@@ -316,6 +316,12 @@ impl IdleDetector {
         self.record_output_at(session_id, byte_count, printable, Instant::now());
     }
 
+    pub(crate) fn notify_raw_output_at(&self, session_id: Uuid, at: Instant) {
+        if let Some((_, observer)) = self.raw_output_observer.get() {
+            observer(session_id, at);
+        }
+    }
+
     /// #2124 - the injectable core of [`record_output`].
     ///
     /// A short periodic burst after long silence (a status-line repaint) must
@@ -337,9 +343,7 @@ impl IdleDetector {
         printable: bool,
         now: Instant,
     ) {
-        if let Some((_, observer)) = self.raw_output_observer.get() {
-            observer(session_id, now);
-        }
+        self.notify_raw_output_at(session_id, now);
         let tuning = self
             .tuning
             .lock()
@@ -2221,6 +2225,18 @@ mod response_close_raw_output_tests {
         let now = Instant::now();
         detector.record_output_at(id, 3, false, now);
         assert_eq!(observed.lock().unwrap().as_slice(), &[(id, now)]);
+        let silence = detector.silence.lock().unwrap().clone();
+        let registered = detector.registered_at.lock().unwrap().clone();
+        let idle = detector.idle_set.lock().unwrap().clone();
+        let later = now + Duration::from_secs(1);
+        detector.notify_raw_output_at(id, later);
+        assert_eq!(
+            observed.lock().unwrap().as_slice(),
+            &[(id, now), (id, later)]
+        );
+        assert_eq!(*detector.silence.lock().unwrap(), silence);
+        assert_eq!(*detector.registered_at.lock().unwrap(), registered);
+        assert_eq!(*detector.idle_set.lock().unwrap(), idle);
         assert_eq!(detector.raw_output_observer_identity(), Some(1));
     }
 }

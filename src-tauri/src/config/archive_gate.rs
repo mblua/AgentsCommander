@@ -76,11 +76,23 @@ pub(crate) async fn probe_spawn_refusal<R: tauri::Runtime>(
 
 /// #881: enforce that a session spawn never leaves a live PTY inside an
 /// archived project.
-pub(crate) async fn enforce_unarchived_for_spawn<R: tauri::Runtime>(
+pub(crate) async fn enforce_unarchived_for_spawn<R, W, WF, A, AF, P, F>(
     app: &tauri::AppHandle<R>,
     cwd: &str,
     session_label: &str,
-) -> Result<(), String> {
+    prepare: W,
+    admit: A,
+    publish_settings: F,
+) -> Result<(), String>
+where
+    R: tauri::Runtime,
+    W: FnMut() -> WF,
+    WF: std::future::Future<Output = Result<(), String>>,
+    A: FnMut() -> AF,
+    AF: std::future::Future<Output = Result<Option<P>, String>>,
+    P: Send + 'static,
+    F: FnOnce(&crate::config::settings::AppSettings),
+{
     let settings = app.state::<crate::config::settings::SettingsState>();
     let archived = {
         let current = settings.read().await;
@@ -101,16 +113,31 @@ pub(crate) async fn enforce_unarchived_for_spawn<R: tauri::Runtime>(
         return Ok(());
     };
 
-    auto_unarchive_for_activation(app, &root, session_label).await
+    auto_unarchive_for_activation(app, &root, session_label, prepare, admit, publish_settings).await
 }
 
-async fn auto_unarchive_for_activation<R: tauri::Runtime>(
+async fn auto_unarchive_for_activation<R, W, WF, A, AF, P, F>(
     app: &tauri::AppHandle<R>,
     root: &str,
     session_label: &str,
-) -> Result<(), String> {
+    mut prepare: W,
+    mut admit: A,
+    publish_settings: F,
+) -> Result<(), String>
+where
+    R: tauri::Runtime,
+    W: FnMut() -> WF,
+    WF: std::future::Future<Output = Result<(), String>>,
+    A: FnMut() -> AF,
+    AF: std::future::Future<Output = Result<Option<P>, String>>,
+    P: Send + 'static,
+    F: FnOnce(&crate::config::settings::AppSettings),
+{
     let settings = app.state::<crate::config::settings::SettingsState>();
-    let mut s = tokio::time::timeout(Duration::from_secs(5), settings.write())
+    let (mut s, permission, path) = loop {
+        // Target acquisition never waits while a settings guard is held.
+        prepare().await?;
+        let s = tokio::time::timeout(Duration::from_secs(5), settings.write())
         .await
         .map_err(|_| {
             format!(
@@ -118,15 +145,21 @@ async fn auto_unarchive_for_activation<R: tauri::Runtime>(
                 root
             )
         })?;
+        let path = crate::config::config_dir()
+            .ok_or("Could not determine settings directory")?
+            .join(SETTINGS_FILE_NAME);
+        if let Some(permission) = admit().await? {
+            break (s, permission, path);
+        }
+        drop(s);
+        tokio::task::yield_now().await;
+    };
 
-    let path = crate::config::config_dir()
-        .ok_or("Could not determine settings directory")?
-        .join(SETTINGS_FILE_NAME);
     let root_owned = root.to_string();
     let current = s.clone();
     // The managed guard stays owned by this future; the blocking closure owns
     // only the file token and captures, and releases it before the await ends.
-    let written = tokio::task::spawn_blocking(move || -> Result<_, String> {
+    let (permission, written) = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let mut transaction =
             crate::config::settings::begin_project_paths_transaction_at_path(&current, &path)?;
         let mut candidate = transaction.fresh_settings().clone();
@@ -145,17 +178,21 @@ async fn auto_unarchive_for_activation<R: tauri::Runtime>(
             )
         })?;
         let Some(reg) = reg else {
-            return Ok((candidate, Ok(None)));
+            return Ok((permission, (candidate, Ok(None))));
         };
         crate::config::settings::resync_project_state_from_runtime(&mut candidate);
         match transaction.commit_project_groups(&candidate, true, true) {
-            Ok(written) => Ok((written, Ok(Some(reg)))),
-            Err(error) => Ok((transaction.fresh_settings().clone(), Err(error))),
+            Ok(written) => Ok((permission, (written, Ok(Some(reg))))),
+            Err(error) => Ok((permission, (transaction.fresh_settings().clone(), Err(error)))),
         }
     })
     .await
     .map_err(|error| format!("archive gate task failed: {error}"))??;
+    // Every actual tuple, including the nested commit error, publishes the
+    // effective pair synchronously before this settings adoption.
+    publish_settings(&written.0);
     *s = written.0;
+    drop(permission);
     let Some(reg) = written.1? else {
         return Ok(());
     };

@@ -9,6 +9,10 @@ use crate::pty::manager::{PtyInputPermit, PtyManager, PtyRouteWriteGuard};
 use crate::session::manager::SessionManager;
 use crate::session::session::{Session, SessionStatus};
 
+// Internal mailbox suspension, consumed only after the writer/lifecycle guards
+// have returned. It is never a delivered outcome or public status.
+pub(crate) const OWNED_WORK_SCOPE_WAIT: &str = "owned_work_scope_wait";
+
 /// Stable, payload-free validation failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PtyInputTextErrorKind {
@@ -401,6 +405,13 @@ pub async fn inject_text_into_session<R: tauri::Runtime>(
 /// keeps the plain `inject_text_into_session` above: that body was already
 /// marked delivered when the command half succeeded, so a hold armed during the
 /// detached idle wait must not drop it.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )
+)]
 pub(crate) async fn inject_peer_wake_text_into_session<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_id: Uuid,
@@ -408,15 +419,68 @@ pub(crate) async fn inject_peer_wake_text_into_session<R: tauri::Runtime>(
     message_id: &str,
     settle: SettleReadiness,
 ) -> Result<(), String> {
+    inject_peer_wake_text_into_session_with_pre_write_check(
+        app,
+        session_id,
+        text,
+        message_id,
+        settle,
+        |_| Ok(()),
+    )
+    .await
+}
+
+/// Peer delivery retains its hold policy and completion cleanup while allowing
+/// the caller to validate immediately before the serialized first write.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )
+)]
+pub(crate) async fn inject_peer_wake_text_into_session_with_pre_write_check<R, F>(
+    app: &tauri::AppHandle<R>,
+    session_id: Uuid,
+    text: &str,
+    message_id: &str,
+    settle: SettleReadiness,
+    pre_write_check: F,
+) -> Result<(), String>
+where
+    R: tauri::Runtime,
+    F: FnOnce(&Session) -> Result<(), String>,
+{
+    inject_peer_wake_with_current_facts(app, session_id, text, message_id, settle, |session, _| {
+        pre_write_check(session)
+    })
+    .await
+}
+
+/// Internal extension of the same peer boundary: upper policy admission sees
+/// the interior snapshot already held by the injector, without manager reentry.
+pub(crate) async fn inject_peer_wake_with_current_facts<R, F>(
+    app: &tauri::AppHandle<R>,
+    session_id: Uuid,
+    text: &str,
+    message_id: &str,
+    settle: SettleReadiness,
+    pre_write_check: F,
+) -> Result<(), String>
+where
+    R: tauri::Runtime,
+    F: FnOnce(&Session, &crate::session::manager::CarrierSnapshot) -> Result<(), String>,
+{
     let result = inject_text_into_session_impl(
         app,
         session_id,
         text,
         HoldPolicy::PeerWake(message_id),
         settle,
-        |session| {
-            session.ok_or_else(|| format!("Session not found: {}", session_id))?;
-            Ok(())
+        |session, current| {
+            let session = session.ok_or_else(|| format!("Session not found: {}", session_id))?;
+            let current = current.expect("peer boundary supplies current facts");
+            pre_write_check(session, current)
         },
     )
     .await;
@@ -444,7 +508,7 @@ where
         text,
         HoldPolicy::Exempt,
         SettleReadiness::Unknown,
-        move |session| {
+        move |session, _| {
             session.ok_or_else(|| format!("Session not found: {}", session_id))?;
             pre_write_check()
         },
@@ -496,7 +560,7 @@ where
         text,
         HoldPolicy::Exempt,
         SettleReadiness::Unknown,
-        move |session| {
+        move |session, _| {
             let session = session.ok_or_else(|| {
                 format!(
                     "Session {} is missing before supported-agent injection",
@@ -556,7 +620,7 @@ where
         text,
         HoldPolicy::InternalNotice,
         SettleReadiness::Unknown,
-        move |session| {
+        move |session, _| {
             let session = session.ok_or_else(|| {
                 format!(
                     "Session {} is missing before supported-agent injection",
@@ -570,43 +634,59 @@ where
     .await
 }
 
-async fn inject_text_into_session_impl<R, F>(
-    app: &tauri::AppHandle<R>,
-    session_id: Uuid,
+async fn write_injected_text_checked<F>(
+    manager: &SessionManager,
+    pty_manager: &Arc<Mutex<PtyManager>>,
+    permit: &crate::pty::manager::PtyInputPermit,
+    session_id: uuid::Uuid,
     text: &str,
-    hold_policy: HoldPolicy<'_>,
-    settle: SettleReadiness,
-    pre_write_check: F,
+    legacy_check: Option<F>,
 ) -> Result<(), String>
 where
-    R: tauri::Runtime,
-    F: FnOnce(Option<&Session>) -> Result<(), String>,
+    F: FnOnce(
+        Option<&Session>,
+        Option<&crate::session::manager::CarrierSnapshot>,
+    ) -> Result<(), String>,
 {
-    // Resolve one public snapshot without retaining a manager guard across an await.
-    let session = {
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let manager = session_mgr.read().await.clone();
-        manager.get_session(session_id).await
-    };
-    let shell = session.as_ref().map(|session| session.shell.clone());
-    let send_enter = shell.as_deref().map(needs_explicit_enter).unwrap_or(false);
-    log::info!(
-        "[inject] session={} shell={:?} send_enter={}",
-        session_id,
-        shell,
-        send_enter
-    );
+    if let Some(check) = legacy_check {
+        // Snapshotting a typed route is pure registry access. The verified
+        // guard validates that same kind/generation/identity against our
+        // already-held writer; it writes directly, without reacquiring itself.
+        let route = PtyManager::snapshot_route_proof(pty_manager, session_id).ok();
+        manager
+            .with_response_close_facts(|current| {
+                let route_guard = match route
+                    .as_ref()
+                    .and_then(|route| route.saved_replica().map(|replica| (route, replica)))
+                {
+                    Some((route, replica)) => PtyManager::lock_route_for_verified_write(
+                        permit,
+                        route.backend_kind(),
+                        route.saved_cwd(),
+                        replica,
+                    ),
+                    None => PtyManager::lock_route_for_write(permit),
+                };
+                let route_guard =
+                    route_guard.map_err(|error| format!("PTY write failed: {}", error))?;
+                let session = current.rows.iter().find(|session| session.id == session_id);
+                check(session, Some(current))?;
+                route_guard
+                    .write(text.as_bytes())
+                    .map_err(|error| format!("PTY write failed: {}", error))
+            })
+            .await
+    } else {
+        PtyManager::write_with_permit(permit, text.as_bytes())
+            .map_err(|error| format!("PTY write failed: {}", error))
+    }
+}
 
-    // Acquire the per-session input permit before running the pre-write closure,
-    // so the closure and the first checked write happen together at the real
-    // serialized write boundary (plan 7.5). The permit is held across the whole
-    // text-then-Enter seam, which gives legacy/logical injection writer
-    // serialization (invariant 3) without changing its public byte sequence.
-    let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-    let permit = PtyManager::acquire_input_writer(&pty_manager, session_id)
-        .await
-        .map_err(|error| error.to_string())?;
-
+async fn check_injection_hold<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: uuid::Uuid,
+    hold_policy: &HoldPolicy<'_>,
+) -> Result<(), String> {
     if let Some(menu_guard) = app.try_state::<Arc<crate::pty::menu_guard::MenuGuard>>() {
         if menu_guard.is_blocked(session_id) {
             return Err(format!(
@@ -637,11 +717,63 @@ where
             return Err(reason);
         }
     }
+    Ok(())
+}
+
+async fn inject_text_into_session_impl<R, F>(
+    app: &tauri::AppHandle<R>,
+    session_id: Uuid,
+    text: &str,
+    hold_policy: HoldPolicy<'_>,
+    settle: SettleReadiness,
+    pre_write_check: F,
+) -> Result<(), String>
+where
+    R: tauri::Runtime,
+    F: FnOnce(
+        Option<&Session>,
+        Option<&crate::session::manager::CarrierSnapshot>,
+    ) -> Result<(), String>,
+{
+    // Resolve one public snapshot without retaining a manager guard across an await.
+    let manager = {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let manager = session_mgr.read().await.clone();
+        manager
+    };
+    let session = manager.get_session(session_id).await;
+    let shell = session.as_ref().map(|session| session.shell.clone());
+    let send_enter = shell.as_deref().map(needs_explicit_enter).unwrap_or(false);
+    log::info!(
+        "[inject] session={} shell={:?} send_enter={}",
+        session_id,
+        shell,
+        send_enter
+    );
+
+    // Acquire the per-session input permit before running the pre-write closure,
+    // so the closure and the first checked write happen together at the real
+    // serialized write boundary (plan 7.5). The permit is held across the whole
+    // text-then-Enter seam, which gives legacy/logical injection writer
+    // serialization (invariant 3) without changing its public byte sequence.
+    let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let permit = PtyManager::acquire_input_writer(&pty_manager, session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    check_injection_hold(app, session_id, &hold_policy).await?;
 
     // Deliberately synchronous and immediately adjacent to the serialized write
     // boundary. Callers of the supported variant perform their final
     // filesystem/config guard here.
-    pre_write_check(session.as_ref())?;
+    // Peer callbacks use the fresh interior snapshot below, after all waits.
+    let peer_boundary = matches!(hold_policy, HoldPolicy::PeerWake(_));
+    let legacy_check = if peer_boundary {
+        Some(pre_write_check)
+    } else {
+        pre_write_check(session.as_ref(), None)?;
+        None
+    };
 
     // #2586 D1 - on a `send_enter` shell the two later lone `\r` are the submit;
     // the wake render's trailing `\n\r` rides inside the pasted burst and can
@@ -653,13 +785,25 @@ where
     };
 
     // Write the text block through the held permit.
-    PtyManager::write_with_permit(&permit, text.as_bytes()).map_err(|error| {
+    let written = write_injected_text_checked(
+        &manager,
+        &pty_manager,
+        &permit,
+        session_id,
+        text,
+        legacy_check,
+    )
+    .await;
+    written.map_err(|error| {
+        if error == OWNED_WORK_SCOPE_WAIT {
+            return error;
+        }
         log::error!(
             "[inject] PTY write FAILED session={}: {}",
             session_id,
             error
         );
-        format!("PTY write failed: {}", error)
+        error
     })?;
     log::info!(
         "[inject] PTY write OK session={} bytes={}",
@@ -1661,6 +1805,95 @@ mod tests {
             vec![b"echo hello".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
         );
         assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 0);
+    }
+
+    #[tokio::test]
+    async fn response_close_peer_callback_respects_hold_and_success_cleanup() {
+        let (app, id, backend) = typing_hold_app("bash").await;
+        let window = std::time::Duration::from_secs(30);
+        let hold = app.state::<crate::pty::input_activity::TypingHoldState>();
+        hold.lock().unwrap().note_qualifying_key(id);
+        let calls = std::cell::Cell::new(0);
+        let error = inject_peer_wake_text_into_session_with_pre_write_check(
+            app.handle(),
+            id,
+            "payload",
+            "callback-held",
+            SettleReadiness::Unknown,
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(crate::pty::menu_guard::is_typing_hold_deferred_error(
+            &error
+        ));
+        assert_eq!(calls.get(), 0);
+        assert!(recorded_writes(&backend, id).is_empty());
+        assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 1);
+        assert!(!hold.lock().unwrap().toggle_manual(id, window).closed);
+        inject_peer_wake_text_into_session_with_pre_write_check(
+            app.handle(),
+            id,
+            "payload",
+            "callback-held",
+            SettleReadiness::Unknown,
+            |session| {
+                assert_eq!(session.id, id);
+                assert!(recorded_writes(&backend, id).is_empty());
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls.get(), 1);
+        assert_eq!(recorded_writes(&backend, id), vec![b"payload".to_vec()]);
+        assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 0);
+    }
+
+    #[tokio::test]
+    async fn response_close_peer_callback_waits_for_writer_and_rejects_before_bytes() {
+        use std::future::Future;
+        let (app, id, backend) = typing_hold_app("bash").await;
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let writer = PtyManager::acquire_input_writer(&pty, id).await.unwrap();
+        let calls = std::cell::Cell::new(0);
+        let mut delivery = std::pin::pin!(inject_peer_wake_text_into_session_with_pre_write_check(
+            app.handle(),
+            id,
+            "payload",
+            "callback-rejected",
+            SettleReadiness::Unknown,
+            |session| {
+                assert_eq!(session.id, id);
+                assert!(recorded_writes(&backend, id).is_empty());
+                calls.set(calls.get() + 1);
+                Err("peer authorization changed".to_string())
+            },
+        ));
+        {
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(delivery.as_mut().poll(&mut context).is_pending());
+        }
+        assert_eq!(calls.get(), 0);
+        assert!(recorded_writes(&backend, id).is_empty());
+        drop(writer);
+        assert_eq!(delivery.await, Err("peer authorization changed".into()));
+        assert_eq!(calls.get(), 1);
+        assert!(recorded_writes(&backend, id).is_empty());
+        inject_peer_wake_text_into_session(
+            app.handle(),
+            id,
+            "payload",
+            "legacy-noop",
+            SettleReadiness::Unknown,
+        )
+        .await
+        .unwrap();
+        assert_eq!(recorded_writes(&backend, id), vec![b"payload".to_vec()]);
     }
 
     /// Plain maintenance/Telegram writes remain exempt from typing hold.

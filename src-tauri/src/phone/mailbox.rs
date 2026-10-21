@@ -1346,11 +1346,15 @@ async fn deliver_claimed_wake<R: tauri::Runtime>(
     origin: &Path,
     validated: &ValidatedWake,
 ) -> Result<(), String> {
+    let _candidate_disposal = validated
+        .response
+        .as_ref()
+        .map(ResponseWakeWork::candidate_disposal);
     match delivery.deliver_validated_wake(app, validated, false).await {
         // `claim.parent()` is the outbox dir, so delivered/ is derived exactly
         // as it is today and the destination still comes from `msg.id`. The
         // delivered JSON carries the receipt annotation (#1635-2 D4).
-        Ok(annotated) => match delivery.move_to_delivered(claim, &annotated).await {
+        Ok(annotated) => match delivery.move_to_delivered(app, claim, &annotated).await {
             Ok(()) => Ok(()),
             Err(error) => {
                 release_wake_claim(claim, origin);
@@ -2852,6 +2856,278 @@ fn session_has_current_pty_submission_provenance(
         .is_some()
 }
 
+enum PtySpawnStep {
+    Created(SessionInfo),
+    OwnedCreated(
+        SessionInfo,
+        crate::session::selection::OwnedReplacementContinuation,
+    ),
+    Retained {
+        continuation: crate::session::selection::OwnedReplacementContinuation,
+        failed: bool,
+    },
+    RetainedUnowned,
+    NeedReacquire(Option<crate::session::selection::PreparedOwnedReplacement>),
+}
+
+type OwnedPtyWorkTransfer = (
+    crate::session::selection::OwnedReplacementContinuation,
+    crate::session::selection::LifecycleEffectGuard,
+);
+
+async fn finish_owned_pty_work<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    work: &mut Option<OwnedPtyWorkTransfer>,
+    observed: bool,
+) {
+    let Some((continuation, effect)) = work.take() else {
+        return;
+    };
+    let manager = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .read()
+        .await
+        .clone();
+    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    continuation
+        .finish_observed_work_transfer(&manager, &pty, effect, observed)
+        .await;
+}
+
+async fn observe_pty_spawn_scope<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    target: &crate::config::teams::VerifiedPtyInputIdentity,
+) -> (
+    crate::config::sessions_persistence::CreateCarrierScope,
+    Option<Uuid>,
+) {
+    let directory = crate::config::config_dir();
+    let manager = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .read()
+        .await
+        .clone();
+    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    manager
+        .with_current_carrier_snapshot(&permit, |current| {
+            use crate::config::sessions_persistence::CreateCarrierScope;
+            let scope = crate::config::sessions_persistence::classify_lifecycle_carrier_scope(
+                &permit,
+                Some(&target.canonical_fqn),
+                &target.replica_identity.canonical_path,
+            );
+            let retained = match &scope {
+                CreateCarrierScope::Protected {
+                    session_id,
+                    preparing_owner: None,
+                    ..
+                } => directory.as_ref().and_then(|directory| {
+                    crate::config::sessions_persistence::retained_carrier_for_replacement(
+                        &permit,
+                        directory,
+                        &target.canonical_fqn,
+                        *session_id,
+                        current,
+                    )
+                    .map(|_| *session_id)
+                }),
+                _ => None,
+            };
+            (scope, retained)
+        })
+        .await
+}
+
+async fn pty_spawn_scope_may_resume<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    target: &crate::config::teams::VerifiedPtyInputIdentity,
+) -> bool {
+    use crate::config::sessions_persistence::CreateCarrierScope;
+    matches!(
+        observe_pty_spawn_scope(app, target).await,
+        (CreateCarrierScope::Foreign { .. }, _)
+            | (
+                CreateCarrierScope::Protected {
+                    preparing_owner: None,
+                    ..
+                },
+                Some(_),
+            )
+    )
+}
+
+fn pty_resume_metadata_matches(
+    original: &crate::phone::types::PtyInputResult,
+    current: &crate::phone::types::PtyInputResult,
+    claimed: &crate::api::message_store::ClaimedPtyInputOperation,
+) -> bool {
+    !current.terminal
+        && !original.terminal
+        && original.status == crate::phone::types::PtyInputPublicStatus::Queued
+        && original.issued_at.is_some()
+        && original.queued_at.is_some()
+        && original.payload_bytes.is_some()
+        && original.payload_sha256.is_some()
+        && current.injection_id == original.injection_id
+        && current.op_id == original.op_id
+        && current.sender == original.sender
+        && current.target == original.target
+        && current.source_plane == original.source_plane
+        && current.expires_at == original.expires_at
+        && current.status == crate::phone::types::PtyInputPublicStatus::Queued
+        && current.injection_id == claimed.injection_id
+        && current.op_id.as_deref() == Some(claimed.op_id.as_str())
+        && current.sender.as_deref() == Some(claimed.sender_fqn.as_str())
+        && current.target.as_deref() == Some(claimed.target_fqn.as_str())
+        && current.source_plane == Some(claimed.source_plane)
+        && current.expires_at.as_deref() == Some(claimed.expires_at.as_str())
+        && current.version == original.version
+        && current.payload_bytes == original.payload_bytes
+        && current.payload_sha256 == original.payload_sha256
+        && current.issued_at == original.issued_at
+        && current.queued_at == original.queued_at
+        && current.selected_session_id.is_none()
+        && current.selected_backend.is_none()
+        && current.actuating_at.is_none()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PtyClaimRefresh {
+    Current,
+    Terminal,
+}
+
+#[derive(Clone, Copy)]
+enum PtyReacquireGoal {
+    Spawn,
+    Published(Uuid),
+}
+
+async fn reacquire_pty_dispatch_target<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    source: (
+        &Arc<crate::api::message_store::MessageStore>,
+        &crate::phone::types::PtyInputResult,
+        &crate::api::message_store::ClaimedPtyInputOperation,
+    ),
+    target: (
+        &Arc<crate::api::message_store::PtyInputTargetGate>,
+        &crate::config::teams::VerifiedPtyInputIdentity,
+        PtyReacquireGoal,
+    ),
+    deadline: (
+        chrono::DateTime<chrono::Utc>,
+        &tokio_util::sync::CancellationToken,
+    ),
+    heartbeat: &mut crate::api::message_store::PreparationHeartbeatGuard,
+) -> Option<(
+    crate::api::message_store::PtyInputStripeGuard,
+    crate::api::message_store::PtyInputTargetGuard,
+)> {
+    use crate::phone::types::PtyInputReasonCode as C;
+    let (store, initial, claimed) = source;
+    let (gate, target, goal) = target;
+    let (expires, shutdown) = deadline;
+    let acquired = await_pty_input_before_deadline(expires, shutdown, async {
+        if refresh_pty_claim_for_resume(store, initial, claimed).await? == PtyClaimRefresh::Terminal
+        {
+            return Ok(None);
+        }
+        if let Some(coordinator) =
+            app.try_state::<crate::session::selection::SelectionCoordinator>()
+        {
+            coordinator
+                .wait_for_restore_release()
+                .await
+                .map_err(|_| C::StoreTransient)?;
+        }
+        loop {
+            let ready = match goal {
+                PtyReacquireGoal::Spawn => pty_spawn_scope_may_resume(app, target).await,
+                PtyReacquireGoal::Published(id) => {
+                    !crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
+                        &target.canonical_fqn,
+                        id,
+                    )
+                }
+            };
+            if ready {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let stripe = gate
+            .acquire_target_lock(&target.canonical_fqn)
+            .await
+            .map_err(|_| C::StoreTransient)?;
+        let exact = gate.acquire_exact(&target.canonical_fqn).await;
+        if refresh_pty_claim_for_resume(store, initial, claimed).await? == PtyClaimRefresh::Terminal
+        {
+            return Ok(None);
+        }
+        Ok::<_, C>(Some((stripe, exact)))
+    })
+    .await;
+    match acquired {
+        Ok(Ok(Some(guards))) => Some(guards),
+        Ok(Ok(None)) | Err(PtyInputPreBoundaryStop::Shutdown) => {
+            heartbeat.finish().await;
+            None
+        }
+        Ok(Err(code)) => {
+            finish_pty_input_before_boundary(
+                store,
+                heartbeat,
+                &claimed.injection_id,
+                &claimed.lease_owner,
+                code,
+            )
+            .await;
+            None
+        }
+        Err(PtyInputPreBoundaryStop::Expired) => {
+            reject_pty_input_before_boundary(store, heartbeat, &claimed.injection_id, C::Expired)
+                .await;
+            None
+        }
+    }
+}
+
+async fn refresh_pty_claim_for_resume(
+    store: &crate::api::message_store::MessageStore,
+    original: &crate::phone::types::PtyInputResult,
+    claimed: &crate::api::message_store::ClaimedPtyInputOperation,
+) -> Result<PtyClaimRefresh, crate::phone::types::PtyInputReasonCode> {
+    use crate::phone::types::PtyInputReasonCode as C;
+    let current = store
+        .query_pty_input_by_injection_offloaded(claimed.injection_id.clone())
+        .await
+        .map_err(|_| C::StoreTransient)?
+        .ok_or(C::AuthorityChanged)?;
+    if current.terminal {
+        return Ok(PtyClaimRefresh::Terminal);
+    }
+    if !pty_resume_metadata_matches(original, &current, claimed) {
+        return Err(C::AuthorityChanged);
+    }
+    match store
+        .renew_pty_input_lease_offloaded(
+            claimed.injection_id.clone(),
+            claimed.lease_owner.clone(),
+            chrono::Utc::now(),
+        )
+        .await
+    {
+        Ok(true) => Ok(PtyClaimRefresh::Current),
+        _ => {
+            // The original claimed-expiry parse already validated this value.
+            let expires = crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at)
+                .map_err(|_| C::AuthorityChanged)?;
+            Err(pty_input_lease_failure_code(expires))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PtyInputPreBoundaryStop {
     Expired,
@@ -2893,7 +3169,7 @@ async fn reject_pty_input_before_boundary(
     heartbeat: &mut crate::api::message_store::PreparationHeartbeatGuard,
     injection_id: &str,
     code: crate::phone::types::PtyInputReasonCode,
-) {
+) -> bool {
     heartbeat.finish().await;
     match store
         .terminalize_pty_input_offloaded(
@@ -2904,11 +3180,17 @@ async fn reject_pty_input_before_boundary(
         )
         .await
     {
-        Ok(result) => crate::api::audit::record_pty_input_result("terminal", &result),
-        Err(_) => log::warn!(
-            "[pty-input] rejection persistence failed id={} code=terminal_store_failed",
-            injection_id
-        ),
+        Ok(result) => {
+            crate::api::audit::record_pty_input_result("terminal", &result);
+            result.terminal
+        }
+        Err(_) => {
+            log::warn!(
+                "[pty-input] rejection persistence failed id={} code=terminal_store_failed",
+                injection_id
+            );
+            false
+        }
     }
 }
 
@@ -2918,7 +3200,7 @@ async fn finish_pty_input_before_boundary(
     injection_id: &str,
     lease_owner: &str,
     code: crate::phone::types::PtyInputReasonCode,
-) {
+) -> bool {
     use crate::phone::types::PtyInputReasonCode as C;
     heartbeat.finish().await;
     if matches!(
@@ -2941,11 +3223,11 @@ async fn finish_pty_input_before_boundary(
             .await
             .is_ok()
         {
-            return;
+            return true;
         }
-        reject_pty_input_before_boundary(store, heartbeat, injection_id, C::StoreTransient).await;
+        reject_pty_input_before_boundary(store, heartbeat, injection_id, C::StoreTransient).await
     } else {
-        reject_pty_input_before_boundary(store, heartbeat, injection_id, code).await;
+        reject_pty_input_before_boundary(store, heartbeat, injection_id, code).await
     }
 }
 
@@ -3125,6 +3407,9 @@ type MailboxAttachCalls = Arc<Mutex<Vec<(Uuid, Option<String>)>>>;
 #[cfg(test)]
 #[derive(Clone, Default)]
 struct MailboxTestHooks {
+    /// Consumed only by an actual accepted replacement; None keeps ticket mode.
+    replacement_fixture:
+        Arc<Mutex<Option<Arc<crate::session::selection::ReplacementFixtureControl>>>>,
     pty_presence: Arc<Mutex<HashMap<Uuid, bool>>>,
     inject_results: Arc<Mutex<VecDeque<Result<(), String>>>>,
     /// (#1001 PR1 / G6) Scripted consumption verdicts, mirroring
@@ -3164,6 +3449,18 @@ struct MailboxTestHooks {
     /// (#2411) One-shot error for the test spawn arm, returned after the real
     /// coordinator-create clear runs, mirroring a create that fails after it.
     internal_spawn_error: Arc<Mutex<Option<String>>>,
+}
+
+#[cfg(test)]
+impl MailboxTestHooks {
+    fn replacement_fixture_control(
+        &self,
+    ) -> Option<Arc<crate::session::selection::ReplacementFixtureControl>> {
+        self.replacement_fixture
+            .lock()
+            .expect("replacement fixture control")
+            .clone()
+    }
 }
 
 #[cfg(test)]
@@ -3214,13 +3511,554 @@ impl MailboxPoller {
     }
 }
 
+// Only primitive/static/UUID diagnostics; expressions remain lazy when disabled.
+macro_rules! response_diag {
+    ($stage:literal, $outcome:expr, $id:expr) => {
+        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+            if let Some(id) = $id {
+                log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag stage={} outcome={} site={} id={}", $stage, $outcome, line!(), id);
+            } else {
+                log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag stage={} outcome={} site={} id=unknown", $stage, $outcome, line!());
+            }
+        }
+    };
+}
+macro_rules! response_diag_result {
+    ($value:expr, $stage:literal, $id:expr) => {{
+        let result = $value;
+        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+            let outcome = match &result {
+                Ok(_) => "ok",
+                Err(crate::pty::manager::ResponseCloseError::Unavailable) => "unavailable",
+                Err(crate::pty::manager::ResponseCloseError::Unknown) => "unknown",
+                Err(crate::pty::manager::ResponseCloseError::Conflict) => "conflict",
+                Err(crate::pty::manager::ResponseCloseError::ClosingDeferred) => "closing_deferred",
+            };
+            response_diag!($stage, outcome, $id);
+        }
+        result
+    }};
+}
+
+fn response_diag_emit_lazy(
+    stage: &'static str,
+    outcome: impl FnOnce() -> &'static str,
+    id: impl FnOnce() -> Option<Uuid>,
+    site: u32,
+) {
+    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+        if let Some(id) = id() {
+            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag stage={} outcome={} site={} id={}", stage, outcome(), site, id);
+        } else {
+            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag stage={} outcome={} site={} id=unknown", stage, outcome(), site);
+        }
+    }
+}
+fn response_diag_option_lazy<T>(
+    value: Option<T>,
+    stage: &'static str,
+    outcome: &'static str,
+    id: impl FnOnce() -> Option<Uuid>,
+    site: u32,
+) -> Option<T> {
+    match value {
+        Some(value) => Some(value),
+        None => {
+            response_diag_emit_lazy(stage, || outcome, id, site);
+            None
+        }
+    }
+}
+fn response_diag_result_ref<T>(
+    value: &Result<T, crate::pty::manager::ResponseCloseError>,
+    stage: &'static str,
+    id: impl FnOnce() -> Option<Uuid>,
+    site: u32,
+) {
+    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+        let outcome = match value {
+            Ok(_) => "ok",
+            Err(crate::pty::manager::ResponseCloseError::Unavailable) => "unavailable",
+            Err(crate::pty::manager::ResponseCloseError::Unknown) => "unknown",
+            Err(crate::pty::manager::ResponseCloseError::Conflict) => "conflict",
+            Err(crate::pty::manager::ResponseCloseError::ClosingDeferred) => "closing_deferred",
+        };
+        response_diag_emit_lazy(stage, || outcome, id, site);
+    }
+}
+fn response_diag_debug_only(action: impl FnOnce()) {
+    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+        action();
+    }
+}
+macro_rules! response_diag_local {
+    ($stage:literal, $outcome:expr, $id:expr) => {
+        response_diag_emit_lazy($stage, || $outcome, || $id, line!())
+    };
+}
+macro_rules! response_diag_option_local {
+    ($value:expr, $stage:literal, $outcome:literal, $id:expr) => {
+        response_diag_option_lazy($value, $stage, $outcome, || $id, line!())
+    };
+}
+macro_rules! response_diag_result_local {
+    ($value:expr, $stage:literal, $id:expr) => {{
+        let result = $value;
+        response_diag_result_ref(&result, $stage, || $id, line!());
+        result
+    }};
+}
+
+fn current_response_row<'a>(
+    current: &'a crate::session::manager::CarrierSnapshot,
+    identity: &crate::pty::manager::ResponseRouteIdentity,
+) -> Option<&'a Session> {
+    current.rows.iter().find(|row| {
+        row.id == identity.session_id
+            && row.token == identity.token
+            && row.backend_kind == identity.backend
+            && !current.pending_ids.contains(&row.id)
+            && !matches!(row.status, SessionStatus::Exited(_))
+            && current.versions.get(&row.id) == Some(&identity.carrier_version)
+    })
+}
+
+/// Both frozen route lifecycles and the caller's current interior manager read
+/// remain live through the pure tracker transition. The coordinator keeps its
+/// actual backend; the member alone must be a local interactive process.
+fn with_verified_response_pair<T>(
+    current: &crate::session::manager::CarrierSnapshot,
+    pty: &Arc<Mutex<PtyManager>>,
+    state: &crate::pty::manager::ResponseCloseState,
+    member: &crate::pty::manager::ResponseRouteIdentity,
+    coordinator: &crate::pty::manager::ResponseRouteIdentity,
+    publish: impl FnOnce(&Session, &Session) -> T,
+) -> Option<T> {
+    response_diag_debug_only(|| {
+        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag site={} outcome=observed stage=verified_pair scope=stage_current id=unknown member={} coordinator={} current_member_version={:?} current_coordinator_version={:?} captured_member_version={} captured_coordinator_version={} token_backend_role_physical_checks=not_evaluated", line!(), member.session_id, coordinator.session_id, current.versions.get(&member.session_id), current.versions.get(&coordinator.session_id), member.carrier_version, coordinator.carrier_version);
+    });
+    let member_row = response_diag_option_local!(
+        current_response_row(current, member),
+        "verified_pair",
+        "current_member_rejected",
+        None::<Uuid>
+    )?;
+    let coordinator_row = response_diag_option_local!(
+        current_response_row(current, coordinator),
+        "verified_pair",
+        "current_coordinator_rejected",
+        None::<Uuid>
+    )?;
+    if member.backend != SessionBackendKind::LocalProcess
+        || member_row.is_root_agent
+        || member_row.is_coordinator
+        || member_row.agent_kind.is_none()
+        || !coordinator_row.is_coordinator
+        || coordinator_row.is_root_agent
+    {
+        response_diag_local!("verified_pair", "role_or_backend", None::<Uuid>);
+        return None;
+    }
+    let member_route = response_diag_option_local!(
+        PtyManager::snapshot_route_proof(pty, member.session_id).ok(),
+        "verified_pair",
+        "member_route_proof_missing",
+        None::<Uuid>
+    )?;
+    let coordinator_route = response_diag_option_local!(
+        PtyManager::snapshot_route_proof(pty, coordinator.session_id).ok(),
+        "verified_pair",
+        "coordinator_route_proof_missing",
+        None::<Uuid>
+    )?;
+    if member_route.backend_kind() != SessionBackendKind::LocalProcess
+        || coordinator_route.backend_kind() != coordinator.backend
+        || !crate::path_identity::verify_directory(std::path::Path::new(
+            &member_row.working_directory,
+        ))
+        .is_ok_and(|actual| crate::path_identity::same_object(&actual, member_route.saved_cwd()))
+        || !crate::path_identity::verify_directory(std::path::Path::new(
+            &coordinator_row.working_directory,
+        ))
+        .is_ok_and(|actual| {
+            crate::path_identity::same_object(&actual, coordinator_route.saved_cwd())
+        })
+    {
+        response_diag_local!("verified_pair", "backend_or_cwd_mismatch", None::<Uuid>);
+        return None;
+    }
+    let member_authority = response_diag_option_local!(
+        PtyManager::authority_route_proof(pty, member.session_id).ok(),
+        "verified_pair",
+        "member_authority_proof_missing",
+        None::<Uuid>
+    )?;
+    let coordinator_authority = response_diag_option_local!(
+        PtyManager::authority_route_proof(pty, coordinator.session_id).ok(),
+        "verified_pair",
+        "coordinator_authority_proof_missing",
+        None::<Uuid>
+    )?;
+    let _member_guard = response_diag_option_local!(
+        member_authority
+            .lock_verified(
+                member.backend,
+                member_route.saved_cwd(),
+                member_route.saved_replica(),
+            )
+            .ok(),
+        "verified_pair",
+        "member_authority_lock_rejected",
+        None::<Uuid>
+    )?;
+    let _coordinator_guard = response_diag_option_local!(
+        coordinator_authority
+            .lock_verified(
+                coordinator.backend,
+                coordinator_route.saved_cwd(),
+                coordinator_route.saved_replica(),
+            )
+            .ok(),
+        "verified_pair",
+        "coordinator_authority_lock_rejected",
+        None::<Uuid>
+    )?;
+    if state.generation(member.session_id) != Some(member.generation)
+        || state.generation(coordinator.session_id) != Some(coordinator.generation)
+    {
+        response_diag_local!("verified_pair", "generation_mismatch", None::<Uuid>);
+        return None;
+    }
+    response_diag_debug_only(|| {
+        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag site={} outcome=observed stage=verified_pair scope=stage_current member={} coordinator={} captured_member_version={} captured_coordinator_version={} current_member_version={:?} current_coordinator_version={:?} token_backend_role_physical_generation_checks=true", line!(), member.session_id, coordinator.session_id, member.carrier_version, coordinator.carrier_version, current.versions.get(&member.session_id), current.versions.get(&coordinator.session_id));
+    });
+    response_diag_local!("verified_pair", "callback_reached", None::<Uuid>);
+    Some(publish(member_row, coordinator_row))
+}
+
+#[derive(Clone)]
+struct ResponseRequestCandidate {
+    context: crate::pty::manager::ResponseDeliveryContext,
+    member: crate::pty::manager::ResponseRouteIdentity,
+    coordinator: crate::pty::manager::ResponseRouteIdentity,
+    initial: crate::config::sessions_persistence::InitialCarrierIntent,
+}
+
+struct ResponseCandidateAttempt {
+    state: crate::pty::manager::ResponseCloseState,
+    candidate: Mutex<Option<ResponseRequestCandidate>>,
+    armed: std::sync::atomic::AtomicBool,
+}
+
+struct ResponseCandidateDisposal(Arc<ResponseCandidateAttempt>);
+
+impl Drop for ResponseCandidateDisposal {
+    fn drop(&mut self) {
+        match self.0.candidate.lock() {
+            Ok(candidate) => {
+                response_diag_local!("candidate_disposal", "invoked", None::<Uuid>);
+                if self
+                    .0
+                    .armed
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+                {
+                    if let Some(candidate) = candidate.as_ref() {
+                        response_diag_local!(
+                            "mark_request_submitted",
+                            "false_invocation",
+                            None::<Uuid>
+                        );
+                        response_diag_debug_only(|| {
+                            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag stage=candidate_disposal outcome=false_submission_invoked site={} id=unknown member={} coordinator={}", line!(), candidate.member.session_id, candidate.coordinator.session_id);
+                        });
+                        self.0
+                            .state
+                            .mark_request_submitted(&candidate.context, false);
+                    } else {
+                        response_diag_local!(
+                            "candidate_disposal",
+                            "candidate_absent",
+                            None::<Uuid>
+                        );
+                    }
+                } else {
+                    response_diag_local!("candidate_disposal", "attempt_disarmed", None::<Uuid>);
+                }
+            }
+            Err(_) => {
+                response_diag_local!("candidate_disposal", "candidate_lock_failure", None::<Uuid>);
+                self.0.state.fail_closed()
+            }
+        }
+    }
+}
+
+impl ResponseWakeWork {
+    fn candidate_disposal(&self) -> ResponseCandidateDisposal {
+        let attempt = Arc::new(ResponseCandidateAttempt {
+            state: self.state.clone(),
+            candidate: Mutex::new(None),
+            armed: std::sync::atomic::AtomicBool::new(true),
+        });
+        *self
+            .attempt
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(attempt.clone());
+        ResponseCandidateDisposal(attempt)
+    }
+}
+
+struct PreparedResponseRequest {
+    member: crate::pty::manager::ResponseRouteIdentity,
+    coordinator: crate::pty::manager::ResponseRouteIdentity,
+    roots: Vec<String>,
+}
+
+fn reserve_response_request_at_write<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    current: &crate::session::manager::CarrierSnapshot,
+    session: &Session,
+    prepared: &PreparedResponseRequest,
+    work: &ResponseWakeWork,
+    attempt: &Arc<ResponseCandidateAttempt>,
+) {
+    if !attempt.armed.load(std::sync::atomic::Ordering::Acquire) {
+        response_diag_local!(
+            "prewrite_reserve",
+            "attempt_disarmed",
+            work.diagnostic_message_id
+        );
+        return;
+    }
+    if app
+        .try_state::<crate::session::selection::SelectionCoordinator>()
+        .is_some_and(|coordinator| coordinator.restore_is_active())
+    {
+        response_diag_local!(
+            "prewrite_reserve",
+            "restore_active",
+            work.diagnostic_message_id
+        );
+        return;
+    }
+    let settings = app.state::<SettingsState>().inner().clone();
+    let Ok(settings) = settings.try_read_owned() else {
+        response_diag_local!(
+            "prewrite_reserve",
+            "settings_busy",
+            work.diagnostic_message_id
+        );
+        return;
+    };
+    if settings.project_paths != prepared.roots {
+        response_diag_local!(
+            "prewrite_reserve",
+            "roots_changed",
+            work.diagnostic_message_id
+        );
+        return;
+    }
+    let Some(member) = current_response_row(current, &prepared.member) else {
+        response_diag_local!(
+            "prewrite_reserve",
+            "current_member_missing",
+            work.diagnostic_message_id
+        );
+        return;
+    };
+    let Some(coordinator) = current_response_row(current, &prepared.coordinator) else {
+        response_diag_local!(
+            "prewrite_reserve",
+            "current_coordinator_missing",
+            work.diagnostic_message_id
+        );
+        return;
+    };
+    if session.id != member.id
+        || member.backend_kind != SessionBackendKind::LocalProcess
+        || member.is_coordinator
+        || member.is_root_agent
+        || member.agent_kind.is_none()
+        || member
+            .communication
+            .as_ref()
+            .is_some_and(|communication| communication.kind == SessionCommunicationKind::CoManaged)
+        || !coordinator.is_coordinator
+        || coordinator.is_root_agent
+    {
+        response_diag_local!(
+            "prewrite_reserve",
+            "role_or_backend_or_communication",
+            work.diagnostic_message_id
+        );
+        return;
+    }
+    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let Ok(member_route) = PtyManager::snapshot_route_proof(&pty, member.id) else {
+        response_diag_local!(
+            "prewrite_reserve",
+            "member_route_missing",
+            work.diagnostic_message_id
+        );
+        return;
+    };
+    let Some(replica) = member_route.saved_replica() else {
+        response_diag_local!(
+            "prewrite_reserve",
+            "member_replica_missing",
+            work.diagnostic_message_id
+        );
+        return;
+    };
+    if member_route.backend_kind() != SessionBackendKind::LocalProcess
+        || !crate::path_identity::verify_directory(std::path::Path::new(&member.working_directory))
+            .is_ok_and(|actual| {
+                crate::path_identity::same_object(&actual, member_route.saved_cwd())
+            })
+        || !member_route.matches_requester_route(
+            member.backend_kind,
+            member_route.saved_cwd(),
+            Some(replica),
+        )
+    {
+        response_diag_local!(
+            "prewrite_reserve",
+            "member_route_mismatch",
+            work.diagnostic_message_id
+        );
+        return;
+    }
+    let Ok(coordinator_route) = PtyManager::snapshot_route_proof(&pty, coordinator.id) else {
+        response_diag_local!(
+            "prewrite_reserve",
+            "coordinator_route_missing",
+            work.diagnostic_message_id
+        );
+        return;
+    };
+    let Ok(authority) = PtyManager::authority_route_proof(&pty, coordinator.id) else {
+        response_diag_local!(
+            "prewrite_reserve",
+            "coordinator_authority_missing",
+            work.diagnostic_message_id
+        );
+        return;
+    };
+    let Ok(_coordinator_guard) = authority.lock_verified(
+        coordinator.backend_kind,
+        coordinator_route.saved_cwd(),
+        coordinator_route.saved_replica(),
+    ) else {
+        response_diag_local!(
+            "prewrite_reserve",
+            "authority_lock_rejected",
+            work.diagnostic_message_id
+        );
+        return;
+    };
+    if coordinator_route.backend_kind() != coordinator.backend_kind
+        || !crate::path_identity::verify_directory(std::path::Path::new(
+            &coordinator.working_directory,
+        ))
+        .is_ok_and(|actual| {
+            crate::path_identity::same_object(&actual, coordinator_route.saved_cwd())
+        })
+        || work.state.generation(member.id) != Some(prepared.member.generation)
+        || work.state.generation(coordinator.id) != Some(prepared.coordinator.generation)
+    {
+        response_diag_local!(
+            "prewrite_reserve",
+            "coordinator_route_or_generation_mismatch",
+            work.diagnostic_message_id
+        );
+        return;
+    }
+    let now = std::time::Instant::now();
+    work.state.apply_settings(
+        settings.response_close_enabled,
+        settings.response_close_idle_seconds,
+        now,
+    );
+    work.state.publish_manager_facts(
+        prepared.member.clone(),
+        true,
+        crate::session::session::is_working(member),
+        now,
+    );
+    work.state.publish_manager_facts(
+        prepared.coordinator.clone(),
+        false,
+        crate::session::session::is_working(coordinator),
+        now,
+    );
+    let Ok(mut candidate) = attempt.candidate.lock() else {
+        work.state.fail_closed();
+        response_diag_local!(
+            "prewrite_reserve",
+            "candidate_lock_poisoned",
+            work.diagnostic_message_id
+        );
+        return;
+    };
+    if !attempt.armed.load(std::sync::atomic::Ordering::Acquire) {
+        response_diag_local!(
+            "prewrite_reserve",
+            "attempt_disarmed_after_lock",
+            work.diagnostic_message_id
+        );
+        return;
+    }
+    let Ok(context) = response_diag_result_local!(
+        work.state.reserve_policy_candidate(
+            prepared.member.clone(),
+            prepared.coordinator.clone(),
+            work.key.clone(),
+            work.digest.clone(),
+            now,
+        ),
+        "reserve_policy",
+        work.diagnostic_message_id
+    ) else {
+        response_diag_local!(
+            "prewrite_reserve",
+            "reserve_policy_error",
+            work.diagnostic_message_id
+        );
+        return;
+    };
+
+    *candidate = Some(ResponseRequestCandidate {
+        context,
+        member: prepared.member.clone(),
+        coordinator: prepared.coordinator.clone(),
+        initial: crate::config::sessions_persistence::InitialCarrierIntent::new(
+            prepared.member.target.clone(),
+            member.id,
+            member.token,
+            prepared.member.carrier_version,
+            replica.canonical_path.clone(),
+        ),
+    });
+    response_diag_local!(
+        "prewrite_reserve",
+        "candidate_created",
+        work.diagnostic_message_id
+    );
+}
+
 #[derive(Clone)]
 struct ResponseWakeWork {
+    diagnostic_message_id: Option<Uuid>,
     state: crate::pty::manager::ResponseCloseState,
     target: String,
     key: String,
     digest: String,
+    attempt: Arc<Mutex<Option<Arc<ResponseCandidateAttempt>>>>,
     return_context: Option<crate::pty::manager::ReturnObservationContext>,
+    return_routes: Option<(
+        crate::pty::manager::ResponseRouteIdentity,
+        crate::pty::manager::ResponseRouteIdentity,
+    )>,
     // P05 creates the nonce-bound context at the actual pre-write boundary.
     #[allow(dead_code)]
     delivery_context: Option<crate::pty::manager::ResponseDeliveryContext>,
@@ -3246,6 +4084,79 @@ type SpawnedPeerWake = (
     Option<crate::config::agent_command::AgentSpawnCommand>,
     ResolvedWakeAgentCommand,
 );
+
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Preserve the owned delivered message and its existing receipt ownership"
+)]
+enum OwnedPeerWakeStep {
+    Delivered(OutboxMessage),
+    Relist,
+    Retained,
+}
+
+struct OwnedPeerWakeExecution {
+    message: OutboxMessage,
+    delivery: (WakeDeliveryOrigin, bool),
+    response: Option<ResponseWakeWork>,
+    flags_present: bool,
+    request: crate::commands::session::OwnedReplacementCreateRequest,
+    resolved_command: ResolvedWakeAgentCommand,
+    continuation: crate::session::selection::OwnedReplacementContinuation,
+    gate: Arc<crate::api::message_store::PtyInputTargetGate>,
+    exact: Option<crate::api::message_store::PtyInputTargetGuard>,
+    stripe: Option<crate::api::message_store::PtyInputStripeGuard>,
+}
+
+struct OwnedPeerTarget {
+    continuation: crate::session::selection::OwnedReplacementContinuation,
+    gate: Arc<crate::api::message_store::PtyInputTargetGate>,
+    exact: crate::api::message_store::PtyInputTargetGuard,
+    stripe: crate::api::message_store::PtyInputStripeGuard,
+    physical: crate::path_identity::VerifiedPathIdentity,
+}
+
+fn owned_replacement_launch_recipe(
+    request: &crate::commands::session::OwnedReplacementCreateRequest,
+) -> serde_json::Value {
+    let configured = request.resolved_spawn.as_ref().map(|spawn| {
+        let seed = spawn.seed.as_ref().map(|seed| {
+            serde_json::json!({
+                "dest": seed.dest,
+                "candidates": seed.candidates.iter().map(|candidate| serde_json::json!({
+                    "tier": format!("{:?}", candidate.tier),
+                    "os": candidate.os_specific, "path": candidate.path,
+                })).collect::<Vec<_>>(),
+                "replicaRoot": seed.context.replica_root,
+                "rootKind": format!("{:?}", seed.context.root_kind),
+                "acRoot": seed.context.ac_root, "matrixRoot": seed.context.matrix_root,
+                "warning": seed.config_dir_warning,
+            })
+        });
+        serde_json::json!({
+            "shell": spawn.shell, "args": spawn.shell_args,
+            "agentEnv": spawn.agent_env, "profileEnv": spawn.profile_env,
+            "generatedEnv": spawn.generated_env, "childEnv": spawn.child_env,
+            "removeEnv": spawn.env_remove_keys, "codexHome": spawn.effective_codex_home,
+            "requestedProfile": spawn.profile_resolution.requested_profile,
+            "effectiveProfile": spawn.profile_resolution.effective_profile,
+            "fallbackChain": spawn.profile_resolution.fallback_chain,
+            "fallbackApplied": spawn.profile_resolution.fallback_applied,
+            "profileHash": spawn.profile_content_hash,
+            "trustedId": spawn.trusted_agent_id, "trustedLabel": spawn.trusted_agent_label,
+            "backend": format!("{:?}", SessionBackendKind::from(&spawn.backend)),
+            "matchTier": spawn.match_tier, "originalProfile": spawn.original_profile_letter,
+            "seed": seed,
+        })
+    });
+    serde_json::json!({
+        "shell": request.shell, "args": request.shell_args, "cwd": request.cwd,
+        "name": request.name, "agentId": request.agent_id, "agentLabel": request.agent_label,
+        "skipToolingSave": request.skip_tooling_save, "repos": request.git_repos,
+        "hostShell": request.host_shell.as_ref().map(|host| (&host.program, &host.args)),
+        "configured": configured,
+    })
+}
 
 pub struct MailboxPoller {
     poll_interval: std::time::Duration,
@@ -3431,7 +4342,7 @@ impl Default for MailboxPoller {
 }
 
 impl MailboxPoller {
-    fn settle_response_source(&self, path: &Path, success: bool) {
+    fn settle_response_source(&self, path: &Path, _success: bool) {
         let origin = wake_claim_origin(path).unwrap_or_else(|| path.to_path_buf());
         let work = self
             .response_sources
@@ -3442,16 +4353,539 @@ impl MailboxPoller {
             let now = std::time::Instant::now();
             work.state.settle_terminal(&work.target, &work.key, now);
             if let Some(context) = work.return_context {
-                if success {
-                    let _ = work.state.observe_return_success(
-                        crate::pty::manager::ReturnDeliveryProof { context },
-                        now,
-                    );
-                } else {
-                    let _ = work.state.settle_return_terminal(&context, now);
-                }
+                // No AppHandle/current manager and route boundary exists here.
+                // A synchronous source settlement can only terminate a return.
+                let _ = work.state.settle_return_terminal(&context, now);
             }
         }
+    }
+
+    async fn prepare_response_request<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        session_id: Uuid,
+        comanaged: bool,
+        response: Option<&ResponseWakeWork>,
+    ) -> Option<PreparedResponseRequest> {
+        response_diag_local!("prepare", "entry", Uuid::parse_str(&msg.id).ok());
+        let work = response_diag_option_local!(
+            response,
+            "prepare",
+            "response_work_missing",
+            Uuid::parse_str(&msg.id).ok()
+        )?;
+        if comanaged
+            || msg.command.is_some()
+            || msg.action.is_some()
+            || msg.get_output
+            || msg.pty_input.is_some()
+            || msg.from.rsplit_once('/').map(|(room, _)| room)
+                != msg.to.rsplit_once('/').map(|(room, _)| room)
+        {
+            response_diag_local!(
+                "prepare",
+                "excluded_message_class_or_room",
+                Uuid::parse_str(&msg.id).ok()
+            );
+            return None;
+        }
+        let token = response_diag_option_local!(
+            Uuid::parse_str(response_diag_option_local!(
+                msg.token.as_deref(),
+                "prepare",
+                "token_missing",
+                Uuid::parse_str(&msg.id).ok()
+            )?)
+            .ok(),
+            "prepare",
+            "token_invalid",
+            Uuid::parse_str(&msg.id).ok()
+        )?;
+        let roots = app
+            .state::<SettingsState>()
+            .read()
+            .await
+            .project_paths
+            .clone();
+        response_diag_option_local!(
+            teams::verified_wg_coordinator_target(&msg.from, &roots),
+            "prepare",
+            "configured_coordinator_rejected",
+            Uuid::parse_str(&msg.id).ok()
+        )?;
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let snapshot = manager.aggregate_snapshot().await;
+        let member = response_diag_option_local!(
+            snapshot.sessions.iter().find(|row| row.id == session_id),
+            "prepare",
+            "member_absent",
+            Uuid::parse_str(&msg.id).ok()
+        )?;
+        if sender_name_for_session_cwd_with_root_flag(
+            &member.working_directory,
+            member.is_root_agent,
+        ) != msg.to
+        {
+            response_diag_local!(
+                "prepare",
+                "member_target_mismatch",
+                Uuid::parse_str(&msg.id).ok()
+            );
+            return None;
+        }
+        let mut senders = snapshot
+            .sessions
+            .iter()
+            .filter(|row| row.token == token && !matches!(row.status, SessionStatus::Exited(_)));
+        let coordinator = response_diag_option_local!(
+            senders.next(),
+            "prepare",
+            "sender_missing",
+            Uuid::parse_str(&msg.id).ok()
+        )?;
+        if senders.next().is_some()
+            || sender_name_for_session_cwd_with_root_flag(
+                &coordinator.working_directory,
+                coordinator.is_root_agent,
+            ) != msg.from
+        {
+            response_diag_local!(
+                "prepare",
+                "sender_ambiguous_or_target_mismatch",
+                Uuid::parse_str(&msg.id).ok()
+            );
+            return None;
+        }
+        let coordinator_id = coordinator.id;
+        manager
+            .with_response_close_facts(|current| {
+                let member = response_diag_option_local!(
+                    current.rows.iter().find(|row| {
+                        row.id == session_id
+                            && row.token == member.token
+                            && !current.pending_ids.contains(&row.id)
+                    }),
+                    "prepare",
+                    "current_member_absent_or_pending",
+                    Uuid::parse_str(&msg.id).ok()
+                )?;
+                let coordinator = response_diag_option_local!(
+                    current.rows.iter().find(|row| {
+                        row.id == coordinator_id
+                            && row.token == token
+                            && !current.pending_ids.contains(&row.id)
+                    }),
+                    "prepare",
+                    "current_coordinator_absent_or_pending",
+                    Uuid::parse_str(&msg.id).ok()
+                )?;
+                let route = |row: &Session, target: &str| {
+                    Some(crate::pty::manager::ResponseRouteIdentity {
+                        target: target.to_owned(),
+                        session_id: row.id,
+                        token: row.token,
+                        generation: response_diag_option_local!(
+                            work.state.generation(row.id),
+                            "prepare",
+                            "route_generation_absent",
+                            Uuid::parse_str(&msg.id).ok()
+                        )?,
+                        carrier_version: *response_diag_option_local!(
+                            current.versions.get(&row.id),
+                            "prepare",
+                            "carrier_version_absent",
+                            Uuid::parse_str(&msg.id).ok()
+                        )?,
+                        backend: row.backend_kind,
+                    })
+                };
+                let prepared = PreparedResponseRequest {
+                    member: route(member, &msg.to)?,
+                    coordinator: route(coordinator, &msg.from)?,
+                    roots,
+                };
+                response_diag_local!("prepare", "prepared", Uuid::parse_str(&msg.id).ok());
+                Some(prepared)
+            })
+            .await
+    }
+
+    async fn complete_response_request<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        work: &ResponseWakeWork,
+    ) {
+        let attempt = {
+            match work.attempt.lock() {
+                Ok(attempt) => attempt.clone(),
+                Err(_) => {
+                    response_diag_local!(
+                        "complete_request",
+                        "attempt_lock_error",
+                        work.diagnostic_message_id
+                    );
+                    None
+                }
+            }
+        };
+        let Some(attempt) = attempt else {
+            response_diag_local!(
+                "complete_request",
+                "attempt_missing",
+                work.diagnostic_message_id
+            );
+            return;
+        };
+        let candidate = {
+            match attempt.candidate.lock() {
+                Ok(candidate) => candidate.clone(),
+                Err(_) => {
+                    response_diag_local!(
+                        "complete_request",
+                        "candidate_lock_error",
+                        work.diagnostic_message_id
+                    );
+                    None
+                }
+            }
+        };
+        let Some(candidate) = candidate else {
+            response_diag_local!(
+                "complete_request",
+                "candidate_missing",
+                work.diagnostic_message_id
+            );
+            return;
+        };
+        let Some(dir) = crate::config::config_dir() else {
+            response_diag_local!(
+                "complete_request",
+                "config_dir_unavailable",
+                work.diagnostic_message_id
+            );
+            return;
+        };
+        let roots = {
+            let settings = app.state::<SettingsState>();
+            let settings = settings.read().await;
+            crate::config::sessions_persistence::session_retention_project_paths(&settings).ok()
+        };
+        let Some(roots) = roots else {
+            response_diag_local!(
+                "complete_request",
+                "roots_unavailable",
+                work.diagnostic_message_id
+            );
+            return;
+        };
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let initial = if let Some(coordinator) =
+            app.try_state::<crate::session::selection::SelectionCoordinator>()
+        {
+            let Some(exclusion) = coordinator.restore_mint_exclusion() else {
+                response_diag_local!(
+                    "complete_request",
+                    "restore_exclusion_missing",
+                    work.diagnostic_message_id
+                );
+                return;
+            };
+            candidate.initial.clone().with_restore_exclusion(exclusion)
+        } else {
+            candidate.initial.clone()
+        };
+        let published = crate::config::sessions_persistence::persist_initial_carrier(
+            &manager, dir, roots, initial,
+        )
+        .await;
+        response_diag_debug_only(|| {
+            let outcome = match &published {
+                Err(_) => "persist_initial_carrier_error",
+                Ok(None) => "persist_initial_carrier_none",
+                Ok(Some(_)) => "persist_initial_carrier_confirmed",
+            };
+            response_diag_local!("complete_request", outcome, work.diagnostic_message_id);
+        });
+        let Ok(Some(published)) = published else {
+            response_diag_local!(
+                "complete_request",
+                "published_not_confirmed",
+                work.diagnostic_message_id
+            );
+            return;
+        };
+        let settings = app.state::<SettingsState>();
+        let settings = settings.read().await;
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        if app
+            .try_state::<crate::session::selection::SelectionCoordinator>()
+            .is_some_and(|coordinator| coordinator.restore_is_active())
+        {
+            response_diag_local!(
+                "complete_request",
+                "restore_active",
+                work.diagnostic_message_id
+            );
+            return;
+        }
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                let diagnostic_pair = with_verified_response_pair(
+                    current,
+                    &pty,
+                    &work.state,
+                    &candidate.member,
+                    &candidate.coordinator,
+                    |member, coordinator| {
+                        let Ok(_candidate_guard) = attempt.candidate.lock() else {
+                            work.state.fail_closed();
+                            response_diag_local!(
+                                "complete_request",
+                                "candidate_lock_poisoned",
+                                work.diagnostic_message_id
+                            );
+                            return;
+                        };
+                        if !attempt.armed.load(std::sync::atomic::Ordering::Acquire) {
+                            response_diag_local!(
+                                "complete_request",
+                                "attempt_disarmed",
+                                work.diagnostic_message_id
+                            );
+                            return;
+                        }
+                        let now = std::time::Instant::now();
+                        work.state.apply_settings(
+                            settings.response_close_enabled,
+                            settings.response_close_idle_seconds,
+                            now,
+                        );
+                        work.state.publish_manager_facts(
+                            candidate.member.clone(),
+                            true,
+                            crate::session::session::is_working(member),
+                            now,
+                        );
+                        work.state.publish_manager_facts(
+                            candidate.coordinator.clone(),
+                            false,
+                            crate::session::session::is_working(coordinator),
+                            now,
+                        );
+                        let mut diagnostic_callback_reached = false;
+                        let registered =
+                            crate::config::sessions_persistence::register_published_carrier(
+                                &permit,
+                                &published,
+                                current,
+                                |_| {
+                                    response_diag_debug_only(|| {
+                                        diagnostic_callback_reached = true;
+                                    });
+                                    response_diag_local!(
+                                        "complete_request",
+                                        "register_published_carrier_callback_reached",
+                                        work.diagnostic_message_id
+                                    );
+                                    response_diag_result_local!(
+                                        work.state.register_request(
+                                            crate::pty::manager::ResponseDeliveryProof {
+                                                context: candidate.context.clone(),
+                                                member: candidate.member.clone(),
+                                                coordinator: candidate.coordinator.clone(),
+                                                published_carrier_version: published.version,
+                                            },
+                                            now,
+                                        ),
+                                        "register_request",
+                                        work.diagnostic_message_id
+                                    )
+                                    .ok()
+                                },
+                            );
+                        response_diag_local!(
+                            "complete_request",
+                            if registered.is_some() {
+                                "published_registration_some"
+                            } else {
+                                "published_registration_none"
+                            },
+                            work.diagnostic_message_id
+                        );
+                        response_diag_local!(
+                            "complete_request",
+                            if diagnostic_callback_reached {
+                                "register_published_callback_reached"
+                            } else {
+                                "register_published_callback_not_reached"
+                            },
+                            work.diagnostic_message_id
+                        );
+                        if registered.is_some() {
+                            let remembered =
+                                crate::session::selection::remember_response_close_registration(
+                                    crate::session::selection::ResponseCloseRegistration {
+                                        diagnostic_last_poll_outcome: Arc::new(
+                                            std::sync::atomic::AtomicU64::new(0),
+                                        ),
+                                        tracker: work.state.clone(),
+                                        member: candidate.member.clone(),
+                                        coordinator: candidate.coordinator.clone(),
+                                        carrier: published.clone(),
+                                    },
+                                );
+                            response_diag_local!(
+                                "complete_request",
+                                if remembered {
+                                    "remember_true"
+                                } else {
+                                    "remember_false"
+                                },
+                                work.diagnostic_message_id
+                            );
+                            if !remembered {
+                                work.state.fail_closed();
+                            }
+                            response_diag_local!(
+                                "complete_request",
+                                "disarm",
+                                work.diagnostic_message_id
+                            );
+                            attempt
+                                .armed
+                                .store(false, std::sync::atomic::Ordering::Release);
+                        }
+                    },
+                );
+                response_diag_local!(
+                    "complete_request",
+                    if diagnostic_pair.is_some() {
+                        "verified_pair_callback_reached"
+                    } else {
+                        "verified_pair_rejected"
+                    },
+                    work.diagnostic_message_id
+                );
+            })
+            .await;
+    }
+
+    async fn complete_response_delivery<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+    ) {
+        let origin = wake_claim_origin(path).unwrap_or_else(|| path.to_path_buf());
+        let work = self
+            .response_sources
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&origin);
+        let Some(work) = work else {
+            response_diag!("complete_delivery", "source_work_absent", None::<Uuid>);
+            return;
+        };
+        let app = app.clone();
+        crate::config::sessions_persistence::run_owned_persist_core(async move {
+            Self::complete_response_request(&app, &work).await;
+            let now = std::time::Instant::now();
+            work.state.settle_terminal(&work.target, &work.key, now);
+            response_diag!(
+                "complete_delivery",
+                "ordinary_terminal_settlement_invoked",
+                work.diagnostic_message_id
+            );
+            let Some(context) = work.return_context else {
+                response_diag!(
+                    "complete_delivery",
+                    "return_context_absent",
+                    work.diagnostic_message_id
+                );
+                return;
+            };
+            let Some((member, coordinator)) = work.return_routes else {
+                let _ = work.state.settle_return_terminal(&context, now);
+                response_diag!(
+                    "complete_delivery",
+                    "return_routes_absent",
+                    work.diagnostic_message_id
+                );
+                return;
+            };
+            let manager = app
+                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                .read()
+                .await
+                .clone();
+            let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+            let settings = app.state::<SettingsState>();
+            let settings = settings.read().await;
+            work.state.apply_settings(
+                settings.response_close_enabled,
+                settings.response_close_idle_seconds,
+                now,
+            );
+            let success = manager
+                .with_response_close_facts(|current| {
+                    let diagnostic_pair = with_verified_response_pair(
+                        current,
+                        &pty,
+                        &work.state,
+                        &member,
+                        &coordinator,
+                        |member_row, coordinator_row| {
+                            let now = std::time::Instant::now();
+                            work.state.publish_manager_facts(
+                                member.clone(),
+                                true,
+                                crate::session::session::is_working(member_row),
+                                now,
+                            );
+                            work.state.publish_manager_facts(
+                                coordinator.clone(),
+                                false,
+                                crate::session::session::is_working(coordinator_row),
+                                now,
+                            );
+                            response_diag_result!(
+                                work.state.observe_return_success(
+                                    crate::pty::manager::ReturnDeliveryProof {
+                                        context: context.clone(),
+                                    },
+                                    now,
+                                ),
+                                "observe_return_success",
+                                work.diagnostic_message_id
+                            )
+                            .is_ok()
+                        },
+                    );
+                    response_diag!(
+                        "complete_delivery",
+                        if diagnostic_pair.is_some() {
+                            "verified_pair_reached"
+                        } else {
+                            "verified_pair_rejected"
+                        },
+                        work.diagnostic_message_id
+                    );
+                    diagnostic_pair.unwrap_or(false)
+                })
+                .await;
+            if !success {
+                let _ = work.state.settle_return_terminal(&context, now);
+            }
+        })
+        .await;
     }
 
     async fn admit_response_source<R: tauri::Runtime>(
@@ -3462,10 +4896,23 @@ impl MailboxPoller {
         authenticated: bool,
         content: &str,
     ) -> Option<ResponseWakeWork> {
-        let state = app
-            .try_state::<crate::pty::manager::ResponseCloseState>()?
-            .inner()
-            .clone();
+        response_diag_local!(
+            "admit_source",
+            if authenticated {
+                "entry_authenticated_input_true"
+            } else {
+                "entry_authenticated_input_false"
+            },
+            Uuid::parse_str(&msg.id).ok()
+        );
+        let state = response_diag_option_local!(
+            app.try_state::<crate::pty::manager::ResponseCloseState>(),
+            "admit_source",
+            "tracker_missing",
+            Uuid::parse_str(&msg.id).ok()
+        )?
+        .inner()
+        .clone();
         let digest = crate::phone::types::sha256_hex(content.as_bytes());
         if let Some(previous) = self
             .response_sources
@@ -3476,31 +4923,83 @@ impl MailboxPoller {
         {
             if previous.digest != digest || previous.target != msg.to {
                 state.fail_closed();
+                response_diag_local!(
+                    "admit_source",
+                    "replay_identity_conflict",
+                    Uuid::parse_str(&msg.id).ok()
+                );
                 return None;
             }
+            response_diag_local!(
+                "admit_source",
+                "replay_reused",
+                Uuid::parse_str(&msg.id).ok()
+            );
             return Some(previous);
         }
         let key = format!("fs:{}:{}", path.to_string_lossy(), msg.id);
-        let mut admission = match state.reserve_work(&msg.to, &key) {
+        let mut admission = match response_diag_result_local!(
+            state.reserve_work(&msg.to, &key),
+            "reserve_work",
+            Uuid::parse_str(&msg.id).ok()
+        ) {
             Ok(admission) => admission,
             Err(_) => {
                 state.fail_closed();
+                response_diag_local!(
+                    "admit_source",
+                    "reserve_work_error",
+                    Uuid::parse_str(&msg.id).ok()
+                );
                 return None;
             }
         };
-        if admission.accept_durable(&digest).is_err() {
+        if response_diag_result_local!(
+            admission.accept_durable(&digest),
+            "accept_durable",
+            Uuid::parse_str(&msg.id).ok()
+        )
+        .is_err()
+        {
             state.fail_closed();
+            response_diag_local!(
+                "admit_source",
+                "accept_durable_error",
+                Uuid::parse_str(&msg.id).ok()
+            );
             return None;
         }
         drop(admission);
+        response_diag_local!(
+            "admit_source",
+            "response_work_created",
+            Uuid::parse_str(&msg.id).ok()
+        );
         let mut work = ResponseWakeWork {
+            diagnostic_message_id: if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
+            {
+                Uuid::parse_str(&msg.id).ok()
+            } else {
+                None
+            },
             state: state.clone(),
             target: msg.to.clone(),
             key,
             digest,
+            attempt: Arc::default(),
             return_context: None,
+            return_routes: None,
             delivery_context: None,
         };
+        response_diag_local!(
+            "admit_source",
+            if authenticated {
+                "authenticated_input_true"
+            } else {
+                "authenticated_input_false"
+            },
+            Uuid::parse_str(&msg.id).ok()
+        );
         if authenticated {
             let settings = app.state::<SettingsState>();
             let settings = settings.read().await;
@@ -3514,6 +5013,22 @@ impl MailboxPoller {
             drop(settings);
             let same_room = msg.from.rsplit_once('/').map(|(room, _)| room)
                 == msg.to.rsplit_once('/').map(|(room, _)| room);
+            response_diag_debug_only(|| {
+                if coordinator.is_none() {
+                    response_diag_local!(
+                        "admit_source",
+                        "configured_coordinator_absent",
+                        Uuid::parse_str(&msg.id).ok()
+                    );
+                }
+                if !same_room {
+                    response_diag_local!(
+                        "admit_source",
+                        "cross_room",
+                        Uuid::parse_str(&msg.id).ok()
+                    );
+                }
+            });
             if coordinator.is_some() && same_room {
                 let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let manager = managers.read().await.clone();
@@ -3521,7 +5036,7 @@ impl MailboxPoller {
                     .token
                     .as_deref()
                     .and_then(|token| Uuid::parse_str(token).ok());
-                work.return_context = manager
+                let observed = manager
                     .with_response_close_facts(|snapshot| {
                         let route = |target: &str| {
                             let mut matches = snapshot.rows.iter().filter(|row| {
@@ -3531,10 +5046,19 @@ impl MailboxPoller {
                                         row.is_root_agent,
                                     ) == target
                                     && !matches!(row.status, SessionStatus::Exited(_))
-                                    && row.backend_kind == SessionBackendKind::LocalProcess
                             });
-                            let row = matches.next()?;
+                            let row = response_diag_option_local!(
+                                matches.next(),
+                                "admit_source",
+                                "route_missing",
+                                Uuid::parse_str(&msg.id).ok()
+                            )?;
                             if matches.next().is_some() {
+                                response_diag_local!(
+                                    "admit_source",
+                                    "route_ambiguous",
+                                    Uuid::parse_str(&msg.id).ok()
+                                );
                                 return None;
                             }
                             Some((
@@ -3542,8 +5066,18 @@ impl MailboxPoller {
                                     target: target.to_string(),
                                     session_id: row.id,
                                     token: row.token,
-                                    generation: state.generation(row.id)?,
-                                    carrier_version: *snapshot.versions.get(&row.id)?,
+                                    generation: response_diag_option_local!(
+                                        state.generation(row.id),
+                                        "admit_source",
+                                        "generation_unavailable",
+                                        Uuid::parse_str(&msg.id).ok()
+                                    )?,
+                                    carrier_version: *response_diag_option_local!(
+                                        snapshot.versions.get(&row.id),
+                                        "admit_source",
+                                        "version_unavailable",
+                                        Uuid::parse_str(&msg.id).ok()
+                                    )?,
                                     backend: row.backend_kind,
                                 },
                                 row,
@@ -3551,41 +5085,85 @@ impl MailboxPoller {
                         };
                         let (member, member_row) = route(&msg.from)?;
                         let (coordinator, coordinator_row) = route(&msg.to)?;
-                        if member_row.is_coordinator
+                        if member.backend != SessionBackendKind::LocalProcess
+                            || member_row.is_coordinator
                             || member_row.is_root_agent
                             || member_row.agent_kind.is_none()
                             || token != Some(member.token)
                             || !coordinator_row.is_coordinator
                             || coordinator_row.is_root_agent
                         {
+                            response_diag_local!(
+                                "admit_source",
+                                "role_or_token_or_backend",
+                                Uuid::parse_str(&msg.id).ok()
+                            );
                             return None;
                         }
-                        let now = std::time::Instant::now();
-                        state.publish_manager_facts(
-                            member.clone(),
-                            true,
-                            crate::session::session::is_working(member_row),
-                            now,
+                        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+                        let diagnostic_pair = with_verified_response_pair(
+                            snapshot,
+                            &pty,
+                            &state,
+                            &member,
+                            &coordinator,
+                            |member_row, coordinator_row| {
+                                let now = std::time::Instant::now();
+                                state.publish_manager_facts(
+                                    member.clone(),
+                                    true,
+                                    crate::session::session::is_working(member_row),
+                                    now,
+                                );
+                                state.publish_manager_facts(
+                                    coordinator.clone(),
+                                    false,
+                                    crate::session::session::is_working(coordinator_row),
+                                    now,
+                                );
+                                response_diag_result_local!(
+                                    state.admit_return(
+                                        &member,
+                                        &coordinator,
+                                        work.key.clone(),
+                                        work.digest.clone(),
+                                        now,
+                                    ),
+                                    "admit_return",
+                                    Uuid::parse_str(&msg.id).ok()
+                                )
+                                .ok()
+                            },
                         );
-                        state.publish_manager_facts(
-                            coordinator.clone(),
-                            false,
-                            crate::session::session::is_working(coordinator_row),
-                            now,
+                        response_diag_local!(
+                            "admit_source",
+                            if diagnostic_pair.is_some() {
+                                "verified_pair_callback_reached"
+                            } else {
+                                "verified_pair_rejected"
+                            },
+                            Uuid::parse_str(&msg.id).ok()
                         );
-                        state
-                            .admit_return(
-                                &member,
-                                &coordinator,
-                                work.key.clone(),
-                                work.digest.clone(),
-                                now,
-                            )
-                            .ok()
+                        diagnostic_pair
+                            .flatten()
+                            .map(|context| (context, member, coordinator))
                     })
                     .await;
+                if let Some((context, member, coordinator)) = observed {
+                    work.return_context = Some(context);
+                    work.return_routes = Some((member, coordinator));
+                }
             }
         }
+        response_diag_local!(
+            "admit_source",
+            if work.return_context.is_some() {
+                "return_context_present"
+            } else {
+                "return_context_absent"
+            },
+            work.diagnostic_message_id
+        );
         self.response_sources
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -5750,10 +7328,66 @@ impl MailboxPoller {
         source_plane: crate::phone::types::PtyInputSourcePlane,
         api_client_store: Option<&Arc<crate::api::auth::ApiClientStore>>,
     ) {
+        #[cfg(test)]
+        if let Some(control) = self
+            .test_hooks
+            .as_ref()
+            .and_then(MailboxTestHooks::replacement_fixture_control)
+        {
+            if !control.before_source_accept(injection_id).await {
+                return;
+            }
+        }
+        let delivery = self.delivery_poller();
+        let app = app.clone();
+        let injection_id = injection_id.to_owned();
+        let api_client_store = api_client_store.cloned();
+        let state = crate::api::message_store::MessageStoreState {
+            store: state.store.clone(),
+            active_operations: state.active_operations.clone(),
+            target_locks: state.target_locks.clone(),
+            target_gate: state.target_gate.clone(),
+        };
+        crate::config::sessions_persistence::run_owned_persist_core(async move {
+            delivery
+                .dispatch_pty_input_operation_core(
+                    &app,
+                    &state,
+                    &injection_id,
+                    source_plane,
+                    api_client_store.as_ref(),
+                )
+                .await;
+        })
+        .await;
+    }
+
+    async fn dispatch_pty_input_operation_core<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        state: &crate::api::message_store::MessageStoreState,
+        injection_id: &str,
+        source_plane: crate::phone::types::PtyInputSourcePlane,
+        api_client_store: Option<&Arc<crate::api::auth::ApiClientStore>>,
+    ) {
         use crate::phone::types::{PtyInputPublicStatus as S, PtyInputReasonCode as C};
+        let mut source_executor = crate::session::selection::SourceExecutorGuard::unbound();
+        #[cfg(test)]
+        if let Some(control) = self
+            .test_hooks
+            .as_ref()
+            .and_then(MailboxTestHooks::replacement_fixture_control)
+        {
+            if !control.after_pty_core_accept(injection_id).await {
+                return;
+            }
+        }
+        // Borrow the lexical observer through the whole existing dispatch
+        // body. This is polled inline, with no new task or accepted core.
+        let failed = async {
         let store = match &state.store {
             Ok(store) => Arc::clone(store),
-            Err(_) => return,
+            Err(_) => return false,
         };
         let shutdown = app
             .try_state::<crate::shutdown::ShutdownSignal>()
@@ -5761,35 +7395,44 @@ impl MailboxPoller {
             .unwrap_or_else(tokio_util::sync::CancellationToken::new);
         let _operation_lock = match store.try_operation_lock(injection_id) {
             Ok(Some(lock)) => lock,
-            _ => return,
+            _ => return false,
         };
         let _active = match state.active_operations.try_register(injection_id) {
             Some(active) => active,
-            None => return,
+            None => return false,
         };
         let initial = match store
             .query_pty_input_by_injection_offloaded(injection_id.to_string())
             .await
         {
             Ok(Some(result)) if !result.terminal => result,
-            _ => return,
+            _ => return false,
         };
         let target = match initial.target.clone() {
             Some(target) => target,
-            None => return,
+            None => return false,
         };
         let _response_delivery = match store.begin_response_delivery(&target) {
             Ok(reservation) => reservation,
-            Err(_) => return,
+            Err(_) => return false,
         };
         let target_gate = match &state.target_gate {
             Ok(gate) => Arc::clone(gate),
-            Err(_) => return,
+            Err(_) => return false,
         };
-        let target_stripe = match target_gate.try_target_lock(&target) {
+        // Startup restore must finish before this dispatch owns target guards.
+        // No claim or payload has been consumed at this point.
+        if let Some(coordinator) =
+            app.try_state::<crate::session::selection::SelectionCoordinator>()
+        {
+            if coordinator.wait_for_restore_release().await.is_err() {
+                return false;
+            }
+        }
+        let mut target_stripe = Some(match target_gate.try_target_lock(&target) {
             Ok(Some(lock)) => lock,
-            _ => return,
-        };
+            _ => return false,
+        });
         let initial_expires = match initial
             .expires_at
             .as_deref()
@@ -5812,42 +7455,51 @@ impl MailboxPoller {
                         injection_id
                     );
                 }
-                return;
+                return false;
             }
         };
-        let target_guard = match await_pty_input_before_deadline(
-            initial_expires,
-            &shutdown,
-            target_gate.acquire_exact(&target),
-        )
-        .await
-        {
-            Ok(guard) => guard,
-            Err(PtyInputPreBoundaryStop::Shutdown) => return,
-            Err(PtyInputPreBoundaryStop::Expired) => {
-                if store
-                    .terminalize_pty_input_offloaded(
-                        injection_id.to_string(),
-                        S::Rejected,
-                        Some(C::Expired),
-                        chrono::Utc::now(),
-                    )
-                    .await
-                    .is_err()
-                {
-                    log::warn!(
+        let mut target_guard = Some(
+            match await_pty_input_before_deadline(
+                initial_expires,
+                &shutdown,
+                target_gate.acquire_exact(&target),
+            )
+            .await
+            {
+                Ok(guard) => guard,
+                Err(PtyInputPreBoundaryStop::Shutdown) => return false,
+                Err(PtyInputPreBoundaryStop::Expired) => {
+                    if store
+                        .terminalize_pty_input_offloaded(
+                            injection_id.to_string(),
+                            S::Rejected,
+                            Some(C::Expired),
+                            chrono::Utc::now(),
+                        )
+                        .await
+                        .is_err()
+                    {
+                        log::warn!(
                         "[pty-input] target-wait expiry failed id={} code=terminal_store_failed",
                         injection_id
                     );
+                    }
+                    return false;
                 }
-                return;
-            }
-        };
-        let target_ownership =
-            match target_gate.target_ownership(&target, &target_stripe, &target_guard) {
-                Ok(ownership) => ownership,
-                Err(_) => return,
+            },
+        );
+        {
+            let (Some(stripe), Some(exact)) = (target_stripe.as_ref(), target_guard.as_ref())
+            else {
+                return false;
             };
+            if target_gate
+                .target_ownership(&target, stripe, exact)
+                .is_err()
+            {
+                return false;
+            }
+        }
         let lease_owner = Uuid::new_v4().to_string();
         let claimed = match store
             .claim_pty_input_offloaded(
@@ -5859,7 +7511,7 @@ impl MailboxPoller {
             .await
         {
             Ok(Some(claimed)) => claimed,
-            _ => return,
+            _ => return false,
         };
         let expires = match crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at)
         {
@@ -5880,7 +7532,7 @@ impl MailboxPoller {
                         injection_id
                     );
                 }
-                return;
+                return false;
             }
         };
         let mut heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
@@ -5892,143 +7544,182 @@ impl MailboxPoller {
         if expires <= chrono::Utc::now() {
             reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, C::Expired)
                 .await;
-            return;
+            return false;
         }
-        if app
-            .try_state::<Arc<crate::RestoreInProgress>>()
-            .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
-        {
-            finish_pty_input_before_boundary(
-                &store,
-                &mut heartbeat,
-                injection_id,
-                &lease_owner,
-                C::RestoreInProgress,
-            )
-            .await;
-            return;
-        }
-        if app
-            .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
-            .is_some_and(|guard| guard.blocks_agent(&claimed.target_fqn))
-        {
-            finish_pty_input_before_boundary(
-                &store,
-                &mut heartbeat,
-                injection_id,
-                &lease_owner,
-                C::PurgeInProgress,
-            )
-            .await;
-            return;
-        }
-
-        let verified_route = if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
-            self.validate_claimed_host_authority(app, &claimed).await
-        } else {
-            match self
-                .validate_claimed_api_authority(app, &claimed, api_client_store)
-                .await
-            {
-                Ok(route) => route,
-                Err(_) => {
-                    finish_pty_input_before_boundary(
-                        &store,
-                        &mut heartbeat,
-                        injection_id,
-                        &lease_owner,
-                        C::StoreTransient,
-                    )
-                    .await;
-                    return;
-                }
+        match refresh_pty_claim_for_resume(&store, &initial, &claimed).await {
+            Ok(PtyClaimRefresh::Current) => {}
+            Ok(PtyClaimRefresh::Terminal) => {
+                heartbeat.finish().await;
+                return false;
             }
-        };
-        let Some(verified_route) = verified_route else {
-            let code = if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
-                C::AuthorityChanged
-            } else {
-                C::ApiBindingMismatch
-            };
-            reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, code).await;
-            return;
-        };
-        if verified_route.target.canonical_fqn != target {
-            reject_pty_input_before_boundary(
-                &store,
-                &mut heartbeat,
-                injection_id,
-                C::AuthorityChanged,
-            )
-            .await;
-            return;
-        }
-        let verified_sender = verified_route.sender;
-        let verified_target = verified_route.target;
-
-        let session_manager = app
-            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .inner()
-            .clone();
-        let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-        let sessions = {
-            let guard = session_manager.read().await;
-            guard.list_sessions().await
-        };
-        let mut matching: Vec<SessionInfo> = sessions
-            .into_iter()
-            .filter(|session| {
-                crate::config::teams::agent_fqn_from_path(&session.working_directory)
-                    == claimed.target_fqn
-            })
-            .collect();
-        matching.sort_by(|left, right| {
-            fn rank(status: &SessionStatus) -> u8 {
-                match status {
-                    SessionStatus::Active => 0,
-                    SessionStatus::Running => 1,
-                    SessionStatus::Idle => 2,
-                    SessionStatus::Exited(_) => 3,
-                }
-            }
-            rank(&left.status)
-                .cmp(&rank(&right.status))
-                .then_with(|| right.created_at.cmp(&left.created_at))
-                .then_with(|| left.id.cmp(&right.id))
-        });
-
-        let pty_profile_settings = app.state::<SettingsState>().read().await.clone();
-        let mut eligible = Vec::new();
-        let mut saw_supported_busy = false;
-        let mut saw_live_unsupported = false;
-        let mut saw_live_inconsistent = false;
-        let mut saw_live_temporary = false;
-        for session in &matching {
-            if matches!(session.status, SessionStatus::Exited(_)) {
-                continue;
-            }
-            if session
-                .name
-                .starts_with(crate::session::session::TEMP_SESSION_PREFIX)
-            {
-                saw_live_temporary = true;
-                continue;
-            }
-            let Ok(id) = Uuid::parse_str(&session.id) else {
-                saw_live_unsupported = true;
-                continue;
-            };
-            let (live, route_backend, route_identities) = {
-                let manager = pty_manager
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                (
-                    manager.has_session(id),
-                    manager.backend_kind(id),
-                    manager.route_identities(id),
+            Err(code) => {
+                finish_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    &lease_owner,
+                    code,
                 )
+                .await;
+                return false;
+            }
+        }
+        let mut prepared_replacement = None;
+        let mut owned_work: Option<OwnedPtyWorkTransfer> = None;
+        let (selected, spawned, verified_target, session_manager, pty_manager) = loop {
+            if app
+                .try_state::<Arc<crate::RestoreInProgress>>()
+                .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
+            {
+                let observed = finish_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    &lease_owner,
+                    C::RestoreInProgress,
+                )
+                .await;
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
+            }
+            if app
+                .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+                .is_some_and(|guard| guard.blocks_agent(&claimed.target_fqn))
+            {
+                let observed = finish_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    &lease_owner,
+                    C::PurgeInProgress,
+                )
+                .await;
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
+            }
+
+            let verified_route =
+                if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
+                    self.validate_claimed_host_authority(app, &claimed).await
+                } else {
+                    match self
+                        .validate_claimed_api_authority(app, &claimed, api_client_store)
+                        .await
+                    {
+                        Ok(route) => route,
+                        Err(_) => {
+                            let observed = finish_pty_input_before_boundary(
+                                &store,
+                                &mut heartbeat,
+                                injection_id,
+                                &lease_owner,
+                                C::StoreTransient,
+                            )
+                            .await;
+                            drop(target_guard.take());
+                            drop(target_stripe.take());
+                            finish_owned_pty_work(app, &mut owned_work, observed).await;
+                            return false;
+                        }
+                    }
+                };
+            let Some(verified_route) = verified_route else {
+                let code = if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
+                    C::AuthorityChanged
+                } else {
+                    C::ApiBindingMismatch
+                };
+                let observed =
+                    reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, code)
+                        .await;
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
             };
-            let path_matches = route_identities.is_some_and(|(cwd_identity, replica_anchor, _)| {
+            if verified_route.target.canonical_fqn != target {
+                let observed = reject_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    C::AuthorityChanged,
+                )
+                .await;
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
+            }
+            let verified_sender = verified_route.sender;
+            let verified_target = verified_route.target;
+
+            let session_manager = app
+                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                .inner()
+                .clone();
+            let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+            let sessions = {
+                let guard = session_manager.read().await;
+                guard.list_sessions().await
+            };
+            let mut matching: Vec<SessionInfo> = sessions
+                .into_iter()
+                .filter(|session| {
+                    crate::config::teams::agent_fqn_from_path(&session.working_directory)
+                        == claimed.target_fqn
+                })
+                .collect();
+            matching.sort_by(|left, right| {
+                fn rank(status: &SessionStatus) -> u8 {
+                    match status {
+                        SessionStatus::Active => 0,
+                        SessionStatus::Running => 1,
+                        SessionStatus::Idle => 2,
+                        SessionStatus::Exited(_) => 3,
+                    }
+                }
+                rank(&left.status)
+                    .cmp(&rank(&right.status))
+                    .then_with(|| right.created_at.cmp(&left.created_at))
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+
+            let pty_profile_settings = app.state::<SettingsState>().read().await.clone();
+            let mut eligible = Vec::new();
+            let mut saw_supported_busy = false;
+            let mut saw_live_unsupported = false;
+            let mut saw_live_inconsistent = false;
+            let mut saw_live_temporary = false;
+            for session in &matching {
+                if matches!(session.status, SessionStatus::Exited(_)) {
+                    continue;
+                }
+                if session
+                    .name
+                    .starts_with(crate::session::session::TEMP_SESSION_PREFIX)
+                {
+                    saw_live_temporary = true;
+                    continue;
+                }
+                let Ok(id) = Uuid::parse_str(&session.id) else {
+                    saw_live_unsupported = true;
+                    continue;
+                };
+                let (live, route_backend, route_identities) = {
+                    let manager = pty_manager
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    (
+                        manager.has_session(id),
+                        manager.backend_kind(id),
+                        manager.route_identities(id),
+                    )
+                };
+                let path_matches = route_identities.is_some_and(|(cwd_identity, replica_anchor, _)| {
                 let current_cwd = crate::path_identity::verify_directory(
                     Path::new(&session.working_directory),
                 );
@@ -6041,119 +7732,355 @@ impl MailboxPoller {
                             && current.authority_fingerprint == verified_target.authority_fingerprint
                             && crate::path_identity::same_object(&saved, &verified_target.replica_identity))
             });
-            if !live || route_backend != Some(session.backend_kind) || !path_matches {
-                saw_live_inconsistent = true;
-                continue;
+                if !live || route_backend != Some(session.backend_kind) || !path_matches {
+                    saw_live_inconsistent = true;
+                    continue;
+                }
+                if !session_has_current_pty_submission_provenance(session, &pty_profile_settings) {
+                    saw_live_unsupported = true;
+                    continue;
+                }
+                if session.waiting_for_input {
+                    eligible.push(session.clone());
+                } else {
+                    saw_supported_busy = true;
+                }
             }
-            if !session_has_current_pty_submission_provenance(session, &pty_profile_settings) {
-                saw_live_unsupported = true;
-                continue;
-            }
-            if session.waiting_for_input {
-                eligible.push(session.clone());
-            } else {
-                saw_supported_busy = true;
-            }
-        }
-        let (selected, spawned) = if let Some(selected) = eligible.into_iter().next() {
-            (selected, false)
-        } else if saw_supported_busy {
-            reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, C::Busy).await;
-            return;
-        } else if saw_live_temporary {
-            reject_pty_input_before_boundary(
-                &store,
-                &mut heartbeat,
-                injection_id,
-                C::NonpersistentLiveSession,
-            )
-            .await;
-            return;
-        } else if saw_live_inconsistent {
-            if claimed.attempt < 5 {
-                finish_pty_input_before_boundary(
+            let (selected, spawned) = if let Some(selected) = eligible.into_iter().next() {
+                (selected, false)
+            } else if saw_supported_busy {
+                let observed =
+                    reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, C::Busy)
+                        .await;
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
+            } else if saw_live_temporary {
+                let observed = reject_pty_input_before_boundary(
                     &store,
                     &mut heartbeat,
                     injection_id,
-                    &lease_owner,
-                    C::SessionRace,
+                    C::NonpersistentLiveSession,
                 )
                 .await;
-            } else {
-                reject_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    C::InconsistentSession,
-                )
-                .await;
-            }
-            return;
-        } else if saw_live_unsupported {
-            reject_pty_input_before_boundary(
-                &store,
-                &mut heartbeat,
-                injection_id,
-                C::UnsupportedSession,
-            )
-            .await;
-            return;
-        } else {
-            let spawn = await_pty_input_before_deadline(
-                expires,
-                &shutdown,
-                self.spawn_pty_input_target(
-                    app,
-                    &claimed,
-                    &matching,
-                    &verified_sender,
-                    &verified_target,
-                    source_plane,
-                    api_client_store,
-                    &target_ownership,
-                ),
-            )
-            .await;
-            match spawn {
-                Ok(Ok(session)) => (session, true),
-                Ok(Err(code)) => {
-                    finish_pty_input_before_boundary(
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
+            } else if saw_live_inconsistent {
+                if claimed.attempt < 5 {
+                    let observed = finish_pty_input_before_boundary(
                         &store,
                         &mut heartbeat,
                         injection_id,
                         &lease_owner,
-                        code,
+                        C::SessionRace,
                     )
                     .await;
-                    return;
-                }
-                Err(PtyInputPreBoundaryStop::Expired) => {
-                    reject_pty_input_before_boundary(
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
+                } else {
+                    let observed = reject_pty_input_before_boundary(
                         &store,
                         &mut heartbeat,
                         injection_id,
-                        C::Expired,
+                        C::InconsistentSession,
                     )
                     .await;
-                    return;
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
                 }
-                Err(PtyInputPreBoundaryStop::Shutdown) => {
+                return false;
+            } else if saw_live_unsupported {
+                let observed = reject_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    C::UnsupportedSession,
+                )
+                .await;
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
+            } else {
+                #[cfg(test)]
+                let fixture_control = self
+                    .test_hooks
+                    .as_ref()
+                    .and_then(MailboxTestHooks::replacement_fixture_control)
+                    .filter(|control| {
+                        !control
+                            .ticket_only
+                            .load(std::sync::atomic::Ordering::Acquire)
+                    });
+                #[cfg(test)]
+                let fixture_lease = if fixture_control.is_some() {
+                    let (Some(exact), Some(stripe)) = (target_guard.take(), target_stripe.take())
+                    else {
+                        heartbeat.finish().await;
+                        return false;
+                    };
+                    Some(Arc::new(crate::commands::session::FixturePtyCutLease {
+                        gate: target_gate.clone(),
+                        target: target.clone(),
+                        exact,
+                        stripe,
+                    }))
+                } else {
+                    None
+                };
+                let spawn = {
+                    #[cfg(test)]
+                    let (stripe, exact) = match fixture_lease.as_ref() {
+                        Some(lease) => (Some(&lease.stripe), Some(&lease.exact)),
+                        None => (target_stripe.as_ref(), target_guard.as_ref()),
+                    };
+                    #[cfg(not(test))]
+                    let (stripe, exact) = (target_stripe.as_ref(), target_guard.as_ref());
+                    let (Some(stripe), Some(exact)) = (stripe, exact) else {
+                        heartbeat.finish().await;
+                        return false;
+                    };
+                    let target_ownership =
+                        match target_gate.target_ownership(&target, stripe, exact) {
+                            Ok(proof) => proof,
+                            Err(_) => {
+                                heartbeat.finish().await;
+                                return false;
+                            }
+                        };
+                    await_pty_input_before_deadline(
+                        expires,
+                        &shutdown,
+                        self.spawn_pty_input_target(
+                            app,
+                            &claimed,
+                            &matching,
+                            &verified_sender,
+                            &verified_target,
+                            source_plane,
+                            api_client_store,
+                            &target_ownership,
+                            &initial,
+                            prepared_replacement.take(),
+                            &mut source_executor,
+                            #[cfg(test)]
+                            fixture_lease.as_ref(),
+                        ),
+                    )
+                    .await
+                };
+                #[cfg(test)]
+                if let Some(lease) = fixture_lease {
+                    let restored = Arc::try_unwrap(lease);
+                    let worker_still_holds_clone = restored.is_err();
+                    let receipt_missing = fixture_control.as_ref().is_some_and(|control| {
+                        control.submitted.load(std::sync::atomic::Ordering::Acquire)
+                            && !control.received.load(std::sync::atomic::Ordering::Acquire)
+                    });
+                    match restored {
+                        Ok(lease) if !receipt_missing => {
+                            target_guard = Some(lease.exact);
+                            target_stripe = Some(lease.stripe);
+                        }
+                        other => {
+                            drop(other);
+                            if let Some(control) = fixture_control.as_ref() {
+                                control.restoration_shared.store(worker_still_holds_clone, std::sync::atomic::Ordering::Release);
+                                control.restoration_failed.store(true, std::sync::atomic::Ordering::Release);
+                            }
+                            // This cut precedes every Retained/timeout/error
+                            // handoff, even if the owner already has a stop or
+                            // rollback receipt. A submitted job without actual
+                            // receive has no source-side work authority.
+                            heartbeat.finish().await;
+                            return false;
+                        }
+                    }
+                }
+                match spawn {
+                    Ok(Ok(PtySpawnStep::Created(session))) => (session, true),
+                    Ok(Ok(PtySpawnStep::OwnedCreated(session, continuation))) => {
+                        let Some(effect) = continuation.start_effect(
+                            crate::session::selection::LifecycleEffectSlot::WorkTransfer,
+                        ) else {
+                            drop(target_guard.take());
+                            drop(target_stripe.take());
+                            heartbeat.finish().await;
+                            return false;
+                        };
+                        owned_work = Some((continuation, effect));
+                        (session, true)
+                    }
+                    Ok(Ok(PtySpawnStep::Retained { continuation, failed })) => {
+                        drop(target_guard.take());
+                        drop(target_stripe.take());
+                        let stop = continuation.source_stop();
+                        let rolled_back = continuation.precommit_rollback_completed();
+                        if stop.is_none() && !rolled_back {
+                            heartbeat.finish().await;
+                            return failed;
+                        }
+                        let effect = continuation.start_effect(
+                            crate::session::selection::LifecycleEffectSlot::WorkTransfer,
+                        );
+                        use crate::session::selection::OwnedSourceStop as Stop;
+                        let observed = match stop {
+                            Some(Stop::Terminal) => {
+                                heartbeat.finish().await;
+                                true
+                            }
+                            reason => {
+                                let code = match reason {
+                                    Some(Stop::AuthorityChanged) => C::AuthorityChanged,
+                                    Some(Stop::StoreTransient) => C::StoreTransient,
+                                    Some(Stop::Expired) => C::Expired,
+                                    Some(Stop::LeaseLost) => C::LeaseLost,
+                                    Some(Stop::Terminal) => unreachable!(),
+                                    None => C::SpawnFailedSafe,
+                                };
+                                finish_pty_input_before_boundary(
+                                    &store,
+                                    &mut heartbeat,
+                                    injection_id,
+                                    &lease_owner,
+                                    code,
+                                )
+                                .await
+                            }
+                        };
+                        if let Some(effect) = effect {
+                            let manager = app
+                                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                                .read()
+                                .await
+                                .clone();
+                            let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+                            if rolled_back {
+                                continuation
+                                    .finish_rolled_back_work(&manager, &pty, effect, observed)
+                                    .await;
+                            } else {
+                                continuation
+                                    .finish_observed_work_transfer(&manager, &pty, effect, observed)
+                                    .await;
+                            }
+                        }
+                        return failed;
+                    }
+                    Ok(Ok(PtySpawnStep::RetainedUnowned)) => {
+                        drop(target_guard.take());
+                        drop(target_stripe.take());
+                        heartbeat.finish().await;
+                        return false;
+                    }
+                    Ok(Ok(PtySpawnStep::NeedReacquire(prepared))) => {
+                        prepared_replacement = prepared;
+                        // The spawn block ended the proof borrow above.
+                        drop(target_guard.take());
+                        drop(target_stripe.take());
+                        let Some((stripe, exact)) = reacquire_pty_dispatch_target(
+                            app,
+                            (&store, &initial, &claimed),
+                            (&target_gate, &verified_target, PtyReacquireGoal::Spawn),
+                            (expires, &shutdown),
+                            &mut heartbeat,
+                        )
+                        .await
+                        else {
+                            return false;
+                        };
+                        target_stripe = Some(stripe);
+                        target_guard = Some(exact);
+                        continue;
+                    }
+                    Ok(Err(code)) => {
+                        let observed = finish_pty_input_before_boundary(
+                            &store,
+                            &mut heartbeat,
+                            injection_id,
+                            &lease_owner,
+                            code,
+                        )
+                        .await;
+                        drop(target_guard.take());
+                        drop(target_stripe.take());
+                        finish_owned_pty_work(app, &mut owned_work, observed).await;
+                        return false;
+                    }
+                    Err(PtyInputPreBoundaryStop::Expired) => {
+                        let observed = reject_pty_input_before_boundary(
+                            &store,
+                            &mut heartbeat,
+                            injection_id,
+                            C::Expired,
+                        )
+                        .await;
+                        drop(target_guard.take());
+                        drop(target_stripe.take());
+                        finish_owned_pty_work(app, &mut owned_work, observed).await;
+                        return false;
+                    }
+                    Err(PtyInputPreBoundaryStop::Shutdown) => {
+                        heartbeat.finish().await;
+                        return false;
+                    }
+                }
+            };
+            let selected_id = Uuid::parse_str(&selected.id).ok();
+            if owned_work.is_none()
+                && selected_id.is_some_and(|id| {
+                    crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
+                        &claimed.target_fqn,
+                        id,
+                    )
+                })
+            {
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                let Some(id) = selected_id else {
                     heartbeat.finish().await;
-                    return;
-                }
+                    return false;
+                };
+                let Some((stripe, exact)) = reacquire_pty_dispatch_target(
+                    app,
+                    (&store, &initial, &claimed),
+                    (
+                        &target_gate,
+                        &verified_target,
+                        PtyReacquireGoal::Published(id),
+                    ),
+                    (expires, &shutdown),
+                    &mut heartbeat,
+                )
+                .await
+                else {
+                    return false;
+                };
+                target_stripe = Some(stripe);
+                target_guard = Some(exact);
+                continue;
             }
+            break (selected, spawned, verified_target, session_manager, pty_manager);
         };
         let selected_id = match Uuid::parse_str(&selected.id) {
             Ok(id) => id,
             Err(_) => {
-                reject_pty_input_before_boundary(
+                let observed = reject_pty_input_before_boundary(
                     &store,
                     &mut heartbeat,
                     injection_id,
                     C::InconsistentSession,
                 )
                 .await;
-                return;
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
             }
         };
         let readiness = await_pty_input_before_deadline(
@@ -6174,7 +8101,7 @@ impl MailboxPoller {
         match readiness {
             Ok(Ok(())) => {}
             Ok(Err(code)) => {
-                finish_pty_input_before_boundary(
+                let observed = finish_pty_input_before_boundary(
                     &store,
                     &mut heartbeat,
                     injection_id,
@@ -6182,16 +8109,27 @@ impl MailboxPoller {
                     code,
                 )
                 .await;
-                return;
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
             }
             Err(PtyInputPreBoundaryStop::Expired) => {
-                reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, C::Expired)
-                    .await;
-                return;
+                let observed = reject_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    C::Expired,
+                )
+                .await;
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
             }
             Err(PtyInputPreBoundaryStop::Shutdown) => {
                 heartbeat.finish().await;
-                return;
+                return false;
             }
         }
         if !matches!(
@@ -6204,7 +8142,7 @@ impl MailboxPoller {
                 .await,
             Ok(true)
         ) {
-            finish_pty_input_before_boundary(
+            let observed = finish_pty_input_before_boundary(
                 &store,
                 &mut heartbeat,
                 injection_id,
@@ -6212,7 +8150,10 @@ impl MailboxPoller {
                 pty_input_lease_failure_code(expires),
             )
             .await;
-            return;
+            drop(target_guard.take());
+            drop(target_stripe.take());
+            finish_owned_pty_work(app, &mut owned_work, observed).await;
+            return false;
         }
         let permit = match await_pty_input_before_deadline(
             expires,
@@ -6223,7 +8164,7 @@ impl MailboxPoller {
         {
             Ok(Ok(permit)) => permit,
             Ok(Err(_)) => {
-                finish_pty_input_before_boundary(
+                let observed = finish_pty_input_before_boundary(
                     &store,
                     &mut heartbeat,
                     injection_id,
@@ -6231,42 +8172,61 @@ impl MailboxPoller {
                     C::SessionRace,
                 )
                 .await;
-                return;
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
             }
             Err(PtyInputPreBoundaryStop::Expired) => {
-                reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, C::Expired)
-                    .await;
-                return;
+                let observed = reject_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    C::Expired,
+                )
+                .await;
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
             }
             Err(PtyInputPreBoundaryStop::Shutdown) => {
                 heartbeat.finish().await;
-                return;
+                return false;
             }
         };
         let final_api_guard =
             if source_plane == crate::phone::types::PtyInputSourcePlane::ContainerApi {
                 let Some(client_store) = api_client_store else {
-                    reject_pty_input_before_boundary(
+                    let observed = reject_pty_input_before_boundary(
                         &store,
                         &mut heartbeat,
                         injection_id,
                         C::AuthorityChanged,
                     )
                     .await;
-                    return;
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    drop(permit);
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    return false;
                 };
                 let (Some(client_id), Some(generation)) = (
                     claimed.authority_client_id.as_deref(),
                     claimed.authority_client_generation.as_deref(),
                 ) else {
-                    reject_pty_input_before_boundary(
+                    let observed = reject_pty_input_before_boundary(
                         &store,
                         &mut heartbeat,
                         injection_id,
                         C::AuthorityChanged,
                     )
                     .await;
-                    return;
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    drop(permit);
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    return false;
                 };
                 match client_store
                     .load_active_binding_fresh_offloaded(
@@ -6278,17 +8238,21 @@ impl MailboxPoller {
                 {
                     Ok(Some(guard)) => Some(guard),
                     Ok(None) => {
-                        reject_pty_input_before_boundary(
+                        let observed = reject_pty_input_before_boundary(
                             &store,
                             &mut heartbeat,
                             injection_id,
                             C::AuthorityChanged,
                         )
                         .await;
-                        return;
+                        drop(target_guard.take());
+                        drop(target_stripe.take());
+                        drop(permit);
+                        finish_owned_pty_work(app, &mut owned_work, observed).await;
+                        return false;
                     }
                     Err(_) => {
-                        finish_pty_input_before_boundary(
+                        let observed = finish_pty_input_before_boundary(
                             &store,
                             &mut heartbeat,
                             injection_id,
@@ -6296,7 +8260,11 @@ impl MailboxPoller {
                             C::StoreTransient,
                         )
                         .await;
-                        return;
+                        drop(target_guard.take());
+                        drop(target_stripe.take());
+                        drop(permit);
+                        finish_owned_pty_work(app, &mut owned_work, observed).await;
+                        return false;
                     }
                 }
             } else {
@@ -6309,14 +8277,18 @@ impl MailboxPoller {
             self.validate_claimed_host_authority(app, &claimed).await
         };
         let Some(final_authority) = final_authority else {
-            reject_pty_input_before_boundary(
+            let observed = reject_pty_input_before_boundary(
                 &store,
                 &mut heartbeat,
                 injection_id,
                 C::AuthorityChanged,
             )
             .await;
-            return;
+            drop(target_guard.take());
+            drop(target_stripe.take());
+            drop(permit);
+            finish_owned_pty_work(app, &mut owned_work, observed).await;
+            return false;
         };
         if final_authority.target.authority_fingerprint != verified_target.authority_fingerprint
             || !crate::path_identity::same_object(
@@ -6324,14 +8296,18 @@ impl MailboxPoller {
                 &verified_target.replica_identity,
             )
         {
-            reject_pty_input_before_boundary(
+            let observed = reject_pty_input_before_boundary(
                 &store,
                 &mut heartbeat,
                 injection_id,
                 C::AuthorityChanged,
             )
             .await;
-            return;
+            drop(target_guard.take());
+            drop(target_stripe.take());
+            drop(permit);
+            finish_owned_pty_work(app, &mut owned_work, observed).await;
+            return false;
         }
         if self
             .validate_selected_pty_target(
@@ -6344,7 +8320,7 @@ impl MailboxPoller {
             .await
             .is_none()
         {
-            finish_pty_input_before_boundary(
+            let observed = finish_pty_input_before_boundary(
                 &store,
                 &mut heartbeat,
                 injection_id,
@@ -6352,7 +8328,11 @@ impl MailboxPoller {
                 C::SessionRace,
             )
             .await;
-            return;
+            drop(target_guard.take());
+            drop(target_stripe.take());
+            drop(permit);
+            finish_owned_pty_work(app, &mut owned_work, observed).await;
+            return false;
         }
         if heartbeat.failed() {
             let code = if expires <= chrono::Utc::now() {
@@ -6360,7 +8340,7 @@ impl MailboxPoller {
             } else {
                 C::LeaseLost
             };
-            finish_pty_input_before_boundary(
+            let observed = finish_pty_input_before_boundary(
                 &store,
                 &mut heartbeat,
                 injection_id,
@@ -6368,7 +8348,11 @@ impl MailboxPoller {
                 code,
             )
             .await;
-            return;
+            drop(target_guard.take());
+            drop(target_stripe.take());
+            drop(permit);
+            finish_owned_pty_work(app, &mut owned_work, observed).await;
+            return false;
         }
         if !matches!(
             store
@@ -6380,7 +8364,7 @@ impl MailboxPoller {
                 .await,
             Ok(true)
         ) {
-            finish_pty_input_before_boundary(
+            let observed = finish_pty_input_before_boundary(
                 &store,
                 &mut heartbeat,
                 injection_id,
@@ -6388,10 +8372,14 @@ impl MailboxPoller {
                 pty_input_lease_failure_code(expires),
             )
             .await;
-            return;
+            drop(target_guard.take());
+            drop(target_stripe.take());
+            drop(permit);
+            finish_owned_pty_work(app, &mut owned_work, observed).await;
+            return false;
         }
         if !heartbeat.finish().await {
-            finish_pty_input_before_boundary(
+            let observed = finish_pty_input_before_boundary(
                 &store,
                 &mut heartbeat,
                 injection_id,
@@ -6399,7 +8387,11 @@ impl MailboxPoller {
                 pty_input_lease_failure_code(expires),
             )
             .await;
-            return;
+            drop(target_guard.take());
+            drop(target_stripe.take());
+            drop(permit);
+            finish_owned_pty_work(app, &mut owned_work, observed).await;
+            return false;
         }
         let backend_name = match selected.backend_kind {
             SessionBackendKind::LocalProcess => "localProcess",
@@ -6417,22 +8409,27 @@ impl MailboxPoller {
         {
             Ok(payload) => payload,
             Err(crate::api::message_store::MessageStoreError::ActuationCommitAmbiguous) => {
-                if store
+                let terminal = store
                     .terminalize_pty_input_offloaded(
                         injection_id.to_string(),
                         S::Indeterminate,
                         Some(C::TerminalStoreFailed),
                         chrono::Utc::now(),
                     )
-                    .await
-                    .is_err()
-                {
+                    .await;
+                let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
+                drop(final_api_guard);
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                drop(permit);
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                if terminal.is_err() {
                     log::error!(
                         "[pty-input] ambiguous boundary reconciliation failed id={} code=terminal_store_failed",
                         injection_id
                     );
                 }
-                return;
+                return false;
             }
             Err(_) => {
                 reject_pty_input_before_boundary(
@@ -6442,7 +8439,7 @@ impl MailboxPoller {
                     C::StoreTransient,
                 )
                 .await;
-                return;
+                return false;
             }
         };
         let post_authority = if let Some(fresh) = final_api_guard.as_ref() {
@@ -6451,40 +8448,50 @@ impl MailboxPoller {
         } else {
             self.validate_claimed_host_authority(app, &claimed).await
         };
-        let post_valid = post_authority.is_some_and(|route| {
-            route.sender.authority_fingerprint == final_authority.sender.authority_fingerprint
-                && route.target.authority_fingerprint == verified_target.authority_fingerprint
-                && crate::path_identity::same_object(
-                    &route.target.replica_identity,
-                    &verified_target.replica_identity,
+        let payload_matches = initial.payload_bytes == Some(payload.len() as u64)
+            && initial.payload_sha256.as_deref()
+                == Some(crate::phone::types::sha256_hex(&payload).as_str());
+        let post_valid = payload_matches
+            && post_authority.is_some_and(|route| {
+                route.sender.authority_fingerprint == final_authority.sender.authority_fingerprint
+                    && route.target.authority_fingerprint == verified_target.authority_fingerprint
+                    && crate::path_identity::same_object(
+                        &route.target.replica_identity,
+                        &verified_target.replica_identity,
+                    )
+            })
+            && self
+                .validate_selected_pty_target(
+                    app,
+                    &claimed,
+                    &verified_target,
+                    selected_id,
+                    selected.backend_kind,
                 )
-        }) && self
-            .validate_selected_pty_target(
-                app,
-                &claimed,
-                &verified_target,
-                selected_id,
-                selected.backend_kind,
-            )
-            .await
-            .is_some();
+                .await
+                .is_some();
         if !post_valid {
-            if store
+            let terminal = store
                 .terminalize_pty_input_offloaded(
                     injection_id.to_string(),
                     S::Indeterminate,
                     Some(C::FinalRevalidationFailed),
                     chrono::Utc::now(),
                 )
-                .await
-                .is_err()
-            {
+                .await;
+            let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
+            drop(final_api_guard);
+            drop(target_guard.take());
+            drop(target_stripe.take());
+            drop(permit);
+            finish_owned_pty_work(app, &mut owned_work, observed).await;
+            if terminal.is_err() {
                 log::error!(
                     "[pty-input] post-boundary terminalization failed id={} code=terminal_store_failed",
                     injection_id
                 );
             }
-            return;
+            return false;
         }
         let manager = {
             let guard = session_manager.read().await;
@@ -6499,22 +8506,27 @@ impl MailboxPoller {
         ) {
             Ok(id) => id,
             Err(_) => {
-                if store
+                let terminal = store
                     .terminalize_pty_input_offloaded(
                         injection_id.to_string(),
                         S::Indeterminate,
                         Some(C::FinalRevalidationFailed),
                         chrono::Utc::now(),
                     )
-                    .await
-                    .is_err()
-                {
+                    .await;
+                let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
+                drop(final_api_guard);
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                drop(permit);
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                if terminal.is_err() {
                     log::error!(
                         "[pty-input] boundary terminalization failed id={} code=terminal_store_failed",
                         injection_id
                     );
                 }
-                return;
+                return false;
             }
         };
         let authority_backend = match source_plane {
@@ -6530,21 +8542,25 @@ impl MailboxPoller {
         let authority_route = match PtyManager::authority_route_proof(&pty_manager, authority_id) {
             Ok(proof) => proof,
             Err(_) => {
-                if store
-                    .terminalize_pty_input(
-                        injection_id,
-                        S::Indeterminate,
-                        Some(C::FinalRevalidationFailed),
-                        chrono::Utc::now(),
-                    )
-                    .is_err()
-                {
+                let terminal = store.terminalize_pty_input(
+                    injection_id,
+                    S::Indeterminate,
+                    Some(C::FinalRevalidationFailed),
+                    chrono::Utc::now(),
+                );
+                let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
+                drop(final_api_guard);
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                drop(permit);
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                if terminal.is_err() {
                     log::error!(
                         "[pty-input] boundary terminalization failed id={} code=terminal_store_failed",
                         injection_id
                     );
                 }
-                return;
+                return false;
             }
         };
         let expected_api_binding = final_api_guard.as_ref().and_then(|fresh| {
@@ -6561,25 +8577,70 @@ impl MailboxPoller {
         if source_plane == crate::phone::types::PtyInputSourcePlane::ContainerApi
             && expected_api_binding.is_none()
         {
-            if store
-                .terminalize_pty_input(
-                    injection_id,
-                    S::Indeterminate,
-                    Some(C::FinalRevalidationFailed),
-                    chrono::Utc::now(),
-                )
-                .is_err()
-            {
+            let terminal = store.terminalize_pty_input(
+                injection_id,
+                S::Indeterminate,
+                Some(C::FinalRevalidationFailed),
+                chrono::Utc::now(),
+            );
+            let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
+            drop(final_api_guard);
+            drop(target_guard.take());
+            drop(target_stripe.take());
+            drop(permit);
+            finish_owned_pty_work(app, &mut owned_work, observed).await;
+            if terminal.is_err() {
                 log::error!(
                     "[pty-input] boundary terminalization failed id={} code=terminal_store_failed",
                     injection_id
                 );
             }
-            return;
+            return false;
         }
         let boundary_settings = app.state::<SettingsState>().inner().clone();
-        let route_guard = match manager
-            .prepare_pty_input_boundary(
+        let owned_route = owned_work
+            .as_ref()
+            .and_then(|_| PtyManager::snapshot_route_proof(&pty_manager, selected_id).ok());
+        let boundary_carrier = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let owned_token = owned_work
+            .as_ref()
+            .and_then(|(continuation, _)| continuation.launch_token());
+        let owned_current = match owned_work.as_ref() {
+            Some((continuation, _)) => {
+                manager
+                    .with_current_carrier_snapshot(&boundary_carrier, |current| {
+                        owned_token.is_some()
+                            && continuation.current_completion_region(
+                                &boundary_carrier,
+                                current,
+                                &pty_manager,
+                            )
+                    })
+                    .await
+            }
+            None => true,
+        };
+        if !owned_current {
+            drop(boundary_carrier);
+            let observed = store
+                .terminalize_pty_input_offloaded(
+                    injection_id.to_string(),
+                    S::Indeterminate,
+                    Some(C::FinalRevalidationFailed),
+                    chrono::Utc::now(),
+                )
+                .await
+                .is_ok_and(|result| result.terminal);
+            drop(final_api_guard);
+            drop(target_guard.take());
+            drop(target_stripe.take());
+            drop(permit);
+            finish_owned_pty_work(app, &mut owned_work, observed).await;
+            return false;
+        }
+        let boundary_write = match manager
+            .prepare_pty_input_boundary_with_carrier_permit(
+                &boundary_carrier,
                 selected_id,
                 &verified_target,
                 selected.backend_kind,
@@ -6591,10 +8652,16 @@ impl MailboxPoller {
                 &idle_detector,
                 &boundary_settings,
                 |session, settings| {
-                    session_has_current_pty_submission_provenance(
-                        &SessionInfo::from(session),
-                        settings,
-                    )
+                    owned_token.is_none_or(|token| session.token == token)
+                        && owned_work.as_ref().is_none_or(|(continuation, _)| {
+                            owned_route.as_ref().is_some_and(|proof| {
+                                continuation.matches_captured_launch_route(proof)
+                            })
+                        })
+                        && session_has_current_pty_submission_provenance(
+                            &SessionInfo::from(session),
+                            settings,
+                        )
                 },
                 || {
                     if expires <= chrono::Utc::now()
@@ -6638,31 +8705,39 @@ impl MailboxPoller {
             )
             .await
         {
-            Ok(guard) => guard,
+            Ok(guard) => {
+                drop(boundary_carrier);
+                Ok(crate::pty::inject::write_exact_agent_input_first(
+                    guard, &payload,
+                ))
+            }
             Err(_) => {
-                // This result type can contain a non-Send route guard. Awaiting
-                // a blocking wrapper on the error arm would make the enclosing
-                // dispatcher future non-Send, so keep this conditional SQLite
-                // transition synchronous. No route guard exists on this arm.
-                if store
-                    .terminalize_pty_input(
-                        injection_id,
-                        S::Indeterminate,
-                        Some(C::FinalRevalidationFailed),
-                        chrono::Utc::now(),
-                    )
-                    .is_err()
-                {
-                    log::error!(
-                        "[pty-input] boundary terminalization failed id={} code=terminal_store_failed",
-                        injection_id
-                    );
+                drop(boundary_carrier);
+                // The guard-bearing Result ends in this match. Only the
+                // observed terminal boolean survives to the work handoff await.
+                let terminal = store.terminalize_pty_input(
+                    injection_id,
+                    S::Indeterminate,
+                    Some(C::FinalRevalidationFailed),
+                    chrono::Utc::now(),
+                );
+                if terminal.is_err() {
+                    log::error!("[pty-input] boundary terminalization failed id={} code=terminal_store_failed", injection_id);
                 }
-                return;
+                Err(terminal.as_ref().is_ok_and(|result| result.terminal))
             }
         };
-        let text_write_succeeded =
-            crate::pty::inject::write_exact_agent_input_first(route_guard, &payload);
+        let text_write_succeeded = match boundary_write {
+            Ok(written) => written,
+            Err(observed) => {
+                drop(final_api_guard);
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                drop(permit);
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
+            }
+        };
         // Keep the fresh registry lock through the synchronous first-write
         // boundary so a concurrent revocation linearizes before or after it,
         // never between the final authority check and the text write.
@@ -6711,16 +8786,23 @@ impl MailboxPoller {
                     "[pty-input] terminal persistence failed id={} code=terminal_store_failed",
                     injection_id
                 );
-                return;
+                return false;
             }
         };
         crate::api::audit::record_pty_input_result("terminal", &result);
+        drop(target_guard.take());
+        drop(target_stripe.take());
+        drop(permit);
+        finish_owned_pty_work(app, &mut owned_work, result.terminal).await;
         if app.emit("pty_input_status", &result).is_err() {
             log::warn!(
                 "[pty-input] status event failed id={} code=boundary_metadata_failed",
                 injection_id
             );
         }
+        false
+        }.await;
+        source_executor.returned(failed);
     }
 
     async fn validate_claimed_api_authority<R: tauri::Runtime>(
@@ -6892,6 +8974,324 @@ impl MailboxPoller {
         }))
     }
 
+    async fn owned_pty_recipe_is_current<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        expected: &crate::commands::session::OwnedReplacementCreateRequest,
+    ) -> bool {
+        let Some(agent) = expected.agent_id.as_deref() else {
+            return false;
+        };
+        let settings = app.state::<SettingsState>().read().await.clone();
+        let Ok(Some(spawn)) = crate::commands::session::build_configured_agent_spawn_for_cwd(
+            &settings,
+            agent,
+            &expected.cwd,
+            None,
+        ) else {
+            return false;
+        };
+        if SessionBackendKind::from(&spawn.backend) != SessionBackendKind::LocalProcess {
+            return false;
+        }
+        let mut current = expected.clone();
+        current.shell = spawn.shell.clone();
+        current.shell_args = spawn.shell_args.clone();
+        current.agent_label = Some(spawn.trusted_agent_label.clone());
+        current.resolved_spawn = Some(spawn);
+        current.host_shell = Some(crate::pty::backend::ResolvedAgentHostShell {
+            program: settings.default_shell,
+            args: settings.default_shell_args,
+        });
+        owned_replacement_launch_recipe(&current) == owned_replacement_launch_recipe(expected)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the actual PTY source, proof, executor and fixture borrow contract together"
+    )]
+    async fn spawn_owned_pty_replacement<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        request: crate::commands::session::OwnedReplacementCreateRequest,
+        source: (
+            &crate::api::message_store::ClaimedPtyInputOperation,
+            &crate::phone::types::PtyInputResult,
+            &crate::config::teams::VerifiedPtyInputIdentity,
+            Option<&Arc<crate::api::auth::ApiClientStore>>,
+        ),
+        target: (&crate::config::teams::VerifiedPtyInputIdentity, Uuid),
+        prepared: Option<crate::session::selection::PreparedOwnedReplacement>,
+        target_ownership: &crate::api::message_store::PtyInputTargetOwnership<'_>,
+        source_executor: &mut crate::session::selection::SourceExecutorGuard,
+        #[cfg(test)] fixture_lease: Option<&Arc<crate::commands::session::FixturePtyCutLease>>,
+    ) -> Result<PtySpawnStep, crate::phone::types::PtyInputReasonCode> {
+        use crate::phone::types::PtyInputReasonCode as C;
+        use crate::session::selection::{
+            OwnedReplacementWork, ReplacementAdmissionStep, ResolvedReplacement,
+        };
+        let (claimed, initial, sender, api_client_store) = source;
+        let (target, previous_id) = target;
+        let Some(coordinator) = app.try_state::<crate::session::selection::SelectionCoordinator>()
+        else {
+            return Ok(PtySpawnStep::NeedReacquire(prepared));
+        };
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let prepared = match prepared {
+            Some(prepared) => prepared,
+            None => {
+                let directory = crate::config::config_dir().ok_or(C::UnsafePath)?;
+                let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+                let captured = manager
+                    .with_current_carrier_snapshot(&permit, |current| {
+                        let carrier =
+                            crate::config::sessions_persistence::retained_carrier_for_replacement(
+                                &permit,
+                                &directory,
+                                &target.canonical_fqn,
+                                previous_id,
+                                current,
+                            )?;
+                        let row = current
+                            .rows
+                            .iter()
+                            .find(|row| row.id == previous_id)?
+                            .clone();
+                        Some((carrier, row))
+                    })
+                    .await;
+                drop(permit);
+                let Some((carrier, previous)) = captured else {
+                    return Ok(PtySpawnStep::NeedReacquire(None));
+                };
+                let work = OwnedReplacementWork::PtyDurableReference {
+                    version: initial.version,
+                    injection_id: claimed.injection_id.clone(),
+                    op_id: claimed.op_id.clone(),
+                    sender: claimed.sender_fqn.clone(),
+                    target: claimed.target_fqn.clone(),
+                    source_plane: match claimed.source_plane {
+                        crate::phone::types::PtyInputSourcePlane::HostCli => "host_cli",
+                        crate::phone::types::PtyInputSourcePlane::ContainerApi => "container_api",
+                    }
+                    .into(),
+                    payload_sha256: initial.payload_sha256.clone().ok_or(C::AuthorityChanged)?,
+                    payload_bytes: initial.payload_bytes.ok_or(C::AuthorityChanged)?,
+                    issued_at: initial.issued_at.clone().ok_or(C::AuthorityChanged)?,
+                    expires_at: claimed.expires_at.clone(),
+                    queued_at: initial.queued_at.clone().ok_or(C::AuthorityChanged)?,
+                    lease_owner: claimed.lease_owner.clone(),
+                    attempt: claimed.attempt,
+                    authority_session_id: claimed.authority_session_id.clone(),
+                    authority_client_id: claimed.authority_client_id.clone(),
+                    authority_client_generation: claimed.authority_client_generation.clone(),
+                    sender_identity_fingerprint: claimed.sender_identity_fingerprint.clone(),
+                    target_identity_fingerprint: claimed.target_identity_fingerprint.clone(),
+                    requested_agent_id: claimed.requested_agent_id.clone(),
+                };
+                let cwd_identity = crate::path_identity::verify_directory(Path::new(&request.cwd))
+                    .map_err(|_| C::UnsafePath)?;
+                coordinator.prepare_owned_replacement(
+                    ResolvedReplacement {
+                        target: target.canonical_fqn.clone(),
+                        directory,
+                        previous,
+                        carrier,
+                        requested_agent_id: request.agent_id.clone(),
+                        requested_profile: None,
+                        shell: request.shell.clone(),
+                        shell_args: request.shell_args.clone(),
+                        launch_recipe: owned_replacement_launch_recipe(&request),
+                        cwd: request.cwd.clone(),
+                        backend: SessionBackendKind::LocalProcess,
+                        work,
+                        cwd_identity: cwd_identity.into(),
+                        replica_identity: Some(target.replica_identity.clone().into()),
+                    },
+                    manager.reserve_carrier_create_binding(),
+                )
+            }
+        };
+        if !prepared.matches_launch(
+            &request.shell,
+            &request.shell_args,
+            &request.cwd,
+            &request.agent_id,
+            &owned_replacement_launch_recipe(&request),
+        ) {
+            return Err(C::AuthorityChanged);
+        }
+        let tracker = pty
+            .lock()
+            .map_err(|_| C::StoreTransient)?
+            .response_close_state();
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let admission = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                coordinator.admit_owned_replacement(&permit, current, &tracker, &pty, prepared)
+            })
+            .await;
+        drop(permit);
+        let continuation = match admission {
+            Ok(ReplacementAdmissionStep::Waiting(prepared)) => {
+                return Ok(PtySpawnStep::NeedReacquire(Some(prepared)))
+            }
+            Ok(ReplacementAdmissionStep::Accepted(continuation)) => continuation,
+            Err(_) => return Err(C::StoreTransient),
+        };
+        if !source_executor.bind(&continuation) {
+            return Ok(PtySpawnStep::RetainedUnowned);
+        }
+        let validation_app = app.clone();
+        let validation_claim = claimed.clone();
+        let validation_initial = initial.clone();
+        let validation_sender = sender.clone();
+        let validation_target = target.clone();
+        let validation_api = api_client_store.cloned();
+        let validation_request = request.clone();
+        let continuation = continuation.with_source_validation(Arc::new(move || {
+            let app = validation_app.clone();
+            let claimed = validation_claim.clone();
+            let initial = validation_initial.clone();
+            let sender = validation_sender.clone();
+            let target = validation_target.clone();
+            let api = validation_api.clone();
+            let request = validation_request.clone();
+            Box::pin(async move {
+                use crate::session::selection::OwnedSourceStop as Stop;
+                let delivery = MailboxPoller::delivery_only();
+                let store = app
+                    .try_state::<crate::api::message_store::MessageStoreState>()
+                    .and_then(|state| state.store.as_ref().ok().cloned())
+                    .ok_or(Stop::StoreTransient)?;
+                match refresh_pty_claim_for_resume(&store, &initial, &claimed).await {
+                    Ok(PtyClaimRefresh::Current) => {}
+                    Ok(PtyClaimRefresh::Terminal) => return Err(Stop::Terminal),
+                    Err(C::AuthorityChanged) => return Err(Stop::AuthorityChanged),
+                    Err(C::Expired) => return Err(Stop::Expired),
+                    Err(C::LeaseLost) => return Err(Stop::LeaseLost),
+                    Err(_) => return Err(Stop::StoreTransient),
+                }
+                match delivery
+                    .pty_spawn_authority_is_current(
+                        &app,
+                        &claimed,
+                        &sender,
+                        &target,
+                        claimed.source_plane,
+                        api.as_ref(),
+                    )
+                    .await
+                {
+                    Ok(true) => {
+                        if delivery.owned_pty_recipe_is_current(&app, &request).await {
+                            Ok(())
+                        } else {
+                            Err(Stop::AuthorityChanged)
+                        }
+                    }
+                    Ok(false) => Err(Stop::AuthorityChanged),
+                    Err(_) => Err(Stop::StoreTransient),
+                }
+            })
+        }));
+        #[cfg(test)]
+        let continuation = match self
+            .test_hooks
+            .as_ref()
+            .and_then(MailboxTestHooks::replacement_fixture_control)
+        {
+            Some(control) => continuation.with_fixture_control(control),
+            None => continuation,
+        };
+        #[cfg(test)]
+        continuation.fixture_inserted();
+        #[cfg(test)]
+        if !continuation
+            .fixture_reached(crate::session::selection::ReplacementFixtureCut::SourceCoreEntered)
+            .await
+        {
+            return Ok(PtySpawnStep::RetainedUnowned);
+        }
+        #[cfg(test)]
+        let fixture_created = if let Some(lease) = fixture_lease {
+            let Some(control) = self
+                .test_hooks
+                .as_ref()
+                .and_then(MailboxTestHooks::replacement_fixture_control)
+            else {
+                return Ok(PtySpawnStep::RetainedUnowned);
+            };
+            let result = coordinator
+                .submit_inline_replacement_fixture(
+                    crate::commands::session::FixtureReplacementInput {
+                        request: request.clone(),
+                        continuation: continuation.clone().with_fixture_control(control.clone()),
+                        lease: crate::commands::session::FixtureReplacementLease::PtyCutShared(
+                            lease.clone(),
+                        ),
+                    },
+                    control,
+                )
+                .await;
+            let Some(result) = result else {
+                return Ok(PtySpawnStep::RetainedUnowned);
+            };
+            if result.ordinary_lease.is_some() {
+                return Ok(PtySpawnStep::RetainedUnowned);
+            }
+            Some(result.outcome)
+        } else {
+            None
+        };
+        #[cfg(test)]
+        let created = match fixture_created {
+            Some(created) => created,
+            None => {
+                crate::commands::session::create_owned_response_replacement(
+                    app,
+                    request,
+                    continuation.clone(),
+                    target_ownership,
+                )
+                .await
+            }
+        };
+        #[cfg(not(test))]
+        let created = crate::commands::session::create_owned_response_replacement(
+            app,
+            request,
+            continuation.clone(),
+            target_ownership,
+        )
+        .await;
+        match created {
+            Ok(crate::commands::session::OwnedReplacementCreateStep::Finalized(info)) => {
+                Ok(PtySpawnStep::OwnedCreated(info, continuation))
+            }
+            Ok(crate::commands::session::OwnedReplacementCreateStep::Retained) => {
+                Ok(PtySpawnStep::Retained {
+                    continuation,
+                    failed: false,
+                })
+            }
+            Err(error) => {
+                // A returned create error does not certify runtime rollback or
+                // durable source handoff. Keep the accepted owner authoritative.
+                continuation.note_retained_work(error);
+                Ok(PtySpawnStep::Retained {
+                    continuation,
+                    failed: true,
+                })
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn spawn_pty_input_target<R: tauri::Runtime>(
         &self,
@@ -6903,7 +9303,11 @@ impl MailboxPoller {
         source_plane: crate::phone::types::PtyInputSourcePlane,
         api_client_store: Option<&Arc<crate::api::auth::ApiClientStore>>,
         target_ownership: &crate::api::message_store::PtyInputTargetOwnership<'_>,
-    ) -> Result<SessionInfo, crate::phone::types::PtyInputReasonCode> {
+        initial: &crate::phone::types::PtyInputResult,
+        prepared_replacement: Option<crate::session::selection::PreparedOwnedReplacement>,
+        source_executor: &mut crate::session::selection::SourceExecutorGuard,
+        #[cfg(test)] fixture_lease: Option<&Arc<crate::commands::session::FixturePtyCutLease>>,
+    ) -> Result<PtySpawnStep, crate::phone::types::PtyInputReasonCode> {
         use crate::phone::types::PtyInputReasonCode as C;
 
         if verified_target.canonical_fqn != claimed.target_fqn
@@ -7015,6 +9419,50 @@ impl MailboxPoller {
             Ok(false) => return Err(C::AuthorityChanged),
             Err(_) => return Err(C::StoreTransient),
         }
+        // No destroy/create/native preparation has started. Return ownership
+        // to dispatch rather than waiting under its borrowed target guards.
+        use crate::config::sessions_persistence::CreateCarrierScope;
+        let (scope, retained) = observe_pty_spawn_scope(app, verified_target).await;
+        if !matches!(scope, CreateCarrierScope::Foreign { .. }) {
+            let Some(retained_id) = retained else {
+                return Ok(PtySpawnStep::NeedReacquire(prepared_replacement));
+            };
+            if expected_backend != SessionBackendKind::LocalProcess {
+                return Err(C::AuthorityChanged);
+            }
+            let exited = exited.ok_or(C::InconsistentSession)?;
+            let exited_id = crate::phone::types::parse_canonical_uuid_v4(&exited.id)
+                .map_err(|_| C::InconsistentSession)?;
+            if exited_id != retained_id {
+                return Err(C::InconsistentSession);
+            }
+            let (_, local_name) = crate::config::teams::split_project_prefix(&claimed.target_fqn);
+            return self
+                .spawn_owned_pty_replacement(
+                    app,
+                    crate::commands::session::OwnedReplacementCreateRequest {
+                        shell: spawn.shell.clone(),
+                        shell_args: spawn.shell_args.clone(),
+                        cwd: crate::path_utils::normalize_windows_verbatim_path(&target_root_text),
+                        name: Some(local_name.to_string()),
+                        agent_id: Some(agent_id),
+                        agent_label: Some(spawn.trusted_agent_label.clone()),
+                        skip_tooling_save: false,
+                        git_repos: Vec::new(),
+                        resolved_spawn: Some(spawn),
+                        host_shell: resolved_agent_host_shell,
+                    },
+                    (claimed, initial, verified_sender, api_client_store),
+                    (verified_target, exited_id),
+                    prepared_replacement,
+                    target_ownership,
+                    source_executor,
+                    #[cfg(test)]
+                    fixture_lease,
+                )
+                .await;
+        }
+        drop(prepared_replacement);
         if let Some(exited) = exited {
             let exited_id = crate::phone::types::parse_canonical_uuid_v4(&exited.id)
                 .map_err(|_| C::InconsistentSession)?;
@@ -7098,7 +9546,10 @@ impl MailboxPoller {
         )
         .await;
         let info = match created {
-            Ok(info) => info,
+            Ok(crate::commands::session::PtyTargetCreateStep::Finalized(info)) => info,
+            Ok(crate::commands::session::PtyTargetCreateStep::Retained) => {
+                return Ok(PtySpawnStep::RetainedUnowned)
+            }
             Err(error) => {
                 let sessions = {
                     let guard = session_manager.read().await;
@@ -7186,7 +9637,7 @@ impl MailboxPoller {
                 }
             }
         }
-        Ok(info)
+        Ok(PtySpawnStep::Created(info))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -8116,13 +10567,17 @@ impl MailboxPoller {
             message: msg,
             response,
         };
+        let _candidate_disposal = validated
+            .response
+            .as_ref()
+            .map(ResponseWakeWork::candidate_disposal);
         // #2232 phase 7: a Co-managed message is delivered inline with its
         // display attribution; it is never parked for the detached worker pool,
         // whose shared `deliver_wake` tail carries no attribution and must keep
         // its exact behaviour for every other origin.
         if origin == OutboxOrigin::CoManaged {
             let annotated = self.deliver_validated_wake(app, &validated, true).await?;
-            return self.move_to_delivered(path, &annotated).await;
+            return self.move_to_delivered(app, path, &annotated).await;
         }
         if let Some(slot) = deferred_tail {
             *slot = Some(validated);
@@ -8134,7 +10589,7 @@ impl MailboxPoller {
         let annotated = self.deliver_validated_wake(app, &validated, false).await?;
 
         // Move to delivered/ with token stripped
-        self.move_to_delivered(path, &annotated).await
+        self.move_to_delivered(app, path, &annotated).await
     }
 
     /// Deliver mode: wake — inject into the recipient's PTY for any non-Exited
@@ -8243,10 +10698,7 @@ impl MailboxPoller {
                 origin,
                 comanaged,
                 response,
-            } => {
-                self.deliver_peer_wake(app, message, origin, comanaged, response)
-                    .await
-            }
+            } => Box::pin(self.deliver_peer_wake(app, message, origin, comanaged, response)).await,
             WakeDelivery::InternalSystem {
                 target,
                 notice,
@@ -8321,28 +10773,687 @@ impl MailboxPoller {
             }
         }
 
-        let fallback = match self
-            .select_peer_wake_candidate(
-                app,
-                msg,
-                (origin, comanaged),
-                response,
-                (parsed_remote_command.is_some(), flags_present),
-            )
-            .await?
-        {
-            std::ops::ControlFlow::Break(delivered) => return Ok(delivered),
-            std::ops::ControlFlow::Continue(fallback) => fallback,
+        loop {
+            let fallback = match self
+                .select_peer_wake_candidate(
+                    app,
+                    msg,
+                    (origin, comanaged),
+                    response,
+                    (parsed_remote_command.is_some(), flags_present),
+                )
+                .await?
+            {
+                std::ops::ControlFlow::Break(delivered) => return Ok(delivered),
+                std::ops::ControlFlow::Continue(fallback) => fallback,
+            };
+            if let Some(previous) = fallback.1 {
+                if self
+                    .peer_wake_needs_owned_replacement(app, msg, previous)
+                    .await
+                {
+                    match self
+                        .deliver_owned_peer_replacement(
+                            app,
+                            msg,
+                            (origin, comanaged),
+                            response,
+                            (parsed_remote_command.is_some(), flags_present),
+                            previous,
+                        )
+                        .await?
+                    {
+                        OwnedPeerWakeStep::Delivered(delivered) => return Ok(delivered),
+                        OwnedPeerWakeStep::Relist => {
+                            tokio::task::yield_now().await;
+                            continue;
+                        }
+                        OwnedPeerWakeStep::Retained => return std::future::pending().await,
+                    }
+                }
+            }
+            return self
+                .deliver_peer_wake_fallback(
+                    app,
+                    msg,
+                    (origin, comanaged),
+                    response,
+                    (parsed_remote_command.is_some(), flags_present),
+                    fallback,
+                )
+                .await;
+        }
+    }
+
+    async fn peer_wake_needs_owned_replacement<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        previous: Uuid,
+    ) -> bool {
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let Some(row) = manager.get_session(previous).await else {
+            return false;
         };
-        self.deliver_peer_wake_fallback(
-            app,
-            msg,
-            (origin, comanaged),
-            response,
-            (parsed_remote_command.is_some(), flags_present),
-            fallback,
+        let Ok(directory) =
+            crate::path_identity::verify_directory(Path::new(&row.working_directory))
+        else {
+            return true;
+        };
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        !matches!(
+            crate::config::sessions_persistence::classify_lifecycle_carrier_scope(
+                &permit,
+                Some(&msg.to),
+                &directory.canonical_path,
+            ),
+            crate::config::sessions_persistence::CreateCarrierScope::Foreign { .. }
         )
-        .await
+    }
+
+    async fn owned_peer_source_is_current<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        request: &crate::commands::session::OwnedReplacementCreateRequest,
+        physical: &crate::path_identity::VerifiedPathIdentity,
+    ) -> bool {
+        if app
+            .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+            .is_some_and(|purge| purge.blocks_agent(&msg.to))
+        {
+            return false;
+        }
+        let settings = app.state::<SettingsState>().read().await.clone();
+        let master = msg.token.as_deref().is_some_and(|token| {
+            app.try_state::<MasterToken>()
+                .is_some_and(|master| master.matches(token))
+                || settings.root_token.as_deref() == Some(token)
+        });
+        if !master {
+            if let Some(token) = msg.token.as_deref() {
+                let Ok(token) = Uuid::parse_str(token) else {
+                    return false;
+                };
+                let manager = app
+                    .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                    .read()
+                    .await
+                    .clone();
+                let Some(sender) = manager.find_by_token(token).await else {
+                    return false;
+                };
+                if sender_name_for_session_cwd_with_root_flag(
+                    &sender.working_directory,
+                    sender.is_root_agent,
+                ) != msg.from
+                {
+                    return false;
+                }
+            }
+            if !teams::can_communicate(&msg.from, &msg.to, &teams::discover_teams()) {
+                return false;
+            }
+        }
+        let Ok(current_physical) = crate::path_identity::verify_directory(Path::new(&request.cwd))
+        else {
+            return false;
+        };
+        if !crate::path_identity::same_object(&current_physical, physical)
+            || teams::is_coordinator_for_cwd(&request.cwd, &teams::discover_teams())
+            || crate::config::root_agent::is_root_agent_path(&request.cwd)
+        {
+            return false;
+        }
+        let Ok(current) = self.resolve_wake_spawn_plan(app, msg).await else {
+            return false;
+        };
+        if crate::path_utils::normalize_windows_verbatim_path(&current.cwd) != request.cwd
+            || current.spawn_shell != request.shell
+            || current.spawn_args != request.shell_args
+            || current.resolved_command.agent_id != request.agent_id
+            || current.spawn_label != request.agent_label
+            || current.resolved_agent_host_shell != request.host_shell
+        {
+            return false;
+        }
+        match (
+            current.configured_spawn.as_ref(),
+            request.resolved_spawn.as_ref(),
+        ) {
+            (Some(current), Some(expected)) => {
+                current.profile_content_hash == expected.profile_content_hash
+                    && current.profile_resolution == expected.profile_resolution
+                    && current.trusted_agent_id == expected.trusted_agent_id
+                    && current.trusted_agent_label == expected.trusted_agent_label
+                    && current.shell == expected.shell
+                    && current.shell_args == expected.shell_args
+                    && current.env_remove_keys == expected.env_remove_keys
+                    && current.effective_codex_home == expected.effective_codex_home
+                    && current.effective_child_env() == expected.effective_child_env()
+                    && match (current.seed.as_ref(), expected.seed.as_ref()) {
+                        (None, None) => true,
+                        (Some(current), Some(expected)) => {
+                            current.dest == expected.dest
+                                && current.candidates == expected.candidates
+                                && current.context == expected.context
+                                && current.config_dir_warning == expected.config_dir_warning
+                        }
+                        _ => false,
+                    }
+                    && SessionBackendKind::from(&current.backend)
+                        == SessionBackendKind::LocalProcess
+            }
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    async fn admit_owned_peer_replacement<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        request: &crate::commands::session::OwnedReplacementCreateRequest,
+        previous_id: Uuid,
+    ) -> Result<Option<OwnedPeerTarget>, String> {
+        #[cfg(test)]
+        if let Some(control) = self
+            .test_hooks
+            .as_ref()
+            .and_then(MailboxTestHooks::replacement_fixture_control)
+        {
+            if !control.before_source_accept(&msg.id).await {
+                return Ok(None);
+            }
+        }
+        use crate::session::selection::{
+            OwnedReplacementWork, ReplacementAdmissionStep, ResolvedReplacement,
+        };
+        let coordinator = app.state::<crate::session::selection::SelectionCoordinator>();
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let gate = app
+            .try_state::<crate::api::message_store::MessageStoreState>()
+            .and_then(|state| state.target_gate.as_ref().ok().cloned())
+            .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
+        let directory =
+            crate::config::config_dir().ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
+        let physical = crate::path_identity::verify_directory(Path::new(&request.cwd))
+            .map_err(|_| "targetCreateGateUnavailable".to_string())?;
+        let replica = teams::strict_wg_replica_anchor_from_cwd(Path::new(&request.cwd))
+            .ok()
+            .flatten()
+            .and_then(|root| crate::path_identity::verify_directory(&root).ok())
+            .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
+        let payload = serde_json::to_value(msg).map_err(|error| error.to_string())?;
+        let work = OwnedReplacementWork::OrdinaryOwned {
+            message_id: msg.id.clone(),
+            body: msg.body.clone(),
+            payload: payload.clone(),
+            recipient: msg.to.clone(),
+            request: payload,
+        };
+        let mut prepared = None;
+        loop {
+            coordinator.wait_for_restore_release().await?;
+            if !self
+                .owned_peer_source_is_current(app, msg, request, &physical)
+                .await
+            {
+                return Err("Wake source authority changed before replacement".into());
+            }
+            let stripe = gate
+                .acquire_target_lock(&msg.to)
+                .await
+                .map_err(|_| "targetCreateGateUnavailable".to_string())?;
+            let exact = gate.acquire_exact(&msg.to).await;
+            let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+            let captured = manager
+                .with_current_carrier_snapshot(&permit, |current| {
+                    let scope =
+                        crate::config::sessions_persistence::classify_lifecycle_carrier_scope(
+                            &permit,
+                            Some(&msg.to),
+                            &physical.canonical_path,
+                        );
+                    let foreign = matches!(
+                        scope,
+                        crate::config::sessions_persistence::CreateCarrierScope::Foreign { .. }
+                    );
+                    let carrier =
+                        crate::config::sessions_persistence::retained_carrier_for_replacement(
+                            &permit,
+                            &directory,
+                            &msg.to,
+                            previous_id,
+                            current,
+                        );
+                    let previous = current
+                        .rows
+                        .iter()
+                        .find(|row| row.id == previous_id)
+                        .cloned();
+                    let old_missing = previous.is_none();
+                    (foreign || old_missing, carrier.zip(previous))
+                })
+                .await;
+            drop(permit);
+            if captured.0 {
+                return Ok(None);
+            }
+            if prepared.is_none() {
+                if let Some((carrier, previous)) = captured.1 {
+                    prepared = Some(coordinator.prepare_owned_replacement(
+                        ResolvedReplacement {
+                            target: msg.to.clone(),
+                            directory: directory.clone(),
+                            previous,
+                            carrier,
+                            requested_agent_id: request.agent_id.clone(),
+                            requested_profile: msg.requested_profile.clone(),
+                            shell: request.shell.clone(),
+                            shell_args: request.shell_args.clone(),
+                            launch_recipe: owned_replacement_launch_recipe(request),
+                            cwd: request.cwd.clone(),
+                            backend: SessionBackendKind::LocalProcess,
+                            work: work.clone(),
+                            cwd_identity: physical.clone().into(),
+                            replica_identity: Some(replica.clone().into()),
+                        },
+                        manager.reserve_carrier_create_binding(),
+                    ));
+                }
+            }
+            if let Some(candidate) = prepared.take() {
+                let tracker = pty
+                    .lock()
+                    .map_err(|_| "targetCreateGateUnavailable".to_string())?
+                    .response_close_state();
+                let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+                let admission = manager
+                    .with_current_carrier_snapshot(&permit, |current| {
+                        coordinator
+                            .admit_owned_replacement(&permit, current, &tracker, &pty, candidate)
+                    })
+                    .await;
+                drop(permit);
+                match admission? {
+                    ReplacementAdmissionStep::Accepted(continuation) => {
+                        return Ok(Some(OwnedPeerTarget {
+                            continuation,
+                            gate,
+                            exact,
+                            stripe,
+                            physical,
+                        }))
+                    }
+                    ReplacementAdmissionStep::Waiting(candidate) => prepared = Some(candidate),
+                }
+            }
+            drop(exact);
+            drop(stripe);
+            tokio::task::yield_now().await;
+        }
+    }
+
+    async fn deliver_owned_peer_replacement<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        delivery: (WakeDeliveryOrigin, bool),
+        response: Option<&ResponseWakeWork>,
+        dispatch: (bool, bool),
+        previous: Uuid,
+    ) -> Result<OwnedPeerWakeStep, String> {
+        let plan = self.resolve_wake_spawn_plan(app, msg).await?;
+        if let Some(command) = msg.command.as_deref() {
+            resolve_remote_pty_command(&plan.spawn_shell, command)?;
+        }
+        if plan.configured_spawn.as_ref().is_some_and(|spawn| {
+            SessionBackendKind::from(&spawn.backend) != SessionBackendKind::LocalProcess
+        }) {
+            return Ok(OwnedPeerWakeStep::Retained);
+        }
+        let request = crate::commands::session::OwnedReplacementCreateRequest {
+            shell: plan.spawn_shell,
+            shell_args: plan.spawn_args,
+            cwd: crate::path_utils::normalize_windows_verbatim_path(&plan.cwd),
+            name: Some(plan.session_name),
+            agent_id: plan.resolved_command.agent_id.clone(),
+            agent_label: plan.spawn_label,
+            skip_tooling_save: dispatch.1,
+            git_repos: Vec::new(),
+            resolved_spawn: plan.configured_spawn,
+            host_shell: plan.resolved_agent_host_shell,
+        };
+        let Some(target) = self
+            .admit_owned_peer_replacement(app, msg, &request, previous)
+            .await?
+        else {
+            return Ok(OwnedPeerWakeStep::Relist);
+        };
+        let validation_app = app.clone();
+        let validation_message = msg.clone();
+        let validation_request = request.clone();
+        let physical = target.physical;
+        let continuation = target
+            .continuation
+            .with_source_validation(Arc::new(move || {
+                let app = validation_app.clone();
+                let msg = validation_message.clone();
+                let request = validation_request.clone();
+                let physical = physical.clone();
+                Box::pin(async move {
+                    if MailboxPoller::delivery_only()
+                        .owned_peer_source_is_current(&app, &msg, &request, &physical)
+                        .await
+                    {
+                        Ok(())
+                    } else {
+                        Err(crate::session::selection::OwnedSourceStop::AuthorityChanged)
+                    }
+                })
+            }));
+        #[cfg(test)]
+        let continuation = match self
+            .test_hooks
+            .as_ref()
+            .and_then(MailboxTestHooks::replacement_fixture_control)
+        {
+            Some(control) => continuation.with_fixture_control(control),
+            None => continuation,
+        };
+        #[cfg(test)]
+        continuation.fixture_inserted();
+        let mut execution = OwnedPeerWakeExecution {
+            message: msg.clone(),
+            delivery,
+            response: response.cloned(),
+            flags_present: dispatch.1,
+            request,
+            resolved_command: plan.resolved_command,
+            continuation,
+            gate: target.gate,
+            exact: Some(target.exact),
+            stripe: Some(target.stripe),
+        };
+        let completion = execution.continuation.clone();
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let app = app.clone();
+        let delivery = self.delivery_poller();
+        // Relocates the one existing create core around its owned work tail.
+        // Common create borrows this lexical proof and never spawns another core.
+        let result = crate::config::sessions_persistence::run_owned_persist_core(async move {
+            let mut source = crate::session::selection::SourceExecutorGuard::unbound();
+            if !source.bind(&execution.continuation) {
+                return Ok(OwnedPeerWakeStep::Retained);
+            }
+            let result = delivery
+                .execute_owned_peer_replacement(&app, &mut execution)
+                .await;
+            source.returned(result.is_err());
+            result
+        })
+        .await;
+        #[cfg(test)]
+        if matches!(&result, Ok(OwnedPeerWakeStep::Retained)) {
+            // The accepted core has actually returned; its public wake caller
+            // intentionally remains pending below. This is observation only.
+            let _ = completion
+                .fixture_reached(
+                    crate::session::selection::ReplacementFixtureCut::SourceRetainedReturn,
+                )
+                .await;
+        }
+        // The existing result channel has returned the real legacy Err to the
+        // source-owning caller. The completed core has released its target
+        // guards; the original full message remains with this caller.
+        if result.is_err() && completion.precommit_rollback_completed() {
+            if let Some(effect) = completion
+                .start_effect(crate::session::selection::LifecycleEffectSlot::WorkTransfer)
+            {
+                completion
+                    .finish_rolled_back_work(&manager, &pty, effect, true)
+                    .await;
+            }
+        }
+        result
+    }
+
+    async fn execute_owned_peer_replacement<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        execution: &mut OwnedPeerWakeExecution,
+    ) -> Result<OwnedPeerWakeStep, String> {
+        use crate::session::selection::LifecycleEffectSlot;
+        #[cfg(test)]
+        let fixture_control = self
+            .test_hooks
+            .as_ref()
+            .and_then(MailboxTestHooks::replacement_fixture_control);
+        #[cfg(test)]
+        let fixture_continuation = match &fixture_control {
+            Some(control) => execution
+                .continuation
+                .clone()
+                .with_fixture_control(control.clone()),
+            None => execution.continuation.clone(),
+        };
+        #[cfg(test)]
+        let continuation = &fixture_continuation;
+        #[cfg(not(test))]
+        let continuation = &execution.continuation;
+        #[cfg(test)]
+        if !continuation
+            .fixture_reached(crate::session::selection::ReplacementFixtureCut::SourceCoreEntered)
+            .await
+        {
+            return Ok(OwnedPeerWakeStep::Retained);
+        }
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        if !continuation.validate_source().await {
+            return Ok(OwnedPeerWakeStep::Retained);
+        }
+        if let Some(spawn) = execution.request.resolved_spawn.as_ref() {
+            if !continuation
+                .validate_pre_effect_region(&manager, &pty)
+                .await
+            {
+                return Ok(OwnedPeerWakeStep::Retained);
+            }
+            let Some(effect) = continuation.start_effect(LifecycleEffectSlot::ContextPreparation)
+            else {
+                return Ok(OwnedPeerWakeStep::Retained);
+            };
+            let prepared = crate::config::agent_command::prepare_agent_spawn_command(spawn);
+            effect.complete(prepared.as_ref().map(|_| None).map_err(Clone::clone));
+            if let Err(error) = prepared {
+                continuation
+                    .rollback_failed_create(&manager, &pty, &error)
+                    .await;
+                return Err(error);
+            }
+            if !continuation.preserve_context_prerequisite() {
+                return Ok(OwnedPeerWakeStep::Retained);
+            }
+        }
+        #[cfg(test)]
+        let fixture = fixture_control.filter(|control| {
+            !control
+                .ticket_only
+                .load(std::sync::atomic::Ordering::Acquire)
+        });
+        #[cfg(test)]
+        let fixture_created = if let Some(control) = fixture {
+            let (Some(exact), Some(stripe)) = (execution.exact.take(), execution.stripe.take())
+            else {
+                return Ok(OwnedPeerWakeStep::Retained);
+            };
+            let Some(coordinator) =
+                app.try_state::<crate::session::selection::SelectionCoordinator>()
+            else {
+                return Ok(OwnedPeerWakeStep::Retained);
+            };
+            let input = crate::commands::session::FixtureReplacementInput {
+                request: execution.request.clone(),
+                continuation: continuation.clone().with_fixture_control(control.clone()),
+                lease: crate::commands::session::FixtureReplacementLease::OrdinaryMoved(
+                    crate::commands::session::FixturePtyCutLease {
+                        gate: execution.gate.clone(),
+                        target: execution.message.to.clone(),
+                        exact,
+                        stripe,
+                    },
+                ),
+            };
+            let Some(result) = coordinator
+                .submit_inline_replacement_fixture(input, control)
+                .await
+            else {
+                return Ok(OwnedPeerWakeStep::Retained);
+            };
+            let Some(lease) = result.ordinary_lease else {
+                return Ok(OwnedPeerWakeStep::Retained);
+            };
+            if !Arc::ptr_eq(&lease.gate, &execution.gate) || lease.target != execution.message.to {
+                return Ok(OwnedPeerWakeStep::Retained);
+            }
+            execution.exact = Some(lease.exact);
+            execution.stripe = Some(lease.stripe);
+            Some(result.outcome)
+        } else {
+            None
+        };
+        #[cfg(test)]
+        let created = match fixture_created {
+            Some(created) => created,
+            None => {
+                let proof = execution
+                    .gate
+                    .target_ownership(
+                        &execution.message.to,
+                        execution.stripe.as_ref().ok_or("missingTargetStripe")?,
+                        execution.exact.as_ref().ok_or("missingTargetOwnership")?,
+                    )
+                    .map_err(|_| "invalidTargetCreateOwnership".to_string())?;
+                crate::commands::session::create_owned_response_replacement(
+                    app,
+                    execution.request.clone(),
+                    continuation.clone(),
+                    &proof,
+                )
+                .await
+            }
+        };
+        #[cfg(not(test))]
+        let created = {
+            let proof = execution
+                .gate
+                .target_ownership(
+                    &execution.message.to,
+                    execution.stripe.as_ref().ok_or("missingTargetStripe")?,
+                    execution.exact.as_ref().ok_or("missingTargetOwnership")?,
+                )
+                .map_err(|_| "invalidTargetCreateOwnership".to_string())?;
+            crate::commands::session::create_owned_response_replacement(
+                app,
+                execution.request.clone(),
+                continuation.clone(),
+                &proof,
+            )
+            .await
+        };
+        match created {
+            Ok(crate::commands::session::OwnedReplacementCreateStep::Finalized(_)) => {}
+            Ok(crate::commands::session::OwnedReplacementCreateStep::Retained) => {
+                return Ok(OwnedPeerWakeStep::Retained)
+            }
+            Err(error) => return Err(error),
+        }
+        let Some(info) = continuation.refresh_completion_info(&manager, &pty).await else {
+            return Ok(OwnedPeerWakeStep::Retained);
+        };
+        let id = continuation.binding().map(|binding| binding.session_id());
+        let Some(id) = id else {
+            return Ok(OwnedPeerWakeStep::Retained);
+        };
+        // Start the work receipt only after its initial current-B checks. A
+        // failed preflight has reached no bridge, settle or input effect.
+        let Some(effect) = continuation.start_effect(LifecycleEffectSlot::WorkTransfer) else {
+            return Ok(OwnedPeerWakeStep::Retained);
+        };
+        if info.telegram_bot_id.is_some() {
+            self.attach_persisted_telegram_for_wake(app, id, info.telegram_bot_id.as_deref())
+                .await;
+        }
+        let settle = match self.wait_for_spawned_wake_idle(app, id).await {
+            Ok(settle) => settle,
+            Err(error) => {
+                effect.complete(Err(error.clone()));
+                continuation.note_retained_work(error);
+                return Ok(OwnedPeerWakeStep::Retained);
+            }
+        };
+        if continuation
+            .refresh_completion_info(&manager, &pty)
+            .await
+            .is_none()
+        {
+            // The bridge/settle calls returned; no input was attempted. Keep
+            // their known incomplete-work result instead of an unwind receipt.
+            effect.complete(Err("replacement work stopped before input".into()));
+            return Ok(OwnedPeerWakeStep::Retained);
+        }
+        let injected = self
+            .inject_wake_into_pty(
+                app,
+                id,
+                &execution.message,
+                execution.delivery,
+                settle,
+                (execution.response.as_ref(), Some(continuation)),
+            )
+            .await;
+        if let Err(error) = injected {
+            effect.complete(Err(error.clone()));
+            continuation.note_retained_work(error);
+            return Ok(OwnedPeerWakeStep::Retained);
+        }
+        drop(execution.exact.take());
+        drop(execution.stripe.take());
+        continuation
+            .finish_observed_work_transfer(&manager, &pty, effect, true)
+            .await;
+        let mut delivered = execution.message.clone();
+        if execution.flags_present {
+            if let Some(spawn) = execution.request.resolved_spawn.as_ref() {
+                delivered.effective_agent_id = Some(spawn.trusted_agent_id.clone());
+                delivered.effective_profile =
+                    Some(spawn.profile_resolution.effective_profile.clone());
+                delivered.profile_fallback_applied = spawn.profile_resolution.fallback_applied;
+            } else {
+                delivered.effective_agent_id = execution.resolved_command.agent_id.clone();
+            }
+        }
+        Ok(OwnedPeerWakeStep::Delivered(delivered))
     }
 
     async fn try_inject_peer_candidate<R: tauri::Runtime>(
@@ -8389,7 +11500,14 @@ impl MailboxPoller {
         // inject's own race handling below.
         let settle = self.settle_live_before_inject(app, session_id).await;
         match self
-            .inject_wake_into_pty(app, session_id, msg, (origin, comanaged), settle, response)
+            .inject_wake_into_pty(
+                app,
+                session_id,
+                msg,
+                (origin, comanaged),
+                settle,
+                (response, None),
+            )
             .await
         {
             Ok(()) => {
@@ -8709,8 +11827,15 @@ impl MailboxPoller {
         let settle = self.wait_for_spawned_wake_idle(app, session_id).await?;
 
         // Inject message — interactive mode (session persists, user sees reply instructions)
-        self.inject_wake_into_pty(app, session_id, msg, (origin, comanaged), settle, response)
-            .await?;
+        self.inject_wake_into_pty(
+            app,
+            session_id,
+            msg,
+            (origin, comanaged),
+            settle,
+            (response, None),
+        )
+        .await?;
 
         // #1635-2 D4: the delivered JSON reports the effective agent and
         // profile when dispatch flags were honored on this spawn. When the
@@ -9564,11 +12689,19 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         attribution: (WakeDeliveryOrigin, bool),
         settle: SettleReadiness,
-        _response: Option<&ResponseWakeWork>,
+        context: (
+            Option<&ResponseWakeWork>,
+            Option<&crate::session::selection::OwnedReplacementContinuation>,
+        ),
     ) -> Result<(), String> {
+        let (response, owned_replacement) = context;
         let (origin, comanaged) = attribution;
         #[cfg(test)]
-        if let Some(hooks) = &self.test_hooks {
+        if let Some(hooks) = self
+            .test_hooks
+            .as_ref()
+            .filter(|_| owned_replacement.is_none())
+        {
             {
                 let mut calls = hooks.inject_calls.lock().unwrap();
                 calls.push(session_id);
@@ -9605,9 +12738,74 @@ impl MailboxPoller {
             }
         }
 
-        let result = self
-            .inject_into_pty(app, session_id, msg, true, origin, comanaged, settle)
-            .await;
+        let result = loop {
+            let result = self
+                .inject_into_pty_with_response(
+                    app,
+                    session_id,
+                    msg,
+                    true,
+                    origin,
+                    comanaged,
+                    settle,
+                    (response, owned_replacement),
+                )
+                .await;
+            if result
+                .as_ref()
+                .is_err_and(|error| error == crate::pty::inject::OWNED_WORK_SCOPE_WAIT)
+            {
+                // The injector has dropped its writer and route guards. An
+                // ordinary unowned wake retains its source and attempts here.
+                tokio::task::yield_now().await;
+                continue;
+            }
+            break result;
+        };
+        if result.is_ok() {
+            if let Some(attempt) = response.and_then(|work| match work.attempt.lock() {
+                Ok(attempt) => attempt.clone(),
+                Err(_) => {
+                    response_diag_local!(
+                        "mark_request_submitted",
+                        "attempt_lock_failure",
+                        work.diagnostic_message_id
+                    );
+                    None
+                }
+            }) {
+                if let Ok(candidate) = attempt.candidate.lock() {
+                    if let Some(candidate) = candidate.as_ref() {
+                        response_diag_local!(
+                            "mark_request_submitted",
+                            "true_invocation",
+                            Uuid::parse_str(&msg.id).ok()
+                        );
+                        attempt
+                            .state
+                            .mark_request_submitted(&candidate.context, true);
+                    } else {
+                        response_diag_local!(
+                            "mark_request_submitted",
+                            "candidate_absent",
+                            None::<Uuid>
+                        );
+                    }
+                } else {
+                    response_diag_local!(
+                        "mark_request_submitted",
+                        "candidate_lock_failure",
+                        None::<Uuid>
+                    );
+                }
+            } else {
+                response_diag_local!(
+                    "mark_request_submitted",
+                    "work_or_attempt_absent",
+                    None::<Uuid>
+                );
+            }
+        }
         // #552 auto-close: a successful inter-agent wake is activity for the
         // recipient team's silence clock (NOT the badge; inter-agent is not a
         // user message). This single site covers both wake paths (deliver_wake
@@ -10105,6 +13303,13 @@ impl MailboxPoller {
     /// `use_markers=true` branch below is retained for future non-interactive
     /// consumers; see _plans/delete-modes.md §2.4.
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+        )
+    )]
     async fn inject_into_pty<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -10115,6 +13320,38 @@ impl MailboxPoller {
         comanaged: bool,
         settle: SettleReadiness,
     ) -> Result<(), String> {
+        self.inject_into_pty_with_response(
+            app,
+            session_id,
+            msg,
+            interactive,
+            origin,
+            comanaged,
+            settle,
+            (None, None),
+        )
+        .await
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the original peer injection flags, settle policy and borrowed response context"
+    )]
+    async fn inject_into_pty_with_response<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+        msg: &OutboxMessage,
+        interactive: bool,
+        origin: WakeDeliveryOrigin,
+        comanaged: bool,
+        settle: SettleReadiness,
+        context: (
+            Option<&ResponseWakeWork>,
+            Option<&crate::session::selection::OwnedReplacementContinuation>,
+        ),
+    ) -> Result<(), String> {
+        let (response, owned_replacement) = context;
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
         // Remote logical actions use the same canonical text-block injector as
@@ -10151,15 +13388,33 @@ impl MailboxPoller {
             // message delivery; delayed double Enter remains the shared defense.
             // #2336 - this is a peer wake (logical remote command), so it passes
             // through the typing hold like a standard wake.
-            crate::pty::inject::inject_peer_wake_text_into_session(
+            crate::pty::inject::inject_peer_wake_with_current_facts(
                 app,
                 session_id,
                 resolved.text,
                 &msg.id,
                 settle,
+                |session, current| {
+                    if owned_replacement.is_none()
+                        && crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
+                            &msg.to, session.id,
+                        )
+                    {
+                        return Err(crate::pty::inject::OWNED_WORK_SCOPE_WAIT.into());
+                    }
+                    if owned_replacement.is_some_and(|continuation| {
+                        !continuation.pre_write_work_matches(current, pty_mgr.inner())
+                    }) {
+                        return Err("replacement work binding requires recapture".into());
+                    }
+                    Ok(())
+                },
             )
             .await
             .map_err(|e| {
+                if e == crate::pty::inject::OWNED_WORK_SCOPE_WAIT {
+                    return e;
+                }
                 if !crate::pty::menu_guard::is_typing_hold_deferred_error(&e)
                     && is_permanent_delivery_error(&e)
                 {
@@ -10318,11 +13573,81 @@ impl MailboxPoller {
         );
         // #2336 - a standard peer wake is the other gated delivery path; the
         // detached logical-command follow-up above stays on the plain injector.
-        crate::pty::inject::inject_peer_wake_text_into_session(
-            app, session_id, &payload, &msg.id, settle,
+        let prepared = self
+            .prepare_response_request(app, msg, session_id, comanaged, response)
+            .await;
+        let attempt = response.and_then(|work| match work.attempt.lock() {
+            Ok(attempt) => attempt.clone(),
+            Err(_) => {
+                response_diag_local!("inject", "attempt_lock_failure", work.diagnostic_message_id);
+                None
+            }
+        });
+        response_diag_debug_only(|| {
+            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag site={} outcome=observed stage=inject_presence id=unknown member={} prepared={} attempt={} work={}", line!(), session_id, prepared.is_some(), attempt.is_some(), response.is_some());
+        });
+        let mut diagnostic_prewrite_reached = false;
+        crate::pty::inject::inject_peer_wake_with_current_facts(
+            app,
+            session_id,
+            &payload,
+            &msg.id,
+            settle,
+            |session, current| {
+                response_diag_debug_only(|| {
+                    diagnostic_prewrite_reached = true;
+                });
+                response_diag_local!(
+                    "prewrite",
+                    "callback_reached",
+                    Uuid::parse_str(&msg.id).ok()
+                );
+                if owned_replacement.is_none()
+                    && crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
+                        &msg.to, session.id,
+                    )
+                {
+                    response_diag_local!(
+                        "prewrite",
+                        "owned_replacement_wait",
+                        Uuid::parse_str(&msg.id).ok()
+                    );
+                    return Err(crate::pty::inject::OWNED_WORK_SCOPE_WAIT.into());
+                }
+                if owned_replacement.is_some_and(|continuation| {
+                    !continuation.pre_write_work_matches(current, pty_mgr.inner())
+                }) {
+                    response_diag_local!(
+                        "prewrite",
+                        "owned_replacement_mismatch",
+                        Uuid::parse_str(&msg.id).ok()
+                    );
+                    return Err("replacement work binding requires recapture".into());
+                }
+                if let (Some(prepared), Some(attempt), Some(work)) =
+                    (prepared.as_ref(), attempt.as_ref(), response)
+                {
+                    reserve_response_request_at_write(
+                        app, current, session, prepared, work, attempt,
+                    );
+                }
+                Ok(())
+            },
         )
         .await
         .map_err(|e| {
+            response_diag_local!(
+                "inject",
+                if diagnostic_prewrite_reached {
+                    "failure_after_prewrite"
+                } else {
+                    "failure_before_prewrite"
+                },
+                Uuid::parse_str(&msg.id).ok()
+            );
+            if e == crate::pty::inject::OWNED_WORK_SCOPE_WAIT {
+                return e;
+            }
             if !crate::pty::menu_guard::is_typing_hold_deferred_error(&e)
                 && is_permanent_delivery_error(&e)
             {
@@ -10340,6 +13665,15 @@ impl MailboxPoller {
             e
         })?;
 
+        response_diag_local!(
+            "inject",
+            if diagnostic_prewrite_reached {
+                "success_prewrite_reached"
+            } else {
+                "success_prewrite_not_reached"
+            },
+            Uuid::parse_str(&msg.id).ok()
+        );
         log::info!(
             "[mailbox] PTY injection SUCCESS session={} msg={}",
             session_id,
@@ -10892,7 +14226,7 @@ impl MailboxPoller {
                         "[mailbox] Failed to serialize close-session response: {}",
                         e
                     );
-                    return self.move_to_delivered(path, msg).await;
+                    return self.move_to_delivered(app, path, msg).await;
                 }
             };
 
@@ -10973,7 +14307,7 @@ impl MailboxPoller {
         }
 
         // Move original message to delivered/
-        self.move_to_delivered(path, msg).await
+        self.move_to_delivered(app, path, msg).await
     }
 
     // ── (#885) purge-wg ──────────────────────────────────────────────────
@@ -11409,7 +14743,7 @@ impl MailboxPoller {
             Ok(j) => j,
             Err(e) => {
                 log::warn!("[mailbox] Failed to serialize purge-wg response: {}", e);
-                return self.move_to_delivered(path, msg).await;
+                return self.move_to_delivered(app, path, msg).await;
             }
         };
 
@@ -11446,7 +14780,7 @@ impl MailboxPoller {
             }
         }
 
-        self.move_to_delivered(path, msg).await
+        self.move_to_delivered(app, path, msg).await
     }
     /// Returns fast: the 30s sustained-idle wait runs in a detached task so the
     /// poll loop is never blocked. Idempotent: a second request while one is
@@ -12839,7 +16173,7 @@ impl MailboxPoller {
                 }
             }
         }
-        self.move_to_delivered(path, msg).await
+        self.move_to_delivered(app, path, msg).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -12883,7 +16217,7 @@ impl MailboxPoller {
                 }
             }
         }
-        self.move_to_delivered(path, msg).await
+        self.move_to_delivered(app, path, msg).await
     }
 
     /// #1632 - write the self-handoff-and-restart queue-ack response, then move the message to
@@ -12930,7 +16264,7 @@ impl MailboxPoller {
                 }
             }
         }
-        self.move_to_delivered(path, msg).await
+        self.move_to_delivered(app, path, msg).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -12972,7 +16306,7 @@ impl MailboxPoller {
                 }
             }
         }
-        self.move_to_delivered(path, msg).await
+        self.move_to_delivered(app, path, msg).await
     }
 
     /// Force-close a session immediately via destroy_session_inner.
@@ -13472,7 +16806,12 @@ impl MailboxPoller {
     }
 
     /// Move an outbox message to outbox/delivered/ with token stripped.
-    async fn move_to_delivered(&self, path: &Path, msg: &OutboxMessage) -> Result<(), String> {
+    async fn move_to_delivered<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+    ) -> Result<(), String> {
         let delivered_dir = path.parent().ok_or("No parent dir")?.join("delivered");
         std::fs::create_dir_all(&delivered_dir)
             .map_err(|e| format!("Failed to create delivered dir: {}", e))?;
@@ -13489,7 +16828,7 @@ impl MailboxPoller {
 
         // Remove original
         std::fs::remove_file(path).map_err(|e| format!("Failed to remove outbox file: {}", e))?;
-        self.settle_response_source(path, true);
+        self.complete_response_delivery(app, path).await;
 
         log::info!("[mailbox] Message {} moved to delivered/", msg.id);
         Ok(())
@@ -14527,6 +17866,8 @@ mod tests {
         live: std::sync::Mutex<HashSet<Uuid>>,
         writes: std::sync::Mutex<Vec<(Uuid, Vec<u8>)>>,
         fail_spawn: std::sync::atomic::AtomicBool,
+        fail_kill_once: std::sync::atomic::AtomicBool,
+        kill_attempts: std::sync::atomic::AtomicUsize,
         fail_write: std::sync::atomic::AtomicBool,
     }
 
@@ -14592,6 +17933,12 @@ mod tests {
         }
 
         fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+            self.kill_attempts.fetch_add(1, Ordering::SeqCst);
+            if self.fail_kill_once.swap(false, Ordering::SeqCst) {
+                return Err(crate::errors::AppError::PtyError(
+                    "simulated fixture kill failure once".into(),
+                ));
+            }
             self.live.lock().unwrap().remove(&id);
             Ok(())
         }
@@ -15313,6 +18660,7 @@ mod tests {
         let (pty_mgr, _) = make_test_pty_manager();
 
         tauri::test::mock_builder()
+            .manage(Arc::new(AppLifetimeProbe))
             .manage(MasterToken::new(MAILBOX_MASTER_TOKEN.into()))
             .manage(AppOutbox::new(
                 projects_root
@@ -15336,6 +18684,8 @@ mod tests {
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mailbox test app")
     }
+
+    struct AppLifetimeProbe;
 
     fn app_handle(
         app: &tauri::App<tauri::test::MockRuntime>,
@@ -15593,6 +18943,5224 @@ mod tests {
         injection_id
     }
 
+    #[cfg(windows)]
+    fn physical_cwd_child_or_parent(wrapper: &str) -> bool {
+        use std::os::windows::process::CommandExt;
+        const MARKER: &str = "AC_P05_PHYSICAL_CWD_CHILD";
+        const IDENTITY: &str = "AC_P05_PHYSICAL_CWD_IDENTITY";
+        if let Some(marked_wrapper) = std::env::var_os(MARKER) {
+            assert_eq!(
+                marked_wrapper.to_str(),
+                Some(wrapper),
+                "wrong child wrapper"
+            );
+            let identity = std::env::var(IDENTITY).expect("child identity");
+            let (run, suffix) = identity.split_once('\n').expect("run-bound identity");
+            Uuid::parse_str(run).expect("parent run nonce");
+            assert_eq!(suffix, wrapper);
+            let config = PathBuf::from(
+                std::env::var_os("AGENTSCOMMANDER_CONFIG_DIR").expect("child config"),
+            );
+            let test_config = PathBuf::from(
+                std::env::var_os("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("child test config"),
+            );
+            assert!(config.is_absolute());
+            assert_eq!(config, test_config);
+            assert_eq!(crate::config::config_dir().as_ref(), Some(&config));
+            assert!(
+                !config.join("completion.txt").exists(),
+                "receipt must be fresh"
+            );
+            return false;
+        }
+        assert!(
+            std::env::var_os(IDENTITY).is_none(),
+            "orphan child identity"
+        );
+        let directory = tempfile::tempdir().expect("parent child directory");
+        let path = directory
+            .path()
+            .canonicalize()
+            .expect("absolute child directory");
+        let temporary = path.join("tmp");
+        std::fs::create_dir(&temporary).expect("child temporary directory");
+        let identity = format!("{}\n{wrapper}", Uuid::new_v4());
+        let stdout = std::fs::File::create(path.join("stdout.log")).expect("child stdout");
+        let stderr = std::fs::File::create(path.join("stderr.log")).expect("child stderr");
+        let child = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([wrapper, "--exact", "--nocapture", "--test-threads=1"])
+            .stdin(std::process::Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr)
+            .env(MARKER, wrapper)
+            .env(IDENTITY, &identity)
+            .env("AGENTSCOMMANDER_CONFIG_DIR", &path)
+            .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &path)
+            .env("TEMP", &temporary)
+            .env("TMP", &temporary)
+            .env("TMPDIR", &temporary)
+            .creation_flags(0x08000000)
+            .spawn()
+            .expect("spawn exact physical cwd child");
+        let mut owner = RetainedSourceChild {
+            child,
+            directory: Some(directory),
+            reaped: false,
+        };
+        owner.supervise(&identity, "physical-cwd");
+        true
+    }
+
+    #[cfg(windows)]
+    fn complete_physical_cwd_child(wrapper: &str) {
+        assert_eq!(
+            std::env::var("AC_P05_PHYSICAL_CWD_CHILD").as_deref(),
+            Ok(wrapper),
+            "completion requires exact child marker"
+        );
+        assert!(
+            !physical_cwd_child_or_parent(wrapper),
+            "completion requires child"
+        );
+        let identity = std::env::var("AC_P05_PHYSICAL_CWD_IDENTITY").expect("child identity");
+        let config =
+            PathBuf::from(std::env::var_os("AGENTSCOMMANDER_CONFIG_DIR").expect("child config"));
+        std::fs::write(config.join("completion.txt"), identity).expect("child assertion receipt");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn response_request_physical_cwd_boundary() {
+        if physical_cwd_child_or_parent(
+            "phone::mailbox::tests::response_request_physical_cwd_boundary",
+        ) {
+            return;
+        }
+        use crate::pty::manager::{ResponseClosePublisher as P, ResponseRouteIdentity};
+        let configured = PathBuf::from(
+            std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("isolated test config"),
+        );
+        assert!(configured.is_absolute());
+        if let Some(public) = std::env::var_os("AGENTSCOMMANDER_CONFIG_DIR") {
+            assert_eq!(
+                PathBuf::from(public),
+                configured,
+                "public override must match before config access"
+            );
+        }
+        assert_eq!(crate::config::config_dir().unwrap(), configured);
+        for name in ["TEMP", "TMP", "TMPDIR"] {
+            assert!(
+                PathBuf::from(std::env::var_os(name).expect("isolated absolute temp"))
+                    .is_absolute()
+            );
+        }
+        for (canonical_member, canonical_coordinator) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            assert_eq!(crate::config::config_dir().unwrap(), configured);
+            let fixture = make_mailbox_fixture();
+            let app = fixture.app.handle();
+            let tracker = crate::pty::manager::ResponseCloseState::default();
+            let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            *managers.write().await = SessionManager::with_response_close(tracker.clone());
+            let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+            pty.lock().unwrap().bind_response_close(tracker.clone());
+            app.manage(tracker.clone());
+            let (route, sender, member_id) =
+                seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
+            let manager = managers.read().await.clone();
+            manager.set_is_coordinator(sender, true).await;
+            manager
+                .set_agent_kind(
+                    member_id,
+                    Some(crate::session::profile::CodingAgentKind::Codex),
+                )
+                .await;
+            let roots = {
+                let state = app.state::<SettingsState>();
+                let mut settings = state.write().await;
+                settings.response_close_enabled = true;
+                settings.response_close_idle_seconds = 30;
+                settings.project_paths.clone()
+            };
+            let member_physical =
+                crate::path_identity::verify_directory(&fixture.target_cwd).unwrap();
+            let coordinator_physical =
+                crate::path_identity::verify_directory(&fixture.sender_cwd).unwrap();
+            let ordinary_member = crate::path_utils::normalize_windows_verbatim_path_buf(
+                &member_physical.canonical_path,
+            );
+            let ordinary_coordinator = crate::path_utils::normalize_windows_verbatim_path_buf(
+                &coordinator_physical.canonical_path,
+            );
+            assert_ne!(ordinary_member, member_physical.canonical_path);
+            assert_ne!(ordinary_coordinator, coordinator_physical.canonical_path);
+            assert_eq!(
+                crate::path_identity::verify_directory(&ordinary_member)
+                    .unwrap()
+                    .object_id,
+                member_physical.object_id
+            );
+            assert_eq!(
+                crate::path_identity::verify_directory(&ordinary_coordinator)
+                    .unwrap()
+                    .object_id,
+                coordinator_physical.object_id
+            );
+            let other = fixture._temp.path().join("different-directory");
+            std::fs::create_dir(&other).unwrap();
+            let file = fixture._temp.path().join("regular-file");
+            std::fs::write(&file, b"not a directory").unwrap();
+            let invalid_paths = [
+                other.clone(),
+                other.join("missing"),
+                file,
+                other.join("..").join("different-directory"),
+            ];
+            let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+            for publisher in [
+                P::Manager,
+                P::Pty,
+                P::RawOutput,
+                P::Detector,
+                P::Menu,
+                P::Hold,
+            ] {
+                tracker.bind_publisher(publisher);
+            }
+            tracker.mark_work_bootstrapped();
+            tracker.try_enable_readiness().unwrap();
+            let key = "physical-cwd-request".to_string();
+            let digest = "physical-cwd-body".to_string();
+            let mut admission = tracker
+                .reserve_work(&route.target.canonical_fqn, &key)
+                .unwrap();
+            admission.accept_durable(&digest).unwrap();
+            drop(admission);
+            let work = ResponseWakeWork {
+                diagnostic_message_id: None,
+                state: tracker.clone(),
+                target: route.target.canonical_fqn.clone(),
+                key,
+                digest,
+                attempt: Arc::new(Mutex::new(None)),
+                return_context: None,
+                return_routes: None,
+                delivery_context: None,
+            };
+            manager
+                .with_current_carrier_snapshot(&permit, |current| {
+                    let member_row = current.rows.iter().find(|row| row.id == member_id).unwrap();
+                    let coordinator_row = current.rows.iter().find(|row| row.id == sender).unwrap();
+                    let member = ResponseRouteIdentity {
+                        target: route.target.canonical_fqn.clone(),
+                        session_id: member_id,
+                        token: member_row.token,
+                        generation: tracker.generation(member_id).unwrap(),
+                        carrier_version: current.versions[&member_id],
+                        backend: member_row.backend_kind,
+                    };
+                    let coordinator = ResponseRouteIdentity {
+                        target: route.sender.canonical_fqn.clone(),
+                        session_id: sender,
+                        token: coordinator_row.token,
+                        generation: tracker.generation(sender).unwrap(),
+                        carrier_version: current.versions[&sender],
+                        backend: coordinator_row.backend_kind,
+                    };
+                    let mut positive = current.clone();
+                    positive
+                        .rows
+                        .iter_mut()
+                        .find(|row| row.id == member_id)
+                        .unwrap()
+                        .working_directory = if canonical_member {
+                        &member_physical.canonical_path
+                    } else {
+                        &ordinary_member
+                    }
+                    .to_string_lossy()
+                    .into_owned();
+                    positive
+                        .rows
+                        .iter_mut()
+                        .find(|row| row.id == sender)
+                        .unwrap()
+                        .working_directory = if canonical_coordinator {
+                        &coordinator_physical.canonical_path
+                    } else {
+                        &ordinary_coordinator
+                    }
+                    .to_string_lossy()
+                    .into_owned();
+                    for role in [member_id, sender] {
+                        // The first case reaches the real write boundary; each later case changes one fact.
+                        for failure in 0..7 {
+                            let mut snapshot = positive.clone();
+                            let mut prepared = PreparedResponseRequest {
+                                member: member.clone(),
+                                coordinator: coordinator.clone(),
+                                roots: roots.clone(),
+                            };
+                            if (1..=4).contains(&failure) {
+                                snapshot
+                                    .rows
+                                    .iter_mut()
+                                    .find(|row| row.id == role)
+                                    .unwrap()
+                                    .working_directory =
+                                    invalid_paths[failure - 1].to_string_lossy().into_owned();
+                            }
+                            if failure == 5 {
+                                if role == member_id {
+                                    prepared.member.generation += 1;
+                                } else {
+                                    prepared.coordinator.generation += 1;
+                                }
+                            }
+                            if failure == 6 {
+                                snapshot
+                                    .rows
+                                    .iter_mut()
+                                    .find(|row| row.id == role)
+                                    .unwrap()
+                                    .backend_kind = SessionBackendKind::ContainerTransport;
+                                if role == member_id {
+                                    prepared.member.backend =
+                                        SessionBackendKind::ContainerTransport;
+                                } else {
+                                    prepared.coordinator.backend =
+                                        SessionBackendKind::ContainerTransport;
+                                }
+                            }
+                            let disposal = work.candidate_disposal();
+                            let session = snapshot
+                                .rows
+                                .iter()
+                                .find(|row| row.id == member_id)
+                                .unwrap();
+                            reserve_response_request_at_write(
+                                app,
+                                &snapshot,
+                                session,
+                                &prepared,
+                                &work,
+                                &disposal.0,
+                            );
+                            assert_eq!(
+                                disposal.0.candidate.lock().unwrap().is_some(),
+                                failure == 0,
+                                "role={role} case={failure}"
+                            );
+                            drop(disposal);
+                        }
+                    }
+                })
+                .await;
+            drop(permit);
+        }
+        complete_physical_cwd_child(
+            "phone::mailbox::tests::response_request_physical_cwd_boundary",
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn response_pair_physical_cwd_boundary() {
+        if physical_cwd_child_or_parent(
+            "phone::mailbox::tests::response_pair_physical_cwd_boundary",
+        ) {
+            return;
+        }
+        use crate::pty::manager::{ResponseClosePublisher as P, ResponseRouteIdentity};
+        let configured = PathBuf::from(
+            std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("isolated test config"),
+        );
+        assert!(configured.is_absolute());
+        if let Some(public) = std::env::var_os("AGENTSCOMMANDER_CONFIG_DIR") {
+            assert_eq!(
+                PathBuf::from(public),
+                configured,
+                "public override must match before config access"
+            );
+        }
+        assert_eq!(crate::config::config_dir().unwrap(), configured);
+        for name in ["TEMP", "TMP", "TMPDIR"] {
+            assert!(
+                PathBuf::from(std::env::var_os(name).expect("isolated absolute temp"))
+                    .is_absolute()
+            );
+        }
+        for (canonical_member, canonical_coordinator) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            assert_eq!(crate::config::config_dir().unwrap(), configured);
+            let fixture = make_mailbox_fixture();
+            let app = fixture.app.handle();
+            let tracker = crate::pty::manager::ResponseCloseState::default();
+            let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            *managers.write().await = SessionManager::with_response_close(tracker.clone());
+            let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+            pty.lock().unwrap().bind_response_close(tracker.clone());
+            app.manage(tracker.clone());
+            let (route, sender, member_id) =
+                seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
+            let manager = managers.read().await.clone();
+            manager.set_is_coordinator(sender, true).await;
+            manager
+                .set_agent_kind(
+                    member_id,
+                    Some(crate::session::profile::CodingAgentKind::Codex),
+                )
+                .await;
+            let roots = {
+                let state = app.state::<SettingsState>();
+                let mut settings = state.write().await;
+                settings.response_close_enabled = true;
+                settings.response_close_idle_seconds = 30;
+                settings.project_paths.clone()
+            };
+            let member_physical =
+                crate::path_identity::verify_directory(&fixture.target_cwd).unwrap();
+            let coordinator_physical =
+                crate::path_identity::verify_directory(&fixture.sender_cwd).unwrap();
+            let ordinary_member = crate::path_utils::normalize_windows_verbatim_path_buf(
+                &member_physical.canonical_path,
+            );
+            let ordinary_coordinator = crate::path_utils::normalize_windows_verbatim_path_buf(
+                &coordinator_physical.canonical_path,
+            );
+            assert_ne!(ordinary_member, member_physical.canonical_path);
+            assert_ne!(ordinary_coordinator, coordinator_physical.canonical_path);
+            assert_eq!(
+                crate::path_identity::verify_directory(&ordinary_member)
+                    .unwrap()
+                    .object_id,
+                member_physical.object_id
+            );
+            assert_eq!(
+                crate::path_identity::verify_directory(&ordinary_coordinator)
+                    .unwrap()
+                    .object_id,
+                coordinator_physical.object_id
+            );
+            let other = fixture._temp.path().join("different-directory");
+            std::fs::create_dir(&other).unwrap();
+            let file = fixture._temp.path().join("regular-file");
+            std::fs::write(&file, b"not a directory").unwrap();
+            let invalid_paths = [
+                other.clone(),
+                other.join("missing"),
+                file,
+                other.join("..").join("different-directory"),
+            ];
+            assert_eq!(
+                roots,
+                app.state::<SettingsState>().read().await.project_paths
+            );
+            for publisher in [
+                P::Manager,
+                P::Pty,
+                P::RawOutput,
+                P::Detector,
+                P::Menu,
+                P::Hold,
+            ] {
+                tracker.bind_publisher(publisher);
+            }
+            tracker.mark_work_bootstrapped();
+            tracker.try_enable_readiness().unwrap();
+            let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+            manager
+                .with_current_carrier_snapshot(&permit, |current| {
+                    let member_row = current.rows.iter().find(|row| row.id == member_id).unwrap();
+                    let coordinator_row = current.rows.iter().find(|row| row.id == sender).unwrap();
+                    let member = ResponseRouteIdentity {
+                        target: route.target.canonical_fqn.clone(),
+                        session_id: member_id,
+                        token: member_row.token,
+                        generation: tracker.generation(member_id).unwrap(),
+                        carrier_version: current.versions[&member_id],
+                        backend: member_row.backend_kind,
+                    };
+                    let coordinator = ResponseRouteIdentity {
+                        target: route.sender.canonical_fqn.clone(),
+                        session_id: sender,
+                        token: coordinator_row.token,
+                        generation: tracker.generation(sender).unwrap(),
+                        carrier_version: current.versions[&sender],
+                        backend: coordinator_row.backend_kind,
+                    };
+                    let mut positive = current.clone();
+                    positive
+                        .rows
+                        .iter_mut()
+                        .find(|row| row.id == member_id)
+                        .unwrap()
+                        .working_directory = if canonical_member {
+                        &member_physical.canonical_path
+                    } else {
+                        &ordinary_member
+                    }
+                    .to_string_lossy()
+                    .into_owned();
+                    positive
+                        .rows
+                        .iter_mut()
+                        .find(|row| row.id == sender)
+                        .unwrap()
+                        .working_directory = if canonical_coordinator {
+                        &coordinator_physical.canonical_path
+                    } else {
+                        &ordinary_coordinator
+                    }
+                    .to_string_lossy()
+                    .into_owned();
+                    for role in [member_id, sender] {
+                        for failure in 0..7 {
+                            let mut snapshot = positive.clone();
+                            let mut captured_member = member.clone();
+                            let mut captured_coordinator = coordinator.clone();
+                            if (1..=4).contains(&failure) {
+                                snapshot
+                                    .rows
+                                    .iter_mut()
+                                    .find(|row| row.id == role)
+                                    .unwrap()
+                                    .working_directory =
+                                    invalid_paths[failure - 1].to_string_lossy().into_owned();
+                            }
+                            if failure == 5 {
+                                if role == member_id {
+                                    captured_member.generation += 1;
+                                } else {
+                                    captured_coordinator.generation += 1;
+                                }
+                            }
+                            if failure == 6 {
+                                snapshot
+                                    .rows
+                                    .iter_mut()
+                                    .find(|row| row.id == role)
+                                    .unwrap()
+                                    .backend_kind = SessionBackendKind::ContainerTransport;
+                                if role == member_id {
+                                    captured_member.backend =
+                                        SessionBackendKind::ContainerTransport;
+                                } else {
+                                    captured_coordinator.backend =
+                                        SessionBackendKind::ContainerTransport;
+                                }
+                            }
+                            let mut calls = 0;
+                            let result = with_verified_response_pair(
+                                &snapshot,
+                                &pty,
+                                &tracker,
+                                &captured_member,
+                                &captured_coordinator,
+                                |_, _| {
+                                    calls += 1;
+                                },
+                            );
+                            assert_eq!(
+                                calls,
+                                usize::from(failure == 0),
+                                "role={role} case={failure}"
+                            );
+                            assert_eq!(result.is_some(), failure == 0);
+                        }
+                    }
+                })
+                .await;
+            drop(permit);
+        }
+        complete_physical_cwd_child("phone::mailbox::tests::response_pair_physical_cwd_boundary");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn response_close_physical_cwd_reaches_dormant() {
+        if physical_cwd_child_or_parent(
+            "phone::mailbox::tests::response_close_physical_cwd_reaches_dormant",
+        ) {
+            return;
+        }
+        let configured = PathBuf::from(
+            std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("isolated test config"),
+        );
+        assert!(configured.is_absolute());
+        if let Some(public) = std::env::var_os("AGENTSCOMMANDER_CONFIG_DIR") {
+            assert_eq!(
+                PathBuf::from(public),
+                configured,
+                "public override must match before config access"
+            );
+        }
+        assert_eq!(crate::config::config_dir().unwrap(), configured);
+        for name in ["TEMP", "TMP", "TMPDIR"] {
+            assert!(
+                PathBuf::from(std::env::var_os(name).expect("isolated absolute temp"))
+                    .is_absolute()
+            );
+        }
+        for (canonical_member, canonical_coordinator) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            assert_eq!(crate::config::config_dir().unwrap(), configured);
+            let mut fixture = make_mailbox_fixture();
+            let member_physical =
+                crate::path_identity::verify_directory(&fixture.target_cwd).unwrap();
+            let coordinator_physical =
+                crate::path_identity::verify_directory(&fixture.sender_cwd).unwrap();
+            let ordinary_member = crate::path_utils::normalize_windows_verbatim_path_buf(
+                &member_physical.canonical_path,
+            );
+            let ordinary_coordinator = crate::path_utils::normalize_windows_verbatim_path_buf(
+                &coordinator_physical.canonical_path,
+            );
+            assert_ne!(ordinary_member, member_physical.canonical_path);
+            assert_ne!(ordinary_coordinator, coordinator_physical.canonical_path);
+            assert_eq!(
+                crate::path_identity::verify_directory(&ordinary_member)
+                    .unwrap()
+                    .object_id,
+                member_physical.object_id
+            );
+            assert_eq!(
+                crate::path_identity::verify_directory(&ordinary_coordinator)
+                    .unwrap()
+                    .object_id,
+                coordinator_physical.object_id
+            );
+            fixture.target_cwd = if canonical_member {
+                member_physical.canonical_path
+            } else {
+                ordinary_member
+            };
+            fixture.sender_cwd = if canonical_coordinator {
+                coordinator_physical.canonical_path
+            } else {
+                ordinary_coordinator
+            };
+            let (coordinator, _, _, member) = prepare_retained_exited_respawn(&fixture).await;
+            assert!(crate::session::selection::response_close_registration(member).is_none());
+            let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+                .await
+                .expect("focused dormant fixture close");
+            assert!(report.persistence_safe, "{:?}", report.retained);
+            let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+            assert!(
+                crate::config::sessions_persistence::retire_carrier_for_discard(&permit, member),
+                "finished focused fixture must release only its own retired carrier"
+            );
+            drop(permit);
+        }
+        complete_physical_cwd_child(
+            "phone::mailbox::tests::response_close_physical_cwd_reaches_dormant",
+        );
+    }
+
+    /// P05 preparation uses the existing mailbox fixture and the real
+    /// conditional-close worker. Only tracker time/idle publishers are fixture
+    /// stimuli; the retired carrier is minted by actual settlement.
+    async fn prepare_retained_exited_respawn(
+        fixture: &MailboxFixture,
+    ) -> (
+        crate::session::selection::SelectionCoordinator,
+        crate::config::teams::VerifiedPtyInputRoute,
+        Uuid,
+        Uuid,
+    ) {
+        let app = fixture.app.handle();
+        let tracker = crate::pty::manager::ResponseCloseState::default();
+        let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        *managers.write().await = SessionManager::with_response_close(tracker.clone());
+        app.state::<Arc<Mutex<PtyManager>>>()
+            .lock()
+            .unwrap()
+            .bind_response_close(tracker.clone());
+        app.manage(tracker.clone());
+        app.manage(Arc::new(
+            crate::resource_monitor::ResourceMonitorState::new(),
+        ));
+        app.manage(crate::web::broadcast::WsBroadcaster::new());
+        app.manage(crate::pty::input_activity::new_state());
+        app.manage(crate::pty::input_activity::new_typing_hold_state());
+        app.manage(Arc::new(crate::capture::registry::CaptureRegistry::new()));
+        app.manage(crate::network::OutboundNetwork::new_for_tests(1));
+        app.manage(crate::session::warnings::new_session_warning_state());
+        app.manage(Arc::new(crate::pty::menu_guard::MenuGuard::new()));
+        let gate = crate::api::message_store::PtyInputTargetGateState::for_root(
+            fixture._temp.path().to_path_buf(),
+        );
+        let store = Arc::new(
+            crate::api::message_store::MessageStore::open(
+                fixture._temp.path().join("retained-respawn.sqlite3"),
+            )
+            .unwrap(),
+        );
+        app.manage(
+            crate::api::message_store::MessageStoreState::with_store_and_target_gate(
+                Ok(store),
+                gate.gate.clone(),
+            ),
+        );
+        app.manage(gate);
+        let coordinator =
+            crate::session::selection::SelectionCoordinator::with_fixture_root_reservation(
+                managers.inner().clone(),
+                tokio_util::sync::CancellationToken::new(),
+                crate::session::selection::FixtureRootReservation::Normal65,
+            );
+        app.manage(coordinator.clone());
+        coordinator.start(app.clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+        coordinator.wait_for_restore_release().await.unwrap();
+        let (route, sender, previous) =
+            seed_shared_pty_engine_sessions(fixture, SessionStatus::Idle).await;
+        retire_retained_fixture_member(fixture, &coordinator, &route, sender, previous).await;
+        (coordinator, route, sender, previous)
+    }
+
+    async fn retire_retained_fixture_member(
+        fixture: &MailboxFixture,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        route: &crate::config::teams::VerifiedPtyInputRoute,
+        sender: Uuid,
+        previous: Uuid,
+    ) {
+        use crate::pty::manager::{ResponseClosePublisher as P, ResponseRouteIdentity};
+        let app = fixture.app.handle();
+        let tracker = app
+            .state::<crate::pty::manager::ResponseCloseState>()
+            .inner()
+            .clone();
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        manager.set_is_coordinator(sender, true).await;
+        manager
+            .set_agent_kind(
+                previous,
+                Some(crate::session::profile::CodingAgentKind::Codex),
+            )
+            .await;
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let (member, leader) = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                let identity = |id, target: String| {
+                    let row = current.rows.iter().find(|row| row.id == id).unwrap();
+                    ResponseRouteIdentity {
+                        target,
+                        session_id: id,
+                        token: row.token,
+                        generation: tracker.generation(id).unwrap(),
+                        carrier_version: current.versions[&id],
+                        backend: row.backend_kind,
+                    }
+                };
+                (
+                    identity(previous, route.target.canonical_fqn.clone()),
+                    identity(sender, route.sender.canonical_fqn.clone()),
+                )
+            })
+            .await;
+        drop(permit);
+        let directory =
+            crate::config::config_dir().expect("designated isolated test config directory");
+        let configured = std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR")
+            .expect("retained-source fixtures require the designated isolated test configuration");
+        assert_eq!(
+            directory,
+            PathBuf::from(configured),
+            "never write a user configuration"
+        );
+        let settings = app.state::<SettingsState>().read().await.clone();
+        crate::config::settings::save_settings_with_project_paths(&settings).unwrap();
+        let written = crate::config::settings::save_settings(&settings).unwrap();
+        *app.state::<SettingsState>().write().await = written;
+        let carrier = crate::config::sessions_persistence::persist_initial_carrier(
+            &manager,
+            directory,
+            vec![fixture._temp.path().to_string_lossy().into_owned()],
+            crate::config::sessions_persistence::InitialCarrierIntent::new(
+                member.target.clone(),
+                previous,
+                member.token,
+                member.carrier_version,
+                route.target.replica_identity.canonical_path.clone(),
+            ),
+        )
+        .await
+        .unwrap()
+        .expect("real initial Confirmed A");
+        let key = format!("prepare:{}", Uuid::new_v4());
+        let mut admission = tracker.reserve_work(&member.target, &key).unwrap();
+        admission.accept_durable("prepare-body").unwrap();
+        drop(admission);
+        let past = std::time::Instant::now() - Duration::from_secs(120);
+        for publisher in [
+            P::Manager,
+            P::Pty,
+            P::RawOutput,
+            P::Detector,
+            P::Menu,
+            P::Hold,
+        ] {
+            tracker.bind_publisher(publisher);
+        }
+        tracker.mark_work_bootstrapped();
+        tracker.try_enable_readiness().unwrap();
+        tracker.apply_settings(true, 30, past);
+        // Re-publish the real route identities on the fake Instant timeline
+        // before admitting this test's first policy. No retirement is forged.
+        for (identity, eligible) in [(&member, true), (&leader, false)] {
+            tracker.register_route(identity.session_id, identity.generation, past);
+            tracker.publish_manager_row(
+                identity.session_id,
+                identity.token,
+                identity.generation,
+                identity.carrier_version,
+                eligible,
+                false,
+                past,
+            );
+            tracker.publish_manager_facts(identity.clone(), eligible, false, past);
+        }
+        tracker.observe_detector(previous, false, past);
+        tracker.publish_menu(previous, Some(false), past);
+        tracker.publish_hold(previous, None, true, past);
+        let context = tracker
+            .reserve_policy_candidate(
+                member.clone(),
+                leader.clone(),
+                key,
+                "prepare-body".into(),
+                past,
+            )
+            .unwrap();
+        tracker.mark_request_submitted(&context, true);
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                crate::config::sessions_persistence::register_published_carrier(
+                    &permit,
+                    &carrier,
+                    current,
+                    |_| {
+                        tracker
+                            .register_request(
+                                crate::pty::manager::ResponseDeliveryProof {
+                                    context,
+                                    member: member.clone(),
+                                    coordinator: leader.clone(),
+                                    published_carrier_version: carrier.version,
+                                },
+                                past,
+                            )
+                            .ok()
+                    },
+                )
+            })
+            .await
+            .expect("real current published request registration");
+        drop(permit);
+        let context = tracker
+            .admit_return(
+                &member,
+                &leader,
+                format!("prepare-return-{}", Uuid::new_v4()),
+                "prepare-return-body".into(),
+                past,
+            )
+            .unwrap();
+        tracker
+            .observe_return_success(crate::pty::manager::ReturnDeliveryProof { context }, past)
+            .unwrap();
+        assert!(
+            crate::session::selection::remember_response_close_registration(
+                crate::session::selection::ResponseCloseRegistration {
+                    diagnostic_last_poll_outcome: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    tracker: tracker.clone(),
+                    member,
+                    coordinator: leader,
+                    carrier
+                },
+            )
+        );
+        crate::session::selection::poll_response_close(app).await;
+        coordinator.snapshot().await.unwrap();
+        let row = manager.get_session(previous).await.unwrap();
+        assert_eq!(row.status, SessionStatus::Exited(0));
+        assert!(
+            tracker.generation(previous).is_none(),
+            "actual finish removed route"
+        );
+        assert!(!app
+            .state::<Arc<Mutex<PtyManager>>>()
+            .lock()
+            .unwrap()
+            .has_session(previous));
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let retired = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                crate::config::sessions_persistence::retained_carrier_for_replacement(
+                    &permit,
+                    &crate::config::config_dir().unwrap(),
+                    &route.target.canonical_fqn,
+                    previous,
+                    current,
+                )
+                .is_some()
+            })
+            .await;
+        drop(permit);
+        assert!(retired, "genuine current retired Protected A prerequisite");
+    }
+
+    fn provision_retained_fixture_member(
+        fixture: &MailboxFixture,
+        name: &str,
+    ) -> (PathBuf, String) {
+        let workspace = fixture.target_cwd.parent().unwrap();
+        let ac_root = workspace.parent().unwrap();
+        let origin = ac_root.join(format!("_agent_{name}"));
+        let replica = workspace.join(format!("__agent_{name}"));
+        std::fs::create_dir(&origin).unwrap();
+        std::fs::create_dir(&replica).unwrap();
+        std::fs::write(
+            replica.join("config.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "identity": format!("../../_agent_{name}")
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let team_path = ac_root.join("_team_dev-team/config.json");
+        let mut team: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&team_path).unwrap()).unwrap();
+        team["agents"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::Value::String(format!("../_agent_{name}")));
+        std::fs::write(team_path, serde_json::to_vec(&team).unwrap()).unwrap();
+        (replica, format!("proj-a:wg-1-dev-team/{name}"))
+    }
+
+    async fn prepare_additional_retained_member(
+        fixture: &MailboxFixture,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        sender: Uuid,
+        replica: &Path,
+        target: &str,
+    ) -> (crate::config::teams::VerifiedPtyInputRoute, Uuid) {
+        let app = fixture.app.handle();
+        let previous = add_mailbox_session(
+            app,
+            replica,
+            "independent member",
+            SessionStatus::Idle,
+            None,
+        )
+        .await;
+        let route = crate::config::teams::verify_pty_input_route(
+            &fixture.sender_cwd,
+            false,
+            target,
+            &[fixture._temp.path().to_string_lossy().into_owned()],
+        )
+        .unwrap();
+        {
+            let state = app.state::<Arc<Mutex<PtyManager>>>();
+            let pty = state.lock().unwrap();
+            pty.record_route_with_identities(
+                previous,
+                SessionBackendKind::LocalProcess,
+                Some(crate::path_identity::verify_directory(replica).unwrap()),
+                Some(route.target.replica_identity.clone()),
+            )
+            .unwrap();
+            let backend = pty.backend_for_kind(SessionBackendKind::LocalProcess);
+            backend
+                .as_any()
+                .downcast_ref::<MailboxMockPtyBackend>()
+                .unwrap()
+                .set_live(previous);
+        }
+        let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
+        idle.register_session(previous, crate::session::profile::IdleTuning::DEFAULT);
+        idle.set_pty_input_ready_for_test(previous);
+        retire_retained_fixture_member(fixture, coordinator, &route, sender, previous).await;
+        (route, previous)
+    }
+
+    async fn set_retained_fixture_communication(
+        manager: &SessionManager,
+        id: Uuid,
+        full: bool,
+    ) -> Option<crate::session::session::SessionCommunication> {
+        if !full {
+            manager
+                .set_telegram_bot_id(id, Some("newer-b".into()))
+                .await;
+            return None;
+        }
+        let (changed, tuple) = manager
+            .set_blocked_menu(
+                id,
+                "newer-b-full".into(),
+                chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+            )
+            .await
+            .expect("real full communication setter");
+        assert!(changed);
+        Some(tuple)
+    }
+
+    async fn observe_retained_commit_setter(
+        control: &Arc<crate::session::selection::ReplacementFixtureControl>,
+        manager: &SessionManager,
+        resume_commit: tokio::sync::oneshot::Sender<()>,
+        full: bool,
+    ) -> Option<crate::session::session::SessionCommunication> {
+        use std::future::Future;
+        let receipt = retained_source_wait_cut(
+            control,
+            crate::session::selection::ReplacementFixtureCut::AfterDisarm,
+        )
+        .await;
+        let id = receipt.binding.unwrap().session_id();
+        let setter = set_retained_fixture_communication(manager, id, full);
+        tokio::pin!(setter);
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(
+                setter.as_mut().poll(cx).is_pending()
+            ))
+            .await,
+            "same setter must wait behind finalization U"
+        );
+        resume_commit.send(()).unwrap();
+        setter.await
+    }
+
+    async fn observe_retained_seed_fixture(
+        fixture: &MailboxFixture,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        control: &Arc<crate::session::selection::ReplacementFixtureControl>,
+        manager: &SessionManager,
+        resume_native: tokio::sync::oneshot::Sender<()>,
+        scenario: &str,
+        seed_source: &Path,
+    ) {
+        use crate::session::selection::ReplacementFixtureCut as Cut;
+        let app = fixture.app.handle();
+        let entered = retained_source_wait_cut(control, Cut::SeedNativeEnter).await;
+        let id = entered.binding.unwrap().session_id();
+        let actual_pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        assert!(control.observe_owner(coordinator).unwrap().source_active);
+        assert!(
+            !control
+                .cleanup_observed_stopped(coordinator, manager, &actual_pty)
+                .await,
+            "actual native seed closure is entered and Running, not cleanup authority"
+        );
+        assert!(manager
+            .get_pending_session(entered.binding.unwrap())
+            .await
+            .is_some());
+        let blocker = fixture
+            .target_cwd
+            .join(format!(".p05-seed.acseed-tmp-{id}"));
+        let destination = fixture.target_cwd.join(".p05-seed");
+        assert!(!destination.exists());
+        if scenario == "seed-staging-file" {
+            std::fs::write(&blocker, b"ordinary staging blocker").unwrap();
+        }
+        resume_native.send(()).unwrap();
+        retained_source_wait_cut(control, Cut::SeedNativeReturned).await;
+        let native = control
+            .native_results
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(cut, _)| *cut == Cut::SeedNativeReturned)
+            .map(|(_, result)| result.clone())
+            .expect("actual seed report");
+        if scenario == "seed-staging-file" {
+            assert!(
+                native.starts_with("Failed(Staging"),
+                "actual staging failure: {native}"
+            );
+            assert!(
+                native.contains(&format!("source: {seed_source:?}")),
+                "selected readable source: {native}"
+            );
+            assert!(
+                native.contains(&format!("staging_path: {blocker:?}")),
+                "exact actual B suffix: {native}"
+            );
+            assert!(
+                native.contains("create "),
+                "actual staging create-path error: {native}"
+            );
+            assert!(std::fs::symlink_metadata(&blocker).unwrap().is_file());
+            assert_eq!(
+                std::fs::read(&blocker).unwrap(),
+                b"ordinary staging blocker"
+            );
+            assert!(
+                !destination.exists(),
+                "best-effort staging failure did not partially publish"
+            );
+            std::fs::remove_file(&blocker).unwrap();
+        } else {
+            assert!(
+                native.starts_with("Published("),
+                "actual seed publication: {native}"
+            );
+            assert_eq!(
+                std::fs::read(destination.join("fixture.txt")).unwrap(),
+                b"actual seed fixture content"
+            );
+        }
+    }
+
+    async fn configure_retained_seed_fixture(fixture: &MailboxFixture, seed_source: &Path) {
+        let app = fixture.app.handle();
+        let seed_lock: crate::ConfigSeedLockState = Arc::new(tokio::sync::Mutex::new(()));
+        assert!(app.manage(seed_lock));
+        std::fs::create_dir(seed_source).unwrap();
+        std::fs::write(
+            seed_source.join("fixture.txt"),
+            b"actual seed fixture content",
+        )
+        .unwrap();
+        let mut settings = app.state::<SettingsState>().read().await.clone();
+        settings
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == "codex")
+            .unwrap()
+            .config_seed = Some(crate::config::settings::ConfigSeedConfig {
+            enabled: true,
+            dest: ".p05-seed".into(),
+        });
+        crate::config::settings::validate_and_repair_settings(&mut settings)
+            .expect("actual seed settings validator");
+        let written = crate::config::settings::save_settings(&settings).unwrap();
+        *app.state::<SettingsState>().write().await = written;
+    }
+
+    async fn assert_retained_pty_preboundary_rejections(
+        fixture: &MailboxFixture,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        route: &crate::config::teams::VerifiedPtyInputRoute,
+        sender: Uuid,
+        previous: Uuid,
+    ) {
+        use crate::phone::types::{PtyInputReasonCode as C, PtyInputSourcePlane as Plane};
+        use crate::session::selection::{
+            OwnedReplacementWork, ResolvedReplacement, SourceExecutorGuard,
+        };
+        let app = fixture.app.handle();
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let state = app.state::<crate::api::message_store::MessageStoreState>();
+        let store = state.store.as_ref().unwrap().clone();
+        let gate = state.target_gate.as_ref().unwrap().clone();
+        let original_settings = app.state::<SettingsState>().read().await.clone();
+        let original_name = manager.get_session(previous).await.unwrap().name;
+        let directory = crate::config::config_dir().unwrap();
+        let publication = std::fs::read(directory.join("sessions.json")).unwrap();
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let backend = pty
+            .lock()
+            .unwrap()
+            .backend_for_kind(SessionBackendKind::LocalProcess);
+        let backend = backend
+            .as_any()
+            .downcast_ref::<MailboxMockPtyBackend>()
+            .unwrap();
+        let kills = backend.kill_attempts.load(Ordering::SeqCst);
+        let hooks = MailboxTestHooks::default();
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        // These are primitive checks in the existing positive PTY cell. Every
+        // input has a genuine store claim and the SAME truly retired A.
+        for case in ["backend", "absent", "temporary", "different", "prepared"] {
+            tokio::time::timeout(Duration::from_secs(20), async {
+            let injection = enqueue_shared_pty_engine_operation(
+                &store,
+                route,
+                sender,
+                b"preboundary-rejection",
+            );
+            let initial = store
+                .query_pty_input_by_injection(&injection)
+                .unwrap()
+                .unwrap();
+            assert!(!initial.terminal);
+            let claimed = store
+                .claim_pty_input(
+                    Plane::HostCli,
+                    Some(&injection),
+                    &Uuid::new_v4().to_string(),
+                    chrono::Utc::now(),
+                )
+                .unwrap()
+                .unwrap();
+            let mut heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
+                store.clone(),
+                injection.clone(),
+                claimed.lease_owner.clone(),
+                crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at).unwrap(),
+            );
+            let stripe = gate
+                .try_target_lock(&route.target.canonical_fqn)
+                .unwrap()
+                .unwrap();
+            let exact = gate.acquire_exact(&route.target.canonical_fqn).await;
+            let ownership = gate
+                .target_ownership(&route.target.canonical_fqn, &stripe, &exact)
+                .unwrap();
+            let mut prepared = None;
+            if case == "prepared" {
+                let cwd = crate::path_utils::normalize_windows_verbatim_path(
+                    &route.target.replica_root.to_string_lossy(),
+                );
+                let spawn = crate::commands::session::build_configured_agent_spawn_for_cwd(
+                    &original_settings,
+                    "codex",
+                    &cwd,
+                    None,
+                )
+                .unwrap()
+                .unwrap();
+                let request = crate::commands::session::OwnedReplacementCreateRequest {
+                    shell: spawn.shell.clone(),
+                    shell_args: spawn.shell_args.clone(),
+                    cwd: cwd.clone(),
+                    name: Some(
+                        crate::config::teams::split_project_prefix(&claimed.target_fqn)
+                            .1
+                            .to_string(),
+                    ),
+                    agent_id: Some("codex".into()),
+                    agent_label: Some(spawn.trusted_agent_label.clone()),
+                    skip_tooling_save: false,
+                    git_repos: Vec::new(),
+                    resolved_spawn: Some(spawn),
+                    host_shell: Some(crate::pty::backend::ResolvedAgentHostShell {
+                        program: original_settings.default_shell.clone(),
+                        args: original_settings.default_shell_args.clone(),
+                    }),
+                };
+                let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+                let (carrier, row) = manager
+                    .with_current_carrier_snapshot(&permit, |current| {
+                        (
+                            crate::config::sessions_persistence::retained_carrier_for_replacement(
+                                &permit,
+                                &directory,
+                                &route.target.canonical_fqn,
+                                previous,
+                                current,
+                            )
+                            .unwrap(),
+                            current
+                                .rows
+                                .iter()
+                                .find(|row| row.id == previous)
+                                .unwrap()
+                                .clone(),
+                        )
+                    })
+                    .await;
+                drop(permit);
+                prepared = Some(
+                    coordinator.prepare_owned_replacement(
+                        ResolvedReplacement {
+                            target: route.target.canonical_fqn.clone(),
+                            directory: directory.clone(),
+                            previous: row,
+                            carrier,
+                            requested_agent_id: request.agent_id.clone(),
+                            requested_profile: None,
+                            shell: request.shell.clone(),
+                            shell_args: request.shell_args.clone(),
+                            launch_recipe: owned_replacement_launch_recipe(&request),
+                            cwd: cwd.clone(),
+                            backend: SessionBackendKind::LocalProcess,
+                            work: OwnedReplacementWork::PtyDurableReference {
+                                version: initial.version,
+                                injection_id: claimed.injection_id.clone(),
+                                op_id: claimed.op_id.clone(),
+                                sender: claimed.sender_fqn.clone(),
+                                target: claimed.target_fqn.clone(),
+                                source_plane: "host_cli".into(),
+                                payload_sha256: initial.payload_sha256.clone().unwrap(),
+                                payload_bytes: initial.payload_bytes.unwrap(),
+                                issued_at: initial.issued_at.clone().unwrap(),
+                                expires_at: claimed.expires_at.clone(),
+                                queued_at: initial.queued_at.clone().unwrap(),
+                                lease_owner: claimed.lease_owner.clone(),
+                                attempt: claimed.attempt,
+                                authority_session_id: claimed.authority_session_id.clone(),
+                                authority_client_id: claimed.authority_client_id.clone(),
+                                authority_client_generation: claimed
+                                    .authority_client_generation
+                                    .clone(),
+                                sender_identity_fingerprint: claimed
+                                    .sender_identity_fingerprint
+                                    .clone(),
+                                target_identity_fingerprint: claimed
+                                    .target_identity_fingerprint
+                                    .clone(),
+                                requested_agent_id: claimed.requested_agent_id.clone(),
+                            },
+                            cwd_identity: crate::path_identity::verify_directory(Path::new(&cwd))
+                                .unwrap()
+                                .into(),
+                            replica_identity: Some(route.target.replica_identity.clone().into()),
+                        },
+                        manager.reserve_carrier_create_binding(),
+                    ),
+                );
+                assert!(
+                    prepared.as_ref().unwrap().matches_launch(
+                        &request.shell,
+                        &request.shell_args,
+                        &request.cwd,
+                        &request.agent_id,
+                        &owned_replacement_launch_recipe(&request)
+                    ),
+                    "original actual prepared recipe matches"
+                );
+                app.state::<SettingsState>()
+                    .write()
+                    .await
+                    .agents
+                    .iter_mut()
+                    .find(|agent| agent.id == "codex")
+                    .unwrap()
+                    .command
+                    .push_str(" --changed-before-admission");
+            }
+            if case == "backend" {
+                let settings_state = app.state::<SettingsState>();
+                let mut settings = settings_state.write().await;
+                let agent = settings
+                    .agents
+                    .iter_mut()
+                    .find(|agent| agent.id == "codex")
+                    .unwrap();
+                agent.backend.kind = SessionBackendKind::ContainerTransport;
+                agent.backend.image = Some("agentscommander/ac-codex:latest".into());
+            }
+            if case == "temporary" {
+                manager
+                    .rename_session(
+                        previous,
+                        format!(
+                            "{}preboundary",
+                            crate::session::session::TEMP_SESSION_PREFIX
+                        ),
+                    )
+                    .await
+                    .unwrap();
+            }
+            let other = if case == "different" {
+                Some(
+                    add_mailbox_session(
+                        app,
+                        &fixture.target_cwd,
+                        "other real exited row",
+                        SessionStatus::Exited(0),
+                        None,
+                    )
+                    .await,
+                )
+            } else {
+                None
+            };
+            let before = serde_json::to_value(SessionInfo::from(
+                &manager.get_session(previous).await.unwrap(),
+            ))
+            .unwrap();
+            let mut before_ids: Vec<_> = manager
+                .list_sessions()
+                .await
+                .into_iter()
+                .map(|row| row.id)
+                .collect();
+            before_ids.sort();
+            let before_live = backend.live.lock().unwrap().clone();
+            let mut matching: Vec<_> = manager
+                .list_sessions()
+                .await
+                .into_iter()
+                .filter(|row| {
+                    crate::config::teams::agent_fqn_from_path(&row.working_directory)
+                        == route.target.canonical_fqn
+                })
+                .collect();
+            if case == "absent" || case == "backend" {
+                matching.clear();
+            }
+            if let Some(other) = other {
+                matching.retain(|row| row.id == other.to_string());
+            }
+            let (_, ready_a) = observe_pty_spawn_scope(app, &route.target).await;
+            assert_eq!(
+                ready_a,
+                Some(previous),
+                "test needs actual strict retained A: {case}"
+            );
+            assert!(pty_spawn_scope_may_resume(app, &route.target).await);
+            let mut source = SourceExecutorGuard::unbound();
+            let actual = poller.spawn_pty_input_target(
+                    app,
+                    &claimed,
+                    &matching,
+                    &route.sender,
+                    &route.target,
+                    Plane::HostCli,
+                    None,
+                    &ownership,
+                    &initial,
+                    prepared,
+                    &mut source,
+                    None,
+                ).await;
+            let expected = if case == "backend" || case == "prepared" {
+                C::AuthorityChanged
+            } else {
+                C::InconsistentSession
+            };
+            assert!(
+                matches!(actual, Err(code) if code == expected),
+                "actual rejection: {case}"
+            );
+            source.returned(false);
+            assert!(
+                finish_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    &injection,
+                    &claimed.lease_owner,
+                    expected
+                )
+                .await
+            );
+            drop(exact);
+            drop(stripe);
+            let result = store
+                .query_pty_input_by_injection(&injection)
+                .unwrap()
+                .unwrap();
+            assert!(result.terminal);
+            assert_eq!(
+                result.status,
+                crate::phone::types::PtyInputPublicStatus::Rejected
+            );
+            assert_eq!(result.reason.map(|reason| reason.code), Some(expected));
+            let connection =
+                rusqlite::Connection::open(fixture._temp.path().join("retained-respawn.sqlite3"))
+                    .unwrap();
+            let counts: (i64, i64, i64) = connection.query_row(
+                "SELECT attempt,(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND status='retry'),(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND status='rejected') FROM pty_input_operations WHERE injection_id=?1",
+                [&injection], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+            assert_eq!(counts, (claimed.attempt, 0, 1));
+            assert_eq!(coordinator.fixture_root_count(), Some(0));
+            let mut after_ids: Vec<_> = manager
+                .list_sessions()
+                .await
+                .into_iter()
+                .map(|row| row.id)
+                .collect();
+            after_ids.sort();
+            assert_eq!(after_ids, before_ids, "no B inserted or A removed: {case}");
+            assert_eq!(
+                *backend.live.lock().unwrap(),
+                before_live,
+                "no native runtime created: {case}"
+            );
+            assert_eq!(
+                serde_json::to_value(SessionInfo::from(
+                    &manager.get_session(previous).await.unwrap()
+                ))
+                .unwrap(),
+                before
+            );
+            assert_eq!(
+                std::fs::read(directory.join("sessions.json")).unwrap(),
+                publication
+            );
+            assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills);
+            assert!(backend.writes.lock().unwrap().is_empty());
+            assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+            assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+            assert!(gate
+                .try_target_lock(&route.target.canonical_fqn)
+                .unwrap()
+                .is_some());
+            if let Some(other) = other {
+                assert_eq!(manager.remove_exited_sessions(&[other]).await, 1);
+            }
+            manager
+                .rename_session(previous, original_name.clone())
+                .await
+                .unwrap();
+            *app.state::<SettingsState>().write().await = original_settings.clone();
+            }).await.expect("entire preboundary operation must finish before its 20s deadline");
+        }
+        assert_eq!(
+            observe_pty_spawn_scope(app, &route.target).await.1,
+            Some(previous)
+        );
+    }
+
+    #[cfg(test)]
+    async fn retained_root_reclaim_operation(
+        fixture: &MailboxFixture,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        manager: &SessionManager,
+        request: &crate::commands::session::RootJobRequest,
+        id: uuid::Uuid,
+        operation: usize,
+    ) -> uuid::Uuid {
+        let app = fixture.app.handle();
+        let mut id = id;
+        let actual = tokio::time::timeout(
+            Duration::from_secs(20),
+            coordinator.root_lifecycle(app.clone(), request.clone()),
+        )
+        .await
+        .expect("actual same-history Root entry deadline")
+        .expect("actual legacy live-root reuse result");
+        assert_eq!(
+            actual.id,
+            id.to_string(),
+            "reuse returns the actual root incarnation"
+        );
+        assert!(manager.get_session(id).await.unwrap().is_root_agent);
+        assert!(app
+            .state::<Arc<Mutex<PtyManager>>>()
+            .lock()
+            .unwrap()
+            .has_session(id));
+        assert_eq!(
+            coordinator.fixture_root_count(),
+            Some(0),
+            "actual EntryTerminal/effects/lease release reclaims capacity before next entry"
+        );
+        if operation == 0 || operation == 33 {
+            let previous = id;
+            app.state::<Arc<Mutex<PtyManager>>>()
+                .lock()
+                .unwrap()
+                .kill_for_kind(previous, SessionBackendKind::LocalProcess)
+                .unwrap();
+            if operation == 33 {
+                // Real legacy exit mutation selects WakeDormant; the first case selects DiscardMissingPty.
+                manager.mark_exited(previous, 0).await;
+                assert_eq!(
+                    manager.get_session(previous).await.unwrap().status,
+                    SessionStatus::Exited(0)
+                );
+            }
+            let restarted = tokio::time::timeout(
+                Duration::from_secs(20),
+                coordinator.root_lifecycle(app.clone(), request.clone()),
+            )
+            .await
+            .expect("same-entry Root direct-restart deadline")
+            .expect("actual legacy root direct restart");
+            id = Uuid::parse_str(&restarted.id).unwrap();
+            assert_ne!(id, previous);
+            assert!(manager.get_session(previous).await.is_none());
+            assert!(manager.get_session(id).await.unwrap().is_root_agent);
+            assert!(app
+                .state::<Arc<Mutex<PtyManager>>>()
+                .lock()
+                .unwrap()
+                .has_session(id));
+            assert_eq!(
+                coordinator.fixture_root_count(),
+                Some(0),
+                "SAME Root entry covers actual direct restart and releases once"
+            );
+        }
+        id
+    }
+
+    #[cfg(test)]
+    async fn observe_retained_native_source_unwind(
+        seed: bool,
+        fixture: &MailboxFixture,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        control: &crate::session::selection::ReplacementFixtureControl,
+        entered: crate::session::selection::ReplacementFixtureCut,
+        panic_source: tokio::sync::oneshot::Sender<()>,
+    ) -> crate::session::manager::PendingCreateBinding {
+        use crate::session::selection::ReplacementFixtureCut as Cut;
+        let receipt = retained_source_wait_cut(control, entered).await;
+        assert_eq!(
+            coordinator.fixture_native_work_counts(),
+            Some((1, 1)),
+            "actual tracker Started with installed completion guard"
+        );
+        assert!(control.observe_owner(coordinator).unwrap().source_active);
+        if seed {
+            assert!(control
+                .native_results
+                .lock()
+                .unwrap()
+                .iter()
+                .any(
+                    |(cut, result)| *cut == Cut::ContextNativeReturned && result.starts_with("Ok(")
+                ));
+            assert!(
+                std::fs::read_to_string(fixture.target_cwd.join("AGENTS.md"))
+                    .unwrap()
+                    .contains("Actual native context content."),
+                "actual resolved context completed before selected seed native begins"
+            );
+        }
+        panic_source.send(()).unwrap();
+        loop {
+            if control.observe_owner(coordinator).unwrap().source_unwound {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            control
+                .observe_owner(coordinator)
+                .unwrap()
+                .source_returned_failed,
+            None,
+            "actual source unwind stays Stopped, never Returned"
+        );
+        assert_eq!(coordinator.fixture_native_work_counts(), Some((1, 1)));
+        receipt.binding.unwrap()
+    }
+
+    #[cfg(test)]
+    fn assert_retained_native_result(fixture: &MailboxFixture, seed: bool, actual: &str) {
+        if seed {
+            assert!(
+                actual.starts_with("Published("),
+                "actual selected seed result: {actual}"
+            );
+            assert_eq!(
+                std::fs::read(fixture.target_cwd.join(".p05-seed/fixture.txt")).unwrap(),
+                b"actual seed fixture content"
+            );
+        } else {
+            assert!(
+                actual.starts_with("Ok("),
+                "actual resolved context result: {actual}"
+            );
+            assert!(
+                std::fs::read_to_string(fixture.target_cwd.join("AGENTS.md"))
+                    .unwrap()
+                    .contains("Actual native context content.")
+            );
+        }
+    }
+
+    #[cfg(test)]
+    fn run_retained_source_child_scenario<'a>(
+        pty: bool,
+        inline: bool,
+        scenario: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
+        match scenario {
+            "native-waiter-context" | "native-waiter-seed" => Box::pin(
+                retained_exited_respawn_native_waiter_cell(pty, scenario == "native-waiter-seed"),
+            ),
+            "lifetime-source-panic" => Box::pin(retained_exited_respawn_lifetime_cell(pty, inline)),
+            "root-full" => Box::pin(retained_exited_respawn_root_full_cell(pty, inline)),
+            "root-poison" | "root-close-first" => Box::pin(
+                retained_exited_respawn_root_refusal_cell(pty, inline, scenario == "root-poison"),
+            ),
+            "queued-drain"
+            | "cleanup-claim-first"
+            | "cleanup-finalize-first"
+            | "cleanup-runtime-changed"
+            | "cleanup-unknown-veto" => {
+                Box::pin(retained_exited_respawn_queued_cell(pty, inline, scenario))
+            }
+            "root-reservation-refusal" => {
+                Box::pin(retained_exited_respawn_reservation_refusal_cell())
+            }
+            "entry-root-reclaim" => Box::pin(retained_exited_respawn_entry_root_reclaim_cell()),
+            "entry-restart-reclaim" => {
+                Box::pin(retained_exited_respawn_entry_restart_reclaim_cell())
+            }
+            "call-before-accept" | "call-after-accept" => Box::pin(
+                retained_exited_respawn_caller_cell(pty, inline, scenario == "call-before-accept"),
+            ),
+            "submit-refused" | "submit-channel-close" => {
+                Box::pin(retained_exited_respawn_submit_refused_cell(
+                    pty,
+                    scenario == "submit-channel-close",
+                ))
+            }
+            "recv-after-release" => {
+                Box::pin(retained_exited_respawn_receive_after_release_cell(pty))
+            }
+            "pty-held-stop" | "pty-held-rollback" | "pty-cancel-held" => {
+                Box::pin(retained_exited_respawn_pty_held_cell(scenario))
+            }
+            "positive"
+            | "reclaim-66"
+            | "walk-terminal"
+            | "seal-insert-first"
+            | "shutdown-executing"
+            | "root-duplicate"
+            | "newer-telegram"
+            | "newer-full"
+            | "under-commit-telegram"
+            | "under-commit-full"
+            | "seed-positive"
+            | "seed-staging-file" => {
+                Box::pin(retained_exited_respawn_source_cell(pty, inline, scenario))
+            }
+            _ => Box::pin(retained_exited_respawn_failure_cell(pty, inline, scenario)),
+        }
+    }
+
+    #[cfg(test)]
+    fn retained_failure_action(
+        scenario: &str,
+        inline: bool,
+        control: &crate::session::selection::ReplacementFixtureControl,
+        backend: &MailboxMockPtyBackend,
+        physical_cut: Option<crate::session::selection::ReplacementFixtureCut>,
+        physical_gate: &mut Option<tokio::sync::oneshot::Receiver<()>>,
+        context_gate: &mut Option<tokio::sync::oneshot::Receiver<()>>,
+    ) -> Option<crate::session::selection::ReplacementFixtureAction> {
+        use crate::session::selection::{
+            ReplacementFixtureAction as Action, ReplacementFixtureCut as Cut,
+        };
+        match scenario {
+            "pre-finalize" | "post-carry-runtime" | "post-rename-physical" | "post-retire-runtime" =>
+                Some(Action::Pause { cut: physical_cut.unwrap(), resume: physical_gate.take().expect("selected physical gate") }),
+            "pre-context" => Some(Action::Pause { cut: Cut::ContextNativeEnter, resume: context_gate.take().expect("selected context gate") }),
+            "native-context-panic" => Some(Action::PanicOnce { cut: Cut::ContextNativeEnter }),
+            "native-seed-panic" => Some(Action::PanicOnce { cut: Cut::SeedNativeEnter }),
+            "pre-backend" => { backend.fail_spawn.store(true, Ordering::SeqCst); None }
+            "pre-binder" => Some(Action::BindPreparedTwice),
+            "pre-rollback-error" => {
+                backend.fail_kill_once.store(true, Ordering::SeqCst);
+                Some(Action::SimulatedPrecommitFailure)
+            }
+            "base-missing" => Some(Action::FixtureStopExactB),
+            "panic-spawn" => Some(Action::PanicOnce { cut: Cut::BeforeBackendSpawn }),
+            "panic-before-commit" => Some(Action::PanicOnce { cut: Cut::BeforeCommit }),
+            "panic-commit-before-disarm" => Some(Action::CommitBeforeDisarmPanicOnce),
+            "panic-baseline" => Some(Action::PanicOnce { cut: Cut::AfterDisarm }),
+            "panic-carry" => Some(Action::PanicOnce { cut: Cut::BeforeCarry }),
+            "panic-rename" => Some(Action::PanicOnce { cut: Cut::BeforePublication }),
+            "panic-readback" => Some(Action::PublicationLeaf(crate::config::sessions_persistence::FixturePublicationActionKind::PanicOnce)),
+            "post-readback-fault" => Some(Action::PublicationLeaf(crate::config::sessions_persistence::FixturePublicationActionKind::CorruptFixtureLeafOnce)),
+            "panic-retire" => Some(Action::PanicOnce { cut: Cut::BeforeRetirement }),
+            "base-continue-loss" => {
+                let (sender, receiver) = tokio::sync::oneshot::channel();
+                *control.baseline_gate.lock().unwrap() = Some(receiver); drop(sender); None
+            }
+            "release-lost" if inline => {
+                let (sender, receiver) = tokio::sync::oneshot::channel();
+                *control.before_release_gate.lock().unwrap() = Some(receiver); drop(sender); None
+            }
+            "recv-live-source" if inline => { control.drop_receiver.store(true, Ordering::Release); None }
+            _ => panic!("unknown finite failure scenario {scenario}"),
+        }
+    }
+
+    #[cfg(test)]
+    async fn retained_failure_physical_controller(
+        scenario: &str,
+        physical_cut: Option<crate::session::selection::ReplacementFixtureCut>,
+        control: &crate::session::selection::ReplacementFixtureControl,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        pty_manager: &Arc<Mutex<PtyManager>>,
+        resume_physical: tokio::sync::oneshot::Sender<()>,
+    ) {
+        if let Some(cut) = physical_cut {
+            let reached = retained_source_wait_cut(control, cut).await;
+            let id = reached.binding.unwrap().session_id();
+            if scenario == "post-rename-physical" {
+                let directory = crate::config::config_dir().unwrap();
+                let leaf = directory.join("sessions.json");
+                let backup =
+                    directory.join(format!("p05-rename-backup-{}.json", reached.operation));
+                assert!(leaf.is_file());
+                assert!(!backup.exists());
+                std::fs::rename(&leaf, &backup).unwrap();
+                std::fs::create_dir(&leaf).unwrap();
+                std::fs::write(leaf.join("nonempty-fixture"), b"real rename blocker").unwrap();
+            } else {
+                let owner = control.observe_owner(coordinator).unwrap();
+                if scenario == "post-retire-runtime" {
+                    assert!(
+                        owner.checkpoint_confirmed,
+                        "actual first Confirmed checkpoint precedes retirement cut"
+                    );
+                }
+                if scenario == "post-carry-runtime" {
+                    assert!(owner.initial_version.is_some());
+                }
+                let actual = pty_manager.lock().unwrap();
+                assert!(actual.has_session(id));
+                actual
+                    .kill_for_kind(id, SessionBackendKind::LocalProcess)
+                    .unwrap();
+                assert!(!actual.has_session(id));
+            }
+            resume_physical.send(()).unwrap();
+        } else {
+            drop(resume_physical);
+        }
+    }
+
+    #[cfg(test)]
+    async fn retained_failure_context_controller(
+        scenario: &str,
+        fixture: &MailboxFixture,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        control: &crate::session::selection::ReplacementFixtureControl,
+        manager: &SessionManager,
+        pty_manager: &Arc<Mutex<PtyManager>>,
+        resume_context: tokio::sync::oneshot::Sender<()>,
+    ) {
+        use crate::session::selection::ReplacementFixtureCut as Cut;
+        if scenario == "pre-context" {
+            let entered = retained_source_wait_cut(control, Cut::ContextNativeEnter).await;
+            assert!(control.observe_owner(coordinator).unwrap().source_active);
+            assert!(
+                !control
+                    .cleanup_observed_stopped(coordinator, manager, pty_manager)
+                    .await,
+                "actual native context closure is Running; no stopped-source cleanup"
+            );
+            assert!(manager
+                .get_pending_session(entered.binding.unwrap())
+                .await
+                .is_some());
+            let target = fixture.target_cwd.join("AGENTS.md");
+            if target.exists() {
+                assert!(std::fs::symlink_metadata(&target).unwrap().is_file());
+                std::fs::remove_file(&target).unwrap();
+            }
+            std::fs::create_dir(&target).unwrap();
+            resume_context.send(()).unwrap();
+            retained_source_wait_cut(control, Cut::ContextNativeReturned).await;
+            let actual = control
+                .native_results
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(cut, _)| *cut == Cut::ContextNativeReturned)
+                .map(|(_, result)| result.clone())
+                .expect("real native context result");
+            assert!(
+                actual.starts_with("Err("),
+                "real content/materializer Err: {actual}"
+            );
+            assert!(
+                actual.contains("is a real directory, not a file"),
+                "resolved content Some reached actual refusal: {actual}"
+            );
+            assert!(target.is_dir(), "real managed directory was not deleted");
+        } else {
+            drop(resume_context);
+        }
+    }
+
+    #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "P05 verifies the actual setup result and notification/rollback/runtime evidence without bundling owners."
+    )]
+    async fn assert_retained_setup_failure(
+        ordinary: Option<Result<OutboxMessage, String>>,
+        scenario: &str,
+        inline: bool,
+        control: &crate::session::selection::ReplacementFixtureControl,
+        manager: &SessionManager,
+        pty_manager: &Arc<Mutex<PtyManager>>,
+        binding: crate::session::manager::PendingCreateBinding,
+        receipt: crate::session::selection::ReplacementFixtureReceipt,
+        kills_before: usize,
+        backend: &MailboxMockPtyBackend,
+    ) {
+        if let Some(result) = ordinary {
+            let error = result.expect_err("actual setup error");
+            let expected = if scenario == "pre-backend" {
+                "synthetic spawn failure"
+            } else if scenario == "pre-context" {
+                "is a real directory, not a file"
+            } else if scenario == "pre-finalize" {
+                "created session is not displayable"
+            } else if inline {
+                "inline create binding was already prepared"
+            } else {
+                "create finalization ticket was already bound"
+            };
+            assert!(error.contains(expected), "actual primary error: {error}");
+        }
+        if scenario == "pre-context" {
+            let observed = control.context_notification.lock().unwrap();
+            let crate::session::selection::FixtureContextNotification::Consumed {
+                operation,
+                executor,
+                binding: observed_binding,
+                error,
+                title,
+                message,
+            } = &*observed
+            else {
+                panic!("explicit context notification arm was not consumed");
+            };
+            assert_eq!(*operation, receipt.operation);
+            assert_ne!(*executor, Uuid::nil());
+            assert_eq!(*observed_binding, binding);
+            assert!(error.contains("is a real directory, not a file"));
+            assert_eq!(title, "Session Launch Error");
+            assert_eq!(
+                message,
+                &format!("Cannot launch session - failed to update replica config:\n\n{error}")
+            );
+        }
+        assert!(manager.get_pending_session(binding).await.is_none());
+        assert!(!pty_manager
+            .lock()
+            .unwrap()
+            .has_session(binding.session_id()));
+        assert_eq!(
+            backend.kill_attempts.load(Ordering::SeqCst),
+            kills_before + usize::from(scenario == "pre-finalize")
+        );
+    }
+
+    #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "P05 keeps native failure, source result and actual pending/runtime evidence distinct."
+    )]
+    async fn assert_retained_native_failure(
+        ordinary: &Option<Result<OutboxMessage, String>>,
+        scenario: &str,
+        control: &crate::session::selection::ReplacementFixtureControl,
+        owner: &crate::session::selection::ReplacementFixtureOwnerObservation,
+        manager: &SessionManager,
+        binding: crate::session::manager::PendingCreateBinding,
+        backend: &MailboxMockPtyBackend,
+        kills_before: usize,
+    ) {
+        use crate::session::selection::ReplacementFixtureCut as Cut;
+        let (entered, returned, expected) = if scenario == "native-seed-panic" {
+            (
+                Cut::SeedNativeEnter,
+                Cut::SeedNativeReturned,
+                "config seed blocking preparation failed",
+            )
+        } else {
+            (
+                Cut::ContextNativeEnter,
+                Cut::ContextNativeReturned,
+                "replica context blocking preparation failed",
+            )
+        };
+        assert!(control
+            .receipts
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|receipt| receipt.cut == entered));
+        assert!(!control
+            .receipts
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|receipt| receipt.cut == returned));
+        if let Some(actual) = ordinary.as_ref() {
+            assert!(
+                actual.as_ref().unwrap_err().contains(expected),
+                "actual native JoinError precedence"
+            );
+        }
+        assert!(!owner.cleanup_claimed && !owner.rollback_completed);
+        assert!(manager.get_pending_session(binding).await.is_some());
+        assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills_before);
+    }
+
+    #[cfg(test)]
+    fn assert_retained_failed_rollback(
+        ordinary: Option<Result<OutboxMessage, String>>,
+        pty: bool,
+        owner: &crate::session::selection::ReplacementFixtureOwnerObservation,
+        backend: &MailboxMockPtyBackend,
+        kills_before: usize,
+    ) {
+        if pty {
+            assert_eq!(
+                owner.source_returned_failed,
+                Some(true),
+                "actual create Err survives retained step and entire PTY core"
+            );
+            assert!(!owner.source_unwound);
+        }
+        assert!(owner.cleanup_claimed && !owner.rollback_completed);
+        assert_eq!(
+            backend.kill_attempts.load(Ordering::SeqCst),
+            kills_before + 1
+        );
+        if let Some(result) = ordinary {
+            assert!(result
+                .unwrap_err()
+                .contains("simulated fixture precommit setup failure"));
+        }
+    }
+
+    #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "P05 preserves each committed-loss and physical-publication assertion with original owners borrowed."
+    )]
+    async fn assert_retained_committed_failure(
+        scenario: &str,
+        pty: bool,
+        control: &crate::session::selection::ReplacementFixtureControl,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        manager: &SessionManager,
+        pty_manager: &Arc<Mutex<PtyManager>>,
+        binding: crate::session::manager::PendingCreateBinding,
+        owner: &crate::session::selection::ReplacementFixtureOwnerObservation,
+        kills_before: usize,
+        backend: &MailboxMockPtyBackend,
+        old_publication: Option<Vec<u8>>,
+        receipt: crate::session::selection::ReplacementFixtureReceipt,
+    ) {
+        if scenario == "panic-commit-before-disarm" {
+            assert!(!owner.cleanup_disarmed);
+            assert!(owner.initial_version.is_none());
+            assert!(
+                manager.get_pending_session(binding).await.is_none(),
+                "real commit made B nonpending"
+            );
+            assert!(pty_manager
+                .lock()
+                .unwrap()
+                .has_session(binding.session_id()));
+            assert!(
+                !control
+                    .cleanup_observed_stopped(coordinator, manager, pty_manager)
+                    .await
+            );
+            assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills_before);
+        }
+        if scenario == "base-missing" || scenario == "panic-baseline" {
+            assert!(owner.cleanup_disarmed && owner.initial_version.is_none());
+            assert_eq!(owner.carry_attempts, 0);
+        }
+        if pty && scenario == "base-continue-loss" {
+            assert_eq!(
+                owner.source_returned_failed,
+                Some(false),
+                "actual Ok(Retained) is not a create failure"
+            );
+        }
+        if scenario == "post-rename-physical" {
+            assert!(owner.rename_failed && !owner.checkpoint_confirmed);
+            let directory = crate::config::config_dir().unwrap();
+            let backup = directory.join(format!("p05-rename-backup-{}.json", receipt.operation));
+            assert_eq!(std::fs::read(backup).unwrap(), old_publication.unwrap());
+            assert_eq!(
+                std::fs::read(directory.join("sessions.json/nonempty-fixture")).unwrap(),
+                b"real rename blocker"
+            );
+        }
+        if scenario == "post-retire-runtime" || scenario == "post-carry-runtime" {
+            assert!(owner.cleanup_disarmed && !owner.rollback_completed);
+            assert_eq!(
+                backend.kill_attempts.load(Ordering::SeqCst),
+                kills_before + 1
+            );
+        }
+    }
+
+    #[cfg(test)]
+    async fn assert_retained_cleanup_runtime_veto(
+        control: &crate::session::selection::ReplacementFixtureControl,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        binding: crate::session::manager::PendingCreateBinding,
+    ) {
+        let owner = control.observe_owner(coordinator).unwrap();
+        assert!(!owner.cleanup_claimed && !owner.cleanup_disarmed && !owner.rollback_completed);
+        assert!(manager.get_pending_session(binding).await.is_some());
+        assert!(pty.lock().unwrap().has_session(binding.session_id()));
+    }
+
+    #[cfg(test)]
+    async fn assert_retained_cleanup_claimed(
+        control: &crate::session::selection::ReplacementFixtureControl,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        binding: crate::session::manager::PendingCreateBinding,
+    ) {
+        let owner = control.observe_owner(coordinator).unwrap();
+        assert!(owner.cleanup_claimed && owner.rollback_completed);
+        assert!(!owner.cleanup_disarmed && owner.initial_version.is_none());
+        assert!(manager.get_pending_session(binding).await.is_none());
+        assert!(!pty.lock().unwrap().has_session(binding.session_id()));
+    }
+
+    #[cfg(test)]
+    async fn assert_retained_cleanup_finalized(
+        control: &crate::session::selection::ReplacementFixtureControl,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        binding: crate::session::manager::PendingCreateBinding,
+    ) {
+        assert!(manager.get_pending_session(binding).await.is_none());
+        assert!(manager.get_session(binding.session_id()).await.is_some());
+        assert!(pty.lock().unwrap().has_session(binding.session_id()));
+        let owner = control.observe_owner(coordinator).unwrap();
+        assert!(owner.cleanup_disarmed && !owner.cleanup_claimed);
+        assert!(!owner.rollback_completed);
+    }
+
+    #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "P05 verifies actual stopped-source cleanup and runtime counters while original gate/backend owners remain in caller."
+    )]
+    async fn assert_retained_cleanup_common(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        control: &crate::session::selection::ReplacementFixtureControl,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        binding: crate::session::manager::PendingCreateBinding,
+        kills_before: usize,
+        claim_first: bool,
+        backend: &MailboxMockPtyBackend,
+    ) {
+        use crate::session::selection::ReplacementFixtureCut as Cut;
+        assert!(
+            !control
+                .cleanup_observed_stopped(coordinator, manager, pty)
+                .await,
+            "same cleanup delegate cannot claim twice or kill finalized B"
+        );
+        assert_eq!(
+            backend.kill_attempts.load(Ordering::SeqCst),
+            kills_before + usize::from(claim_first),
+            "exactly one real pending kill, or zero after finalize"
+        );
+        let owner = control.observe_owner(coordinator).unwrap();
+        assert!(!owner.terminal && !owner.transferred);
+        assert!(owner.source_stopped);
+        assert!(!control.received.load(Ordering::Acquire));
+        assert!(!control
+            .receipts
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|receipt| receipt.cut == Cut::SourceReceived));
+        assert!(shared_engine_writes(app, binding.session_id()).is_empty());
+    }
+
+    #[cfg(test)]
+    fn assert_retained_cleanup_close(
+        report: &crate::session::selection::SelectionShutdownReport,
+        backend: &MailboxMockPtyBackend,
+        kills_before: usize,
+        claim_first: bool,
+    ) {
+        assert!(
+            !report.persistence_safe,
+            "pending cleanup is not work-transfer authority"
+        );
+        assert_eq!(
+            backend.kill_attempts.load(Ordering::SeqCst),
+            kills_before + usize::from(claim_first),
+            "after-join cleanup cannot kill a second time"
+        );
+    }
+
+    #[cfg(test)]
+    fn assert_retained_source_inline_boundary(
+        control: &crate::session::selection::ReplacementFixtureControl,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        id: uuid::Uuid,
+        newer_b: bool,
+    ) {
+        let (published, inner_released, work_started, transferred, held) = control
+            .observe_retained(coordinator)
+            .expect("owner retained before fixture admission release");
+        let actual_owner = control
+            .observe_owner(coordinator)
+            .expect("matching operation remains in the actual root");
+        assert!(
+            !actual_owner.terminal && !actual_owner.transferred,
+            "early adapter flags do not satisfy the actual terminal predicate"
+        );
+        if !newer_b {
+            assert!(
+                published && inner_released,
+                "actual common inline flags are early"
+            );
+        }
+        assert!(!transferred);
+        assert!(!work_started);
+        assert!(held >= 1, "actual initial fixture admission remains held");
+        assert!(shared_engine_writes(app, id).is_empty());
+        assert!(!control.received.load(Ordering::Acquire));
+    }
+
+    #[cfg(test)]
+    fn assert_retained_source_reconciliation(
+        control: &crate::session::selection::ReplacementFixtureControl,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        actual_version: u64,
+        expected_version: u64,
+        initial_version: Option<u64>,
+    ) {
+        assert_eq!(
+            actual_version, expected_version,
+            "recapture performs zero stale B assignments/version invalidations"
+        );
+        let observed = control.observe_owner(coordinator).unwrap();
+        assert!(observed.carry_recaptured);
+        assert_eq!(observed.carry_attempts, 1);
+        assert_eq!(
+            observed.initial_version, initial_version,
+            "initial baseline remains immutable"
+        );
+    }
+
+    #[cfg(test)]
+    fn assert_retained_source_receipt_order(
+        control: &crate::session::selection::ReplacementFixtureControl,
+    ) {
+        use crate::session::selection::ReplacementFixtureCut as Cut;
+        let receipts = control.receipts.lock().unwrap();
+        let position = |cut| {
+            receipts
+                .iter()
+                .position(|receipt| receipt.cut == cut)
+                .unwrap()
+        };
+        assert!(position(Cut::AdapterReturned) < position(Cut::AdmissionReleased));
+        assert!(position(Cut::AdmissionReleased) < position(Cut::SourceReceived));
+        assert!(receipts
+            .iter()
+            .all(|receipt| receipt.operation == receipts[0].operation));
+        assert!(receipts
+            .iter()
+            .find(|receipt| receipt.cut == Cut::AdapterReturned)
+            .and_then(|receipt| receipt.outcome)
+            .is_some());
+    }
+
+    #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "P05 compares current B communication and source ownership using the original actual observations."
+    )]
+    async fn assert_retained_source_newer_result(
+        fixture: &MailboxFixture,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        control: &crate::session::selection::ReplacementFixtureControl,
+        manager: &SessionManager,
+        previous: uuid::Uuid,
+        id: uuid::Uuid,
+        full: bool,
+        expected_communication: Option<SessionCommunication>,
+    ) {
+        let app = fixture.app.handle();
+        if full {
+            let actual = manager.get_session(id).await.unwrap().communication;
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(expected_communication).unwrap()
+            );
+        } else {
+            assert_eq!(
+                manager
+                    .get_session(id)
+                    .await
+                    .unwrap()
+                    .telegram_bot_id
+                    .as_deref(),
+                Some("newer-b")
+            );
+        }
+        if full {
+            assert!(
+                shared_engine_writes(app, id).is_empty(),
+                "actual blocked menu vetoes input"
+            );
+            assert!(control.observe_retained(coordinator).is_some());
+        } else {
+            assert!(
+                manager.get_session(previous).await.is_none(),
+                "current B reconciliation retires A with fresh proof"
+            );
+            assert!(
+                !shared_engine_writes(app, id).is_empty(),
+                "current reconciled B receives actual source bytes"
+            );
+            assert!(
+                control.observe_retained(coordinator).is_none(),
+                "only actual fresh proof and work transfer allow removal"
+            );
+        }
+    }
+
+    #[cfg(test)]
+    async fn assert_retained_source_positive(
+        fixture: &MailboxFixture,
+        manager: &SessionManager,
+        previous: uuid::Uuid,
+        id: uuid::Uuid,
+        injection: Option<String>,
+        store: &crate::api::message_store::MessageStore,
+        hooks: &MailboxTestHooks,
+    ) {
+        let app = fixture.app.handle();
+        assert!(manager.get_session(previous).await.is_none());
+        assert!(
+            !shared_engine_writes(app, id).is_empty(),
+            "actual backend bytes"
+        );
+        if let Some(injection) = injection {
+            let result = store
+                .query_pty_input_by_injection(&injection)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                result.status,
+                crate::phone::types::PtyInputPublicStatus::Injected
+            );
+            assert_eq!(
+                result.selected_session_id.as_deref(),
+                Some(id.to_string().as_str())
+            );
+        }
+        assert!(
+            hooks.spawn_calls.lock().unwrap().is_empty(),
+            "legacy fake spawn unused"
+        );
+        assert!(
+            hooks.destroy_calls.lock().unwrap().is_empty(),
+            "A retired by owned path"
+        );
+    }
+
+    #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "P05 preserves sealed-entry assertions on the same fixture, source operation and retained owner."
+    )]
+    async fn assert_retained_source_sealed(
+        fixture: &MailboxFixture,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        control: &crate::session::selection::ReplacementFixtureControl,
+        manager: &SessionManager,
+        previous: uuid::Uuid,
+        id: uuid::Uuid,
+        injection: Option<String>,
+        store: &crate::api::message_store::MessageStore,
+        owner_weak: &crate::session::selection::ReplacementFixtureOwnerWeak,
+    ) {
+        let app = fixture.app.handle();
+        assert!(manager.get_session(previous).await.is_some());
+        let binding = control.receipts.lock().unwrap()[0].binding.unwrap();
+        assert!(manager.get_pending_session(binding).await.is_none());
+        assert!(manager.get_session(id).await.is_none());
+        assert!(shared_engine_writes(app, id).is_empty());
+        assert!(owner_weak.is_alive());
+        assert_eq!(coordinator.fixture_root_count(), Some(1));
+        if let Some(injection) = injection {
+            let actual = store
+                .query_pty_input_by_injection(&injection)
+                .unwrap()
+                .unwrap();
+            assert_ne!(
+                actual.status,
+                crate::phone::types::PtyInputPublicStatus::Injected
+            );
+            if actual.terminal {
+                assert!(
+                    control.observe_owner(coordinator).unwrap().terminal,
+                    "only actual verified rollback/handoff can terminally reject retained PTY work"
+                );
+            }
+        }
+        assert!(
+            !coordinator.close_and_join().await.persistence_safe,
+            "original incomplete-at-seal close report remains conservative"
+        );
+    }
+
+    #[cfg(test)]
+    fn assert_retained_source_lifetime(
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        report: &crate::session::selection::SelectionShutdownReport,
+        owner_weak: &crate::session::selection::ReplacementFixtureOwnerWeak,
+        full: bool,
+        shutdown_executing: bool,
+        walk_terminal: bool,
+    ) {
+        assert_eq!(
+            report.persistence_safe,
+            !full && !shutdown_executing,
+            "actual retained-root close accounting: {:?}",
+            report.retained
+        );
+        if walk_terminal || shutdown_executing {
+            assert!(
+                owner_weak.is_alive(),
+                "sealed root retains its verified terminal owner"
+            );
+            assert_eq!(coordinator.fixture_root_count(), Some(1));
+        } else if report.persistence_safe {
+            assert!(
+                !owner_weak.is_alive(),
+                "real terminal removal releases actual owner after worker join"
+            );
+        } else {
+            assert!(
+                owner_weak.is_alive(),
+                "actual incomplete root keeps owner after transient source ends"
+            );
+        }
+    }
+
+    #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "P05 reuses one operation within the same fixture and whole66 history using the unchanged outer scenario."
+    )]
+    async fn retained_source_operation(
+        fixture: &MailboxFixture,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        route: &crate::config::teams::VerifiedPtyInputRoute,
+        sender: uuid::Uuid,
+        previous_slot: &mut uuid::Uuid,
+        pty_source: bool,
+        inline: bool,
+        outer_scenario: &str,
+        operation: usize,
+    ) -> bool {
+        use crate::session::selection::{ReplacementFixtureControl, ReplacementFixtureCut as Cut};
+        use std::future::Future;
+        let app = fixture.app.handle();
+        let previous = *previous_slot;
+        let scenario = outer_scenario;
+        let reclaim = scenario == "reclaim-66";
+        let check_reacquire = pty_source && scenario == "positive";
+        let newer_b = scenario.starts_with("newer-") || scenario.starts_with("under-commit-");
+        let walk_terminal = scenario == "walk-terminal";
+        let shutdown_executing = scenario == "shutdown-executing";
+        let seal_insert_first = scenario == "seal-insert-first";
+        let seed_scenario = scenario.starts_with("seed-");
+        let full = scenario.ends_with("full");
+        let under_commit = scenario.starts_with("under-commit");
+        let scenario = if reclaim { "positive" } else { scenario };
+        let seed_source = fixture
+            .target_cwd
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("default.p05-seed");
+        if seed_scenario {
+            configure_retained_seed_fixture(fixture, &seed_source).await;
+        }
+        let control = Arc::new(ReplacementFixtureControl::default());
+        let (resume_terminal, terminal_gate) = tokio::sync::oneshot::channel();
+        if walk_terminal {
+            control.actions.lock().unwrap().push(
+                crate::session::selection::ReplacementFixtureAction::Pause {
+                    cut: Cut::BeforeTerminalRemoval,
+                    resume: terminal_gate,
+                },
+            );
+        }
+        let (resume_tail, tail_gate) = tokio::sync::oneshot::channel();
+        if shutdown_executing {
+            control.actions.lock().unwrap().push(
+                crate::session::selection::ReplacementFixtureAction::Pause {
+                    cut: Cut::BeforeCarry,
+                    resume: tail_gate,
+                },
+            );
+        }
+        {
+            let pty = app.state::<Arc<Mutex<PtyManager>>>();
+            let backend = pty
+                .lock()
+                .unwrap()
+                .backend_for_kind(SessionBackendKind::LocalProcess);
+            assert!(backend.as_any().is::<MailboxMockPtyBackend>());
+        }
+        control.mock_backend.store(true, Ordering::Release);
+        control.ticket_only.store(!inline, Ordering::Release);
+        let (resume_insertion, insertion_gate) = tokio::sync::oneshot::channel();
+        if scenario == "root-duplicate" || seal_insert_first {
+            control.actions.lock().unwrap().push(
+                crate::session::selection::ReplacementFixtureAction::Pause {
+                    cut: Cut::SourceCoreEntered,
+                    resume: insertion_gate,
+                },
+            );
+        }
+        let (resume_native, native_gate) = tokio::sync::oneshot::channel();
+        if seed_scenario {
+            control.actions.lock().unwrap().push(
+                crate::session::selection::ReplacementFixtureAction::Pause {
+                    cut: Cut::SeedNativeEnter,
+                    resume: native_gate,
+                },
+            );
+        }
+        let (resume_baseline, baseline_gate) = tokio::sync::oneshot::channel();
+        *control.baseline_gate.lock().unwrap() = Some(baseline_gate);
+        let (resume_commit, commit_gate) = tokio::sync::oneshot::channel();
+        if under_commit {
+            control.actions.lock().unwrap().push(
+                crate::session::selection::ReplacementFixtureAction::Pause {
+                    cut: Cut::AfterDisarm,
+                    resume: commit_gate,
+                },
+            );
+        }
+        let (resume_release, release_gate) = tokio::sync::oneshot::channel();
+        let (resume_publication, publication_gate) = tokio::sync::oneshot::channel();
+        if newer_b {
+            control.actions.lock().unwrap().push(
+                crate::session::selection::ReplacementFixtureAction::Pause {
+                    cut: Cut::BeforePublication,
+                    resume: publication_gate,
+                },
+            );
+        }
+        if inline {
+            *control.before_release_gate.lock().unwrap() = Some(release_gate);
+        }
+        let hooks = MailboxTestHooks::default();
+        *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let state = app.state::<crate::api::message_store::MessageStoreState>();
+        let store = state.store.as_ref().unwrap().clone();
+        let injection = pty_source.then(|| {
+            enqueue_shared_pty_engine_operation(&store, route, sender, b"retained-source-body")
+        });
+        let mut message = wake_message_to_target();
+        message.id = format!("retained-source-{}", Uuid::new_v4());
+        let (wait_observed, wait_gate) = tokio::sync::oneshot::channel();
+        let (delivery_finished, delivery_gate) = tokio::sync::oneshot::channel();
+        let delivery = async {
+            if let Some(injection) = injection.as_deref() {
+                poller
+                    .dispatch_pty_input_operation(
+                        app,
+                        &state,
+                        injection,
+                        crate::phone::types::PtyInputSourcePlane::HostCli,
+                        None,
+                    )
+                    .await;
+            } else {
+                let result = retained_fixture_ordinary_wake(&poller, app, &message, &control).await;
+                if seal_insert_first {
+                    if inline {
+                        assert!(
+                            result.is_none(),
+                            "actual closed inline reserve returns retained"
+                        );
+                    } else {
+                        assert!(result
+                            .expect("actual ticket setup result")
+                            .unwrap_err()
+                            .contains(
+                                &crate::session::selection::SelectionCoordinatorError::Unavailable
+                                    .to_string()
+                            ));
+                    }
+                } else if !newer_b {
+                    result
+                        .expect("actual ordinary result")
+                        .expect("actual ordinary source tail");
+                }
+            }
+            let _ = delivery_finished.send(());
+        };
+        let readiness_observer = async {
+            if !check_reacquire {
+                return;
+            }
+            let baseline = retained_source_wait_cut(&control, Cut::Baseline).await;
+            let id = baseline.binding.unwrap().session_id();
+            assert!(
+                !pty_spawn_scope_may_resume(app, &route.target).await,
+                "real Preparing B is not strict retired A"
+            );
+            let waiting_id =
+                enqueue_shared_pty_engine_operation(&store, route, sender, b"waiting-preboundary");
+            let initial = store
+                .query_pty_input_by_injection(&waiting_id)
+                .unwrap()
+                .unwrap();
+            let claimed = store
+                .claim_pty_input(
+                    crate::phone::types::PtyInputSourcePlane::HostCli,
+                    Some(&waiting_id),
+                    &Uuid::new_v4().to_string(),
+                    chrono::Utc::now(),
+                )
+                .unwrap()
+                .unwrap();
+            let expires =
+                crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at).unwrap();
+            let mut heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
+                store.clone(),
+                waiting_id.clone(),
+                claimed.lease_owner.clone(),
+                expires,
+            );
+            let gate = state.target_gate.as_ref().unwrap().clone();
+            let shutdown = tokio_util::sync::CancellationToken::new();
+            {
+                let waiting = reacquire_pty_dispatch_target(
+                    app,
+                    (&store, &initial, &claimed),
+                    (&gate, &route.target, PtyReacquireGoal::Spawn),
+                    (expires, &shutdown),
+                    &mut heartbeat,
+                );
+                tokio::pin!(waiting);
+                assert!(
+                    std::future::poll_fn(|cx| std::task::Poll::Ready(
+                        waiting.as_mut().poll(cx).is_pending()
+                    ))
+                    .await
+                );
+                wait_observed.send(()).unwrap();
+                tokio::select! {
+                    biased;
+                    _ = &mut waiting => panic!("not-ready operation reacquired before real state change"),
+                    done = delivery_gate => done.expect("whole first source returned"),
+                }
+                // The first source has released its guards; the suspended
+                // operation must still own none, including exact/U/M.
+                let stripe = gate
+                    .try_target_lock(&route.target.canonical_fqn)
+                    .unwrap()
+                    .unwrap();
+                let exact = gate.acquire_exact(&route.target.canonical_fqn).await;
+                drop(exact);
+                drop(stripe);
+                assert!(!pty_spawn_scope_may_resume(app, &route.target).await);
+                retire_retained_fixture_member(fixture, coordinator, route, sender, id).await;
+                let (stripe, exact) = waiting
+                    .await
+                    .expect("real retirement resumes the SAME claim");
+                let ownership = gate
+                    .target_ownership(&route.target.canonical_fqn, &stripe, &exact)
+                    .unwrap();
+                let mut source = crate::session::selection::SourceExecutorGuard::unbound();
+                let actual = poller
+                    .spawn_pty_input_target(
+                        app,
+                        &claimed,
+                        &[],
+                        &route.sender,
+                        &route.target,
+                        crate::phone::types::PtyInputSourcePlane::HostCli,
+                        None,
+                        &ownership,
+                        &initial,
+                        None,
+                        &mut source,
+                        None,
+                    )
+                    .await;
+                assert!(matches!(
+                    actual,
+                    Err(crate::phone::types::PtyInputReasonCode::InconsistentSession)
+                ));
+                source.returned(false);
+                drop(exact);
+                drop(stripe);
+            }
+            assert!(
+                finish_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    &waiting_id,
+                    &claimed.lease_owner,
+                    crate::phone::types::PtyInputReasonCode::InconsistentSession
+                )
+                .await
+            );
+            let actual = store
+                .query_pty_input_by_injection(&waiting_id)
+                .unwrap()
+                .unwrap();
+            assert!(actual.terminal);
+            assert_eq!(
+                actual.reason.unwrap().code,
+                crate::phone::types::PtyInputReasonCode::InconsistentSession
+            );
+            let connection =
+                rusqlite::Connection::open(fixture._temp.path().join("retained-respawn.sqlite3"))
+                    .unwrap();
+            let (attempt, retries): (i64, i64) = connection.query_row(
+                    "SELECT attempt,(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND status='retry') FROM pty_input_operations WHERE injection_id=?1",
+                    [&waiting_id], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+            assert_eq!((attempt, retries), (claimed.attempt, 0));
+        };
+        let controller = async {
+            if scenario == "root-duplicate" || seal_insert_first {
+                let entered = retained_source_wait_cut(&control, Cut::SourceCoreEntered).await;
+                let weak = control.owner_weak(coordinator).unwrap();
+                assert_eq!(coordinator.fixture_root_count(), Some(1));
+                if seal_insert_first {
+                    assert_eq!(
+                        control.observe_owner(coordinator).unwrap().effects_started,
+                        0
+                    );
+                    let report =
+                        tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+                            .await
+                            .expect("real insertion precedes actual seal");
+                    assert!(
+                        !report.persistence_safe,
+                        "real admitted work is incomplete at seal"
+                    );
+                    resume_insertion.send(()).unwrap();
+                    return (entered.binding.unwrap().session_id(), None, weak);
+                }
+                assert_eq!(
+                    control.attempt_duplicate(coordinator).unwrap_err(),
+                    crate::session::selection::SelectionCoordinatorError::Busy.to_string()
+                );
+                assert_eq!(coordinator.fixture_root_count(), Some(1));
+                assert!(weak.is_alive());
+                assert_eq!(
+                    control.observe_owner(coordinator).unwrap().effects_started,
+                    0
+                );
+                assert!(manager
+                    .get_pending_session(entered.binding.unwrap())
+                    .await
+                    .is_none());
+                resume_insertion.send(()).unwrap();
+            } else {
+                drop(resume_insertion);
+            }
+            if seed_scenario {
+                observe_retained_seed_fixture(
+                    fixture,
+                    coordinator,
+                    &control,
+                    &manager,
+                    resume_native,
+                    scenario,
+                    &seed_source,
+                )
+                .await;
+            } else {
+                drop(resume_native);
+            }
+            let mut expected_communication = None;
+            if under_commit {
+                expected_communication =
+                    observe_retained_commit_setter(&control, &manager, resume_commit, full).await;
+            } else {
+                drop(resume_commit);
+            }
+            let baseline = retained_source_wait_cut(&control, Cut::Baseline).await;
+            let id = baseline.binding.unwrap().session_id();
+            let owner_weak = control
+                .owner_weak(coordinator)
+                .expect("actual baseline owner Weak");
+            assert_ne!(id, previous);
+            let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+            let version = manager
+                .with_current_carrier_snapshot(&permit, |current| current.versions[&id])
+                .await;
+            drop(permit);
+            if !under_commit {
+                assert_eq!(baseline.initial_version, Some(version));
+            }
+            let setter_version = if newer_b {
+                if !under_commit {
+                    expected_communication =
+                        set_retained_fixture_communication(&manager, id, full).await;
+                }
+                let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+                let changed = manager
+                    .with_current_carrier_snapshot(&permit, |current| current.versions[&id])
+                    .await;
+                drop(permit);
+                assert_ne!(Some(changed), baseline.initial_version);
+                Some(changed)
+            } else {
+                None
+            };
+            // Existing detector fixture stimulus; no Ready result is forged.
+            let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
+            idle.register_session(id, crate::session::profile::IdleTuning::DEFAULT);
+            idle.set_pty_input_ready_for_test(id);
+            hooks.real_inject_sessions.lock().unwrap().insert(id);
+            if check_reacquire {
+                wait_gate.await.expect("real not-ready observation");
+            }
+            resume_baseline.send(()).unwrap();
+            if let Some(expected_version) = setter_version {
+                retained_source_wait_cut(&control, Cut::BeforePublication).await;
+                let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+                let actual_version = manager
+                    .with_current_carrier_snapshot(&permit, |current| current.versions[&id])
+                    .await;
+                drop(permit);
+                assert_retained_source_reconciliation(
+                    &control,
+                    coordinator,
+                    actual_version,
+                    expected_version,
+                    baseline.initial_version,
+                );
+                resume_publication.send(()).unwrap();
+            } else {
+                drop(resume_publication);
+            }
+            if inline {
+                retained_source_wait_cut(&control, Cut::AdapterReturned).await;
+                assert_retained_source_inline_boundary(&control, coordinator, app, id, newer_b);
+                if shutdown_executing {
+                    let close =
+                        tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join());
+                    tokio::pin!(close);
+                    assert!(
+                        std::future::poll_fn(|cx| std::task::Poll::Ready(
+                            close.as_mut().poll(cx).is_pending()
+                        ))
+                        .await,
+                        "actual worker still executes its admitted inline envelope"
+                    );
+                    resume_release.send(()).unwrap();
+                    retained_source_wait_cut(&control, Cut::BeforeCarry).await;
+                    let report = close.await.expect("actual executing-inline shutdown/join");
+                    assert!(
+                        !report.persistence_safe,
+                        "actual source carry is still Running"
+                    );
+                    assert!(control.received.load(Ordering::Acquire));
+                    assert!(!control.observe_owner(coordinator).unwrap().transferred);
+                } else {
+                    resume_release.send(()).unwrap();
+                }
+            } else {
+                drop(resume_release);
+            }
+            if shutdown_executing {
+                resume_tail.send(()).unwrap();
+            } else {
+                drop(resume_tail);
+            }
+            if walk_terminal {
+                retained_source_wait_cut(&control, Cut::BeforeTerminalRemoval).await;
+                let actual = control.observe_owner(coordinator).unwrap();
+                assert!(
+                    actual.terminal && actual.transferred,
+                    "actual strict terminal proof precedes observer, outside U"
+                );
+                assert_eq!(coordinator.fixture_root_count(), Some(1));
+                let report =
+                    tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+                        .await
+                        .expect("actual terminal entry seal/traversal");
+                assert!(
+                    report.persistence_safe,
+                    "sealed traversal sees genuinely verified terminal owner"
+                );
+                assert!(owner_weak.is_alive());
+                resume_terminal.send(()).unwrap();
+            } else {
+                drop(resume_terminal);
+            }
+            (id, expected_communication, owner_weak)
+        };
+        let ((), (id, expected_communication, owner_weak), ()) =
+            tokio::time::timeout(Duration::from_secs(20), async {
+                tokio::join!(delivery, controller, readiness_observer)
+            })
+            .await
+            .expect("source and controller both progress");
+        if seal_insert_first {
+            assert_retained_source_sealed(
+                fixture,
+                coordinator,
+                &control,
+                &manager,
+                previous,
+                id,
+                injection,
+                &store,
+                &owner_weak,
+            )
+            .await;
+            return true;
+        }
+        if inline {
+            assert_retained_source_receipt_order(&control);
+        }
+        if newer_b {
+            assert_retained_source_newer_result(
+                fixture,
+                coordinator,
+                &control,
+                &manager,
+                previous,
+                id,
+                full,
+                expected_communication,
+            )
+            .await;
+        } else {
+            assert_retained_source_positive(
+                fixture, &manager, previous, id, injection, &store, &hooks,
+            )
+            .await;
+        }
+        if reclaim {
+            coordinator
+                .snapshot()
+                .await
+                .expect("real worker barrier after actual source transfer");
+            assert_eq!(
+                coordinator.fixture_root_count(),
+                Some(0),
+                "actual terminal removal reclaims capacity"
+            );
+            if operation + 1 < 66 {
+                retire_retained_fixture_member(fixture, coordinator, route, sender, id).await;
+                *previous_slot = id;
+            }
+            return false;
+        }
+        let report = coordinator.close_and_join().await;
+        assert_retained_source_lifetime(
+            coordinator,
+            &report,
+            &owner_weak,
+            full,
+            shutdown_executing,
+            walk_terminal,
+        );
+        false
+    }
+
+    async fn retained_exited_respawn_source_cell(pty_source: bool, inline: bool, scenario: &str) {
+        let reclaim = scenario == "reclaim-66";
+        let fixture = make_mailbox_fixture();
+
+        let (coordinator, route, sender, mut previous) =
+            prepare_retained_exited_respawn(&fixture).await;
+        if pty_source && scenario == "positive" {
+            assert_retained_pty_preboundary_rejections(
+                &fixture,
+                &coordinator,
+                &route,
+                sender,
+                previous,
+            )
+            .await;
+        }
+        for operation in 0..if reclaim { 66 } else { 1 } {
+            if retained_source_operation(
+                &fixture,
+                &coordinator,
+                &route,
+                sender,
+                &mut previous,
+                pty_source,
+                inline,
+                scenario,
+                operation,
+            )
+            .await
+            {
+                return;
+            }
+        }
+        if reclaim {
+            let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+                .await
+                .expect("one final close after genuine whole66 history");
+            assert!(
+                report.persistence_safe,
+                "whole66 actually completed: {:?}",
+                report.retained
+            );
+        }
+    }
+
+    async fn configure_retained_context_fixture(fixture: &MailboxFixture) {
+        let app = fixture.app.handle();
+        let origin = fixture
+            .target_cwd
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("_agent_dev-rust");
+        std::fs::write(
+            origin.join("Role.md"),
+            "# Fixture role\nActual native context content.\n",
+        )
+        .unwrap();
+        let mut settings = app.state::<SettingsState>().read().await.clone();
+        settings
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == "codex")
+            .unwrap()
+            .instructions_filename = Some("AGENTS.md".into());
+        crate::config::settings::validate_and_repair_settings(&mut settings).unwrap();
+        let written = crate::config::settings::save_settings(&settings).unwrap();
+        *app.state::<SettingsState>().write().await = written;
+    }
+
+    async fn assert_retained_native_paused(
+        control: &crate::session::selection::ReplacementFixtureControl,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        manager: &SessionManager,
+        pty_manager: &Arc<Mutex<PtyManager>>,
+        binding: crate::session::manager::PendingCreateBinding,
+        backend: &MailboxMockPtyBackend,
+        kills: usize,
+    ) {
+        assert!(
+            !control
+                .cleanup_observed_stopped(coordinator, manager, pty_manager)
+                .await,
+            "Started native vetoes stopped-source cleanup"
+        );
+        assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills);
+        assert!(manager.get_pending_session(binding).await.is_some());
+        assert!(
+            !control
+                .observe_owner(coordinator)
+                .unwrap()
+                .rollback_completed
+        );
+        assert!(!control.observe_owner(coordinator).unwrap().transferred);
+        // The operation deadline above has ended. This is the real product five-second close.
+        let report = coordinator.close_and_join().await;
+        assert!(!report.persistence_safe);
+        assert!(report
+            .retained
+            .iter()
+            .any(|reason| reason == "reason=blocking-seed-transaction-await state=retained"));
+        assert_eq!(coordinator.fixture_native_work_counts(), Some((1, 1)));
+    }
+
+    async fn retained_exited_respawn_native_waiter_cell(pty: bool, seed: bool) {
+        use crate::session::selection::{
+            ReplacementFixtureAction as Action, ReplacementFixtureControl,
+            ReplacementFixtureCut as Cut,
+        };
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle();
+        let (coordinator, route, sender, previous) =
+            prepare_retained_exited_respawn(&fixture).await;
+        configure_retained_context_fixture(&fixture).await;
+        let seed_source = fixture
+            .target_cwd
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("default.p05-seed");
+        if seed {
+            configure_retained_seed_fixture(&fixture, &seed_source).await;
+        }
+        let control = Arc::new(ReplacementFixtureControl::default());
+        control.ticket_only.store(true, Ordering::Release);
+        control.mock_backend.store(true, Ordering::Release);
+        let entered = if seed {
+            Cut::SeedNativeEnter
+        } else {
+            Cut::ContextNativeEnter
+        };
+        let returned = if seed {
+            Cut::SeedNativeReturned
+        } else {
+            Cut::ContextNativeReturned
+        };
+        let (resume_native, native_gate) = tokio::sync::oneshot::channel();
+        control.actions.lock().unwrap().push(Action::Pause {
+            cut: entered,
+            resume: native_gate,
+        });
+        let (panic_source, panic_gate) = tokio::sync::oneshot::channel();
+        *control.native_await_panic.lock().unwrap() = Some(if seed {
+            crate::session::selection::NativeAwaitPanicOnce::Seed(panic_gate)
+        } else {
+            crate::session::selection::NativeAwaitPanicOnce::Context(panic_gate)
+        });
+        let hooks = MailboxTestHooks::default();
+        *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+        let poller = MailboxPoller::new_with_test_hooks(hooks);
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let backend = pty_manager
+            .lock()
+            .unwrap()
+            .backend_for_kind(SessionBackendKind::LocalProcess);
+        let backend = backend
+            .as_any()
+            .downcast_ref::<MailboxMockPtyBackend>()
+            .expect("actual mock backend");
+        let kills = backend.kill_attempts.load(Ordering::SeqCst);
+        let state = app.state::<crate::api::message_store::MessageStoreState>();
+        let store = state.store.as_ref().unwrap().clone();
+        let injection = pty.then(|| {
+            enqueue_shared_pty_engine_operation(&store, &route, sender, b"native-waiter-source")
+        });
+        let mut message = wake_message_to_target();
+        message.id = format!("native-waiter-{}", Uuid::new_v4());
+        let binding = {
+            let delivery = async {
+                if let Some(injection) = injection.as_deref() {
+                    poller
+                        .dispatch_pty_input_operation(
+                            app,
+                            &state,
+                            injection,
+                            crate::phone::types::PtyInputSourcePlane::HostCli,
+                            None,
+                        )
+                        .await;
+                } else {
+                    let _ = poller.deliver_wake(app, &message).await;
+                }
+            };
+            tokio::pin!(delivery);
+            let controller = observe_retained_native_source_unwind(
+                seed,
+                &fixture,
+                &coordinator,
+                &control,
+                entered,
+                panic_source,
+            );
+            tokio::time::timeout(Duration::from_secs(20), async {
+                tokio::select! {
+                    biased;
+                    () = &mut delivery => panic!("source waiter unexpectedly returned before actual source unwind"),
+                    binding = controller => binding,
+                }
+            }).await.expect("actual native enter and accepted-source unwind")
+            // Only now does the scope drop the outer result-cell waiter as housekeeping.
+        };
+        assert_retained_native_paused(
+            &control,
+            &coordinator,
+            &manager,
+            &pty_manager,
+            binding,
+            backend,
+            kills,
+        )
+        .await;
+        resume_native.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            retained_source_wait_cut(&control, returned).await;
+            while coordinator.fixture_native_work_counts() != Some((0, 0)) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("same native closure returns normally and actual tracker drains");
+        let actual = control
+            .native_results
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(cut, _)| *cut == returned)
+            .unwrap()
+            .1
+            .clone();
+        assert_retained_native_result(&fixture, seed, &actual);
+        let after = coordinator.close_and_join().await;
+        assert!(!after
+            .retained
+            .iter()
+            .any(|reason| reason == "reason=blocking-seed-transaction-await state=retained"));
+        assert!(manager.get_session(previous).await.is_some());
+        assert!(shared_engine_writes(app, binding.session_id()).is_empty());
+        assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills);
+        if let Some(injection) = injection {
+            assert!(
+                !store
+                    .query_pty_input_by_injection(&injection)
+                    .unwrap()
+                    .unwrap()
+                    .terminal
+            );
+        }
+    }
+
+    async fn assert_retained_failure_close(
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        setup_rolled_back: bool,
+    ) {
+        let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+            .await
+            .expect("actual failure close");
+        if !setup_rolled_back {
+            assert!(
+                !report.persistence_safe,
+                "incomplete failure cannot certify safety"
+            );
+        } else {
+            assert!(
+                report.persistence_safe,
+                "actual returned setup failure must finish its own verified rollback/handoff: {:?}",
+                report.retained
+            );
+            assert_eq!(coordinator.fixture_root_count(), Some(0));
+        }
+    }
+
+    async fn retained_exited_respawn_failure_cell(pty: bool, inline: bool, scenario: &str) {
+        use crate::session::selection::{ReplacementFixtureControl, ReplacementFixtureCut as Cut};
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle();
+        let (coordinator, route, sender, previous) =
+            prepare_retained_exited_respawn(&fixture).await;
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let control = Arc::new(ReplacementFixtureControl::default());
+        control.ticket_only.store(!inline, Ordering::Release);
+        if scenario == "native-seed-panic" {
+            let seed_source = fixture
+                .target_cwd
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("default.p05-seed");
+            configure_retained_seed_fixture(&fixture, &seed_source).await;
+        }
+        if scenario == "pre-context" {
+            *control.context_notification.lock().unwrap() =
+                crate::session::selection::FixtureContextNotification::Armed;
+        }
+        if scenario == "pre-context" || scenario == "native-context-panic" {
+            configure_retained_context_fixture(&fixture).await;
+        }
+        let (resume_context, context_gate) = tokio::sync::oneshot::channel();
+        let mut context_gate = Some(context_gate);
+        let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let backend = pty_manager
+            .lock()
+            .unwrap()
+            .backend_for_kind(SessionBackendKind::LocalProcess);
+        let backend = backend
+            .as_any()
+            .downcast_ref::<MailboxMockPtyBackend>()
+            .expect("actual mock backend");
+        control.mock_backend.store(true, Ordering::Release);
+        let kills_before = backend.kill_attempts.load(Ordering::SeqCst);
+        let physical_cut = match scenario {
+            "pre-finalize" => Some(Cut::BeforeFinalizer),
+            "post-carry-runtime" => Some(Cut::BeforeCarry),
+            "post-rename-physical" => Some(Cut::PublicationPrepared),
+            "post-retire-runtime" => Some(Cut::BeforeRetirement),
+            _ => None,
+        };
+        let (resume_physical, physical_gate) = tokio::sync::oneshot::channel();
+        let mut physical_gate = Some(physical_gate);
+        let old_publication = (scenario == "post-rename-physical").then(|| {
+            std::fs::read(crate::config::config_dir().unwrap().join("sessions.json")).unwrap()
+        });
+        let action = retained_failure_action(
+            scenario,
+            inline,
+            &control,
+            backend,
+            physical_cut,
+            &mut physical_gate,
+            &mut context_gate,
+        );
+        if let Some(action) = action {
+            control.actions.lock().unwrap().push(action);
+        }
+        let hooks = MailboxTestHooks::default();
+        *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+        let poller = MailboxPoller::new_with_test_hooks(hooks);
+        let state = app.state::<crate::api::message_store::MessageStoreState>();
+        let store = state.store.as_ref().unwrap().clone();
+        let injection = pty.then(|| {
+            enqueue_shared_pty_engine_operation(&store, &route, sender, b"failure-source")
+        });
+        let mut message = wake_message_to_target();
+        message.id = format!("failure-source-{}", Uuid::new_v4());
+        let delivery = async {
+            if let Some(injection) = injection.as_deref() {
+                poller
+                    .dispatch_pty_input_operation(
+                        app,
+                        &state,
+                        injection,
+                        crate::phone::types::PtyInputSourcePlane::HostCli,
+                        None,
+                    )
+                    .await;
+                None
+            } else {
+                retained_fixture_ordinary_wake(&poller, app, &message, &control).await
+            }
+        };
+        let unwound = async {
+            loop {
+                if control
+                    .observe_owner(&coordinator)
+                    .is_some_and(|owner| owner.source_unwound)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+        let native_controller = async {
+            retained_failure_physical_controller(
+                scenario,
+                physical_cut,
+                &control,
+                &coordinator,
+                &pty_manager,
+                resume_physical,
+            )
+            .await;
+            retained_failure_context_controller(
+                scenario,
+                &fixture,
+                &coordinator,
+                &control,
+                &manager,
+                &pty_manager,
+                resume_context,
+            )
+            .await;
+        };
+        let ordinary = tokio::time::timeout(Duration::from_secs(20), async {
+            let source = async {
+                tokio::select! { actual = delivery => actual, () = unwound => None }
+            };
+            let (actual, ()) = tokio::join!(source, native_controller);
+            actual
+        })
+        .await
+        .expect("real failure return or actual accepted-source unwind");
+        let receipt = control
+            .receipts
+            .lock()
+            .unwrap()
+            .first()
+            .copied()
+            .expect("actual operation receipt");
+        let binding = receipt.binding.expect("actual B binding");
+        assert!(
+            shared_engine_writes(app, binding.session_id()).is_empty(),
+            "no positive source input"
+        );
+        assert!(
+            manager.get_session(previous).await.is_some(),
+            "pre-retirement source A retained"
+        );
+        let owner = control.observe_owner(&coordinator);
+        let setup_rolled_back = matches!(
+            scenario,
+            "pre-backend" | "pre-binder" | "pre-context" | "pre-finalize"
+        );
+        if setup_rolled_back {
+            assert_retained_setup_failure(
+                ordinary,
+                scenario,
+                inline,
+                &control,
+                &manager,
+                &pty_manager,
+                binding,
+                receipt,
+                kills_before,
+                backend,
+            )
+            .await;
+        } else {
+            let owner = owner.as_ref().expect("incomplete owner remains retained");
+            assert!(!owner.terminal && !owner.transferred);
+            if scenario == "native-context-panic" || scenario == "native-seed-panic" {
+                assert_retained_native_failure(
+                    &ordinary,
+                    scenario,
+                    &control,
+                    owner,
+                    &manager,
+                    binding,
+                    backend,
+                    kills_before,
+                )
+                .await;
+            }
+            if scenario == "pre-rollback-error" {
+                assert_retained_failed_rollback(ordinary, pty, owner, backend, kills_before);
+            }
+            assert_retained_committed_failure(
+                scenario,
+                pty,
+                &control,
+                &coordinator,
+                &manager,
+                &pty_manager,
+                binding,
+                owner,
+                kills_before,
+                backend,
+                old_publication,
+                receipt,
+            )
+            .await;
+        }
+        assert_retained_failure_close(&coordinator, setup_rolled_back).await;
+    }
+
+    async fn retained_fixture_ordinary_wake(
+        poller: &MailboxPoller,
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        message: &OutboxMessage,
+        control: &crate::session::selection::ReplacementFixtureControl,
+    ) -> Option<Result<OutboxMessage, String>> {
+        tokio::select! {
+            biased;
+            actual = poller.deliver_wake(app, message) => Some(actual),
+            _ = retained_source_wait_cut(control,
+                crate::session::selection::ReplacementFixtureCut::SourceRetainedReturn) => None,
+        }
+        // None means only that the real core returned Retained and its public
+        // pending waiter was dropped. It is never a product result or success.
+    }
+
+    async fn retained_source_wait_cut(
+        control: &crate::session::selection::ReplacementFixtureControl,
+        cut: crate::session::selection::ReplacementFixtureCut,
+    ) -> crate::session::selection::ReplacementFixtureReceipt {
+        loop {
+            if let Some(receipt) = control
+                .receipts
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|receipt| receipt.cut == cut)
+                .copied()
+            {
+                return receipt;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    async fn retained_exited_respawn_pty_held_cell(scenario: &str) {
+        use crate::session::selection::{
+            OwnedSourceStop, ReplacementFixtureAction as Action, ReplacementFixtureControl,
+            ReplacementFixtureCut as Cut,
+        };
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle();
+        let (coordinator, route, sender, _) = prepare_retained_exited_respawn(&fixture).await;
+        assert!(app.manage(crate::shutdown::ShutdownSignal::new()));
+        let control = Arc::new(ReplacementFixtureControl::default());
+        let (resume_validation, validation) = tokio::sync::oneshot::channel();
+        let (resume_bridge, bridge) = tokio::sync::oneshot::channel();
+        let (lose_receiver, receiver) = tokio::sync::oneshot::channel();
+        let mut lose_receiver = Some(lose_receiver);
+        *control.live_receiver_drop.lock().unwrap() = Some(receiver);
+        control.actions.lock().unwrap().extend([
+            Action::Pause {
+                cut: Cut::BeforeSourceValidation,
+                resume: validation,
+            },
+            Action::Pause {
+                cut: Cut::AdapterOutcomeBeforeLeaseDrop,
+                resume: bridge,
+            },
+        ]);
+        let hooks = MailboxTestHooks::default();
+        *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+        let poller = MailboxPoller::new_with_test_hooks(hooks);
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        if scenario == "pty-held-rollback" {
+            let backend = pty
+                .lock()
+                .unwrap()
+                .backend_for_kind(SessionBackendKind::LocalProcess);
+            backend
+                .as_any()
+                .downcast_ref::<MailboxMockPtyBackend>()
+                .unwrap()
+                .fail_spawn
+                .store(true, Ordering::SeqCst);
+        }
+        let state = app.state::<crate::api::message_store::MessageStoreState>();
+        let store = state.store.as_ref().unwrap().clone();
+        let injection =
+            enqueue_shared_pty_engine_operation(&store, &route, sender, b"held-clone-source");
+        let delivery = poller.dispatch_pty_input_operation(
+            app,
+            &state,
+            &injection,
+            crate::phone::types::PtyInputSourcePlane::HostCli,
+            None,
+        );
+        let controller = async {
+            let entered = retained_source_wait_cut(&control, Cut::BeforeSourceValidation).await;
+            let binding = entered.binding.expect("actual held source binding");
+            if scenario == "pty-held-stop" {
+                let settings = app.state::<SettingsState>();
+                settings
+                    .write()
+                    .await
+                    .agents
+                    .iter_mut()
+                    .find(|agent| agent.id == "codex")
+                    .expect("actual selected agent")
+                    .command
+                    .push_str(" --changed-held-recipe");
+            }
+            if scenario == "pty-cancel-held" {
+                app.state::<crate::shutdown::ShutdownSignal>().trigger();
+                drop(lose_receiver.take());
+                loop {
+                    if control.restoration_failed.load(Ordering::Acquire) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                assert!(control.restoration_shared.load(Ordering::Acquire));
+                resume_validation
+                    .send(())
+                    .expect("real worker still owns clone after source deadline cancellation");
+            } else {
+                resume_validation.send(()).unwrap();
+            }
+            retained_source_wait_cut(&control, Cut::AdapterOutcomeBeforeLeaseDrop).await;
+            let observed = control
+                .observe_owner(&coordinator)
+                .expect("actual retained owner");
+            if scenario == "pty-held-stop" {
+                assert_eq!(
+                    observed.source_stop,
+                    Some(OwnedSourceStop::AuthorityChanged)
+                );
+            } else if scenario == "pty-held-rollback" {
+                assert!(
+                    observed.rollback_completed,
+                    "actual setup rollback completed before bridge pause"
+                );
+            }
+            if scenario != "pty-cancel-held" {
+                lose_receiver
+                    .take()
+                    .unwrap()
+                    .send(())
+                    .expect("actual live helper receiver");
+                loop {
+                    if control.restoration_failed.load(Ordering::Acquire) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                assert!(
+                    control.restoration_shared.load(Ordering::Acquire),
+                    "worker clone genuinely prevents raw restoration"
+                );
+            }
+            assert!(!control.received.load(Ordering::Acquire));
+            assert!(shared_engine_writes(app, binding.session_id()).is_empty());
+            assert!(!control.observe_owner(&coordinator).unwrap().transferred);
+            resume_bridge.send(()).unwrap();
+            binding
+        };
+        let ((), binding) = tokio::time::timeout(Duration::from_secs(20), async {
+            tokio::join!(delivery, controller)
+        })
+        .await
+        .expect("actual held worker/source schedule");
+        let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+            .await
+            .expect("held-source close");
+        assert!(
+            !report.persistence_safe,
+            "lost source receipt never certifies work completion"
+        );
+        let current = store
+            .query_pty_input_by_injection(&injection)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !current.terminal,
+            "inert restoration loss does not fabricate terminal/handoff"
+        );
+        assert!(shared_engine_writes(app, binding.session_id()).is_empty());
+        assert!(!control.observe_owner(&coordinator).unwrap().transferred);
+    }
+
+    async fn retained_exited_respawn_submit_refused_cell(pty: bool, close_first: bool) {
+        use crate::session::selection::{
+            ReplacementFixtureAction as Action, ReplacementFixtureControl,
+            ReplacementFixtureCut as Cut,
+        };
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle();
+        let (coordinator, route, sender, _) = prepare_retained_exited_respawn(&fixture).await;
+        let control = Arc::new(ReplacementFixtureControl::default());
+        let (resume_source, gate) = tokio::sync::oneshot::channel();
+        control.actions.lock().unwrap().push(Action::Pause {
+            cut: Cut::SourceCoreEntered,
+            resume: gate,
+        });
+        let hooks = MailboxTestHooks::default();
+        *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+        let poller = MailboxPoller::new_with_test_hooks(hooks);
+        let state = app.state::<crate::api::message_store::MessageStoreState>();
+        let store = state.store.as_ref().unwrap().clone();
+        let injection = pty.then(|| {
+            enqueue_shared_pty_engine_operation(&store, &route, sender, b"refused-source")
+        });
+        let mut message = wake_message_to_target();
+        message.id = format!("submit-refused-{}", Uuid::new_v4());
+        let delivery = async {
+            if let Some(injection) = injection.as_deref() {
+                poller
+                    .dispatch_pty_input_operation(
+                        app,
+                        &state,
+                        injection,
+                        crate::phone::types::PtyInputSourcePlane::HostCli,
+                        None,
+                    )
+                    .await;
+            } else {
+                let _ = retained_fixture_ordinary_wake(&poller, app, &message, &control).await;
+            }
+        };
+        let controller = async {
+            let entered = retained_source_wait_cut(&control, Cut::SourceCoreEntered).await;
+            let mut reservations = Vec::new();
+            let closed = if close_first {
+                let report =
+                    tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+                        .await
+                        .expect("real close before reserve");
+                assert!(
+                    !report.persistence_safe,
+                    "actual admitted source remains incomplete"
+                );
+                Some(report)
+            } else {
+                None
+            };
+            if !close_first {
+                loop {
+                    match coordinator.reserve_auto_close() {
+                        Ok(ticket) => reservations.push(ticket),
+                        Err(error) => {
+                            assert_eq!(
+                                error,
+                                crate::session::selection::SelectionCoordinatorError::Busy
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+            assert!(
+                close_first || !reservations.is_empty(),
+                "genuine envelope/slot capacity was reserved"
+            );
+            resume_source.send(()).unwrap();
+            retained_source_wait_cut(&control, Cut::SubmitFailed).await;
+            assert!(!control.submitted.load(Ordering::Acquire));
+            assert!(!control.received.load(Ordering::Acquire));
+            let owner = control
+                .observe_owner(&coordinator)
+                .expect("same admitted source owner");
+            assert!(!owner.transferred && !owner.terminal);
+            let binding = entered.binding.unwrap();
+            assert!(shared_engine_writes(app, binding.session_id()).is_empty());
+            drop(reservations);
+            closed
+        };
+        let ((), closed) = tokio::time::timeout(Duration::from_secs(20), async {
+            tokio::join!(delivery, controller)
+        })
+        .await
+        .expect("actual submit-refused schedule");
+        let report = match closed {
+            Some(report) => report,
+            None => tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+                .await
+                .expect("refused source close"),
+        };
+        assert!(
+            !report.persistence_safe,
+            "submission refusal retains accepted source work"
+        );
+    }
+
+    async fn retained_exited_respawn_entry_restart_reclaim_cell() {
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle();
+        let (coordinator, _, _, mut current) = prepare_retained_exited_respawn(&fixture).await;
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        for _ in 0..66 {
+            let previous = current;
+            let actual = tokio::time::timeout(Duration::from_secs(20), coordinator.restart_lifecycle(
+                app.clone(), crate::commands::session::RestartJobRequest {
+                    session_id: previous, agent_id: None, requested_profile: None,
+                    skip_auto_resume: Some(true), activate_after: false,
+                    intent: crate::session::selection::TrustedRestartIntent::Background,
+                    communication_override: None,
+                    enforcement: crate::config::sessions_persistence::default_creation_gate_enforcement(),
+                }))
+                .await.expect("actual same-history Restart entry deadline")
+                .expect("actual legacy restart result");
+            current = Uuid::parse_str(&actual.id).unwrap();
+            assert_ne!(current, previous);
+            assert!(manager.get_session(previous).await.is_none());
+            assert!(manager.get_session(current).await.is_some());
+            assert!(!pty.lock().unwrap().has_session(previous));
+            assert!(pty.lock().unwrap().has_session(current));
+            assert_eq!(
+                coordinator.fixture_root_count(),
+                Some(0),
+                "actual Restart EntryTerminal/effects/lease release precedes next admission"
+            );
+        }
+        let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+            .await
+            .expect("actual Restart-entry reclamation close");
+        assert!(
+            report.persistence_safe,
+            "Restart has its own actual terminal result/effects"
+        );
+    }
+
+    async fn retained_exited_respawn_entry_root_reclaim_cell() {
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle();
+        let (coordinator, _, _, _) = prepare_retained_exited_respawn(&fixture).await;
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let request = crate::commands::session::RootJobRequest {
+            requested_agent_id: Some("codex".into()),
+            requested_profile: None,
+            skip_auto_resume_for_new_session: true,
+            intent: crate::session::selection::TrustedCreateIntent::Background,
+            select_after: false,
+        };
+        let first = tokio::time::timeout(
+            Duration::from_secs(20),
+            coordinator.root_lifecycle(app.clone(), request.clone()),
+        )
+        .await
+        .expect("actual initial Root entry deadline")
+        .expect("actual Root entry creates its root directory/session");
+        let mut id = Uuid::parse_str(&first.id).unwrap();
+        assert!(manager.get_session(id).await.unwrap().is_root_agent);
+        assert!(app
+            .state::<Arc<Mutex<PtyManager>>>()
+            .lock()
+            .unwrap()
+            .has_session(id));
+        assert_eq!(
+            coordinator.fixture_root_count(),
+            Some(0),
+            "actual initial EntryTerminal removed"
+        );
+        for operation in 0..66 {
+            id = retained_root_reclaim_operation(
+                &fixture,
+                &coordinator,
+                &manager,
+                &request,
+                id,
+                operation,
+            )
+            .await;
+        }
+        let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+            .await
+            .expect("actual Root-entry reclamation close");
+        assert!(
+            report.persistence_safe,
+            "Root entries use their own verified terminal contract"
+        );
+    }
+
+    async fn retained_exited_respawn_root_full_cell(pty: bool, inline: bool) {
+        use crate::session::selection::{
+            ReplacementFixtureAction as Action, ReplacementFixtureControl,
+            ReplacementFixtureCut as Cut,
+        };
+        let fixture = make_mailbox_fixture();
+        // Provision the whole immutable team authority before the sole restore.
+        let members: Vec<_> = (0..66)
+            .map(|index| provision_retained_fixture_member(&fixture, &format!("root-full-{index}")))
+            .collect();
+        let app = fixture.app.handle();
+        let (coordinator, _, sender, _) = prepare_retained_exited_respawn(&fixture).await;
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let state = app.state::<crate::api::message_store::MessageStoreState>();
+        let store = state.store.as_ref().unwrap().clone();
+        // Retire every real prerequisite before any retained work is admitted;
+        // an unrelated later close must not compete with earlier Preparing.
+        let mut retired = Vec::with_capacity(members.len());
+        for (replica, target) in &members {
+            let (route, previous) = tokio::time::timeout(
+                Duration::from_secs(20),
+                prepare_additional_retained_member(&fixture, &coordinator, sender, replica, target),
+            )
+            .await
+            .expect("actual retired member prerequisite");
+            retired.push((route, previous, target.clone()));
+        }
+        assert_eq!(coordinator.fixture_root_count(), Some(0));
+        for (index, (route, previous, target)) in retired.iter().enumerate() {
+            tokio::time::timeout(Duration::from_secs(20), async {
+                let control = Arc::new(ReplacementFixtureControl::default());
+                control.ticket_only.store(!inline, Ordering::Release);
+                if index < 65 {
+                    control.actions.lock().unwrap().push(Action::PanicOnce { cut: Cut::SourceCoreEntered });
+                }
+                let hooks = MailboxTestHooks::default();
+                *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+                let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+                let injection = pty.then(|| enqueue_shared_pty_engine_operation(
+                    &store, route, sender, b"root-full-retained-source"));
+                let mut message = wake_message_to_target();
+                message.id = format!("root-full-{index}-{}", Uuid::new_v4());
+                message.to = target.clone();
+                let actual_delivery = async {
+                    if let Some(injection) = injection.as_deref() {
+                        poller.dispatch_pty_input_operation(app, &state, injection,
+                            crate::phone::types::PtyInputSourcePlane::HostCli, None).await;
+                    } else {
+                        let actual = poller.deliver_wake(app, &message).await;
+                        if index == 65 {
+                            assert!(actual.unwrap_err().contains(
+                                &crate::session::selection::SelectionCoordinatorError::Busy.to_string()),
+                                "actual full root maps to Busy");
+                        }
+                    }
+                };
+                if index < 65 {
+                    let stopped = async {
+                        loop {
+                            if control.observe_owner(&coordinator).is_some_and(|owner| owner.source_stopped) { break; }
+                            tokio::task::yield_now().await;
+                        }
+                    };
+                    tokio::select! {
+                        () = actual_delivery => panic!("real accepted-core panic leaves its outer waiter ambiguous"),
+                        () = stopped => {},
+                    }
+                    let receipt = retained_source_wait_cut(&control, Cut::SourceCoreEntered).await;
+                    let owner = control.observe_owner(&coordinator).unwrap();
+                    assert!(owner.source_stopped && !owner.terminal && !owner.transferred);
+                    assert_eq!(owner.effects_started, 0, "no finalization/native capacity consumed");
+                    assert!(manager.get_pending_session(receipt.binding.unwrap()).await.is_none());
+                    assert!(!control.submitted.load(Ordering::Acquire));
+                    assert!(shared_engine_writes(app, receipt.binding.unwrap().session_id()).is_empty());
+                    assert_eq!(coordinator.fixture_root_count(), Some(index + 1));
+                } else {
+                    actual_delivery.await;
+                    assert_eq!(coordinator.fixture_root_count(), Some(65));
+                    assert!(control.receipts.lock().unwrap().is_empty(), "refused attempt was never accepted");
+                }
+                assert!(manager.get_session(*previous).await.is_some());
+                assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+                assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+                if let Some(injection) = injection {
+                    let actual = store.query_pty_input_by_injection(&injection).unwrap().unwrap();
+                    assert_ne!(actual.status, crate::phone::types::PtyInputPublicStatus::Injected);
+                    assert!(!actual.terminal, "retained work cannot claim a terminal handoff");
+                    if index == 65 {
+                        assert_eq!(actual.reason.map(|reason| reason.code),
+                            Some(crate::phone::types::PtyInputReasonCode::StoreTransient));
+                    }
+                }
+            }).await.expect("same-history root member admission/refusal");
+        }
+        assert_eq!(coordinator.fixture_root_count(), Some(65));
+        let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+            .await
+            .expect("actual full retained root close");
+        assert!(!report.persistence_safe);
+        assert_eq!(
+            coordinator.fixture_root_count(),
+            Some(65),
+            "no fake completion/reset during seal"
+        );
+    }
+
+    async fn retained_exited_respawn_root_refusal_cell(pty: bool, inline: bool, poison: bool) {
+        use crate::session::selection::ReplacementFixtureControl;
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle();
+        let (coordinator, route, sender, previous) =
+            prepare_retained_exited_respawn(&fixture).await;
+        let control = Arc::new(ReplacementFixtureControl::default());
+        control.ticket_only.store(!inline, Ordering::Release);
+        let (resume, gate) = tokio::sync::oneshot::channel();
+        *control.preaccept_gate.lock().unwrap() = Some(gate);
+        let hooks = MailboxTestHooks::default();
+        *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let mut before: Vec<_> = manager
+            .list_sessions()
+            .await
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        before.sort();
+        let state = app.state::<crate::api::message_store::MessageStoreState>();
+        let store = state.store.as_ref().unwrap().clone();
+        let injection = pty
+            .then(|| enqueue_shared_pty_engine_operation(&store, &route, sender, b"root-refused"));
+        let mut message = wake_message_to_target();
+        message.id = format!("root-refused-{}", Uuid::new_v4());
+        let delivery = async {
+            if let Some(injection) = injection.as_deref() {
+                poller
+                    .dispatch_pty_input_operation(
+                        app,
+                        &state,
+                        injection,
+                        crate::phone::types::PtyInputSourcePlane::HostCli,
+                        None,
+                    )
+                    .await;
+            } else {
+                let error = poller
+                    .deliver_wake(app, &message)
+                    .await
+                    .expect_err("actual unavailable source mapping");
+                assert!(
+                    error.contains(
+                        &crate::session::selection::SelectionCoordinatorError::Unavailable
+                            .to_string()
+                    ),
+                    "actual root refusal: {error}"
+                );
+            }
+        };
+        let controller = async {
+            while !control.preaccept_entered.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(coordinator.fixture_root_count(), Some(0));
+            if poison {
+                coordinator.fixture_poison_root();
+            } else {
+                let report =
+                    tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+                        .await
+                        .expect("actual root close-first");
+                assert!(
+                    report.persistence_safe,
+                    "no admitted owner before actual seal"
+                );
+            }
+            resume.send(()).unwrap();
+        };
+        tokio::time::timeout(Duration::from_secs(20), async {
+            tokio::join!(delivery, controller);
+        })
+        .await
+        .expect("actual producer refusal after root poison/seal");
+        let mut after: Vec<_> = manager
+            .list_sessions()
+            .await
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        after.sort();
+        assert_eq!(after, before, "refusal added no row or pending B");
+        assert!(manager.get_session(previous).await.is_some());
+        assert!(
+            control.receipts.lock().unwrap().is_empty(),
+            "no accepted operation/effect receipt"
+        );
+        assert!(!control.submitted.load(Ordering::Acquire));
+        assert!(!control.received.load(Ordering::Acquire));
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+        if let Some(injection) = injection {
+            let actual = store
+                .query_pty_input_by_injection(&injection)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                actual.status,
+                crate::phone::types::PtyInputPublicStatus::Queued
+            );
+            assert!(!actual.terminal);
+            assert_eq!(
+                actual.reason.map(|reason| reason.code),
+                Some(crate::phone::types::PtyInputReasonCode::StoreTransient)
+            );
+        }
+        let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+            .await
+            .expect("actual root-refusal traversal");
+        assert_eq!(
+            report.persistence_safe, !poison,
+            "poisoned root cannot be empty-safe"
+        );
+    }
+
+    async fn retained_exited_respawn_caller_cell(pty: bool, inline: bool, before_accept: bool) {
+        use crate::session::selection::{
+            ReplacementFixtureAction as Action, ReplacementFixtureControl,
+            ReplacementFixtureCut as Cut,
+        };
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle();
+        let (coordinator, route, sender, previous) =
+            prepare_retained_exited_respawn(&fixture).await;
+        let control = Arc::new(ReplacementFixtureControl::default());
+        control.ticket_only.store(!inline, Ordering::Release);
+        let (resume, gate) = tokio::sync::oneshot::channel();
+        let (resume_core, core_gate) = tokio::sync::oneshot::channel();
+        if before_accept {
+            *control.preaccept_gate.lock().unwrap() = Some(gate);
+        } else {
+            *control.baseline_gate.lock().unwrap() = Some(gate);
+            if pty {
+                *control.accepted_core_gate.lock().unwrap() = Some(core_gate);
+            } else {
+                control.actions.lock().unwrap().push(Action::Pause {
+                    cut: Cut::SourceCoreEntered,
+                    resume: core_gate,
+                });
+            }
+        }
+        let hooks = MailboxTestHooks::default();
+        *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let state = app.state::<crate::api::message_store::MessageStoreState>();
+        let store = state.store.as_ref().unwrap().clone();
+        let injection = pty
+            .then(|| enqueue_shared_pty_engine_operation(&store, &route, sender, b"caller-source"));
+        let mut message = wake_message_to_target();
+        message.id = format!("caller-source-{}", Uuid::new_v4());
+        let (cancel, canceled) = tokio::sync::oneshot::channel::<()>();
+        let caller_dropped = AtomicBool::new(false);
+        let delivery = async {
+            if let Some(injection) = injection.as_deref() {
+                poller
+                    .dispatch_pty_input_operation(
+                        app,
+                        &state,
+                        injection,
+                        crate::phone::types::PtyInputSourcePlane::HostCli,
+                        None,
+                    )
+                    .await;
+            } else {
+                let _ = retained_fixture_ordinary_wake(&poller, app, &message, &control).await;
+            }
+        };
+        let caller = async {
+            tokio::select! {
+                biased;
+                () = async { canceled.await.expect("controller canceled actual outer waiter"); } => {},
+                () = delivery => panic!("fixture cancellation must precede source result"),
+            }
+            caller_dropped.store(true, Ordering::Release);
+        };
+        let controller = async {
+            if before_accept {
+                loop {
+                    if control.preaccept_entered.load(Ordering::Acquire) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                assert_eq!(coordinator.fixture_root_count(), Some(0));
+                cancel.send(()).unwrap();
+                while !caller_dropped.load(Ordering::Acquire) {
+                    tokio::task::yield_now().await;
+                }
+                // The canceled caller owns no accepted core. Its gate is
+                // dropped as housekeeping, never resumed to manufacture one.
+                drop(resume);
+                drop(resume_core);
+                assert!(!control.accepted_core_entered.load(Ordering::Acquire));
+                assert!(control.receipts.lock().unwrap().is_empty());
+                None
+            } else {
+                if pty {
+                    while !control.accepted_core_entered.load(Ordering::Acquire) {
+                        tokio::task::yield_now().await;
+                    }
+                    assert_eq!(
+                        coordinator.fixture_root_count(),
+                        Some(0),
+                        "real PTY core acceptance precedes Replacement root insertion"
+                    );
+                } else {
+                    retained_source_wait_cut(&control, Cut::SourceCoreEntered).await;
+                    assert_eq!(coordinator.fixture_root_count(), Some(1));
+                }
+                cancel.send(()).unwrap();
+                while !caller_dropped.load(Ordering::Acquire) {
+                    tokio::task::yield_now().await;
+                }
+                resume_core.send(()).unwrap();
+                let baseline = retained_source_wait_cut(&control, Cut::Baseline).await;
+                let id = baseline.binding.unwrap().session_id();
+                assert_eq!(coordinator.fixture_root_count(), Some(1));
+                let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
+                idle.register_session(id, crate::session::profile::IdleTuning::DEFAULT);
+                idle.set_pty_input_ready_for_test(id);
+                hooks.real_inject_sessions.lock().unwrap().insert(id);
+                resume.send(()).unwrap();
+                loop {
+                    if coordinator.fixture_root_count() == Some(0) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                assert!(
+                    !shared_engine_writes(app, id).is_empty(),
+                    "accepted core performs actual source transfer after caller loss"
+                );
+                Some(id)
+            }
+        };
+        let ((), new_id) = tokio::time::timeout(Duration::from_secs(20), async {
+            tokio::join!(caller, controller)
+        })
+        .await
+        .expect("actual before/after acceptance caller cancellation");
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        if let Some(id) = new_id {
+            assert!(manager.get_session(previous).await.is_none());
+            assert!(manager.get_session(id).await.is_some());
+        } else {
+            assert!(manager.get_session(previous).await.is_some());
+            assert!(control.receipts.lock().unwrap().is_empty());
+        }
+        if let Some(injection) = injection.as_deref() {
+            let result = store
+                .query_pty_input_by_injection(injection)
+                .unwrap()
+                .unwrap();
+            if before_accept {
+                assert_eq!(
+                    result.status,
+                    crate::phone::types::PtyInputPublicStatus::Queued
+                );
+            } else {
+                assert_eq!(
+                    result.status,
+                    crate::phone::types::PtyInputPublicStatus::Injected
+                );
+            }
+        }
+        let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+            .await
+            .expect("caller-loss actual close");
+        assert!(
+            report.persistence_safe,
+            "only observed complete/never-accepted work is safe: {:?}",
+            report.retained
+        );
+    }
+
+    async fn retained_exited_respawn_reservation_refusal_cell() {
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle();
+        let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let coordinator =
+            crate::session::selection::SelectionCoordinator::with_fixture_root_reservation(
+                managers.inner().clone(),
+                tokio_util::sync::CancellationToken::new(),
+                crate::session::selection::FixtureRootReservation::RejectCapacity,
+            );
+        assert!(app.manage(coordinator.clone()));
+        coordinator.start(app.clone()).unwrap();
+        let error = coordinator
+            .fixture_initial_reservation_refusal(crate::commands::session::RestartJobRequest {
+                session_id: Uuid::new_v4(),
+                agent_id: None,
+                requested_profile: None,
+                skip_auto_resume: None,
+                activate_after: false,
+                intent: crate::session::selection::TrustedRestartIntent::Background,
+                communication_override: None,
+                enforcement: crate::config::sessions_persistence::default_creation_gate_enforcement(
+                ),
+            })
+            .expect_err("actual capacity overflow makes actual root admission unavailable");
+        assert_eq!(
+            error,
+            crate::session::selection::SelectionCoordinatorError::Unavailable.to_string()
+        );
+        assert_eq!(coordinator.fixture_root_count(), Some(0));
+        let manager = managers.read().await.clone();
+        assert!(manager.list_sessions().await.is_empty());
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let pending_empty = manager
+            .with_current_carrier_snapshot(&permit, |current| current.pending_ids.is_empty())
+            .await;
+        drop(permit);
+        assert!(pending_empty);
+        let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+            .await
+            .expect("actual unavailable-root close");
+        assert!(!report.persistence_safe);
+        assert!(report
+            .retained
+            .iter()
+            .any(|reason| reason.contains("retained-root-unavailable")));
+    }
+
+    async fn retained_exited_respawn_receive_after_release_cell(pty: bool) {
+        use crate::session::selection::{
+            ReplacementFixtureAction as Action, ReplacementFixtureControl,
+            ReplacementFixtureCut as Cut,
+        };
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle();
+        let (coordinator, route, sender, _) = prepare_retained_exited_respawn(&fixture).await;
+        let control = Arc::new(ReplacementFixtureControl::default());
+        let (resume_send, send_gate) = tokio::sync::oneshot::channel();
+        let (drop_receiver, receiver_signal) = tokio::sync::oneshot::channel();
+        control.actions.lock().unwrap().push(Action::Pause {
+            cut: Cut::AfterReleaseBeforeSend,
+            resume: send_gate,
+        });
+        *control.live_receiver_drop.lock().unwrap() = Some(receiver_signal);
+        let hooks = MailboxTestHooks::default();
+        *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+        let poller = MailboxPoller::new_with_test_hooks(hooks);
+        let state = app.state::<crate::api::message_store::MessageStoreState>();
+        let store = state.store.as_ref().unwrap().clone();
+        let injection = pty.then(|| {
+            enqueue_shared_pty_engine_operation(&store, &route, sender, b"after-release-source")
+        });
+        let mut message = wake_message_to_target();
+        message.id = format!("after-release-source-{}", Uuid::new_v4());
+        let delivery = async {
+            if let Some(injection) = injection.as_deref() {
+                poller
+                    .dispatch_pty_input_operation(
+                        app,
+                        &state,
+                        injection,
+                        crate::phone::types::PtyInputSourcePlane::HostCli,
+                        None,
+                    )
+                    .await;
+            } else {
+                let _ = retained_fixture_ordinary_wake(&poller, app, &message, &control).await;
+            }
+        };
+        let controller = async {
+            let released = retained_source_wait_cut(&control, Cut::AfterReleaseBeforeSend).await;
+            let (published, inner_released, work_started, transferred, held) =
+                control.observe_retained(&coordinator).unwrap();
+            assert!(published && inner_released);
+            assert_eq!(held, 0, "actual initial envelope admission released");
+            assert!(!work_started && !transferred);
+            assert!(!control.observe_owner(&coordinator).unwrap().terminal);
+            assert!(!control.received.load(Ordering::Acquire));
+            drop_receiver.send(()).unwrap();
+            retained_source_wait_cut(&control, Cut::ReceiverLost).await;
+            assert!(shared_engine_writes(app, released.binding.unwrap().session_id()).is_empty());
+            resume_send.send(()).unwrap();
+            coordinator
+                .snapshot()
+                .await
+                .expect("actual worker progressed past failed response send");
+        };
+        tokio::time::timeout(Duration::from_secs(20), async {
+            tokio::join!(delivery, controller);
+        })
+        .await
+        .expect("actual release-before-send live receiver loss");
+        {
+            let receipts = control.receipts.lock().unwrap();
+            assert_eq!(
+                receipts
+                    .iter()
+                    .filter(|receipt| receipt.cut == Cut::SourceReceived)
+                    .count(),
+                0
+            );
+            assert_eq!(
+                receipts
+                    .iter()
+                    .filter(|receipt| receipt.cut == Cut::ReceiverLost)
+                    .count(),
+                2,
+                "actual helper receive loss and actual worker send error are distinct"
+            );
+        }
+        assert!(!control.observe_owner(&coordinator).unwrap().transferred);
+        let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+            .await
+            .expect("actual lost-receiver close");
+        assert!(!report.persistence_safe);
+    }
+
+    struct RetainedCleanupRaceGates {
+        first: tokio::sync::oneshot::Sender<()>,
+        finalizer: tokio::sync::oneshot::Sender<()>,
+        disarmed: tokio::sync::oneshot::Sender<()>,
+        panic_source: tokio::sync::oneshot::Sender<()>,
+        claim_first: bool,
+        runtime_changed: bool,
+        unknown: bool,
+    }
+
+    async fn retained_source_unknown_cleanup(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        control: &Arc<crate::session::selection::ReplacementFixtureControl>,
+        gates: RetainedCleanupRaceGates,
+        inline: bool,
+    ) {
+        use crate::session::selection::ReplacementFixtureCut as Cut;
+        let mut first = Some(gates.first);
+        if inline {
+            first.take().unwrap().send(()).unwrap();
+            retained_source_wait_cut(control, Cut::BeforeFinalizer).await;
+        }
+        let binding = control
+            .receipts
+            .lock()
+            .unwrap()
+            .first()
+            .unwrap()
+            .binding
+            .unwrap();
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let backend = pty
+            .lock()
+            .unwrap()
+            .backend_for_kind(SessionBackendKind::LocalProcess);
+        let backend = backend
+            .as_any()
+            .downcast_ref::<MailboxMockPtyBackend>()
+            .unwrap();
+        let kills = backend.kill_attempts.load(Ordering::SeqCst);
+        let owner = control.owner_weak(coordinator).unwrap();
+        assert!(manager.get_pending_session(binding).await.is_some());
+        assert!(control.observe_owner(coordinator).unwrap().source_active);
+        control.poison_observed_owner(coordinator);
+        assert!(
+            control.observe_owner(coordinator).is_none(),
+            "actual proof is unreadable, never assigned Unknown"
+        );
+        assert!(
+            !control
+                .cleanup_observed_stopped(coordinator, &manager, &pty)
+                .await
+        );
+        assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills);
+        drop(gates.panic_source); // Closed signal is disabled; source stays real/live.
+        drop(gates.disarmed);
+        if let Some(first) = first {
+            first.send(()).unwrap();
+        }
+        if inline {
+            gates.finalizer.send(()).unwrap();
+        }
+        coordinator
+            .snapshot()
+            .await
+            .expect("real finalizer conservatively retained poisoned owner");
+        assert!(manager.get_pending_session(binding).await.is_some());
+        assert!(pty.lock().unwrap().has_session(binding.session_id()));
+        assert!(shared_engine_writes(app, binding.session_id()).is_empty());
+        let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+            .await
+            .expect("actual unreadable owner close");
+        assert!(!report.persistence_safe);
+        assert!(
+            owner.is_alive(),
+            "actual incomplete unreadable owner remains rooted"
+        );
+        assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills);
+    }
+
+    fn release_retained_cleanup_worker(
+        first: &mut Option<tokio::sync::oneshot::Sender<()>>,
+        finalizer: &mut Option<tokio::sync::oneshot::Sender<()>>,
+        inline: bool,
+    ) {
+        if let Some(first) = first.take() {
+            first.send(()).unwrap();
+        }
+        if inline {
+            finalizer.take().unwrap().send(()).unwrap();
+        }
+    }
+
+    async fn prepare_retained_cleanup_observation(
+        control: &crate::session::selection::ReplacementFixtureControl,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        binding: crate::session::manager::PendingCreateBinding,
+        panic_source: tokio::sync::oneshot::Sender<()>,
+        runtime_changed: bool,
+    ) {
+        assert!(manager.get_pending_session(binding).await.is_some());
+        assert!(control.observe_owner(coordinator).unwrap().source_active);
+        assert!(
+            !control
+                .cleanup_observed_stopped(coordinator, manager, pty)
+                .await,
+            "a real active source is not stopped-source cleanup evidence"
+        );
+        panic_source.send(()).unwrap();
+        loop {
+            if control
+                .observe_owner(coordinator)
+                .is_some_and(|owner| owner.source_stopped)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        if runtime_changed {
+            let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+            {
+                let actual = pty.lock().unwrap();
+                let (cwd, replica, generation) =
+                    actual.route_identities(binding.session_id()).unwrap();
+                assert!(actual.has_session(binding.session_id()));
+                actual.remove_route_if_kind(binding.session_id(), SessionBackendKind::LocalProcess);
+                actual
+                    .record_route_with_identities(
+                        binding.session_id(),
+                        SessionBackendKind::LocalProcess,
+                        cwd,
+                        replica,
+                    )
+                    .unwrap();
+                assert_ne!(
+                    actual.route_identities(binding.session_id()).unwrap().2,
+                    generation,
+                    "actual registry minted a later route generation"
+                );
+            }
+            drop(permit);
+        }
+    }
+
+    async fn retained_source_cleanup_race(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        coordinator: &crate::session::selection::SelectionCoordinator,
+        control: &Arc<crate::session::selection::ReplacementFixtureControl>,
+        gates: RetainedCleanupRaceGates,
+        inline: bool,
+    ) {
+        use crate::session::selection::ReplacementFixtureCut as Cut;
+        use std::future::Future;
+        if gates.unknown {
+            retained_source_unknown_cleanup(app, coordinator, control, gates, inline).await;
+            return;
+        }
+        let RetainedCleanupRaceGates {
+            first,
+            finalizer,
+            disarmed,
+            panic_source,
+            claim_first,
+            runtime_changed,
+            unknown: _,
+        } = gates;
+        let mut first = Some(first);
+        let mut finalizer = Some(finalizer);
+        if inline {
+            first.take().unwrap().send(()).unwrap();
+            retained_source_wait_cut(control, Cut::BeforeFinalizer).await;
+        }
+        // Ticket: earlier real worker still blocked, real B/native effects done.
+        // Inline: same worker now holds B before its finalizer U.
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let backend = pty
+            .lock()
+            .unwrap()
+            .backend_for_kind(SessionBackendKind::LocalProcess);
+        let backend = backend
+            .as_any()
+            .downcast_ref::<MailboxMockPtyBackend>()
+            .expect("actual cleanup race mock backend");
+        let kills_before = backend.kill_attempts.load(Ordering::SeqCst);
+        let binding = control
+            .receipts
+            .lock()
+            .unwrap()
+            .first()
+            .unwrap()
+            .binding
+            .unwrap();
+        prepare_retained_cleanup_observation(
+            control,
+            coordinator,
+            &manager,
+            &pty,
+            binding,
+            panic_source,
+            runtime_changed,
+        )
+        .await;
+        let cleanup = control.cleanup_observed_stopped(coordinator, &manager, &pty);
+        if runtime_changed {
+            assert!(
+                !cleanup.await,
+                "later actual runtime route vetoes stopped-source claim"
+            );
+            assert_retained_cleanup_runtime_veto(control, coordinator, &manager, &pty, binding)
+                .await;
+            release_retained_cleanup_worker(&mut first, &mut finalizer, inline);
+            drop(disarmed);
+        } else if claim_first {
+            assert!(cleanup.await, "actual stopped-source claim and rollback");
+            assert_retained_cleanup_claimed(control, coordinator, &manager, &pty, binding).await;
+            release_retained_cleanup_worker(&mut first, &mut finalizer, inline);
+            drop(disarmed);
+        } else {
+            release_retained_cleanup_worker(&mut first, &mut finalizer, inline);
+            retained_source_wait_cut(control, Cut::AfterDisarm).await;
+            tokio::pin!(cleanup);
+            assert!(
+                std::future::poll_fn(|cx| std::task::Poll::Ready(
+                    cleanup.as_mut().poll(cx).is_pending()
+                ))
+                .await,
+                "same cleanup future waits for actual finalization U"
+            );
+            disarmed.send(()).unwrap();
+            assert!(!cleanup.await, "real finalized/disarmed B vetoes cleanup");
+            assert_retained_cleanup_finalized(control, coordinator, &manager, &pty, binding).await;
+        }
+        coordinator
+            .snapshot()
+            .await
+            .expect("same real worker completed after race");
+        assert_retained_cleanup_common(
+            app,
+            coordinator,
+            control,
+            &manager,
+            &pty,
+            binding,
+            kills_before,
+            claim_first,
+            backend,
+        )
+        .await;
+        let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+            .await
+            .expect("actual cleanup race close");
+        assert_retained_cleanup_close(&report, backend, kills_before, claim_first);
+    }
+
+    async fn retained_exited_respawn_queued_cell(pty: bool, inline: bool, scenario: &str) {
+        use crate::session::selection::{ReplacementFixtureControl, ReplacementFixtureCut as Cut};
+        use std::future::Future;
+        let fixture = make_mailbox_fixture();
+        // Both actors belong to one unchanged authority history, before restore.
+        let (replica, target) = provision_retained_fixture_member(&fixture, "queued-member");
+        let app = fixture.app.handle();
+        let (coordinator, _, sender, _) = prepare_retained_exited_respawn(&fixture).await;
+        let (route, _) =
+            prepare_additional_retained_member(&fixture, &coordinator, sender, &replica, &target)
+                .await;
+        let first = Arc::new(ReplacementFixtureControl::default());
+        let (release_first, first_gate) = tokio::sync::oneshot::channel();
+        *first.before_release_gate.lock().unwrap() = Some(first_gate);
+        let first_hooks = MailboxTestHooks::default();
+        *first_hooks.replacement_fixture.lock().unwrap() = Some(first.clone());
+        let first_poller = MailboxPoller::new_with_test_hooks(first_hooks.clone());
+        let second = Arc::new(ReplacementFixtureControl::default());
+        second.ticket_only.store(!inline, Ordering::Release);
+        let race = scenario != "queued-drain";
+        let (resume_finalizer, finalizer_gate) = tokio::sync::oneshot::channel();
+        let (resume_disarmed, disarmed_gate) = tokio::sync::oneshot::channel();
+        let (panic_source, source_signal) = tokio::sync::oneshot::channel();
+        if race {
+            *second.source_panic.lock().unwrap() = Some(source_signal);
+            let mut actions = second.actions.lock().unwrap();
+            if inline {
+                actions.push(crate::session::selection::ReplacementFixtureAction::Pause {
+                    cut: Cut::BeforeFinalizer,
+                    resume: finalizer_gate,
+                });
+            }
+            if scenario == "cleanup-finalize-first" {
+                actions.push(crate::session::selection::ReplacementFixtureAction::Pause {
+                    cut: Cut::AfterDisarm,
+                    resume: disarmed_gate,
+                });
+            }
+        }
+        let second_hooks = MailboxTestHooks::default();
+        *second_hooks.replacement_fixture.lock().unwrap() = Some(second.clone());
+        let second_poller = MailboxPoller::new_with_test_hooks(second_hooks);
+        let state = app.state::<crate::api::message_store::MessageStoreState>();
+        let store = state.store.as_ref().unwrap().clone();
+        let injection = pty.then(|| {
+            enqueue_shared_pty_engine_operation(&store, &route, sender, b"queued-drain-source")
+        });
+        let mut first_message = wake_message_to_target();
+        first_message.id = format!("drain-blocker-{}", Uuid::new_v4());
+        let mut second_message = wake_message_to_target();
+        second_message.id = format!("queued-drain-{}", Uuid::new_v4());
+        second_message.to = target;
+        let (start_second, second_gate) = tokio::sync::oneshot::channel();
+        let (finish_outer, outer_finished) = tokio::sync::oneshot::channel();
+        let first_delivery = async {
+            let _ =
+                retained_fixture_ordinary_wake(&first_poller, app, &first_message, &first).await;
+        };
+        let second_delivery = async {
+            second_gate.await.unwrap();
+            let actual_delivery = async {
+                if let Some(injection) = injection.as_deref() {
+                    second_poller
+                        .dispatch_pty_input_operation(
+                            app,
+                            &state,
+                            injection,
+                            crate::phone::types::PtyInputSourcePlane::HostCli,
+                            None,
+                        )
+                        .await;
+                } else {
+                    let _ = retained_fixture_ordinary_wake(
+                        &second_poller,
+                        app,
+                        &second_message,
+                        &second,
+                    )
+                    .await;
+                }
+            };
+            let housekeeping = async {
+                if outer_finished.await.is_ok() {
+                    return;
+                }
+                std::future::pending::<()>().await;
+            };
+            tokio::select! {
+                () = actual_delivery => {},
+                () = housekeeping => assert!(second.observe_owner(&coordinator)
+                    .is_some_and(|owner| owner.source_stopped),
+                    "drop only the outer waiter after real accepted-core unwind"),
+            }
+        };
+        let controller = async {
+            let first_return = retained_source_wait_cut(&first, Cut::AdapterReturned).await;
+            let first_id = first_return.binding.unwrap().session_id();
+            let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
+            idle.register_session(first_id, crate::session::profile::IdleTuning::DEFAULT);
+            idle.set_pty_input_ready_for_test(first_id);
+            first_hooks
+                .real_inject_sessions
+                .lock()
+                .unwrap()
+                .insert(first_id);
+            start_second.send(()).unwrap();
+            let queued = retained_source_wait_cut(
+                &second,
+                if inline {
+                    Cut::Submitted
+                } else {
+                    Cut::TicketSubmitted
+                },
+            )
+            .await;
+            let binding = queued.binding.unwrap();
+            let manager = app
+                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                .read()
+                .await
+                .clone();
+            if !inline {
+                assert!(
+                    manager.get_pending_session(binding).await.is_some(),
+                    "original ticket queued only after actual pending creation/native effects"
+                );
+            }
+            assert!(!second.received.load(Ordering::Acquire));
+            assert!(shared_engine_writes(app, binding.session_id()).is_empty());
+            if race {
+                retained_source_cleanup_race(
+                    app,
+                    &coordinator,
+                    &second,
+                    RetainedCleanupRaceGates {
+                        first: release_first,
+                        finalizer: resume_finalizer,
+                        disarmed: resume_disarmed,
+                        panic_source,
+                        claim_first: scenario == "cleanup-claim-first",
+                        runtime_changed: scenario == "cleanup-runtime-changed",
+                        unknown: scenario == "cleanup-unknown-veto",
+                    },
+                    inline,
+                )
+                .await;
+                if scenario == "cleanup-unknown-veto" {
+                    drop(finish_outer); // Let the actual retained source return normally.
+                } else {
+                    let _ = finish_outer.send(());
+                }
+                return binding;
+            }
+            // Poll the same actual close future to publish shutdown while the
+            // genuine earlier inline envelope still owns the worker.
+            let close = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join());
+            tokio::pin!(close);
+            assert!(
+                std::future::poll_fn(|cx| std::task::Poll::Ready(
+                    close.as_mut().poll(cx).is_pending()
+                ))
+                .await
+            );
+            release_first.send(()).unwrap();
+            retained_source_wait_cut(
+                &second,
+                if inline {
+                    Cut::Drained
+                } else {
+                    Cut::TicketDrained
+                },
+            )
+            .await;
+            retained_source_wait_cut(&second, Cut::ReceiverLost).await;
+            let report = close.await.expect("actual queued-drain close");
+            assert!(!report.persistence_safe);
+            let owner = second.observe_owner(&coordinator).unwrap();
+            assert!(!owner.terminal && !owner.transferred);
+            if inline {
+                assert_eq!(owner.effects_started, 0);
+                assert!(manager.get_pending_session(binding).await.is_none());
+            } else {
+                assert!(
+                    manager.get_pending_session(binding).await.is_some(),
+                    "owned shutdown drain neither invents setup error nor rolls back B"
+                );
+                assert!(!owner.rollback_completed);
+            }
+            assert!(!second
+                .receipts
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|receipt| receipt.cut == Cut::Baseline || receipt.cut == Cut::SourceReceived));
+            assert!(shared_engine_writes(app, binding.session_id()).is_empty());
+            // A closed housekeeping signal is disabled above.
+            drop(finish_outer);
+            binding
+        };
+        let (_, _, binding) = tokio::time::timeout(Duration::from_secs(20), async {
+            tokio::join!(first_delivery, second_delivery, controller)
+        })
+        .await
+        .expect("genuine earlier inline actor and queued source drain");
+        if scenario != "cleanup-unknown-veto" {
+            assert!(!second.observe_owner(&coordinator).unwrap().transferred);
+        } else {
+            assert!(second.observe_owner(&coordinator).is_none());
+        }
+        assert!(shared_engine_writes(app, binding.session_id()).is_empty());
+        if let Some(injection) = injection {
+            let actual = store
+                .query_pty_input_by_injection(&injection)
+                .unwrap()
+                .unwrap();
+            assert!(
+                !actual.terminal,
+                "drained retained work cannot claim delivery"
+            );
+        }
+    }
+
+    async fn retained_exited_respawn_lifetime_cell(pty: bool, inline: bool) {
+        use crate::session::selection::{
+            ReplacementFixtureAction as Action, ReplacementFixtureControl,
+            ReplacementFixtureCut as Cut,
+        };
+        let fixture = make_mailbox_fixture();
+        let probe = Arc::downgrade(fixture.app.state::<Arc<AppLifetimeProbe>>().inner());
+        let retained_handle = fixture.app.handle().clone();
+        let (coordinator, backend, owner) = {
+            let app = fixture.app.handle();
+            let (coordinator, route, sender, _) = prepare_retained_exited_respawn(&fixture).await;
+            let backend = {
+                let state = app.state::<Arc<Mutex<PtyManager>>>();
+                let actual = state
+                    .lock()
+                    .unwrap()
+                    .backend_for_kind(SessionBackendKind::LocalProcess);
+                assert!(actual.as_any().is::<MailboxMockPtyBackend>());
+                Arc::downgrade(&actual)
+            };
+            let control = Arc::new(ReplacementFixtureControl::default());
+            control.ticket_only.store(!inline, Ordering::Release);
+            control.actions.lock().unwrap().push(Action::PanicOnce {
+                cut: Cut::SourceCoreEntered,
+            });
+            let hooks = MailboxTestHooks::default();
+            *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+            let poller = MailboxPoller::new_with_test_hooks(hooks);
+            let state = app.state::<crate::api::message_store::MessageStoreState>();
+            let store = state.store.as_ref().unwrap().clone();
+            let injection = pty.then(|| {
+                enqueue_shared_pty_engine_operation(&store, &route, sender, b"lifetime-source")
+            });
+            let mut message = wake_message_to_target();
+            message.id = format!("lifetime-source-{}", Uuid::new_v4());
+            let delivery = async {
+                if let Some(injection) = injection.as_deref() {
+                    poller
+                        .dispatch_pty_input_operation(
+                            app,
+                            &state,
+                            injection,
+                            crate::phone::types::PtyInputSourcePlane::HostCli,
+                            None,
+                        )
+                        .await;
+                } else {
+                    let _ = retained_fixture_ordinary_wake(&poller, app, &message, &control).await;
+                }
+            };
+            let stopped = async {
+                loop {
+                    if control
+                        .observe_owner(&coordinator)
+                        .is_some_and(|owner| owner.source_stopped)
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(20), async {
+                tokio::select! {
+                    () = delivery => panic!("source panic must not fabricate outer completion"),
+                    () = stopped => {},
+                }
+            })
+            .await
+            .expect("actual source stack unwind observation");
+            let owner = control
+                .owner_weak(&coordinator)
+                .expect("actual retained owner");
+            assert!(owner.is_alive());
+            let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+                .await
+                .expect("actual lifetime close");
+            assert!(
+                !report.persistence_safe,
+                "incomplete Preparing remains unsafe"
+            );
+            assert!(control
+                .observe_owner(&coordinator)
+                .is_some_and(|owner| !owner.terminal && !owner.transferred));
+            (coordinator, backend, owner)
+        };
+        drop(fixture);
+        assert!(
+            probe.upgrade().is_some(),
+            "positive actual AppHandle retains managed state"
+        );
+        drop(retained_handle);
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while probe.upgrade().is_some() || backend.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("actual managed app/backend captures expire after unwind finishes");
+        assert!(
+            owner.is_alive(),
+            "incomplete owner survives solely in actual coordinator root"
+        );
+        drop(coordinator);
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while owner.is_alive() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("actual root destruction and finished transient drops release incomplete owner");
+    }
+
+    /// Parent-owned process and directory have one lifetime. Exit isolates
+    /// process statics only; the child must prove product disposition first.
+    struct RetainedSourceChild {
+        child: std::process::Child,
+        directory: Option<tempfile::TempDir>,
+        reaped: bool,
+    }
+
+    impl RetainedSourceChild {
+        fn logs(&self) -> String {
+            let Some(directory) = &self.directory else {
+                return String::new();
+            };
+            ["stdout.log", "stderr.log"]
+                .iter()
+                .map(|name| {
+                    format!(
+                        "{name}:\n{}",
+                        std::fs::read_to_string(directory.path().join(name))
+                            .unwrap_or_else(|error| format!("log unavailable: {error}"))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        fn supervise(&mut self, identity: &str, scenario: &str) {
+            let seconds = match scenario {
+                "reclaim-66" | "entry-restart-reclaim" | "entry-root-reclaim" => 300,
+                _ => 60,
+            };
+            let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
+            loop {
+                match self.child.try_wait() {
+                    Ok(Some(status)) => {
+                        self.reaped = true;
+                        assert!(
+                            status.success(),
+                            "{identity}: child {status}\n{}",
+                            self.logs()
+                        );
+                        let receipt = std::fs::read_to_string(
+                            self.directory
+                                .as_ref()
+                                .unwrap()
+                                .path()
+                                .join("completion.txt"),
+                        );
+                        assert_eq!(
+                            receipt.as_deref().ok(),
+                            Some(identity),
+                            "{identity}: missing/mismatched assertion receipt\n{}",
+                            self.logs()
+                        );
+                        return;
+                    }
+                    Ok(None) if std::time::Instant::now() < deadline => {
+                        // Supervision alone, never product timing evidence.
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Ok(None) => panic!("{identity}: child deadline\n{}", self.logs()),
+                    Err(error) => {
+                        panic!("{identity}: child polling failed: {error}\n{}", self.logs())
+                    }
+                }
+            }
+        }
+    }
+
+    impl Drop for RetainedSourceChild {
+        fn drop(&mut self) {
+            if self.reaped {
+                return;
+            }
+            let kill = self.child.kill();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                match self.child.try_wait() {
+                    Ok(Some(_)) => {
+                        self.reaped = true;
+                        break;
+                    }
+                    Ok(None) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    _ => break,
+                }
+            }
+            if !self.reaped {
+                if let Some(directory) = self.directory.take() {
+                    let retained = directory.keep();
+                    eprintln!("retained-source child cleanup uncertain; kill={kill:?}; logs retained at {}",
+                        retained.display());
+                }
+            }
+        }
+    }
+
+    async fn retained_exited_respawn_host(pty: bool, inline: bool, wrapper: &str) {
+        const MARKER: &str = "AC_P05_RETAINED_SOURCE_CHILD";
+        const SCENARIO: &str = "AC_P05_RETAINED_SOURCE_SCENARIO";
+        const IDENTITY: &str = "AC_P05_RETAINED_SOURCE_IDENTITY";
+        let mut scenarios = vec![
+            "positive",
+            "reclaim-66",
+            "walk-terminal",
+            "seal-insert-first",
+            "queued-drain",
+            "cleanup-claim-first",
+            "cleanup-finalize-first",
+            "cleanup-runtime-changed",
+            "cleanup-unknown-veto",
+            "root-duplicate",
+            "root-full",
+            "root-poison",
+            "root-close-first",
+            "newer-telegram",
+            "newer-full",
+            "under-commit-telegram",
+            "under-commit-full",
+            "lifetime-source-panic",
+            "call-before-accept",
+            "call-after-accept",
+            "seed-positive",
+            "seed-staging-file",
+            "pre-backend",
+            "pre-context",
+            "pre-finalize",
+            "post-carry-runtime",
+            "post-rename-physical",
+            "post-retire-runtime",
+            "native-context-panic",
+            "native-seed-panic",
+            "pre-binder",
+            "pre-rollback-error",
+            "base-missing",
+            "base-continue-loss",
+            "panic-spawn",
+            "panic-before-commit",
+            "panic-commit-before-disarm",
+            "panic-baseline",
+            "panic-carry",
+            "panic-rename",
+            "panic-readback",
+            "post-readback-fault",
+            "panic-retire",
+        ];
+        if !inline {
+            scenarios.extend(["native-waiter-context", "native-waiter-seed"]);
+        }
+        if inline {
+            scenarios.extend([
+                "release-lost",
+                "recv-live-source",
+                "submit-refused",
+                "submit-channel-close",
+                "recv-after-release",
+                "shutdown-executing",
+            ]);
+        }
+        if pty && inline {
+            scenarios.extend(["pty-held-stop", "pty-held-rollback", "pty-cancel-held"]);
+        }
+        if !pty && !inline {
+            scenarios.push("root-reservation-refusal");
+            scenarios.push("entry-root-reclaim");
+            scenarios.push("entry-restart-reclaim");
+        }
+        if let Some(marked_wrapper) = std::env::var_os(MARKER) {
+            assert_eq!(
+                marked_wrapper.to_str(),
+                Some(wrapper),
+                "wrong child wrapper"
+            );
+            let scenario = std::env::var(SCENARIO).expect("child scenario");
+            assert!(
+                scenarios.contains(&scenario.as_str()),
+                "unknown child scenario"
+            );
+            let identity = std::env::var(IDENTITY).expect("child identity");
+            let (run, suffix) = identity.split_once('\n').expect("run-bound identity");
+            Uuid::parse_str(run).expect("parent run nonce");
+            assert_eq!(suffix, format!("{wrapper}\n{scenario}"));
+            let config =
+                PathBuf::from(std::env::var("AGENTSCOMMANDER_CONFIG_DIR").expect("child config"));
+            let test_config = PathBuf::from(
+                std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("child test config"),
+            );
+            assert!(config.is_absolute());
+            assert_eq!(config, test_config);
+            assert_eq!(crate::config::config_dir().as_ref(), Some(&config));
+            assert!(
+                !config.join("completion.txt").exists(),
+                "receipt must be fresh"
+            );
+            run_retained_source_child_scenario(pty, inline, &scenario).await;
+            std::fs::write(config.join("completion.txt"), identity)
+                .expect("child assertion receipt");
+            return;
+        }
+        assert!(
+            std::env::var_os(SCENARIO).is_none() && std::env::var_os(IDENTITY).is_none(),
+            "orphan child markers"
+        );
+        for scenario in scenarios {
+            let directory = tempfile::tempdir().expect("parent child directory");
+            let path = directory
+                .path()
+                .canonicalize()
+                .expect("absolute child directory");
+            let identity = format!("{}\n{wrapper}\n{scenario}", Uuid::new_v4());
+            let stdout = std::fs::File::create(path.join("stdout.log")).expect("child stdout");
+            let stderr = std::fs::File::create(path.join("stderr.log")).expect("child stderr");
+            let mut command =
+                std::process::Command::new(std::env::current_exe().expect("test executable"));
+            command
+                .args([wrapper, "--exact", "--nocapture", "--test-threads=1"])
+                .stdin(std::process::Stdio::null())
+                .stdout(stdout)
+                .stderr(stderr)
+                .env(MARKER, wrapper)
+                .env(SCENARIO, scenario)
+                .env(IDENTITY, &identity)
+                .env("AGENTSCOMMANDER_CONFIG_DIR", &path)
+                .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &path);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x08000000);
+            }
+            let child = command.spawn().expect("spawn exact fixture child");
+            let mut owner = RetainedSourceChild {
+                child,
+                directory: Some(directory),
+                reaped: false,
+            };
+            owner.supervise(&identity, scenario);
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "#2854 AC-2854-005 WIP/technical debt: native stack overflow in retained-source fixture"]
+    async fn retained_exited_respawn_ordinary_ticket_source_and_newer_b() {
+        retained_exited_respawn_host(
+            false,
+            false,
+            "phone::mailbox::tests::retained_exited_respawn_ordinary_ticket_source_and_newer_b",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "#2854 AC-2854-005 WIP/technical debt: native stack overflow in retained-source fixture"]
+    async fn retained_exited_respawn_pty_ticket_source_and_newer_b() {
+        retained_exited_respawn_host(
+            true,
+            false,
+            "phone::mailbox::tests::retained_exited_respawn_pty_ticket_source_and_newer_b",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "#2854 AC-2854-005 WIP/technical debt: native stack overflow in retained-source fixture"]
+    async fn retained_exited_respawn_pty_inline_source_and_newer_b() {
+        retained_exited_respawn_host(
+            true,
+            true,
+            "phone::mailbox::tests::retained_exited_respawn_pty_inline_source_and_newer_b",
+        )
+        .await;
+    }
+
     fn enqueue_shared_pty_engine_operation_issued_at(
         store: &crate::api::message_store::MessageStore,
         route: &crate::config::teams::VerifiedPtyInputRoute,
@@ -15652,6 +24220,40 @@ mod tests {
         let app = fixture.app.handle().clone();
         let (route, sender_id, target_id) =
             seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
+        // The scope/readiness observation does not turn an ordinary Foreign
+        // Container recipe into a protected Local replacement requirement.
+        let original_settings = app.state::<SettingsState>().read().await.clone();
+        {
+            let settings_state = app.state::<SettingsState>();
+            let mut settings = settings_state.write().await;
+            let agent = settings
+                .agents
+                .iter_mut()
+                .find(|agent| agent.id == "codex")
+                .unwrap();
+            agent.backend.kind = SessionBackendKind::ContainerTransport;
+            agent.backend.image = Some("agentscommander/ac-codex:latest".into());
+            let spawn = crate::commands::session::build_configured_agent_spawn_for_cwd(
+                &settings,
+                "codex",
+                &route.target.replica_root.to_string_lossy(),
+                None,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                SessionBackendKind::from(&spawn.backend),
+                SessionBackendKind::ContainerTransport
+            );
+        }
+        let (scope, retained) = observe_pty_spawn_scope(&app, &route.target).await;
+        assert!(matches!(
+            scope,
+            crate::config::sessions_persistence::CreateCarrierScope::Foreign { .. }
+        ));
+        assert!(retained.is_none());
+        assert!(pty_spawn_scope_may_resume(&app, &route.target).await);
+        *app.state::<SettingsState>().write().await = original_settings;
         let store = Arc::new(
             crate::api::message_store::MessageStore::open(
                 fixture._temp.path().join("shared-engine-positive.sqlite3"),
@@ -15679,6 +24281,10 @@ mod tests {
             .query_pty_input_by_injection(&injection_id)
             .unwrap()
             .unwrap();
+        assert!(
+            result.terminal,
+            "actual successful source result is terminal"
+        );
         assert_eq!(
             result.status,
             crate::phone::types::PtyInputPublicStatus::Injected
@@ -15691,6 +24297,161 @@ mod tests {
                 b"\r".to_vec()
             ]
         );
+        // The same store supplies real Queued metadata and a single actual
+        // Preparing claim; resume renews it without reclaiming/burning attempt.
+        let resume_id =
+            enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"resume metadata");
+        let original = store
+            .query_pty_input_by_injection(&resume_id)
+            .unwrap()
+            .unwrap();
+        assert!(!original.terminal, "real queued metadata is not a handoff");
+        let claimed = store
+            .claim_pty_input(
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                Some(&resume_id),
+                &Uuid::new_v4().to_string(),
+                chrono::Utc::now(),
+            )
+            .unwrap()
+            .unwrap();
+        let current = store
+            .query_pty_input_by_injection(&resume_id)
+            .unwrap()
+            .unwrap();
+        assert!(!current.terminal, "real Preparing claim is not a handoff");
+        assert!(pty_resume_metadata_matches(&original, &current, &claimed));
+        assert_eq!(
+            refresh_pty_claim_for_resume(&store, &original, &claimed).await,
+            Ok(PtyClaimRefresh::Current),
+        );
+        let mut wrong_owner = claimed.clone();
+        wrong_owner.lease_owner = Uuid::new_v4().to_string();
+        assert_eq!(
+            refresh_pty_claim_for_resume(&store, &original, &wrong_owner).await,
+            Err(crate::phone::types::PtyInputReasonCode::LeaseLost),
+            "queued metadata cannot replace actual conditional renew Ok(true)",
+        );
+        let mut wrong_identity = claimed.clone();
+        wrong_identity.op_id = Uuid::new_v4().to_string();
+        assert_eq!(
+            refresh_pty_claim_for_resume(&store, &original, &wrong_identity).await,
+            Err(crate::phone::types::PtyInputReasonCode::AuthorityChanged),
+        );
+        let mut missing = claimed.clone();
+        missing.injection_id = Uuid::new_v4().to_string();
+        assert_eq!(
+            refresh_pty_claim_for_resume(&store, &original, &missing).await,
+            Err(crate::phone::types::PtyInputReasonCode::AuthorityChanged),
+        );
+        let mut changed = current.clone();
+        changed.payload_sha256 = Some("changed".to_string());
+        assert!(!pty_resume_metadata_matches(&original, &changed, &claimed));
+        changed = current.clone();
+        changed.status = crate::phone::types::PtyInputPublicStatus::Actuating;
+        assert!(!pty_resume_metadata_matches(&original, &changed, &claimed));
+        let connection =
+            rusqlite::Connection::open(fixture._temp.path().join("shared-engine-positive.sqlite3"))
+                .unwrap();
+        let actual: (i64, String, String) = connection
+            .query_row(
+                "SELECT attempt,status,lease_owner FROM pty_input_operations WHERE injection_id=?1",
+                [&resume_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            actual,
+            (
+                claimed.attempt,
+                "preparing".to_string(),
+                claimed.lease_owner.clone()
+            )
+        );
+        assert_eq!(claimed.attempt, 1);
+        store
+            .retry_pty_input_offloaded(
+                resume_id,
+                claimed.lease_owner,
+                crate::phone::types::PtyInputReasonCode::StoreTransient,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+
+        let terminal_id =
+            enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"terminal metadata");
+        let terminal_original = store
+            .query_pty_input_by_injection(&terminal_id)
+            .unwrap()
+            .unwrap();
+        let terminal_claim = store
+            .claim_pty_input(
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                Some(&terminal_id),
+                &Uuid::new_v4().to_string(),
+                chrono::Utc::now(),
+            )
+            .unwrap()
+            .unwrap();
+        let mut mismatched_original = terminal_original.clone();
+        mismatched_original.payload_sha256 = Some("0".repeat(64));
+        let reason = refresh_pty_claim_for_resume(&store, &mismatched_original, &terminal_claim)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            reason,
+            crate::phone::types::PtyInputReasonCode::AuthorityChanged
+        );
+        let mut terminal_heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
+            Arc::clone(&store),
+            terminal_id.clone(),
+            terminal_claim.lease_owner.clone(),
+            crate::phone::types::parse_canonical_pty_timestamp(&terminal_claim.expires_at).unwrap(),
+        );
+        assert!(
+            finish_pty_input_before_boundary(
+                &store,
+                &mut terminal_heartbeat,
+                &terminal_id,
+                &terminal_claim.lease_owner,
+                reason,
+            )
+            .await,
+            "actual terminal persistence certifies the release"
+        );
+        let terminal_result = store
+            .query_pty_input_by_injection(&terminal_id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            terminal_result.terminal,
+            "actual rejection result is terminal"
+        );
+        assert_eq!(
+            terminal_result.status,
+            crate::phone::types::PtyInputPublicStatus::Rejected
+        );
+        assert_eq!(
+            terminal_result.reason.as_ref().map(|reason| reason.code),
+            Some(reason)
+        );
+        let (attempt, retries): (i64, i64) = connection.query_row(
+            "SELECT attempt, (SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND status='retry') FROM pty_input_operations WHERE injection_id=?1",
+            [&terminal_id], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(attempt, terminal_claim.attempt);
+        assert_eq!(retries, 0);
+        assert_eq!(
+            refresh_pty_claim_for_resume(&store, &terminal_original, &terminal_claim).await,
+            Ok(PtyClaimRefresh::Terminal),
+        );
+        let after_terminal = store
+            .query_pty_input_by_injection(&terminal_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_terminal, terminal_result);
+
         // Same real engine, same idle fixture, now committed Closing before enqueue.
         let fixture = make_mailbox_fixture();
         let app = fixture.app.handle().clone();
@@ -17645,8 +26406,7 @@ mod tests {
             .join("delivered")
             .join(format!("{}.json", msg_id));
         let poller = MailboxPoller::new_with_test_hooks(hooks);
-        poller
-            .process_message(app, message_path, OutboxOrigin::Replica)
+        Box::pin(poller.process_message(app, message_path, OutboxOrigin::Replica))
             .await
             .expect("process mailbox message");
         assert!(!message_path.exists());
@@ -28178,11 +36938,14 @@ mod tests {
             poller.response_sources.lock().unwrap().insert(
                 origin,
                 ResponseWakeWork {
+                    diagnostic_message_id: None,
                     state: tracker.clone(),
                     target: member.target.clone(),
                     key,
                     digest,
+                    attempt: Arc::default(),
                     return_context: None,
+                    return_routes: None,
                     delivery_context: None,
                 },
             );
@@ -28855,16 +37618,19 @@ mod tests {
             assert_eq!(admission.accept_durable("fs-body"), Ok(true));
             drop(admission);
             let work = ResponseWakeWork {
+                diagnostic_message_id: None,
                 state: tracker.clone(),
                 target: coordinator.target.clone(),
                 key: "fs-key".into(),
                 digest: "fs-body".into(),
+                attempt: Arc::default(),
                 return_context: Some(return_context),
+                return_routes: Some((member.clone(), coordinator.clone())),
                 delivery_context: None,
             };
             (tracker, member, coordinator, work)
         };
-        // Positive twin: the same armable policy observes actual pure completion.
+        // A source-only completion has no current app/route authority and cannot arm.
         let (positive, member, _, work) = prepare();
         let positive_poller = MailboxPoller::new();
         let positive_path = PathBuf::from("positive.json");
@@ -28876,7 +37642,7 @@ mod tests {
         positive_poller.settle_response_source(&positive_path, true);
         assert!(positive
             .select_ticket(member.session_id, now + Duration::from_secs(60))
-            .is_ok());
+            .is_err());
 
         // Restore succeeds: the origin is actionable before the Err is counted.
         {
@@ -31874,14 +40640,17 @@ mod tests {
             chrono::Utc::now() + chrono::Duration::seconds(30),
         );
 
-        finish_pty_input_before_boundary(
-            &store,
-            &mut heartbeat,
-            &op_id,
-            "lease-test",
-            crate::phone::types::PtyInputReasonCode::MenuGuardBlocked,
-        )
-        .await;
+        assert!(
+            finish_pty_input_before_boundary(
+                &store,
+                &mut heartbeat,
+                &op_id,
+                "lease-test",
+                crate::phone::types::PtyInputReasonCode::MenuGuardBlocked,
+            )
+            .await,
+            "actual conditional retry certifies source handoff"
+        );
 
         let op = store
             .query_pty_input_by_injection(&op_id)

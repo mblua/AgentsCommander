@@ -10,10 +10,13 @@ use tauri::Manager;
 use uuid::Uuid;
 
 use crate::config::settings::WindowGeometry;
-use crate::session::manager::{PromptKey, RetainedPrompt, SessionManager};
+use crate::session::manager::{
+    acquire_carrier_mutation_permit, CarrierDisposition, CarrierMutationPermit, PromptKey,
+    RaiseCarrierOutcome, RetainedPrompt, SessionManager,
+};
 use crate::session::profile::CodingAgentKind;
 use crate::session::session::{
-    SessionCommunication, SessionCommunicationKind, SessionInfo, SessionStatus, TEMP_SESSION_PREFIX,
+    SessionCommunication, SessionInfo, SessionStatus, TEMP_SESSION_PREFIX,
 };
 
 /// #291 — in-process mutex serializing all `save_sessions` calls.
@@ -40,6 +43,91 @@ use crate::session::session::{
 /// holder panicked mid-write, but the persisted file is atomic (tmp+rename),
 /// so picking up the lock cleanly is safe.
 static SAVE_SESSIONS_LOCK: Mutex<()> = Mutex::new(());
+
+/// The accepted core owns completion independently of its caller. A lost task
+/// outcome is ambiguous; it never becomes a successful save or a retry request.
+enum PersistOperationState<T> {
+    Running,
+    Completed(Option<T>),
+    Ambiguous,
+}
+
+struct PersistOperationCell<T> {
+    state: Mutex<PersistOperationState<T>>,
+    changed: tokio::sync::Notify,
+}
+
+struct PersistOperationOwner<T> {
+    cell: std::sync::Arc<PersistOperationCell<T>>,
+    completed: bool,
+}
+
+impl<T> PersistOperationOwner<T> {
+    fn complete(mut self, result: T) {
+        {
+            match self.cell.state.lock() {
+                Ok(mut state) => *state = PersistOperationState::Completed(Some(result)),
+                Err(error) => {
+                    *error.into_inner() = PersistOperationState::Ambiguous;
+                    // Poison cannot turn an untrusted cell into observed completion.
+                    drop(result);
+                }
+            }
+        }
+        self.completed = true;
+        self.cell.changed.notify_one();
+    }
+}
+
+impl<T> Drop for PersistOperationOwner<T> {
+    fn drop(&mut self) {
+        if !self.completed {
+            let mut state = self
+                .cell
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            *state = PersistOperationState::Ambiguous;
+            drop(state);
+            self.cell.changed.notify_one();
+        }
+    }
+}
+
+pub(crate) async fn run_owned_persist_core<T, F>(operation: F) -> T
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = T> + Send + 'static,
+{
+    let cell = std::sync::Arc::new(PersistOperationCell {
+        state: Mutex::new(PersistOperationState::Running),
+        changed: tokio::sync::Notify::new(),
+    });
+    let owner = PersistOperationOwner {
+        cell: cell.clone(),
+        completed: false,
+    };
+    tokio::spawn(async move {
+        let result = operation.await;
+        owner.complete(result);
+    });
+    loop {
+        let changed = cell.changed.notified();
+        let result = {
+            match cell.state.lock() {
+                Ok(mut state) => match &mut *state {
+                    PersistOperationState::Completed(result) => result.take(),
+                    PersistOperationState::Running | PersistOperationState::Ambiguous => None,
+                },
+                Err(_) => None,
+            }
+        };
+        if let Some(result) = result {
+            return result;
+        }
+        changed.await;
+    }
+}
 
 const RETAINED_PROMPTS: &str = super::instance_artifacts::RETAINED_PROMPTS;
 
@@ -468,13 +556,69 @@ fn orphan_archive_max_bytes() -> u64 {
 /// instance contention pattern.
 #[derive(Debug)]
 pub(crate) struct RenameDiagnostics {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     op_id: u64,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     pid: u32,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     instance_id: String,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     tmp_exists_before: bool,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     final_exists_before: bool,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     attempts: u32,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     last_os_error: Option<i32>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     duration: std::time::Duration,
 }
 
@@ -853,6 +997,7 @@ fn is_root_persisted_session(session: &PersistedSession) -> bool {
 /// `partition_orphaned_sessions`. `cwd_exists` is filled by the caller (a
 /// `Path::exists` probe, one per drop, inside the same blocking chunk) so the
 /// partition itself stays pure (zero fs calls).
+#[derive(Clone)]
 pub(crate) struct OrphanDrop {
     pub session: PersistedSession,
     pub cwd_exists: bool,
@@ -1007,13 +1152,30 @@ pub(crate) async fn append_orphan_archive_record(
     disposition: &str,
     session: &PersistedSession,
 ) {
-    let _guard = sessions_save_lock().lock().await;
-    append_orphan_archive_record_locked(
-        &dir.join(ORPHAN_ARCHIVE_FILENAME),
-        reason,
-        disposition,
-        session,
-    );
+    let dir = dir.to_path_buf();
+    let reason = reason.to_owned();
+    let disposition = disposition.to_owned();
+    let session = session.clone();
+    run_owned_persist_core(async move {
+        loop {
+            let permit = acquire_carrier_mutation_permit().await;
+            if all_carrier_protections().is_some_and(|protections| {
+                PreparedCarrierRelation::capture(&session, &protections).classify(&protections)
+                    == CarrierDisposition::Foreign
+            }) {
+                append_orphan_archive_record_locked(
+                    &dir.join(ORPHAN_ARCHIVE_FILENAME),
+                    &reason,
+                    &disposition,
+                    &session,
+                );
+                return;
+            }
+            drop(permit);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
 }
 
 /// §1295 N5 — best-effort rotation of the active archive file, mirroring
@@ -1155,6 +1317,8 @@ async fn handle_orphan_drops(
     dir: &Path,
     drops: &[OrphanDrop],
     mode: PersistMode,
+    carrier_permit: &CarrierMutationPermit,
+    dispositions: Option<&HashMap<Uuid, CarrierDisposition>>,
 ) -> OrphanSweepCounts {
     let mut counts = OrphanSweepCounts::default();
     if drops.is_empty() {
@@ -1242,7 +1406,20 @@ async fn handle_orphan_drops(
     }
     if mode == PersistMode::PruneDormant {
         if let Some(mgr) = mgr {
-            let removed = mgr.remove_exited_sessions(&candidate_ids).await;
+            let removed = mgr
+                .remove_exited_sessions_with_carrier_permit(
+                    &candidate_ids,
+                    carrier_permit,
+                    |row, _| {
+                        dispositions.map_or(CarrierDisposition::Foreign, |dispositions| {
+                            dispositions
+                                .get(&row.id)
+                                .copied()
+                                .unwrap_or(CarrierDisposition::Unknown)
+                        })
+                    },
+                )
+                .await;
             // A row classified dormant here but not removed by the manager (e.g. it
             // got restarted between snapshot and prune) stays live: reclassify to
             // live_kept so the counters stay honest.
@@ -1264,13 +1441,15 @@ async fn handle_orphan_drops(
 /// §1295 — persist a prepared snapshot under a lock the caller already holds.
 /// Archives drops (B1), prunes dormant manager rows, dedups WARNs, then saves
 /// the kept set with the unchanged atomic tmp+rename stack.
+#[cfg(test)]
 async fn persist_prepared_locked(
     mgr: Option<&SessionManager>,
     dir: &Path,
     prep: PersistPreparation,
     mode: PersistMode,
+    carrier_permit: &CarrierMutationPermit,
 ) -> Result<(), String> {
-    handle_orphan_drops(mgr, dir, &prep.drops, mode).await;
+    handle_orphan_drops(mgr, dir, &prep.drops, mode, carrier_permit, None).await;
     if let Err(error) = save_sessions_to_dir(dir, &prep.kept) {
         if let Some(mgr) = mgr {
             mgr.disable_prompt_reuse().await;
@@ -1963,27 +2142,49 @@ async fn purge_sessions_outside_project_paths_in_dir_locked(
     project_paths: &[String],
     settings: Option<&super::settings::AppSettings>,
 ) -> Result<(usize, Vec<PersistedSession>), String> {
-    let _guard = sessions_save_lock().lock().await;
-    let captured_settings;
-    let settings = match settings {
-        Some(settings) => settings,
-        None => {
-            captured_settings = super::settings::load_settings_for_cli();
-            &captured_settings
+    let dir = dir.to_path_buf();
+    let roots = project_paths.to_vec();
+    let settings = settings.cloned();
+    run_owned_persist_core(async move {
+        let mut permit = acquire_carrier_mutation_permit().await;
+        let settings = settings.unwrap_or_else(super::settings::load_settings_for_cli);
+        let mut foreign_done = HashSet::new();
+        loop {
+            let before =
+                load_sessions_from_path_with_settings(&dir.join("sessions.json"), Some(&settings));
+            let before_len = before.len();
+            let prep = prepare_persist_snapshot(before, &roots).await?;
+            let protections = all_carrier_protections();
+            let identity = probe_publication_directory(&dir, false);
+            let slot = resolve_publication_slot(&dir, identity);
+            if let (Some(protections), Some(slot)) = (protections, slot) {
+                if file_preparation_survives(&slot, &protections, &prep) {
+                    let drops = prep
+                        .drops
+                        .iter()
+                        .filter(|drop| foreign_done.insert(orphan_effect_key(drop)))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    handle_orphan_drops(None, &dir, &drops, PersistMode::NoPrune, &permit, None)
+                        .await;
+                    // Protection is checked before this legacy length/no-write gate.
+                    if prep.kept.len() == before_len {
+                        return Ok((before_len, prep.kept));
+                    }
+                    match save_file_snapshot_guarded(&dir, &slot, &prep.kept).await {
+                        GuardedSaveAttempt::Completed(result) => {
+                            return result.map(|_| (before_len, prep.kept))
+                        }
+                        GuardedSaveAttempt::Recapture => {}
+                    }
+                }
+            }
+            drop(permit);
+            tokio::task::yield_now().await;
+            permit = acquire_carrier_mutation_permit().await;
         }
-    };
-    let before = load_sessions_from_path_with_settings(&dir.join("sessions.json"), Some(settings));
-    let before_len = before.len();
-    // §1295 site A: prepare runs in-lock (startup/settings-change only, rare
-    // and accepted per S2's allowed branch), then handle(mgr=None) + a GUARDED
-    // save. The explicit `if kept.len() < before_len` guard is what keeps the
-    // second pass byte-identical (AC1).
-    let prep = prepare_persist_snapshot(before, project_paths).await?;
-    handle_orphan_drops(None, dir, &prep.drops, PersistMode::NoPrune).await;
-    if prep.kept.len() < before_len {
-        save_sessions_to_dir(dir, &prep.kept)?;
-    }
-    Ok((before_len, prep.kept))
+    })
+    .await
 }
 
 /// Save current sessions to the app config directory (see config_dir()).
@@ -2006,10 +2207,12 @@ async fn purge_sessions_outside_project_paths_in_dir_locked(
 ///   two can leave the snapshot stale by the time it lands on disk. The
 ///   next session-lifecycle event re-persists. See §224 G-IMPL-4 in
 ///   `phone/mailbox.rs` for the documented behavior.
+#[cfg(test)]
 pub fn save_sessions(sessions: &[PersistedSession]) -> Result<(), String> {
     save_sessions_to_config_dir(sessions)
 }
 
+#[cfg(test)]
 fn save_sessions_to_config_dir(sessions: &[PersistedSession]) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     save_sessions_to_dir(&dir, sessions)
@@ -2027,75 +2230,2223 @@ pub(crate) fn save_sessions_to_dir_for_test(
     save_sessions_to_dir(dir, sessions)
 }
 
+#[cfg(test)]
 fn save_sessions_to_dir(dir: &Path, sessions: &[PersistedSession]) -> Result<(), String> {
-    // #2716 (B3, 4.5b option S): while this directory's agents layer is unreadable,
-    // suppress every sessions.json write so the file keeps its exact bytes. All
-    // writers funnel through here, so one gate covers them.
     if super::settings::agents_layer_unreadable_for_dir(dir) {
         return Ok(());
     }
-    // #291 — serialize in-process saves. Recover from poison: a prior
-    // panic inside the critical section is rare (the body is sync std::fs
-    // + serde), and the on-disk file is atomic (tmp+rename), so the next
-    // caller can safely proceed.
     let _guard = SAVE_SESSIONS_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-    let path = dir.join("sessions.json");
-
-    std::fs::create_dir_all(dir)
-        .map_err(|e| format!("Failed to create config directory: {}", e))?;
-
-    let json = serde_json::to_string_pretty(sessions)
-        .map_err(|e| format!("Failed to serialize sessions: {}", e))?;
-
-    // #291 — unique temp filename per save. Combined with the mutex above,
-    // this kills the shared-`sessions.json.tmp` race: even cross-process
-    // concurrent saves cannot race on the temp file, and any leftover
-    // `.tmp` from a prior crashed run cannot be mistaken for ours.
-    let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let tmp_path = dir.join(format!("sessions.json.{}.{}.tmp", pid, op_id));
-
-    if let Err(e) = std::fs::write(&tmp_path, &json) {
-        // Best-effort cleanup: the partial write may have created the file
-        // even though the write returned Err (e.g. ENOSPC mid-stream).
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("Failed to write temp sessions file: {}", e));
-    }
-
-    // #280 §3.1 — atomic rename with bounded retries to absorb transient
-    // AV / Indexer / second-instance contention. On exhaustion, fold the
-    // diagnostic context into the error so the upstream `log::error!` in
-    // `persist_*` is self-contained for forensics.
-    if let Err((err_msg, d)) = rename_with_retry(&tmp_path, &path) {
-        // #291 — best-effort cleanup of our unique temp file so we don't
-        // accumulate `.tmp` litter across failed saves. The mutex + unique
-        // name guarantee this remove only touches OUR own temp file.
-        let _ = std::fs::remove_file(&tmp_path);
+        .unwrap_or_else(|error| error.into_inner());
+    let write = PreparedSessionsWrite::prepare(dir, sessions)?;
+    if let Err((error, diagnostics)) = rename_with_retry(&write.tmp_path, &write.path) {
         return Err(format!(
             "Failed to rename sessions file: {} [op_id={} pid={} instance={} attempts={} \
              tmp_existed_before={} final_existed_before={} os_error={:?} duration={:?}]",
-            err_msg,
-            d.op_id,
-            d.pid,
-            d.instance_id,
-            d.attempts,
-            d.tmp_exists_before,
-            d.final_exists_before,
-            d.last_os_error,
-            d.duration
+            error,
+            diagnostics.op_id,
+            diagnostics.pid,
+            diagnostics.instance_id,
+            diagnostics.attempts,
+            diagnostics.tmp_exists_before,
+            diagnostics.final_exists_before,
+            diagnostics.last_os_error,
+            diagnostics.duration,
         ));
     }
-
-    log::info!("Saved {} sessions to {:?}", sessions.len(), path);
+    // A raw/seed write advances the same epoch, but cannot mint a manager
+    // checkpoint or feature proof. A stale prepared core must recapture.
+    if let Some(slot) = publication_slot(dir) {
+        if let Ok(mut state) = slot.lock() {
+            if let Some(epoch) = state.epoch.checked_add(1) {
+                state.epoch = epoch;
+            }
+            state.checkpoint = None;
+        }
+    }
+    log::info!("Saved {} sessions to {:?}", sessions.len(), write.path);
     Ok(())
 }
 
+#[derive(Clone)]
+struct PublicationCheckpoint {
+    nonce: Uuid,
+    epoch: u64,
+    rows: Vec<PersistedSession>,
+    versions: HashMap<Uuid, u64>,
+    confirmed: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum ProtectionPhase {
+    Protected,
+    Preparing {
+        owner_nonce: Uuid,
+        previous: Uuid,
+        replacement: Uuid,
+    },
+    Closing,
+}
+
+/// Historical evidence minted only after the real Dormant settlement succeeds.
+/// Current authority always comes from a new Confirmed snapshot under U.
+#[derive(Clone, PartialEq, Eq)]
+struct RetiredLocalCarrierFact {
+    session_id: Uuid,
+    token: Uuid,
+    target: String,
+    protection_nonce: Uuid,
+    canonical_replica: PathBuf,
+    physical_replica: crate::session::manager::CarrierPhysicalIdentity,
+    generation: u64,
+    committed_version: u64,
+    settled_version: u64,
+    checkpoint_nonce: Uuid,
+    publication_epoch: u64,
+}
+
+#[derive(Clone)]
+struct CarrierProtection {
+    target: String,
+    session_id: Uuid,
+    token: Uuid,
+    lifetime: std::sync::Weak<()>,
+    retained: Option<std::sync::Arc<()>>,
+    pending_lifetime: Option<std::sync::Arc<()>>,
+    active: Option<std::sync::Arc<()>>,
+    nonce: Uuid,
+    epoch: u64,
+    version: u64,
+    row: PersistedSession,
+    canonical_cwd: PathBuf,
+    phase: ProtectionPhase,
+    retired_local: Option<RetiredLocalCarrierFact>,
+}
+
+#[derive(Clone, Default)]
+struct PublicationState {
+    canonical_directory: Option<PathBuf>,
+    epoch: u64,
+    checkpoint: Option<PublicationCheckpoint>,
+    protections: Vec<CarrierProtection>,
+}
+
+type PublicationSlot = std::sync::Arc<Mutex<PublicationState>>;
+
+fn publication_slots() -> &'static Mutex<HashMap<PathBuf, PublicationSlot>> {
+    static SLOTS: std::sync::OnceLock<Mutex<HashMap<PathBuf, PublicationSlot>>> =
+        std::sync::OnceLock::new();
+    SLOTS.get_or_init(Default::default)
+}
+
+fn publication_slot(dir: &Path) -> Option<PublicationSlot> {
+    let mut slots = publication_slots().lock().ok()?;
+    Some(slots.entry(dir.to_path_buf()).or_default().clone())
+}
+
+enum PublicationDirectoryIdentity {
+    Legacy,
+    Known(PathBuf),
+    Unknown,
+}
+
+/// Native identity probes run before hot U/M capture. The zero-protection
+/// legacy path performs no additional filesystem probes.
+fn probe_publication_directory(dir: &Path, initial: bool) -> PublicationDirectoryIdentity {
+    match all_carrier_protections() {
+        Some(protections) if protections.is_empty() => {
+            if !initial {
+                return PublicationDirectoryIdentity::Legacy;
+            }
+            std::fs::canonicalize(dir)
+                .map(PublicationDirectoryIdentity::Known)
+                .unwrap_or(PublicationDirectoryIdentity::Legacy)
+        }
+        Some(_) => std::fs::canonicalize(dir)
+            .map(PublicationDirectoryIdentity::Known)
+            .unwrap_or(PublicationDirectoryIdentity::Unknown),
+        None => PublicationDirectoryIdentity::Unknown,
+    }
+}
+
+/// Pure alias adoption under U. Every physical directory shares one slot, so
+/// an alternate path cannot retain a separately confirmed epoch or protection.
+fn resolve_publication_slot(
+    dir: &Path,
+    identity: PublicationDirectoryIdentity,
+) -> Option<PublicationSlot> {
+    let canonical = match identity {
+        PublicationDirectoryIdentity::Legacy => {
+            return all_carrier_protections()?
+                .is_empty()
+                .then(|| publication_slot(dir))
+                .flatten();
+        }
+        PublicationDirectoryIdentity::Known(path) => path,
+        PublicationDirectoryIdentity::Unknown => return None,
+    };
+    let mut slots = publication_slots().lock().ok()?;
+    let mut matching: Option<PublicationSlot> = None;
+    for slot in slots.values() {
+        let state = slot.lock().ok()?;
+        if state.canonical_directory.as_ref() == Some(&canonical) {
+            if matching
+                .as_ref()
+                .is_some_and(|previous| !std::sync::Arc::ptr_eq(previous, slot))
+            {
+                return None;
+            }
+            matching = Some(slot.clone());
+        }
+    }
+    let slot = matching.unwrap_or_else(|| slots.entry(dir.to_path_buf()).or_default().clone());
+    slot.lock().ok()?.canonical_directory = Some(canonical);
+    slots.insert(dir.to_path_buf(), slot.clone());
+    Some(slot)
+}
+
+/// Owned upper binding. The caller supplies the authenticated canonical target
+/// and verified replica root; this module never derives target authority from CWD.
+#[derive(Clone)]
+pub(crate) struct InitialCarrierIntent {
+    pub target: String,
+    pub session_id: Uuid,
+    pub token: Uuid,
+    pub version: u64,
+    pub canonical_replica: PathBuf,
+    restore_exclusion: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    lifetime: std::sync::Arc<()>,
+}
+
+impl InitialCarrierIntent {
+    pub(crate) fn new(
+        target: String,
+        session_id: Uuid,
+        token: Uuid,
+        version: u64,
+        canonical_replica: PathBuf,
+    ) -> Self {
+        Self {
+            target,
+            session_id,
+            token,
+            version,
+            canonical_replica,
+            restore_exclusion: None,
+            lifetime: std::sync::Arc::new(()),
+        }
+    }
+
+    /// Upper passes the same data-only restore exclusion held by its coordinator.
+    pub(crate) fn with_restore_exclusion(
+        mut self,
+        exclusion: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.restore_exclusion = Some(exclusion);
+        self
+    }
+
+    fn restore_allows_publication(&self) -> bool {
+        !self
+            .restore_exclusion
+            .as_ref()
+            .is_some_and(|active| active.load(Ordering::Acquire))
+    }
+
+    fn matches(
+        &self,
+        captured: &crate::session::manager::CarrierSnapshot,
+        rows: &[PersistedSession],
+    ) -> bool {
+        !captured.pending_ids.contains(&self.session_id)
+            && captured.versions.get(&self.session_id) == Some(&self.version)
+            && captured.rows.iter().any(|row| {
+                row.id == self.session_id
+                    && row.token == self.token
+                    && !row.is_root_agent
+                    && !row.is_coordinator
+                    && !matches!(row.status, SessionStatus::Exited(_))
+            })
+            && rows
+                .iter()
+                .filter(|row| {
+                    row.id.as_deref().and_then(|id| Uuid::parse_str(id).ok())
+                        == Some(self.session_id)
+                })
+                .count()
+                == 1
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct PublishedCarrier {
+    pub target: String,
+    pub session_id: Uuid,
+    pub token: Uuid,
+    pub nonce: Uuid,
+    pub version: u64,
+    slot: PublicationSlot,
+    pub directory: PathBuf,
+    lifetime: std::sync::Arc<()>,
+    retired_local: Option<RetiredLocalCarrierFact>,
+}
+
+impl PublishedCarrier {
+    /// Historical generation, never a live route or writer capability.
+    pub(crate) fn retired_local_generation(&self) -> Option<u64> {
+        self.retired_local.as_ref().map(|fact| fact.generation)
+    }
+    pub(crate) fn retired_local_replica_matches(
+        &self,
+        physical: &crate::session::manager::CarrierPhysicalIdentity,
+    ) -> bool {
+        self.retired_local
+            .as_ref()
+            .is_some_and(|fact| fact.physical_replica.same_object(physical))
+    }
+
+    /// Read-only first-write check under the injector's existing current M and
+    /// route writer guard. No U acquisition, filesystem probe or publication.
+    pub(crate) fn matches_owned_work_snapshot(
+        &self,
+        current: &crate::session::manager::CarrierSnapshot,
+        canonical_cwd: &Path,
+    ) -> bool {
+        if self.version == u64::MAX
+            || current.versions.get(&self.session_id) != Some(&self.version)
+            || current.pending_ids.contains(&self.session_id)
+            || !current
+                .rows
+                .iter()
+                .any(|row| row.id == self.session_id && row.token == self.token)
+        {
+            return false;
+        }
+        let Some(protections) = all_carrier_protections() else {
+            return false;
+        };
+        let mut related = protections.iter().filter(|protection| {
+            protection.target == self.target
+                || canonical_cwd.starts_with(&protection.canonical_cwd)
+                || protection.canonical_cwd.starts_with(canonical_cwd)
+        });
+        let Some(protection) = related.next() else {
+            return false;
+        };
+        if related.next().is_some()
+            || protection.target != self.target
+            || protection.session_id != self.session_id
+            || protection.nonce != self.nonce
+            || protection.token != self.token
+            || protection.version != self.version
+            || protection.phase != ProtectionPhase::Protected
+            || !canonical_cwd.starts_with(&protection.canonical_cwd)
+        {
+            return false;
+        }
+        let Ok(state) = self.slot.lock() else {
+            return false;
+        };
+        state.checkpoint.as_ref().is_some_and(|checkpoint| {
+            checkpoint.confirmed
+                && checkpoint.epoch < u64::MAX
+                && checkpoint.epoch == state.epoch
+                && protection.epoch == checkpoint.epoch
+                && checkpoint.versions.get(&self.session_id) == Some(&self.version)
+                && checkpoint
+                    .rows
+                    .iter()
+                    .any(|row| same_carrier_projection(row, &protection.row))
+        })
+    }
+}
+
+pub(crate) struct CurrentCarrierCheckpoint {
+    pub nonce: Uuid,
+    pub epoch: u64,
+    pub version: u64,
+}
+
+fn prepare_protected_publication(
+    next: &mut PublicationState,
+    rows: &[PersistedSession],
+    captured: &crate::session::manager::CarrierSnapshot,
+    initial: Option<&InitialCarrierIntent>,
+) -> bool {
+    next.protections
+        .retain(|protection| protection.lifetime.strong_count() != 0);
+    for protection in &mut next.protections {
+        let mut matches = rows.iter().filter(|row| {
+            row.id.as_deref().and_then(|id| Uuid::parse_str(id).ok()) == Some(protection.session_id)
+        });
+        let Some(row) = matches.next() else {
+            return false;
+        };
+        let Some(version) = captured.versions.get(&protection.session_id) else {
+            return false;
+        };
+        if matches.next().is_some()
+            || captured.pending_ids.contains(&protection.session_id)
+            || !captured.rows.iter().any(|current| {
+                current.id == protection.session_id && current.token == protection.token
+            })
+        {
+            return false;
+        }
+        if !captured.rows.iter().any(|current| {
+            current.id == protection.session_id
+                && current.token == protection.token
+                && crate::session::manager::CarrierSnapshot::is_local_interactive_carrier(current)
+                && matches!(current.status, SessionStatus::Exited(0))
+                && current.working_directory == protection.row.working_directory
+        }) {
+            protection.retired_local = None;
+        }
+        protection.row = row.clone();
+        protection.version = *version;
+        protection.epoch = next.epoch;
+    }
+    let Some(initial) = initial else {
+        return true;
+    };
+    if !initial.matches(captured, rows) {
+        return false;
+    }
+    let Some(all) = all_carrier_protections() else {
+        return false;
+    };
+    if all.iter().any(|protection| {
+        (protection.session_id == initial.session_id || protection.target == initial.target)
+            && !next
+                .protections
+                .iter()
+                .any(|own| own.nonce == protection.nonce && own.session_id == protection.session_id)
+    }) {
+        return false;
+    }
+    if let Some(protection) = next
+        .protections
+        .iter_mut()
+        .find(|protection| protection.session_id == initial.session_id)
+    {
+        if protection.target != initial.target
+            || protection.token != initial.token
+            || !matches!(protection.phase, ProtectionPhase::Protected)
+        {
+            return false;
+        }
+        if protection.retained.is_none() {
+            protection.lifetime = std::sync::Arc::downgrade(&initial.lifetime);
+            protection.pending_lifetime = Some(initial.lifetime.clone());
+        }
+        return true;
+    }
+    let Some(row) = rows.iter().find(|row| {
+        row.id.as_deref().and_then(|id| Uuid::parse_str(id).ok()) == Some(initial.session_id)
+    }) else {
+        return false;
+    };
+    next.protections.push(CarrierProtection {
+        target: initial.target.clone(),
+        session_id: initial.session_id,
+        token: initial.token,
+        nonce: Uuid::new_v4(),
+        epoch: next.epoch,
+        version: initial.version,
+        row: row.clone(),
+        canonical_cwd: initial.canonical_replica.clone(),
+        phase: ProtectionPhase::Protected,
+        retired_local: None,
+        lifetime: std::sync::Arc::downgrade(&initial.lifetime),
+        retained: None,
+        pending_lifetime: Some(initial.lifetime.clone()),
+        active: None,
+    });
+    true
+}
+
+fn published_initial_carrier(
+    slot: &PublicationSlot,
+    initial: &InitialCarrierIntent,
+    dir: &Path,
+) -> Option<PublishedCarrier> {
+    let state = slot.lock().ok()?;
+    let checkpoint = state.checkpoint.as_ref().filter(|checkpoint| {
+        checkpoint.confirmed && checkpoint.epoch < u64::MAX && checkpoint.epoch == state.epoch
+    })?;
+    let protection = state.protections.iter().find(|protection| {
+        protection.target == initial.target
+            && protection.session_id == initial.session_id
+            && protection.token == initial.token
+            && protection.version == initial.version
+            && protection.epoch == checkpoint.epoch
+            && matches!(protection.phase, ProtectionPhase::Protected)
+    })?;
+    if checkpoint.versions.get(&initial.session_id) != Some(&initial.version) {
+        return None;
+    }
+    let lifetime = protection.lifetime.upgrade()?;
+    Some(PublishedCarrier {
+        target: protection.target.clone(),
+        session_id: protection.session_id,
+        token: protection.token,
+        nonce: protection.nonce,
+        version: protection.version,
+        slot: slot.clone(),
+        directory: dir.to_path_buf(),
+        lifetime,
+        retired_local: None,
+    })
+}
+
+/// Capture the retained current A key for an authenticated upper replacement.
+/// No CWD, recipe, or UUID-only lookup creates replacement authority.
+pub(crate) fn retained_carrier_for_replacement(
+    _permit: &CarrierMutationPermit,
+    directory: &Path,
+    target: &str,
+    session_id: Uuid,
+    current: &crate::session::manager::CarrierSnapshot,
+) -> Option<PublishedCarrier> {
+    let row = current.rows.iter().find(|row| {
+        row.id == session_id
+            && matches!(row.status, SessionStatus::Exited(0))
+            && crate::session::manager::CarrierSnapshot::is_local_interactive_carrier(row)
+            && !current.pending_ids.contains(&row.id)
+    })?;
+    let version = *current.versions.get(&session_id)?;
+    let scope = classify_create_carrier_scope(_permit, target, Path::new(&row.working_directory));
+    let slot = publication_slots().lock().ok()?.get(directory)?.clone();
+    let state = slot.lock().ok()?;
+    let checkpoint = state.checkpoint.as_ref().filter(|checkpoint| {
+        checkpoint.confirmed
+            && checkpoint.epoch < u64::MAX
+            && checkpoint.epoch == state.epoch
+            && checkpoint.versions.get(&session_id) == Some(&version)
+    })?;
+    let mut matches = state.protections.iter().filter(|protection| {
+        protection.session_id == session_id
+            && protection.target == target
+            && protection.token == row.token
+            && protection.version == version
+            && protection.epoch == checkpoint.epoch
+            && protection.phase == ProtectionPhase::Protected
+            && protection.lifetime.strong_count() != 0
+    });
+    let protection = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    let fact = protection.retired_local.as_ref()?;
+    if fact.session_id != session_id
+        || fact.token != row.token
+        || fact.target != target
+        || fact.protection_nonce != protection.nonce
+        || fact.canonical_replica != protection.canonical_cwd
+        || fact.committed_version > fact.settled_version
+        || fact.settled_version > version
+        || fact.publication_epoch > checkpoint.epoch
+        || fact.publication_epoch == u64::MAX
+        || (fact.publication_epoch == checkpoint.epoch
+            && (fact.checkpoint_nonce != checkpoint.nonce || fact.settled_version != version))
+        || !checkpoint
+            .rows
+            .iter()
+            .any(|written| same_carrier_projection(written, &protection.row))
+        || !matches!(scope,
+            CreateCarrierScope::Protected { session_id: actual, token, version: actual_version,
+                epoch, preparing_owner: None, .. }
+            if actual == session_id && token == row.token && actual_version == version && epoch == checkpoint.epoch)
+    {
+        return None;
+    }
+    let lifetime = protection.lifetime.upgrade()?;
+    Some(PublishedCarrier {
+        target: target.to_owned(),
+        session_id,
+        token: row.token,
+        nonce: protection.nonce,
+        version,
+        slot: slot.clone(),
+        directory: directory.to_path_buf(),
+        lifetime,
+        retired_local: protection.retired_local.clone(),
+    })
+}
+
+/// A strict current protection for an explicit manual discard. This proves no
+/// route ownership; the transient upper executor must also own the tracker claim.
+pub(crate) fn manual_discard_carrier(
+    permit: &CarrierMutationPermit,
+    canonical_source: &Path,
+    target: &str,
+    session_id: Uuid,
+    current: &crate::session::manager::CarrierSnapshot,
+) -> Option<PublishedCarrier> {
+    let row = current
+        .rows
+        .iter()
+        .find(|row| row.id == session_id && !current.pending_ids.contains(&row.id))?;
+    let version = *current.versions.get(&session_id)?;
+    if !matches!(classify_lifecycle_carrier_scope(permit, Some(target), canonical_source),
+        CreateCarrierScope::Protected { session_id: id, token, version: actual, preparing_owner: None, .. }
+        if id == session_id && token == row.token && actual == version)
+    {
+        return None;
+    }
+    let protections = all_carrier_protections()?;
+    let mut own = protections.iter().filter(|p| p.session_id == session_id);
+    let protection = own.next()?;
+    if own.next().is_some()
+        || protection.target != target
+        || protection.token != row.token
+        || protection.version != version
+        || protection.phase != ProtectionPhase::Protected
+    {
+        return None;
+    }
+    let candidates = publication_slots()
+        .lock()
+        .ok()?
+        .iter()
+        .map(|(directory, slot)| (directory.clone(), slot.clone()))
+        .collect::<Vec<_>>();
+    let mut found: Option<PublishedCarrier> = None;
+    for (directory, slot) in candidates {
+        if found
+            .as_ref()
+            .is_some_and(|prior| std::sync::Arc::ptr_eq(&prior.slot, &slot))
+        {
+            continue;
+        }
+        let state = slot.lock().ok()?;
+        if !state
+            .protections
+            .iter()
+            .any(|p| p.nonce == protection.nonce && p.session_id == session_id)
+        {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        state.checkpoint.as_ref().filter(|checkpoint| {
+            checkpoint.confirmed
+                && checkpoint.epoch < u64::MAX
+                && checkpoint.epoch == state.epoch
+                && checkpoint.epoch == protection.epoch
+                && checkpoint.versions.get(&session_id) == Some(&version)
+                && checkpoint
+                    .rows
+                    .iter()
+                    .any(|written| same_carrier_projection(written, &protection.row))
+        })?;
+        found = Some(PublishedCarrier {
+            target: target.to_owned(),
+            session_id,
+            token: row.token,
+            nonce: protection.nonce,
+            version,
+            slot: slot.clone(),
+            directory,
+            lifetime: protection.lifetime.upgrade()?,
+            retired_local: protection.retired_local.clone(),
+        });
+    }
+    let carrier = found?;
+    if carrier.retired_local.is_some() {
+        // Historical evidence is accepted only through the full retired accessor.
+        return retained_carrier_for_replacement(
+            permit,
+            &carrier.directory,
+            target,
+            session_id,
+            current,
+        );
+    }
+    Some(carrier)
+}
+
+pub(crate) fn retire_manual_discard_carrier(
+    permit: &CarrierMutationPermit,
+    carrier: &PublishedCarrier,
+    canonical_source: &Path,
+    current: &crate::session::manager::CarrierSnapshot,
+) -> bool {
+    let Some(actual) = manual_discard_carrier(
+        permit,
+        canonical_source,
+        &carrier.target,
+        carrier.session_id,
+        current,
+    ) else {
+        return false;
+    };
+    actual.nonce == carrier.nonce
+        && actual.token == carrier.token
+        && actual.version == carrier.version
+        && std::sync::Arc::ptr_eq(&actual.slot, &carrier.slot)
+        && retire_carrier_for_discard(permit, carrier.session_id)
+}
+
+pub(crate) fn begin_carrier_replacement(
+    _permit: &CarrierMutationPermit,
+    carrier: &PublishedCarrier,
+    owner_nonce: Uuid,
+    replacement: Uuid,
+    current: &crate::session::manager::CarrierSnapshot,
+) -> bool {
+    if carrier.retired_local.is_none()
+        || replacement == carrier.session_id
+        || current.rows.iter().any(|row| row.id == replacement)
+        || current.versions.get(&carrier.session_id) != Some(&carrier.version)
+        || !current.rows.iter().any(|row| {
+            row.id == carrier.session_id
+                && row.token == carrier.token
+                && matches!(row.status, SessionStatus::Exited(_))
+                && !current.pending_ids.contains(&row.id)
+        })
+    {
+        return false;
+    }
+    let Ok(mut state) = carrier.slot.lock() else {
+        return false;
+    };
+    let Some(checkpoint) = state.checkpoint.as_ref().filter(|checkpoint| {
+        checkpoint.confirmed
+            && checkpoint.epoch < u64::MAX
+            && checkpoint.epoch == state.epoch
+            && checkpoint.versions.get(&carrier.session_id) == Some(&carrier.version)
+    }) else {
+        return false;
+    };
+    let epoch = checkpoint.epoch;
+    let Some(protection) = state.protections.iter_mut().find(|protection| {
+        protection.target == carrier.target
+            && protection.session_id == carrier.session_id
+            && protection.token == carrier.token
+            && protection.nonce == carrier.nonce
+            && protection.version == carrier.version
+            && protection.epoch == epoch
+            && protection.phase == ProtectionPhase::Protected
+            && protection.retired_local == carrier.retired_local
+    }) else {
+        return false;
+    };
+    protection.phase = ProtectionPhase::Preparing {
+        owner_nonce,
+        previous: carrier.session_id,
+        replacement,
+    };
+    true
+}
+
+/// Renew only the same operation's full Preparing relation. A historical key
+/// never changes UUID; the returned current handle keeps its actual slot/nonce.
+pub(crate) fn renew_carrier_replacement(
+    permit: &CarrierMutationPermit,
+    carrier: &PublishedCarrier,
+    owner_nonce: Uuid,
+    previous: Uuid,
+    replacement: Uuid,
+    current: &crate::session::manager::CarrierSnapshot,
+) -> Option<PublishedCarrier> {
+    let row = current.rows.iter().find(|row| {
+        row.id == carrier.session_id
+            && row.token == carrier.token
+            && !current.pending_ids.contains(&row.id)
+    })?;
+    if carrier.session_id == previous
+        && (!matches!(row.status, SessionStatus::Exited(0))
+            || !crate::session::manager::CarrierSnapshot::is_local_interactive_carrier(row))
+    {
+        return None;
+    }
+    let version = *current.versions.get(&row.id)?;
+    if !matches!(classify_create_carrier_scope(permit, &carrier.target,
+        Path::new(&row.working_directory)), CreateCarrierScope::Protected {
+            session_id, token, version: actual, preparing_owner: Some(owner), ..
+        } if session_id == row.id && token == row.token && actual == version && owner == owner_nonce)
+    {
+        return None;
+    }
+    let state = carrier.slot.lock().ok()?;
+    let checkpoint = state.checkpoint.as_ref().filter(|checkpoint| {
+        checkpoint.confirmed
+            && checkpoint.epoch < u64::MAX
+            && checkpoint.epoch == state.epoch
+            && checkpoint.versions.get(&row.id) == Some(&version)
+    })?;
+    let protection = state.protections.iter().find(|protection| {
+        protection.session_id == row.id
+            && protection.token == row.token
+            && protection.nonce == carrier.nonce
+            && protection.target == carrier.target
+            && protection.version == version
+            && protection.epoch == checkpoint.epoch
+            && protection.phase
+                == ProtectionPhase::Preparing {
+                    owner_nonce,
+                    previous,
+                    replacement,
+                }
+            && checkpoint
+                .rows
+                .iter()
+                .any(|written| same_carrier_projection(written, &protection.row))
+    })?;
+    Some(PublishedCarrier {
+        target: carrier.target.clone(),
+        session_id: row.id,
+        token: row.token,
+        nonce: protection.nonce,
+        version,
+        slot: carrier.slot.clone(),
+        directory: carrier.directory.clone(),
+        lifetime: protection.lifetime.upgrade()?,
+        retired_local: protection.retired_local.clone(),
+    })
+}
+
+/// Current Protected-B completion proof; this reads the actual checkpoint and
+/// never updates a handle to a version that has not been confirmed on disk.
+pub(crate) fn current_protected_carrier(
+    permit: &CarrierMutationPermit,
+    carrier: &PublishedCarrier,
+    current: &crate::session::manager::CarrierSnapshot,
+) -> Option<PublishedCarrier> {
+    let row = current.rows.iter().find(|row| {
+        row.id == carrier.session_id
+            && row.token == carrier.token
+            && !current.pending_ids.contains(&row.id)
+    })?;
+    let version = *current.versions.get(&row.id)?;
+    if version == u64::MAX {
+        return None;
+    }
+    if !matches!(classify_create_carrier_scope(permit, &carrier.target, Path::new(&row.working_directory)),
+        CreateCarrierScope::Protected { session_id, token, version: actual, preparing_owner: None, .. }
+        if session_id == row.id && token == row.token && actual == version)
+    {
+        return None;
+    }
+    let state = carrier.slot.lock().ok()?;
+    let checkpoint = state.checkpoint.as_ref().filter(|checkpoint| {
+        checkpoint.confirmed
+            && checkpoint.epoch < u64::MAX
+            && checkpoint.epoch == state.epoch
+            && checkpoint.versions.get(&row.id) == Some(&version)
+    })?;
+    let protection = state.protections.iter().find(|protection| {
+        protection.session_id == row.id
+            && protection.nonce == carrier.nonce
+            && protection.token == row.token
+            && protection.version == version
+            && protection.epoch == checkpoint.epoch
+            && protection.phase == ProtectionPhase::Protected
+            && checkpoint
+                .rows
+                .iter()
+                .any(|written| same_carrier_projection(written, &protection.row))
+    })?;
+    Some(PublishedCarrier {
+        target: carrier.target.clone(),
+        session_id: row.id,
+        token: row.token,
+        nonce: protection.nonce,
+        version,
+        slot: carrier.slot.clone(),
+        directory: carrier.directory.clone(),
+        lifetime: protection.lifetime.upgrade()?,
+        retired_local: None,
+    })
+}
+
+/// Release the operation's Preparing only after B is strict Confirmed and A
+/// has really been removed from the current manager snapshot under this same U.
+pub(crate) fn finish_carrier_replacement(
+    permit: &CarrierMutationPermit,
+    carrier: &PublishedCarrier,
+    owner_nonce: Uuid,
+    previous: Uuid,
+    current: &crate::session::manager::CarrierSnapshot,
+) -> bool {
+    if current.rows.iter().any(|row| row.id == previous) {
+        return false;
+    }
+    let Some(actual) = renew_carrier_replacement(
+        permit,
+        carrier,
+        owner_nonce,
+        previous,
+        carrier.session_id,
+        current,
+    ) else {
+        return false;
+    };
+    let Ok(mut state) = carrier.slot.lock() else {
+        return false;
+    };
+    let Some(protection) = state.protections.iter_mut().find(|protection| {
+        protection.session_id == actual.session_id
+            && protection.nonce == actual.nonce
+            && protection.phase
+                == ProtectionPhase::Preparing {
+                    owner_nonce,
+                    previous,
+                    replacement: actual.session_id,
+                }
+    }) else {
+        return false;
+    };
+    protection.phase = ProtectionPhase::Protected;
+    true
+}
+
+/// Pre-rename rollback releases only this operation's A-side Preparing.
+/// A current strict checkpoint must still prove A, and B must be absent.
+pub(crate) fn abort_owned_carrier_replacement(
+    permit: &CarrierMutationPermit,
+    carrier: &PublishedCarrier,
+    owner_nonce: Uuid,
+    replacement: Uuid,
+    current: &crate::session::manager::CarrierSnapshot,
+) -> bool {
+    if current.rows.iter().any(|row| row.id == replacement) {
+        return false;
+    }
+    let Some(actual) = renew_carrier_replacement(
+        permit,
+        carrier,
+        owner_nonce,
+        carrier.session_id,
+        replacement,
+        current,
+    ) else {
+        return false;
+    };
+    let Ok(mut state) = carrier.slot.lock() else {
+        return false;
+    };
+    let Some(protection) = state.protections.iter_mut().find(|protection| {
+        protection.session_id == actual.session_id
+            && protection.nonce == actual.nonce
+            && protection.token == actual.token
+            && protection.version == actual.version
+            && protection.phase
+                == ProtectionPhase::Preparing {
+                    owner_nonce,
+                    previous: actual.session_id,
+                    replacement,
+                }
+    }) else {
+        return false;
+    };
+    protection.phase = ProtectionPhase::Protected;
+    true
+}
+
+/// The generic callback runs only under the caller's U/current M region. It
+/// supplies tracker primitives in the upper layer; no tracker dependency enters here.
+pub(crate) fn register_published_carrier<T>(
+    _permit: &CarrierMutationPermit,
+    carrier: &PublishedCarrier,
+    current: &crate::session::manager::CarrierSnapshot,
+    register: impl FnOnce(CurrentCarrierCheckpoint) -> Option<T>,
+) -> Option<T> {
+    let mut state = carrier.slot.lock().ok()?;
+    let checkpoint = state.checkpoint.as_ref().filter(|checkpoint| {
+        checkpoint.confirmed && checkpoint.epoch < u64::MAX && checkpoint.epoch == state.epoch
+    })?;
+    if current.versions.get(&carrier.session_id) != Some(&carrier.version)
+        || checkpoint.versions.get(&carrier.session_id) != Some(&carrier.version)
+        || !current
+            .rows
+            .iter()
+            .any(|row| row.id == carrier.session_id && row.token == carrier.token)
+        || current.pending_ids.contains(&carrier.session_id)
+    {
+        return None;
+    }
+    let stamp = CurrentCarrierCheckpoint {
+        nonce: checkpoint.nonce,
+        epoch: checkpoint.epoch,
+        version: carrier.version,
+    };
+    let protection = state.protections.iter_mut().find(|protection| {
+        protection.session_id == carrier.session_id
+            && protection.token == carrier.token
+            && protection.nonce == carrier.nonce
+            && protection.target == carrier.target
+            && protection.version == carrier.version
+            && protection.epoch == stamp.epoch
+            && matches!(protection.phase, ProtectionPhase::Protected)
+    })?;
+    let result = register(stamp)?;
+    protection.retained = Some(carrier.lifetime.clone());
+    Some(result)
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CarrierCheckpointTransition<'a> {
+    BeginClosing,
+    FinishClosing,
+    FinishDormant {
+        generation: u64,
+        committed_version: u64,
+        replica: &'a crate::session::manager::CarrierPhysicalIdentity,
+    },
+}
+
+/// Caller holds the current interior manager read under U. The opaque upper
+/// transition runs while this same Confirmed slot remains locked; phase changes
+/// occur only after an observed successful tracker transition.
+pub(crate) fn with_confirmed_carrier<T>(
+    _permit: &CarrierMutationPermit,
+    carrier: &PublishedCarrier,
+    current: &crate::session::manager::CarrierSnapshot,
+    transition: CarrierCheckpointTransition<'_>,
+    apply: impl FnOnce(CurrentCarrierCheckpoint) -> Option<T>,
+) -> Option<T> {
+    let mut state = carrier.slot.lock().ok()?;
+    let version = *current.versions.get(&carrier.session_id)?;
+    if version < carrier.version
+        || current.pending_ids.contains(&carrier.session_id)
+        || !current
+            .rows
+            .iter()
+            .any(|row| row.id == carrier.session_id && row.token == carrier.token)
+    {
+        return None;
+    }
+    let checkpoint = state.checkpoint.as_ref().filter(|checkpoint| {
+        checkpoint.confirmed
+            && checkpoint.epoch == state.epoch
+            && checkpoint.versions.get(&carrier.session_id) == Some(&version)
+    })?;
+    let stamp = CurrentCarrierCheckpoint {
+        nonce: checkpoint.nonce,
+        epoch: checkpoint.epoch,
+        version,
+    };
+    let protection = state.protections.iter_mut().find(|protection| {
+        protection.session_id == carrier.session_id
+            && protection.token == carrier.token
+            && protection.target == carrier.target
+            && protection.nonce == carrier.nonce
+            && protection.epoch == stamp.epoch
+            && protection.version == stamp.version
+    })?;
+    let phase_matches = match transition {
+        CarrierCheckpointTransition::BeginClosing => {
+            stamp.epoch < u64::MAX
+                && protection.phase == ProtectionPhase::Protected
+                && version == carrier.version
+        }
+        CarrierCheckpointTransition::FinishClosing
+        | CarrierCheckpointTransition::FinishDormant { .. } => {
+            protection.phase == ProtectionPhase::Closing
+        }
+    };
+    if !phase_matches {
+        return None;
+    }
+    // Prepare owned data BEFORE the irreversible tracker transition. Afterwards
+    // only infallible moves publish history and Protected under the same slot/U.
+    let retirement = match transition {
+        CarrierCheckpointTransition::FinishDormant {
+            generation,
+            committed_version,
+            replica,
+        } => {
+            let row = current
+                .rows
+                .iter()
+                .find(|row| row.id == carrier.session_id)?;
+            if committed_version != carrier.version
+                || committed_version > version
+                || row.token != carrier.token
+                || !crate::session::manager::CarrierSnapshot::is_local_interactive_carrier(row)
+                || !matches!(row.status, SessionStatus::Exited(0))
+                || current.selection.id() == Some(row.id)
+                || replica.canonical_path() != protection.canonical_cwd
+                || !replica.is_dir()
+            {
+                return None;
+            }
+            Some(RetiredLocalCarrierFact {
+                session_id: carrier.session_id,
+                token: carrier.token,
+                target: carrier.target.clone(),
+                protection_nonce: carrier.nonce,
+                canonical_replica: protection.canonical_cwd.clone(),
+                physical_replica: replica.clone(),
+                generation,
+                committed_version,
+                settled_version: stamp.version,
+                checkpoint_nonce: stamp.nonce,
+                publication_epoch: stamp.epoch,
+            })
+        }
+        _ => None,
+    };
+    let result = apply(stamp)?;
+    protection.retired_local = retirement;
+    protection.phase = match transition {
+        CarrierCheckpointTransition::BeginClosing => ProtectionPhase::Closing,
+        CarrierCheckpointTransition::FinishClosing
+        | CarrierCheckpointTransition::FinishDormant { .. } => ProtectionPhase::Protected,
+    };
+    Some(result)
+}
+
+pub(crate) fn retire_carrier_for_discard(_permit: &CarrierMutationPermit, id: Uuid) -> bool {
+    let slots = match publication_slots().lock() {
+        Ok(slots) => slots.values().cloned().collect::<Vec<_>>(),
+        Err(_) => return false,
+    };
+    for slot in &slots {
+        let Ok(state) = slot.lock() else {
+            return false;
+        };
+        if state
+            .protections
+            .iter()
+            .any(|protection| match protection.phase {
+                ProtectionPhase::Closing => protection.session_id == id,
+                ProtectionPhase::Preparing {
+                    previous,
+                    replacement,
+                    ..
+                } => protection.session_id == id || previous == id || replacement == id,
+                ProtectionPhase::Protected => false,
+            })
+        {
+            return false;
+        }
+    }
+    for slot in slots {
+        let Ok(mut state) = slot.lock() else {
+            return false;
+        };
+        state
+            .protections
+            .retain(|protection| protection.session_id != id);
+    }
+    true
+}
+
+fn all_carrier_protections() -> Option<Vec<CarrierProtection>> {
+    let slots = publication_slots()
+        .lock()
+        .ok()?
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut protections = Vec::new();
+    let mut seen = HashSet::new();
+    for slot in slots {
+        if !seen.insert(std::sync::Arc::as_ptr(&slot) as usize) {
+            continue;
+        }
+        let state = slot.lock().ok()?;
+        for protection in &state.protections {
+            if let Some(active) = protection.lifetime.upgrade() {
+                let mut protection = protection.clone();
+                protection.active = Some(active);
+                protections.push(protection);
+            }
+        }
+    }
+    Some(protections)
+}
+
+/// Veto only: an unowned delivery cannot use an unconfirmed replacement B.
+/// False supplies no Foreign, checkpoint, route or replacement authority.
+pub(crate) fn unconfirmed_replacement_work_waits(target: &str, id: Uuid) -> bool {
+    all_carrier_protections().is_none_or(|protections| {
+        protections.iter().any(|protection| {
+            protection.target == target
+                && matches!(protection.phase,
+            ProtectionPhase::Preparing { replacement, .. } if replacement == id)
+        })
+    })
+}
+
+/// Pure ALL-scopes startup precondition. None is unreadable ownership, never
+/// evidence that no publication protection exists.
+pub(crate) fn restore_carrier_scopes_are_empty(_permit: &CarrierMutationPermit) -> Option<bool> {
+    Some(all_carrier_protections()?.is_empty())
+}
+
+fn same_carrier_projection(a: &PersistedSession, b: &PersistedSession) -> bool {
+    a.id == b.id
+        && a.name == b.name
+        && a.shell == b.shell
+        && a.shell_args == b.shell_args
+        && a.working_directory == b.working_directory
+        && a.was_active == b.was_active
+        && a.git_repos.len() == b.git_repos.len()
+        && a.git_repos
+            .iter()
+            .zip(&b.git_repos)
+            .all(|(a, b)| a.label == b.label && a.source_path == b.source_path)
+        && a.is_coordinator == b.is_coordinator
+        && a.is_root_agent == b.is_root_agent
+        && a.agent_id == b.agent_id
+        && a.agent_label == b.agent_label
+        && a.requested_profile == b.requested_profile
+        && a.effective_profile == b.effective_profile
+        && a.telegram_bot_id == b.telegram_bot_id
+        && a.was_detached == b.was_detached
+        && a.start_fresh_on_restore == b.start_fresh_on_restore
+        && a.communication == b.communication
+        && match (&a.status, &b.status) {
+            (Some(SessionStatus::Exited(a)), Some(SessionStatus::Exited(b))) => a == b,
+            (Some(SessionStatus::Exited(_)), _) | (_, Some(SessionStatus::Exited(_))) => false,
+            _ => true,
+        }
+}
+
+fn same_written_projection(expected: &[PersistedSession], actual: &[PersistedSession]) -> bool {
+    expected.len() == actual.len()
+        && expected.iter().zip(actual).all(|(expected, actual)| {
+            same_carrier_projection(expected, actual) && expected.status == actual.status
+        })
+}
+
+/// Current ALL-scopes create relation. This is a publication classification,
+/// never route authority; the upper owner validates current manager facts.
+pub(crate) enum CreateCarrierScope {
+    Foreign {
+        publication_epoch: u64,
+    },
+    Protected {
+        target: String,
+        session_id: Uuid,
+        token: Uuid,
+        version: u64,
+        epoch: u64,
+        preparing_owner: Option<Uuid>,
+    },
+    Waiting,
+}
+
+pub(crate) fn classify_create_carrier_scope(
+    permit: &CarrierMutationPermit,
+    target: &str,
+    cwd: &Path,
+) -> CreateCarrierScope {
+    // Preserve the literal zero-protection legacy path, including absent CWDs.
+    let Some(protections) = all_carrier_protections() else {
+        return CreateCarrierScope::Waiting;
+    };
+    if protections.is_empty() {
+        return CreateCarrierScope::Foreign {
+            publication_epoch: 0,
+        };
+    }
+    let Ok(canonical) = std::fs::canonicalize(cwd) else {
+        return CreateCarrierScope::Waiting;
+    };
+    classify_lifecycle_carrier_scope(permit, Some(target), &canonical)
+}
+
+pub(crate) fn classify_lifecycle_carrier_scope(
+    _permit: &CarrierMutationPermit,
+    target: Option<&str>,
+    canonical: &Path,
+) -> CreateCarrierScope {
+    let Some(protections) = all_carrier_protections() else {
+        return CreateCarrierScope::Waiting;
+    };
+    if protections.is_empty() {
+        return CreateCarrierScope::Foreign {
+            publication_epoch: 0,
+        };
+    }
+    let publication_epoch = protections
+        .iter()
+        .map(|protection| protection.epoch)
+        .max()
+        .unwrap_or(0);
+    let mut related = None;
+    for protection in protections {
+        let intersects = canonical.starts_with(&protection.canonical_cwd)
+            || protection.canonical_cwd.starts_with(canonical);
+        let same_target = target.is_some_and(|target| protection.target == target);
+        if !same_target && !intersects {
+            continue;
+        }
+        if target.is_some_and(|target| protection.target != target)
+            || !canonical.starts_with(&protection.canonical_cwd)
+            || related.is_some()
+            || protection.phase == ProtectionPhase::Closing
+        {
+            return CreateCarrierScope::Waiting;
+        }
+        related = Some(protection);
+    }
+    match related {
+        None => CreateCarrierScope::Foreign { publication_epoch },
+        Some(protection) => CreateCarrierScope::Protected {
+            target: protection.target,
+            session_id: protection.session_id,
+            token: protection.token,
+            version: protection.version,
+            epoch: protection.epoch,
+            preparing_owner: match protection.phase {
+                ProtectionPhase::Preparing { owner_nonce, .. } => Some(owner_nonce),
+                _ => None,
+            },
+        },
+    }
+}
+
+struct PreparedCarrierRelation {
+    id: Option<Uuid>,
+    cwd: String,
+    canonical_cwd: Option<PathBuf>,
+}
+
+impl PreparedCarrierRelation {
+    fn capture(row: &PersistedSession, protections: &[CarrierProtection]) -> Self {
+        Self {
+            id: row.id.as_deref().and_then(|id| Uuid::parse_str(id).ok()),
+            cwd: row.working_directory.clone(),
+            canonical_cwd: (!protections.is_empty())
+                .then(|| std::fs::canonicalize(&row.working_directory).ok())
+                .flatten(),
+        }
+    }
+
+    fn capture_manager(
+        row: &crate::session::session::Session,
+        protections: &[CarrierProtection],
+    ) -> Self {
+        Self {
+            id: Some(row.id),
+            cwd: row.working_directory.clone(),
+            canonical_cwd: (!protections.is_empty())
+                .then(|| std::fs::canonicalize(&row.working_directory).ok())
+                .flatten(),
+        }
+    }
+
+    fn classify(&self, protections: &[CarrierProtection]) -> CarrierDisposition {
+        if protections.is_empty() {
+            return CarrierDisposition::Foreign;
+        }
+        for protection in protections {
+            if self.id == Some(protection.session_id) {
+                return CarrierDisposition::Protected;
+            }
+            let Some(cwd) = self.canonical_cwd.as_ref() else {
+                return CarrierDisposition::Unknown;
+            };
+            if self.cwd == protection.row.working_directory
+                || cwd.starts_with(&protection.canonical_cwd)
+                || protection.canonical_cwd.starts_with(cwd)
+            {
+                return CarrierDisposition::Unknown;
+            }
+        }
+        CarrierDisposition::Foreign
+    }
+}
+
+enum GuardedSaveAttempt {
+    Completed(Result<bool, String>),
+    Recapture,
+}
+
+enum RenamePublicationAttempt {
+    Renamed {
+        leaf: std::sync::MutexGuard<'static, ()>,
+        retired: PublicationState,
+    },
+    Suppressed,
+    Retry,
+    Stale,
+    Failed(std::io::Error),
+}
+
+fn current_capture_matches(
+    current: &crate::session::manager::CarrierSnapshot,
+    captured: &crate::session::manager::CarrierSnapshot,
+) -> bool {
+    current.versions == captured.versions
+        && current.pending_ids == captured.pending_ids
+        && current.order == captured.order
+        && current.selection.id() == captured.selection.id()
+        && current.selection.mode() == captured.selection.mode()
+        && current.selection.epoch() == captured.selection.epoch()
+        && current.selection.revision() == captured.selection.revision()
+}
+
+struct PreparedSessionsWrite {
+    path: PathBuf,
+    tmp_path: PathBuf,
+    op_id: u64,
+    pid: u32,
+    instance: String,
+    started: std::time::Instant,
+    final_existed: bool,
+}
+
+impl PreparedSessionsWrite {
+    fn prepare(dir: &Path, sessions: &[PersistedSession]) -> Result<Self, String> {
+        std::fs::create_dir_all(dir)
+            .map_err(|error| format!("Failed to create config directory: {}", error))?;
+        let json = serde_json::to_string_pretty(sessions)
+            .map_err(|error| format!("Failed to serialize sessions: {}", error))?;
+        let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let tmp_path = dir.join(format!("sessions.json.{}.{}.tmp", pid, op_id));
+        if let Err(error) = std::fs::write(&tmp_path, json) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(format!("Failed to write temp sessions file: {}", error));
+        }
+        let path = dir.join("sessions.json");
+        Ok(Self {
+            final_existed: path.exists(),
+            path,
+            tmp_path,
+            op_id,
+            pid,
+            instance: crate::config::agent_local_dir_name().to_owned(),
+            started: std::time::Instant::now(),
+        })
+    }
+
+    fn terminal_error(&self, error: &std::io::Error) -> String {
+        format!(
+            "Failed to rename sessions file: {} [op_id={} pid={} instance={} attempts={} \
+             tmp_existed_before={} final_existed_before={} os_error={:?} duration={:?}]",
+            error,
+            self.op_id,
+            self.pid,
+            self.instance,
+            RENAME_ATTEMPTS,
+            true,
+            self.final_existed,
+            error.raw_os_error(),
+            self.started.elapsed(),
+        )
+    }
+}
+
+impl Drop for PreparedSessionsWrite {
+    fn drop(&mut self) {
+        // The unique temporary name belongs to this operation only. After
+        // rename it is absent; cleanup never removes the published file.
+        let _ = std::fs::remove_file(&self.tmp_path);
+    }
+}
+
+fn rename_and_publish(
+    dir: &Path,
+    slot: &PublicationSlot,
+    expected_epoch: u64,
+    next: &mut Option<PublicationState>,
+    write: &PreparedSessionsWrite,
+) -> RenamePublicationAttempt {
+    let guarded = super::settings::try_with_agents_layer_publication_state(dir, |suppressed| {
+        if suppressed {
+            return RenamePublicationAttempt::Suppressed;
+        }
+        let leaf = match SAVE_SESSIONS_LOCK.try_lock() {
+            Ok(leaf) => leaf,
+            Err(_) => return RenamePublicationAttempt::Retry,
+        };
+        let mut state = match slot.try_lock() {
+            Ok(state) => state,
+            Err(_) => return RenamePublicationAttempt::Retry,
+        };
+        if state.epoch != expected_epoch {
+            return RenamePublicationAttempt::Stale;
+        }
+        let Some(pending) = next.take() else {
+            return RenamePublicationAttempt::Stale;
+        };
+        match std::fs::rename(&write.tmp_path, &write.path) {
+            Ok(()) => {
+                // The slot and payload are resolved BEFORE the syscall. Keep
+                // the displaced payload alive beyond this critical transition.
+                let retired = std::mem::replace(&mut *state, pending);
+                RenamePublicationAttempt::Renamed { leaf, retired }
+            }
+            Err(error) => {
+                *next = Some(pending);
+                RenamePublicationAttempt::Failed(error)
+            }
+        }
+    });
+    guarded.unwrap_or(RenamePublicationAttempt::Retry)
+}
+
+fn confirm_publication_readback(slot: &PublicationSlot, path: &Path, nonce: Uuid, epoch: u64) {
+    let actual = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Vec<PersistedSession>>(&bytes).ok());
+    let Some(actual) = actual else {
+        return;
+    };
+    let Ok(mut state) = slot.lock() else {
+        return;
+    };
+    if state.epoch != epoch {
+        return;
+    }
+    if let Some(checkpoint) = state.checkpoint.as_mut().filter(|checkpoint| {
+        checkpoint.nonce == nonce && checkpoint.epoch == epoch && !checkpoint.confirmed
+    }) {
+        if same_written_projection(&checkpoint.rows, &actual) {
+            checkpoint.confirmed = true;
+        }
+    }
+    let confirmed = state.checkpoint.as_ref().is_some_and(|checkpoint| {
+        checkpoint.confirmed && checkpoint.nonce == nonce && checkpoint.epoch == epoch
+    });
+    if confirmed {
+        for protection in &mut state.protections {
+            if protection.epoch == epoch {
+                protection.pending_lifetime = None;
+            }
+        }
+    }
+}
+
+fn file_preparation_survives(
+    slot: &PublicationSlot,
+    protections: &[CarrierProtection],
+    prep: &PersistPreparation,
+) -> bool {
+    if prep.drops.iter().any(|drop| {
+        PreparedCarrierRelation::capture(&drop.session, protections).classify(protections)
+            != CarrierDisposition::Foreign
+    }) {
+        return false;
+    }
+    if prep.kept.iter().any(|row| {
+        PreparedCarrierRelation::capture(row, protections).classify(protections)
+            == CarrierDisposition::Unknown
+    }) {
+        return false;
+    }
+    let Ok(state) = slot.lock() else {
+        return false;
+    };
+    state
+        .protections
+        .iter()
+        .filter(|protection| protection.lifetime.strong_count() != 0)
+        .all(|protection| {
+            let mut rows = prep.kept.iter().filter(|row| {
+                row.id.as_deref().and_then(|id| Uuid::parse_str(id).ok())
+                    == Some(protection.session_id)
+            });
+            let Some(row) = rows.next() else {
+                return false;
+            };
+            rows.next().is_none() && same_carrier_projection(row, &protection.row)
+        })
+}
+
+async fn save_file_snapshot_guarded(
+    dir: &Path,
+    slot: &PublicationSlot,
+    rows: &[PersistedSession],
+) -> GuardedSaveAttempt {
+    let (expected, mut prepared) = {
+        let Ok(state) = slot.lock() else {
+            return GuardedSaveAttempt::Recapture;
+        };
+        let Some(epoch) = state.epoch.checked_add(1) else {
+            return GuardedSaveAttempt::Recapture;
+        };
+        let mut next = state.clone();
+        next.epoch = epoch;
+        for protection in &mut next.protections {
+            protection.epoch = epoch;
+        }
+        next.checkpoint = Some(PublicationCheckpoint {
+            nonce: Uuid::new_v4(),
+            epoch,
+            rows: rows.to_vec(),
+            versions: HashMap::new(),
+            confirmed: false,
+        });
+        (state.epoch, next)
+    };
+    if super::settings::agents_layer_unreadable_for_dir(dir) {
+        return GuardedSaveAttempt::Completed(Ok(false));
+    }
+    let write = match PreparedSessionsWrite::prepare(dir, rows) {
+        Ok(write) => write,
+        Err(error) => return GuardedSaveAttempt::Completed(Err(error)),
+    };
+    let checkpoint = prepared
+        .checkpoint
+        .as_ref()
+        .expect("prepared file checkpoint");
+    let (nonce, epoch) = (checkpoint.nonce, checkpoint.epoch);
+    let mut next = Some(std::mem::take(&mut prepared));
+    for attempt in 0..RENAME_ATTEMPTS {
+        match settle_rename_attempt(
+            rename_and_publish(dir, slot, expected, &mut next, &write),
+            slot,
+            &write.path,
+            nonce,
+            epoch,
+            rows.len(),
+            #[cfg(test)]
+            None,
+        ) {
+            SettledRenameAttempt::Completed(written) => {
+                return GuardedSaveAttempt::Completed(Ok(written))
+            }
+            SettledRenameAttempt::Recapture => return GuardedSaveAttempt::Recapture,
+            SettledRenameAttempt::Failed(error) => {
+                log::debug!("[sessions] rename attempt {}/{} failed — op_id={} pid={} os_error={:?} kind={:?}", attempt + 1, RENAME_ATTEMPTS, write.op_id, write.pid, error.raw_os_error(), error.kind());
+                if attempt + 1 == RENAME_ATTEMPTS {
+                    return GuardedSaveAttempt::Completed(Err(write.terminal_error(&error)));
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(
+            RENAME_BACKOFFS_MS[attempt as usize],
+        ))
+        .await;
+    }
+    unreachable!("RENAME_ATTEMPTS is positive")
+}
+
+enum SettledRenameAttempt {
+    Completed(bool),
+    Recapture,
+    Failed(std::io::Error),
+}
+
+/// Consume every non-Send leaf guard synchronously. Only this Send result can
+/// reach the caller's retry await; readback still holds the exact original leaf.
+fn settle_rename_attempt(
+    attempt: RenamePublicationAttempt,
+    slot: &PublicationSlot,
+    path: &Path,
+    nonce: Uuid,
+    epoch: u64,
+    rows: usize,
+    #[cfg(test)] fixture: Option<FixturePublicationAction>,
+) -> SettledRenameAttempt {
+    match attempt {
+        RenamePublicationAttempt::Renamed { leaf, retired } => {
+            #[cfg(test)]
+            if let Some(fixture) = fixture {
+                assert_eq!(fixture.nonce, nonce, "fixture checkpoint nonce");
+                assert_eq!(
+                    path.parent(),
+                    Some(fixture.directory.as_path()),
+                    "fixture exact directory"
+                );
+                assert!(!fixture.operation.is_nil(), "fixture actual operation");
+                match fixture.kind {
+                    FixturePublicationActionKind::CorruptFixtureLeafOnce => {
+                        std::fs::write(path, b"{invalid fixture publication")
+                            .expect("corrupt exact fixture leaf after actual rename");
+                    }
+                    FixturePublicationActionKind::PanicOnce => {
+                        panic!("selected postrename/prereadback fixture unwind")
+                    }
+                }
+            }
+            confirm_publication_readback(slot, path, nonce, epoch);
+            drop(leaf);
+            drop(retired);
+            log::info!("Saved {} sessions to {:?}", rows, path);
+            SettledRenameAttempt::Completed(true)
+        }
+        RenamePublicationAttempt::Suppressed => SettledRenameAttempt::Completed(false),
+        RenamePublicationAttempt::Retry | RenamePublicationAttempt::Stale => {
+            SettledRenameAttempt::Recapture
+        }
+        RenamePublicationAttempt::Failed(error) => SettledRenameAttempt::Failed(error),
+    }
+}
+
+async fn save_current_snapshot_guarded(
+    mgr: &SessionManager,
+    permit: &CarrierMutationPermit,
+    dir: &Path,
+    rows: &[PersistedSession],
+    captured: &crate::session::manager::CarrierSnapshot,
+    expected_epoch: u64,
+    initial: Option<&InitialCarrierIntent>,
+) -> GuardedSaveAttempt {
+    let Some(slot) = publication_slot(dir) else {
+        return GuardedSaveAttempt::Recapture;
+    };
+    let mut prepared = {
+        let Ok(state) = slot.lock() else {
+            return GuardedSaveAttempt::Recapture;
+        };
+        if state.epoch != expected_epoch {
+            return GuardedSaveAttempt::Recapture;
+        }
+        let Some(epoch) = state.epoch.checked_add(1) else {
+            return GuardedSaveAttempt::Recapture;
+        };
+        let mut next = state.clone();
+        next.epoch = epoch;
+        next.checkpoint = Some(PublicationCheckpoint {
+            nonce: Uuid::new_v4(),
+            epoch,
+            rows: rows.to_vec(),
+            versions: captured.versions.clone(),
+            confirmed: false,
+        });
+        next
+    };
+    if !prepare_protected_publication(&mut prepared, rows, captured, initial) {
+        return GuardedSaveAttempt::Recapture;
+    }
+    // Suppression keeps its original successful no-write disposition. It does
+    // not advance the epoch or create a Confirmed checkpoint.
+    if super::settings::agents_layer_unreadable_for_dir(dir) {
+        return GuardedSaveAttempt::Completed(Ok(false));
+    }
+    let current = mgr
+        .with_current_carrier_snapshot(permit, |current| current_capture_matches(current, captured))
+        .await;
+    if !current {
+        return GuardedSaveAttempt::Recapture;
+    }
+    let write = match PreparedSessionsWrite::prepare(dir, rows) {
+        Ok(write) => write,
+        Err(error) => return GuardedSaveAttempt::Completed(Err(error)),
+    };
+    if initial.is_some() && prepared.canonical_directory.is_none() {
+        if let Ok(canonical) = std::fs::canonicalize(dir) {
+            // Native preparation may have created this directory. Adopt any
+            // already-known physical alias before publishing the first key;
+            // its epoch and protections require a whole-snapshot recapture.
+            let Some(resolved) = resolve_publication_slot(
+                dir,
+                PublicationDirectoryIdentity::Known(canonical.clone()),
+            ) else {
+                return GuardedSaveAttempt::Recapture;
+            };
+            if !std::sync::Arc::ptr_eq(&slot, &resolved) {
+                return GuardedSaveAttempt::Recapture;
+            }
+            prepared.canonical_directory = Some(canonical);
+        } else {
+            prepared
+                .protections
+                .retain(|protection| protection.retained.is_some());
+        }
+    }
+    let checkpoint = prepared.checkpoint.as_ref().expect("prepared checkpoint");
+    let nonce = checkpoint.nonce;
+    let epoch = checkpoint.epoch;
+    let mut next = Some(std::mem::take(&mut prepared));
+    for attempt in 0..RENAME_ATTEMPTS {
+        let result = settle_rename_attempt(
+            mgr.with_current_carrier_snapshot(permit, |current| {
+                if !current_capture_matches(current, captured) {
+                    return RenamePublicationAttempt::Stale;
+                }
+                rename_and_publish(dir, &slot, expected_epoch, &mut next, &write)
+            })
+            .await,
+            &slot,
+            &write.path,
+            nonce,
+            epoch,
+            rows.len(),
+            #[cfg(test)]
+            None,
+        );
+        match result {
+            SettledRenameAttempt::Completed(written) => {
+                return GuardedSaveAttempt::Completed(Ok(written))
+            }
+            SettledRenameAttempt::Recapture => return GuardedSaveAttempt::Recapture,
+            SettledRenameAttempt::Failed(error) => {
+                log::debug!(
+                    "[sessions] rename attempt {}/{} failed — op_id={} pid={} os_error={:?} kind={:?}",
+                    attempt + 1, RENAME_ATTEMPTS, write.op_id, write.pid,
+                    error.raw_os_error(), error.kind(),
+                );
+                if attempt + 1 == RENAME_ATTEMPTS {
+                    return GuardedSaveAttempt::Completed(Err(write.terminal_error(&error)));
+                }
+            }
+        }
+        // No M, suppression, lifecycle, or leaf guard crosses this backoff.
+        tokio::time::sleep(std::time::Duration::from_millis(
+            RENAME_BACKOFFS_MS[attempt as usize],
+        ))
+        .await;
+    }
+    unreachable!("RENAME_ATTEMPTS is positive")
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )
+)]
 fn sessions_save_lock() -> &'static tokio::sync::Mutex<()> {
-    static SAVE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-    SAVE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    crate::session::manager::process_carrier_publication_gate().as_ref()
+}
+
+/// Transient prepared native publication. The owner retains destination_key
+/// before publishing; this value itself never enters the retained root.
+pub(crate) struct PreparedOwnedReplacementPublication {
+    #[cfg(test)]
+    fixture_action: Option<FixturePublicationAction>,
+    source: PublishedCarrier,
+    destination_key: PublishedCarrier,
+    owner_nonce: Uuid,
+    previous: Uuid,
+    captured: crate::session::manager::CarrierSnapshot,
+    protections: Vec<CarrierProtection>,
+    expected_epoch: u64,
+    next: Option<PublicationState>,
+    write: PreparedSessionsWrite,
+    nonce: Uuid,
+    epoch: u64,
+    rows: usize,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FixturePublicationActionKind {
+    CorruptFixtureLeafOnce,
+    PanicOnce,
+}
+
+#[cfg(test)]
+struct FixturePublicationAction {
+    operation: Uuid,
+    nonce: Uuid,
+    directory: PathBuf,
+    kind: FixturePublicationActionKind,
+}
+
+impl PreparedOwnedReplacementPublication {
+    #[cfg(test)]
+    pub(crate) fn attach_fixture_action(
+        &mut self,
+        operation: Uuid,
+        directory: &Path,
+        kind: FixturePublicationActionKind,
+    ) {
+        assert_eq!(
+            operation, self.owner_nonce,
+            "fixture actual publication owner"
+        );
+        assert_eq!(
+            directory,
+            self.source.directory.as_path(),
+            "fixture prepared directory"
+        );
+        assert!(
+            self.fixture_action.is_none(),
+            "fixture action consumed once"
+        );
+        self.fixture_action = Some(FixturePublicationAction {
+            operation,
+            nonce: self.nonce,
+            directory: directory.to_path_buf(),
+            kind,
+        });
+    }
+    pub(crate) fn destination_key(&self) -> PublishedCarrier {
+        self.destination_key.clone()
+    }
+}
+
+pub(crate) enum OwnedReplacementPublicationOutcome {
+    Confirmed(PublishedCarrier),
+    Pending(PublishedCarrier),
+    Recapture,
+    Failed(String),
+}
+
+/// A current A still needs strict Confirmed retired authority. After a real
+/// Confirmed B rename, its exact retained key also admits a fresh-manager
+/// checkpoint of newer B, without relabeling the old proof as current.
+fn replacement_publication_authorized(
+    permit: &CarrierMutationPermit,
+    source: &PublishedCarrier,
+    owner_nonce: Uuid,
+    previous: Uuid,
+    replacement: Uuid,
+    current: &crate::session::manager::CarrierSnapshot,
+) -> bool {
+    if source.session_id == previous {
+        return renew_carrier_replacement(
+            permit,
+            source,
+            owner_nonce,
+            previous,
+            replacement,
+            current,
+        )
+        .is_some();
+    }
+    if source.session_id != replacement
+        || current.pending_ids.contains(&replacement)
+        || !current
+            .rows
+            .iter()
+            .any(|row| row.id == replacement && row.token == source.token)
+        || !current
+            .versions
+            .get(&replacement)
+            .is_some_and(|version| *version >= source.version && *version < u64::MAX)
+    {
+        return false;
+    }
+    let Ok(state) = source.slot.lock() else {
+        return false;
+    };
+    let Some(checkpoint) = state.checkpoint.as_ref().filter(|checkpoint| {
+        checkpoint.confirmed && checkpoint.epoch == state.epoch && checkpoint.epoch < u64::MAX
+    }) else {
+        return false;
+    };
+    state.protections.iter().any(|protection| {
+        protection.session_id == replacement
+            && protection.token == source.token
+            && protection.nonce == source.nonce
+            && protection.target == source.target
+            && protection.epoch == checkpoint.epoch
+            && protection.version >= source.version
+            && checkpoint.versions.get(&replacement) == Some(&protection.version)
+            && protection.phase
+                == ProtectionPhase::Preparing {
+                    owner_nonce,
+                    previous,
+                    replacement,
+                }
+            && checkpoint
+                .rows
+                .iter()
+                .any(|row| same_carrier_projection(row, &protection.row))
+    })
+}
+
+/// Capture under U, then release it for filtering, physical probes, serialization
+/// and temporary-file preparation. Only A is omitted before normal deduplication.
+pub(crate) async fn prepare_owned_replacement_publication<V, VF>(
+    mgr: &SessionManager,
+    source: &PublishedCarrier,
+    owner_nonce: Uuid,
+    previous: Uuid,
+    replacement: Uuid,
+    project_paths: &[String],
+    validate_source: V,
+) -> Result<Option<PreparedOwnedReplacementPublication>, String>
+where
+    V: Fn() -> VF,
+    VF: std::future::Future<Output = bool>,
+{
+    let (captured, aggregate, expected_epoch, mut next, protections) = {
+        let permit = acquire_carrier_mutation_permit().await;
+        let captured = mgr
+            .with_current_carrier_snapshot(&permit, Clone::clone)
+            .await;
+        if !replacement_publication_authorized(
+            &permit,
+            source,
+            owner_nonce,
+            previous,
+            replacement,
+            &captured,
+        ) {
+            return Ok(None);
+        }
+        let protections = match all_carrier_protections() {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+        let state = match source.slot.lock() {
+            Ok(value) => value.clone(),
+            Err(_) => return Ok(None),
+        };
+        let aggregate = mgr.aggregate_snapshot().await;
+        (captured, aggregate, state.epoch, state, protections)
+    };
+    let Some(b) = captured.rows.iter().find(|row| {
+        row.id == replacement
+            && crate::session::manager::CarrierSnapshot::is_local_interactive_carrier(row)
+            && !matches!(row.status, SessionStatus::Exited(_))
+            && !captured.pending_ids.contains(&replacement)
+    }) else {
+        return Ok(None);
+    };
+    let Some(version) = captured.versions.get(&replacement).copied() else {
+        return Ok(None);
+    };
+    let omitted = HashSet::from([previous]);
+    let rows = snapshot_aggregate(&aggregate, &omitted);
+    let prep = prepare_persist_snapshot(rows, project_paths).await?;
+    // A filtered/deduplicated B never authorizes a target write. Protected
+    // unrelated rows must also survive the ordinary preparation unchanged.
+    let mut matches = prep.kept.iter().filter(|row| {
+        row.id.as_deref().and_then(|id| Uuid::parse_str(id).ok()) == Some(replacement)
+    });
+    let Some(b_row) = matches.next().cloned() else {
+        return Ok(None);
+    };
+    if matches.next().is_some()
+        || prep
+            .kept
+            .iter()
+            .any(|row| row.id.as_deref().and_then(|id| Uuid::parse_str(id).ok()) == Some(previous))
+    {
+        return Ok(None);
+    }
+    let Some(index) = next.protections.iter().position(|protection| {
+        protection.session_id == source.session_id
+            && protection.nonce == source.nonce
+            && protection.phase
+                == ProtectionPhase::Preparing {
+                    owner_nonce,
+                    previous,
+                    replacement,
+                }
+    }) else {
+        return Ok(None);
+    };
+    let old = next.protections.remove(index);
+    let Some(epoch) = expected_epoch.checked_add(1) else {
+        return Ok(None);
+    };
+    next.epoch = epoch;
+    if !prepare_protected_publication(&mut next, &prep.kept, &captured, None) {
+        return Ok(None);
+    }
+    let lifetime = std::sync::Arc::new(());
+    let destination_key = PublishedCarrier {
+        target: source.target.clone(),
+        session_id: replacement,
+        token: b.token,
+        nonce: Uuid::new_v4(),
+        version,
+        slot: source.slot.clone(),
+        directory: source.directory.clone(),
+        lifetime: lifetime.clone(),
+        retired_local: None,
+    };
+    next.protections.push(CarrierProtection {
+        target: source.target.clone(),
+        session_id: replacement,
+        token: b.token,
+        nonce: destination_key.nonce,
+        epoch,
+        version,
+        row: b_row,
+        canonical_cwd: old.canonical_cwd.clone(),
+        phase: ProtectionPhase::Preparing {
+            owner_nonce,
+            previous,
+            replacement,
+        },
+        retired_local: None,
+        lifetime: std::sync::Arc::downgrade(&lifetime),
+        retained: None,
+        pending_lifetime: Some(lifetime),
+        active: None,
+    });
+    let nonce = Uuid::new_v4();
+    next.checkpoint = Some(PublicationCheckpoint {
+        nonce,
+        epoch,
+        rows: prep.kept.clone(),
+        versions: captured.versions.clone(),
+        confirmed: false,
+    });
+    if super::settings::agents_layer_unreadable_for_dir(&source.directory) {
+        return Ok(None);
+    }
+    if !validate_source().await {
+        return Ok(None);
+    }
+    let permit = acquire_carrier_mutation_permit().await;
+    let valid = mgr
+        .with_current_carrier_snapshot(&permit, |current| {
+            current_capture_matches(current, &captured)
+                && replacement_publication_authorized(
+                    &permit,
+                    source,
+                    owner_nonce,
+                    previous,
+                    replacement,
+                    current,
+                )
+        })
+        .await;
+    if !valid
+        || !all_carrier_protections()
+            .is_some_and(|actual| same_protection_set(&actual, &protections))
+    {
+        return Ok(None);
+    }
+    let write = PreparedSessionsWrite::prepare(&source.directory, &prep.kept)?;
+    drop(permit);
+    Ok(Some(PreparedOwnedReplacementPublication {
+        #[cfg(test)]
+        fixture_action: None,
+        source: source.clone(),
+        destination_key,
+        owner_nonce,
+        previous,
+        captured,
+        protections,
+        expected_epoch,
+        next: Some(next),
+        write,
+        nonce,
+        epoch,
+        rows: prep.kept.len(),
+    }))
+}
+
+/// One actual rename attempt. The caller releases U before any backoff. M and
+/// suppression are gone before readback; the exact native leaf remains held.
+pub(crate) async fn publish_owned_replacement(
+    mgr: &SessionManager,
+    permit: &CarrierMutationPermit,
+    prepared: &mut PreparedOwnedReplacementPublication,
+    validate_current: impl Fn(&crate::session::manager::CarrierSnapshot) -> bool,
+) -> OwnedReplacementPublicationOutcome {
+    let protections_current = all_carrier_protections()
+        .is_some_and(|current| same_protection_set(&current, &prepared.protections));
+    if !protections_current {
+        return OwnedReplacementPublicationOutcome::Recapture;
+    }
+    let authority_current = mgr
+        .with_current_carrier_snapshot(permit, |current| {
+            validate_current(current)
+                && current_capture_matches(current, &prepared.captured)
+                && replacement_publication_authorized(
+                    permit,
+                    &prepared.source,
+                    prepared.owner_nonce,
+                    prepared.previous,
+                    prepared.destination_key.session_id,
+                    current,
+                )
+        })
+        .await;
+    if !authority_current {
+        return OwnedReplacementPublicationOutcome::Recapture;
+    }
+    let attempt = mgr
+        .with_current_carrier_snapshot(permit, |current| {
+            if !validate_current(current) || !current_capture_matches(current, &prepared.captured) {
+                return RenamePublicationAttempt::Stale;
+            }
+            rename_and_publish(
+                &prepared.source.directory,
+                &prepared.source.slot,
+                prepared.expected_epoch,
+                &mut prepared.next,
+                &prepared.write,
+            )
+        })
+        .await;
+    #[cfg(test)]
+    let fixture = if matches!(&attempt, RenamePublicationAttempt::Renamed { .. }) {
+        prepared.fixture_action.take()
+    } else {
+        None
+    };
+    let result = settle_rename_attempt(
+        attempt,
+        &prepared.source.slot,
+        &prepared.write.path,
+        prepared.nonce,
+        prepared.epoch,
+        prepared.rows,
+        #[cfg(test)]
+        fixture,
+    );
+    match result {
+        SettledRenameAttempt::Completed(true) => {
+            match renew_carrier_replacement(
+                permit,
+                &prepared.destination_key,
+                prepared.owner_nonce,
+                prepared.previous,
+                prepared.destination_key.session_id,
+                &prepared.captured,
+            ) {
+                Some(carrier) => OwnedReplacementPublicationOutcome::Confirmed(carrier),
+                None => {
+                    OwnedReplacementPublicationOutcome::Pending(prepared.destination_key.clone())
+                }
+            }
+        }
+        SettledRenameAttempt::Completed(false) | SettledRenameAttempt::Recapture => {
+            OwnedReplacementPublicationOutcome::Recapture
+        }
+        SettledRenameAttempt::Failed(error) => {
+            OwnedReplacementPublicationOutcome::Failed(prepared.write.terminal_error(&error))
+        }
+    }
+}
+
+/// Post-rename recovery only reads back the same leaf. It never prepares A or
+/// performs another rename after an observed successful publication.
+pub(crate) fn reconcile_owned_replacement_readback(
+    permit: &CarrierMutationPermit,
+    carrier: &PublishedCarrier,
+    owner_nonce: Uuid,
+    previous: Uuid,
+    current: &crate::session::manager::CarrierSnapshot,
+) -> Option<PublishedCarrier> {
+    let (nonce, epoch) = {
+        let state = carrier.slot.lock().ok()?;
+        let checkpoint = state.checkpoint.as_ref()?;
+        let protection = state.protections.iter().find(|protection| {
+            protection.session_id == carrier.session_id
+                && protection.nonce == carrier.nonce
+                && protection.token == carrier.token
+                && protection.phase
+                    == ProtectionPhase::Preparing {
+                        owner_nonce,
+                        previous,
+                        replacement: carrier.session_id,
+                    }
+        })?;
+        if checkpoint.epoch != state.epoch || protection.epoch != checkpoint.epoch {
+            return None;
+        }
+        (checkpoint.nonce, checkpoint.epoch)
+    };
+    let leaf = SAVE_SESSIONS_LOCK.try_lock().ok()?;
+    confirm_publication_readback(
+        &carrier.slot,
+        &carrier.directory.join("sessions.json"),
+        nonce,
+        epoch,
+    );
+    drop(leaf);
+    renew_carrier_replacement(
+        permit,
+        carrier,
+        owner_nonce,
+        previous,
+        carrier.session_id,
+        current,
+    )
 }
 
 /// Snapshot current live sessions into the persisted format.
@@ -2103,9 +4454,33 @@ fn sessions_save_lock() -> &'static tokio::sync::Mutex<()> {
 /// Pi runtime injection never enters this field, so configured Pi args are preserved.
 pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
     let aggregate = mgr.aggregate_snapshot().await;
+    let Some(protections) = all_carrier_protections() else {
+        // An unreadable publication registry cannot authorize a snapshot that
+        // silently refills A over an already-published replacement B.
+        return std::future::pending().await;
+    };
+    let omitted = protections
+        .iter()
+        .filter_map(|protection| match protection.phase {
+            ProtectionPhase::Preparing {
+                previous,
+                replacement,
+                ..
+            } if protection.session_id == replacement && previous != replacement => Some(previous),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    snapshot_aggregate(&aggregate, &omitted)
+}
+
+fn snapshot_aggregate(
+    aggregate: &crate::session::manager::ManagerAggregateSnapshot,
+    omitted: &HashSet<Uuid>,
+) -> Vec<PersistedSession> {
     let sessions = aggregate
         .sessions
         .iter()
+        .filter(|row| !omitted.contains(&row.id))
         .map(SessionInfo::from)
         .collect::<Vec<_>>();
     let active_id = aggregate.selection.id().map(|id| id.to_string());
@@ -2481,7 +4856,29 @@ async fn persist_merging_failed_to_dir_for_project_paths_result(
     dir: &Path,
     project_paths: Option<&[String]>,
 ) -> Result<(), String> {
-    let _guard = sessions_save_lock().lock().await;
+    let manager = mgr.clone();
+    let failed = failed.to_vec();
+    let dir = dir.to_path_buf();
+    let roots = project_paths.map(<[String]>::to_vec);
+    run_owned_persist_core(async move {
+        persist_merging_failed_to_dir_for_project_paths_result_core(
+            &manager,
+            &failed,
+            &dir,
+            roots.as_deref(),
+        )
+        .await
+    })
+    .await
+}
+
+async fn persist_merging_failed_to_dir_for_project_paths_result_core(
+    mgr: &SessionManager,
+    failed: &[PersistedSession],
+    dir: &Path,
+    project_paths: Option<&[String]>,
+) -> Result<(), String> {
+    let carrier_permit = acquire_carrier_mutation_permit().await;
     let mut snapshot = snapshot_sessions(mgr).await;
     // §224 — strip stale runtime fields (`id`, `status`, `waiting_for_input`,
     // `created_at`) from failed-recoverable entries (`communication` is kept,
@@ -2510,7 +4907,8 @@ async fn persist_merging_failed_to_dir_for_project_paths_result(
                 .map(|recipe| (binding, recipe))
         })
         .collect();
-    mgr.refresh_failed_binding_recipes(binding_failures).await;
+    mgr.refresh_failed_binding_recipes_with_carrier_permit(&carrier_permit, binding_failures)
+        .await;
     snapshot.extend(failed.iter().map(sanitize_failed_recoverable));
     let aggregate = mgr.aggregate_snapshot().await;
     let snapshot = deduplicate_preserving_affected(
@@ -2528,7 +4926,20 @@ async fn persist_merging_failed_to_dir_for_project_paths_result(
     // §1295 site B (merge): startup-only, keeps lock-first; the inline filter
     // is replaced by the same prepare (in-lock, accepted bounded stall) + handle
     // + save.
-    persist_prepared_locked(Some(mgr), dir, prep, PersistMode::NoPrune).await
+    let failed = failed
+        .iter()
+        .map(sanitize_failed_recoverable)
+        .collect::<Vec<_>>();
+    persist_preparation_owned(
+        mgr,
+        dir,
+        prep,
+        PersistMode::NoPrune,
+        carrier_permit,
+        project_paths,
+        &failed,
+    )
+    .await
 }
 
 pub async fn persist_merging_failed(mgr: &SessionManager, failed: &[PersistedSession]) {
@@ -2557,18 +4968,444 @@ async fn persist_current_state_to_dir_for_project_paths_result(
     project_paths: Option<&[String]>,
     mode: PersistMode,
 ) -> Result<(), String> {
-    // §1295 S2: prepare PRE-LOCK so a hung/offline SMB share during classify
-    // stalls no other persistence writer on the hot path.
-    let snapshot = snapshot_sessions(mgr).await;
-    let prep = match project_paths {
-        Some(project_paths) => prepare_persist_snapshot(snapshot, project_paths).await?,
-        None => PersistPreparation {
-            kept: snapshot,
-            drops: Vec::new(),
-        },
+    let manager = mgr.clone();
+    let dir = dir.to_path_buf();
+    let roots = project_paths.map(<[String]>::to_vec);
+    run_owned_persist_core(async move {
+        persist_current_state_to_dir_for_project_paths_result_core(
+            &manager,
+            &dir,
+            roots.as_deref(),
+            mode,
+            None,
+        )
+        .await
+        .map(|_| ())
+    })
+    .await
+}
+
+async fn persist_current_state_to_dir_for_project_paths_result_core(
+    mgr: &SessionManager,
+    dir: &Path,
+    project_paths: Option<&[String]>,
+    mode: PersistMode,
+    initial: Option<InitialCarrierIntent>,
+) -> Result<Option<PublishedCarrier>, String> {
+    let mut foreign_done = HashSet::new();
+    loop {
+        let directory_identity = probe_publication_directory(dir, initial.is_some());
+        let captured = {
+            let permit = acquire_carrier_mutation_permit().await;
+            if initial
+                .as_ref()
+                .is_some_and(|intent| !intent.restore_allows_publication())
+            {
+                return Ok(None);
+            }
+            if resolve_publication_slot(dir, directory_identity).is_none() {
+                drop(permit);
+                tokio::task::yield_now().await;
+                continue;
+            }
+            let epoch =
+                publication_slot(dir).and_then(|slot| slot.lock().ok().map(|state| state.epoch));
+            let protections = all_carrier_protections();
+            let (Some(epoch), Some(protections)) = (epoch, protections) else {
+                drop(permit);
+                return std::future::pending().await;
+            };
+            let captured = mgr
+                .with_current_carrier_snapshot(&permit, Clone::clone)
+                .await;
+            let snapshot = snapshot_sessions(mgr).await;
+            (captured, snapshot, epoch, protections)
+        };
+        let mut prep = match project_paths {
+            Some(project_paths) => prepare_persist_snapshot(captured.1, project_paths).await?,
+            None => PersistPreparation {
+                kept: captured.1,
+                drops: Vec::new(),
+            },
+        };
+        // Slow path identity probes are performed with neither U nor M held.
+        let relations = prep
+            .kept
+            .iter()
+            .chain(prep.drops.iter().map(|drop| &drop.session))
+            .map(|row| PreparedCarrierRelation::capture(row, &captured.3))
+            .collect::<Vec<_>>();
+        let drop_keys = prep.drops.iter().map(orphan_effect_key).collect::<Vec<_>>();
+        let manager_relations = captured
+            .0
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    row.id,
+                    PreparedCarrierRelation::capture_manager(row, &captured.3),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        if initial
+            .as_ref()
+            .is_some_and(|intent| !intent.restore_allows_publication())
+        {
+            return Ok(None);
+        }
+        let protections = all_carrier_protections();
+        let epoch =
+            publication_slot(dir).and_then(|slot| slot.lock().ok().map(|state| state.epoch));
+        let current = mgr
+            .with_current_carrier_snapshot(&carrier_permit, |current| {
+                current_capture_matches(current, &captured.0)
+            })
+            .await;
+        let valid_protections = protections.as_ref().is_some_and(|current| {
+            same_protection_set(current, &captured.3)
+                && relations
+                    .iter()
+                    .all(|relation| relation.classify(current) != CarrierDisposition::Unknown)
+                && prep.drops.iter().all(|drop| {
+                    !current.iter().any(|protection| {
+                        drop.session
+                            .id
+                            .as_deref()
+                            .and_then(|id| Uuid::parse_str(id).ok())
+                            == Some(protection.session_id)
+                    })
+                })
+        });
+        let keys_survive = publication_slot(dir)
+            .is_some_and(|slot| protected_keys_survive(&slot, &prep.kept, &captured.0));
+        if !current || epoch != Some(captured.2) || !valid_protections || !keys_survive {
+            drop(carrier_permit);
+            tokio::task::yield_now().await;
+            continue;
+        }
+        // ForeignDone belongs to this accepted core. A whole-snapshot recapture
+        // after our prune/repair must not repeat its completed archive effects.
+        let drops = std::mem::take(&mut prep.drops)
+            .into_iter()
+            .zip(drop_keys)
+            .filter_map(|(drop, key)| foreign_done.insert(key).then_some(drop))
+            .collect::<Vec<_>>();
+        let dispositions = manager_relations
+            .iter()
+            .map(|(id, relation)| (*id, relation.classify(&captured.3)))
+            .collect::<HashMap<_, _>>();
+        handle_orphan_drops(
+            Some(mgr),
+            dir,
+            &drops,
+            mode,
+            &carrier_permit,
+            Some(&dispositions),
+        )
+        .await;
+        match save_current_snapshot_guarded(
+            mgr,
+            &carrier_permit,
+            dir,
+            &prep.kept,
+            &captured.0,
+            captured.2,
+            initial
+                .as_ref()
+                .filter(|intent| intent.matches(&captured.0, &prep.kept)),
+        )
+        .await
+        {
+            GuardedSaveAttempt::Completed(result) => {
+                let written = match result {
+                    Ok(written) => written,
+                    Err(error) => {
+                        mgr.disable_prompt_reuse().await;
+                        return Err(error);
+                    }
+                };
+                let initial = initial
+                    .as_ref()
+                    .filter(|intent| intent.matches(&captured.0, &prep.kept));
+                if !written {
+                    return Ok(None);
+                }
+                let prompt_checkpoint = flush_retained_prompts_locked(mgr, dir).await;
+                let Some(initial) = initial else {
+                    prompt_checkpoint?;
+                    return Ok(None);
+                };
+                if let Err(error) = prompt_checkpoint {
+                    // The sessions rename already published a real carrier. A
+                    // sidecar error cannot replace its receipt or reconciliation.
+                    log::warn!("[last-prompt] initial carrier checkpoint retained after sidecar failure: {error}");
+                }
+                drop(carrier_permit);
+                return Ok(wait_initial_publication(dir, initial).await);
+            }
+            GuardedSaveAttempt::Recapture => {
+                drop(carrier_permit);
+                tokio::task::yield_now().await;
+            }
+        }
+    }
+}
+
+/// A post-rename readback loss is Pending, not a save failure or a new write.
+/// The accepted owner retains the Initial lifetime while reconciliation reads
+/// the same directory leaf. A superseding version cannot register this intent.
+async fn wait_initial_publication(
+    dir: &Path,
+    initial: &InitialCarrierIntent,
+) -> Option<PublishedCarrier> {
+    loop {
+        let permit = acquire_carrier_mutation_permit().await;
+        let slot = publication_slot(dir)?;
+        if let Some(carrier) = published_initial_carrier(&slot, initial, dir) {
+            return Some(carrier);
+        }
+        let checkpoint = {
+            let state = slot.lock().ok()?;
+            if !state.protections.iter().any(|protection| {
+                protection.session_id == initial.session_id && protection.token == initial.token
+            }) {
+                return None;
+            }
+            let checkpoint = state.checkpoint.as_ref()?;
+            if checkpoint.versions.get(&initial.session_id) != Some(&initial.version) {
+                return None;
+            }
+            (checkpoint.nonce, checkpoint.epoch)
+        };
+        if let Ok(leaf) = SAVE_SESSIONS_LOCK.try_lock() {
+            confirm_publication_readback(
+                &slot,
+                &dir.join("sessions.json"),
+                checkpoint.0,
+                checkpoint.1,
+            );
+            drop(leaf);
+        }
+        if let Some(carrier) = published_initial_carrier(&slot, initial, dir) {
+            return Some(carrier);
+        }
+        drop(permit);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+pub(crate) async fn persist_initial_carrier(
+    mgr: &SessionManager,
+    dir: PathBuf,
+    project_paths: Vec<String>,
+    initial: InitialCarrierIntent,
+) -> Result<Option<PublishedCarrier>, String> {
+    if super::settings::agents_layer_unreadable_for_dir(&dir) {
+        return Ok(None);
+    }
+    let manager = mgr.clone();
+    run_owned_persist_core(async move {
+        persist_current_state_to_dir_for_project_paths_result_core(
+            &manager,
+            &dir,
+            Some(&project_paths),
+            PersistMode::NoPrune,
+            Some(initial),
+        )
+        .await
+    })
+    .await
+}
+
+fn orphan_effect_key(drop: &OrphanDrop) -> (Option<String>, String, String, String, Vec<String>) {
+    (
+        drop.session.id.clone(),
+        drop.session.working_directory.clone(),
+        drop.session.name.clone(),
+        drop.session.shell.clone(),
+        drop.session.shell_args.clone(),
+    )
+}
+
+fn protected_keys_survive(
+    slot: &PublicationSlot,
+    rows: &[PersistedSession],
+    current: &crate::session::manager::CarrierSnapshot,
+) -> bool {
+    let Ok(state) = slot.lock() else {
+        return false;
     };
-    let _guard = sessions_save_lock().lock().await;
-    persist_prepared_locked(Some(mgr), dir, prep, mode).await
+    state
+        .protections
+        .iter()
+        .filter(|protection| protection.lifetime.strong_count() != 0)
+        .all(|protection| {
+            let count = rows
+                .iter()
+                .filter(|row| {
+                    row.id.as_deref().and_then(|id| Uuid::parse_str(id).ok())
+                        == Some(protection.session_id)
+                })
+                .count();
+            count == 1
+                && !current.pending_ids.contains(&protection.session_id)
+                && current
+                    .rows
+                    .iter()
+                    .any(|row| row.id == protection.session_id && row.token == protection.token)
+        })
+}
+
+fn protected_preparation_survives(
+    slot: &PublicationSlot,
+    protections: &[CarrierProtection],
+    prep: &PersistPreparation,
+    current: &[PersistedSession],
+) -> bool {
+    if prep.drops.iter().any(|drop| {
+        PreparedCarrierRelation::capture(&drop.session, protections).classify(protections)
+            != CarrierDisposition::Foreign
+    }) {
+        return false;
+    }
+    if prep.kept.iter().any(|row| {
+        PreparedCarrierRelation::capture(row, protections).classify(protections)
+            == CarrierDisposition::Unknown
+    }) {
+        return false;
+    }
+    let Ok(state) = slot.lock() else {
+        return false;
+    };
+    state
+        .protections
+        .iter()
+        .filter(|protection| protection.lifetime.strong_count() != 0)
+        .all(|protection| {
+            let matching = |row: &&PersistedSession| {
+                row.id.as_deref().and_then(|id| Uuid::parse_str(id).ok())
+                    == Some(protection.session_id)
+            };
+            let mut kept = prep.kept.iter().filter(matching);
+            let Some(row) = kept.next() else {
+                return false;
+            };
+            kept.next().is_none()
+                && current
+                    .iter()
+                    .filter(matching)
+                    .any(|expected| same_carrier_projection(row, expected))
+        })
+}
+
+/// The accepted operation owns U and may release it on an actual protection
+/// conflict. Its RAM transition is never replayed; only the whole snapshot is
+/// recaptured. Failed-recoverable recipes remain explicit owned inputs.
+async fn persist_preparation_owned(
+    mgr: &SessionManager,
+    dir: &Path,
+    mut prep: PersistPreparation,
+    mode: PersistMode,
+    mut permit: CarrierMutationPermit,
+    roots: Option<&[String]>,
+    failed: &[PersistedSession],
+) -> Result<(), String> {
+    let mut foreign_done = HashSet::new();
+    loop {
+        let identity = probe_publication_directory(dir, false);
+        let slot = resolve_publication_slot(dir, identity);
+        let Some(slot) = slot else {
+            drop(permit);
+            tokio::task::yield_now().await;
+            permit = acquire_carrier_mutation_permit().await;
+            continue;
+        };
+        let epoch = slot.lock().ok().map(|state| state.epoch);
+        let protections = all_carrier_protections();
+        let captured = mgr
+            .with_current_carrier_snapshot(&permit, Clone::clone)
+            .await;
+        let current = snapshot_sessions(mgr).await;
+        if let (Some(epoch), Some(protections)) = (epoch, protections) {
+            if protected_keys_survive(&slot, &prep.kept, &captured)
+                && protected_preparation_survives(&slot, &protections, &prep, &current)
+            {
+                let dispositions = captured
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        (
+                            row.id,
+                            PreparedCarrierRelation::capture_manager(row, &protections)
+                                .classify(&protections),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>();
+                let drops = std::mem::take(&mut prep.drops)
+                    .into_iter()
+                    .filter(|drop| foreign_done.insert(orphan_effect_key(drop)))
+                    .collect::<Vec<_>>();
+                handle_orphan_drops(Some(mgr), dir, &drops, mode, &permit, Some(&dispositions))
+                    .await;
+                match save_current_snapshot_guarded(
+                    mgr, &permit, dir, &prep.kept, &captured, epoch, None,
+                )
+                .await
+                {
+                    GuardedSaveAttempt::Completed(result) => {
+                        let written = match result {
+                            Ok(written) => written,
+                            Err(error) => {
+                                mgr.disable_prompt_reuse().await;
+                                return Err(error);
+                            }
+                        };
+                        if written {
+                            flush_retained_prompts_locked(mgr, dir).await?;
+                        }
+                        return Ok(());
+                    }
+                    GuardedSaveAttempt::Recapture => {}
+                }
+            }
+        }
+        drop(permit);
+        tokio::task::yield_now().await;
+        permit = acquire_carrier_mutation_permit().await;
+        let mut snapshot = snapshot_sessions(mgr).await;
+        snapshot.extend(failed.iter().cloned());
+        let aggregate = mgr.aggregate_snapshot().await;
+        let snapshot = deduplicate_preserving_affected(
+            snapshot,
+            &aggregate.failed_binding_recipes,
+            &aggregate.binding_origins,
+        );
+        prep = match roots {
+            Some(roots) => prepare_persist_snapshot(snapshot, roots).await?,
+            None => PersistPreparation {
+                kept: snapshot,
+                drops: Vec::new(),
+            },
+        };
+    }
+}
+
+fn same_protection_set(a: &[CarrierProtection], b: &[CarrierProtection]) -> bool {
+    a.len() == b.len()
+        && a.iter().all(|a| {
+            b.iter().any(|b| {
+                a.target == b.target
+                    && a.session_id == b.session_id
+                    && a.nonce == b.nonce
+                    && a.epoch == b.epoch
+                    && a.version == b.version
+                    && a.phase == b.phase
+                    && a.retired_local == b.retired_local
+                    && a.canonical_cwd == b.canonical_cwd
+                    && same_carrier_projection(&a.row, &b.row)
+            })
+        })
 }
 
 /// Snapshot the live sessions, apply the project-path filter, and save.
@@ -2588,6 +5425,7 @@ async fn snapshot_and_save_locked(
     mgr: &SessionManager,
     dir: &Path,
     project_paths: Option<&[String]>,
+    carrier_permit: CarrierMutationPermit,
 ) -> Result<(), String> {
     let snapshot = snapshot_sessions(mgr).await;
     let prep = match project_paths {
@@ -2597,7 +5435,16 @@ async fn snapshot_and_save_locked(
             drops: Vec::new(),
         },
     };
-    persist_prepared_locked(Some(mgr), dir, prep, PersistMode::NoPrune).await
+    persist_preparation_owned(
+        mgr,
+        dir,
+        prep,
+        PersistMode::NoPrune,
+        carrier_permit,
+        project_paths,
+        &[],
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -2611,8 +5458,8 @@ pub(crate) async fn persist_current_state_to_dir_result(
     // project-path filter/prune) keeps the snapshot under the lock so a parked
     // persist reflects state that changed while it waited (pinned by
     // `persist_current_state_captures_snapshot_inside_save_lock`).
-    let _guard = sessions_save_lock().lock().await;
-    snapshot_and_save_locked(mgr, dir, None).await
+    let carrier_permit = acquire_carrier_mutation_permit().await;
+    snapshot_and_save_locked(mgr, dir, None, carrier_permit).await
 }
 
 pub async fn persist_current_state(mgr: &SessionManager) {
@@ -2701,19 +5548,42 @@ async fn raise_hand_and_persist_to_dir_result(
     dir: &Path,
     project_paths: Option<&[String]>,
 ) -> Result<RaiseHandPersistOutcome, String> {
-    let _guard = sessions_save_lock().lock().await;
+    let manager = mgr.clone();
+    let dir = dir.to_path_buf();
+    let roots = project_paths.map(<[String]>::to_vec);
+    run_owned_persist_core(async move {
+        raise_hand_and_persist_to_dir_result_core(&manager, session_id, now, &dir, roots.as_deref())
+            .await
+    })
+    .await
+}
 
-    let communication = match mgr.raise_hand(session_id, now).await {
-        Some((true, communication)) => communication,
-        Some((false, _)) => return Ok(RaiseHandPersistOutcome::AlreadyVisible),
-        None => return Ok(RaiseHandPersistOutcome::NotRaisable),
+async fn raise_hand_and_persist_to_dir_result_core(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    now: chrono::DateTime<chrono::Utc>,
+    dir: &Path,
+    project_paths: Option<&[String]>,
+) -> Result<RaiseHandPersistOutcome, String> {
+    let carrier_permit = acquire_carrier_mutation_permit().await;
+
+    let (communication, receipt) = match mgr
+        .raise_hand_with_carrier_permit(&carrier_permit, session_id, now)
+        .await
+    {
+        RaiseCarrierOutcome::Changed(communication, receipt) => (communication, receipt),
+        RaiseCarrierOutcome::AlreadyVisible(_) => {
+            return Ok(RaiseHandPersistOutcome::AlreadyVisible)
+        }
+        RaiseCarrierOutcome::NotRaisable => return Ok(RaiseHandPersistOutcome::NotRaisable),
     };
 
-    if let Err(e) = snapshot_and_save_locked(mgr, dir, project_paths).await {
-        // Roll back the live raise under the still-held lock so a raise that
-        // failed to persist is visible nowhere (memory or disk).
+    if let Err(e) = snapshot_and_save_locked(mgr, dir, project_paths, carrier_permit).await {
+        // Reacquire U and roll back only this nonce/version receipt. A successor
+        // transition after a waiting recapture must remain visible.
+        let carrier_permit = acquire_carrier_mutation_permit().await;
         let _ = mgr
-            .clear_communication_if_kind(session_id, SessionCommunicationKind::RaiseHand)
+            .rollback_raise_with_carrier_permit(&carrier_permit, receipt)
             .await;
         return Err(e);
     }
@@ -2799,9 +5669,37 @@ async fn set_blocked_menu_and_persist_to_dir(
     dir: Option<&Path>,
     project_paths: Option<&[String]>,
 ) -> (BlockedMenuPersistOutcome, Option<String>) {
-    let _guard = sessions_save_lock().lock().await;
+    let manager = mgr.clone();
+    let dir = dir.map(Path::to_path_buf);
+    let roots = project_paths.map(<[String]>::to_vec);
+    run_owned_persist_core(async move {
+        set_blocked_menu_and_persist_to_dir_core(
+            &manager,
+            session_id,
+            message,
+            now,
+            dir.as_deref(),
+            roots.as_deref(),
+        )
+        .await
+    })
+    .await
+}
 
-    let communication = match mgr.set_blocked_menu(session_id, message, now).await {
+async fn set_blocked_menu_and_persist_to_dir_core(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    message: String,
+    now: chrono::DateTime<chrono::Utc>,
+    dir: Option<&Path>,
+    project_paths: Option<&[String]>,
+) -> (BlockedMenuPersistOutcome, Option<String>) {
+    let carrier_permit = acquire_carrier_mutation_permit().await;
+
+    let communication = match mgr
+        .set_blocked_menu_with_carrier_permit(&carrier_permit, session_id, message, now)
+        .await
+    {
         Some((true, communication)) => communication,
         Some((false, _)) => return (BlockedMenuPersistOutcome::Unchanged, None),
         None => return (BlockedMenuPersistOutcome::NotApplicable, None),
@@ -2813,7 +5711,7 @@ async fn set_blocked_menu_and_persist_to_dir(
             Some("Could not determine home directory".to_string()),
         );
     };
-    let error = snapshot_and_save_locked(mgr, dir, project_paths)
+    let error = snapshot_and_save_locked(mgr, dir, project_paths, carrier_permit)
         .await
         .err();
     (BlockedMenuPersistOutcome::Changed(communication), error)
@@ -2866,15 +5764,39 @@ async fn clear_blocked_menu_and_persist_to_dir(
     dir: Option<&Path>,
     project_paths: Option<&[String]>,
 ) -> (bool, Option<String>) {
-    let _guard = sessions_save_lock().lock().await;
+    let manager = mgr.clone();
+    let dir = dir.map(Path::to_path_buf);
+    let roots = project_paths.map(<[String]>::to_vec);
+    run_owned_persist_core(async move {
+        clear_blocked_menu_and_persist_to_dir_core(
+            &manager,
+            session_id,
+            dir.as_deref(),
+            roots.as_deref(),
+        )
+        .await
+    })
+    .await
+}
 
-    if !mgr.clear_blocked_menu(session_id).await {
+async fn clear_blocked_menu_and_persist_to_dir_core(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    dir: Option<&Path>,
+    project_paths: Option<&[String]>,
+) -> (bool, Option<String>) {
+    let carrier_permit = acquire_carrier_mutation_permit().await;
+
+    if !mgr
+        .clear_blocked_menu_with_carrier_permit(&carrier_permit, session_id)
+        .await
+    {
         return (false, None);
     }
     let Some(dir) = dir else {
         return (true, Some("Could not determine home directory".to_string()));
     };
-    match snapshot_and_save_locked(mgr, dir, project_paths).await {
+    match snapshot_and_save_locked(mgr, dir, project_paths, carrier_permit).await {
         Ok(()) => (true, None),
         Err(e) => (true, Some(e)),
     }
@@ -2935,14 +5857,37 @@ async fn clear_user_input_transitions_and_persist_to_dir_result(
     dir: Option<&Path>,
     project_paths: Option<&[String]>,
 ) -> Result<ClearedUserInputTransitions, String> {
-    let _guard = sessions_save_lock().lock().await;
+    let manager = mgr.clone();
+    let dir = dir.map(Path::to_path_buf);
+    let roots = project_paths.map(<[String]>::to_vec);
+    run_owned_persist_core(async move {
+        clear_user_input_transitions_and_persist_to_dir_result_core(
+            &manager,
+            session_id,
+            clear_fresh,
+            dir.as_deref(),
+            roots.as_deref(),
+        )
+        .await
+    })
+    .await
+}
+
+async fn clear_user_input_transitions_and_persist_to_dir_result_core(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    clear_fresh: bool,
+    dir: Option<&Path>,
+    project_paths: Option<&[String]>,
+) -> Result<ClearedUserInputTransitions, String> {
+    let carrier_permit = acquire_carrier_mutation_permit().await;
 
     // Mutate FIRST and unconditionally: the user typed, so the hand is lowered
     // and, when gated, the fresh intent is re-armed even if we cannot persist.
     // Both fields flip in one critical section, so no snapshot can capture a
     // half-applied state.
     let (cleared_start_fresh, cleared_raise_hand) = mgr
-        .clear_user_input_transitions(session_id, clear_fresh)
+        .clear_user_input_transitions_with_carrier_permit(&carrier_permit, session_id, clear_fresh)
         .await;
     let cleared = ClearedUserInputTransitions {
         cleared_start_fresh,
@@ -2951,7 +5896,7 @@ async fn clear_user_input_transitions_and_persist_to_dir_result(
 
     if cleared_start_fresh || cleared_raise_hand {
         let dir = dir.ok_or("Could not determine home directory")?;
-        snapshot_and_save_locked(mgr, dir, project_paths).await?;
+        snapshot_and_save_locked(mgr, dir, project_paths, carrier_permit).await?;
     }
 
     Ok(cleared)
@@ -3011,15 +5956,40 @@ async fn write_start_fresh_and_persist_to_dir_result(
     dir: Option<&Path>,
     project_paths: Option<&[String]>,
 ) -> Result<bool, String> {
-    let _guard = sessions_save_lock().lock().await;
+    let manager = mgr.clone();
+    let dir = dir.map(Path::to_path_buf);
+    let roots = project_paths.map(<[String]>::to_vec);
+    run_owned_persist_core(async move {
+        write_start_fresh_and_persist_to_dir_result_core(
+            &manager,
+            session_id,
+            value,
+            dir.as_deref(),
+            roots.as_deref(),
+        )
+        .await
+    })
+    .await
+}
+
+async fn write_start_fresh_and_persist_to_dir_result_core(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    value: bool,
+    dir: Option<&Path>,
+    project_paths: Option<&[String]>,
+) -> Result<bool, String> {
+    let carrier_permit = acquire_carrier_mutation_permit().await;
     let changed = if value {
-        mgr.set_start_fresh_on_restore_if_unset(session_id).await
+        mgr.set_start_fresh_on_restore_if_unset_with_carrier_permit(&carrier_permit, session_id)
+            .await
     } else {
-        mgr.clear_start_fresh_on_restore_if_set(session_id).await
+        mgr.clear_start_fresh_on_restore_if_set_with_carrier_permit(&carrier_permit, session_id)
+            .await
     };
     if changed {
         let dir = dir.ok_or("Could not determine home directory")?;
-        snapshot_and_save_locked(mgr, dir, project_paths).await?;
+        snapshot_and_save_locked(mgr, dir, project_paths, carrier_permit).await?;
     }
     Ok(changed)
 }
@@ -3120,7 +6090,7 @@ mod tests {
     #[cfg(windows)]
     use super::{deduplicate, load_sessions_from_path};
     use crate::config::settings::AppSettings;
-    use crate::session::manager::SessionManager;
+    use crate::session::manager::{acquire_carrier_mutation_permit, SessionManager};
     use crate::session::session::{SessionCommunication, SessionCommunicationKind, SessionStatus};
     use std::sync::Arc;
     use std::time::Duration;
@@ -3130,6 +6100,642 @@ mod tests {
     /// pollute the process-global counters / dedup registry or race a tiny-cap
     /// rotation. Mirrors the `COUNTING_LOCK` pattern in injected_messages.rs.
     static ORPHAN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[tokio::test]
+    async fn replacement_preparing_requires_current_confirmed_exited_key_and_exact_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("member");
+        let directory = temp.path().join("config");
+        std::fs::create_dir(&cwd).unwrap();
+        let physical_cwd = std::fs::canonicalize(&cwd).unwrap();
+        let physical_replica = crate::path_identity::verify_directory(&cwd).unwrap();
+        let other_replica = temp.path().join("other-member");
+        std::fs::create_dir(&other_replica).unwrap();
+        let mut replaced_object = crate::path_identity::verify_directory(&other_replica).unwrap();
+        // Fault control: retain the original name with another actual file id.
+        // This models directory replacement without requiring a symlink.
+        replaced_object.canonical_path = physical_replica.canonical_path.clone();
+        let manager = SessionManager::new();
+        let row = manager
+            .create_session(
+                "bash".into(),
+                vec![],
+                cwd.to_string_lossy().into_owned(),
+                None,
+                None,
+                vec![],
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        manager.set_start_fresh_on_restore(row.id, true).await;
+        let permit = acquire_carrier_mutation_permit().await;
+        let version = manager
+            .with_current_carrier_snapshot(&permit, |current| current.versions[&row.id])
+            .await;
+        drop(permit);
+        let target = format!("replacement:{}", uuid::Uuid::new_v4());
+        let restore_exclusion = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let initial_intent = super::InitialCarrierIntent::new(
+            target.clone(),
+            row.id,
+            row.token,
+            version,
+            physical_cwd.clone(),
+        )
+        .with_restore_exclusion(restore_exclusion.clone());
+        assert!(
+            super::persist_initial_carrier(
+                &manager,
+                directory.clone(),
+                vec![temp.path().to_string_lossy().into_owned()],
+                initial_intent.clone(),
+            )
+            .await
+            .unwrap()
+            .is_none(),
+            "active restore cannot mint a protection"
+        );
+        assert!(
+            !directory.join("sessions.json").exists(),
+            "excluded initial publication has no rename"
+        );
+        restore_exclusion.store(false, std::sync::atomic::Ordering::Release);
+        let initial = super::persist_initial_carrier(
+            &manager,
+            directory.clone(),
+            vec![temp.path().to_string_lossy().into_owned()],
+            initial_intent,
+        )
+        .await
+        .unwrap()
+        .expect("initial Confirmed key");
+        let permit = acquire_carrier_mutation_permit().await;
+        assert_eq!(
+            super::restore_carrier_scopes_are_empty(&permit),
+            Some(false)
+        );
+        manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                assert!(
+                    super::retained_carrier_for_replacement(
+                        &permit, &directory, &target, row.id, current
+                    )
+                    .is_none(),
+                    "live row cannot become retained replacement A"
+                );
+                let manual =
+                    super::manual_discard_carrier(&permit, &physical_cwd, &target, row.id, current)
+                        .expect("live strict ManualDiscard key");
+                assert_eq!(manual.nonce, initial.nonce);
+                assert_eq!(manual.retired_local_generation(), None);
+                let mut wrong_nonce = manual.clone();
+                wrong_nonce.nonce = uuid::Uuid::new_v4();
+                assert!(
+                    !super::retire_manual_discard_carrier(
+                        &permit,
+                        &wrong_nonce,
+                        &physical_cwd,
+                        current
+                    ),
+                    "manual discard cannot retire another nonce"
+                );
+                assert!(
+                    super::manual_discard_carrier(&permit, &physical_cwd, &target, row.id, current)
+                        .is_some(),
+                    "failed discard leaves protection intact"
+                );
+                assert!(super::with_confirmed_carrier(
+                    &permit,
+                    &initial,
+                    current,
+                    super::CarrierCheckpointTransition::BeginClosing,
+                    |_| Some(())
+                )
+                .is_some());
+            })
+            .await;
+        drop(permit);
+        manager.mark_exited(row.id, 0).await;
+        let permit = acquire_carrier_mutation_permit().await;
+        manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                assert_eq!(current.selection.id(), Some(row.id));
+                let physical_domain = physical_replica.clone().into();
+                assert!(
+                    super::with_confirmed_carrier(
+                        &permit,
+                        &initial,
+                        current,
+                        super::CarrierCheckpointTransition::FinishDormant {
+                            generation: 7,
+                            committed_version: initial.version,
+                            replica: &physical_domain,
+                        },
+                        |_| Some(())
+                    )
+                    .is_none(),
+                    "selected Exited carrier cannot finish Dormant"
+                );
+            })
+            .await;
+        drop(permit);
+        manager.clear_active().await;
+        assert_eq!(manager.selection_payload().await.id(), None);
+        manager.set_start_fresh_on_restore(row.id, false).await;
+        persist_current_state_to_dir_result(&manager, &directory)
+            .await
+            .unwrap();
+        let owner = uuid::Uuid::new_v4();
+        let binding = manager.reserve_carrier_create_binding();
+        let permit = acquire_carrier_mutation_permit().await;
+        manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                assert!(
+                    super::retained_carrier_for_replacement(
+                        &permit, &directory, &target, row.id, current
+                    )
+                    .is_none(),
+                    "Exited plus Confirmed without Dormant settlement is not retirement evidence"
+                );
+                assert!(
+                    super::manual_discard_carrier(&permit, &physical_cwd, &target, row.id, current)
+                        .is_none(),
+                    "Closing cannot be manually adopted"
+                );
+                let physical_domain = physical_replica.clone().into();
+                let transition = super::CarrierCheckpointTransition::FinishDormant {
+                    generation: 7,
+                    committed_version: initial.version,
+                    replica: &physical_domain,
+                };
+                assert!(
+                    super::with_confirmed_carrier(
+                        &permit,
+                        &initial,
+                        current,
+                        transition,
+                        |_| None::<()>
+                    )
+                    .is_none(),
+                    "failed settlement mints nothing"
+                );
+                assert!(super::retained_carrier_for_replacement(
+                    &permit, &directory, &target, row.id, current
+                )
+                .is_none());
+                assert!(super::with_confirmed_carrier(
+                    &permit,
+                    &initial,
+                    current,
+                    transition,
+                    |_| Some(())
+                )
+                .is_some());
+            })
+            .await;
+        drop(permit);
+        manager.set_start_fresh_on_restore(row.id, true).await;
+        persist_current_state_to_dir_result(&manager, &directory)
+            .await
+            .unwrap();
+        let permit = acquire_carrier_mutation_permit().await;
+        manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                let carrier = super::retained_carrier_for_replacement(
+                    &permit, &directory, &target, row.id, current,
+                )
+                .expect("fresh Confirmed Exited A");
+                assert_retired_replacement_current_facts(
+                    &permit,
+                    current,
+                    &carrier,
+                    &initial,
+                    &directory,
+                    &target,
+                    row.id,
+                    &physical_cwd,
+                    &physical_replica,
+                    &replaced_object,
+                    owner,
+                    binding,
+                );
+                assert_retired_replacement_epoch_exhaustion(
+                    &permit, current, &carrier, &directory, &target, row.id, owner, binding,
+                );
+                assert_retired_replacement_preparing_owner(
+                    &permit, current, &carrier, owner, binding, &target, &cwd, &row, &directory,
+                );
+            })
+            .await;
+        drop(permit);
+    }
+
+    #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "P05 checks the same current snapshot and separately owned historical/physical facts without recapture."
+    )]
+    fn assert_retired_replacement_current_facts(
+        permit: &crate::session::manager::CarrierMutationPermit,
+        current: &crate::session::manager::CarrierSnapshot,
+        carrier: &super::PublishedCarrier,
+        initial: &super::PublishedCarrier,
+        directory: &std::path::Path,
+        target: &str,
+        row_id: uuid::Uuid,
+        physical_cwd: &std::path::Path,
+        physical_replica: &crate::path_identity::VerifiedPathIdentity,
+        replaced_object: &crate::path_identity::VerifiedPathIdentity,
+        owner: uuid::Uuid,
+        binding: crate::session::manager::PendingCreateBinding,
+    ) {
+        assert!(carrier.version > initial.version);
+        assert!(
+            matches!(super::classify_lifecycle_carrier_scope(permit, None, physical_cwd),
+            super::CreateCarrierScope::Protected { session_id, target: actual_target, .. }
+            if session_id == row_id && actual_target == target),
+            "None key is a domain fact, never a fabricated Foreign scope"
+        );
+        assert!(
+            carrier.retired_local.as_ref().unwrap().settled_version < carrier.version,
+            "same-A saves preserve historical settlement without relabeling its version"
+        );
+        assert_eq!(carrier.retired_local_generation(), Some(7));
+        assert!(carrier.retired_local_replica_matches(&(*physical_replica).clone().into()));
+        assert!(
+            !carrier.retired_local_replica_matches(&(*replaced_object).clone().into()),
+            "the same pathname cannot adopt a different physical replica"
+        );
+        let manual = super::manual_discard_carrier(permit, physical_cwd, target, row_id, current)
+            .expect("retired ManualDiscard requires the same strict history");
+        assert_eq!(manual.nonce, carrier.nonce);
+        assert_eq!(manual.retired_local_generation(), Some(7));
+        assert!(
+            initial.retired_local_generation().is_none(),
+            "historical handles are not relabeled"
+        );
+        for fault in 0..7 {
+            let mut changed = current.clone();
+            let actual = changed
+                .rows
+                .iter_mut()
+                .find(|actual| actual.id == row_id)
+                .unwrap();
+            match fault {
+                0 => actual.token = uuid::Uuid::new_v4(),
+                1 => actual.status = SessionStatus::Running,
+                2 => {
+                    actual.backend_kind =
+                        crate::pty::backend::SessionBackendKind::ContainerTransport
+                }
+                3 => actual.is_root_agent = true,
+                4 => actual.is_coordinator = true,
+                5 => actual.was_detached = true,
+                _ => {
+                    changed.pending_ids.insert(row_id);
+                }
+            }
+            assert!(
+                super::retained_carrier_for_replacement(
+                    permit, directory, target, row_id, &changed
+                )
+                .is_none(),
+                "changed current identity is never authorized by retirement history"
+            );
+        }
+        assert!(
+            !super::begin_carrier_replacement(
+                permit,
+                initial,
+                owner,
+                binding.session_id(),
+                current
+            ),
+            "initial old version is not relabeled as current"
+        );
+        assert!(
+            super::retained_carrier_for_replacement(
+                permit,
+                &directory.join("other"),
+                target,
+                row_id,
+                current
+            )
+            .is_none(),
+            "a different directory cannot adopt A"
+        );
+    }
+
+    #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "P05 exhausts and restores the same carrier slot under the original borrowed permit."
+    )]
+    fn assert_retired_replacement_epoch_exhaustion(
+        permit: &crate::session::manager::CarrierMutationPermit,
+        current: &crate::session::manager::CarrierSnapshot,
+        carrier: &super::PublishedCarrier,
+        directory: &std::path::Path,
+        target: &str,
+        row_id: uuid::Uuid,
+        owner: uuid::Uuid,
+        binding: crate::session::manager::PendingCreateBinding,
+    ) {
+        // Fault-control only: exhaust the publication clock consistently without
+        // performing another native write or claiming a new readback proof.
+        let saved_epoch = {
+            let mut state = carrier.slot.lock().unwrap();
+            let saved = state.epoch;
+            state.epoch = u64::MAX;
+            state.checkpoint.as_mut().unwrap().epoch = u64::MAX;
+            for protection in &mut state.protections {
+                protection.epoch = u64::MAX;
+            }
+            saved
+        };
+        assert!(super::retained_carrier_for_replacement(
+            permit, directory, target, row_id, current
+        )
+        .is_none());
+        assert!(
+            super::register_published_carrier(permit, carrier, current, |_| -> Option<()> {
+                panic!("exhausted epoch must not register")
+            })
+            .is_none()
+        );
+        assert!(!super::begin_carrier_replacement(
+            permit,
+            carrier,
+            owner,
+            binding.session_id(),
+            current
+        ));
+        assert!(super::with_confirmed_carrier(
+            permit,
+            carrier,
+            current,
+            super::CarrierCheckpointTransition::BeginClosing,
+            |_| -> Option<()> { panic!("exhausted epoch must not begin closing") }
+        )
+        .is_none());
+        {
+            let mut state = carrier.slot.lock().unwrap();
+            assert!(state.protections[0].phase == super::ProtectionPhase::Protected);
+            state.protections[0].phase = super::ProtectionPhase::Closing;
+        }
+        assert_eq!(
+            super::with_confirmed_carrier(
+                permit,
+                carrier,
+                current,
+                super::CarrierCheckpointTransition::FinishClosing,
+                |stamp| Some(stamp.epoch)
+            ),
+            Some(u64::MAX),
+            "exhaustion does not strand an already committed closing owner"
+        );
+        {
+            let mut state = carrier.slot.lock().unwrap();
+            state.epoch = saved_epoch;
+            state.checkpoint.as_mut().unwrap().epoch = saved_epoch;
+            for protection in &mut state.protections {
+                protection.epoch = saved_epoch;
+                protection.retired_local = carrier.retired_local.clone();
+            }
+        }
+    }
+
+    #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "P05 preserves distinct owner, binding, current row and carrier rollback assertions."
+    )]
+    fn assert_retired_replacement_preparing_owner(
+        permit: &crate::session::manager::CarrierMutationPermit,
+        current: &crate::session::manager::CarrierSnapshot,
+        carrier: &super::PublishedCarrier,
+        owner: uuid::Uuid,
+        binding: crate::session::manager::PendingCreateBinding,
+        target: &str,
+        cwd: &std::path::Path,
+        row: &crate::session::session::Session,
+        directory: &std::path::Path,
+    ) {
+        assert!(super::begin_carrier_replacement(
+            permit,
+            carrier,
+            owner,
+            binding.session_id(),
+            current
+        ));
+        assert!(
+            !super::begin_carrier_replacement(
+                permit,
+                carrier,
+                uuid::Uuid::new_v4(),
+                uuid::Uuid::new_v4(),
+                current
+            ),
+            "another owner cannot replace Preparing"
+        );
+        assert!(
+            matches!(super::classify_create_carrier_scope(permit, target, cwd),
+            super::CreateCarrierScope::Protected { preparing_owner: Some(actual), .. } if actual == owner)
+        );
+        assert!(
+            !super::retire_carrier_for_discard(permit, row.id),
+            "manual discard cannot delete a Preparing replacement owner"
+        );
+        assert!(
+            super::retained_carrier_for_replacement(permit, directory, target, row.id, current)
+                .is_none(),
+            "a historical Protected handle does not recapture Preparing"
+        );
+        assert!(
+            !super::abort_owned_carrier_replacement(
+                permit,
+                carrier,
+                uuid::Uuid::new_v4(),
+                binding.session_id(),
+                current
+            ),
+            "wrong owner cannot release Preparing"
+        );
+        let mut with_b = current.clone();
+        let mut b = (*row).clone();
+        b.id = binding.session_id();
+        with_b.rows.push(b);
+        assert!(
+            !super::abort_owned_carrier_replacement(
+                permit,
+                carrier,
+                owner,
+                binding.session_id(),
+                &with_b
+            ),
+            "a surviving B prevents precommit rollback release"
+        );
+        assert!(super::abort_owned_carrier_replacement(
+            permit,
+            carrier,
+            owner,
+            binding.session_id(),
+            current
+        ));
+        assert!(matches!(
+            super::classify_create_carrier_scope(permit, target, cwd),
+            super::CreateCarrierScope::Protected {
+                preparing_owner: None,
+                ..
+            }
+        ));
+        assert!(
+            super::begin_carrier_replacement(permit, carrier, owner, binding.session_id(), current),
+            "aborting preserves the actual A carrier and retirement history"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_publication_readback_fault_retains_pending_then_confirms_same_epoch() {
+        for malformed in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let manager = SessionManager::new();
+            let permit = acquire_carrier_mutation_permit().await;
+            let slot = super::publication_slot(temp.path()).unwrap();
+            let expected_epoch = slot.lock().unwrap().epoch;
+            let nonce = uuid::Uuid::new_v4();
+            let epoch = expected_epoch.checked_add(1).unwrap();
+            let rows = vec![PersistedSession {
+                name: "published-row".into(),
+                working_directory: temp.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            }];
+            let versions = manager
+                .with_current_carrier_snapshot(&permit, |current| current.versions.clone())
+                .await;
+            let mut pending = slot.lock().unwrap().clone();
+            pending.epoch = epoch;
+            pending.checkpoint = Some(super::PublicationCheckpoint {
+                nonce,
+                epoch,
+                rows: rows.clone(),
+                versions,
+                confirmed: false,
+            });
+            let mut next = Some(pending);
+            let write = super::PreparedSessionsWrite::prepare(temp.path(), &rows).unwrap();
+            let renamed = manager
+                .with_current_carrier_snapshot(&permit, |_| {
+                    super::rename_and_publish(temp.path(), &slot, expected_epoch, &mut next, &write)
+                })
+                .await;
+            let super::RenamePublicationAttempt::Renamed { leaf, retired } = renamed else {
+                panic!("real native rename must publish Pending");
+            };
+            assert!(next.is_none());
+            assert!(!write.tmp_path.exists());
+            let published_bytes = std::fs::read(&write.path).unwrap();
+            // Controlled post-rename readback faults, after M/suppression were
+            // released, while this operation still owns U and the same leaf.
+            if malformed {
+                std::fs::write(&write.path, b"invalid JSON").unwrap();
+            } else {
+                let mut different = rows.clone();
+                different[0].name = "another projection".into();
+                std::fs::write(&write.path, serde_json::to_vec(&different).unwrap()).unwrap();
+            }
+            super::confirm_publication_readback(&slot, &write.path, nonce, epoch);
+            {
+                let state = slot.lock().unwrap();
+                assert_eq!(state.epoch, epoch);
+                let checkpoint = state.checkpoint.as_ref().unwrap();
+                assert_eq!(checkpoint.nonce, nonce);
+                assert!(
+                    !checkpoint.confirmed,
+                    "unreadable or mismatched bytes cannot mint proof"
+                );
+            }
+            // Restore readable native bytes, then reconcile only readback.
+            // No second PreparedSessionsWrite or sessions rename is invoked.
+            std::fs::write(&write.path, published_bytes).unwrap();
+            super::confirm_publication_readback(&slot, &write.path, nonce, epoch);
+            {
+                let state = slot.lock().unwrap();
+                assert_eq!(state.epoch, epoch);
+                let checkpoint = state.checkpoint.as_ref().unwrap();
+                assert_eq!(checkpoint.nonce, nonce);
+                assert!(checkpoint.confirmed);
+            }
+            drop(leaf);
+            drop(retired);
+            drop(permit);
+        }
+    }
+
+    #[tokio::test]
+    async fn native_rename_failure_keeps_epoch_checkpoint_and_own_pending_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("sessions.json")).unwrap();
+        let manager = SessionManager::new();
+        let permit = acquire_carrier_mutation_permit().await;
+        let slot = super::publication_slot(temp.path()).unwrap();
+        let before = slot.lock().unwrap().clone();
+        let epoch = before.epoch.checked_add(1).unwrap();
+        let nonce = uuid::Uuid::new_v4();
+        let mut pending = before.clone();
+        pending.epoch = epoch;
+        pending.checkpoint = Some(super::PublicationCheckpoint {
+            nonce,
+            epoch,
+            rows: vec![],
+            versions: Default::default(),
+            confirmed: false,
+        });
+        let mut next = Some(pending);
+        let write = super::PreparedSessionsWrite::prepare(temp.path(), &[]).unwrap();
+        let attempt = manager
+            .with_current_carrier_snapshot(&permit, |_| {
+                super::rename_and_publish(temp.path(), &slot, before.epoch, &mut next, &write)
+            })
+            .await;
+        let super::SettledRenameAttempt::Failed(error) =
+            super::settle_rename_attempt(attempt, &slot, &write.path, nonce, epoch, 0, None)
+        else {
+            panic!("file cannot replace an existing directory");
+        };
+        assert!(write
+            .terminal_error(&error)
+            .starts_with("Failed to rename sessions file:"));
+        assert!(
+            write.tmp_path.is_file(),
+            "failed rename still owns its original temp"
+        );
+        {
+            let state = slot.lock().unwrap();
+            assert_eq!(state.epoch, before.epoch);
+            assert_eq!(
+                state.checkpoint.as_ref().map(|checkpoint| checkpoint.nonce),
+                before
+                    .checkpoint
+                    .as_ref()
+                    .map(|checkpoint| checkpoint.nonce)
+            );
+            assert_eq!(
+                next.as_ref().unwrap().checkpoint.as_ref().unwrap().nonce,
+                nonce
+            );
+        }
+        let owned_temp = write.tmp_path.clone();
+        drop(write);
+        assert!(!owned_temp.exists());
+        assert!(
+            temp.path().join("sessions.json").is_dir(),
+            "cleanup never removes destination"
+        );
+        drop(permit);
+    }
 
     /// §224 D.2 — the strip drops every runtime field but preserves the recipe
     /// fields needed for the next-startup restore attempt. Since #747 a raised
@@ -3680,14 +7286,14 @@ mod tests {
         let stale_snapshot = snapshot_sessions(&mgr).await;
         assert!(stale_snapshot[0].telegram_bot_id.is_none());
 
-        let guard = sessions_save_lock().lock().await;
+        let guard = super::acquire_carrier_mutation_permit().await;
         let mut persist = Box::pin(persist_current_state_to_dir_result(&mgr, temp.path()));
         let timed_out = tokio::time::timeout(Duration::from_millis(25), &mut persist)
             .await
             .is_err();
         assert!(timed_out, "persistence should wait for the save lock");
 
-        mgr.set_telegram_bot_id(session.id, Some("bot-1".into()))
+        mgr.set_telegram_bot_id_with_carrier_permit(&guard, session.id, Some("bot-1".into()))
             .await;
         drop(guard);
         persist.await.expect("persist current state");
@@ -7059,9 +10665,15 @@ mod tests {
         let prep = super::prepare_persist_snapshot(vec![plain_terminal], &project_paths)
             .await
             .unwrap();
-        super::persist_prepared_locked(None, temp.path(), prep, super::PersistMode::NoPrune)
-            .await
-            .expect("a suppressed persist answers Ok");
+        super::persist_prepared_locked(
+            None,
+            temp.path(),
+            prep,
+            super::PersistMode::NoPrune,
+            &super::acquire_carrier_mutation_permit().await,
+        )
+        .await
+        .expect("a suppressed persist answers Ok");
         assert_eq!(
             b3_sha(&sessions_path),
             before,
@@ -7102,9 +10714,15 @@ mod tests {
         let prep = super::prepare_persist_snapshot(Vec::new(), &project_paths)
             .await
             .unwrap();
-        super::persist_prepared_locked(None, temp.path(), prep, super::PersistMode::NoPrune)
-            .await
-            .unwrap();
+        super::persist_prepared_locked(
+            None,
+            temp.path(),
+            prep,
+            super::PersistMode::NoPrune,
+            &super::acquire_carrier_mutation_permit().await,
+        )
+        .await
+        .unwrap();
 
         // Repair, then start two.
         std::fs::write(
@@ -8096,5 +11714,46 @@ mod derived_agent_binding_tests {
         let loaded = load_sessions_from_dir(dir.path());
         assert!(loaded[0].binding_metadata().unwrap().is_none());
         assert!(loaded[0].coding_agent_binding_origin.is_none());
+    }
+    #[tokio::test]
+    async fn response_close_persist_core_retains_real_leaf_after_waiter_cancellation() {
+        for fail in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let output = temp.path().join("output");
+            if fail {
+                std::fs::write(&output, b"not a directory").unwrap();
+            }
+            let task_output = output.clone();
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+            let waiter = tokio::spawn(async move {
+                super::run_owned_persist_core(async move {
+                    started_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                    let result = super::save_sessions_to_dir(&task_output, &[]);
+                    finished_tx.send(result.clone()).unwrap();
+                    result
+                })
+                .await
+            });
+            started_rx.await.unwrap();
+            waiter.abort();
+            assert!(waiter.await.unwrap_err().is_cancelled());
+            release_tx.send(()).unwrap();
+            let result = finished_rx.await.unwrap();
+            if fail {
+                assert!(result
+                    .unwrap_err()
+                    .starts_with("Failed to create config directory:"));
+                assert_eq!(std::fs::read(&output).unwrap(), b"not a directory");
+            } else {
+                result.unwrap();
+                let rows: Vec<PersistedSession> =
+                    serde_json::from_slice(&std::fs::read(output.join("sessions.json")).unwrap())
+                        .unwrap();
+                assert!(rows.is_empty());
+            }
+        }
     }
 }
