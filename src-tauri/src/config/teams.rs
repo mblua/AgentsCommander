@@ -2213,8 +2213,7 @@ mod tests {
         let ac_root = tmp.path().join("proj-a").join(".ac");
         let room = ac_root.join("wg-1-dev-team");
         let replica = room.join("__agent_tech-lead");
-        let (d, st, reservation) =
-            crate::config::settings::identity_reference_pair_paths(&replica);
+        let (d, st, reservation) = crate::config::settings::identity_reference_pair_paths(&replica);
         std::fs::write(&st, b"{}").unwrap();
         let files = [&d, &st];
         let original = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
@@ -2226,9 +2225,7 @@ mod tests {
         let mappings = "a".repeat(64);
         let digest = format!(
             "{:x}",
-            Sha256::digest(
-                serde_json::to_vec(&(1u32, &protected_images, &mappings)).unwrap()
-            )
+            Sha256::digest(serde_json::to_vec(&(1u32, &protected_images, &mappings)).unwrap())
         );
         let resolved = files.map(|path| {
             let value = std::fs::canonicalize(path.parent().unwrap())
@@ -2270,9 +2267,8 @@ mod tests {
             bytes.push(b',');
         }
         bytes.extend_from_slice(br#""unknown-canary":"secret-canary","unknown-canary":0}"#);
-        let image =
-            serde_json::to_value(IdentityReferencePhysicalState::from_bytes(bytes.clone()))
-                .unwrap();
+        let image = serde_json::to_value(IdentityReferencePhysicalState::from_bytes(bytes.clone()))
+            .unwrap();
         match slot {
             0 => std::fs::write(files[side], bytes).unwrap(),
             1 => envelope["beforeTuple"][side] = image,
@@ -2283,11 +2279,8 @@ mod tests {
         let captured = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
         for error in [
             resolve_wg_coordinator_replica_checked(&ac_root, &room).unwrap_err(),
-            verified_wg_coordinator_target_checked(
-                "proj-a:wg-1-dev-team/tech-lead",
-                &paths,
-            )
-            .unwrap_err(),
+            verified_wg_coordinator_target_checked("proj-a:wg-1-dev-team/tech-lead", &paths)
+                .unwrap_err(),
         ] {
             assert!(error.contains("duplicateJsonMember:"));
             assert!(error.contains(files[side].to_str().unwrap()));

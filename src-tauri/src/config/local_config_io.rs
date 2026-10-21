@@ -5841,8 +5841,7 @@ mod pair_activity_tests {
     fn assert_pair_image_duplicate_rejected(side: usize, slot: usize) {
         let fixture = Fixture::new(false);
         for path in [fixture.d(), fixture.s()] {
-            let mut value: Value =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let mut value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             value["opaque"] = json!("e2992-parse-canary");
             fixture.write(&path, value);
         }
@@ -5864,20 +5863,17 @@ mod pair_activity_tests {
             serde_json::from_slice::<Value>(valid).unwrap()
         );
         let image = PhysicalState::from_bytes(duplicate.clone());
-        if slot == 0 {
-            std::fs::write(paths[side], &duplicate).unwrap();
-        } else if slot == 1 {
-            packet.before_tuple[side] = image;
-        } else {
-            packet.plan_images.stages[slot - 2][side] = image;
+        match slot {
+            0 => std::fs::write(paths[side], &duplicate).unwrap(),
+            1 => packet.before_tuple[side] = image,
+            _ => packet.plan_images.stages[slot - 2][side] = image,
         }
         let envelope = serde_json::to_vec(&packet).unwrap();
         std::fs::write(fixture.r(), &envelope).unwrap();
         let originals = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
         E2992_CANARY_MAP_CALLS.with(|count| count.set(0));
         let error =
-            execute_reserved_config_pair(&d, &st, &fixture.r(), &request.operation_id)
-                .unwrap_err();
+            execute_reserved_config_pair(&d, &st, &fixture.r(), &request.operation_id).unwrap_err();
         assert!(
             matches!(&error, PreparedPairError::DuplicateJsonMember(message) if message.contains("duplicateJsonMember:") && message.contains(paths[side].to_str().unwrap()) && message.contains("repeated JSON object members"))
         );
