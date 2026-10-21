@@ -1906,6 +1906,7 @@ pub(crate) fn discover_teams_from_project_paths_checked(
 }
 
 /// Discover teams in a single project directory.
+#[allow(dead_code)] // P52: retain legacy wrapper until P54/P55 migration.
 fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>) {
     discover_teams_in_project_filtered(project_dir, teams, |_| true);
 }

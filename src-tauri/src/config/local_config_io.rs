@@ -420,6 +420,7 @@ where
 /// The production PAIR boundary. Pending deltas are computed on private maps
 /// before cleanup or the caller's split-marker policy can change either file.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // P52: retain legacy wrapper during checked migration.
 pub(crate) fn update_config_pair_guarded<F>(
     decisions: &Path,
     state: &Path,
@@ -482,6 +483,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // P52: retain legacy wrapper during checked migration.
 pub(super) fn update_config_pair_inner<F>(
     decisions: &Path,
     state: &Path,
@@ -1508,8 +1510,8 @@ impl PairReservation {
     }
 
     fn validate(&self, paths: [&Path; 2]) -> Result<(), PreparedPairError> {
-        for side in 0..2 {
-            check_configuration_physical(paths[side], &self.before_tuple[side])?;
+        for (path, image) in paths.into_iter().zip(&self.before_tuple) {
+            check_configuration_physical(path, image)?;
         }
         check_configuration_pair_images(paths, &self.plan_images)?;
         self.plan_images.validate()?;
@@ -5830,7 +5832,7 @@ mod pair_activity_tests {
     #[test]
     fn e2992_duplicate_json_pair_original_and_embedded_images_before_parse() {
         for side in 0..2 {
-            for slot in 0..7 {
+            for slot in 0usize..7 {
                 let fixture = Fixture::new(false);
                 for path in [fixture.d(), fixture.s()] {
                     let mut value: Value =
@@ -5843,7 +5845,7 @@ mod pair_activity_tests {
                 let d = fixture.d();
                 let st = fixture.s();
                 let paths = [d.as_path(), st.as_path()];
-                let stage = if slot < 2 { 0 } else { slot - 2 };
+                let stage = slot.saturating_sub(2);
                 let valid = match &packet.plan_images.stages[stage][side] {
                     PhysicalState::Bytes { bytes, .. } => bytes,
                     PhysicalState::Absent => panic!("present fixture"),

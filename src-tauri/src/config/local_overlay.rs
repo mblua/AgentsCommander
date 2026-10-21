@@ -390,6 +390,7 @@ impl LocalSettingsOverlay {
 
     /// The same loader over captured physical bytes, without a second IO read.
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)] // P52: prepared for P45 captured-source admission.
     pub(crate) fn from_overlay_bytes_paired_checked(
         base: &mut Value,
         contents: &[u8],

@@ -1722,6 +1722,7 @@ impl PersistedSession {
 }
 
 /// Read the startup selection without purge, archive, save or settings IO.
+#[allow(dead_code)] // P52: prepared for P53 startup admission.
 pub(crate) fn read_startup_sessions_for_admission(
     config_dir: &Path,
     settings: &super::settings::AppSettings,
