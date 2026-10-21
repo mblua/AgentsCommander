@@ -18527,6 +18527,15 @@ fn compose_captured_sources(
 }
 
 impl SettingsOwner {
+    /// Runtime provenance uses only the active owner's retained settings locator.
+    pub(crate) fn runtime_source_settings_path(&self) -> Result<PathBuf, String> {
+        self.revalidate().map_err(|error| error.to_string())?;
+        let lease = self.lease.lock().unwrap_or_else(|error| error.into_inner());
+        let lease = lease.as_ref().ok_or("sourceContextUnavailable")?;
+        lease.verify().map_err(|_| "ownerIntegrityLost")?;
+        Ok(lease.settings_path.clone())
+    }
+
     /// StagedCompatibility owner around already-loaded settings: the P40
     /// constructor path. Ready, with managed operations disabled.
     fn staged(settings: AppSettings) -> Self {

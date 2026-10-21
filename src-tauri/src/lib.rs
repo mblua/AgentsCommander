@@ -2356,14 +2356,14 @@ fn resolve_current_persisted_restore(
     persisted: &mut config::sessions_persistence::PersistedSession,
     mode: commands::session::SourceRestoreMode,
     settings: &config::settings::AppSettings,
-    settings_path: &std::path::Path,
+    settings_path: Result<std::path::PathBuf, String>,
 ) -> Result<Option<config::agent_command::AgentSpawnCommand>, String> {
     use commands::session::SourceRestoreDecision;
     let reference = persisted.coding_agent_binding_seed.as_ref()
         .and_then(|seed| seed.configuration_ref.as_ref());
-    let snapshot = reference.map(|reference| config::settings::capture_runtime_source(
-        settings, settings_path, &reference.source,
-    )).unwrap_or_else(|| Err("legacyHasNoSource".into()));
+    let snapshot = reference.map(|reference| settings_path.and_then(|path| config::settings::capture_runtime_source(
+        settings, &path, &reference.source,
+    ))).unwrap_or_else(|| Err("legacyHasNoSource".into()));
     let target_profile = match (reference, snapshot.as_ref()) {
         (Some(reference), Ok(snapshot)) => {
             let scoped = config::settings::resolve_runtime_source_row(settings, snapshot, reference)?;
@@ -2437,23 +2437,21 @@ fn start_native_restore_startup(
                     return;
                 }
             };
-            for ps in &mut persisted {
-                if let Err(error) = ps.capture_binding_seed(&settings_snapshot) {
-                    log::error!(
-                        "[restore] binding seed unavailable for '{}': {}",
-                        ps.name,
-                        error
-                    );
-                }
-            }
-            let mut active_id = None;
             let mut failed_recoverable: Vec<sessions_persistence::PersistedSession> = Vec::new();
+            persisted.retain_mut(|ps| {
+                if let Err(error) = ps.capture_binding_seed(&settings_snapshot) {
+                    log::error!("[restore] binding seed unavailable for '{}': {}", ps.name, error);
+                    failed_recoverable.push(ps.clone());
+                    false
+                } else { true }
+            });
+            let mut active_id = None;
 
             // #248 Grinch Z5 — count outcomes for the end-of-restore summary line.
             let mut n_woken: usize = 0;
             let mut n_deferred: usize = 0;
 
-            let root_agent_path = match crate::config::root_agent::ensure_root_agent_dir() {
+            let root_agent_path = match crate::config::root_agent::root_agent_dir() {
                 Ok(path) => Some(path),
                 Err(e) => {
                     log::error!(
@@ -2463,7 +2461,7 @@ fn start_native_restore_startup(
                     None
                 }
             };
-            let root_ps = persisted
+            let mut root_ps = persisted
                 .iter()
                 .find(|ps| {
                     ps.is_root_agent
@@ -2471,14 +2469,28 @@ fn start_native_restore_startup(
                 })
                 .cloned();
 
-            if let Some(root_path) = root_agent_path.clone() {
+            let root_capture_failed = failed_recoverable.iter().any(|ps| ps.is_root_agent
+                || crate::config::root_agent::is_root_agent_path(&ps.working_directory));
+            let original_root_ps = root_ps.clone();
+            let root_source = if let Some(ps) = root_ps.as_mut() {
+                let mode = if should_wake_root_agent_on_restore(ps.status.as_ref()) {
+                    commands::session::SourceRestoreMode::Wake
+                } else { commands::session::SourceRestoreMode::Defer };
+                resolve_current_persisted_restore(ps, mode, &settings_snapshot, settings_state_clone.runtime_source_settings_path())
+            } else { Ok(None) };
+            let root_source_failed = root_source.is_err();
+            if let Err(error) = root_source.as_ref() {
+                log::error!("[restore] source Root refused: {error}");
+            }
+            let root_source_spawn = root_source.ok().flatten();
+            if let Some(root_path) = root_agent_path.clone().filter(|_| !root_source_failed && !root_capture_failed) {
                 if shutdown_for_body.token().is_cancelled() {
                     // 14.4 - exit during restore: never spawn a root PTY
                     // once shutdown is underway (it would be orphaned until
                     // the next boot's container-orphan cleanup). Keep the
                     // row for next boot via the failed_recoverable merge.
                     if let Some(ps) = root_ps.as_ref() {
-                        failed_recoverable.push(ps.clone());
+                        failed_recoverable.push(original_root_ps.as_ref().unwrap_or(ps).clone());
                     }
                 } else {
                     match root_ps.as_ref() {
@@ -2526,7 +2538,7 @@ fn start_native_restore_startup(
                         }
                         Some(ps) if ps.binding_metadata().is_err() => {
                             log::error!("[restore] ambiguous Root binding; preserving recipe");
-                            failed_recoverable.push(ps.clone());
+                            failed_recoverable.push(original_root_ps.as_ref().unwrap_or(ps).clone());
                         }
                         Some(ps) if should_wake_root_agent_on_restore(ps.status.as_ref()) => {
                             let existing_root = {
@@ -2589,7 +2601,17 @@ fn start_native_restore_startup(
                             }
                             if should_create {
                                 let mut rebuild_failed = false;
-                                let resolved_spawn = if ps.agent_id.is_some()
+                                let resolved_spawn = if let Some(spawn) = root_source_spawn.clone() {
+                                    match config::agent_command::prepare_agent_spawn_command(&spawn) {
+                                        Ok(()) => Some(spawn),
+                                        Err(error) => {
+                                            log::error!("[restore] source Root preparation refused: {error}");
+                                            failed_recoverable.push(original_root_ps.as_ref().unwrap_or(ps).clone());
+                                            rebuild_failed = true;
+                                            None
+                                        }
+                                    }
+                                } else if ps.agent_id.is_some()
                                     && settings_snapshot.agents_layer.unreadable_path().is_some()
                                 {
                                     // #2716 (B3, 4.5b option S): skip, and push nothing to
@@ -2615,7 +2637,7 @@ fn start_native_restore_startup(
                                                 ps.name,
                                                 e
                                             );
-                                            failed_recoverable.push(ps.clone());
+                                            failed_recoverable.push(original_root_ps.as_ref().unwrap_or(ps).clone());
                                             rebuild_failed = true;
                                             None
                                         }
@@ -2636,6 +2658,13 @@ fn start_native_restore_startup(
                                 } else {
                                     None
                                 };
+                                if !rebuild_failed {
+                                    if let Err(error) = crate::config::root_agent::ensure_root_agent_dir() {
+                                        log::error!("[restore] Root provisioning refused: {error}");
+                                        failed_recoverable.push(original_root_ps.as_ref().unwrap_or(ps).clone());
+                                        rebuild_failed = true;
+                                    }
+                                }
                                 if !rebuild_failed {
                                     let (shell, shell_args, agent_label) =
                                         if let Some(spawn) = resolved_spawn.as_ref() {
@@ -2734,7 +2763,7 @@ fn start_native_restore_startup(
                                             ps.name,
                                             e
                                         );
-                                            failed_recoverable.push(ps.clone());
+                                            failed_recoverable.push(original_root_ps.as_ref().unwrap_or(ps).clone());
                                         }
                                     }
                                 }
@@ -2793,7 +2822,7 @@ fn start_native_restore_startup(
                                             ps.name,
                                             e
                                         );
-                                        failed_recoverable.push(ps.clone());
+                                        failed_recoverable.push(original_root_ps.as_ref().unwrap_or(ps).clone());
                                     }
                                 }
                             }
@@ -2801,7 +2830,7 @@ fn start_native_restore_startup(
                     }
                 }
             } else if let Some(ps) = root_ps.as_ref() {
-                failed_recoverable.push(ps.clone());
+                failed_recoverable.push(original_root_ps.as_ref().unwrap_or(ps).clone());
             }
 
             let archived_roots = sessions_persistence::normalize_project_roots(
@@ -2887,6 +2916,21 @@ fn start_native_restore_startup(
                     persisted_working,
                 );
 
+                let original_ps = ps;
+                let mut current_ps = ps.clone();
+                let mode = if wake { commands::session::SourceRestoreMode::Wake }
+                    else { commands::session::SourceRestoreMode::Defer };
+                let source_spawn = match resolve_current_persisted_restore(
+                    &mut current_ps, mode, &settings_snapshot, settings_state_clone.runtime_source_settings_path(),
+                ) {
+                    Ok(spawn) => spawn,
+                    Err(error) => {
+                        log::error!("[restore] source refused '{}': {error}", ps.name);
+                        failed_recoverable.push(original_ps.clone());
+                        continue;
+                    }
+                };
+                let ps = &current_ps;
                 if !wake {
                     // Defer: create a dormant Session record (no PTY, status = Exited(0)).
                     match restore_transaction_for_task
@@ -2921,7 +2965,7 @@ fn start_native_restore_startup(
                         }
                         Err(e) => {
                             log::error!("Failed to create deferred session '{}': {}", ps.name, e);
-                            failed_recoverable.push(ps.clone());
+                            failed_recoverable.push(original_ps.clone());
                         }
                     }
                     continue;
@@ -2929,7 +2973,14 @@ fn start_native_restore_startup(
 
                 // Wake: rebuild configured-agent sessions from the persisted recipe,
                 // while custom-shell records keep their materialized shell args.
-                let resolved_spawn = if ps.agent_id.is_some()
+                let resolved_spawn = if let Some(spawn) = source_spawn {
+                    if let Err(error) = config::agent_command::prepare_agent_spawn_command(&spawn) {
+                        log::error!("[restore] source preparation refused '{}': {error}", ps.name);
+                        failed_recoverable.push(original_ps.clone());
+                        continue;
+                    }
+                    Some(spawn)
+                } else if ps.agent_id.is_some()
                     && settings_snapshot.agents_layer.unreadable_path().is_some()
                 {
                     // #2716 (B3, 4.5b option S): skip without pushing to failed_recoverable.
@@ -2952,7 +3003,7 @@ fn start_native_restore_startup(
                                 ps.name,
                                 e
                             );
-                            failed_recoverable.push(ps.clone());
+                            failed_recoverable.push(original_ps.clone());
                             continue;
                         }
                     }
@@ -3108,7 +3159,7 @@ fn start_native_restore_startup(
                     Err(e) => {
                         log::error!("Failed to restore session '{}': {}", ps.name, e);
                         // Preserve for next startup attempt (CWD exists, transient failure)
-                        failed_recoverable.push(ps.clone());
+                        failed_recoverable.push(original_ps.clone());
                     }
                 }
             }
@@ -9364,6 +9415,98 @@ mod tests {
             hoist < loop_start,
             "startup restore must normalize archived roots once before the session loop"
         );
+    }
+
+    fn e2432_assert_current_source_restore(root: bool, deferred: bool) {
+        use crate::commands::session::{e2432_physical_restore_fixture, SourceRestoreMode};
+        let temp = tempfile::tempdir().unwrap();
+        let (mut host, path, mut persisted) = e2432_physical_restore_fixture(&temp.path().join("F"), "F-old");
+        persisted.is_root_agent = root;
+        let (global, g_path, g) = e2432_physical_restore_fixture(&temp.path().join("G"), "G-old");
+        let g_seed = g.coding_agent_binding_seed.as_ref().unwrap();
+        let g_snapshot = config::settings::capture_runtime_source(&global,
+            &g_path, &g_seed.configuration_ref.as_ref().unwrap().source).unwrap();
+        host.agents = config::settings::agent_file_projection(&g_snapshot).unwrap().agents;
+        host.agents_layer = config::settings::AgentsLayerState::Unreadable {
+            path: temp.path().join("global-invalid"), reason:"global unreadable decoy".into(),
+        };
+        let original = serde_json::to_value(&persisted).unwrap();
+        e2432_physical_restore_fixture(&temp.path().join("G"), "G-new");
+        let mut carrier: PersistedSession = serde_json::from_value(original.clone()).unwrap();
+        let id = carrier.coding_agent_binding_id.clone();
+        let origin = carrier.coding_agent_binding_origin.clone();
+        if deferred {
+            assert!(resolve_current_persisted_restore(&mut carrier, SourceRestoreMode::Defer, &host, Ok(path.clone())).unwrap().is_none());
+            carrier = serde_json::from_value(serde_json::to_value(&carrier).unwrap()).unwrap();
+        }
+        let first = resolve_current_persisted_restore(&mut carrier, SourceRestoreMode::Wake, &host, Ok(path.clone())).unwrap().unwrap();
+        assert!(first.shell.contains("tool"));
+        assert_eq!(first.profile_resolution.cell.env.get("SOURCE").map(String::as_str), Some("F-old"));
+        assert_eq!(first.trusted_agent_id, "same");
+        assert_eq!(first.backend.image.as_deref(), Some("F-old"));
+        assert!(first.source_seed.is_some());
+        let first_seed = carrier.coding_agent_binding_seed.clone().unwrap();
+        e2432_physical_restore_fixture(&temp.path().join("F"), "F-current");
+        let current = resolve_current_persisted_restore(&mut carrier, SourceRestoreMode::Wake, &host, Ok(path.clone())).unwrap().unwrap();
+        assert_eq!(current.profile_resolution.cell.env.get("SOURCE").map(String::as_str), Some("F-current"));
+        assert_ne!(carrier.coding_agent_binding_seed, Some(first_seed));
+        assert_eq!(carrier.coding_agent_binding_id, id);
+        assert_eq!(carrier.coding_agent_binding_origin, origin);
+        assert_eq!(serde_json::to_value(&persisted).unwrap(), original);
+        let source_file = path.with_file_name(config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME);
+        let valid = std::fs::read(&source_file).unwrap();
+        for replacement in [Some(b"{\"agents\":[]}".to_vec()), None] {
+            if let Some(bytes) = replacement { std::fs::write(&source_file, bytes).unwrap(); }
+            else { std::fs::remove_file(&source_file).unwrap(); }
+            let before = serde_json::to_value(&carrier).unwrap();
+            assert!(resolve_current_persisted_restore(&mut carrier, SourceRestoreMode::Wake, &host, Ok(path.clone())).is_err());
+            assert_eq!(serde_json::to_value(&carrier).unwrap(), before);
+            std::fs::write(&source_file, &valid).unwrap();
+        }
+        let mut changed: serde_json::Value = serde_json::from_slice(&valid).unwrap();
+        changed["agents"][0]["baseCommand"] = serde_json::json!("changed-base");
+        std::fs::write(&source_file, serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert!(resolve_current_persisted_restore(&mut carrier, SourceRestoreMode::Wake, &host, Ok(path.clone())).is_err());
+        std::fs::write(&source_file, &valid).unwrap();
+        carrier.coding_agent_binding_conflict = true;
+        assert!(resolve_current_persisted_restore(&mut carrier, SourceRestoreMode::Wake, &host, Ok(path.clone())).is_err());
+        carrier.coding_agent_binding_conflict = false;
+        carrier.coding_agent_binding_seed.as_mut().unwrap().identity_revision = "malformed".into();
+        assert!(resolve_current_persisted_restore(&mut carrier, SourceRestoreMode::Wake, &host, Ok(path.clone())).is_err());
+        assert!(matches!(prepare_persisted_restore(&persisted, SourceRestoreMode::Wake,
+            &host, Err("source unreadable".into()), None), crate::commands::session::SourceRestoreDecision::Refuse { .. }));
+        let legacy = PersistedSession::default();
+        assert!(matches!(prepare_persisted_restore(&legacy, SourceRestoreMode::Wake,
+            &host, Err("no source".into()), None), crate::commands::session::SourceRestoreDecision::Legacy));
+    }
+
+    #[test]
+    fn e2432_restore_root_source() { e2432_assert_current_source_restore(true, false); }
+
+    #[test]
+    fn e2432_restore_ordinary_source() { e2432_assert_current_source_restore(false, false); }
+
+    #[test]
+    fn e2432_restore_deferred_source() {
+        e2432_assert_current_source_restore(false, true);
+        e2432_assert_current_source_restore(true, true);
+    }
+
+    #[test]
+    fn e2432_restore_production_source_first_wiring() {
+        let source = include_str!("lib.rs");
+        let start = source.find("fn start_native_restore_startup(").unwrap();
+        let body = &source[start..source.find("fn e2432_assert_current_source_restore(").unwrap()];
+        let root = body.find("let root_source =").unwrap();
+        let root_global = body.find("settings_snapshot.agents_layer.unreadable_path()").unwrap();
+        assert!(root < root_global);
+        let ordinary = body.find("let source_spawn = match").unwrap();
+        let ordinary_global = body.rfind("settings_snapshot.agents_layer.unreadable_path()").unwrap();
+        assert!(ordinary < ordinary_global);
+        assert!(body[root..].contains("SourceRestoreMode::Defer"));
+        assert!(body[ordinary..].contains("restore_dormant_inline"));
+        assert!(body.contains("resolve_current_persisted_restore"));
+        assert!(body.contains("!root_source_failed && !root_capture_failed"));
     }
 
     fn persisted_row(name: &str, was_active: bool) -> PersistedSession {

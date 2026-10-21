@@ -63,7 +63,7 @@ pub struct NormalizedAgentCommand {
 
 #[derive(Debug, Clone)]
 pub struct AgentSpawnCommand {
-    pub(crate) source_seed: Option<crate::config::sessions_persistence::CodingAgentBindingSeed>,
+    pub(crate) source_seed: Option<serde_json::Value>,
     pub shell: String,
     pub shell_args: Vec<String>,
     pub agent_env: BTreeMap<String, String>,
