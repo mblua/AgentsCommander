@@ -455,6 +455,33 @@ struct DeferredCreateOutput {
     info: SessionInfo,
     binding: PendingCreateBinding,
     warnings: Vec<SessionWarning>,
+    effective_continuation: bool,
+}
+
+#[derive(Clone)]
+struct InitialLastPrompt {
+    text: Option<String>,
+    agent_id: Option<String>,
+    requested_profile: Option<String>,
+    effective_profile: Option<String>,
+}
+
+impl InitialLastPrompt {
+    fn from_persisted(row: &crate::config::sessions_persistence::PersistedSession) -> Self {
+        Self {
+            text: row.last_prompt.clone(),
+            agent_id: row.agent_id.clone(),
+            requested_profile: row.requested_profile.clone(),
+            effective_profile: row.effective_profile.clone(),
+        }
+    }
+
+    fn compatible(&self, row: &crate::session::session::Session) -> bool {
+        self.agent_id.is_some()
+            && self.agent_id == row.agent_id
+            && self.requested_profile == row.requested_profile
+            && self.effective_profile == row.effective_profile
+    }
 }
 
 enum CreateCompletion {
@@ -1600,6 +1627,16 @@ pub(crate) mod coordinator_create_seam {
 
     static FORCED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
+    pub(crate) fn force_root(key: &str) {
+        force(&format!("root:{key}"));
+    }
+    pub(crate) fn unforce_root(key: &str) {
+        unforce(&format!("root:{key}"));
+    }
+    pub(crate) fn forced_root(key: &str) -> bool {
+        forced(&format!("root:{key}"))
+    }
+
     pub(crate) fn force(key: &str) {
         FORCED
             .lock()
@@ -1737,6 +1774,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         None,
         crate::config::sessions_persistence::default_creation_gate_enforcement(),
         None,
+        None,
     )
     .await?
     .into_finalized()
@@ -1787,6 +1825,7 @@ pub(crate) async fn create_session_inner_with_pty_target_ownership<R: tauri::Run
         Some(target_ownership),
         crate::config::sessions_persistence::default_creation_gate_enforcement(),
         None,
+        None,
     )
     .await?
     .into_finalized()
@@ -1812,6 +1851,7 @@ pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
     pending_start_fresh: Option<bool>,
     pending_communication: Option<SessionCommunication>,
     coding_agent_binding: Option<crate::session::manager::CodingAgentBinding>,
+    initial_last_prompt: Option<&crate::config::sessions_persistence::PersistedSession>,
 ) -> Result<SessionInfo, String> {
     create_session_inner_impl(
         transaction.app(),
@@ -1838,6 +1878,7 @@ pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
         None,
         crate::config::sessions_persistence::default_creation_gate_enforcement(),
         coding_agent_binding,
+        initial_last_prompt.map(InitialLastPrompt::from_persisted),
     )
     .await?
     .into_finalized()
@@ -2087,7 +2128,12 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
     preheld_target: Option<&crate::api::message_store::PtyInputTargetOwnership<'_>>,
     enforcement: crate::config::sessions_persistence::CreationGateEnforcement,
     coding_agent_binding: Option<crate::session::manager::CodingAgentBinding>,
+    initial_last_prompt: Option<InitialLastPrompt>,
 ) -> Result<CreateCompletion, String> {
+    {
+        let manager = session_mgr.read().await;
+        crate::config::sessions_persistence::initialize_prompt_retention(&manager).await;
+    }
     // #1327 - startup coding-agent updates gate: no session may open (GUI,
     // restore, restart, root agent, web, phone) before the startup update run
     // finishes or times out. Absent in tests (mock app, nothing managed) and in
@@ -2205,6 +2251,8 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         #[cfg(test)]
         let is_coordinator = is_coordinator || coordinator_create_seam::forced(&cwd);
         let is_root_agent = crate::config::root_agent::is_root_agent_path(&cwd);
+        #[cfg(test)]
+        let is_root_agent = is_root_agent || coordinator_create_seam::forced_root(&cwd);
 
         if is_coordinator {
             *marker_ticket.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -2531,6 +2579,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         }
 
         let mut shell_args = shell_args;
+        let mut effective_continuation = false;
         let full_cmd = format!("{} {}", shell, shell_args.join(" "));
         // #260: single detector (session/profile.rs). Replaces the old
         // starts_with triple; this is the SAME call `strip_auto_injected_args`
@@ -2699,11 +2748,13 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                             || last.to_lowercase().contains("claude")
                         {
                             *last = format!("{} {}", last, continue_flag);
+                            effective_continuation = true;
                             log::info!("Auto-injected --continue for agent '{}' (prior conversation exists, cmd path)", aid);
                         }
                     }
                 } else {
                     shell_args.push(continue_flag.to_string());
+                    effective_continuation = true;
                     log::info!(
                         "Auto-injected --continue for agent '{}' (prior conversation exists)",
                         aid
@@ -2754,6 +2805,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             &shell,
             &mut shell_args,
         ) {
+            effective_continuation = true;
             if let Some(spawn) = resolved_spawn.as_ref() {
                 log::info!(
                     "Auto-injected Pi `--continue` for trusted agent '{}'",
@@ -2765,6 +2817,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         if agent_kind == Some(CodingAgentKind::Codex) && !skip_auto_resume {
             if let Some(ref aid) = agent_id {
                 if inject_codex_resume(&shell, &mut shell_args) {
+                    effective_continuation = true;
                     log::info!("Auto-injected `codex resume --last` for agent '{}'", aid);
                 }
             }
@@ -2773,6 +2826,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         if agent_kind == Some(CodingAgentKind::Antigravity) && !skip_auto_resume {
             if let Some(ref aid) = agent_id {
                 if inject_antigravity_resume(&shell, &mut shell_args) {
+                    effective_continuation = true;
                     log::info!("Auto-injected `agy --continue` for agent '{}'", aid);
                 }
             }
@@ -2789,6 +2843,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             &shell,
             &mut shell_args,
         ) {
+            effective_continuation = true;
             if let Some(spawn) = resolved_spawn.as_ref() {
                 log::info!(
                     "Auto-injected Muse `resume --last` for trusted agent '{}'",
@@ -3381,6 +3436,37 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             }
         }
 
+        let key = if session.backend_kind == crate::pty::backend::SessionBackendKind::LocalProcess {
+            crate::config::sessions_persistence::prompt_key(
+                &cwd,
+                session.agent_id.as_deref(),
+                session.requested_profile.as_deref(),
+                session.effective_profile.as_deref(),
+            )
+        } else {
+            None
+        };
+        let initial = initial_last_prompt
+            .as_ref()
+            .filter(|source| source.compatible(&session))
+            .and_then(|source| source.text.clone());
+        let revalidated = crate::config::sessions_persistence::prompt_key(
+            &cwd,
+            session.agent_id.as_deref(),
+            session.requested_profile.as_deref(),
+            session.effective_profile.as_deref(),
+        );
+        let key = key.filter(|candidate| Some(candidate) == revalidated.as_ref());
+        mgr.initialize_pending_prompt(
+            pending_binding,
+            key,
+            initial,
+            effective_continuation,
+            skip_auto_resume || pending_start_fresh == Some(true) || fresh_forced_by_mirror,
+            !defer_inline_finalization,
+        )
+        .await?;
+
         if defer_inline_finalization {
             if create_ticket.is_some() || inline_transaction.is_none() {
                 return Err(
@@ -3400,6 +3486,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 info,
                 binding: pending_binding,
                 warnings: finalization_warnings,
+                effective_continuation,
             }));
         }
 
@@ -4162,6 +4249,9 @@ pub(crate) async fn execute_destroy_transaction<R: tauri::Runtime>(
                 error
             );
         }
+
+        #[cfg(test)]
+        restart_reader_seam::hit_after_old_release(&format!("destroy:{session_id}")).await;
 
         if is_root_agent && !request.force_destroy_root {
             mutations.set_detached_intent(session_id, false);
@@ -5246,6 +5336,7 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         None,
         enforcement,
         coding_agent_binding,
+        None,
     )
     .await;
     let deferred = match completion {
@@ -5299,6 +5390,24 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
     let mut mutations = LifecycleMutations::default();
     mutations.finalize_live(deferred.binding, live);
     mutations.remove(uuid);
+    if deferred.effective_continuation && !restart_start_fresh {
+        let manager = session_mgr.read().await;
+        if let (Some(source), Some(target)) = (
+            manager.get_session(uuid).await,
+            manager.get_pending_session(deferred.binding).await,
+        ) {
+            if source.agent_id.is_some()
+                && source.agent_id == target.agent_id
+                && source.requested_profile == target.requested_profile
+                && source.effective_profile == target.effective_profile
+                && source.working_directory == target.working_directory
+                && !source.start_fresh_on_restore
+                && !target.start_fresh_on_restore
+            {
+                mutations.transfer_prompt(uuid, deferred.binding);
+            }
+        }
+    }
     let decision = if old_selected || activate_after {
         CommitDecision::Live(live)
     } else {
@@ -5491,6 +5600,59 @@ pub async fn set_last_prompt(
         serde_json::json!({ "sessionId": id, "text": text }),
     );
     Ok(())
+}
+
+/// A reused Root is already public: serialize the absent-only seed and event
+/// with every external prompt setter, then persist after releasing the permit.
+pub(crate) async fn seed_root_last_prompt<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    id: Uuid,
+    persisted: &crate::config::sessions_persistence::PersistedSession,
+) {
+    if persisted.start_fresh_on_restore {
+        return;
+    }
+    let Some(prompt) = persisted.last_prompt.clone() else {
+        return;
+    };
+    let manager = session_mgr.read().await;
+    crate::config::sessions_persistence::initialize_prompt_retention(&manager).await;
+    let Some(row) = manager.get_session(id).await else {
+        return;
+    };
+    if !InitialLastPrompt::from_persisted(persisted).compatible(&row) {
+        return;
+    }
+    let key = crate::config::sessions_persistence::prompt_key(
+        &row.working_directory,
+        row.agent_id.as_deref(),
+        row.requested_profile.as_deref(),
+        row.effective_profile.as_deref(),
+    );
+    let verified = crate::config::sessions_persistence::prompt_key(
+        &row.working_directory,
+        row.agent_id.as_deref(),
+        row.requested_profile.as_deref(),
+        row.effective_profile.as_deref(),
+    );
+    let Some(key) = key.filter(|key| Some(key) == verified.as_ref()) else {
+        return;
+    };
+    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    let changed = manager
+        .seed_if_absent_with_carrier_permit(&permit, id, &key, prompt.clone())
+        .await;
+    if changed {
+        let _ = app.emit(
+            "last_prompt",
+            serde_json::json!({ "sessionId": id.to_string(), "text": prompt }),
+        );
+    }
+    drop(permit);
+    if changed {
+        crate::config::sessions_persistence::persist_current_state(&manager).await;
+    }
 }
 
 /// Extract the basename (without extension) from a path or command token.
@@ -6041,6 +6203,7 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
         None,
         crate::config::sessions_persistence::default_creation_gate_enforcement(),
         None,
+        None,
     )
     .await?
     .into_finalized()?;
@@ -6410,6 +6573,201 @@ async fn inject_restart_resume_prompt(app: &AppHandle, target: &RestartResumeTar
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn issue_3145_wake_and_dormant_publish_initial_prompt_before_observation() {
+        use tauri::Listener;
+        for (dormant, root) in [(false, false), (false, true), (true, false), (true, true)] {
+            let cwd = tempfile::tempdir().unwrap();
+            let cwd_text = cwd.path().to_string_lossy().into_owned();
+            let settings = test_settings();
+            let spawn =
+                super::build_configured_agent_spawn_for_cwd(&settings, "codex", &cwd_text, None)
+                    .unwrap()
+                    .unwrap();
+            let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+            let backend = Arc::new(ScriptedSpawnBackend::default());
+            let pty = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+                backend,
+            )));
+            let app = session_test_app(settings, sessions.clone(), pty.clone());
+            let transaction =
+                crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
+            if root {
+                super::coordinator_create_seam::force_root(&cwd_text);
+            }
+            let recipe = crate::config::sessions_persistence::PersistedSession {
+                name: "restore prompt".into(),
+                shell: spawn.shell.clone(),
+                shell_args: spawn.shell_args.clone(),
+                working_directory: cwd_text.clone(),
+                agent_id: Some("codex".into()),
+                requested_profile: Some(spawn.profile_resolution.requested_profile.clone()),
+                effective_profile: Some(spawn.profile_resolution.effective_profile.clone()),
+                last_prompt: Some("A".into()),
+                ..Default::default()
+            };
+            let events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+            let captured = events.clone();
+            app.listen("session_created", move |event| {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_str(event.payload()).unwrap());
+            });
+            let info = if dormant {
+                transaction
+                    .restore_dormant_inline(crate::session::selection::DormantRestoreRequest {
+                        persisted: recipe.clone(),
+                        working_directory: cwd_text,
+                        is_coordinator: false,
+                        is_root_agent: root,
+                    })
+                    .await
+                    .unwrap()
+            } else {
+                super::create_session_inner_for_restore(
+                    &transaction,
+                    &sessions,
+                    &pty,
+                    spawn.shell.clone(),
+                    spawn.shell_args.clone(),
+                    cwd_text,
+                    Some(recipe.name.clone()),
+                    Some("codex".into()),
+                    None,
+                    true,
+                    Vec::new(),
+                    false,
+                    Some(spawn),
+                    None,
+                    None,
+                    Some(false),
+                    None,
+                    None,
+                    Some(&recipe),
+                )
+                .await
+                .unwrap()
+            };
+            assert_eq!(info.last_prompt.as_deref(), Some("A"));
+            assert_eq!(
+                sessions.read().await.list_sessions().await[0]
+                    .last_prompt
+                    .as_deref(),
+                Some("A")
+            );
+            let events = events.lock().unwrap().clone();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0]["lastPrompt"], "A");
+            assert_eq!(info.is_root_agent, root);
+            super::coordinator_create_seam::unforce_root(&recipe.working_directory);
+            drop(transaction);
+            close_test_coordinator(&app).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn issue_3145_reused_root_live_and_dormant_seed_event_never_overwrite_new_input() {
+        use tauri::Listener;
+        for dormant in [false, true] {
+            for newer in [None, Some("N"), Some("")] {
+                let cwd = tempfile::tempdir().unwrap();
+                let cwd_text = cwd.path().to_string_lossy().into_owned();
+                let settings = test_settings();
+                let spawn = super::build_configured_agent_spawn_for_cwd(
+                    &settings, "codex", &cwd_text, None,
+                )
+                .unwrap()
+                .unwrap();
+                let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+                let backend = Arc::new(ScriptedSpawnBackend::default());
+                let pty = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+                    backend,
+                )));
+                let app = session_test_app(settings, sessions.clone(), pty.clone());
+                let transaction =
+                    crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
+                let mut recipe = crate::config::sessions_persistence::PersistedSession {
+                    name: "reused root".into(),
+                    shell: spawn.shell.clone(),
+                    shell_args: spawn.shell_args.clone(),
+                    working_directory: cwd_text.clone(),
+                    agent_id: Some("codex".into()),
+                    requested_profile: Some(spawn.profile_resolution.requested_profile.clone()),
+                    effective_profile: Some(spawn.profile_resolution.effective_profile.clone()),
+                    ..Default::default()
+                };
+                let info = if dormant {
+                    transaction
+                        .restore_dormant_inline(crate::session::selection::DormantRestoreRequest {
+                            persisted: recipe.clone(),
+                            working_directory: cwd_text,
+                            is_coordinator: false,
+                            is_root_agent: true,
+                        })
+                        .await
+                        .unwrap()
+                } else {
+                    super::create_session_inner_for_restore(
+                        &transaction,
+                        &sessions,
+                        &pty,
+                        spawn.shell.clone(),
+                        spawn.shell_args.clone(),
+                        cwd_text,
+                        Some(recipe.name.clone()),
+                        Some("codex".into()),
+                        None,
+                        true,
+                        Vec::new(),
+                        false,
+                        Some(spawn),
+                        None,
+                        None,
+                        Some(false),
+                        None,
+                        None,
+                        Some(&recipe),
+                    )
+                    .await
+                    .unwrap()
+                };
+                let id = Uuid::parse_str(&info.id).unwrap();
+                let manager = sessions.read().await.clone();
+                manager.set_is_root_agent(id, true).await;
+                if let Some(text) = newer {
+                    manager.set_last_prompt(id, text.into()).await;
+                }
+                let events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+                let captured = events.clone();
+                app.listen("last_prompt", move |event| {
+                    captured
+                        .lock()
+                        .unwrap()
+                        .push(serde_json::from_str(event.payload()).unwrap());
+                });
+                recipe.last_prompt = Some("A".into());
+                super::seed_root_last_prompt(app.handle(), &sessions, id, &recipe).await;
+                assert_eq!(
+                    manager
+                        .get_session(id)
+                        .await
+                        .unwrap()
+                        .last_prompt
+                        .as_deref(),
+                    Some(newer.unwrap_or("A"))
+                );
+                let observed = events.lock().unwrap().clone();
+                assert_eq!(observed.len(), usize::from(newer.is_none()));
+                if newer.is_none() {
+                    assert_eq!(observed[0]["text"], "A");
+                }
+                drop(transaction);
+                close_test_coordinator(&app).await;
+            }
+        }
+    }
+
     use super::{
         classify_existing_root, claude_projects_dir_for_config_dir,
         claude_resume_probe_target_for_kind, coding_agent_descriptor, compute_profile_outdated,
@@ -6765,6 +7123,7 @@ mod tests {
             Some(false),
             None,
             Some(birth.clone()),
+            None,
         )
         .await
         .unwrap();
@@ -6889,6 +7248,7 @@ mod tests {
                 Some(false),
                 None,
                 Some(birth.clone()),
+                None,
             )
             .await
             .unwrap();
@@ -9667,6 +10027,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await;
             assert!(
@@ -10902,6 +11263,7 @@ mod tests {
             None,
             None,        // lib.rs:2365, headless caller keeps 120x30
             Some(false), // lib.rs:2366, Some(ps.start_fresh_on_restore). LOAD-BEARING.
+            None,
             None,
             None,
         )
@@ -13320,6 +13682,7 @@ exec claude \"$@\"
             None,
             CreationGateEnforcement::Enforce,
             None,
+            None,
         )
         .await;
         let err = match err {
@@ -13385,6 +13748,7 @@ exec claude \"$@\"
             false,
             None,
             CreationGateEnforcement::Enforce,
+            None,
             None,
         )
         .await;
@@ -14016,6 +14380,7 @@ exec claude \"$@\"
             None,
             None,
             Some(true),
+            None,
             None,
             None,
         )
@@ -17556,6 +17921,293 @@ pub(crate) mod reader_demand_tests {
     }
 
     // ── Test 9: restart transfers reader ownership to the new session UUID ──
+
+    #[tokio::test]
+    async fn issue_3145_restart_barrier_publishes_latest_prompt_in_first_event() {
+        use tauri::Listener;
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = restart_harness(&fixture);
+        let old = h
+            .live_session(fixture.coordinator_path(), CodingAgentKind::Codex)
+            .await;
+        let manager = h.manager.read().await.clone();
+        manager.set_last_prompt(old, "A".into()).await;
+        let events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let captured = events.clone();
+        let listener = h.app.listen("session_created", move |event| {
+            captured
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+        let barrier = restart_reader_seam::install_after_old_release(&old.to_string());
+        let app = h.app.handle().clone();
+        let sessions = h.manager.clone();
+        let pty = h.pty.clone();
+        let settings = h
+            .app
+            .state::<crate::config::settings::SettingsState>()
+            .inner()
+            .clone();
+        let restart = tokio::spawn(async move {
+            restart_session_inner_with_intent(
+                &app,
+                &sessions,
+                &pty,
+                &settings,
+                old,
+                None,
+                None,
+                Some(false),
+                true,
+                TrustedRestartIntent::User,
+                None,
+                crate::config::sessions_persistence::default_creation_gate_enforcement(),
+            )
+            .await
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            barrier.reached.notified(),
+        )
+        .await
+        .unwrap();
+        manager.set_last_prompt(old, "B".into()).await;
+        barrier.release.notify_one();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), restart)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.last_prompt.as_deref(), Some("B"));
+        assert_eq!(
+            manager.list_sessions().await[0].last_prompt.as_deref(),
+            Some("B")
+        );
+        assert_eq!(
+            crate::config::sessions_persistence::snapshot_sessions(&manager).await[0]
+                .last_prompt
+                .as_deref(),
+            Some("B")
+        );
+        let observed = events.lock().unwrap().clone();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0]["id"], result.id);
+        assert_eq!(observed[0]["lastPrompt"], "B");
+        h.app.unlisten(listener);
+        h.release_all(Uuid::parse_str(&result.id).unwrap()).await;
+        h.close().await;
+    }
+
+    #[tokio::test]
+    async fn issue_3145_restart_fresh_durable_and_failed_spawn_never_inherit() {
+        for mode in [0, 1, 2] {
+            let fixture = room_fixture();
+            configure_room(fixture.room_path(), true);
+            let h = restart_harness(&fixture);
+            let old = h
+                .live_session(fixture.coordinator_path(), CodingAgentKind::Codex)
+                .await;
+            let manager = h.manager.read().await.clone();
+            manager.set_last_prompt(old, "A".into()).await;
+            if mode == 1 {
+                manager.set_start_fresh_on_restore(old, true).await;
+            }
+            if mode == 2 {
+                h.backend.fail_spawn(2);
+            }
+            let result = h
+                .restart_with(old, if mode == 0 { Some(true) } else { Some(false) })
+                .await;
+            if mode == 2 {
+                assert!(result.is_err());
+                assert!(manager.list_sessions().await.is_empty());
+            } else {
+                let result = result.unwrap();
+                assert_eq!(result.last_prompt, None);
+                h.release_all(Uuid::parse_str(&result.id).unwrap()).await;
+            }
+            h.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn issue_3145_restart_changed_agent_requested_or_effective_profile_abstains() {
+        for mode in [0, 1, 2] {
+            let fixture = room_fixture();
+            configure_room(fixture.room_path(), true);
+            let h = restart_harness(&fixture);
+            let old = h
+                .live_session(fixture.coordinator_path(), CodingAgentKind::Codex)
+                .await;
+            let manager = h.manager.read().await.clone();
+            manager.set_last_prompt(old, "A".into()).await;
+            let row = manager.get_session(old).await.unwrap();
+            if mode != 0 {
+                manager
+                    .set_profile_metadata(
+                        old,
+                        if mode == 1 {
+                            None
+                        } else {
+                            row.requested_profile.clone()
+                        },
+                        if mode == 2 {
+                            Some("previous-effective".into())
+                        } else {
+                            row.effective_profile.clone()
+                        },
+                        Vec::new(),
+                        false,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+            }
+            let settings = h.app.state::<crate::config::settings::SettingsState>();
+            let result = restart_session_inner_with_intent(
+                h.app.handle(),
+                &h.manager,
+                &h.pty,
+                settings.inner(),
+                old,
+                (mode == 0).then(|| "claude".to_string()),
+                row.requested_profile,
+                Some(false),
+                true,
+                TrustedRestartIntent::User,
+                None,
+                crate::config::sessions_persistence::default_creation_gate_enforcement(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.last_prompt, None, "incompatible domain {mode}");
+            drop(settings);
+            h.release_all(Uuid::parse_str(&result.id).unwrap()).await;
+            h.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn issue_3145_restart_mirror_forced_fresh_never_inherits() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let h = restart_harness(&fixture);
+        let old = h
+            .live_session(fixture.coordinator_path(), CodingAgentKind::Codex)
+            .await;
+        h.manager
+            .read()
+            .await
+            .set_last_prompt(old, "A".into())
+            .await;
+        let cwd = crate::path_utils::normalize_windows_verbatim_path(
+            &fixture.coordinator_path().to_string_lossy(),
+        );
+        let clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
+            Arc::new(Mutex::new(Default::default()));
+        clocks.lock().unwrap().mark_start_fresh(
+            &crate::config::teams::agent_fqn_from_path(&cwd),
+            chrono::Utc::now(),
+        );
+        assert!(h.app.manage(clocks));
+        coordinator_create_seam::force(&cwd);
+        let result = h.restart(old).await.unwrap();
+        coordinator_create_seam::unforce(&cwd);
+        assert_eq!(result.last_prompt, None);
+        assert!(
+            h.manager
+                .read()
+                .await
+                .get_session(Uuid::parse_str(&result.id).unwrap())
+                .await
+                .unwrap()
+                .start_fresh_on_restore
+        );
+        h.release_all(Uuid::parse_str(&result.id).unwrap()).await;
+        h.close().await;
+    }
+
+    #[tokio::test]
+    async fn issue_3145_manual_auto_close_reload_retains_input_during_teardown() {
+        for source in [DestructionSource::ManualClose, DestructionSource::AutoClose] {
+            let fixture = room_fixture();
+            configure_room(fixture.room_path(), true);
+            let h = restart_harness(&fixture);
+            let old = h
+                .live_session(fixture.coordinator_path(), CodingAgentKind::Codex)
+                .await;
+            let manager = h.manager.read().await.clone();
+            manager.set_last_prompt(old, "A".into()).await;
+            let barrier = restart_reader_seam::install_after_old_release(&format!("destroy:{old}"));
+            let app = h.app.handle().clone();
+            let destroy = tokio::spawn(async move {
+                destroy_sessions_with_source(&app, vec![old], source, false).await
+            });
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                barrier.reached.notified(),
+            )
+            .await
+            .unwrap();
+            manager.set_last_prompt(old, "B".into()).await;
+            barrier.release.notify_one();
+            let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), destroy)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert!(outcome.succeeded(old));
+            assert!(manager.list_sessions().await.is_empty());
+            let checkpoint = tempfile::tempdir().unwrap();
+            crate::config::sessions_persistence::persist_current_state_to_dir_result(
+                &manager,
+                checkpoint.path(),
+            )
+            .await
+            .unwrap();
+            let next = restart_harness(&fixture);
+            let next_manager = next.manager.read().await.clone();
+            crate::config::sessions_persistence::initialize_prompt_retention_in_dir(
+                &next_manager,
+                checkpoint.path(),
+            )
+            .await;
+            assert!(next_manager.list_sessions().await.is_empty());
+            let cwd = fixture.coordinator_path().to_string_lossy().into_owned();
+            let spawn = build_configured_agent_spawn_for_cwd(&next.settings, "codex", &cwd, None)
+                .unwrap()
+                .unwrap();
+            let resumed = create_session_inner(
+                next.app.handle(),
+                &next.manager,
+                &next.pty,
+                spawn.shell.clone(),
+                spawn.shell_args.clone(),
+                cwd,
+                Some("resumed".into()),
+                Some("codex".into()),
+                None,
+                true,
+                Vec::new(),
+                false,
+                Some(spawn),
+                None,
+                None,
+                CreateSelectionIntent::User,
+            )
+            .await
+            .unwrap();
+            assert_eq!(resumed.last_prompt.as_deref(), Some("B"));
+            next.release_all(Uuid::parse_str(&resumed.id).unwrap())
+                .await;
+            h.close().await;
+            next.close().await;
+        }
+    }
 
     const PHASE4_BOT_ID: &str = "phase4-bot";
 

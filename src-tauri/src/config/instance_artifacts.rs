@@ -510,7 +510,21 @@ pub(crate) fn publication_temp_name_for_destination(
 /// either rules that predate this registry, kept byte-identical so no existing
 /// generated file is rewritten, or names whose writer is deliberately left
 /// alone and guarded by the git fixture instead.
+pub(crate) const RETAINED_PROMPTS: &str = "last-prompts.retained.json";
+
 pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
+    InstanceArtifact {
+        name: RETAINED_PROMPTS,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: private retained last prompts",
+    },
+    InstanceArtifact {
+        name: "last-prompts.retained.json.*.tmp",
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: retained prompt atomic temporaries",
+    },
     InstanceArtifact {
         name: SET_ASIDE_GLOB,
         kind: ArtifactKind::Glob,
@@ -1119,6 +1133,24 @@ pub(crate) fn matches_atomic_write_tmp_glob(file_name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn issue_3145_retained_prompt_artifacts_are_ignored() {
+        for (name, kind) in [
+            (super::RETAINED_PROMPTS, super::ArtifactKind::File),
+            (
+                "last-prompts.retained.json.*.tmp",
+                super::ArtifactKind::Glob,
+            ),
+        ] {
+            let rows: Vec<_> = super::INSTANCE_ARTIFACTS
+                .iter()
+                .filter(|row| row.name == name)
+                .collect();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].kind, kind);
+            assert_eq!(rows[0].disposition, super::Disposition::Ignore);
+        }
+    }
     use super::*;
 
     #[test]

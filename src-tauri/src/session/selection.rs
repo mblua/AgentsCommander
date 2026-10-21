@@ -2936,6 +2936,12 @@ async fn execute_restore_dormant<R: Runtime>(
     let id = Uuid::new_v4();
     let binding = PendingCreateBinding::new(id, Uuid::new_v4());
     let persisted = request.persisted;
+    let retained_key = crate::config::sessions_persistence::prompt_key(
+        &request.working_directory,
+        persisted.agent_id.as_deref(),
+        persisted.requested_profile.as_deref(),
+        persisted.effective_profile.as_deref(),
+    );
     let coding_agent_binding = persisted.binding_metadata()?;
     let exit_code = match persisted.status {
         Some(SessionStatus::Exited(code)) => code,
@@ -2954,7 +2960,11 @@ async fn execute_restore_dormant<R: Runtime>(
         waiting_for_input: false,
         communication: persisted.communication,
         pending_review: false,
-        last_prompt: persisted.last_prompt,
+        last_prompt: if persisted.start_fresh_on_restore {
+            None
+        } else {
+            persisted.last_prompt.clone()
+        },
         agent_id: persisted.agent_id,
         agent_label: persisted.agent_label,
         git_repos: persisted.git_repos,
@@ -2965,7 +2975,7 @@ async fn execute_restore_dormant<R: Runtime>(
         token: Uuid::new_v4(),
         agent_kind: None,
         requested_profile: persisted.requested_profile,
-        effective_profile: None,
+        effective_profile: persisted.effective_profile,
         profile_fallback_chain: Vec::new(),
         profile_fallback_applied: false,
         match_tier: None,
@@ -2983,8 +2993,21 @@ async fn execute_restore_dormant<R: Runtime>(
         context_percent: None,
     };
     let manager = transaction.manager().await;
+    crate::config::sessions_persistence::initialize_prompt_retention(&manager).await;
+    let initial_prompt = session.last_prompt.clone();
+    let fresh = session.start_fresh_on_restore;
+    let verified_key = crate::config::sessions_persistence::prompt_key(
+        &session.working_directory,
+        session.agent_id.as_deref(),
+        session.requested_profile.as_deref(),
+        session.effective_profile.as_deref(),
+    );
+    let retained_key = retained_key.filter(|key| Some(key) == verified_key.as_ref());
     manager
         .insert_transaction_pending_record(session, binding)
+        .await?;
+    manager
+        .initialize_pending_prompt(binding, retained_key, initial_prompt, true, fresh, false)
         .await?;
     if let Err(error) = manager
         .install_pending_coding_agent_binding(binding, coding_agent_binding)
