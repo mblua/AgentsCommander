@@ -7421,7 +7421,11 @@ mod tests {
         let (project, cwd, _) = strict_target_fixture();
         let (mut host, path, persisted) =
             super::e2432_physical_restore_fixture(&project.path().join("instance"), "source-owned");
-        host.project_paths = vec![project.path().join("project").to_string_lossy().into_owned()];
+        host.project_paths = vec![project
+            .path()
+            .join("project")
+            .to_string_lossy()
+            .into_owned()];
         host.default_shell = "default-control-shell".into();
         host.default_shell_args = vec!["--default-control".into()];
         std::fs::write(&path, serde_json::to_vec(&host).unwrap()).unwrap();
@@ -7461,10 +7465,7 @@ mod tests {
             );
             for explicit in [false, true] {
                 let (shell, args, expected_shell, expected_args) = if explicit {
-                    let args = vec![
-                        "--keep".to_string(),
-                        "one argument with spaces".to_string(),
-                    ];
+                    let args = vec!["--keep".to_string(), "one argument with spaces".to_string()];
                     (
                         Some("explicit-control-shell".to_string()),
                         Some(args.clone()),
