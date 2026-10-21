@@ -613,6 +613,7 @@ enum MatrixCopyKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MatrixCopyStamp {
+    identity: Option<MatrixCopyIdentity>,
     kind: MatrixCopyKind,
     size: u64,
     modified: std::time::SystemTime,
@@ -642,6 +643,7 @@ enum MatrixCopyStage {
     Classify,
     Streaming,
     BeforeVerify,
+    ConfigWritten,
     Provenance,
     ProvenanceWritten,
     BeforeCleanup,
@@ -832,6 +834,7 @@ impl OwnedCopyArtifacts {
         digest: Option<[u8; 32]>,
     ) -> Result<MatrixCopyStamp, String> {
         Ok(MatrixCopyStamp {
+            identity: None,
             kind: Self::kind(metadata)?,
             size: metadata.len(),
             modified: metadata.modified().map_err(|e| e.to_string())?,
@@ -858,6 +861,7 @@ impl OwnedCopyArtifacts {
         {
             return Err("Matrix file changed before reading".into());
         }
+        let identity = Self::handle_identity(&input)?;
         let mut digest = sha2::Sha256::new();
         let mut chunk = [0u8; 64 * 1024];
         loop {
@@ -891,7 +895,35 @@ impl OwnedCopyArtifacts {
         {
             return Err(format!("Matrix file changed: {}", path.display()));
         }
-        Self::stamp(&after, Some(digest.finalize().into()))
+        let current = Self::open_existing(path, MatrixCopyKind::File)?;
+        if Self::handle_identity(&current)? != identity {
+            return Err("Matrix file replaced during reading".into());
+        }
+        let mut stamp = Self::stamp(&after, Some(digest.finalize().into()))?;
+        stamp.identity = Some(identity);
+        Ok(stamp)
+    }
+
+    fn selected_root_entry(
+        path: &Path,
+        name: &str,
+        hooks: &MatrixCopyHooks<'_>,
+    ) -> Result<bool, String> {
+        let required = match name {
+            "Role.md" => Some(MatrixCopyKind::File),
+            "skills" => Some(MatrixCopyKind::Directory),
+            _ if name.contains("default") => None,
+            _ => return Ok(false),
+        };
+        let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        let kind = Self::source_kind(&metadata, hooks)?;
+        if let Some(expected) = required {
+            if kind != expected {
+                return Err(format!("Unexpected generic asset type: {name}"));
+            }
+            return Ok(true);
+        }
+        Ok(kind == MatrixCopyKind::Directory)
     }
 
     fn scan(
@@ -899,20 +931,20 @@ impl OwnedCopyArtifacts {
         relative: &Path,
         mut output: Option<&mut Self>,
         inventory: &mut std::collections::BTreeMap<PathBuf, MatrixCopyStamp>,
-        history: &mut Option<Vec<u8>>,
         hooks: &mut MatrixCopyHooks<'_>,
     ) -> Result<(), String> {
         let path = source.join(relative);
         hooks.run(MatrixCopyStage::Classify, &path)?;
         let metadata = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
         let kind = Self::source_kind(&metadata, hooks)?;
-        if relative == Path::new(COPY_PROVENANCE_FILE) && kind != MatrixCopyKind::File {
-            return Err("Copy provenance must be a regular file".into());
-        }
         if kind == MatrixCopyKind::Directory {
-            let stamp = Self::stamp(&metadata, None)?;
-            inventory.insert(relative.to_path_buf(), stamp.clone());
-            if !relative.as_os_str().is_empty() {
+            let root = relative.as_os_str().is_empty();
+            let handle = Self::open_existing(&path, kind)?;
+            let identity = Self::handle_identity(&handle)?;
+            let mut stamp = Self::stamp(&metadata, None)?;
+            stamp.identity = Some(identity);
+            if !root {
+                inventory.insert(relative.to_path_buf(), stamp.clone());
                 if let Some(owned) = &mut output {
                     owned.create_directory(relative)?;
                 }
@@ -923,32 +955,34 @@ impl OwnedCopyArtifacts {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())?;
             children.sort();
+            let mut role = false;
             for child in children {
+                if root {
+                    let name = child.to_str().ok_or("Non-UTF-8 Matrix root entry")?;
+                    role |= name == "Role.md";
+                    if !Self::selected_root_entry(&path.join(&child), name, hooks)? {
+                        continue;
+                    }
+                }
                 Self::scan(
                     source,
                     &relative.join(child),
                     output.as_deref_mut(),
                     inventory,
-                    history,
                     hooks,
                 )?;
             }
-            let after = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-            if stamp != Self::stamp(&after, None)? {
-                return Err("Matrix directory changed".into());
+            if root && !role {
+                return Err("Missing required Role.md".into());
             }
-        } else if relative == Path::new(COPY_PROVENANCE_FILE) {
-            let mut bytes = Vec::new();
-            let capture = output.is_some();
-            let stamp = Self::read_file(
-                &path,
-                None,
-                if capture { Some(&mut bytes) } else { None },
-                hooks,
-            )?;
-            inventory.insert(relative.to_path_buf(), stamp);
-            if capture {
-                *history = Some(bytes);
+            let after = Self::open_existing(&path, kind)?;
+            if Self::handle_identity(&after)? != identity {
+                return Err("Matrix directory replaced".into());
+            }
+            let mut after_stamp = Self::stamp(&after.metadata().map_err(|e| e.to_string())?, None)?;
+            after_stamp.identity = Some(identity);
+            if !root && stamp != after_stamp {
+                return Err("Matrix directory changed".into());
             }
         } else {
             let stamp = if let Some(owned) = output {
@@ -1111,6 +1145,8 @@ fn copy_agent_matrix_strict_with_hooks(
     {
         return Err("Source Matrix must be a directory".into());
     }
+    let source_handle = OwnedCopyArtifacts::open_existing(&source, MatrixCopyKind::Directory)?;
+    let source_identity = OwnedCopyArtifacts::handle_identity(&source_handle)?;
     let canonical_source = source.canonicalize().map_err(|e| e.to_string())?;
     let parent = canonical_source
         .parent()
@@ -1151,22 +1187,27 @@ fn copy_agent_matrix_strict_with_hooks(
     let result = (|| -> Result<(), String> {
         hooks.run(MatrixCopyStage::Reserved, &owned.root)?;
         let mut first = std::collections::BTreeMap::new();
-        let mut history = None;
-        OwnedCopyArtifacts::scan(
-            &source,
-            Path::new(""),
-            Some(&mut owned),
-            &mut first,
-            &mut history,
-            hooks,
-        )?;
-        let provenance = validate_copy_provenance(history.as_deref())?;
+        OwnedCopyArtifacts::scan(&source, Path::new(""), Some(&mut owned), &mut first, hooks)?;
+        let provenance = validate_copy_provenance(None)?;
         hooks.run(MatrixCopyStage::BeforeVerify, &source)?;
         let mut second = std::collections::BTreeMap::new();
-        OwnedCopyArtifacts::scan(&source, Path::new(""), None, &mut second, &mut None, hooks)?;
+        OwnedCopyArtifacts::scan(&source, Path::new(""), None, &mut second, hooks)?;
+        let current = OwnedCopyArtifacts::open_existing(&source, MatrixCopyKind::Directory)?;
+        if OwnedCopyArtifacts::handle_identity(&current)? != source_identity {
+            return Err("Source Matrix root replaced".into());
+        }
         if first != second {
             return Err("Source Matrix changed during copy".into());
         }
+        for &directory in AGENT_MATRIX_DIRS {
+            if directory != "skills" || !first.contains_key(Path::new("skills")) {
+                owned.create_directory(Path::new(directory))?;
+            }
+        }
+        let config =
+            serde_json::to_vec_pretty(&default_agent_matrix_config()).map_err(|e| e.to_string())?;
+        write_owned_team_file(&mut owned, Path::new("config.json"), &config)?;
+        hooks.run(MatrixCopyStage::ConfigWritten, &owned.root)?;
         let provenance = append_copy_provenance(provenance, &project, source_ref)?;
         let bytes = serde_json::to_vec_pretty(&provenance).map_err(|e| e.to_string())?;
         hooks.run(MatrixCopyStage::Provenance, &owned.root)?;
@@ -1183,6 +1224,7 @@ fn copy_agent_matrix_strict_with_hooks(
             hooks.run(MatrixCopyStage::ProvenanceWritten, &owned.root)?;
         }
         output.flush().map_err(|e| e.to_string())?;
+        output.sync_all().map_err(|e| e.to_string())?;
         Ok(())
     })();
     if let Err(primary) = result {
@@ -5401,6 +5443,7 @@ mod tests {
             "outbox",
             "empty",
             "unknown/.hidden",
+            "default-tools/.hidden",
         ] {
             std::fs::create_dir_all(source.join(directory)).unwrap();
         }
@@ -5411,6 +5454,7 @@ mod tests {
             ("memory-archive/old/blob", &[0, 255, 1, 128]),
             (".hidden", b"hidden".as_slice()),
             ("unknown/.hidden/data", b"unknown".as_slice()),
+            ("default-tools/.hidden/data", b"unknown".as_slice()),
             ("inbox/message", b"inbox".as_slice()),
             ("outbox/message", b"outbox".as_slice()),
         ] {
@@ -5490,6 +5534,7 @@ mod tests {
         let beta = project.join(".ac/_agent_beta");
         std::fs::create_dir(&beta).unwrap();
         std::fs::write(beta.join("payload"), [0, 255, 17]).unwrap();
+        std::fs::write(beta.join("Role.md"), b"beta role").unwrap();
         let before = issue_3068_inventory(&source);
         let team = issue_3068_create(
             &destination,
@@ -5619,6 +5664,7 @@ mod tests {
         for fail_metadata in [false, true] {
             let (_tmp, project, _source, destination) = issue_3068_fixture();
             std::fs::create_dir(project.join(".ac/_agent_beta")).unwrap();
+            std::fs::write(project.join(".ac/_agent_beta/Role.md"), b"beta role").unwrap();
             let mut triggered = false;
             let mut callback = |stage, path: &Path| {
                 let target = if fail_metadata {
@@ -5911,17 +5957,30 @@ mod tests {
         assert!(!source.join(COPY_PROVENANCE_FILE).exists());
     }
 
+    // Independent full-tree proof: never use the production selection scanner.
     fn issue_3068_inventory(source: &Path) -> BTreeMap<PathBuf, MatrixCopyStamp> {
+        fn walk(root: &Path, relative: &Path, inventory: &mut BTreeMap<PathBuf, MatrixCopyStamp>) {
+            let path = root.join(relative);
+            let metadata = std::fs::symlink_metadata(&path).unwrap();
+            let digest = if metadata.is_file() {
+                Some(OwnedCopyArtifacts::digest_bytes(
+                    &std::fs::read(&path).unwrap(),
+                ))
+            } else {
+                None
+            };
+            inventory.insert(
+                relative.to_path_buf(),
+                OwnedCopyArtifacts::stamp(&metadata, digest).unwrap(),
+            );
+            if metadata.is_dir() {
+                for entry in std::fs::read_dir(path).unwrap() {
+                    walk(root, &relative.join(entry.unwrap().file_name()), inventory);
+                }
+            }
+        }
         let mut inventory = BTreeMap::new();
-        OwnedCopyArtifacts::scan(
-            source,
-            Path::new(""),
-            None,
-            &mut inventory,
-            &mut None,
-            &mut MatrixCopyHooks::default(),
-        )
-        .unwrap();
+        walk(source, Path::new(""), &mut inventory);
         inventory
     }
 
@@ -5930,32 +5989,85 @@ mod tests {
     }
 
     #[test]
-    fn issue_3068_complete_independent_tree_and_multiple_copies() {
+    fn issue_3142_generic_independent_payload_and_multiple_copies() {
         let (_tmp, project, source, destination) = issue_3068_fixture();
+        let selected = [
+            "default",
+            "defaults.json",
+            "default.claude",
+            "my-default",
+            "default-tools/profiles/linux",
+            "default-tools/profiles/windows",
+            "skills/nested",
+        ];
+        for directory in selected {
+            std::fs::create_dir_all(source.join(directory).join(".hidden/empty")).unwrap();
+            std::fs::write(
+                source.join(directory).join(".hidden/payload"),
+                b"opaque\0\xff $AGENTSCOMMANDER_CONTEXT {{literal}}\r\n",
+            )
+            .unwrap();
+        }
+        for directory in [
+            "My-Default",
+            ".claude",
+            "memory/default-nested",
+            "plans/default-only",
+        ] {
+            std::fs::create_dir_all(source.join(directory)).unwrap();
+            std::fs::write(source.join(directory).join("excluded"), b"private").unwrap();
+        }
+        std::fs::write(source.join("default-file"), b"not a directory").unwrap();
+        std::fs::write(source.join("Role.md"), b"\xef\xbb\xbfrole\r\n\0\xff").unwrap();
         let before = issue_3068_inventory(&source);
         let first =
             copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_first").unwrap();
         let second =
-            copy_agent_matrix_strict(&project, "_agent_alpha", &destination, "_agent_second")
-                .unwrap();
+            copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_second").unwrap();
         assert_eq!(before, issue_3068_inventory(&source));
-        for (relative, stamp) in &before {
-            if stamp.kind == MatrixCopyKind::Directory {
-                assert!(first.root.join(relative).is_dir());
-            } else {
-                assert_eq!(
-                    std::fs::read(source.join(relative)).unwrap(),
-                    std::fs::read(first.root.join(relative)).unwrap()
-                );
-            }
+        for directory in selected {
+            assert!(first.root.join(directory).join(".hidden/empty").is_dir());
+            assert_eq!(
+                std::fs::read(source.join(directory).join(".hidden/payload")).unwrap(),
+                std::fs::read(first.root.join(directory).join(".hidden/payload")).unwrap()
+            );
         }
+        assert_eq!(
+            std::fs::read(first.root.join("Role.md")).unwrap(),
+            std::fs::read(source.join("Role.md")).unwrap()
+        );
+        for directory in ["memory", "plans", "inbox", "outbox"] {
+            assert_eq!(
+                std::fs::read_dir(first.root.join(directory))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
+        for excluded in [
+            "My-Default",
+            ".claude",
+            "memory-archive",
+            "unknown",
+            ".hidden",
+            "empty",
+            "default-file",
+        ] {
+            assert!(!first.root.join(excluded).exists(), "{excluded}");
+        }
+        let config: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(first.root.join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(config, default_agent_matrix_config());
+        assert_eq!(
+            issue_3068_history(&first.root)["copies"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         std::fs::write(first.root.join("Role.md"), b"destination edit").unwrap();
         assert_eq!(before, issue_3068_inventory(&source));
-        std::fs::write(source.join("config.json"), b"source edit").unwrap();
-        assert_eq!(
-            std::fs::read(first.root.join("config.json")).unwrap(),
-            b"{\"custom\":true}"
-        );
         assert_ne!(
             std::fs::read(first.root.join("Role.md")).unwrap(),
             std::fs::read(second.root.join("Role.md")).unwrap()
@@ -5965,74 +6077,42 @@ mod tests {
     }
 
     #[test]
-    fn issue_3068_three_hops_preserve_history_and_unknown_fields() {
-        let (tmp, project, source, destination) = issue_3068_fixture();
-        let before = chrono::Utc::now();
+    fn issue_3142_hops_start_fresh_history() {
+        let (tmp, project, _source, destination) = issue_3068_fixture();
         let first =
             copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_beta").unwrap();
-        let a = issue_3068_history(&first.root);
-        assert_eq!(a["copies"].as_array().unwrap().len(), 1);
-        assert_eq!(a["copies"][0]["sourceProjectName"], "source-project");
-        assert_eq!(a["copies"][0]["sourceAgentRef"], "_agent_alpha");
-        let mut enriched = a.clone();
-        enriched["unknownDocument"] = serde_json::json!({"keep": [1, 2]});
-        enriched["copies"][0]["unknownEvent"] = serde_json::json!(["keep"]);
+        let mut history = issue_3068_history(&first.root);
+        history["unknownDocument"] = serde_json::json!({"private": true});
+        history["copies"][0]["unknownEvent"] = serde_json::json!("private");
         std::fs::write(
             first.root.join(COPY_PROVENANCE_FILE),
-            serde_json::to_vec(&enriched).unwrap(),
+            serde_json::to_vec(&history).unwrap(),
         )
         .unwrap();
-        let c_project = tmp.path().join("third-project");
-        std::fs::create_dir_all(c_project.join(".ac")).unwrap();
+        let next_project = tmp.path().join("next-project");
+        std::fs::create_dir_all(next_project.join(".ac")).unwrap();
+        let before = issue_3068_inventory(&first.root);
         let second = copy_agent_matrix_strict(
             destination.parent().unwrap(),
             "beta",
-            &c_project.join(".ac"),
+            &next_project.join(".ac"),
             "_agent_gamma",
         )
         .unwrap();
-        let b = issue_3068_history(&second.root);
-        assert_eq!(b["copies"].as_array().unwrap().len(), 2);
-        assert_eq!(b["copies"][0], enriched["copies"][0]);
-        assert_eq!(b["unknownDocument"], enriched["unknownDocument"]);
-        let d_project = tmp.path().join("fourth-project");
-        std::fs::create_dir_all(d_project.join(".ac")).unwrap();
-        let third =
-            copy_agent_matrix_strict(&c_project, "gamma", &d_project.join(".ac"), "_agent_delta")
-                .unwrap();
-        let c = issue_3068_history(&third.root);
-        assert_eq!(c["copies"].as_array().unwrap().len(), 3);
-        assert_eq!(
-            &c["copies"].as_array().unwrap()[..2],
-            b["copies"].as_array().unwrap()
-        );
-        assert_eq!(c["copies"][2]["sourceProjectName"], "third-project");
-        assert_eq!(c["copies"][2]["sourceAgentRef"], "_agent_gamma");
-        for event in c["copies"].as_array().unwrap() {
-            let text = event["copiedAt"].as_str().unwrap();
-            assert!(text.ends_with('Z'));
-            let timestamp = chrono::DateTime::parse_from_rfc3339(text)
-                .unwrap()
-                .with_timezone(&chrono::Utc);
-            assert!(timestamp >= before && timestamp <= chrono::Utc::now());
-        }
-        assert!(!source.join(COPY_PROVENANCE_FILE).exists());
-        let entry = third
-            .entries
-            .iter()
-            .find(|e| e.relative == Path::new(COPY_PROVENANCE_FILE))
-            .unwrap();
-        assert_eq!(
-            entry.digest,
-            Some(OwnedCopyArtifacts::digest_bytes(
-                &std::fs::read(third.root.join(COPY_PROVENANCE_FILE)).unwrap()
-            ))
-        );
-        cleanup_owned_copy_artifacts(&third).unwrap();
+        assert_eq!(before, issue_3068_inventory(&first.root));
+        let fresh = issue_3068_history(&second.root);
+        assert_eq!(fresh["copies"].as_array().unwrap().len(), 1);
+        assert_eq!(fresh["copies"][0]["sourceAgentRef"], "_agent_beta");
+        assert!(fresh.get("unknownDocument").is_none());
+        assert!(fresh["copies"][0].get("unknownEvent").is_none());
+        let text = fresh["copies"][0]["copiedAt"].as_str().unwrap();
+        assert!(text.ends_with('Z'));
+        chrono::DateTime::parse_from_rfc3339(text).unwrap();
+        cleanup_owned_copy_artifacts(&second).unwrap();
     }
 
     #[test]
-    fn issue_3068_provenance_validation_and_source_intact() {
+    fn issue_3142_source_history_is_opaque_and_intact() {
         for history in [
             b"{\"schemaVersion\":1,\"copies\":[]}".as_slice(),
             b"not json".as_slice(),
@@ -6046,31 +6126,220 @@ mod tests {
             std::fs::write(source.join(COPY_PROVENANCE_FILE), history).unwrap();
             let before = issue_3068_inventory(&source);
             let result = copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_copy");
-            if history == b"{\"schemaVersion\":1,\"copies\":[]}" {
-                let owned = result.unwrap();
-                assert_eq!(issue_3068_history(&owned.root)["copies"].as_array().unwrap().len(), 1);
-                cleanup_owned_copy_artifacts(&owned).unwrap();
-            } else {
-                assert!(result.is_err(), "{history:?}");
-                assert!(!destination.join("_agent_copy").exists());
-            }
+            let owned = result.unwrap();
+            assert_eq!(issue_3068_history(&owned.root)["copies"].as_array().unwrap().len(), 1);
+            cleanup_owned_copy_artifacts(&owned).unwrap();
             assert_eq!(before, issue_3068_inventory(&source));
         }
     }
 
     #[test]
-    fn issue_3068_provenance_changed_before_verify() {
-        let (_tmp, project, source, destination) = issue_3068_fixture();
-        std::fs::write(
-            source.join(COPY_PROVENANCE_FILE),
-            br#"{"schemaVersion":1,"copies":[],"tag":1}"#,
-        )
-        .unwrap();
+    fn issue_3142_excluded_changes_before_verify_succeed() {
+        let (_tmp, project, _source, destination) = issue_3068_fixture();
         let mut callback = |stage, path: &Path| {
             if stage == MatrixCopyStage::BeforeVerify {
+                std::fs::write(path.join(COPY_PROVENANCE_FILE), b"malformed history").unwrap();
+                std::fs::write(path.join("config.json"), b"malformed config").unwrap();
+                std::fs::create_dir(path.join("unrelated-added")).unwrap();
+                std::fs::write(path.join("memory/new-private"), b"private").unwrap();
+            }
+            Ok(())
+        };
+        let owned = copy_agent_matrix_strict_with_hooks(
+            &project,
+            "alpha",
+            &destination,
+            "_agent_copy",
+            &mut MatrixCopyHooks {
+                callback: Some(&mut callback),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!owned.root.join("unrelated-added").exists());
+        assert!(!owned.root.join("memory/new-private").exists());
+        assert_eq!(
+            issue_3068_history(&owned.root)["copies"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        cleanup_owned_copy_artifacts(&owned).unwrap();
+    }
+
+    #[test]
+    fn issue_3142_no_defaults_and_missing_skills_succeed() {
+        let (_tmp, project, source, destination) = issue_3068_fixture();
+        std::fs::remove_dir_all(source.join("default-tools")).unwrap();
+        std::fs::remove_dir(source.join("skills")).unwrap();
+        let before = issue_3068_inventory(&source);
+        let owned =
+            copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_copy").unwrap();
+        for directory in AGENT_MATRIX_DIRS {
+            assert_eq!(
+                std::fs::read_dir(owned.root.join(directory))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
+        assert_eq!(before, issue_3068_inventory(&source));
+        cleanup_owned_copy_artifacts(&owned).unwrap();
+    }
+
+    #[test]
+    fn issue_3142_required_asset_kinds_and_exact_role_name() {
+        for mutation in 0..4 {
+            let (_tmp, project, source, destination) = issue_3068_fixture();
+            match mutation {
+                0 => std::fs::remove_file(source.join("Role.md")).unwrap(),
+                1 => {
+                    std::fs::remove_file(source.join("Role.md")).unwrap();
+                    std::fs::create_dir(source.join("Role.md")).unwrap();
+                }
+                2 => {
+                    std::fs::remove_dir(source.join("skills")).unwrap();
+                    std::fs::write(source.join("skills"), b"wrong kind").unwrap();
+                }
+                _ => {
+                    std::fs::remove_file(source.join("Role.md")).unwrap();
+                    std::fs::write(source.join("role.md"), b"wrong case").unwrap();
+                }
+            }
+            let before = issue_3068_inventory(&source);
+            assert!(
+                copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_copy").is_err()
+            );
+            assert!(!destination.join("_agent_copy").exists());
+            assert_eq!(before, issue_3068_inventory(&source));
+        }
+    }
+
+    #[test]
+    fn issue_3142_selected_replacement_and_root_replacement_fail() {
+        for relative in ["", "Role.md", "skills", "default-tools"] {
+            let (_tmp, project, source, destination) = issue_3068_fixture();
+            let mut callback = |stage, _: &Path| {
+                if stage == MatrixCopyStage::BeforeVerify {
+                    let selected = source.join(relative);
+                    let moved = project.join("held-original");
+                    std::fs::rename(&selected, &moved).unwrap();
+                    if relative == "Role.md" {
+                        std::fs::copy(&moved, &selected).unwrap();
+                    } else {
+                        std::fs::create_dir(&selected).unwrap();
+                        if relative.is_empty() {
+                            std::fs::copy(moved.join("Role.md"), selected.join("Role.md")).unwrap();
+                        }
+                    }
+                }
+                Ok(())
+            };
+            assert!(
+                copy_agent_matrix_strict_with_hooks(
+                    &project,
+                    "alpha",
+                    &destination,
+                    "_agent_copy",
+                    &mut MatrixCopyHooks {
+                        callback: Some(&mut callback),
+                        ..Default::default()
+                    }
+                )
+                .is_err(),
+                "{relative}"
+            );
+            assert!(!destination.join("_agent_copy").exists());
+            assert!(project.join("held-original").exists());
+        }
+    }
+
+    #[test]
+    fn issue_3142_selected_classification_failures_clean_output() {
+        for target in ["skills", "Role.md", "default-tools"] {
+            let (_tmp, project, _source, destination) = issue_3068_fixture();
+            let mut triggered = false;
+            let mut callback = |stage, path: &Path| {
+                if stage == MatrixCopyStage::Classify && path.ends_with(target) {
+                    triggered = true;
+                    return Err("injected selected read failure".into());
+                }
+                Ok(())
+            };
+            let error = copy_agent_matrix_strict_with_hooks(
+                &project,
+                "alpha",
+                &destination,
+                "_agent_copy",
+                &mut MatrixCopyHooks {
+                    callback: Some(&mut callback),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert!(triggered && error.contains("injected selected read failure"));
+            assert!(!destination.join("_agent_copy").exists());
+        }
+    }
+
+    #[test]
+    fn issue_3142_selection_rejects_unsafe_kinds_without_reading_exclusions() {
+        let (_tmp, _project, source, _destination) = issue_3068_fixture();
+        for classification in [
+            (true, 0, true, false),
+            (false, 0x400, true, false),
+            (false, 0, false, false),
+        ] {
+            let hooks = MatrixCopyHooks {
+                classification: Some(classification),
+                ..Default::default()
+            };
+            for name in ["Role.md", "skills", "default-tools"] {
+                assert!(
+                    OwnedCopyArtifacts::selected_root_entry(&source.join(name), name, &hooks)
+                        .is_err()
+                );
+            }
+            assert!(!OwnedCopyArtifacts::selected_root_entry(
+                &source.join("not-present"),
+                "not-present",
+                &hooks
+            )
+            .unwrap());
+        }
+        assert!(OwnedCopyArtifacts::selected_root_entry(
+            &source.join("missing-default"),
+            "missing-default",
+            &MatrixCopyHooks::default()
+        )
+        .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn issue_3142_excluded_non_utf8_root_name_fails() {
+        use std::os::unix::ffi::OsStringExt;
+        let (_tmp, project, source, destination) = issue_3068_fixture();
+        std::fs::write(
+            source.join(std::ffi::OsString::from_vec(vec![255])),
+            b"excluded",
+        )
+        .unwrap();
+        let error =
+            copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_copy").unwrap_err();
+        assert!(error.contains("Non-UTF-8"));
+        assert!(!destination.join("_agent_copy").exists());
+    }
+
+    #[test]
+    fn issue_3142_config_collision_retains_foreign_output() {
+        let (_tmp, project, _source, destination) = issue_3068_fixture();
+        let mut callback = |stage, _: &Path| {
+            if stage == MatrixCopyStage::BeforeVerify {
                 std::fs::write(
-                    path.join(COPY_PROVENANCE_FILE),
-                    br#"{"schemaVersion":1,"copies":[],"tag":2}"#,
+                    destination.join("_agent_copy/config.json"),
+                    b"external config",
                 )
                 .unwrap();
             }
@@ -6087,11 +6356,12 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(error.contains("changed"), "{error}");
-        assert!(!destination.join("_agent_copy").exists());
-        assert!(std::fs::read_to_string(source.join(COPY_PROVENANCE_FILE))
-            .unwrap()
-            .contains("\"tag\":2"));
+        assert!(error.contains("residues"));
+        assert_eq!(
+            std::fs::read(destination.join("_agent_copy/config.json")).unwrap(),
+            b"external config"
+        );
+        assert!(!destination.join("_agent_copy/Role.md").exists());
     }
 
     #[test]
@@ -6148,20 +6418,22 @@ mod tests {
         for failure_stage in [
             MatrixCopyStage::Reserved,
             MatrixCopyStage::Streaming,
+            MatrixCopyStage::ConfigWritten,
             MatrixCopyStage::Provenance,
             MatrixCopyStage::ProvenanceWritten,
         ] {
             let (_tmp, project, source, destination) = issue_3068_fixture();
-            std::fs::write(source.join("large.bin"), vec![77u8; 192 * 1024]).unwrap();
+            std::fs::write(source.join("skills/large.bin"), vec![77u8; 192 * 1024]).unwrap();
             let mut triggered = false;
             let mut callback = |stage, path: &Path| {
                 if stage == failure_stage
                     && (stage != MatrixCopyStage::Streaming || path.ends_with("large.bin"))
                 {
                     if stage == MatrixCopyStage::Streaming {
-                        let size = std::fs::metadata(destination.join("_agent_copy/large.bin"))
-                            .unwrap()
-                            .len();
+                        let size =
+                            std::fs::metadata(destination.join("_agent_copy/skills/large.bin"))
+                                .unwrap()
+                                .len();
                         assert!(size > 0 && size < 192 * 1024);
                     }
                     triggered = true;
@@ -6188,23 +6460,24 @@ mod tests {
 
     #[test]
     fn issue_3068_source_changes_are_detected() {
-        for mutation in 0..5 {
+        for mutation in 0..7 {
             let (_tmp, project, _source, destination) = issue_3068_fixture();
             let mut callback = |stage, source: &Path| {
                 if stage == MatrixCopyStage::BeforeVerify {
                     match mutation {
-                        0 => std::fs::write(source.join("added"), b"new").unwrap(),
+                        0 => std::fs::write(source.join("skills/added"), b"new").unwrap(),
                         1 => std::fs::remove_file(source.join("Role.md")).unwrap(),
                         2 => std::fs::write(source.join("Role.md"), b"changed bytes").unwrap(),
                         3 => {
                             std::fs::remove_file(source.join("Role.md")).unwrap();
                             std::fs::create_dir(source.join("Role.md")).unwrap();
                         }
-                        _ => std::fs::write(
-                            source.join(COPY_PROVENANCE_FILE),
-                            br#"{"schemaVersion":1,"copies":[]}"#,
-                        )
-                        .unwrap(),
+                        4 => std::fs::create_dir(source.join("new-default")).unwrap(),
+                        5 => std::fs::remove_dir_all(source.join("default-tools")).unwrap(),
+                        _ => {
+                            std::fs::write(source.join("skills/added-other"), b"selected addition")
+                                .unwrap()
+                        }
                     }
                 }
                 Ok(())
@@ -6252,7 +6525,7 @@ mod tests {
     #[test]
     fn issue_3068_real_special_file_is_rejected() {
         let (_tmp, project, source, destination) = issue_3068_fixture();
-        let _socket = std::os::unix::net::UnixListener::bind(source.join("socket")).unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(source.join("skills/socket")).unwrap();
         let error =
             copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_copy").unwrap_err();
         assert!(error.contains("special"), "{error}");
@@ -6307,7 +6580,7 @@ mod tests {
                     let selected = if replace_root {
                         root.to_path_buf()
                     } else {
-                        root.join("unknown")
+                        root.join("default-tools")
                     };
                     let moved = destination.join("moved-owned-directory");
                     std::fs::rename(&selected, &moved).unwrap();
@@ -6338,7 +6611,7 @@ mod tests {
             let selected = if replace_root {
                 destination.join("_agent_copy")
             } else {
-                destination.join("_agent_copy/unknown")
+                destination.join("_agent_copy/default-tools")
             };
             assert_eq!(
                 std::fs::read(selected.join("sentinel")).unwrap(),
@@ -6416,12 +6689,12 @@ mod tests {
     #[test]
     fn issue_3068_hardlinked_source_creates_independent_output_files() {
         let (_tmp, project, source, destination) = issue_3068_fixture();
-        std::fs::hard_link(source.join("Role.md"), source.join("Role-linked.md")).unwrap();
+        std::fs::hard_link(source.join("Role.md"), source.join("skills/Role-linked.md")).unwrap();
         let before = issue_3068_inventory(&source);
         let owned =
             copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_copy").unwrap();
         let first = File::open(owned.root.join("Role.md")).unwrap();
-        let second = File::open(owned.root.join("Role-linked.md")).unwrap();
+        let second = File::open(owned.root.join("skills/Role-linked.md")).unwrap();
         let original = File::open(source.join("Role.md")).unwrap();
         assert_ne!(
             OwnedCopyArtifacts::handle_identity(&first).unwrap(),
@@ -6432,10 +6705,10 @@ mod tests {
             OwnedCopyArtifacts::handle_identity(&original).unwrap()
         );
         drop((first, second, original));
-        std::fs::write(owned.root.join("Role-linked.md"), b"copy changed").unwrap();
+        std::fs::write(owned.root.join("skills/Role-linked.md"), b"copy changed").unwrap();
         assert_eq!(before, issue_3068_inventory(&source));
         assert_ne!(
-            std::fs::read(owned.root.join("Role-linked.md")).unwrap(),
+            std::fs::read(owned.root.join("skills/Role-linked.md")).unwrap(),
             std::fs::read(owned.root.join("Role.md")).unwrap()
         );
     }
@@ -6443,7 +6716,7 @@ mod tests {
     #[test]
     fn issue_3068_source_changes_during_streaming_fail() {
         let (_tmp, project, source, destination) = issue_3068_fixture();
-        std::fs::write(source.join("large.bin"), vec![8u8; 192 * 1024]).unwrap();
+        std::fs::write(source.join("skills/large.bin"), vec![8u8; 192 * 1024]).unwrap();
         let mut changed = false;
         let mut callback = |stage, path: &Path| {
             if stage == MatrixCopyStage::Streaming && path.ends_with("large.bin") && !changed {
