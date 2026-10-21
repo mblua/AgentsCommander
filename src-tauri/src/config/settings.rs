@@ -19142,16 +19142,15 @@ mod tests {
         let config = temp.path().join("config");
         if mode == "existing" {
             std::fs::create_dir(&config).unwrap();
-            std::fs::write(
-                config.join(super::SETTINGS_FILE_NAME),
-                serde_json::json!({
-                    "voiceToTextEnabled": true,
-                    "startOnlyCoordinators": true,
-                    "rootToken": "startup-sentinel"
-                })
-                .to_string(),
-            )
-            .unwrap();
+            let mut raw = serde_json::to_value(super::AppSettings::default()).unwrap();
+            raw["voiceToTextEnabled"] = serde_json::json!(true);
+            raw["startOnlyCoordinators"] = serde_json::json!(true);
+            raw["rootToken"] = serde_json::json!("startup-sentinel");
+            raw.as_object_mut()
+                .unwrap()
+                .remove("restoreCoordinatorWakeState");
+            std::fs::write(config.join(super::SETTINGS_FILE_NAME), raw.to_string())
+                .unwrap();
         }
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([

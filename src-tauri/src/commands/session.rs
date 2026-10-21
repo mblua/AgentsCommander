@@ -7952,6 +7952,7 @@ mod tests {
         host.root_token = Some("gate-fixture".into());
         host.archived_project_paths = vec![project.clone(), missing.clone()];
         std::fs::write(&path, serde_json::to_vec(&host).unwrap()).unwrap();
+        let host = crate::config::settings::load_settings_from_path(&path);
         let owner =
             crate::config::settings::new_runtime_settings_state_at_path(host.clone(), &path)
                 .unwrap();
@@ -8774,7 +8775,7 @@ mod tests {
         std::fs::create_dir_all(g_path.parent().unwrap()).unwrap();
         let base = reference.calculated_id.clone();
         let g_raw = serde_json::json!({"schemaVersion":2,
-        "agents":[{"key":"same", "label":"G", "color":"green", "baseCommand":"tool"}],
+        "agents":[{"key":"same", "label":"G", "description":"", "color":"green", "baseCommand":"tool"}],
         "profileBindingVersion":1, "profilesByBaseHash":{
             (base.clone()):{"A":{"additionalArguments":"tool G-current", "env":{"SOURCE":"G-current"}}}
         }});
