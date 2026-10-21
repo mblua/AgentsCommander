@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+#[cfg(any(windows, test))]
+use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use tauri::{AppHandle, Emitter};
@@ -1005,6 +1007,25 @@ impl SessionIoFanout {
             return None;
         }
         state.reader_gate.acquire()
+    }
+
+    #[cfg(any(windows, test))]
+    pub(crate) fn observe_raw_read_for_reader(
+        &self,
+        token: &PtyOutputRegistrationToken,
+        byte_count: usize,
+        at: Instant,
+    ) -> bool {
+        if byte_count == 0 {
+            return false;
+        }
+        let Some(lease) = self.acquire_reader_lease(token) else {
+            return false;
+        };
+        self.idle_detector
+            .notify_raw_output_at(token.identity.session_id, at);
+        lease.complete();
+        true
     }
 
     /// #3029: the reader's own parser is the only cursor authority. No locks escape.
@@ -2994,6 +3015,55 @@ mod tests {
 
         assert!(fanout.attached_labels_for_test(id).is_empty());
         assert_eq!(fanout.pending_output_bytes_for_test(id), None);
+        let raw_fanout = super::SessionIoFanout::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            IdleDetector::new(|_| {}, |_| {}),
+            None,
+        );
+        let raw_token = raw_fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 4, 40)
+            .unwrap();
+        let parsers = raw_fanout.screen_parsers.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let resume_rx = Mutex::new(resume_rx);
+        assert!(raw_fanout
+            .idle_detector
+            .bind_raw_output_observer(1, move |_, _| {
+                assert!(
+                    parsers.try_lock().is_ok(),
+                    "raw policy holds no parser mutex"
+                );
+                entered_tx.send(()).unwrap();
+                resume_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
+            }));
+        std::thread::scope(|scope| {
+            let reader = scope
+                .spawn(|| raw_fanout.observe_raw_read_for_reader(&raw_token, 1, Instant::now()));
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let (removed_tx, removed_rx) = std::sync::mpsc::channel();
+            let raw_ref = &raw_fanout;
+            let destroyer = scope.spawn(move || {
+                raw_ref.remove_session(id);
+                removed_tx.send(()).unwrap();
+            });
+            while raw_fanout.acquire_reader_lease(&raw_token).is_some() {
+                std::thread::yield_now();
+            }
+            assert!(
+                removed_rx.try_recv().is_err(),
+                "admitted raw callback retains retirement lease"
+            );
+            assert!(!raw_fanout.observe_raw_read_for_reader(&raw_token, 1, Instant::now()));
+            resume_tx.send(()).unwrap();
+            assert!(reader.join().unwrap());
+            destroyer.join().unwrap();
+            removed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
     }
 
     /// The 16 ms timer, armed and fired for real. Every other backend test holds it and drives
@@ -3041,7 +3111,16 @@ mod tests {
                 PtyOutputTarget::from_test_sink(Arc::clone(&old_sink)),
             )
             .expect("register old session");
+        assert!(!fanout.observe_raw_read_for_reader(&old_token, 0, Instant::now()));
+        assert!(fanout.observe_raw_read_for_reader(&old_token, 1, Instant::now()));
+        let foreign = super::SessionIoFanout::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            IdleDetector::new(|_| {}, |_| {}),
+            None,
+        );
+        assert!(!foreign.observe_raw_read_for_reader(&old_token, 1, Instant::now()));
         fanout.remove_session(id);
+        assert!(!fanout.observe_raw_read_for_reader(&old_token, 1, Instant::now()));
         let new_token = fanout
             .register_session(
                 id,
@@ -3052,7 +3131,22 @@ mod tests {
             )
             .expect("register replacement session");
 
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let captured = notices.clone();
+        assert!(fanout
+            .idle_detector
+            .bind_raw_output_observer(1, move |id, at| captured.lock().unwrap().push((id, at))));
+        assert!(!fanout.observe_raw_read_for_reader(&old_token, 1, Instant::now()));
+        assert!(notices.lock().unwrap().is_empty());
+        assert!(fanout.observe_raw_read_for_reader(&new_token, 1, Instant::now()));
+        assert_eq!(notices.lock().unwrap().len(), 1);
+
         fanout.handle_output(&old_token, &id.to_string(), b"old output".to_vec());
+        assert_eq!(
+            notices.lock().unwrap().len(),
+            1,
+            "retired segment cannot notify successor policy"
+        );
         let snapshot = fanout
             .get_screen_snapshot(id)
             .expect("replacement snapshot");

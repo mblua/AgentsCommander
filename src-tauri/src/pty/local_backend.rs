@@ -159,7 +159,7 @@ fn write_cursor_reply(
 #[cfg(windows)]
 fn pump_cursor_query(
     reader: &mut dyn Read,
-    mut raw: impl FnMut(&[u8]),
+    mut raw: impl FnMut(&[u8]) -> bool,
     mut output: impl FnMut(&[u8]),
     mut reply: impl FnMut() -> std::io::Result<()>,
     #[cfg(test)] observer: Option<&CursorReplyObserver>,
@@ -170,7 +170,9 @@ fn pump_cursor_query(
         match reader.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
-                raw(&buf[..n]);
+                if !raw(&buf[..n]) {
+                    continue;
+                }
                 query.feed(&buf[..n], |segment, consumed| {
                     if consumed {
                         #[cfg(test)]
@@ -838,11 +840,12 @@ mod tests {
             // An already upgraded original remains valid, never redirects to the replacement.
             let retained = if fail == 4 { None } else { weak.upgrade() };
             map.insert(Uuid::nil(), replacement);
-            let fanout = SessionIoFanout::new(
-                Arc::new(Mutex::new(HashMap::new())),
-                IdleDetector::new(|_| {}, |_| {}),
-                None,
-            );
+            let detector = IdleDetector::new(|_| {}, |_| {});
+            let policy = Arc::new(Mutex::new(Vec::new()));
+            let notices = policy.clone();
+            assert!(detector
+                .bind_raw_output_observer(1, move |id, at| notices.lock().unwrap().push((id, at))));
+            let fanout = SessionIoFanout::new(Arc::new(Mutex::new(HashMap::new())), detector, None);
             let id = Uuid::new_v4();
             let token = fanout
                 .register_session_for_test(id, crate::session::profile::IdleTuning::DEFAULT, 24, 80)
@@ -853,6 +856,8 @@ mod tests {
             let (tx, rx) = mpsc::channel();
             let (seen_tx, seen_rx) = mpsc::channel();
             let (done_tx, done_rx) = mpsc::channel();
+            let (final_tx, final_rx) = mpsc::channel();
+            let policy_worker = policy.clone();
             let observed = observer.clone();
             let bytes = saved.clone();
             let raw_copy = raw.clone();
@@ -860,7 +865,16 @@ mod tests {
             let worker = std::thread::spawn(move || {
                 pump_cursor_query(
                     &mut Frames(rx),
-                    |chunk| raw_copy.lock().unwrap().extend_from_slice(chunk),
+                    |chunk| {
+                        let at = Instant::now();
+                        raw_copy.lock().unwrap().extend_from_slice(chunk);
+                        let admitted = fanout.observe_raw_read_for_reader(&token, chunk.len(), at);
+                        if fail == 3 && chunk == b"FINAL" {
+                            assert!(!admitted);
+                            final_tx.send(()).unwrap();
+                        }
+                        admitted
+                    },
                     |chunk| {
                         fanout.handle_output(&token, &id.to_string(), chunk.to_vec());
                         out.lock().unwrap().extend_from_slice(chunk);
@@ -899,6 +913,11 @@ mod tests {
                     );
                     assert_eq!(fanout.get_screen_snapshot(id).unwrap().sequence, 0);
                 }
+                assert!(policy_worker
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|(observed_id, _)| *observed_id == id));
                 drop(retained);
                 done_tx.send(()).unwrap();
             });
@@ -916,17 +935,34 @@ mod tests {
                 map.contains_key(&Uuid::nil()),
                 "reader must not clean up the instance"
             );
+            let policy_before_final = policy.lock().unwrap().len();
             tx.send(b"FINAL".to_vec()).unwrap();
-            seen_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("Stop must retain final-frame drainer");
+            if fail == 3 {
+                final_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("actual FINAL read drained with refused admission");
+            } else {
+                seen_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("Stop must retain final-frame drainer");
+            }
             drop(tx);
             done_rx
                 .recv_timeout(Duration::from_secs(5))
                 .expect("EOF finishes reader");
             worker.join().unwrap();
             assert!(observer.finished.load(Ordering::SeqCst));
-            assert_eq!(&*output.lock().unwrap(), b"\x1b[3;4HhiTAIL\x1b[6nFINAL");
+            if fail == 3 {
+                assert_eq!(&*output.lock().unwrap(), b"\x1b[3;4HhiTAIL\x1b[6n");
+                assert_eq!(policy.lock().unwrap().len(), policy_before_final);
+                assert!(
+                    seen_rx.try_recv().is_err(),
+                    "refused FINAL never reaches filtered callback"
+                );
+            } else {
+                assert_eq!(&*output.lock().unwrap(), b"\x1b[3;4HhiTAIL\x1b[6nFINAL");
+                assert!(policy.lock().unwrap().len() > policy_before_final);
+            }
             assert_eq!(&*raw.lock().unwrap(), b"\x1b[3;4Hhi\x1b[6nTAIL\x1b[6nFINAL");
             assert!(replacement_bytes.lock().unwrap().is_empty());
             match fail {
@@ -977,27 +1013,123 @@ mod tests {
             &output, b"\x1b[6n",
             "fixture must withhold READY without CPR"
         );
-        let writer: Arc<Mutex<Box<dyn Write + Send>>> =
-            Arc::new(Mutex::new(Box::new(CursorTestWriter {
-                bytes: saved.clone(),
-                fail: 0,
-            })));
-        let observer = CursorReplyObserver::default();
-        let mut output = vec![];
-        pump_cursor_query(
-            &mut Startup {
-                phase: 0,
-                reply: saved,
-            },
-            |_| {},
-            |bytes| output.extend_from_slice(bytes),
-            || write_cursor_reply(&Arc::downgrade(&writer), Some((1, 1))),
-            Some(&observer),
-        );
-        assert_eq!(&output, b"READY");
-        assert_eq!(observer.consumed.load(Ordering::SeqCst), 1);
-        assert_eq!(observer.written.load(Ordering::SeqCst), 1);
-        assert!(observer.finished.load(Ordering::SeqCst));
+        for terminal_error in [false, true] {
+            for complete in [false, true] {
+                let saved = Arc::new(Mutex::new(Vec::new()));
+                let writer: Arc<Mutex<Box<dyn Write + Send>>> =
+                    Arc::new(Mutex::new(Box::new(CursorTestWriter {
+                        bytes: saved.clone(),
+                        fail: 0,
+                    })));
+
+                let observer = CursorReplyObserver::default();
+                let detector = IdleDetector::new(|_| {}, |_| {});
+                let notices = Arc::new(Mutex::new(Vec::new()));
+                let captured = notices.clone();
+                assert!(detector.bind_raw_output_observer(1, move |id, at| captured
+                    .lock()
+                    .unwrap()
+                    .push((id, at))));
+                let fanout =
+                    SessionIoFanout::new(Arc::new(Mutex::new(HashMap::new())), detector, None);
+                let id = Uuid::new_v4();
+                let token = fanout
+                    .register_session_for_test(
+                        id,
+                        crate::session::profile::IdleTuning::DEFAULT,
+                        24,
+                        80,
+                    )
+                    .unwrap();
+                struct FiniteReads {
+                    frames: std::collections::VecDeque<Vec<u8>>,
+                    reply: Arc<Mutex<Vec<u8>>>,
+                    terminal_error: bool,
+                }
+                impl Read for FiniteReads {
+                    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                        let Some(bytes) = self.frames.pop_front() else {
+                            return if self.terminal_error {
+                                Err(std::io::Error::other("finite read error"))
+                            } else {
+                                Ok(0)
+                            };
+                        };
+                        if bytes == b"READY" {
+                            assert_eq!(&*self.reply.lock().unwrap(), b"\x1b[1;4R");
+                        }
+                        out[..bytes.len()].copy_from_slice(&bytes);
+                        Ok(bytes.len())
+                    }
+                }
+                let mut reader = FiniteReads {
+                    frames: if complete {
+                        vec![
+                            b"abc".to_vec(),
+                            vec![27],
+                            b"[".to_vec(),
+                            b"6n".to_vec(),
+                            b"READY".to_vec(),
+                        ]
+                        .into()
+                    } else {
+                        vec![b"abc".to_vec(), vec![27], b"[".to_vec()].into()
+                    },
+                    reply: saved.clone(),
+                    terminal_error,
+                };
+                let mut output = vec![];
+                let mut read_times = vec![];
+                pump_cursor_query(
+                    &mut reader,
+                    |bytes| {
+                        let at = Instant::now();
+                        read_times.push(at);
+                        let before = notices.lock().unwrap().len();
+                        let admitted = fanout.observe_raw_read_for_reader(&token, bytes.len(), at);
+                        assert!(admitted);
+                        assert_eq!(notices.lock().unwrap()[before], (id, at));
+                        admitted
+                    },
+                    |bytes| {
+                        fanout.handle_output(&token, &id.to_string(), bytes.to_vec());
+                        output.extend_from_slice(bytes);
+                    },
+                    || {
+                        write_cursor_reply(
+                            &Arc::downgrade(&writer),
+                            fanout.cursor_position_for_reader(&token),
+                        )
+                    },
+                    Some(&observer),
+                );
+                assert_eq!(
+                    output.as_slice(),
+                    if complete {
+                        &b"abcREADY"[..]
+                    } else {
+                        &b"abc\x1b["[..]
+                    }
+                );
+                assert_eq!(
+                read_times.len(),
+                if complete { 5 } else { 3 },
+                "EOF/error/zero produces no prefilter callback; retained prefix may notify later"
+            );
+                assert!(notices.lock().unwrap().len() >= read_times.len());
+                assert_eq!(
+                    observer.consumed.load(Ordering::SeqCst),
+                    usize::from(complete)
+                );
+                assert_eq!(
+                    observer.written.load(Ordering::SeqCst),
+                    usize::from(complete)
+                );
+                assert!(observer.finished.load(Ordering::SeqCst));
+                let snapshot = fanout.get_screen_snapshot(id).unwrap();
+                assert!(!snapshot.data.windows(4).any(|bytes| bytes == b"\x1b[6n"));
+            }
+        }
     }
 
     fn cursor_test_backend() -> LocalProcessBackend {
@@ -2523,7 +2655,11 @@ impl LocalProcessBackend {
             #[cfg(windows)]
             pump_cursor_query(
                 &mut reader,
-                |bytes| record.note_output(bytes),
+                |bytes| {
+                    let read_at = Instant::now();
+                    record.note_output(bytes);
+                    fanout.observe_raw_read_for_reader(&output_token, bytes.len(), read_at)
+                },
                 |bytes| {
                     fanout.handle_output(&output_token, &session_id_str, bytes.to_vec());
                     if !rendered.load(Ordering::Relaxed) && fanout.has_rendered_visible_content(id)
