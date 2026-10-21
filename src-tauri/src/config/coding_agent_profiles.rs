@@ -6,7 +6,7 @@ use crate::config::ac_root::{
     ensure_authoritative_ac_root, is_ac_root_name, CANONICAL_AC_ROOT_DIR,
 };
 use crate::config::settings::{
-    empty_profile_cell, normalize_profile_letter, AppSettings, ProfileCellConfig,
+    empty_profile_cell, normalize_profile_letter, AppSettings, ConfigurationRef, ProfileCellConfig,
 };
 
 #[derive(Debug, Clone)]
@@ -497,6 +497,82 @@ pub struct ReplicaSelectionPair {
     pub requested_profile: String,
 }
 
+/// Shape and compatibility validation only; this does not authorize a source or
+/// resolve its current cells. Commands must prepare those before publication.
+pub(crate) fn validate_configuration_ref_pair(
+    reference: &ConfigurationRef,
+    pair: &ReplicaSelectionPair,
+) -> Result<(), String> {
+    let full_identity = |value: &str| value.strip_prefix("cid1:").is_some_and(|digest| {
+        digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    });
+    if reference.version != 1
+        || reference.source.context_root.is_empty()
+        || pair.coding_agent_id.trim().is_empty()
+        || !full_identity(&reference.calculated_id)
+        || !reference.profile_calculated_id.as_deref().is_some_and(full_identity)
+        || reference.legacy_entry_hint.as_deref() != Some(pair.coding_agent_id.as_str())
+        || normalize_profile_letter(&pair.requested_profile).as_deref() != Some(pair.requested_profile.as_str())
+        || reference.requested_profile.as_ref().is_some_and(|letter| letter != &pair.requested_profile)
+    {
+        return Err("invalid configurationRef or incompatible saved selection pair".into());
+    }
+    Ok(())
+}
+
+fn configuration_ref_from_tooling(
+    tooling: &serde_json::Map<String, Value>,
+    pair: Option<&ReplicaSelectionPair>,
+) -> Result<Option<ConfigurationRef>, String> {
+    let Some(raw) = tooling.get("configurationRef") else { return Ok(None); };
+    let reference: ConfigurationRef = serde_json::from_value(raw.clone()).map_err(|e| e.to_string())?;
+    validate_configuration_ref_pair(&reference, pair.ok_or("configurationRef requires a complete saved pair")?)?;
+    Ok(Some(reference))
+}
+
+/// Read a coherent source-null pin without treating derived aliases as manual.
+/// Historical and absent markers keep the existing alias authority and warning.
+#[allow(dead_code)]
+pub(crate) fn read_source_null_profile_result(
+    launch_path: &Path,
+) -> Result<ReplicaProfileRead, String> {
+    let (config, identity) = crate::config::replica_identity::read_wg_replica_config_read_only(launch_path)?;
+    let state = selection_state_from_value(&config, &identity.identity);
+    let expected = state.expectation()?;
+    let warning = match state {
+        ReplicaSelectionState::Unlocked { warning, .. } | ReplicaSelectionState::Locked { warning, .. } => warning,
+        ReplicaSelectionState::Invalid { .. } => unreachable!("expectation rejects invalid state"),
+    };
+    let mut read = ReplicaProfileRead {
+        profile: config.pointer("/tooling/profile").and_then(Value::as_str)
+            .and_then(normalize_profile_letter)
+            .or_else(|| config.pointer("/tooling/instanceProfileOverride")
+                .and_then(Value::as_str).and_then(normalize_profile_letter)),
+        warning,
+    };
+    if expected.configuration_ref.as_ref().is_some_and(|reference| reference.requested_profile.is_none())
+        && expected.profile_override_source.as_deref() == Some("source-default")
+    {
+        read.profile = None;
+    }
+    Ok(read)
+}
+
+/// Already authorized, source-local resolution. The aliases retain requested
+/// intent while the reference witnesses the effective full pair, even fallback.
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedSourceSelection {
+    pub pair: ReplicaSelectionPair,
+    pub configuration_ref: ConfigurationRef,
+    pub profile_override_source: Option<String>,
+}
+
+impl PreparedSourceSelection {
+    fn validate(&self) -> Result<(), String> {
+        validate_configuration_ref_pair(&self.configuration_ref, &self.pair)
+    }
+}
+
 /// A prior selection state a write must still observe (CAS). Built from
 /// [`read_replica_selection_state`] so a write can never overwrite a state it
 /// did not read.
@@ -508,6 +584,8 @@ pub struct ReplicaSelectionExpectation {
     /// The complete saved pair, or `None` for a legacy config without one.
     pub pair: Option<ReplicaSelectionPair>,
     pub locked: bool,
+    pub configuration_ref: Option<ConfigurationRef>,
+    pub profile_override_source: Option<String>,
 }
 
 /// #1939 - strict, read-only view of a replica's stored selection.
@@ -519,6 +597,8 @@ pub struct ReplicaSelectionExpectation {
 pub enum ReplicaSelectionState {
     Unlocked {
         identity: String,
+        configuration_ref: Option<ConfigurationRef>,
+        profile_override_source: Option<String>,
         /// `None` when no complete pair is stored (legacy unlocked config, which
         /// remains valid and may be deliberately assigned).
         pair: Option<ReplicaSelectionPair>,
@@ -528,6 +608,8 @@ pub enum ReplicaSelectionState {
     },
     Locked {
         identity: String,
+        configuration_ref: Option<ConfigurationRef>,
+        profile_override_source: Option<String>,
         pair: ReplicaSelectionPair,
         warning: Option<String>,
     },
@@ -560,15 +642,19 @@ impl ReplicaSelectionState {
     /// never be force-repaired implicitly.
     pub fn expectation(&self) -> Result<ReplicaSelectionExpectation, String> {
         match self {
-            Self::Unlocked { identity, pair, .. } => Ok(ReplicaSelectionExpectation {
+            Self::Unlocked { identity, pair, configuration_ref, profile_override_source, .. } => Ok(ReplicaSelectionExpectation {
                 identity: identity.clone(),
                 pair: pair.clone(),
                 locked: false,
+                configuration_ref: configuration_ref.clone(),
+                profile_override_source: profile_override_source.clone(),
             }),
-            Self::Locked { identity, pair, .. } => Ok(ReplicaSelectionExpectation {
+            Self::Locked { identity, pair, configuration_ref, profile_override_source, .. } => Ok(ReplicaSelectionExpectation {
                 identity: identity.clone(),
                 pair: Some(pair.clone()),
                 locked: true,
+                configuration_ref: configuration_ref.clone(),
+                profile_override_source: profile_override_source.clone(),
             }),
             Self::Invalid { diagnostic } => Err(format!(
                 "replica selection state is invalid: {}",
@@ -651,6 +737,8 @@ pub(crate) fn selection_state_from_value(config: &Value, identity: &str) -> Repl
         None => {
             return ReplicaSelectionState::Unlocked {
                 identity: identity.to_string(),
+                configuration_ref: None,
+                profile_override_source: None,
                 pair: None,
                 warning: None,
             }
@@ -701,6 +789,18 @@ pub(crate) fn selection_state_from_value(config: &Value, identity: &str) -> Repl
         _ => None,
     };
 
+    let configuration_ref = match configuration_ref_from_tooling(tooling, pair.as_ref()) {
+        Ok(reference) => reference,
+        Err(diagnostic) => return ReplicaSelectionState::Invalid { diagnostic },
+    };
+    let profile_override_source = match tooling.get("instanceProfileOverrideSource") {
+        None => None,
+        Some(Value::String(marker)) => Some(marker.clone()),
+        Some(_) if configuration_ref.is_some() => return ReplicaSelectionState::Invalid {
+            diagnostic: "instanceProfileOverrideSource must be a string".into(),
+        },
+        Some(_) => None,
+    };
     match (locked, pair) {
         (true, None) => ReplicaSelectionState::Invalid {
             diagnostic: "tooling.selectionLocked is true but the saved selection pair is incomplete or invalid"
@@ -708,11 +808,15 @@ pub(crate) fn selection_state_from_value(config: &Value, identity: &str) -> Repl
         },
         (true, Some(pair)) => ReplicaSelectionState::Locked {
             identity: identity.to_string(),
+            configuration_ref,
+            profile_override_source,
             pair,
             warning,
         },
         (false, pair) => ReplicaSelectionState::Unlocked {
             identity: identity.to_string(),
+            configuration_ref,
+            profile_override_source,
             pair,
             warning,
         },
@@ -737,6 +841,7 @@ pub struct ReplicaSelectionDefault {
     pub coding_agent_id: String,
     pub requested_profile: String,
     pub selection_locked: bool,
+    pub configuration_ref: Option<ConfigurationRef>,
 }
 
 impl ReplicaSelectionDefault {
@@ -752,10 +857,17 @@ impl ReplicaSelectionDefault {
                 "replicaSelectionDefault.codingAgentId must be a non-empty string".to_string(),
             );
         }
+        if let Some(reference) = &self.configuration_ref {
+            validate_configuration_ref_pair(reference, &ReplicaSelectionPair {
+                coding_agent_id: coding_agent_id.clone(),
+                requested_profile: requested_profile.clone(),
+            })?;
+        }
         Ok(Self {
             coding_agent_id,
             requested_profile,
             selection_locked: self.selection_locked,
+            configuration_ref: self.configuration_ref,
         })
     }
 }
@@ -800,6 +912,9 @@ fn parse_replica_selection_default(
         coding_agent_id,
         requested_profile,
         selection_locked,
+        configuration_ref: default.get("configurationRef")
+            .map(|raw| serde_json::from_value(raw.clone()).map_err(|e| e.to_string()))
+            .transpose()?,
     }
     .normalized()?;
     Ok(Some(normalized))
@@ -869,14 +984,15 @@ pub fn write_replica_selection_default(
         let tooling = tooling_value
             .as_object_mut()
             .ok_or_else(|| format!("tooling must be a JSON object at {}", config_path.display()))?;
-        tooling.insert(
-            "replicaSelectionDefault".to_string(),
-            serde_json::json!({
+        let mut value = serde_json::json!({
                 "codingAgentId": normalized.coding_agent_id,
                 "requestedProfile": normalized.requested_profile,
                 "selectionLocked": normalized.selection_locked,
-            }),
-        );
+            });
+        if let Some(reference) = &normalized.configuration_ref {
+            value["configurationRef"] = serde_json::to_value(reference).map_err(|e| e.to_string())?;
+        }
+        tooling.insert("replicaSelectionDefault".to_string(), value);
         Ok(())
     })?;
     Ok(SelectionWriteOutcome::WRITTEN)
@@ -888,6 +1004,7 @@ pub(crate) fn apply_replica_selection_default(
     config: &mut Value,
     default: &ReplicaSelectionDefault,
 ) -> Result<(), String> {
+    let default = &default.clone().normalized()?;
     let root = config
         .as_object_mut()
         .ok_or_else(|| "Replica config must be a JSON object".to_string())?;
@@ -911,12 +1028,18 @@ pub(crate) fn apply_replica_selection_default(
     );
     tooling.insert(
         "instanceProfileOverrideSource".to_string(),
-        Value::String("manual".to_string()),
+        Value::String(if default.configuration_ref.as_ref().is_some_and(|reference| reference.requested_profile.is_none()) {
+            "source-default"
+        } else { "manual" }.to_string()),
     );
     tooling.insert(
         "selectionLocked".to_string(),
         Value::Bool(default.selection_locked),
     );
+    match &default.configuration_ref {
+        Some(reference) => { tooling.insert("configurationRef".into(), serde_json::to_value(reference).map_err(|e| e.to_string())?); }
+        None => { tooling.remove("configurationRef"); }
+    }
     Ok(())
 }
 
@@ -1479,6 +1602,12 @@ fn validate_selection_write_state(
             describe_selection_pair(current_pair.as_ref())
         ));
     }
+    let current = selection_state_from_value(&config, &identity.identity).expectation()?;
+    if current.configuration_ref != expected.configuration_ref
+        || current.profile_override_source != expected.profile_override_source
+    {
+        return Err("stale replica selection reference or profile marker".into());
+    }
     if current_locked != expected.locked {
         return Err(format!(
             "stale replica selection at {}: expected selectionLocked={}, found selectionLocked={}",
@@ -1502,6 +1631,47 @@ pub fn write_replica_selection(
     pair: &ReplicaSelectionPair,
     intent: SelectionWriteIntent,
     expected: &ReplicaSelectionExpectation,
+) -> Result<SelectionWriteOutcome, String> {
+    write_replica_selection_prepared(settings, replica_path, pair, intent, expected, None)
+}
+
+/// Dormant source companion; no source IO or runtime activation in this layer.
+#[allow(dead_code)]
+pub(crate) fn write_prepared_source_selection(
+    settings: &AppSettings,
+    replica_path: &Path,
+    prepared: &PreparedSourceSelection,
+    intent: SelectionWriteIntent,
+    expected: &ReplicaSelectionExpectation,
+) -> Result<SelectionWriteOutcome, String> {
+    prepared.validate()?;
+    if prepared.configuration_ref.requested_profile.is_none() {
+        if let Some(prior) = &expected.pair {
+            if expected.profile_override_source.as_deref() != Some("source-default") {
+                if prepared.pair.requested_profile != prior.requested_profile
+                    || prepared.profile_override_source != expected.profile_override_source
+                {
+                    return Err("source-null assignment must preserve the authoritative pin".into());
+                }
+            } else if prepared.profile_override_source.as_deref() != Some("source-default") {
+                return Err("derived source-null aliases require source-default".into());
+            }
+        } else if prepared.profile_override_source.as_deref() != Some("source-default") {
+            return Err("unpinned source-null aliases require source-default".into());
+        }
+    } else if prepared.profile_override_source.as_deref() != Some("manual") {
+        return Err("explicit source aliases require manual".into());
+    }
+    write_replica_selection_prepared(settings, replica_path, &prepared.pair, intent, expected, Some(prepared))
+}
+
+fn write_replica_selection_prepared(
+    settings: &AppSettings,
+    replica_path: &Path,
+    pair: &ReplicaSelectionPair,
+    intent: SelectionWriteIntent,
+    expected: &ReplicaSelectionExpectation,
+    prepared: Option<&PreparedSourceSelection>,
 ) -> Result<SelectionWriteOutcome, String> {
     let profile = normalize_profile_letter(&pair.requested_profile)
         .ok_or_else(|| "Profile must be a single letter A through Z".to_string())?;
@@ -1528,7 +1698,10 @@ pub fn write_replica_selection(
                     | SelectionWriteIntent::IndividualAssignLock => {
                         // #2010 - KEEP: the same stored pair is a no-op, not an
                         // error; the lock stays and nothing is published.
-                        if current_pair.as_ref() == Some(&requested_pair) {
+                        if current_pair.as_ref() == Some(&requested_pair)
+                            && expected.configuration_ref.as_ref() == prepared.map(|value| &value.configuration_ref)
+                            && prepared.is_none_or(|value| value.profile_override_source == expected.profile_override_source)
+                        {
                             marker.set(Some(SelectionGuardMarker::SkippedLocked));
                             return Err(NO_PUBLISH_SENTINEL.to_string());
                         }
@@ -1576,10 +1749,7 @@ pub fn write_replica_selection(
                 "instanceProfileOverride".to_string(),
                 Value::String(profile.clone()),
             );
-            tooling.insert(
-                "instanceProfileOverrideSource".to_string(),
-                Value::String("manual".to_string()),
-            );
+            publish_prepared_reference(tooling, prepared)?;
             if target_locked {
                 tooling.insert("selectionLocked".to_string(), Value::Bool(true));
             }
@@ -1597,6 +1767,53 @@ pub fn write_replica_selection(
             _ => Err(error),
         },
     }
+}
+
+fn publish_prepared_reference(
+    tooling: &mut serde_json::Map<String, Value>,
+    prepared: Option<&PreparedSourceSelection>,
+) -> Result<(), String> {
+    if let Some(prepared) = prepared {
+        tooling.insert("configurationRef".into(), serde_json::to_value(&prepared.configuration_ref).map_err(|e| e.to_string())?);
+        match &prepared.profile_override_source {
+            Some(marker) => { tooling.insert("instanceProfileOverrideSource".into(), Value::String(marker.clone())); }
+            None => { tooling.remove("instanceProfileOverrideSource"); }
+        }
+    } else {
+        tooling.remove("configurationRef");
+        tooling.insert("instanceProfileOverrideSource".into(), Value::String("manual".into()));
+    }
+    Ok(())
+}
+
+/// Dedicated manual setter companion keeps the existing setter's lock treatment.
+/// The caller has reauthorized/reloaded the source and prepared its fresh pair.
+#[allow(dead_code)]
+pub(crate) fn set_prepared_source_profile_override(
+    settings: &AppSettings,
+    replica_path: &Path,
+    prepared: &PreparedSourceSelection,
+    expected: &ReplicaSelectionExpectation,
+) -> Result<(), String> {
+    prepared.validate()?;
+    let previous = expected.configuration_ref.as_ref().ok_or("source reference required")?;
+    if previous.source != prepared.configuration_ref.source
+        || previous.calculated_id != prepared.configuration_ref.calculated_id
+        || previous.legacy_entry_hint != prepared.configuration_ref.legacy_entry_hint
+        || previous.requested_profile.is_none() != prepared.configuration_ref.requested_profile.is_none()
+        || prepared.profile_override_source.as_deref() != Some("manual")
+    {
+        return Err("manual source override must preserve source and null intent".into());
+    }
+    let replica_dir = validated_replica_dir(settings, replica_path)?;
+    crate::config::agent_config::update_existing_agent_config(&replica_dir.join("config.json"), |obj, _state| {
+        validate_selection_write_state(&replica_dir, expected)?;
+        let tooling = obj.get_mut("tooling").and_then(Value::as_object_mut).ok_or("tooling must be an object")?;
+        tooling.insert("profile".into(), Value::String(prepared.pair.requested_profile.clone()));
+        tooling.insert("instanceProfileOverride".into(), Value::String(prepared.pair.requested_profile.clone()));
+        publish_prepared_reference(tooling, Some(prepared))
+    })?;
+    Ok(())
 }
 
 /// #1939 - guarded unlock. Only the flag is written (`false`); the pair and
@@ -1710,6 +1927,9 @@ fn write_profile_to_launch_path(launch_path: &Path, profile: Option<&str>) -> Re
             .ok_or_else(|| format!("tooling must be a JSON object at {}", config_path.display()))?;
         match profile {
             Some(profile) => {
+                if tooling.contains_key("configurationRef") {
+                    return Err("source profile override requires a prepared same-source selection".into());
+                }
                 // A new valid requested letter is permitted; the Coding Agent
                 // and the lock flag are preserved exactly as stored.
                 tooling.insert("profile".to_string(), Value::String(profile.to_string()));
@@ -1723,7 +1943,7 @@ fn write_profile_to_launch_path(launch_path: &Path, profile: Option<&str>) -> Re
                 );
             }
             None => {
-                if protected_selection_pair_present(tooling) {
+                if protected_selection_pair_present(tooling) || tooling.contains_key("configurationRef") {
                     return Err(format!(
                         "Cannot clear the profile at {} while a protected replica selection pair exists",
                         launch_path.display()
@@ -2557,6 +2777,159 @@ mod tests {
         serde_json::from_str(&config_bytes(replica)).unwrap()
     }
 
+    fn e2432_reference(requested: Option<&str>) -> ConfigurationRef {
+        use crate::config::settings::{SourceFamily, SourceKind, SourceRef, SourceRole, SourceScope};
+        ConfigurationRef {
+            version: 1,
+            source: SourceRef {
+                family: SourceFamily::Agents,
+                role: SourceRole::Catalog,
+                scope: SourceScope::Project,
+                kind: SourceKind::CatalogProject,
+                context_root: "fixture-project".into(),
+            },
+            calculated_id: format!("cid1:{}", "a".repeat(64)),
+            requested_profile: requested.map(str::to_owned),
+            profile_calculated_id: Some(format!("cid1:{}", "b".repeat(64))),
+            legacy_entry_hint: Some("codex".into()),
+        }
+    }
+
+    fn e2432_seed_source(fx: &SelectionFixture, marker: Option<&str>, letter: &str, locked: bool) {
+        let mut tooling = serde_json::json!({
+            "currentCodingAgent": "codex", "profile": letter,
+            "instanceProfileOverride": letter, "selectionLocked": locked,
+            "configurationRef": e2432_reference(None), "unrelated": 42
+        });
+        if let Some(marker) = marker { tooling["instanceProfileOverrideSource"] = marker.into(); }
+        write_config(&fx.replica, &seed_selection_config(&tooling.to_string()));
+    }
+
+    #[test]
+    fn e2432_source_null_marker_controls_alias_authority_and_fallback() {
+        let fx = selection_fixture();
+        for marker in [Some("source-default"), Some("manual"), None, Some("historical")] {
+            let alias = if marker == Some("source-default") { "B" } else { "D" };
+            e2432_seed_source(&fx, marker, alias, false);
+            let read = read_source_null_profile_result(&fx.replica).unwrap();
+            let mut scoped = settings_with_cells(&[("codex", vec!["C", "D", "E"])]);
+            scoped.coding_agent_profiles.profiles_by_agent.get_mut("codex").unwrap().get_mut("D").unwrap().enabled = false;
+            scoped.coding_agent_profiles.default_profile_by_agent.insert("dev-rust".into(), if alias == "B" { "C" } else { "E" }.into());
+            let resolution = resolve_profile(&scoped, ProfileResolutionRequest {
+                coding_agent_id: "codex", launch_path: None,
+                agent_matrix_name: Some("dev-rust"), requested_profile: read.profile.as_deref(),
+                requested_profile_authoritative: true,
+            });
+            assert_eq!(resolution.requested_profile, if alias == "B" { "C" } else { "D" });
+            assert_eq!(resolution.effective_profile, "C");
+            assert_eq!(config_value(&fx.replica)["tooling"]["profile"], alias);
+        }
+        e2432_seed_source(&fx, Some("source-default"), "B", false);
+        let mut value = config_value(&fx.replica);
+        value["tooling"]["instanceProfileOverride"] = "D".into();
+        write_config(&fx.replica, &value.to_string());
+        let read = read_source_null_profile_result(&fx.replica).unwrap();
+        assert!(read.profile.is_none());
+        assert!(read.warning.is_some());
+    }
+
+    #[test]
+    fn e2432_source_prepared_publication_manual_clear_and_stale_are_atomic() {
+        let fx = selection_fixture();
+        e2432_seed_source(&fx, Some("source-default"), "B", false);
+        let expected = read_replica_selection_state(&fx.replica).expectation().unwrap();
+        let mut prepared = PreparedSourceSelection {
+            pair: ReplicaSelectionPair { coding_agent_id: "codex".into(), requested_profile: "C".into() },
+            configuration_ref: e2432_reference(None),
+            profile_override_source: Some("source-default".into()),
+        };
+        assert!(write_prepared_source_selection(&fx.settings, &fx.replica, &prepared, SelectionWriteIntent::Individual, &expected).unwrap().published);
+        assert_eq!(config_value(&fx.replica)["tooling"]["profile"], "C");
+        assert!(read_source_null_profile_result(&fx.replica).unwrap().profile.is_none());
+        let before = config_bytes(&fx.replica);
+        assert!(write_prepared_source_selection(&fx.settings, &fx.replica, &prepared, SelectionWriteIntent::BulkForceReviewed, &expected).is_err());
+        assert_eq!(config_bytes(&fx.replica), before);
+        let expected = read_replica_selection_state(&fx.replica).expectation().unwrap();
+        prepared.pair.requested_profile = "D".into();
+        prepared.profile_override_source = Some("manual".into());
+        prepared.configuration_ref.profile_calculated_id = Some(format!("cid1:{}", "c".repeat(64)));
+        set_prepared_source_profile_override(&fx.settings, &fx.replica, &prepared, &expected).unwrap();
+        let after = config_value(&fx.replica);
+        assert!(after["tooling"]["configurationRef"]["requestedProfile"].is_null());
+        assert_eq!(after["tooling"]["profile"], "D");
+        assert_eq!(after["tooling"]["instanceProfileOverride"], "D");
+        assert_eq!(after["tooling"]["instanceProfileOverrideSource"], "manual");
+        assert_eq!(after["tooling"]["configurationRef"]["profileCalculatedId"], format!("cid1:{}", "c".repeat(64)));
+        assert_eq!(after["tooling"]["unrelated"], 42);
+        for locked in [false, true] {
+            e2432_seed_source(&fx, Some("manual"), "D", locked);
+            let before = config_bytes(&fx.replica);
+            assert!(set_instance_profile_override(&fx.settings, &fx.replica, None).is_err());
+            assert_eq!(config_bytes(&fx.replica), before);
+        }
+        e2432_seed_source(&fx, Some("manual"), "D", false);
+        let expected = read_replica_selection_state(&fx.replica).expectation().unwrap();
+        prepared.pair.requested_profile = "E".into();
+        prepared.profile_override_source = Some("source-default".into());
+        let before = config_bytes(&fx.replica);
+        assert!(write_prepared_source_selection(&fx.settings, &fx.replica, &prepared, SelectionWriteIntent::Individual, &expected).is_err());
+        assert_eq!(config_bytes(&fx.replica), before);
+        prepared.pair.requested_profile = "D".into();
+        prepared.profile_override_source = Some("manual".into());
+        assert!(write_prepared_source_selection(&fx.settings, &fx.replica, &prepared, SelectionWriteIntent::Individual, &expected).unwrap().published);
+        // A deliberate legacy replacement removes stale provenance in its publish.
+        let expected = read_replica_selection_state(&fx.replica).expectation().unwrap();
+        write_replica_selection(&fx.settings, &fx.replica, &prepared.pair, SelectionWriteIntent::Individual, &expected).unwrap();
+        assert!(config_value(&fx.replica)["tooling"].get("configurationRef").is_none());
+    }
+
+    #[test]
+    fn e2432_source_reference_default_roundtrip_invalid_and_lock_controls() {
+        let fx = selection_fixture();
+        let default = ReplicaSelectionDefault {
+            coding_agent_id: "codex".into(), requested_profile: "B".into(),
+            selection_locked: true, configuration_ref: Some(e2432_reference(None)),
+        };
+        write_replica_selection_default(&fx.matrix, &default, None).unwrap();
+        assert_eq!(read_replica_selection_default(&fx.matrix).unwrap(), Some(default.clone()));
+        set_agent_default_profile(&fx.settings, &fx.matrix, "E").unwrap();
+        assert_eq!(read_replica_selection_default(&fx.matrix).unwrap(), Some(default.clone()));
+        let mut value = serde_json::json!({"identity": REPLICA_IDENTITY});
+        apply_replica_selection_default(&mut value, &default).unwrap();
+        assert_eq!(value["tooling"]["instanceProfileOverrideSource"], "source-default");
+        write_config(&fx.replica, &value.to_string());
+        let expected = read_replica_selection_state(&fx.replica).expectation().unwrap();
+        let prepared = PreparedSourceSelection {
+            pair: expected.pair.clone().unwrap(), configuration_ref: default.configuration_ref.clone().unwrap(),
+            profile_override_source: Some("source-default".into()),
+        };
+        let before = config_bytes(&fx.replica);
+        for intent in [SelectionWriteIntent::Individual, SelectionWriteIntent::BulkOrdinary] {
+            assert!(!write_prepared_source_selection(&fx.settings, &fx.replica, &prepared, intent, &expected).unwrap().published);
+            assert_eq!(config_bytes(&fx.replica), before);
+        }
+        for bad in [Value::Null, serde_json::json!({}), serde_json::to_value(e2432_reference(Some("D"))).unwrap()] {
+            let mut invalid = value.clone();
+            invalid["tooling"]["configurationRef"] = bad;
+            write_config(&fx.replica, &invalid.to_string());
+            let before = config_bytes(&fx.replica);
+            assert!(read_replica_selection_state(&fx.replica).expectation().is_err());
+            assert!(write_prepared_source_selection(&fx.settings, &fx.replica, &prepared, SelectionWriteIntent::BulkForceReviewed, &expected).is_err());
+            assert_eq!(config_bytes(&fx.replica), before);
+        }
+        // Marker and reference drift alone invalidate an otherwise equal pair.
+        for field in ["instanceProfileOverrideSource", "configurationRef"] {
+            let mut changed = value.clone();
+            if field == "configurationRef" {
+                changed["tooling"][field]["profileCalculatedId"] = format!("cid1:{}", "d".repeat(64)).into();
+            } else { changed["tooling"][field] = "historical".into(); }
+            write_config(&fx.replica, &changed.to_string());
+            let before = config_bytes(&fx.replica);
+            assert!(write_prepared_source_selection(&fx.settings, &fx.replica, &prepared, SelectionWriteIntent::BulkForceReviewed, &expected).is_err());
+            assert_eq!(config_bytes(&fx.replica), before);
+        }
+    }
+
     /// #2816 (C3) - the state file beside `dir`'s `config.json`.
     fn state_path(dir: &Path) -> PathBuf {
         dir.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
@@ -2973,6 +3346,8 @@ mod tests {
             &pair("codex", "B"),
             SelectionWriteIntent::BulkForceReviewed,
             &ReplicaSelectionExpectation {
+                configuration_ref: None,
+                profile_override_source: None,
                 identity: REPLICA_IDENTITY.to_string(),
                 pair: Some(pair("codex", "B")),
                 locked: false,
@@ -2986,6 +3361,8 @@ mod tests {
             &fixture.settings,
             &fixture.replica,
             &ReplicaSelectionExpectation {
+                configuration_ref: None,
+                profile_override_source: None,
                 identity: REPLICA_IDENTITY.to_string(),
                 pair: Some(pair("codex", "B")),
                 locked: true,
@@ -3272,6 +3649,7 @@ mod tests {
         assert_eq!(
             read_replica_selection_default(&fixture.matrix).unwrap(),
             Some(ReplicaSelectionDefault {
+                configuration_ref: None,
                 coding_agent_id: "codex".to_string(),
                 requested_profile: "B".to_string(),
                 selection_locked: true,
@@ -3308,6 +3686,7 @@ mod tests {
     fn issue_1937_selection_state_default_write_cas_and_preservation() {
         let fixture = selection_fixture();
         let default = ReplicaSelectionDefault {
+            configuration_ref: None,
             coding_agent_id: "codex".to_string(),
             requested_profile: "b".to_string(),
             selection_locked: false,
@@ -3337,6 +3716,7 @@ mod tests {
         .unwrap();
         let prior = read_replica_selection_default(&fixture.matrix).unwrap();
         let next = ReplicaSelectionDefault {
+            configuration_ref: None,
             coding_agent_id: "claude".to_string(),
             requested_profile: "C".to_string(),
             selection_locked: true,
@@ -3505,6 +3885,8 @@ mod tests {
                 if error.starts_with("Room replica '") && error.ends_with(IDENTITY_TAIL))
         };
         let expected = ReplicaSelectionExpectation {
+            configuration_ref: None,
+            profile_override_source: None,
             identity: REPLICA_IDENTITY.to_string(),
             pair: None,
             locked: false,
@@ -3928,6 +4310,7 @@ mod tests {
 
         let fx = selection_fixture();
         let default = ReplicaSelectionDefault {
+            configuration_ref: None,
             coding_agent_id: "codex".to_string(),
             requested_profile: "B".to_string(),
             selection_locked: false,
