@@ -19149,8 +19149,7 @@ mod tests {
             raw.as_object_mut()
                 .unwrap()
                 .remove("restoreCoordinatorWakeState");
-            std::fs::write(config.join(super::SETTINGS_FILE_NAME), raw.to_string())
-                .unwrap();
+            std::fs::write(config.join(super::SETTINGS_FILE_NAME), raw.to_string()).unwrap();
         }
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
