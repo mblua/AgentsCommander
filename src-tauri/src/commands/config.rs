@@ -2102,7 +2102,10 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
             }
             continue;
         }
-        let expected = candidate.expected.clone().ok_or("invalid selection expectation")?;
+        let expected = candidate
+            .expected
+            .clone()
+            .ok_or("invalid selection expectation")?;
         let pair = crate::config::coding_agent_profiles::ReplicaSelectionPair {
             coding_agent_id: request.coding_agent_id.clone(),
             requested_profile: normalized_profile.clone(),
@@ -3015,8 +3018,14 @@ fn fingerprint_candidates(
                 }),
                 locked: target.selection_state == SelectionState::Locked,
                 invalid: target.selection_state == SelectionState::Invalid,
-                configuration_ref: candidate.expected.as_ref().and_then(|expected| expected.configuration_ref.clone()),
-                profile_override_source: candidate.expected.as_ref().and_then(|expected| expected.profile_override_source.clone()),
+                configuration_ref: candidate
+                    .expected
+                    .as_ref()
+                    .and_then(|expected| expected.configuration_ref.clone()),
+                profile_override_source: candidate
+                    .expected
+                    .as_ref()
+                    .and_then(|expected| expected.profile_override_source.clone()),
                 live_sessions,
             }
         })
@@ -3148,10 +3157,13 @@ async fn prepare_source_profile_override(
     settings: &SettingsState,
     replica_path: &Path,
     profile: &str,
-) -> Result<(
-    crate::config::coding_agent_profiles::ReplicaSelectionExpectation,
-    crate::config::coding_agent_profiles::PreparedSourceSelection,
-), String> {
+) -> Result<
+    (
+        crate::config::coding_agent_profiles::ReplicaSelectionExpectation,
+        crate::config::coding_agent_profiles::PreparedSourceSelection,
+    ),
+    String,
+> {
     use crate::config::coding_agent_profiles::{
         read_replica_selection_state, resolve_profile, PreparedSourceSelection,
         ProfileResolutionRequest, ReplicaSelectionPair,
@@ -3159,34 +3171,69 @@ async fn prepare_source_profile_override(
     use crate::config::settings::{agent_file_projection, configuration_identity, pair_identity};
     let profile = crate::config::settings::normalize_profile_letter(profile)
         .ok_or("Profile must be a single letter A through Z")?;
-    let host = settings.current_snapshot().await.map_err(|e| e.to_string())?;
-    let validated = crate::config::coding_agent_profiles::validate_profile_selection_agent_path(&host, replica_path)?;
+    let host = settings
+        .current_snapshot()
+        .await
+        .map_err(|e| e.to_string())?;
+    let validated = crate::config::coding_agent_profiles::validate_profile_selection_agent_path(
+        &host,
+        replica_path,
+    )?;
     let expected = read_replica_selection_state(&validated.launch_path).expectation()?;
-    let mut reference = expected.configuration_ref.clone().ok_or("source reference required")?;
+    let mut reference = expected
+        .configuration_ref
+        .clone()
+        .ok_or("source reference required")?;
     let snapshot = read_agent_file_source_inner(settings, reference.source.clone()).await?;
-    let hint = reference.legacy_entry_hint.as_deref().ok_or("source hint required")?;
-    let matches: Vec<_> = snapshot.rows.iter().filter(|row| row.entry_hint == hint).collect();
-    if matches.len() != 1 || !matches[0].launchable
+    let hint = reference
+        .legacy_entry_hint
+        .as_deref()
+        .ok_or("source hint required")?;
+    let matches: Vec<_> = snapshot
+        .rows
+        .iter()
+        .filter(|row| row.entry_hint == hint)
+        .collect();
+    if matches.len() != 1
+        || !matches[0].launchable
         || matches[0].base_hash.as_deref() != Some(reference.calculated_id.as_str())
     {
         return Err("stored source selection is unavailable or changed".into());
     }
     let scoped = agent_file_projection(&snapshot)?;
-    let agents: Vec<_> = scoped.agents.iter().filter(|agent| agent.id == hint).collect();
-    if agents.len() != 1 || configuration_identity(&agents[0].command, &agents[0].envs) != reference.calculated_id {
+    let agents: Vec<_> = scoped
+        .agents
+        .iter()
+        .filter(|agent| agent.id == hint)
+        .collect();
+    if agents.len() != 1
+        || configuration_identity(&agents[0].command, &agents[0].envs) != reference.calculated_id
+    {
         return Err("stored source identity is missing or ambiguous".into());
     }
-    let resolution = resolve_profile(&scoped, ProfileResolutionRequest {
-        coding_agent_id: hint,
-        launch_path: None,
-        agent_matrix_name: None,
-        requested_profile: Some(&profile),
-        requested_profile_authoritative: true,
-    });
-    reference.profile_calculated_id = Some(pair_identity(&agents[0].command, &agents[0].envs, &resolution.cell));
-    if reference.requested_profile.is_some() { reference.requested_profile = Some(profile.clone()); }
+    let resolution = resolve_profile(
+        &scoped,
+        ProfileResolutionRequest {
+            coding_agent_id: hint,
+            launch_path: None,
+            agent_matrix_name: None,
+            requested_profile: Some(&profile),
+            requested_profile_authoritative: true,
+        },
+    );
+    reference.profile_calculated_id = Some(pair_identity(
+        &agents[0].command,
+        &agents[0].envs,
+        &resolution.cell,
+    ));
+    if reference.requested_profile.is_some() {
+        reference.requested_profile = Some(profile.clone());
+    }
     let prepared = PreparedSourceSelection {
-        pair: ReplicaSelectionPair { coding_agent_id: hint.to_owned(), requested_profile: profile },
+        pair: ReplicaSelectionPair {
+            coding_agent_id: hint.to_owned(),
+            requested_profile: profile,
+        },
         configuration_ref: reference,
         profile_override_source: Some("manual".into()),
     };
@@ -3570,7 +3617,10 @@ pub(crate) async fn apply_selection_lock_removal_inner(
                 already_unlocked_paths.push(target.replica_path.clone());
             }
             SelectionState::Locked => {
-                let expected = candidate.expected.clone().ok_or("invalid selection expectation")?;
+                let expected = candidate
+                    .expected
+                    .clone()
+                    .ok_or("invalid selection expectation")?;
                 match crate::config::coding_agent_profiles::clear_replica_selection_lock(
                     &settings_snapshot,
                     Path::new(&target.replica_path),
@@ -15354,29 +15404,56 @@ mod e2432_p02_source_api_tests {
     #[tokio::test]
     async fn e2432_source_fingerprints_bind_ref_marker_source_and_context() {
         let (temp, owner) = fixture();
-        let source = list_agent_file_sources_inner(&owner).await.unwrap().sources
-            .into_iter().find(|source| source.source.kind == SourceKind::RegisteredInstance).unwrap().source;
+        let source = list_agent_file_sources_inner(&owner)
+            .await
+            .unwrap()
+            .sources
+            .into_iter()
+            .find(|source| source.source.kind == SourceKind::RegisteredInstance)
+            .unwrap()
+            .source;
         let snapshot = read_agent_file_source_inner(&owner, source).await.unwrap();
         let ticket = snapshot.tickets["same"]["default"].clone();
         let default = crate::config::coding_agent_profiles::ReplicaSelectionDefault {
-            coding_agent_id: "same".into(), requested_profile: "B".into(),
-            selection_locked: false, configuration_ref: Some(ticket.configuration_ref.clone()),
+            coding_agent_id: "same".into(),
+            requested_profile: "B".into(),
+            selection_locked: false,
+            configuration_ref: Some(ticket.configuration_ref.clone()),
         };
         let fingerprint = selection_default_fingerprint(temp.path(), Some(&default)).unwrap();
         let mut changed = default.clone();
         changed.configuration_ref = None;
-        assert_ne!(fingerprint, selection_default_fingerprint(temp.path(), Some(&changed)).unwrap());
-        let fingerprint = source_selection_fingerprint("target", &ticket, Some("source-default")).unwrap();
-        assert_ne!(fingerprint, source_selection_fingerprint("target", &ticket, Some("manual")).unwrap());
-        assert_ne!(fingerprint, source_selection_fingerprint("other", &ticket, Some("source-default")).unwrap());
+        assert_ne!(
+            fingerprint,
+            selection_default_fingerprint(temp.path(), Some(&changed)).unwrap()
+        );
+        let fingerprint =
+            source_selection_fingerprint("target", &ticket, Some("source-default")).unwrap();
+        assert_ne!(
+            fingerprint,
+            source_selection_fingerprint("target", &ticket, Some("manual")).unwrap()
+        );
+        assert_ne!(
+            fingerprint,
+            source_selection_fingerprint("other", &ticket, Some("source-default")).unwrap()
+        );
         for field in ["context", "revision", "ref"] {
             let mut changed = ticket.clone();
             match field {
                 "context" => changed.catalog_context_revision.push('x'),
-                "revision" => changed.expected_source_revision = crate::config::settings::SourceRevision::Absent {},
-                _ => changed.configuration_ref.profile_calculated_id = Some(format!("cid1:{}", "a".repeat(64))),
+                "revision" => {
+                    changed.expected_source_revision =
+                        crate::config::settings::SourceRevision::Absent {}
+                }
+                _ => {
+                    changed.configuration_ref.profile_calculated_id =
+                        Some(format!("cid1:{}", "a".repeat(64)))
+                }
             }
-            assert_ne!(fingerprint, source_selection_fingerprint("target", &changed, Some("source-default")).unwrap());
+            assert_ne!(
+                fingerprint,
+                source_selection_fingerprint("target", &changed, Some("source-default")).unwrap()
+            );
         }
     }
 

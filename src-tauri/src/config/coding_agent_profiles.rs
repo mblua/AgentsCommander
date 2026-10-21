@@ -503,17 +503,29 @@ pub(crate) fn validate_configuration_ref_pair(
     reference: &ConfigurationRef,
     pair: &ReplicaSelectionPair,
 ) -> Result<(), String> {
-    let full_identity = |value: &str| value.strip_prefix("cid1:").is_some_and(|digest| {
-        digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    });
+    let full_identity = |value: &str| {
+        value.strip_prefix("cid1:").is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+    };
     if reference.version != 1
         || reference.source.context_root.is_empty()
         || pair.coding_agent_id.trim().is_empty()
         || !full_identity(&reference.calculated_id)
-        || !reference.profile_calculated_id.as_deref().is_some_and(full_identity)
+        || !reference
+            .profile_calculated_id
+            .as_deref()
+            .is_some_and(full_identity)
         || reference.legacy_entry_hint.as_deref() != Some(pair.coding_agent_id.as_str())
-        || normalize_profile_letter(&pair.requested_profile).as_deref() != Some(pair.requested_profile.as_str())
-        || reference.requested_profile.as_ref().is_some_and(|letter| letter != &pair.requested_profile)
+        || normalize_profile_letter(&pair.requested_profile).as_deref()
+            != Some(pair.requested_profile.as_str())
+        || reference
+            .requested_profile
+            .as_ref()
+            .is_some_and(|letter| letter != &pair.requested_profile)
     {
         return Err("invalid configurationRef or incompatible saved selection pair".into());
     }
@@ -524,9 +536,15 @@ fn configuration_ref_from_tooling(
     tooling: &serde_json::Map<String, Value>,
     pair: Option<&ReplicaSelectionPair>,
 ) -> Result<Option<ConfigurationRef>, String> {
-    let Some(raw) = tooling.get("configurationRef") else { return Ok(None); };
-    let reference: ConfigurationRef = serde_json::from_value(raw.clone()).map_err(|e| e.to_string())?;
-    validate_configuration_ref_pair(&reference, pair.ok_or("configurationRef requires a complete saved pair")?)?;
+    let Some(raw) = tooling.get("configurationRef") else {
+        return Ok(None);
+    };
+    let reference: ConfigurationRef =
+        serde_json::from_value(raw.clone()).map_err(|e| e.to_string())?;
+    validate_configuration_ref_pair(
+        &reference,
+        pair.ok_or("configurationRef requires a complete saved pair")?,
+    )?;
     Ok(Some(reference))
 }
 
@@ -536,21 +554,32 @@ fn configuration_ref_from_tooling(
 pub(crate) fn read_source_null_profile_result(
     launch_path: &Path,
 ) -> Result<ReplicaProfileRead, String> {
-    let (config, identity) = crate::config::replica_identity::read_wg_replica_config_read_only(launch_path)?;
+    let (config, identity) =
+        crate::config::replica_identity::read_wg_replica_config_read_only(launch_path)?;
     let state = selection_state_from_value(&config, &identity.identity);
     let expected = state.expectation()?;
     let warning = match state {
-        ReplicaSelectionState::Unlocked { warning, .. } | ReplicaSelectionState::Locked { warning, .. } => warning,
+        ReplicaSelectionState::Unlocked { warning, .. }
+        | ReplicaSelectionState::Locked { warning, .. } => warning,
         ReplicaSelectionState::Invalid { .. } => unreachable!("expectation rejects invalid state"),
     };
     let mut read = ReplicaProfileRead {
-        profile: config.pointer("/tooling/profile").and_then(Value::as_str)
+        profile: config
+            .pointer("/tooling/profile")
+            .and_then(Value::as_str)
             .and_then(normalize_profile_letter)
-            .or_else(|| config.pointer("/tooling/instanceProfileOverride")
-                .and_then(Value::as_str).and_then(normalize_profile_letter)),
+            .or_else(|| {
+                config
+                    .pointer("/tooling/instanceProfileOverride")
+                    .and_then(Value::as_str)
+                    .and_then(normalize_profile_letter)
+            }),
         warning,
     };
-    if expected.configuration_ref.as_ref().is_some_and(|reference| reference.requested_profile.is_none())
+    if expected
+        .configuration_ref
+        .as_ref()
+        .is_some_and(|reference| reference.requested_profile.is_none())
         && expected.profile_override_source.as_deref() == Some("source-default")
     {
         read.profile = None;
@@ -642,14 +671,26 @@ impl ReplicaSelectionState {
     /// never be force-repaired implicitly.
     pub fn expectation(&self) -> Result<ReplicaSelectionExpectation, String> {
         match self {
-            Self::Unlocked { identity, pair, configuration_ref, profile_override_source, .. } => Ok(ReplicaSelectionExpectation {
+            Self::Unlocked {
+                identity,
+                pair,
+                configuration_ref,
+                profile_override_source,
+                ..
+            } => Ok(ReplicaSelectionExpectation {
                 identity: identity.clone(),
                 pair: pair.clone(),
                 locked: false,
                 configuration_ref: configuration_ref.clone(),
                 profile_override_source: profile_override_source.clone(),
             }),
-            Self::Locked { identity, pair, configuration_ref, profile_override_source, .. } => Ok(ReplicaSelectionExpectation {
+            Self::Locked {
+                identity,
+                pair,
+                configuration_ref,
+                profile_override_source,
+                ..
+            } => Ok(ReplicaSelectionExpectation {
                 identity: identity.clone(),
                 pair: Some(pair.clone()),
                 locked: true,
@@ -796,9 +837,11 @@ pub(crate) fn selection_state_from_value(config: &Value, identity: &str) -> Repl
     let profile_override_source = match tooling.get("instanceProfileOverrideSource") {
         None => None,
         Some(Value::String(marker)) => Some(marker.clone()),
-        Some(_) if configuration_ref.is_some() => return ReplicaSelectionState::Invalid {
-            diagnostic: "instanceProfileOverrideSource must be a string".into(),
-        },
+        Some(_) if configuration_ref.is_some() => {
+            return ReplicaSelectionState::Invalid {
+                diagnostic: "instanceProfileOverrideSource must be a string".into(),
+            }
+        }
         Some(_) => None,
     };
     match (locked, pair) {
@@ -858,10 +901,13 @@ impl ReplicaSelectionDefault {
             );
         }
         if let Some(reference) = &self.configuration_ref {
-            validate_configuration_ref_pair(reference, &ReplicaSelectionPair {
-                coding_agent_id: coding_agent_id.clone(),
-                requested_profile: requested_profile.clone(),
-            })?;
+            validate_configuration_ref_pair(
+                reference,
+                &ReplicaSelectionPair {
+                    coding_agent_id: coding_agent_id.clone(),
+                    requested_profile: requested_profile.clone(),
+                },
+            )?;
         }
         Ok(Self {
             coding_agent_id,
@@ -912,7 +958,8 @@ fn parse_replica_selection_default(
         coding_agent_id,
         requested_profile,
         selection_locked,
-        configuration_ref: default.get("configurationRef")
+        configuration_ref: default
+            .get("configurationRef")
             .map(|raw| serde_json::from_value(raw.clone()).map_err(|e| e.to_string()))
             .transpose()?,
     }
@@ -985,12 +1032,13 @@ pub fn write_replica_selection_default(
             .as_object_mut()
             .ok_or_else(|| format!("tooling must be a JSON object at {}", config_path.display()))?;
         let mut value = serde_json::json!({
-                "codingAgentId": normalized.coding_agent_id,
-                "requestedProfile": normalized.requested_profile,
-                "selectionLocked": normalized.selection_locked,
-            });
+            "codingAgentId": normalized.coding_agent_id,
+            "requestedProfile": normalized.requested_profile,
+            "selectionLocked": normalized.selection_locked,
+        });
         if let Some(reference) = &normalized.configuration_ref {
-            value["configurationRef"] = serde_json::to_value(reference).map_err(|e| e.to_string())?;
+            value["configurationRef"] =
+                serde_json::to_value(reference).map_err(|e| e.to_string())?;
         }
         tooling.insert("replicaSelectionDefault".to_string(), value);
         Ok(())
@@ -1028,17 +1076,33 @@ pub(crate) fn apply_replica_selection_default(
     );
     tooling.insert(
         "instanceProfileOverrideSource".to_string(),
-        Value::String(if default.configuration_ref.as_ref().is_some_and(|reference| reference.requested_profile.is_none()) {
-            "source-default"
-        } else { "manual" }.to_string()),
+        Value::String(
+            if default
+                .configuration_ref
+                .as_ref()
+                .is_some_and(|reference| reference.requested_profile.is_none())
+            {
+                "source-default"
+            } else {
+                "manual"
+            }
+            .to_string(),
+        ),
     );
     tooling.insert(
         "selectionLocked".to_string(),
         Value::Bool(default.selection_locked),
     );
     match &default.configuration_ref {
-        Some(reference) => { tooling.insert("configurationRef".into(), serde_json::to_value(reference).map_err(|e| e.to_string())?); }
-        None => { tooling.remove("configurationRef"); }
+        Some(reference) => {
+            tooling.insert(
+                "configurationRef".into(),
+                serde_json::to_value(reference).map_err(|e| e.to_string())?,
+            );
+        }
+        None => {
+            tooling.remove("configurationRef");
+        }
     }
     Ok(())
 }
@@ -1662,7 +1726,14 @@ pub(crate) fn write_prepared_source_selection(
     } else if prepared.profile_override_source.as_deref() != Some("manual") {
         return Err("explicit source aliases require manual".into());
     }
-    write_replica_selection_prepared(settings, replica_path, &prepared.pair, intent, expected, Some(prepared))
+    write_replica_selection_prepared(
+        settings,
+        replica_path,
+        &prepared.pair,
+        intent,
+        expected,
+        Some(prepared),
+    )
 }
 
 fn write_replica_selection_prepared(
@@ -1699,8 +1770,11 @@ fn write_replica_selection_prepared(
                         // #2010 - KEEP: the same stored pair is a no-op, not an
                         // error; the lock stays and nothing is published.
                         if current_pair.as_ref() == Some(&requested_pair)
-                            && expected.configuration_ref.as_ref() == prepared.map(|value| &value.configuration_ref)
-                            && prepared.is_none_or(|value| value.profile_override_source == expected.profile_override_source)
+                            && expected.configuration_ref.as_ref()
+                                == prepared.map(|value| &value.configuration_ref)
+                            && prepared.is_none_or(|value| {
+                                value.profile_override_source == expected.profile_override_source
+                            })
                         {
                             marker.set(Some(SelectionGuardMarker::SkippedLocked));
                             return Err(NO_PUBLISH_SENTINEL.to_string());
@@ -1774,14 +1848,27 @@ fn publish_prepared_reference(
     prepared: Option<&PreparedSourceSelection>,
 ) -> Result<(), String> {
     if let Some(prepared) = prepared {
-        tooling.insert("configurationRef".into(), serde_json::to_value(&prepared.configuration_ref).map_err(|e| e.to_string())?);
+        tooling.insert(
+            "configurationRef".into(),
+            serde_json::to_value(&prepared.configuration_ref).map_err(|e| e.to_string())?,
+        );
         match &prepared.profile_override_source {
-            Some(marker) => { tooling.insert("instanceProfileOverrideSource".into(), Value::String(marker.clone())); }
-            None => { tooling.remove("instanceProfileOverrideSource"); }
+            Some(marker) => {
+                tooling.insert(
+                    "instanceProfileOverrideSource".into(),
+                    Value::String(marker.clone()),
+                );
+            }
+            None => {
+                tooling.remove("instanceProfileOverrideSource");
+            }
         }
     } else {
         tooling.remove("configurationRef");
-        tooling.insert("instanceProfileOverrideSource".into(), Value::String("manual".into()));
+        tooling.insert(
+            "instanceProfileOverrideSource".into(),
+            Value::String("manual".into()),
+        );
     }
     Ok(())
 }
@@ -1796,23 +1883,39 @@ pub(crate) fn set_prepared_source_profile_override(
     expected: &ReplicaSelectionExpectation,
 ) -> Result<(), String> {
     prepared.validate()?;
-    let previous = expected.configuration_ref.as_ref().ok_or("source reference required")?;
+    let previous = expected
+        .configuration_ref
+        .as_ref()
+        .ok_or("source reference required")?;
     if previous.source != prepared.configuration_ref.source
         || previous.calculated_id != prepared.configuration_ref.calculated_id
         || previous.legacy_entry_hint != prepared.configuration_ref.legacy_entry_hint
-        || previous.requested_profile.is_none() != prepared.configuration_ref.requested_profile.is_none()
+        || previous.requested_profile.is_none()
+            != prepared.configuration_ref.requested_profile.is_none()
         || prepared.profile_override_source.as_deref() != Some("manual")
     {
         return Err("manual source override must preserve source and null intent".into());
     }
     let replica_dir = validated_replica_dir(settings, replica_path)?;
-    crate::config::agent_config::update_existing_agent_config(&replica_dir.join("config.json"), |obj, _state| {
-        validate_selection_write_state(&replica_dir, expected)?;
-        let tooling = obj.get_mut("tooling").and_then(Value::as_object_mut).ok_or("tooling must be an object")?;
-        tooling.insert("profile".into(), Value::String(prepared.pair.requested_profile.clone()));
-        tooling.insert("instanceProfileOverride".into(), Value::String(prepared.pair.requested_profile.clone()));
-        publish_prepared_reference(tooling, Some(prepared))
-    })?;
+    crate::config::agent_config::update_existing_agent_config(
+        &replica_dir.join("config.json"),
+        |obj, _state| {
+            validate_selection_write_state(&replica_dir, expected)?;
+            let tooling = obj
+                .get_mut("tooling")
+                .and_then(Value::as_object_mut)
+                .ok_or("tooling must be an object")?;
+            tooling.insert(
+                "profile".into(),
+                Value::String(prepared.pair.requested_profile.clone()),
+            );
+            tooling.insert(
+                "instanceProfileOverride".into(),
+                Value::String(prepared.pair.requested_profile.clone()),
+            );
+            publish_prepared_reference(tooling, Some(prepared))
+        },
+    )?;
     Ok(())
 }
 
@@ -1928,7 +2031,9 @@ fn write_profile_to_launch_path(launch_path: &Path, profile: Option<&str>) -> Re
         match profile {
             Some(profile) => {
                 if tooling.contains_key("configurationRef") {
-                    return Err("source profile override requires a prepared same-source selection".into());
+                    return Err(
+                        "source profile override requires a prepared same-source selection".into(),
+                    );
                 }
                 // A new valid requested letter is permitted; the Coding Agent
                 // and the lock flag are preserved exactly as stored.
@@ -1943,7 +2048,9 @@ fn write_profile_to_launch_path(launch_path: &Path, profile: Option<&str>) -> Re
                 );
             }
             None => {
-                if protected_selection_pair_present(tooling) || tooling.contains_key("configurationRef") {
+                if protected_selection_pair_present(tooling)
+                    || tooling.contains_key("configurationRef")
+                {
                     return Err(format!(
                         "Cannot clear the profile at {} while a protected replica selection pair exists",
                         launch_path.display()
@@ -2778,7 +2885,9 @@ mod tests {
     }
 
     fn e2432_reference(requested: Option<&str>) -> ConfigurationRef {
-        use crate::config::settings::{SourceFamily, SourceKind, SourceRef, SourceRole, SourceScope};
+        use crate::config::settings::{
+            SourceFamily, SourceKind, SourceRef, SourceRole, SourceScope,
+        };
         ConfigurationRef {
             version: 1,
             source: SourceRef {
@@ -2801,26 +2910,58 @@ mod tests {
             "instanceProfileOverride": letter, "selectionLocked": locked,
             "configurationRef": e2432_reference(None), "unrelated": 42
         });
-        if let Some(marker) = marker { tooling["instanceProfileOverrideSource"] = marker.into(); }
+        if let Some(marker) = marker {
+            tooling["instanceProfileOverrideSource"] = marker.into();
+        }
         write_config(&fx.replica, &seed_selection_config(&tooling.to_string()));
     }
 
     #[test]
     fn e2432_source_null_marker_controls_alias_authority_and_fallback() {
         let fx = selection_fixture();
-        for marker in [Some("source-default"), Some("manual"), None, Some("historical")] {
-            let alias = if marker == Some("source-default") { "B" } else { "D" };
+        for marker in [
+            Some("source-default"),
+            Some("manual"),
+            None,
+            Some("historical"),
+        ] {
+            let alias = if marker == Some("source-default") {
+                "B"
+            } else {
+                "D"
+            };
             e2432_seed_source(&fx, marker, alias, false);
             let read = read_source_null_profile_result(&fx.replica).unwrap();
             let mut scoped = settings_with_cells(&[("codex", vec!["C", "D", "E"])]);
-            scoped.coding_agent_profiles.profiles_by_agent.get_mut("codex").unwrap().get_mut("D").unwrap().enabled = false;
-            scoped.coding_agent_profiles.default_profile_by_agent.insert("dev-rust".into(), if alias == "B" { "C" } else { "E" }.into());
-            let resolution = resolve_profile(&scoped, ProfileResolutionRequest {
-                coding_agent_id: "codex", launch_path: None,
-                agent_matrix_name: Some("dev-rust"), requested_profile: read.profile.as_deref(),
-                requested_profile_authoritative: true,
-            });
-            assert_eq!(resolution.requested_profile, if alias == "B" { "C" } else { "D" });
+            scoped
+                .coding_agent_profiles
+                .profiles_by_agent
+                .get_mut("codex")
+                .unwrap()
+                .get_mut("D")
+                .unwrap()
+                .enabled = false;
+            scoped
+                .coding_agent_profiles
+                .default_profile_by_agent
+                .insert(
+                    "dev-rust".into(),
+                    if alias == "B" { "C" } else { "E" }.into(),
+                );
+            let resolution = resolve_profile(
+                &scoped,
+                ProfileResolutionRequest {
+                    coding_agent_id: "codex",
+                    launch_path: None,
+                    agent_matrix_name: Some("dev-rust"),
+                    requested_profile: read.profile.as_deref(),
+                    requested_profile_authoritative: true,
+                },
+            );
+            assert_eq!(
+                resolution.requested_profile,
+                if alias == "B" { "C" } else { "D" }
+            );
             assert_eq!(resolution.effective_profile, "C");
             assert_eq!(config_value(&fx.replica)["tooling"]["profile"], alias);
         }
@@ -2837,29 +2978,60 @@ mod tests {
     fn e2432_source_prepared_publication_manual_clear_and_stale_are_atomic() {
         let fx = selection_fixture();
         e2432_seed_source(&fx, Some("source-default"), "B", false);
-        let expected = read_replica_selection_state(&fx.replica).expectation().unwrap();
+        let expected = read_replica_selection_state(&fx.replica)
+            .expectation()
+            .unwrap();
         let mut prepared = PreparedSourceSelection {
-            pair: ReplicaSelectionPair { coding_agent_id: "codex".into(), requested_profile: "C".into() },
+            pair: ReplicaSelectionPair {
+                coding_agent_id: "codex".into(),
+                requested_profile: "C".into(),
+            },
             configuration_ref: e2432_reference(None),
             profile_override_source: Some("source-default".into()),
         };
-        assert!(write_prepared_source_selection(&fx.settings, &fx.replica, &prepared, SelectionWriteIntent::Individual, &expected).unwrap().published);
+        assert!(
+            write_prepared_source_selection(
+                &fx.settings,
+                &fx.replica,
+                &prepared,
+                SelectionWriteIntent::Individual,
+                &expected
+            )
+            .unwrap()
+            .published
+        );
         assert_eq!(config_value(&fx.replica)["tooling"]["profile"], "C");
-        assert!(read_source_null_profile_result(&fx.replica).unwrap().profile.is_none());
+        assert!(read_source_null_profile_result(&fx.replica)
+            .unwrap()
+            .profile
+            .is_none());
         let before = config_bytes(&fx.replica);
-        assert!(write_prepared_source_selection(&fx.settings, &fx.replica, &prepared, SelectionWriteIntent::BulkForceReviewed, &expected).is_err());
+        assert!(write_prepared_source_selection(
+            &fx.settings,
+            &fx.replica,
+            &prepared,
+            SelectionWriteIntent::BulkForceReviewed,
+            &expected
+        )
+        .is_err());
         assert_eq!(config_bytes(&fx.replica), before);
-        let expected = read_replica_selection_state(&fx.replica).expectation().unwrap();
+        let expected = read_replica_selection_state(&fx.replica)
+            .expectation()
+            .unwrap();
         prepared.pair.requested_profile = "D".into();
         prepared.profile_override_source = Some("manual".into());
         prepared.configuration_ref.profile_calculated_id = Some(format!("cid1:{}", "c".repeat(64)));
-        set_prepared_source_profile_override(&fx.settings, &fx.replica, &prepared, &expected).unwrap();
+        set_prepared_source_profile_override(&fx.settings, &fx.replica, &prepared, &expected)
+            .unwrap();
         let after = config_value(&fx.replica);
         assert!(after["tooling"]["configurationRef"]["requestedProfile"].is_null());
         assert_eq!(after["tooling"]["profile"], "D");
         assert_eq!(after["tooling"]["instanceProfileOverride"], "D");
         assert_eq!(after["tooling"]["instanceProfileOverrideSource"], "manual");
-        assert_eq!(after["tooling"]["configurationRef"]["profileCalculatedId"], format!("cid1:{}", "c".repeat(64)));
+        assert_eq!(
+            after["tooling"]["configurationRef"]["profileCalculatedId"],
+            format!("cid1:{}", "c".repeat(64))
+        );
         assert_eq!(after["tooling"]["unrelated"], 42);
         for locked in [false, true] {
             e2432_seed_source(&fx, Some("manual"), "D", locked);
@@ -2868,64 +3040,144 @@ mod tests {
             assert_eq!(config_bytes(&fx.replica), before);
         }
         e2432_seed_source(&fx, Some("manual"), "D", false);
-        let expected = read_replica_selection_state(&fx.replica).expectation().unwrap();
+        let expected = read_replica_selection_state(&fx.replica)
+            .expectation()
+            .unwrap();
         prepared.pair.requested_profile = "E".into();
         prepared.profile_override_source = Some("source-default".into());
         let before = config_bytes(&fx.replica);
-        assert!(write_prepared_source_selection(&fx.settings, &fx.replica, &prepared, SelectionWriteIntent::Individual, &expected).is_err());
+        assert!(write_prepared_source_selection(
+            &fx.settings,
+            &fx.replica,
+            &prepared,
+            SelectionWriteIntent::Individual,
+            &expected
+        )
+        .is_err());
         assert_eq!(config_bytes(&fx.replica), before);
         prepared.pair.requested_profile = "D".into();
         prepared.profile_override_source = Some("manual".into());
-        assert!(write_prepared_source_selection(&fx.settings, &fx.replica, &prepared, SelectionWriteIntent::Individual, &expected).unwrap().published);
+        assert!(
+            write_prepared_source_selection(
+                &fx.settings,
+                &fx.replica,
+                &prepared,
+                SelectionWriteIntent::Individual,
+                &expected
+            )
+            .unwrap()
+            .published
+        );
         // A deliberate legacy replacement removes stale provenance in its publish.
-        let expected = read_replica_selection_state(&fx.replica).expectation().unwrap();
-        write_replica_selection(&fx.settings, &fx.replica, &prepared.pair, SelectionWriteIntent::Individual, &expected).unwrap();
-        assert!(config_value(&fx.replica)["tooling"].get("configurationRef").is_none());
+        let expected = read_replica_selection_state(&fx.replica)
+            .expectation()
+            .unwrap();
+        write_replica_selection(
+            &fx.settings,
+            &fx.replica,
+            &prepared.pair,
+            SelectionWriteIntent::Individual,
+            &expected,
+        )
+        .unwrap();
+        assert!(config_value(&fx.replica)["tooling"]
+            .get("configurationRef")
+            .is_none());
     }
 
     #[test]
     fn e2432_source_reference_default_roundtrip_invalid_and_lock_controls() {
         let fx = selection_fixture();
         let default = ReplicaSelectionDefault {
-            coding_agent_id: "codex".into(), requested_profile: "B".into(),
-            selection_locked: true, configuration_ref: Some(e2432_reference(None)),
+            coding_agent_id: "codex".into(),
+            requested_profile: "B".into(),
+            selection_locked: true,
+            configuration_ref: Some(e2432_reference(None)),
         };
         write_replica_selection_default(&fx.matrix, &default, None).unwrap();
-        assert_eq!(read_replica_selection_default(&fx.matrix).unwrap(), Some(default.clone()));
+        assert_eq!(
+            read_replica_selection_default(&fx.matrix).unwrap(),
+            Some(default.clone())
+        );
         set_agent_default_profile(&fx.settings, &fx.matrix, "E").unwrap();
-        assert_eq!(read_replica_selection_default(&fx.matrix).unwrap(), Some(default.clone()));
+        assert_eq!(
+            read_replica_selection_default(&fx.matrix).unwrap(),
+            Some(default.clone())
+        );
         let mut value = serde_json::json!({"identity": REPLICA_IDENTITY});
         apply_replica_selection_default(&mut value, &default).unwrap();
-        assert_eq!(value["tooling"]["instanceProfileOverrideSource"], "source-default");
+        assert_eq!(
+            value["tooling"]["instanceProfileOverrideSource"],
+            "source-default"
+        );
         write_config(&fx.replica, &value.to_string());
-        let expected = read_replica_selection_state(&fx.replica).expectation().unwrap();
+        let expected = read_replica_selection_state(&fx.replica)
+            .expectation()
+            .unwrap();
         let prepared = PreparedSourceSelection {
-            pair: expected.pair.clone().unwrap(), configuration_ref: default.configuration_ref.clone().unwrap(),
+            pair: expected.pair.clone().unwrap(),
+            configuration_ref: default.configuration_ref.clone().unwrap(),
             profile_override_source: Some("source-default".into()),
         };
         let before = config_bytes(&fx.replica);
-        for intent in [SelectionWriteIntent::Individual, SelectionWriteIntent::BulkOrdinary] {
-            assert!(!write_prepared_source_selection(&fx.settings, &fx.replica, &prepared, intent, &expected).unwrap().published);
+        for intent in [
+            SelectionWriteIntent::Individual,
+            SelectionWriteIntent::BulkOrdinary,
+        ] {
+            assert!(
+                !write_prepared_source_selection(
+                    &fx.settings,
+                    &fx.replica,
+                    &prepared,
+                    intent,
+                    &expected
+                )
+                .unwrap()
+                .published
+            );
             assert_eq!(config_bytes(&fx.replica), before);
         }
-        for bad in [Value::Null, serde_json::json!({}), serde_json::to_value(e2432_reference(Some("D"))).unwrap()] {
+        for bad in [
+            Value::Null,
+            serde_json::json!({}),
+            serde_json::to_value(e2432_reference(Some("D"))).unwrap(),
+        ] {
             let mut invalid = value.clone();
             invalid["tooling"]["configurationRef"] = bad;
             write_config(&fx.replica, &invalid.to_string());
             let before = config_bytes(&fx.replica);
-            assert!(read_replica_selection_state(&fx.replica).expectation().is_err());
-            assert!(write_prepared_source_selection(&fx.settings, &fx.replica, &prepared, SelectionWriteIntent::BulkForceReviewed, &expected).is_err());
+            assert!(read_replica_selection_state(&fx.replica)
+                .expectation()
+                .is_err());
+            assert!(write_prepared_source_selection(
+                &fx.settings,
+                &fx.replica,
+                &prepared,
+                SelectionWriteIntent::BulkForceReviewed,
+                &expected
+            )
+            .is_err());
             assert_eq!(config_bytes(&fx.replica), before);
         }
         // Marker and reference drift alone invalidate an otherwise equal pair.
         for field in ["instanceProfileOverrideSource", "configurationRef"] {
             let mut changed = value.clone();
             if field == "configurationRef" {
-                changed["tooling"][field]["profileCalculatedId"] = format!("cid1:{}", "d".repeat(64)).into();
-            } else { changed["tooling"][field] = "historical".into(); }
+                changed["tooling"][field]["profileCalculatedId"] =
+                    format!("cid1:{}", "d".repeat(64)).into();
+            } else {
+                changed["tooling"][field] = "historical".into();
+            }
             write_config(&fx.replica, &changed.to_string());
             let before = config_bytes(&fx.replica);
-            assert!(write_prepared_source_selection(&fx.settings, &fx.replica, &prepared, SelectionWriteIntent::BulkForceReviewed, &expected).is_err());
+            assert!(write_prepared_source_selection(
+                &fx.settings,
+                &fx.replica,
+                &prepared,
+                SelectionWriteIntent::BulkForceReviewed,
+                &expected
+            )
+            .is_err());
             assert_eq!(config_bytes(&fx.replica), before);
         }
     }
