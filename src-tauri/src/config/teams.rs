@@ -2081,12 +2081,13 @@ mod tests {
             let files = [&d, &st, &team];
             std::fs::write(files[side], br#"{"unknown-canary":"value-canary","unknown-canary":0}"#).unwrap();
             let before: Vec<_> = files.iter().map(|path| std::fs::read(path).unwrap()).collect();
-            for error in [
-                resolve_wg_coordinator_replica_checked(&ac_root, &room).unwrap_err(),
-                verified_wg_coordinator_target_checked("proj-a:wg-1-dev-team/tech-lead", &paths).unwrap_err(),
+            for (resolver, error) in [
+                ("resolve_wg_coordinator_replica_checked", resolve_wg_coordinator_replica_checked(&ac_root, &room).unwrap_err()),
+                ("verified_wg_coordinator_target_checked", verified_wg_coordinator_target_checked("proj-a:wg-1-dev-team/tech-lead", &paths).unwrap_err()),
             ] {
                 assert!(error.contains("duplicateJsonMember:"));
-                assert!(error.contains(files[side].to_str().unwrap()));
+                assert!(error.contains(files[side].to_str().unwrap()),
+                    "side={side} resolver={resolver} expected_physical_path={:?} returned_error={error:?}", files[side]);
                 assert!(!error.contains("canary"));
             }
             for (path, bytes) in files.iter().zip(before) { assert_eq!(std::fs::read(path).unwrap(), bytes); }

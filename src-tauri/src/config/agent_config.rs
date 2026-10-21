@@ -1819,7 +1819,9 @@ mod tests {
         assert!(matches!(error, AgentConfigWriteError::Ordinary(_)));
         std::fs::write(temp.path().join("config.json"), b"{").unwrap();
         assert!(read_agent_local_config_checked(temp.path()).unwrap().is_none());
-        assert!(read_agent_local_config_json(temp.path()).unwrap_err().contains("parse"));
+        let native_error = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        assert!(native_error.is_eof());
+        assert_eq!(read_agent_local_config_json(temp.path()).unwrap_err(), native_error.to_string());
     }
 
     use super::*;
