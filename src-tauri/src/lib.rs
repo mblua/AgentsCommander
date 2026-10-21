@@ -2336,7 +2336,6 @@ fn load_startup_sessions(
     Ok(load(&paths))
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Production restore seam shared by root, ordinary and deferred branches.
 fn prepare_persisted_restore(
     persisted: &config::sessions_persistence::PersistedSession,
@@ -2423,6 +2422,7 @@ fn resolve_current_persisted_restore(
     Ok(spawn)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_native_restore_startup(
     app: tauri::AppHandle,
     restore_barrier: crate::session::selection::RestoreBarrierGuard,

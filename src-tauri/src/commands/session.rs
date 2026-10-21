@@ -492,14 +492,14 @@ impl InitialLastPrompt {
 }
 
 enum CreateCompletion {
-    Finalized(SessionInfo),
-    Deferred(DeferredCreateOutput),
+    Finalized(Box<SessionInfo>),
+    Deferred(Box<DeferredCreateOutput>),
 }
 
 impl CreateCompletion {
     fn into_finalized(self) -> Result<SessionInfo, String> {
         match self {
-            Self::Finalized(info) => Ok(info),
+            Self::Finalized(info) => Ok(*info),
             Self::Deferred(_) => Err("create unexpectedly deferred finalization".to_string()),
         }
     }
@@ -3598,13 +3598,13 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .take();
-            return Ok(CreateCompletion::Deferred(DeferredCreateOutput {
+            return Ok(CreateCompletion::Deferred(Box::new(DeferredCreateOutput {
                 restart_binding,
                 info,
                 binding: pending_binding,
                 warnings: finalization_warnings,
                 effective_continuation,
-            }));
+            })));
         }
 
         let finalized = if let Some(ticket) = create_ticket.take() {
@@ -3624,7 +3624,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 .unwrap_or_else(|error| error.into_inner())
                 .take();
         }
-        let completion = finalized.map(CreateCompletion::Finalized);
+        let completion = finalized.map(|info| CreateCompletion::Finalized(Box::new(info)));
         // #2232 phase 4 section 5.1: the Room demand may be raised only once
         // the row is **finalized and visible** to `get_session` — a
         // pending-create row is hidden, so a raise spawned earlier answers
@@ -3730,7 +3730,7 @@ pub(crate) enum SourceRestoreMode {
 pub(crate) enum SourceRestoreDecision {
     Legacy,
     SourceWake {
-        scoped_settings: AppSettings,
+        scoped_settings: Box<AppSettings>,
         entry_hint: String,
         effective_profile: String,
         updated_seed: crate::config::sessions_persistence::CodingAgentBindingSeed,
@@ -3828,7 +3828,7 @@ pub(crate) fn prepare_source_restore_decision(
         binding.seed = Some(serde_json::to_value(&updated_seed).map_err(|e| e.to_string())?);
         Ok(match mode {
             SourceRestoreMode::Wake => SourceRestoreDecision::SourceWake {
-                scoped_settings,
+                scoped_settings: Box::new(scoped_settings),
                 entry_hint,
                 effective_profile: resolution.effective_profile,
                 updated_seed,
@@ -6116,7 +6116,7 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
     )
     .await;
     let deferred = match completion {
-        Ok(CreateCompletion::Deferred(deferred)) => deferred,
+        Ok(CreateCompletion::Deferred(deferred)) => *deferred,
         Ok(CreateCompletion::Finalized(_)) => {
             let error = "restart replacement was published before atomic finalization".to_string();
             if old_lost {
@@ -7978,9 +7978,12 @@ mod tests {
         let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
             backend.clone(),
         )));
-        let app = session_test_app(host, session_mgr.clone(), pty_mgr.clone());
-        app.unmanage::<crate::config::settings::SettingsState>();
-        assert!(app.manage(owner.clone()));
+        let app = session_test_app_with_owner_and_store(
+            owner.clone(),
+            session_mgr.clone(),
+            pty_mgr.clone(),
+            SessionTestStoreState::Ready,
+        );
         let before = std::fs::read(&path).unwrap();
         let error = crate::config::sessions_persistence::enforce_creation_gate(
             app.handle(),
@@ -8120,7 +8123,15 @@ mod tests {
         let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
             backend.clone(),
         )));
-        let app = session_test_app(host.clone(), session_mgr.clone(), pty_mgr.clone());
+        let owner =
+            crate::config::settings::new_runtime_settings_state_at_path(host.clone(), &path)
+                .unwrap();
+        let app = session_test_app_with_owner_and_store(
+            owner,
+            session_mgr.clone(),
+            pty_mgr.clone(),
+            SessionTestStoreState::Ready,
+        );
         let manager = session_mgr.read().await.clone();
 
         for malformed in [false, true] {
@@ -8184,11 +8195,6 @@ mod tests {
         }
 
         std::fs::write(&config_path, serde_json::to_vec(&valid_config).unwrap()).unwrap();
-        let owner =
-            crate::config::settings::new_runtime_settings_state_at_path(host.clone(), &path)
-                .unwrap();
-        app.unmanage::<crate::config::settings::SettingsState>();
-        assert!(app.manage(owner));
         let snapshot =
             crate::config::settings::capture_runtime_source(&host, &path, &reference.source)
                 .unwrap();
@@ -8563,12 +8569,15 @@ mod tests {
         let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
             backend.clone(),
         )));
-        let app = session_test_app(host.clone(), session_mgr.clone(), pty_mgr.clone());
         let owner =
             crate::config::settings::new_runtime_settings_state_at_path(host.clone(), &path)
                 .unwrap();
-        app.unmanage::<crate::config::settings::SettingsState>();
-        assert!(app.manage(owner));
+        let app = session_test_app_with_owner_and_store(
+            owner,
+            session_mgr.clone(),
+            pty_mgr.clone(),
+            SessionTestStoreState::Ready,
+        );
         let transaction =
             crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
         let reference = persisted
@@ -8971,12 +8980,15 @@ mod tests {
         let pty = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
             backend.clone(),
         )));
-        let app = session_test_app(host.clone(), sessions.clone(), pty.clone());
-        app.unmanage::<crate::config::settings::SettingsState>();
         let owner =
             crate::config::settings::new_runtime_settings_state_at_path(host.clone(), &path)
                 .unwrap();
-        assert!(app.manage(owner));
+        let app = session_test_app_with_owner_and_store(
+            owner,
+            sessions.clone(),
+            pty.clone(),
+            SessionTestStoreState::Ready,
+        );
         let transaction =
             crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
         let first = super::create_session_inner_for_restore(
@@ -9238,12 +9250,15 @@ mod tests {
         let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
             Arc::new(ScriptedSpawnBackend::default()),
         )));
-        let app = session_test_app(host.clone(), session_mgr.clone(), pty_mgr.clone());
         let owner =
             crate::config::settings::new_runtime_settings_state_at_path(host.clone(), &path)
                 .unwrap();
-        app.unmanage::<crate::config::settings::SettingsState>();
-        assert!(app.manage(owner));
+        let app = session_test_app_with_owner_and_store(
+            owner,
+            session_mgr.clone(),
+            pty_mgr.clone(),
+            SessionTestStoreState::Ready,
+        );
         let transaction =
             crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
         let seed = persisted.coding_agent_binding_seed.as_ref().unwrap();
@@ -11017,6 +11032,20 @@ mod tests {
         pty_mgr: Arc<Mutex<crate::pty::manager::PtyManager>>,
         store_state: SessionTestStoreState,
     ) -> tauri::App<tauri::test::MockRuntime> {
+        session_test_app_with_owner_and_store(
+            crate::config::settings::new_settings_state(settings),
+            session_mgr,
+            pty_mgr,
+            store_state,
+        )
+    }
+
+    fn session_test_app_with_owner_and_store(
+        settings_state: crate::config::settings::SettingsState,
+        session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+        pty_mgr: Arc<Mutex<crate::pty::manager::PtyManager>>,
+        store_state: SessionTestStoreState,
+    ) -> tauri::App<tauri::test::MockRuntime> {
         let shutdown = crate::shutdown::ShutdownSignal::new();
         let coordinator = crate::session::selection::SelectionCoordinator::new(
             Arc::clone(&session_mgr),
@@ -11047,7 +11076,7 @@ mod tests {
         let target_gate_state =
             crate::api::message_store::PtyInputTargetGateState::for_root(store_root);
         let mut builder = tauri::test::mock_builder()
-            .manage(crate::config::settings::new_settings_state(settings))
+            .manage(settings_state)
             .manage(Arc::new(
                 crate::resource_monitor::ResourceMonitorState::new(),
             ))
