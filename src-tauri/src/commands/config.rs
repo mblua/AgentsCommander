@@ -13975,13 +13975,14 @@ mod tests {
             "dev-rust",
             locked_tooling("B", "agent-0"),
         );
-        // The lenient anchor validation accepts a duplicate key; the strict
-        // reader rejects it, so the failure is the strict read's own.
+        // Duplicate admission rejects the anchor before the legacy strict reader.
+        let config_path = anchor.join("config.json");
         std::fs::write(
-            anchor.join("config.json"),
+            &config_path,
             br#"{"identity":"../../_agent_dev-rust","tooling":{},"tooling":{}}"#,
         )
         .expect("break anchor");
+        let original = std::fs::read(&config_path).unwrap();
         let settings = selection_api_settings(&fixture);
         let error = match super::enumerate_profile_assignment_targets(
             &settings,
@@ -13992,7 +13993,12 @@ mod tests {
             Ok(_) => panic!("a strictly unparseable anchor must fail the enumeration"),
             Err(error) => error,
         };
-        assert!(error.contains("Target replica '"), "{error}");
+        assert!(error.contains("duplicateJsonMember:"), "{error}");
+        assert!(error.contains(config_path.to_str().unwrap()), "{error}");
+        assert!(error.contains("repeated JSON object members"), "{error}");
+        assert!(!error.contains("tooling"), "{error}");
+        assert!(!error.contains("../../_agent_dev-rust"), "{error}");
+        assert_eq!(std::fs::read(&config_path).unwrap(), original);
     }
 
     #[test]

@@ -2539,13 +2539,21 @@ mod tests {
                     requested_profile: Some("A"),
                     requested_profile_authoritative: true,
                 };
-                for error in [
-                    resolve_profile_checked(&fx.settings, request).unwrap_err(),
-                    resolve_profile_selection(&fx.settings, Some(&fx.replica), "codex", Some("A"))
-                        .unwrap_err(),
+                for (resolver, error) in [
+                    (
+                        "resolve_profile_checked",
+                        resolve_profile_checked(&fx.settings, request).unwrap_err(),
+                    ),
+                    (
+                        "resolve_profile_selection",
+                        resolve_profile_selection(&fx.settings, Some(&fx.replica), "codex", Some("A"))
+                            .unwrap_err(),
+                    ),
                 ] {
                     assert!(error.contains("duplicateJsonMember:"));
-                    assert!(error.contains(paths[side].to_str().unwrap()));
+                    assert!(error.contains(paths[side].to_str().unwrap()),
+                        "origin={origin} side={side} resolver={resolver} expected_physical_file={:?} returned_error={error:?} expected_canonical={:?} expected_metadata={:?}",
+                        paths[side], std::fs::canonicalize(paths[side]), std::fs::symlink_metadata(paths[side]));
                     assert!(!error.contains("canary"));
                 }
                 if !origin && side == 0 {

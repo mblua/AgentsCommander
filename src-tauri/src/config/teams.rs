@@ -2258,15 +2258,13 @@ mod tests {
         assert_eq!(std::fs::read(&reservation).unwrap(), control);
         assert_eq!(std::fs::read(&d).unwrap(), original[0]);
         assert_eq!(std::fs::read(&st).unwrap(), original[1]);
-        let closing = original[side]
-            .iter()
-            .rposition(|byte| *byte == b'}')
-            .unwrap();
+        let closing = original[side].iter().rposition(|byte| *byte == 0x7d).unwrap();
         let mut bytes = original[side][..closing].to_vec();
         if closing > 1 {
             bytes.push(b',');
         }
-        bytes.extend_from_slice(br#""unknown-canary":"secret-canary","unknown-canary":0}"#);
+        bytes.extend_from_slice(br#""unknown-canary":"secret-canary","unknown-canary":0"#);
+        bytes.push(0x7d);
         let image = serde_json::to_value(IdentityReferencePhysicalState::from_bytes(bytes.clone()))
             .unwrap();
         match slot {

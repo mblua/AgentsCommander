@@ -555,7 +555,16 @@ mod tests {
             if side == 0 {
                 let (fault, message) =
                     read_wg_replica_config_read_only_classified(&replica).unwrap_err();
-                assert_eq!(fault, ReplicaConfigFault::DuplicateJsonMember);
+                assert_eq!(
+                    fault,
+                    ReplicaConfigFault::DuplicateJsonMember,
+                    "side={side} physical_file={d:?} actual_fault={fault:?} message={message:?} canonical={:?} component_chain={:?} ancestors={:?}",
+                    std::fs::canonicalize(&d),
+                    crate::path_identity::verify_component_chain_reason(&replica),
+                    d.ancestors()
+                        .map(|path| (path.to_path_buf(), std::fs::symlink_metadata(path)))
+                        .collect::<Vec<_>>()
+                );
                 assert!(message.contains(d.to_str().unwrap()));
                 assert!(!message.contains("canary"));
             }
