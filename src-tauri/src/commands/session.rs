@@ -18230,7 +18230,6 @@ pub(crate) mod reader_demand_tests {
             .await
             .unwrap();
             assert_eq!(result.last_prompt, None, "incompatible domain {mode}");
-            drop(settings);
             h.release_all(Uuid::parse_str(&result.id).unwrap()).await;
             h.close().await;
         }
