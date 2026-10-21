@@ -607,9 +607,15 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 serde_json::from_value(args.get("newSettings").cloned().unwrap_or(args.clone()))
                     .map_err(|e| e.to_string())?;
 
-            let (saved, changed) = crate::commands::config::persist_protected_settings_update(
+            let tracker = state.app_handle.try_state::<crate::pty::manager::ResponseCloseState>().map(|state| state.inner().clone());
+            let (saved, changed) = crate::commands::config::persist_protected_settings_update_with_publication(
                 &state.settings,
                 new_settings,
+                |written| {
+                    if let Some(tracker) = &tracker {
+                        tracker.apply_settings(written.response_close_enabled, written.response_close_idle_seconds, std::time::Instant::now());
+                    }
+                },
             )
             .await?;
             if changed {
@@ -630,9 +636,13 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 serde_json::from_value(args.get("draft").cloned().unwrap_or(args.clone()))
                     .map_err(|e| e.to_string())?;
 
+            let tracker = state.app_handle.try_state::<crate::pty::manager::ResponseCloseState>().map(|state| state.inner().clone());
             let (saved, events) =
-                crate::commands::config::persist_settings_draft_update(&state.settings, draft)
-                    .await?;
+                crate::commands::config::persist_settings_draft_update_with_publication(&state.settings, draft, |written| {
+                    if let Some(tracker) = &tracker {
+                        tracker.apply_settings(written.response_close_enabled, written.response_close_idle_seconds, std::time::Instant::now());
+                    }
+                }).await?;
             if events.room_idle_confirmation_changed {
                 broadcast_all(
                     &state.app_handle,
@@ -665,10 +675,16 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         "set_terminal_snapshots_enabled" => {
             let expected: bool = require_json(args, "expected")?;
             let enabled: bool = require_json(args, "enabled")?;
-            crate::commands::config::set_terminal_snapshots_enabled_inner(
+            let tracker = state.app_handle.try_state::<crate::pty::manager::ResponseCloseState>().map(|state| state.inner().clone());
+            crate::commands::config::set_terminal_snapshots_enabled_with_publication(
                 &state.settings,
                 expected,
                 enabled,
+                |written| {
+                    if let Some(tracker) = &tracker {
+                        tracker.apply_settings(written.response_close_enabled, written.response_close_idle_seconds, std::time::Instant::now());
+                    }
+                },
             )
             .await?;
             Ok(json!(null))

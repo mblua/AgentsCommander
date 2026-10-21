@@ -1047,7 +1047,20 @@ async fn update_settings_with_hotkey_registration(
     new_settings: AppSettings,
     register_hotkey: fn(&AppHandle, &str) -> Result<(), String>,
 ) -> Result<(), String> {
-    let (saved, changed) = persist_protected_settings_update(settings, new_settings).await?;
+    let tracker = app
+        .try_state::<crate::pty::manager::ResponseCloseState>()
+        .map(|state| state.inner().clone());
+    let (saved, changed) =
+        persist_protected_settings_update_with_publication(settings, new_settings, |written| {
+            if let Some(tracker) = &tracker {
+                tracker.apply_settings(
+                    written.response_close_enabled,
+                    written.response_close_idle_seconds,
+                    std::time::Instant::now(),
+                );
+            }
+        })
+        .await?;
     emit_room_idle_confirmation_updated(&app, changed);
     purge_sessions_after_settings_update(&saved).await;
     // #714 re-register the (possibly changed) hotkey. Syntax was already validated
@@ -1085,7 +1098,20 @@ async fn save_settings_draft_with_hotkey_registration(
     draft: AppSettings,
     register_hotkey: fn(&AppHandle, &str) -> Result<(), String>,
 ) -> Result<(), String> {
-    let (saved, events) = persist_settings_draft_update(settings, draft).await?;
+    let tracker = app
+        .try_state::<crate::pty::manager::ResponseCloseState>()
+        .map(|state| state.inner().clone());
+    let (saved, events) =
+        persist_settings_draft_update_with_publication(settings, draft, |written| {
+            if let Some(tracker) = &tracker {
+                tracker.apply_settings(
+                    written.response_close_enabled,
+                    written.response_close_idle_seconds,
+                    std::time::Instant::now(),
+                );
+            }
+        })
+        .await?;
     emit_room_idle_confirmation_updated(&app, events.room_idle_confirmation_changed);
     purge_sessions_after_settings_update(&saved).await;
     // #714 same non-failing hotkey re-registration as update_settings: persisted
@@ -1111,29 +1137,61 @@ async fn save_settings_draft_with_hotkey_registration(
 
 #[tauri::command]
 pub async fn set_terminal_snapshots_enabled(
+    app: AppHandle,
     settings: State<'_, SettingsState>,
     expected: bool,
     enabled: bool,
 ) -> Result<(), String> {
-    set_terminal_snapshots_enabled_inner(settings.inner(), expected, enabled).await
+    let tracker = app
+        .try_state::<crate::pty::manager::ResponseCloseState>()
+        .map(|state| state.inner().clone());
+    set_terminal_snapshots_enabled_with_publication(
+        settings.inner(),
+        expected,
+        enabled,
+        |written| {
+            if let Some(tracker) = &tracker {
+                tracker.apply_settings(
+                    written.response_close_enabled,
+                    written.response_close_idle_seconds,
+                    std::time::Instant::now(),
+                );
+            }
+        },
+    )
+    .await
 }
 
 /// Shared #1173 owner used by native Tauri and browser WebSocket transports.
 /// Whole-settings writers preserve this field and cannot call this owner
 /// without an explicit expected value.
+// Compatibility entry point for tests and dormant callers without an app tracker.
+#[allow(dead_code)]
 pub(crate) async fn set_terminal_snapshots_enabled_inner(
     settings: &SettingsState,
     expected: bool,
     enabled: bool,
 ) -> Result<(), String> {
+    set_terminal_snapshots_enabled_with_publication(settings, expected, enabled, |_| {}).await
+}
+
+pub(crate) async fn set_terminal_snapshots_enabled_with_publication(
+    settings: &SettingsState,
+    expected: bool,
+    enabled: bool,
+    mut publish: impl FnMut(&AppSettings),
+) -> Result<(), String> {
     let mut guard = settings.write().await;
     let written = crate::config::settings::compare_and_set_terminal_snapshots_enabled(
         &guard, expected, enabled,
     )?;
+    publish(&written);
     *guard = written;
     Ok(())
 }
 
+// Compatibility entry point for tests and dormant callers without an app tracker.
+#[allow(dead_code)]
 pub(crate) async fn persist_protected_settings_update(
     settings: &SettingsState,
     new_settings: AppSettings,
@@ -1141,16 +1199,48 @@ pub(crate) async fn persist_protected_settings_update(
     persist_protected_settings_update_with_saver(settings, new_settings, save_settings).await
 }
 
+pub(crate) async fn persist_protected_settings_update_with_publication(
+    settings: &SettingsState,
+    new_settings: AppSettings,
+    publish: impl FnMut(&AppSettings),
+) -> Result<(AppSettings, bool), String> {
+    persist_protected_settings_update_with_saver_and_publication(
+        settings,
+        new_settings,
+        save_settings,
+        publish,
+    )
+    .await
+}
+
 async fn persist_protected_settings_update_with_saver(
     settings: &SettingsState,
     new_settings: AppSettings,
     save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
+) -> Result<(AppSettings, bool), String> {
+    persist_protected_settings_update_with_saver_and_publication(
+        settings,
+        new_settings,
+        save,
+        |_| {},
+    )
+    .await
+}
+
+/// Publish the effective saved value before adoption under settings ownership.
+/// The synchronous callback must not acquire the settings lock.
+async fn persist_protected_settings_update_with_saver_and_publication(
+    settings: &SettingsState,
+    new_settings: AppSettings,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
+    mut publish: impl FnMut(&AppSettings),
 ) -> Result<(AppSettings, bool), String> {
     let mut s = settings.write().await;
     let current = s.clone();
     let candidate = build_protected_settings_candidate(&current, new_settings)?;
     let written = save(&candidate)?;
     let changed = current.room_idle_confirmation_seconds != written.room_idle_confirmation_seconds;
+    publish(&written);
     *s = written.clone();
     Ok((written, changed))
 }
@@ -1238,6 +1328,8 @@ fn build_protected_settings_candidate(
     Ok(candidate)
 }
 
+// Compatibility entry point for tests and dormant callers without an app tracker.
+#[allow(dead_code)]
 pub(crate) async fn persist_settings_draft_update(
     settings: &SettingsState,
     draft: AppSettings,
@@ -1245,10 +1337,35 @@ pub(crate) async fn persist_settings_draft_update(
     persist_settings_draft_update_with_saver(settings, draft, save_settings).await
 }
 
+pub(crate) async fn persist_settings_draft_update_with_publication(
+    settings: &SettingsState,
+    draft: AppSettings,
+    publish: impl FnMut(&AppSettings),
+) -> Result<(AppSettings, SettingsDraftUpdateEvents), String> {
+    persist_settings_draft_update_with_saver_and_publication(
+        settings,
+        draft,
+        save_settings,
+        publish,
+    )
+    .await
+}
+
 async fn persist_settings_draft_update_with_saver(
+    settings: &SettingsState,
+    draft: AppSettings,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
+) -> Result<(AppSettings, SettingsDraftUpdateEvents), String> {
+    persist_settings_draft_update_with_saver_and_publication(settings, draft, save, |_| {}).await
+}
+
+/// Publish the effective saved value before adoption under settings ownership.
+/// The synchronous callback must not acquire the settings lock.
+async fn persist_settings_draft_update_with_saver_and_publication(
     settings: &SettingsState,
     mut draft: AppSettings,
     save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
+    mut publish: impl FnMut(&AppSettings),
 ) -> Result<(AppSettings, SettingsDraftUpdateEvents), String> {
     let mut s = settings.write().await;
     let current = s.clone();
@@ -1280,6 +1397,7 @@ async fn persist_settings_draft_update_with_saver(
     let written = save(&draft)?;
     events.room_idle_confirmation_changed =
         current.room_idle_confirmation_seconds != written.room_idle_confirmation_seconds;
+    publish(&written);
     *s = written.clone();
     Ok((written, events))
 }
@@ -5042,31 +5160,53 @@ mod tests {
                     room_idle_confirmation_seconds: candidate_seconds,
                     ..current
                 };
+                let stage = std::cell::Cell::new(0);
                 let saver = |candidate: &AppSettings| {
                     assert!(
                         state.try_write().is_err(),
                         "saver must run under writer lock"
                     );
                     assert_eq!(candidate.room_idle_confirmation_seconds, candidate_seconds);
+                    assert_eq!(stage.replace(1), 0);
                     let mut written = candidate.clone();
+                    written.response_close_enabled = false;
+                    written.response_close_idle_seconds = written_seconds;
                     written.room_idle_confirmation_seconds = written_seconds;
                     Ok(written)
                 };
+                let publish = |written: &AppSettings| {
+                    assert!(
+                        state.try_read().is_err(),
+                        "publication precedes reader visibility"
+                    );
+                    assert_eq!(stage.replace(2), 1, "publication follows successful save");
+                    assert!(!written.response_close_enabled);
+                    assert_eq!(written.response_close_idle_seconds, written_seconds);
+                };
                 let (saved, receipt) = match writer {
-                    "whole" => persist_protected_settings_update_with_saver(&state, payload, saver)
-                        .await
-                        .unwrap(),
+                    "whole" => super::persist_protected_settings_update_with_saver_and_publication(
+                        &state, payload, saver, publish,
+                    )
+                    .await
+                    .unwrap(),
                     "draft" => {
                         let (saved, events) =
-                            persist_settings_draft_update_with_saver(&state, payload, saver)
-                                .await
-                                .unwrap();
+                            super::persist_settings_draft_update_with_saver_and_publication(
+                                &state, payload, saver, publish,
+                            )
+                            .await
+                            .unwrap();
                         assert!(!events.profiles_changed);
                         assert!(events.env_agent_ids.is_empty());
                         (saved, events.room_idle_confirmation_changed)
                     }
                     _ => unreachable!(),
                 };
+                assert_eq!(stage.get(), 2);
+                let live = state.read().await;
+                assert!(!live.response_close_enabled);
+                assert_eq!(live.response_close_idle_seconds, written_seconds);
+                drop(live);
                 assert_eq!(
                     receipt, changed,
                     "{writer}/{candidate_seconds}/{written_seconds}"
@@ -5091,13 +5231,18 @@ mod tests {
                 assert!(state.try_write().is_err());
                 Err("injected I/O failure".into())
             };
+            let publish = |_: &AppSettings| panic!("failed save must not publish");
             let error = match writer {
-                "whole" => persist_protected_settings_update_with_saver(&state, payload, saver)
-                    .await
-                    .unwrap_err(),
-                "draft" => persist_settings_draft_update_with_saver(&state, payload, saver)
-                    .await
-                    .unwrap_err(),
+                "whole" => super::persist_protected_settings_update_with_saver_and_publication(
+                    &state, payload, saver, publish,
+                )
+                .await
+                .unwrap_err(),
+                "draft" => super::persist_settings_draft_update_with_saver_and_publication(
+                    &state, payload, saver, publish,
+                )
+                .await
+                .unwrap_err(),
                 _ => unreachable!(),
             };
             assert_eq!(error, "injected I/O failure");
