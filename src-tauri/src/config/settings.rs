@@ -18193,6 +18193,7 @@ pub struct SettingsOwner {
     control: std::sync::Mutex<SettingsOwnerControl>,
     released: std::sync::Condvar,
     lease: std::sync::Mutex<Option<SettingsOwnerLease>>,
+    runtime_directory: Option<crate::path_identity::VerifiedPathIdentity>,
     counters: SettingsOwnerCounters,
 }
 
@@ -18527,13 +18528,27 @@ fn compose_captured_sources(
 }
 
 impl SettingsOwner {
-    /// Runtime provenance uses only the active owner's retained settings locator.
+    /// Revalidate the backend-owned runtime locator before reading a source.
     pub(crate) fn runtime_source_settings_path(&self) -> Result<PathBuf, String> {
         self.revalidate().map_err(|error| error.to_string())?;
-        let lease = self.lease.lock().unwrap_or_else(|error| error.into_inner());
-        let lease = lease.as_ref().ok_or("sourceContextUnavailable")?;
-        lease.verify().map_err(|_| "ownerIntegrityLost")?;
-        Ok(lease.settings_path.clone())
+        if self.stage == SettingsOwnerStage::Active {
+            let lease = self.lease.lock().unwrap_or_else(|error| error.into_inner());
+            let lease = lease.as_ref().ok_or("sourceContextUnavailable")?;
+            lease.verify().map_err(|_| "ownerIntegrityLost")?;
+            return Ok(lease.settings_path.clone());
+        }
+        let expected = self
+            .runtime_directory
+            .as_ref()
+            .ok_or("sourceContextUnavailable")?;
+        let current = crate::path_identity::verify_directory(&expected.canonical_path)
+            .map_err(|_| "ownerIntegrityLost")?;
+        if !crate::path_identity::same_object(expected, &current)
+            || expected.canonical_path != current.canonical_path
+        {
+            return Err("ownerIntegrityLost".into());
+        }
+        Ok(expected.canonical_path.join(SETTINGS_FILE_NAME))
     }
 
     /// StagedCompatibility owner around already-loaded settings: the P40
@@ -18567,6 +18582,7 @@ impl SettingsOwner {
             }),
             released: std::sync::Condvar::new(),
             lease: std::sync::Mutex::new(lease),
+            runtime_directory: None,
             counters: SettingsOwnerCounters::default(),
         }
     }
@@ -19059,12 +19075,231 @@ impl SettingsOwner {
 
 pub type SettingsState = Arc<SettingsOwner>;
 
+fn verify_runtime_settings_directory(
+    path: &Path,
+) -> Result<crate::path_identity::VerifiedPathIdentity, String> {
+    if path.file_name() != Some(std::ffi::OsStr::new(SETTINGS_FILE_NAME)) {
+        return Err("runtime_settings_leaf_rejected".into());
+    }
+    let parent = path.parent().ok_or("missing_parent_directory")?;
+    if parent
+        .components()
+        .any(|component| component == std::path::Component::ParentDir)
+    {
+        return Err("runtime_directory_rejected".into());
+    }
+    match crate::path_identity::verify_component_chain_reason(parent) {
+        Ok(()) | Err(crate::path_identity::PathRule::ComponentIsLink) => {}
+        Err(_) => return Err("runtime_directory_rejected".into()),
+    }
+    let physical_parent = std::fs::canonicalize(parent).map_err(|_| "runtime_directory_rejected")?;
+    crate::path_identity::verify_directory(&physical_parent)
+}
+
+fn bound_runtime_settings_owner(
+    settings: AppSettings,
+    directory: crate::path_identity::VerifiedPathIdentity,
+) -> SettingsState {
+    let mut owner = SettingsOwner::staged(settings);
+    owner.runtime_directory = Some(directory);
+    Arc::new(owner)
+}
+
+#[cfg(test)]
+pub(crate) fn new_runtime_settings_state_at_path(
+    settings: AppSettings,
+    path: &Path,
+) -> Result<SettingsState, String> {
+    let directory = verify_runtime_settings_directory(path)?;
+    Ok(bound_runtime_settings_owner(settings, directory))
+}
+
+/// Preserve the ordinary loader's effects, then bind its physical directory.
+pub(crate) fn load_runtime_settings_state() -> SettingsState {
+    let Some(path) = settings_path() else {
+        log::warn!("Could not determine home directory, using defaults");
+        return new_settings_state(AppSettings::default());
+    };
+    let settings = load_settings_from_path(&path);
+    match verify_runtime_settings_directory(&path) {
+        Ok(directory) => bound_runtime_settings_owner(settings, directory),
+        Err(reason) => {
+            log::warn!("Runtime source directory unavailable: {reason}");
+            new_settings_state(settings)
+        }
+    }
+}
+
 pub fn new_settings_state(settings: AppSettings) -> SettingsState {
     Arc::new(SettingsOwner::staged(settings))
 }
 
 #[cfg(test)]
 mod tests {
+    fn e2432_startup_child(mode: &str) {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config");
+        if mode == "existing" {
+            std::fs::create_dir(&config).unwrap();
+            std::fs::write(
+                config.join(super::SETTINGS_FILE_NAME),
+                serde_json::json!({
+                    "voiceToTextEnabled": true,
+                    "startOnlyCoordinators": true,
+                    "rootToken": "startup-sentinel"
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::settings::tests::e2432_runtime_startup_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("AC_E2432_STARTUP_CHILD", mode)
+            .env("AGENTSCOMMANDER_CONFIG_DIR", &config)
+            .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &config)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+
+    #[test]
+    fn e2432_runtime_startup_existing_config() {
+        e2432_startup_child("existing");
+    }
+
+    #[test]
+    fn e2432_runtime_startup_first_run() {
+        e2432_startup_child("first");
+    }
+
+    #[test]
+    fn e2432_runtime_startup_child() {
+        let Ok(mode) = std::env::var("AC_E2432_STARTUP_CHILD") else {
+            return;
+        };
+        let config = std::path::PathBuf::from(
+            std::env::var_os("AGENTSCOMMANDER_TEST_CONFIG_DIR").unwrap(),
+        );
+        assert_eq!(config.exists(), mode == "existing");
+        let owner = super::load_runtime_settings_state();
+        let loaded = owner.blocking_current_snapshot().unwrap();
+        assert_eq!(owner.stage, super::SettingsOwnerStage::StagedCompatibility);
+        assert_eq!(owner.availability(), super::SettingsAvailability::Ready);
+        assert!(!owner.identity().managed_operations_enabled);
+        assert!(owner.lease_guard().is_none());
+        assert!(owner.runtime_directory.is_some());
+        let physical = std::fs::canonicalize(&config).unwrap();
+        assert_eq!(
+            owner.runtime_source_settings_path().unwrap(),
+            physical.join(super::SETTINGS_FILE_NAME)
+        );
+        let raw: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(config.join(super::SETTINGS_FILE_NAME)).unwrap(),
+        )
+        .unwrap();
+        if mode == "existing" {
+            assert!(loaded.voice_to_text_enabled);
+            assert!(loaded.restore_coordinator_wake_state);
+            assert!(loaded.legacy_start_only_coordinators.is_none());
+            assert!(raw.get("startOnlyCoordinators").is_none());
+            assert_eq!(loaded.root_token.as_deref(), Some("startup-sentinel"));
+        } else {
+            assert!(loaded
+                .root_token
+                .as_ref()
+                .is_some_and(|token| !token.is_empty()));
+        }
+        assert_eq!(raw["rootToken"].as_str(), loaded.root_token.as_deref());
+        let counts = super::source_transition_effect_counts();
+        owner.blocking_write().voice_to_text_enabled = !loaded.voice_to_text_enabled;
+        assert_eq!(
+            owner.blocking_read().voice_to_text_enabled,
+            !loaded.voice_to_text_enabled
+        );
+        assert!(matches!(
+            owner.with_operation_blocking("staged-runtime", |_, _| Ok(())),
+            Err(super::SettingsOwnerError::OperationsNotEnabled)
+        ));
+        assert_eq!(super::source_transition_effect_counts(), counts);
+    }
+
+    #[test]
+    fn e2432_runtime_source_staged_unbound_and_directory_identity() {
+        let unbound = super::new_settings_state(super::AppSettings::default());
+        assert_eq!(
+            unbound.runtime_source_settings_path().unwrap_err(),
+            "sourceContextUnavailable"
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("instance");
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join(super::SETTINGS_FILE_NAME);
+        let owner = super::new_runtime_settings_state_at_path(super::AppSettings::default(), &path)
+            .unwrap();
+        assert!(super::new_runtime_settings_state_at_path(
+            super::AppSettings::default(),
+            &directory.join("other.json")
+        )
+        .is_err());
+        assert!(super::new_runtime_settings_state_at_path(
+            super::AppSettings::default(),
+            &directory.join("../settings.json")
+        )
+        .is_err());
+        let moved = temp.path().join("original");
+        std::fs::rename(&directory, &moved).unwrap();
+        assert_eq!(
+            owner.runtime_source_settings_path().unwrap_err(),
+            "ownerIntegrityLost"
+        );
+        std::fs::create_dir(&directory).unwrap();
+        assert_eq!(
+            owner.runtime_source_settings_path().unwrap_err(),
+            "ownerIntegrityLost"
+        );
+        assert!(owner.blocking_current_snapshot().is_ok());
+        assert!(!owner.identity().managed_operations_enabled);
+    }
+
+    #[test]
+    fn e2432_runtime_source_same_directory_file_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let (host, path, persisted) =
+            crate::commands::session::e2432_physical_restore_fixture(temp.path(), "old");
+        let owner = super::new_runtime_settings_state_at_path(host.clone(), &path).unwrap();
+        let reference = persisted
+            .coding_agent_binding_seed
+            .unwrap()
+            .configuration_ref
+            .unwrap();
+        let before = super::capture_runtime_source(
+            &host,
+            &owner.runtime_source_settings_path().unwrap(),
+            &reference.source,
+        )
+        .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&host).unwrap()).unwrap();
+        crate::commands::session::e2432_physical_restore_fixture(temp.path(), "current");
+        let after = super::capture_runtime_source(
+            &host,
+            &owner.runtime_source_settings_path().unwrap(),
+            &reference.source,
+        )
+        .unwrap();
+        assert_ne!(before.revision, after.revision);
+        let scoped = super::resolve_runtime_source_row(&host, &after, &reference).unwrap();
+        assert_eq!(
+            scoped.coding_agent_profiles.profiles_by_agent["same"]["A"].env["SOURCE"],
+            "current"
+        );
+    }
+
     mod issue_3047_schema {
         use super::super::*;
         use serde_json::json;

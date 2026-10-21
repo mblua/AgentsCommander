@@ -4637,16 +4637,18 @@ pub fn run(
         TelegramBridgeManager::with_captures(output_senders, capture_registry),
     ));
 
-    let loaded_settings = config::settings::load_settings();
+    let settings = config::settings::load_runtime_settings_state();
+    let loaded_settings = settings
+        .blocking_current_snapshot()
+        .expect("fresh runtime settings owner is ready");
     response_close.apply_settings(
         loaded_settings.response_close_enabled,
         loaded_settings.response_close_idle_seconds,
         std::time::Instant::now(),
     );
     // (#621) Snapshot registered project paths for the startup orphan-clock prune
-    // below (taken before the value is moved into the RwLock).
+    // below, from the same loaded snapshot as response-close settings.
     let startup_project_paths = loaded_settings.project_paths.clone();
-    let settings: SettingsState = crate::config::settings::new_settings_state(loaded_settings);
     // #552 persisted coordinator badge clock + auto-closed marker store (loaded
     // once at startup; flushed by the auto-close tick and on app exit).
     let coordinator_clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
@@ -9489,6 +9491,104 @@ mod tests {
             hoist < loop_start,
             "startup restore must normalize archived roots once before the session loop"
         );
+    }
+
+    #[test]
+    fn e2432_runtime_startup_wiring() {
+        let source = include_str!("lib.rs");
+        let start = source
+            .find("    let settings = config::settings::load_runtime_settings_state();")
+            .unwrap();
+        let end = source[start..].find("    let coordinator_clocks:").unwrap() + start;
+        let startup = &source[start..end];
+        assert_eq!(startup.matches("load_runtime_settings_state()").count(), 1);
+        assert_eq!(startup.matches("blocking_current_snapshot()").count(), 1);
+        assert!(startup.contains("loaded_settings.response_close_enabled"));
+        assert!(startup.contains("loaded_settings.response_close_idle_seconds"));
+        assert!(startup.contains("loaded_settings.project_paths.clone()"));
+        assert!(!startup.contains("new_settings_state("));
+        assert!(!startup.contains("load_settings()"));
+        let settings = include_str!("config/settings.rs");
+        let start = settings
+            .find("pub(crate) fn load_runtime_settings_state()")
+            .unwrap();
+        let end = settings[start..].find("pub fn new_settings_state(").unwrap() + start;
+        let helper = &settings[start..end];
+        assert_eq!(helper.matches("settings_path()").count(), 1);
+        assert_eq!(helper.matches("load_settings_from_path(&path)").count(), 1);
+        assert!(
+            helper.find("load_settings_from_path(&path)").unwrap()
+                < helper
+                    .find("verify_runtime_settings_directory(&path)")
+                    .unwrap()
+        );
+    }
+
+    #[test]
+    fn e2432_runtime_directory_failure_preserves_restore_recipes() {
+        use super::config;
+        use crate::commands::session::{e2432_physical_restore_fixture, SourceRestoreMode};
+        for root in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let directory = temp.path().join("F");
+            let (mut host, path, mut persisted) =
+                e2432_physical_restore_fixture(&directory, "F-only");
+            let (decoy, decoy_path, decoy_recipe) =
+                e2432_physical_restore_fixture(&temp.path().join("G"), "G-decoy");
+            let decoy_ref = decoy_recipe
+                .coding_agent_binding_seed
+                .unwrap()
+                .configuration_ref
+                .unwrap();
+            let decoy_snapshot = config::settings::capture_runtime_source(
+                &decoy,
+                &decoy_path,
+                &decoy_ref.source,
+            )
+            .unwrap();
+            host.agents = config::settings::agent_file_projection(&decoy_snapshot)
+                .unwrap()
+                .agents;
+            host.agents_layer = config::settings::AgentsLayerState::Unreadable {
+                path: temp.path().join("global-invalid"),
+                reason: "global unreadable decoy".into(),
+            };
+            persisted.is_root_agent = root;
+            let owner = config::settings::new_runtime_settings_state_at_path(host.clone(), &path)
+                .unwrap();
+            let original = serde_json::to_value(&persisted).unwrap();
+            let mut positive = persisted.clone();
+            assert!(super::resolve_current_persisted_restore(
+                &mut positive,
+                SourceRestoreMode::Wake,
+                &host,
+                owner.runtime_source_settings_path()
+            )
+            .unwrap()
+            .is_some());
+            // A real absent directory, with no injected source result or permission assumption.
+            std::fs::remove_dir_all(&directory).unwrap();
+            for mode in [SourceRestoreMode::Wake, SourceRestoreMode::Defer] {
+                let mut failed = persisted.clone();
+                let error = super::resolve_current_persisted_restore(
+                    &mut failed,
+                    mode,
+                    &host,
+                    owner.runtime_source_settings_path(),
+                )
+                .unwrap_err();
+                assert_eq!(error, "ownerIntegrityLost");
+                assert_eq!(serde_json::to_value(&failed).unwrap(), original);
+                assert_eq!(
+                    failed.coding_agent_binding_id,
+                    persisted.coding_agent_binding_id
+                );
+                assert_eq!(
+                    failed.coding_agent_binding_origin,
+                    persisted.coding_agent_binding_origin
+                );
+            }
+        }
     }
 
     fn e2432_assert_current_source_restore(root: bool, deferred: bool) {
