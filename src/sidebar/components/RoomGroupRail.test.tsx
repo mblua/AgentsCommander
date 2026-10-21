@@ -51,7 +51,7 @@ describe("rail diagnostic positive controls with real gate and transport", () =>
     return { fake, restore };
   }
 
-  it("observes interrupted press -> project replacement -> release without dispatching click, and synthetic trusted=false handler/selection reversal", async () => {
+  it("observes interrupted press -> project removal -> release without dispatching click, and synthetic trusted=false handler/selection reversal", async () => {
     const { fake, restore } = await prepare();
     const [projects, setProjects] = createSignal([project()]);
     const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={projects()} surface="embedded" />, fake);
@@ -63,7 +63,7 @@ describe("rail diagnostic positive controls with real gate and transport", () =>
       pointer(node, "pointerdown");
       const press = diagnostics(fake).find(record => record.event === "pointerdown")!;
       expect(press.groupId).toBeTypeOf("number");
-      setProjects([project()]);
+      setProjects([]);
       expect(node.isConnected).toBe(false);
       pointer(document.body, "pointerup");
       const release = diagnostics(fake).find(record => record.event === "pointerup")!;
@@ -71,6 +71,7 @@ describe("rail diagnostic positive controls with real gate and transport", () =>
       expect(release.originalConnected).toBe(false);
       expect(release.groupId).toBe(press.groupId);
       expect(diagnostics(fake).some(record => record.event === "node-dispose")).toBe(true);
+      setProjects([project()]);
       expect(diagnostics(fake).some(record => record.event === "node-mount" && record.nodeId !== press.nodeId)).toBe(true);
       expect(diagnostics(fake).some(record => record.event === "project-buttons")).toBe(true);
       expect(diagnostics(fake).some(record => record.event === "click")).toBe(false);
