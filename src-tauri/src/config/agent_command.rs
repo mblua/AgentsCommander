@@ -63,6 +63,7 @@ pub struct NormalizedAgentCommand {
 
 #[derive(Debug, Clone)]
 pub struct AgentSpawnCommand {
+    pub(crate) source_seed: Option<serde_json::Value>,
     pub shell: String,
     pub shell_args: Vec<String>,
     pub agent_env: BTreeMap<String, String>,
@@ -1386,6 +1387,7 @@ pub(crate) fn resolve_agent_spawn_command(
     };
 
     Ok(AgentSpawnCommand {
+        source_seed: None,
         shell,
         shell_args,
         agent_env,
@@ -1604,6 +1606,7 @@ mod tests {
         env_remove_keys: Vec<String>,
     ) -> AgentSpawnCommand {
         AgentSpawnCommand {
+            source_seed: None,
             shell: "codex".to_string(),
             shell_args: Vec::new(),
             agent_env: BTreeMap::new(),

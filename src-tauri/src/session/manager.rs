@@ -473,16 +473,39 @@ enum FinalizeMutation {
     Dormant(PendingCreateBinding, DormantRuntimeWitness, i32),
 }
 
+/// Owned restart capability; metadata remains private until the atomic commit.
+#[derive(Debug)]
+pub(crate) struct RestartBindingSeedTransition {
+    target: PendingCreateBinding,
+    retiring_runtime: Uuid,
+    coding_agent_id: String,
+    expected_seed: Option<serde_json::Value>,
+    expected_origin: Option<serde_json::Value>,
+    desired_seed: serde_json::Value,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct LifecycleMutations {
     removals: Vec<Uuid>,
     mark_exited: Vec<(Uuid, i32)>,
     detached_intent: Vec<(Uuid, bool)>,
     finalizations: Vec<FinalizeMutation>,
+    restart_binding: Option<RestartBindingSeedTransition>,
     prompt_transfers: Vec<(Uuid, PendingCreateBinding)>,
 }
 
 impl LifecycleMutations {
+    pub(crate) fn set_restart_binding(
+        &mut self,
+        transition: RestartBindingSeedTransition,
+    ) -> Result<(), String> {
+        if self.restart_binding.is_some() {
+            return Err("duplicate restart binding transition".into());
+        }
+        self.restart_binding = Some(transition);
+        Ok(())
+    }
+
     pub(crate) fn transfer_prompt(&mut self, source: Uuid, target: PendingCreateBinding) {
         self.prompt_transfers.push((source, target));
     }
@@ -3003,6 +3026,31 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Stage only the pending runtime association; seed, origin and recipes stay intact.
+    pub(crate) async fn stage_pending_restart_binding(
+        &self,
+        target: PendingCreateBinding,
+        retiring_runtime: Uuid,
+        expected: CodingAgentBinding,
+        desired_seed: serde_json::Value,
+    ) -> Result<RestartBindingSeedTransition, String> {
+        let permit = acquire_carrier_mutation_permit().await;
+        let mut state = self.carrier_state_write(&permit).await;
+        let transition = RestartBindingSeedTransition {
+            target,
+            retiring_runtime,
+            coding_agent_id: expected.id,
+            expected_seed: expected.seed,
+            expected_origin: expected.origin,
+            desired_seed,
+        };
+        validate_restart_binding(&state, &transition, false)?;
+        state
+            .coding_agent_bindings
+            .insert(target.session_id, transition.coding_agent_id.clone());
+        Ok(transition)
+    }
+
     pub(crate) async fn coding_agent_binding(&self, id: Uuid) -> Option<CodingAgentBinding> {
         let state = self.state.read().await;
         let binding = state.coding_agent_bindings.get(&id)?;
@@ -3213,19 +3261,15 @@ impl SessionManager {
             state.revision
         };
 
-        // Every fallible check runs before either row receives transferred text.
-        if !matches!(
-            (target_mode, target_id, target_status.as_ref()),
-            (SelectionMode::None, None, _)
-                | (SelectionMode::Live, Some(_), _)
-                | (
-                    SelectionMode::Dormant,
-                    Some(_),
-                    Some(SessionStatus::Exited(_))
-                )
-        ) {
-            return Err("invalid canonical selection target".to_string());
-        }
+        // Prevalidate the projection while the same guard protects application.
+        validate_commit_projection_and_restart_binding(
+            &state,
+            &mutations,
+            target_mode,
+            target_id,
+            target_status.as_ref(),
+        )?;
+
         apply_commit_prompt_domains(&mut state, &mutations, cause);
         let mut result = CommitResult::default();
         let mut changed_ids = HashSet::new();
@@ -3322,7 +3366,7 @@ impl SessionManager {
                     let target = state
                         .sessions
                         .get_mut(&id)
-                        .expect("selection target validated before mutations");
+                        .expect("live selection target prevalidated under the same guard");
                     target.status = SessionStatus::Active;
                     changed_ids.insert(id);
                     SessionSelection::live(state.epoch, next_revision, cause, id)
@@ -3334,7 +3378,7 @@ impl SessionManager {
                     };
                     SessionSelection::dormant(state.epoch, next_revision, cause, id, code, has_pty)
                 }
-                _ => unreachable!("selection target prevalidated"),
+                _ => unreachable!("canonical selection projection prevalidated"),
             };
             result.selection = Some(state.selection.clone());
         }
@@ -3374,6 +3418,12 @@ impl SessionManager {
         // to `Active` still reads as working and is recorded.
         append_finalized_live_activity(&state, finalized_live_ids, &mut result);
 
+        // Last publication: no fallible operation or await follows.
+        if let Some(transition) = mutations.restart_binding {
+            state
+                .binding_seeds
+                .insert(transition.coding_agent_id, transition.desired_seed);
+        }
         Ok(result)
     }
 
@@ -3530,6 +3580,85 @@ fn append_finalized_live_activity(
 
 /// Lifecycle mutation sets in removals, exits, finalizations order.
 type LifecycleMutationSets = (HashSet<Uuid>, HashSet<Uuid>, HashSet<Uuid>);
+
+fn validate_commit_projection_and_restart_binding(
+    state: &SessionManagerState,
+    mutations: &LifecycleMutations,
+    target_mode: SelectionMode,
+    target_id: Option<Uuid>,
+    target_status: Option<&SessionStatus>,
+) -> Result<(), String> {
+    match (target_mode, target_id, target_status) {
+        (SelectionMode::None, None, _) => {}
+        (SelectionMode::Live, Some(id), _) if state.sessions.contains_key(&id) => {}
+        (SelectionMode::Dormant, Some(id), Some(SessionStatus::Exited(_)))
+            if state.sessions.contains_key(&id) => {}
+        _ => return Err("invalid canonical selection target".into()),
+    }
+    if let Some(transition) = mutations.restart_binding.as_ref() {
+        validate_restart_binding(state, transition, true)?;
+        if !mutations.removals.contains(&transition.retiring_runtime)
+            || !mutations.finalizations.iter().any(|mutation| {
+                matches!(mutation,
+                FinalizeMutation::Live(binding, _) if *binding == transition.target)
+            })
+        {
+            return Err("restart binding requires atomic replacement".into());
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_restart_binding(
+    state: &SessionManagerState,
+    transition: &RestartBindingSeedTransition,
+    staged: bool,
+) -> Result<(), String> {
+    let id = &transition.coding_agent_id;
+    if Uuid::parse_str(id).is_err()
+        || !["identityRevision", "originalAgentId"].iter().all(|key| {
+            transition
+                .desired_seed
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+        })
+    {
+        return Err("invalid_coding_agent_binding_seed".into());
+    }
+    if !binding_matches(state, transition.target)
+        || transition.target.session_id == transition.retiring_runtime
+        || !state.sessions.contains_key(&transition.retiring_runtime)
+        || state
+            .pending_create
+            .contains_key(&transition.retiring_runtime)
+        || state
+            .coding_agent_bindings
+            .get(&transition.retiring_runtime)
+            != Some(id)
+        || state
+            .coding_agent_bindings
+            .get(&transition.target.session_id)
+            != if staged { Some(id) } else { None }
+        || state
+            .coding_agent_bindings
+            .iter()
+            .any(|(runtime, candidate)| {
+                candidate == id
+                    && *runtime != transition.retiring_runtime
+                    && (!staged || *runtime != transition.target.session_id)
+            })
+    {
+        return Err("restart coding-agent binding owner/capability mismatch".into());
+    }
+    if state.binding_seeds.get(id) != transition.expected_seed.as_ref()
+        || state.binding_origins.get(id) != transition.expected_origin.as_ref()
+    {
+        return Err("restart coding-agent binding metadata changed".into());
+    }
+    Ok(())
+}
 
 fn prompt_domain_exclusive(
     state: &SessionManagerState,
@@ -6482,6 +6611,444 @@ mod tests {
             )
             .await
             .expect("pending session")
+    }
+
+    async fn e2432_manager_fingerprint(manager: &SessionManager) -> serde_json::Value {
+        let snapshot = manager.aggregate_snapshot().await;
+        let mut pending: Vec<_> = snapshot.pending_ids.into_iter().collect();
+        pending.sort();
+        serde_json::json!({
+            "sessions": snapshot.sessions, "order": snapshot.order, "pending": pending,
+            "bindings": snapshot.coding_agent_bindings, "seeds": snapshot.binding_seeds,
+            "origins": snapshot.binding_origins, "recipes": snapshot.failed_binding_recipes,
+            "selection": snapshot.selection,
+        })
+    }
+
+    async fn e2432_bound_old(
+        manager: &SessionManager,
+        seed: Option<serde_json::Value>,
+        origin: Option<serde_json::Value>,
+    ) -> (Uuid, CodingAgentBinding) {
+        let (old, pending) = pending_fixture(manager, false).await;
+        let binding = CodingAgentBinding {
+            id: Uuid::new_v4().to_string(),
+            seed,
+            origin,
+        };
+        manager
+            .install_pending_coding_agent_binding(pending, Some(binding.clone()))
+            .await
+            .unwrap();
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_dormant(pending, dormant_witness(old.id), 0);
+        manager
+            .commit_selection_transition(
+                &CommitCapability::for_test(),
+                CommitDecision::Keep,
+                SelectionCause::Restore,
+                mutations,
+            )
+            .await
+            .unwrap();
+        (old.id, binding)
+    }
+
+    #[tokio::test]
+    async fn e2432_restart_binding_stages_without_publication_and_commits_last() {
+        for seed in [
+            None,
+            Some(
+                serde_json::json!({"identityRevision":"old", "originalAgentId":"same", "unknown":null}),
+            ),
+        ] {
+            for origin in [
+                None,
+                Some(serde_json::Value::Null),
+                Some(serde_json::json!({"ordinal":7})),
+            ] {
+                let manager = SessionManager::new();
+                let (old, expected) = e2432_bound_old(&manager, seed.clone(), origin).await;
+                let (replacement, pending) = pending_fixture(&manager, false).await;
+                let desired =
+                    serde_json::json!({"identityRevision":"fresh", "originalAgentId":"same"});
+                let transition = manager
+                    .stage_pending_restart_binding(pending, old, expected.clone(), desired.clone())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    manager.coding_agent_binding(old).await.unwrap().seed,
+                    expected.seed
+                );
+                assert_eq!(
+                    manager
+                        .coding_agent_binding(replacement.id)
+                        .await
+                        .unwrap()
+                        .seed,
+                    expected.seed
+                );
+                let snapshot = manager.aggregate_snapshot().await;
+                assert!(snapshot.sessions.iter().any(|row| row.id == old));
+                assert!(!snapshot.sessions.iter().any(|row| row.id == replacement.id));
+                let mut mutations = LifecycleMutations::default();
+                mutations.finalize_live(pending, live_witness(replacement.id));
+                mutations.remove(old);
+                mutations.set_restart_binding(transition).unwrap();
+                manager
+                    .commit_selection_transition(
+                        &CommitCapability::for_test(),
+                        CommitDecision::Keep,
+                        SelectionCause::Restore,
+                        mutations,
+                    )
+                    .await
+                    .unwrap();
+                assert!(manager.get_session(old).await.is_none());
+                assert!(manager.get_session(replacement.id).await.is_some());
+                let final_binding = manager.coding_agent_binding(replacement.id).await.unwrap();
+                assert_eq!(final_binding.id, expected.id);
+                assert_eq!(final_binding.origin, expected.origin);
+                assert_eq!(final_binding.seed, Some(desired));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn e2432_restart_binding_real_refresh_o1_o2_rejects_without_stale_rollback() {
+        for refresh_after_stage in [false, true] {
+            let manager = SessionManager::new();
+            let (old, expected) =
+                e2432_bound_old(&manager, None, Some(serde_json::json!("O1"))).await;
+            let (_, pending) = pending_fixture(&manager, false).await;
+            let desired =
+                serde_json::json!({"identityRevision":"desired", "originalAgentId":"same"});
+            let transition = if refresh_after_stage {
+                Some(
+                    manager
+                        .stage_pending_restart_binding(
+                            pending,
+                            old,
+                            expected.clone(),
+                            desired.clone(),
+                        )
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            let concurrent = CodingAgentBinding {
+                id: expected.id.clone(),
+                seed: Some(serde_json::json!({"identityRevision":"O2", "originalAgentId":"same"})),
+                origin: Some(serde_json::json!("O2")),
+            };
+            manager
+                .refresh_failed_binding_recipes(vec![(
+                    concurrent.clone(),
+                    serde_json::json!({"recipe":"O2"}),
+                )])
+                .await;
+            manager.set_last_prompt(old, "B".into()).await;
+            let before_seeds = manager.aggregate_snapshot().await.binding_seeds;
+            assert_eq!(before_seeds.get(&concurrent.id), concurrent.seed.as_ref());
+            let before_rejection = e2432_manager_fingerprint(&manager).await;
+            if let Some(transition) = transition {
+                let mut mutations = LifecycleMutations::default();
+                mutations.finalize_live(pending, live_witness(pending.session_id));
+                mutations.remove(old);
+                mutations.transfer_prompt(old, pending);
+                mutations.set_restart_binding(transition).unwrap();
+                assert!(manager
+                    .commit_selection_transition(
+                        &CommitCapability::for_test(),
+                        CommitDecision::Keep,
+                        SelectionCause::Restore,
+                        mutations
+                    )
+                    .await
+                    .is_err());
+            } else {
+                assert!(manager
+                    .stage_pending_restart_binding(pending, old, expected, desired)
+                    .await
+                    .is_err());
+            }
+            assert_eq!(e2432_manager_fingerprint(&manager).await, before_rejection);
+            // The rejected commit has returned and dropped its guard; rollback has not run.
+            assert_eq!(
+                manager.aggregate_snapshot().await.binding_seeds,
+                before_seeds
+            );
+            assert_eq!(
+                manager
+                    .get_session(old)
+                    .await
+                    .unwrap()
+                    .last_prompt
+                    .as_deref(),
+                Some("B")
+            );
+            assert!(manager
+                .get_pending_session(pending)
+                .await
+                .unwrap()
+                .last_prompt
+                .is_none());
+            manager.rollback_pending_create(pending).await.unwrap();
+            let retained = manager.coding_agent_binding(old).await.unwrap();
+            assert_eq!(retained.seed, concurrent.seed);
+            assert_eq!(retained.origin, concurrent.origin);
+            assert!(manager
+                .aggregate_snapshot()
+                .await
+                .failed_binding_recipes
+                .is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn e2432_restart_binding_stage_rejections_are_nonmutating() {
+        for case in 0..8 {
+            let manager = SessionManager::new();
+            let (old, expected) = e2432_bound_old(&manager, None, None).await;
+            let (_, pending) = pending_fixture(&manager, false).await;
+            let mut target = pending;
+            let mut retiring = old;
+            let mut captured = expected.clone();
+            let mut desired =
+                serde_json::json!({"identityRevision":"new", "originalAgentId":"same"});
+            match case {
+                0 => target.nonce = Uuid::new_v4(),
+                1 => retiring = Uuid::new_v4(),
+                2 => captured.id = Uuid::new_v4().to_string(),
+                3 => captured.seed = Some(serde_json::Value::Null),
+                4 => captured.origin = Some(serde_json::Value::Null),
+                5 => desired = serde_json::json!({"identityRevision":"", "originalAgentId":"same"}),
+                6 => {
+                    let (_, extra) = pending_fixture(&manager, false).await;
+                    manager
+                        .install_pending_coding_agent_binding(extra, Some(expected.clone()))
+                        .await
+                        .unwrap();
+                }
+                7 => manager
+                    .install_pending_coding_agent_binding(pending, Some(expected.clone()))
+                    .await
+                    .unwrap(),
+                _ => unreachable!(),
+            }
+            let before = e2432_manager_fingerprint(&manager).await;
+            assert!(
+                manager
+                    .stage_pending_restart_binding(target, retiring, captured, desired)
+                    .await
+                    .is_err(),
+                "case {case}"
+            );
+            assert_eq!(
+                e2432_manager_fingerprint(&manager).await,
+                before,
+                "case {case}"
+            );
+            manager.rollback_pending_create(pending).await.unwrap();
+            assert!(manager.get_session(old).await.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn e2432_restart_binding_commit_prevalidation_has_no_partial_publication() {
+        for case in 0..5 {
+            let manager = SessionManager::new();
+            let (old, expected) = e2432_bound_old(&manager, None, None).await;
+            let (replacement, pending) = pending_fixture(&manager, false).await;
+            let desired = serde_json::json!({"identityRevision":"new", "originalAgentId":"same"});
+            let transition = manager
+                .stage_pending_restart_binding(pending, old, expected.clone(), desired.clone())
+                .await
+                .unwrap();
+            let mut witness = live_witness(replacement.id);
+            let mut decision = CommitDecision::Live(witness);
+            match case {
+                0 => witness.has_pty = false,
+                1 => {
+                    manager
+                        .state
+                        .write()
+                        .await
+                        .sessions
+                        .get_mut(&replacement.id)
+                        .unwrap()
+                        .status = SessionStatus::Exited(1)
+                }
+                2 => decision = CommitDecision::Live(live_witness(Uuid::new_v4())),
+                3 => manager.state.write().await.revision = u64::MAX,
+                4 => {
+                    manager
+                        .refresh_failed_binding_recipes(vec![(
+                            CodingAgentBinding {
+                                id: expected.id.clone(),
+                                seed: None,
+                                origin: Some(serde_json::json!("O2")),
+                            },
+                            serde_json::json!({}),
+                        )])
+                        .await
+                }
+                _ => unreachable!(),
+            }
+            let before = e2432_manager_fingerprint(&manager).await;
+            let mut mutations = LifecycleMutations::default();
+            mutations.finalize_live(pending, witness);
+            mutations.remove(old);
+            mutations.set_restart_binding(transition).unwrap();
+            assert!(
+                manager
+                    .commit_selection_transition(
+                        &CommitCapability::for_test(),
+                        decision,
+                        SelectionCause::Restore,
+                        mutations
+                    )
+                    .await
+                    .is_err(),
+                "case {case}"
+            );
+            assert_eq!(
+                e2432_manager_fingerprint(&manager).await,
+                before,
+                "case {case}"
+            );
+            manager.rollback_pending_create(pending).await.unwrap();
+            assert!(manager.get_session(old).await.is_some());
+            assert_eq!(
+                manager.coding_agent_binding(old).await.unwrap().seed,
+                expected.seed
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn e2432_restart_binding_orphan_refresh_is_not_a_retiring_owner() {
+        let manager = SessionManager::new();
+        let orphan = CodingAgentBinding {
+            id: Uuid::new_v4().to_string(),
+            seed: Some(serde_json::json!({"identityRevision":"current", "originalAgentId":"same"})),
+            origin: Some(serde_json::json!({"ordinal":2})),
+        };
+        manager
+            .refresh_failed_binding_recipes(vec![(orphan.clone(), serde_json::json!({}))])
+            .await;
+        let snapshot = manager.aggregate_snapshot().await;
+        assert!(snapshot.sessions.is_empty());
+        assert!(snapshot.failed_binding_recipes.is_empty());
+        assert!(snapshot.coding_agent_bindings.is_empty());
+        let (_, pending) = pending_fixture(&manager, false).await;
+        let before = e2432_manager_fingerprint(&manager).await;
+        assert!(manager
+            .stage_pending_restart_binding(
+                pending,
+                Uuid::new_v4(),
+                orphan.clone(),
+                orphan.seed.clone().unwrap()
+            )
+            .await
+            .is_err());
+        assert_eq!(e2432_manager_fingerprint(&manager).await, before);
+        manager.rollback_pending_create(pending).await.unwrap();
+        let persisted =
+            serde_json::json!({"id":orphan.id, "seed":orphan.seed, "origin":orphan.origin});
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&persisted).unwrap()).unwrap();
+        for live in [false, true] {
+            let cold = SessionManager::new();
+            let (_, birth) = pending_fixture(&cold, false).await;
+            cold.install_pending_coding_agent_binding(
+                birth,
+                Some(CodingAgentBinding {
+                    id: persisted["id"].as_str().unwrap().to_string(),
+                    seed: Some(persisted["seed"].clone()),
+                    origin: Some(persisted["origin"].clone()),
+                }),
+            )
+            .await
+            .unwrap();
+            let mut mutations = LifecycleMutations::default();
+            if live {
+                mutations.finalize_live(birth, live_witness(birth.session_id));
+            } else {
+                mutations.finalize_dormant(birth, dormant_witness(birth.session_id), 0);
+            }
+            cold.commit_selection_transition(
+                &CommitCapability::for_test(),
+                CommitDecision::Keep,
+                SelectionCause::Restore,
+                mutations,
+            )
+            .await
+            .unwrap();
+            let restored = cold.coding_agent_binding(birth.session_id).await.unwrap();
+            assert_eq!(restored.id, orphan.id);
+            assert_eq!(restored.seed, orphan.seed);
+            assert_eq!(restored.origin, orphan.origin);
+            assert!(cold.get_session(birth.session_id).await.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn e2432_restart_binding_second_transition_and_last_owner_retirement() {
+        let manager = SessionManager::new();
+        let (old, expected) = e2432_bound_old(
+            &manager,
+            Some(serde_json::json!({
+                "identityRevision":"old", "originalAgentId":"same",
+            })),
+            Some(serde_json::json!("original")),
+        )
+        .await;
+        let (_, pending) = pending_fixture(&manager, false).await;
+        let desired = serde_json::json!({"identityRevision":"desired", "originalAgentId":"same"});
+        let transition = manager
+            .stage_pending_restart_binding(pending, old, expected.clone(), desired.clone())
+            .await
+            .unwrap();
+        let before = e2432_manager_fingerprint(&manager).await;
+        assert!(manager
+            .stage_pending_restart_binding(pending, old, expected.clone(), desired.clone())
+            .await
+            .is_err());
+        assert_eq!(e2432_manager_fingerprint(&manager).await, before);
+        let mut mutations = LifecycleMutations::default();
+        mutations.set_restart_binding(transition).unwrap();
+        let other = SessionManager::new();
+        let (other_old, other_expected) = e2432_bound_old(&other, None, None).await;
+        let (_, other_pending) = pending_fixture(&other, false).await;
+        let second = other
+            .stage_pending_restart_binding(other_pending, other_old, other_expected, desired)
+            .await
+            .unwrap();
+        assert!(mutations.set_restart_binding(second).is_err());
+        manager.rollback_pending_create(pending).await.unwrap();
+        assert_eq!(
+            manager.coding_agent_binding(old).await.unwrap().seed,
+            expected.seed
+        );
+        let mut remove = LifecycleMutations::default();
+        remove.remove(old);
+        manager
+            .commit_selection_transition(
+                &CommitCapability::for_test(),
+                CommitDecision::Keep,
+                SelectionCause::Restore,
+                remove,
+            )
+            .await
+            .unwrap();
+        let retired = manager.aggregate_snapshot().await;
+        assert!(!retired.binding_seeds.contains_key(&expected.id));
+        assert!(!retired.binding_origins.contains_key(&expected.id));
+        assert!(retired.coding_agent_bindings.is_empty());
+        other.rollback_pending_create(other_pending).await.unwrap();
     }
 
     fn live_witness(session_id: Uuid) -> LiveRuntimeWitness {

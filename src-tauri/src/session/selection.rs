@@ -7273,6 +7273,8 @@ fn commit_selection_transition_with_carrier_permit() {
                 session_id,
                 agent_id: None,
                 requested_profile: None,
+                source_ticket: None,
+                use_stored_selection: false,
                 skip_auto_resume: None,
                 activate_after: false,
                 intent: TrustedRestartIntent::Background,
