@@ -3262,24 +3262,13 @@ impl SessionManager {
         };
 
         // Prevalidate the projection while the same guard protects application.
-        match (target_mode, target_id, target_status.as_ref()) {
-            (SelectionMode::None, None, _) => {}
-            (SelectionMode::Live, Some(id), _) if state.sessions.contains_key(&id) => {}
-            (SelectionMode::Dormant, Some(id), Some(SessionStatus::Exited(_)))
-                if state.sessions.contains_key(&id) => {}
-            _ => return Err("invalid canonical selection target".into()),
-        }
-        if let Some(transition) = mutations.restart_binding.as_ref() {
-            validate_restart_binding(&state, transition, true)?;
-            if !mutations.removals.contains(&transition.retiring_runtime)
-                || !mutations.finalizations.iter().any(|mutation| {
-                    matches!(mutation,
-                    FinalizeMutation::Live(binding, _) if *binding == transition.target)
-                })
-            {
-                return Err("restart binding requires atomic replacement".into());
-            }
-        }
+        validate_commit_projection_and_restart_binding(
+            &state,
+            &mutations,
+            target_mode,
+            target_id,
+            target_status.as_ref(),
+        )?;
 
         apply_commit_prompt_domains(&mut state, &mutations, cause);
         let mut result = CommitResult::default();
@@ -3591,6 +3580,35 @@ fn append_finalized_live_activity(
 
 /// Lifecycle mutation sets in removals, exits, finalizations order.
 type LifecycleMutationSets = (HashSet<Uuid>, HashSet<Uuid>, HashSet<Uuid>);
+
+fn validate_commit_projection_and_restart_binding(
+    state: &SessionManagerState,
+    mutations: &LifecycleMutations,
+    target_mode: SelectionMode,
+    target_id: Option<Uuid>,
+    target_status: Option<&SessionStatus>,
+) -> Result<(), String> {
+    match (target_mode, target_id, target_status) {
+        (SelectionMode::None, None, _) => {}
+        (SelectionMode::Live, Some(id), _) if state.sessions.contains_key(&id) => {}
+        (SelectionMode::Dormant, Some(id), Some(SessionStatus::Exited(_)))
+            if state.sessions.contains_key(&id) => {}
+        _ => return Err("invalid canonical selection target".into()),
+    }
+    if let Some(transition) = mutations.restart_binding.as_ref() {
+        validate_restart_binding(state, transition, true)?;
+        if !mutations.removals.contains(&transition.retiring_runtime)
+            || !mutations.finalizations.iter().any(|mutation| {
+                matches!(mutation,
+                FinalizeMutation::Live(binding, _) if *binding == transition.target)
+            })
+        {
+            return Err("restart binding requires atomic replacement".into());
+        }
+    }
+
+    Ok(())
+}
 
 fn validate_restart_binding(
     state: &SessionManagerState,
