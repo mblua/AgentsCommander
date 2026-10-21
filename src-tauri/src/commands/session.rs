@@ -2244,7 +2244,14 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
 
         let agent_kind = CodingAgentKind::detect(&shell, &shell_args);
         let is_agent_owned_launch = agent_id.is_some() || agent_kind.is_some() || is_root_agent;
-        let coding_agent_binding = match coding_agent_binding.clone() {
+        let source_seed = resolved_spawn.as_ref().and_then(|spawn| spawn.source_seed.as_ref());
+        let coding_agent_binding = if let Some(seed) = source_seed {
+            let mut binding = coding_agent_binding.clone().unwrap_or_else(|| crate::session::manager::CodingAgentBinding {
+                id: Uuid::new_v4().to_string(), seed: None, origin: None,
+            });
+            binding.seed = Some(serde_json::to_value(seed).map_err(|error| error.to_string())?);
+            Some(binding)
+        } else { match coding_agent_binding.clone() {
             Some(binding) => Some(binding),
             None => match agent_id.as_ref() {
                 Some(original_agent_id) => {
@@ -2279,6 +2286,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 }
                 None => None,
             },
+        };
         };
         let resource_monitor = app.state::<Arc<ResourceMonitorState>>().inner().clone();
         let mut resource_permit = if is_agent_owned_launch {
@@ -3517,6 +3525,211 @@ fn resolve_launch_auto_self_clear(
     crate::config::settings::resolve_auto_self_clear(settings, &agent_name, class_default_on)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceRestoreMode {
+    Wake,
+    Defer,
+}
+
+pub(crate) enum SourceRestoreDecision {
+    Legacy,
+    SourceWake {
+        scoped_settings: AppSettings,
+        entry_hint: String,
+        effective_profile: String,
+        updated_seed: crate::config::sessions_persistence::CodingAgentBindingSeed,
+        binding: crate::session::manager::CodingAgentBinding,
+    },
+    SourceDeferred {
+        updated_seed: crate::config::sessions_persistence::CodingAgentBindingSeed,
+        binding: crate::session::manager::CodingAgentBinding,
+    },
+    Refuse { diagnostic: String },
+}
+
+/// No IO: the caller captures the authorized file and actual-target policy.
+/// `target_profile` is that read-only policy observation, never a global cell.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_source_restore_decision(
+    seed: Option<&crate::config::sessions_persistence::CodingAgentBindingSeed>,
+    binding: Result<Option<crate::session::manager::CodingAgentBinding>, String>,
+    _legacy_agent: Option<&str>,
+    target_profile: Option<&str>,
+    cwd: &str,
+    mode: SourceRestoreMode,
+    host: &AppSettings,
+    snapshot: Result<crate::config::settings::SelectedAgentFileSnapshot, String>,
+) -> SourceRestoreDecision {
+    use crate::config::settings::{self, SourceRevision};
+    let prepared: Result<SourceRestoreDecision, String> = (|| {
+        let binding = binding?;
+        let Some(seed) = seed else { return Ok(SourceRestoreDecision::Legacy) };
+        let Some(reference) = seed.configuration_ref.as_ref() else {
+            return if seed.identity_revision.starts_with("s1:") {
+                Err("invalidSourceSeed".into())
+            } else {
+                Ok(SourceRestoreDecision::Legacy)
+            };
+        };
+        let pair = crate::config::coding_agent_profiles::ReplicaSelectionPair {
+            coding_agent_id: seed.original_agent_id.clone(),
+            requested_profile: reference.requested_profile.clone().unwrap_or_else(|| "A".into()),
+        };
+        crate::config::coding_agent_profiles::validate_configuration_ref_pair(reference, &pair)?;
+        let suffix = format!(":{}", reference.calculated_id);
+        let digest = seed.identity_revision.strip_prefix("s1:")
+            .and_then(|value| value.strip_suffix(&suffix)).ok_or("invalidSourceSeed")?;
+        if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            return Err("invalidSourceSeed".into());
+        }
+        let snapshot = snapshot?;
+        let scoped_settings = settings::resolve_runtime_source_row(host, &snapshot, reference)?;
+        let entry_hint = seed.original_agent_id.clone();
+        // No launch_path: the pure seam cannot reread aliases or disk defaults.
+        let name = crate::config::coding_agent_profiles::agent_name_from_dir(std::path::Path::new(cwd));
+        let resolution = crate::config::coding_agent_profiles::resolve_profile(
+            &scoped_settings,
+            crate::config::coding_agent_profiles::ProfileResolutionRequest {
+                coding_agent_id: &entry_hint,
+                launch_path: None,
+                agent_matrix_name: name.as_deref(),
+                requested_profile: reference.requested_profile.as_deref().or(target_profile),
+                requested_profile_authoritative: true,
+            },
+        );
+        let agent = &scoped_settings.agents[0];
+        let mut reference = reference.clone();
+        reference.profile_calculated_id = Some(settings::pair_identity(&agent.command, &agent.envs, &resolution.cell));
+        let SourceRevision::Bytes { sha256 } = snapshot.revision else { return Err("sourceUnavailable".into()) };
+        let updated_seed = crate::config::sessions_persistence::CodingAgentBindingSeed {
+            identity_revision: format!("s1:{sha256}:{}", reference.calculated_id),
+            original_agent_id: entry_hint.clone(),
+            configuration_ref: Some(reference),
+        };
+        let mut binding = binding.ok_or("sourceBindingMissing")?;
+        binding.seed = Some(serde_json::to_value(&updated_seed).map_err(|e| e.to_string())?);
+        Ok(match mode {
+            SourceRestoreMode::Wake => SourceRestoreDecision::SourceWake {
+                scoped_settings, entry_hint, effective_profile: resolution.effective_profile,
+                updated_seed, binding,
+            },
+            SourceRestoreMode::Defer => SourceRestoreDecision::SourceDeferred { updated_seed, binding },
+        })
+    })();
+    prepared.unwrap_or_else(|diagnostic| SourceRestoreDecision::Refuse { diagnostic })
+}
+
+/// Read-only final resolution; authoritative letter plus full pair witness make
+/// a second alias/default decision impossible before host preparation.
+pub(crate) fn resolve_source_wake_spawn(
+    scoped: &AppSettings,
+    hint: &str,
+    effective: &str,
+    cwd: &str,
+    seed: &crate::config::sessions_persistence::CodingAgentBindingSeed,
+) -> Result<AgentSpawnCommand, String> {
+    let mut spawn = crate::config::agent_command::resolve_agent_spawn_command(
+        scoped, hint, Some(std::path::Path::new(cwd)), Some(effective), true,
+    )?;
+    let agent = scoped.agents.iter().find(|agent| agent.id == hint).ok_or("sourceRowMissing")?;
+    let reference = seed.configuration_ref.as_ref().ok_or("sourceReferenceMissing")?;
+    let pair = crate::config::settings::pair_identity(&agent.command, &agent.envs, &spawn.profile_resolution.cell);
+    if spawn.profile_resolution.effective_profile != effective
+        || reference.profile_calculated_id.as_deref() != Some(pair.as_str())
+    {
+        return Err("sourcePairChangedBeforeSpawn".into());
+    }
+    spawn.source_seed = Some(seed.clone());
+    Ok(spawn)
+}
+
+fn runtime_replica_expectation(
+    cwd: &str,
+    required: bool,
+) -> Result<Option<crate::config::coding_agent_profiles::ReplicaSelectionExpectation>, String> {
+    let path = std::path::Path::new(cwd);
+    let replica = path.file_name().and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("__agent_"));
+    if !replica {
+        return if required { Err("storedSelectionRequiresExistingReplica".into()) } else { Ok(None) };
+    }
+    crate::config::coding_agent_profiles::read_replica_selection_state(path).expectation().map(Some)
+}
+
+/// Capture target policy before the pure seam. Only coherent source-null
+/// `source-default` aliases are suppressed; historical/manual aliases stay pins.
+pub(crate) fn source_target_profile(
+    scoped: &AppSettings,
+    reference: &crate::config::settings::ConfigurationRef,
+    cwd: &str,
+) -> Result<Option<String>, String> {
+    if let Some(letter) = &reference.requested_profile { return Ok(Some(letter.clone())); }
+    let path = std::path::Path::new(cwd);
+    let expected = runtime_replica_expectation(cwd, false)?;
+    if let Some(expected) = expected {
+        if expected.profile_override_source.as_deref() != Some("source-default") {
+            if let Some(pair) = expected.pair { return Ok(Some(pair.requested_profile)); }
+        } else {
+            // Reuse the marker-aware strict reader and retain its disagreement diagnostic.
+            let read = crate::config::coding_agent_profiles::read_source_null_profile_result(path)?;
+            if let Some(warning) = read.warning { log::warn!("[source-selection] {warning}"); }
+            if let Some(letter) = read.profile { return Ok(Some(letter)); }
+        }
+        let validated = crate::config::coding_agent_profiles::validate_profile_selection_agent_path(scoped, path)?;
+        if let Some(config) = crate::config::agent_config::read_agent_local_config_json(&validated.origin_matrix_dir)? {
+            if let Some(letter) = config.pointer("/tooling/defaultProfile").and_then(serde_json::Value::as_str)
+                .and_then(crate::config::settings::normalize_profile_letter) {
+                return Ok(Some(letter));
+            }
+        }
+    }
+    let name = crate::config::coding_agent_profiles::agent_name_from_dir(path);
+    Ok(name.and_then(|name| scoped.coding_agent_profiles.default_profile_by_agent.get(&name).cloned()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_runtime_source_spawn(
+    settings: &AppSettings,
+    settings_path: &std::path::Path,
+    cwd: &str,
+    reference: &crate::config::settings::ConfigurationRef,
+    ticket: Option<&crate::config::settings::SourceSelectionTicket>,
+    binding: Option<crate::session::manager::CodingAgentBinding>,
+) -> Result<(AgentSpawnCommand, crate::session::manager::CodingAgentBinding), String> {
+    let snapshot = crate::config::settings::capture_runtime_source(settings, settings_path, &reference.source)?;
+    if let Some(ticket) = ticket {
+        if ticket.configuration_ref != *reference
+            || ticket.expected_source_revision != snapshot.revision
+            || ticket.catalog_context_revision != snapshot.context_revision {
+            return Err("staleSourceSelectionTicket".into());
+        }
+    }
+    let scoped = crate::config::settings::resolve_runtime_source_row(settings, &snapshot, reference)?;
+    let target_profile = source_target_profile(&scoped, reference, cwd)?;
+    let crate::config::settings::SourceRevision::Bytes { sha256 } = &snapshot.revision else { return Err("sourceUnavailable".into()) };
+    let seed = crate::config::sessions_persistence::CodingAgentBindingSeed {
+        identity_revision: format!("s1:{sha256}:{}", reference.calculated_id),
+        original_agent_id: reference.legacy_entry_hint.clone().ok_or("missingSourceHint")?,
+        configuration_ref: Some(reference.clone()),
+    };
+    let binding = binding.unwrap_or_else(|| crate::session::manager::CodingAgentBinding {
+        id: Uuid::new_v4().to_string(), seed: None, origin: None,
+    });
+    match prepare_source_restore_decision(Some(&seed), Ok(Some(binding)), None, target_profile.as_deref(), cwd,
+        SourceRestoreMode::Wake, settings, Ok(snapshot)) {
+        SourceRestoreDecision::SourceWake { scoped_settings, entry_hint, effective_profile, updated_seed, binding } => {
+            if ticket.is_some() && reference.requested_profile.is_some()
+                && reference.profile_calculated_id != updated_seed.configuration_ref.as_ref().and_then(|r| r.profile_calculated_id.clone()) {
+                return Err("staleSourceSelectionPair".into());
+            }
+            let spawn = resolve_source_wake_spawn(&scoped_settings, &entry_hint, &effective_profile, cwd, &updated_seed)?;
+            Ok((spawn, binding))
+        }
+        SourceRestoreDecision::Refuse { diagnostic } => Err(diagnostic),
+        _ => Err("sourceSelectionRequired".into()),
+    }
+}
+
 pub(crate) fn resolve_configured_agent_spawn_for_cwd(
     settings: &AppSettings,
     agent_id: &str,
@@ -3667,6 +3880,32 @@ pub async fn create_session(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SessionInfo, String> {
+    create_session_with_source(app, session_mgr, pty_mgr, _tg_mgr, settings, shell,
+        shell_args, cwd, session_name, agent_id, requested_profile, None, git_repos,
+        skip_auto_resume, cols, rows).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_session_with_source(
+    app: AppHandle,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    _tg_mgr: State<'_, TelegramBridgeState>,
+    settings: State<'_, SettingsState>,
+    shell: Option<String>,
+    shell_args: Option<Vec<String>>,
+    cwd: Option<String>,
+    session_name: Option<String>,
+    agent_id: Option<String>,
+    requested_profile: Option<String>,
+    source_ticket: Option<crate::config::settings::SourceSelectionTicket>,
+    git_repos: Option<Vec<SessionRepo>>,
+    skip_auto_resume: Option<bool>,
+    // #973 - the terminal size the view has already fitted to. Optional: an older frontend,
+    // or any caller that has no tile to measure, simply omits it and gets AC's 120x30.
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<SessionInfo, String> {
     let cfg = settings
         .current_read()
         .await
@@ -3674,7 +3913,20 @@ pub async fn create_session(
 
     let cwd = resolve_create_session_cwd(cwd);
 
-    let resolved_spawn = if let Some(aid) = agent_id.as_deref() {
+    let replica = runtime_replica_expectation(&cwd, false)?;
+    let reference = source_ticket.as_ref().map(|ticket| ticket.configuration_ref.clone())
+        .or_else(|| replica.as_ref().and_then(|saved| saved.configuration_ref.clone()));
+    let resolved_spawn = if let Some(reference) = reference.as_ref() {
+        if source_ticket.is_none()
+            && (agent_id.as_ref().is_some_and(|id| Some(id) != reference.legacy_entry_hint.as_ref())
+                || requested_profile.as_ref().is_some_and(|letter| Some(letter) != reference.requested_profile.as_ref())) {
+            return Err("sourceSelectionProvenanceMismatch".into());
+        }
+        let (spawn, _) = resolve_runtime_source_spawn(&cfg, settings.settings_path(), &cwd,
+            reference, source_ticket.as_ref(), None)?;
+        crate::config::agent_command::prepare_agent_spawn_command(&spawn)?;
+        Some(spawn)
+    } else if let Some(aid) = agent_id.as_deref() {
         build_configured_agent_spawn_for_cwd(&cfg, aid, &cwd, requested_profile.as_deref())?
     } else {
         None
@@ -4692,6 +4944,8 @@ pub(crate) fn resolve_restart_selected_agent_id(
 
 #[derive(Debug, Clone)]
 pub(crate) struct RestartJobRequest {
+    pub source_ticket: Option<crate::config::settings::SourceSelectionTicket>,
+    pub use_stored_selection: bool,
     pub session_id: Uuid,
     pub agent_id: Option<String>,
     pub requested_profile: Option<String>,
@@ -4798,9 +5052,33 @@ pub(crate) async fn restart_session_inner_with_intent<R: tauri::Runtime>(
     communication_override: Option<SessionCommunication>,
     enforcement: crate::config::sessions_persistence::CreationGateEnforcement,
 ) -> Result<SessionInfo, String> {
+    restart_session_inner_with_source(app, _session_mgr, _pty_mgr, _settings, uuid,
+        agent_id, requested_profile, None, false, skip_auto_resume, activate_after,
+        intent, communication_override, enforcement).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn restart_session_inner_with_source<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    _session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    _pty_mgr: &Arc<Mutex<PtyManager>>,
+    _settings: &SettingsState,
+    uuid: Uuid,
+    agent_id: Option<String>,
+    requested_profile: Option<String>,
+    source_ticket: Option<crate::config::settings::SourceSelectionTicket>,
+    use_stored_selection: bool,
+    skip_auto_resume: Option<bool>,
+    activate_after: bool,
+    intent: TrustedRestartIntent,
+    communication_override: Option<SessionCommunication>,
+    enforcement: crate::config::sessions_persistence::CreationGateEnforcement,
+) -> Result<SessionInfo, String> {
     let restarted = app
         .state::<SelectionCoordinator>()
         .restart_lifecycle(RestartJobRequest {
+            source_ticket,
+            use_stored_selection,
             session_id: uuid,
             agent_id,
             requested_profile,
@@ -5027,6 +5305,8 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
     let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
     let settings = app.state::<SettingsState>().inner().clone();
     let RestartJobRequest {
+        source_ticket,
+        use_stored_selection,
         session_id: uuid,
         agent_id,
         requested_profile,
@@ -5036,6 +5316,9 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         communication_override,
         enforcement,
     } = request;
+    if use_stored_selection && (agent_id.is_some() || requested_profile.is_some() || source_ticket.is_some()) {
+        return Err("storedSelectionMixedArguments".into());
+    }
     // 1. Read config from existing session BEFORE destroying it
     let (
         shell,
@@ -5075,29 +5358,49 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         )
     };
 
-    let cwd = if is_root_agent {
-        crate::config::root_agent::ensure_root_agent_dir()?
-    } else {
-        cwd
-    };
+    if use_stored_selection && is_root_agent { return Err("rootStoredSelectionUnsupported".into()); }
+    let binding_manager = session_mgr.read().await.clone();
+    let original_binding = binding_manager.coding_agent_binding(uuid).await;
+    let old_seed = original_binding.as_ref().and_then(|binding| binding.seed.as_ref())
+        .map(|seed| serde_json::from_value::<crate::config::sessions_persistence::CodingAgentBindingSeed>(seed.clone()))
+        .transpose().map_err(|error| error.to_string())?;
+    if old_seed.as_ref().is_some_and(|seed| seed.identity_revision.starts_with("s1:") && seed.configuration_ref.is_none()) {
+        return Err("invalidSourceSeed".into());
+    }
+    // root_agent_dir is a read-only locator. Provision only after resolution.
+    let cwd = if is_root_agent { crate::config::root_agent::root_agent_dir()? } else { cwd };
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
-    crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;
-    // §1295 5.1b / B2: the creation gate runs AFTER `probe_spawn_refusal` but
-    // WELL BEFORE `teardown_old_for_restart` (below). A rejected restart of a
-    // live outside-roots session therefore DECLINES: the old session stays
-    // running (live PTY untouched), `Err(sessionCreateBlocked: ...)` propagates,
-    // and no `finalize_failed_restart` runs. Root-agent restarts already
-    // normalized `cwd` to `ensure_root_agent_dir()` above, which the gate
-    // exempts by rule 1.
-    crate::config::sessions_persistence::enforce_creation_gate(app, &cwd, enforcement).await?;
+
 
     // 2. Strip auto-injected args before restart so the new session starts from the saved recipe.
     let clean_args =
         crate::config::sessions_persistence::strip_auto_injected_args(&shell, &shell_args);
 
-    let requested_agent_id = agent_id;
+    let replica = runtime_replica_expectation(&cwd, use_stored_selection)?;
+    let mut selected_legacy_agent = agent_id;
+    let mut selected_legacy_profile = requested_profile;
+    let reference = if let Some(ticket) = source_ticket.as_ref() {
+        Some(ticket.configuration_ref.clone())
+    } else if use_stored_selection {
+        let saved = replica.as_ref().ok_or("storedSelectionUnavailable")?;
+        let pair = saved.pair.as_ref().ok_or("storedSelectionUnavailable")?;
+        selected_legacy_agent = Some(pair.coding_agent_id.clone());
+        selected_legacy_profile = Some(pair.requested_profile.clone());
+        saved.configuration_ref.clone()
+    } else {
+        old_seed.as_ref().and_then(|seed| seed.configuration_ref.clone())
+            .or_else(|| replica.as_ref().and_then(|saved| saved.configuration_ref.clone()))
+    };
+    if let Some(reference) = reference.as_ref() {
+        if source_ticket.is_none() && !use_stored_selection
+            && (selected_legacy_agent.as_ref().is_some_and(|id| Some(id) != reference.legacy_entry_hint.as_ref())
+                || selected_legacy_profile.as_ref().is_some_and(|letter| Some(letter) != reference.requested_profile.as_ref())) {
+            return Err("sourceSelectionProvenanceMismatch".into());
+        }
+    }
+    let requested_agent_id = selected_legacy_agent;
     let selected_requested_profile =
-        effective_restart_requested_profile(requested_profile, stored_requested_profile);
+        effective_restart_requested_profile(selected_legacy_profile, stored_requested_profile);
     // #537 read-side / #2434: resolve the launch agent through the one matched
     // selection drift also reads, and resolve its spawn under a single settings
     // read guard. No await is held across the guard; it is dropped at the end of
@@ -5108,6 +5411,12 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
             .current_read()
             .await
             .map_err(|error| error.to_string())?;
+        if let Some(reference) = reference.as_ref() {
+            let (spawn, _) = resolve_runtime_source_spawn(&cfg, settings.settings_path(), &cwd,
+                reference, source_ticket.as_ref(), original_binding.clone())?;
+            let host = Some(ResolvedAgentHostShell { program: cfg.default_shell.clone(), args: cfg.default_shell_args.clone() });
+            (Some(spawn.trusted_agent_id.clone()), Some(spawn), host)
+        } else {
         let selection = matched_selection(
             &cfg,
             &cwd,
@@ -5162,7 +5471,18 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
             None
         };
         (selected_agent_id, resolved_spawn, resolved_agent_host_shell)
+        }
     };
+    crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;
+    // §1295 5.1b / B2: the creation gate runs AFTER `probe_spawn_refusal` but
+    // WELL BEFORE `teardown_old_for_restart` (below). A rejected restart of a
+    // live outside-roots session therefore DECLINES: the old session stays
+    // running (live PTY untouched), `Err(sessionCreateBlocked: ...)` propagates,
+    // and no `finalize_failed_restart` runs. Root-agent restarts already
+    // normalized `cwd` to `ensure_root_agent_dir()` above, which the gate
+    // exempts by rule 1.
+    crate::config::sessions_persistence::enforce_creation_gate(app, &cwd, enforcement).await?;
+    if is_root_agent { crate::config::root_agent::ensure_root_agent_dir()?; }
     // #2434 - prepare (isolated CODEX_HOME, OpenCode config dir) outside the
     // settings guard and BEFORE any teardown: a failure aborts the restart and
     // leaves the old session running.
@@ -5219,8 +5539,7 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
     restart_reader_seam::hit_after_old_release(&uuid.to_string()).await;
 
     // 4. Spawn the replacement as a pending, unannounced row.
-    let binding_manager = session_mgr.read().await.clone();
-    let coding_agent_binding = binding_manager.coding_agent_binding(uuid).await;
+    let coding_agent_binding = original_binding;
     let completion = create_session_inner_impl(
         app,
         &session_mgr,
@@ -5822,6 +6141,7 @@ pub async fn get_active_session(
 
 #[derive(Debug, Clone)]
 pub(crate) struct RootJobRequest {
+    pub source_ticket: Option<crate::config::settings::SourceSelectionTicket>,
     pub requested_agent_id: Option<String>,
     pub requested_profile: Option<String>,
     pub skip_auto_resume_for_new_session: bool,
@@ -5868,8 +6188,30 @@ pub(crate) async fn create_root_agent_inner_with_intent(
     intent: TrustedCreateIntent,
     select_after: bool,
 ) -> Result<SessionInfo, String> {
+    create_root_agent_inner_with_source(app, _session_mgr, _pty_mgr, _tg_mgr, _settings,
+        requested_agent_id, requested_profile, None, false, skip_auto_resume_for_new_session,
+        intent, select_after).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_root_agent_inner_with_source(
+    app: &AppHandle,
+    _session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    _pty_mgr: &Arc<Mutex<PtyManager>>,
+    _tg_mgr: &TelegramBridgeState,
+    _settings: &SettingsState,
+    requested_agent_id: Option<String>,
+    requested_profile: Option<String>,
+    source_ticket: Option<crate::config::settings::SourceSelectionTicket>,
+    use_stored_selection: bool,
+    skip_auto_resume_for_new_session: bool,
+    intent: TrustedCreateIntent,
+    select_after: bool,
+) -> Result<SessionInfo, String> {
+    if use_stored_selection { return Err("rootStoredSelectionUnsupported".into()); }
     app.state::<SelectionCoordinator>()
         .root_lifecycle(RootJobRequest {
+            source_ticket,
             requested_agent_id,
             requested_profile,
             skip_auto_resume_for_new_session,
@@ -5890,7 +6232,15 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
         .clone();
     let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
     let settings = app.state::<SettingsState>().inner().clone();
-    let root_agent_path = crate::config::root_agent::ensure_root_agent_dir()?;
+    let root_agent_path = crate::config::root_agent::root_agent_dir()?;
+    // Validate ticket and resolve read-only before provisioning, publication or teardown.
+    let source_spawn = if let Some(ticket) = request.source_ticket.as_ref() {
+        let cfg = settings.current_read().await.map_err(|error| error.to_string())?;
+        let (spawn, _) = resolve_runtime_source_spawn(&cfg, settings.settings_path(), &root_agent_path,
+            &ticket.configuration_ref, Some(ticket), None)?;
+        let host = ResolvedAgentHostShell { program: cfg.default_shell.clone(), args: cfg.default_shell_args.clone() };
+        Some((spawn, host))
+    } else { None };
     let existing = session_mgr
         .read()
         .await
@@ -5914,7 +6264,7 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
             .unwrap_or_else(|error| error.into_inner())
             .has_session(session_id);
         match classify_existing_root(&existing.status, has_pty) {
-            ExistingRootAction::ReuseLive => {
+            ExistingRootAction::ReuseLive if request.source_ticket.is_none() => {
                 if request.select_after {
                     let decision = transaction
                         .live_decision(session_id)
@@ -5941,7 +6291,7 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
                     .map(|session| SessionInfo::from(&session))
                     .ok_or_else(|| "Root session disappeared during reuse".to_string());
             }
-            ExistingRootAction::WakeDormant | ExistingRootAction::DiscardMissingPty => {
+            ExistingRootAction::ReuseLive | ExistingRootAction::WakeDormant | ExistingRootAction::DiscardMissingPty => {
                 let wake_dormant = matches!(
                     classify_existing_root(&existing.status, has_pty),
                     ExistingRootAction::WakeDormant
@@ -5953,6 +6303,8 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
                 return execute_restart_transaction(
                     transaction,
                     RestartJobRequest {
+                        source_ticket: request.source_ticket,
+                        use_stored_selection: false,
                         session_id,
                         agent_id: request.requested_agent_id,
                         requested_profile: request.requested_profile,
@@ -5973,7 +6325,9 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
     }
 
     let last_coding_agent = crate::config::root_agent::read_last_coding_agent(&root_agent_path);
-    let (shell, shell_args, agent_id, agent_label) = {
+    let (shell, shell_args, agent_id, agent_label) = if let Some((spawn, _)) = source_spawn.as_ref() {
+        (spawn.shell.clone(), spawn.shell_args.clone(), Some(spawn.trusted_agent_id.clone()), Some(spawn.trusted_agent_label.clone()))
+    } else {
         let settings = settings
             .current_read()
             .await
@@ -5984,7 +6338,9 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
             last_coding_agent.as_deref(),
         )?
     };
-    let (resolved_spawn, resolved_agent_host_shell) = if let Some(agent_id) = agent_id.as_deref() {
+    let (resolved_spawn, resolved_agent_host_shell) = if let Some((spawn, host)) = source_spawn {
+        (Some(spawn), Some(host))
+    } else if let Some(agent_id) = agent_id.as_deref() {
         // #1271 - build the spawn and copy the configured default host shell
         // from the SAME single guard, before any await, so the pair can never
         // mix across a configuration change (Phase 1 items 1-2; mirrors the
@@ -6016,6 +6372,8 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
     } else {
         (shell, shell_args, agent_label)
     };
+    crate::config::root_agent::ensure_root_agent_dir()?;
+    if let Some(spawn) = resolved_spawn.as_ref() { crate::config::agent_command::prepare_agent_spawn_command(spawn)?; }
     let info = create_session_inner_impl(
         app,
         &session_mgr,

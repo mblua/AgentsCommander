@@ -2337,6 +2337,60 @@ fn load_startup_sessions(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Production restore seam shared by root, ordinary and deferred branches.
+fn prepare_persisted_restore(
+    persisted: &config::sessions_persistence::PersistedSession,
+    mode: commands::session::SourceRestoreMode,
+    settings: &config::settings::AppSettings,
+    snapshot: Result<config::settings::SelectedAgentFileSnapshot, String>,
+    target_profile: Option<&str>,
+) -> commands::session::SourceRestoreDecision {
+    commands::session::prepare_source_restore_decision(
+        persisted.coding_agent_binding_seed.as_ref(), persisted.binding_metadata(),
+        persisted.agent_id.as_deref(), target_profile, &persisted.working_directory,
+        mode, settings, snapshot,
+    )
+}
+
+fn resolve_current_persisted_restore(
+    persisted: &mut config::sessions_persistence::PersistedSession,
+    mode: commands::session::SourceRestoreMode,
+    settings: &config::settings::AppSettings,
+    settings_path: &std::path::Path,
+) -> Result<Option<config::agent_command::AgentSpawnCommand>, String> {
+    use commands::session::SourceRestoreDecision;
+    let reference = persisted.coding_agent_binding_seed.as_ref()
+        .and_then(|seed| seed.configuration_ref.as_ref());
+    let snapshot = reference.map(|reference| config::settings::capture_runtime_source(
+        settings, settings_path, &reference.source,
+    )).unwrap_or_else(|| Err("legacyHasNoSource".into()));
+    let target_profile = match (reference, snapshot.as_ref()) {
+        (Some(reference), Ok(snapshot)) => {
+            let scoped = config::settings::resolve_runtime_source_row(settings, snapshot, reference)?;
+            commands::session::source_target_profile(&scoped, reference, &persisted.working_directory)?
+        }
+        _ => None,
+    };
+    let (updated_seed, binding, spawn) = match prepare_persisted_restore(
+        persisted, mode, settings, snapshot, target_profile.as_deref(),
+    ) {
+        SourceRestoreDecision::Legacy => return Ok(None),
+        SourceRestoreDecision::Refuse { diagnostic } => return Err(diagnostic),
+        SourceRestoreDecision::SourceWake { scoped_settings, entry_hint, effective_profile, updated_seed, binding } => {
+            let spawn = commands::session::resolve_source_wake_spawn(
+                &scoped_settings, &entry_hint, &effective_profile, &persisted.working_directory, &updated_seed,
+            )?;
+            (updated_seed, binding, Some(spawn))
+        }
+        SourceRestoreDecision::SourceDeferred { updated_seed, binding } => (updated_seed, binding, None),
+    };
+    persisted.coding_agent_binding_seed = Some(updated_seed);
+    persisted.coding_agent_binding_id = Some(binding.id);
+    persisted.coding_agent_binding_origin = binding.origin;
+    Ok(spawn)
+}
+
+
 fn start_native_restore_startup(
     app: tauri::AppHandle,
     restore_barrier: crate::session::selection::RestoreBarrierGuard,
@@ -2449,6 +2503,7 @@ fn start_native_restore_startup(
                                 match commands::session::execute_root_transaction(
                                     &restore_transaction_for_task,
                                     commands::session::RootJobRequest {
+                                        source_ticket: None,
                                         requested_agent_id: None,
                                         requested_profile: None,
                                         skip_auto_resume_for_new_session: true,

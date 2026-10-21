@@ -41964,6 +41964,56 @@ pub(crate) fn agent_file_projection(
     })
 }
 
+/// Read only an authorized current locator. A persisted reference is never a
+/// path grant, and revisions are deliberately not frozen across restoration.
+pub(crate) fn capture_runtime_source(
+    settings: &AppSettings,
+    settings_path: &Path,
+    source: &SourceRef,
+) -> Result<SelectedAgentFileSnapshot, String> {
+    let context = SourceReadContext::from_settings(settings, settings_path)
+        .map_err(|_| "sourceContextUnavailable")?;
+    read_agent_file_snapshot(&context, source)
+}
+
+/// Pure physical-row matching. Keep host/resource policy but replace every
+/// agent/profile projection; a global same-ID or same-BASE row is never a donor.
+pub(crate) fn resolve_runtime_source_row(
+    host: &AppSettings,
+    snapshot: &SelectedAgentFileSnapshot,
+    reference: &ConfigurationRef,
+) -> Result<AppSettings, String> {
+    if reference.version != 1 || snapshot.source != reference.source {
+        return Err("invalidSourceReference".into());
+    }
+    let hint = reference.legacy_entry_hint.as_deref().ok_or("missingSourceHint")?;
+    let mut rows = snapshot.rows.iter().filter(|row| row.entry_hint == hint);
+    let row = rows.next().ok_or("sourceRowMissing")?;
+    if rows.next().is_some() || !row.launchable {
+        return Err("sourceRowMissingOrAmbiguous".into());
+    }
+    let projection = agent_file_projection(snapshot)?;
+    let mut agents = projection.agents.into_iter().filter(|agent| agent.id == hint);
+    let agent = agents.next().ok_or("sourceRowIncomplete")?;
+    if agents.next().is_some()
+        || configuration_identity(&agent.command, &agent.envs) != reference.calculated_id
+    {
+        return Err("sourceBaseChanged".into());
+    }
+    let mut scoped = host.clone();
+    scoped.agents = vec![agent];
+    scoped.agents_layer = AppSettings::default().agents_layer;
+    scoped.coding_agent_profiles = projection.coding_agent_profiles;
+    scoped.coding_agent_profiles.profiles_by_agent.retain(|id, _| id == hint);
+    scoped.coding_agent_profiles.profile_labels_by_agent.retain(|id, _| id == hint);
+    scoped.coding_agent_profiles.identity_by_agent.retain(|id, _| id == hint);
+    scoped.coding_agent_profiles.codex_home_key_by_agent.retain(|id, _| id == hint);
+    // Matrix-name policy is not an agent definition or a profile-cell donor.
+    scoped.coding_agent_profiles.default_profile_by_agent =
+        host.coding_agent_profiles.default_profile_by_agent.clone();
+    Ok(scoped)
+}
+
 pub(crate) fn read_agent_file_snapshot(
     context: &SourceReadContext,
     source: &SourceRef,
