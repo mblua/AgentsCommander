@@ -189,16 +189,36 @@ pub(crate) async fn block_duplicate_restore_prompt_domains(
     .await;
 }
 
+/// A Windows comparison spelling has lost its canonical case, so NotFound on
+/// that spelling cannot prove deletion under per-directory case sensitivity.
+fn prompt_directory_gc_confirmed(windows: bool, metadata: Result<(), std::io::ErrorKind>) -> bool {
+    !windows && metadata == Err(std::io::ErrorKind::NotFound)
+}
+
 /// Called only after sessions_save_lock; always reads the current manager.
 async fn flush_retained_prompts_locked(mgr: &SessionManager, dir: &Path) -> Result<(), String> {
+    flush_retained_prompts_locked_with_probe(mgr, dir, cfg!(windows), |path| {
+        std::fs::metadata(path)
+            .map(|_| ())
+            .map_err(|error| error.kind())
+    })
+    .await
+}
+
+async fn flush_retained_prompts_locked_with_probe(
+    mgr: &SessionManager,
+    dir: &Path,
+    windows: bool,
+    metadata: impl Fn(&str) -> Result<(), std::io::ErrorKind>,
+) -> Result<(), String> {
     let Some(snapshot) = mgr.retained_prompt_snapshot().await else {
         return Ok(());
     };
     let mut entries = Vec::new();
     for (key, value) in snapshot {
-        // Only a definite missing directory permits GC. Transient failures keep bytes.
-        if matches!(std::fs::metadata(&key.canonical_cwd), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound)
-        {
+        // A folded Windows key is never a deletion witness. Other platforms
+        // still collect confirmed missing paths; transient failures keep bytes.
+        if prompt_directory_gc_confirmed(windows, metadata(&key.canonical_cwd)) {
             mgr.forget_retained_prompt(&key).await;
             continue;
         }
@@ -7073,9 +7093,76 @@ mod issue_3145_io_tests {
         flush_retained_prompts_locked(&manager, directory.path())
             .await
             .unwrap();
-        assert!(load_retained_prompts(directory.path()).unwrap().is_empty());
-        assert!(manager.retained_prompt_snapshot().await.unwrap().is_empty());
+        let disk = load_retained_prompts(directory.path()).unwrap();
+        let ram = manager.retained_prompt_snapshot().await.unwrap();
+        if cfg!(windows) {
+            assert_eq!(disk[&key].last_prompt.as_deref(), Some("A"));
+            assert_eq!(ram[&key].last_prompt.as_deref(), Some("A"));
+        } else {
+            assert!(disk.is_empty());
+            assert!(ram.is_empty());
+        }
         drop(guard);
+    }
+
+    #[tokio::test]
+    async fn issue_3145_gc_policy_preserves_unproven_entries_in_ram_sidecar_and_reload() {
+        use std::io::ErrorKind;
+        // Exercise both policies on every host. Inject only metadata outcomes;
+        // snapshots, forgetting, atomic writes, codec and reload stay real.
+        for windows in [false, true] {
+            for metadata_result in [
+                Ok(()),
+                Err(ErrorKind::NotFound),
+                Err(ErrorKind::PermissionDenied),
+                Err(ErrorKind::Other),
+            ] {
+                let directory = tempfile::tempdir().unwrap();
+                let domain = directory.path().join("MixedCaseDomain");
+                std::fs::create_dir(&domain).unwrap();
+                let (key, value) = entry(&domain);
+                if !windows && metadata_result == Err(ErrorKind::NotFound) {
+                    std::fs::remove_dir(&domain).unwrap();
+                }
+                let manager = SessionManager::new();
+                manager
+                    .install_retained_prompts(Some(HashMap::from([(key.clone(), value)])))
+                    .await;
+                let guard = sessions_save_lock().lock().await;
+                flush_retained_prompts_locked_with_probe(
+                    &manager,
+                    directory.path(),
+                    windows,
+                    |_| metadata_result,
+                )
+                .await
+                .unwrap();
+                let retained = windows || metadata_result != Err(ErrorKind::NotFound);
+                let ram = manager.retained_prompt_snapshot().await.unwrap();
+                let disk = load_retained_prompts(directory.path()).unwrap();
+                assert_eq!(ram.contains_key(&key), retained);
+                assert_eq!(disk.contains_key(&key), retained);
+                let reloaded = SessionManager::new();
+                initialize_prompt_retention_in_dir(&reloaded, directory.path()).await;
+                let after_reload = reloaded.retained_prompt_snapshot().await.unwrap();
+                assert_eq!(after_reload.contains_key(&key), retained);
+                if retained {
+                    assert!(
+                        domain.is_dir(),
+                        "unproven deletion must preserve the existing domain"
+                    );
+                    assert_eq!(ram[&key].last_prompt.as_deref(), Some("A"));
+                    assert_eq!(disk[&key].last_prompt.as_deref(), Some("A"));
+                    assert_eq!(after_reload[&key].last_prompt.as_deref(), Some("A"));
+                } else {
+                    assert!(!domain.exists());
+                    assert!(ram.is_empty());
+                    assert!(disk.is_empty());
+                    assert!(after_reload.is_empty());
+                }
+                drop(guard);
+            }
+        }
     }
 
     fn entry(cwd: &Path) -> (PromptKey, RetainedPrompt) {
