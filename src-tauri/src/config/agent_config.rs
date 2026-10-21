@@ -4495,6 +4495,7 @@ mod tests {
 
         // Site 8.
         let default = profiles::ReplicaSelectionDefault {
+            configuration_ref: None,
             coding_agent_id: "codex".to_string(),
             requested_profile: "B".to_string(),
             selection_locked: false,
