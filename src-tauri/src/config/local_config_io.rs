@@ -5833,103 +5833,107 @@ mod pair_activity_tests {
     fn e2992_duplicate_json_pair_original_and_embedded_images_before_parse() {
         for side in 0..2 {
             for slot in 0usize..7 {
-                let fixture = Fixture::new(false);
-                for path in [fixture.d(), fixture.s()] {
-                    let mut value: Value =
-                        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-                    value["opaque"] = json!("e2992-parse-canary");
-                    fixture.write(&path, value);
-                }
-                let request = fixture.request();
-                let mut packet = fixture.reserve(&request).unwrap();
-                let d = fixture.d();
-                let st = fixture.s();
-                let paths = [d.as_path(), st.as_path()];
-                let stage = slot.saturating_sub(2);
-                let valid = match &packet.plan_images.stages[stage][side] {
-                    PhysicalState::Bytes { bytes, .. } => bytes,
-                    PhysicalState::Absent => panic!("present fixture"),
-                };
-                let closing = valid.iter().rposition(|byte| *byte == b'}').unwrap();
-                let mut duplicate = valid[..closing].to_vec();
-                duplicate.extend_from_slice(br#", "opaque":"e2992-parse-canary"}"#);
-                assert_eq!(
-                    serde_json::from_slice::<Value>(&duplicate).unwrap(),
-                    serde_json::from_slice::<Value>(valid).unwrap()
-                );
-                let image = PhysicalState::from_bytes(duplicate.clone());
-                if slot == 0 {
-                    std::fs::write(paths[side], &duplicate).unwrap();
-                } else if slot == 1 {
-                    packet.before_tuple[side] = image;
-                } else {
-                    packet.plan_images.stages[slot - 2][side] = image;
-                }
-                let envelope = serde_json::to_vec(&packet).unwrap();
-                std::fs::write(fixture.r(), &envelope).unwrap();
-                let originals = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
-                E2992_CANARY_MAP_CALLS.with(|count| count.set(0));
-                let error =
-                    execute_reserved_config_pair(&d, &st, &fixture.r(), &request.operation_id)
-                        .unwrap_err();
-                assert!(
-                    matches!(&error, PreparedPairError::DuplicateJsonMember(message) if message.contains("duplicateJsonMember:") && message.contains(paths[side].to_str().unwrap()) && message.contains("repeated JSON object members"))
-                );
-                assert!(!error.to_string().contains("canary"));
-                let called = Cell::new(false);
-                let classified = update_config_pair_guarded_classified(
-                    &d,
-                    &st,
-                    &fixture.r(),
-                    &[],
-                    None,
-                    Some(&|_, _| {
-                        called.set(true);
-                        Ok(())
-                    }),
-                    &|_| {
-                        called.set(true);
-                    },
-                    |_, _| {
-                        called.set(true);
-                        Ok(())
-                    },
-                    &|_| {
-                        called.set(true);
-                        Ok(())
-                    },
-                    None,
-                )
-                .unwrap_err();
-                assert!(
-                    matches!(&classified, ConfigWriteError::DuplicateJsonMember(message)
-                    if message.contains(paths[side].to_str().unwrap()))
-                );
-                assert!(!called.get());
-                assert_eq!(E2992_CANARY_MAP_CALLS.with(Cell::get), 0);
-                assert_eq!(std::fs::read(&d).unwrap(), originals[0]);
-                assert_eq!(std::fs::read(&st).unwrap(), originals[1]);
-                assert_eq!(std::fs::read(fixture.r()).unwrap(), envelope);
-                if slot != 0 {
-                    let mut physical = PhysicalState::from_bytes(envelope.clone());
-                    let before = packet.clone();
-                    let error = reconcile_pair_activity_guarded(
-                        &d,
-                        &st,
-                        &fixture.r(),
-                        &mut packet,
-                        &mut physical,
-                        &PairTargetGuard::new(&|| Ok(())),
-                    )
-                    .unwrap_err();
-                    assert!(matches!(error, PreparedPairError::DuplicateJsonMember(_)));
-                    assert_eq!(packet, before);
-                    assert_eq!(std::fs::read(&d).unwrap(), originals[0]);
-                    assert_eq!(std::fs::read(&st).unwrap(), originals[1]);
-                    assert_eq!(E2992_CANARY_MAP_CALLS.with(Cell::get), 0);
-                    assert_eq!(std::fs::read(fixture.r()).unwrap(), envelope);
-                }
+                assert_pair_image_duplicate_rejected(side, slot);
             }
+        }
+    }
+
+    fn assert_pair_image_duplicate_rejected(side: usize, slot: usize) {
+        let fixture = Fixture::new(false);
+        for path in [fixture.d(), fixture.s()] {
+            let mut value: Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            value["opaque"] = json!("e2992-parse-canary");
+            fixture.write(&path, value);
+        }
+        let request = fixture.request();
+        let mut packet = fixture.reserve(&request).unwrap();
+        let d = fixture.d();
+        let st = fixture.s();
+        let paths = [d.as_path(), st.as_path()];
+        let stage = slot.saturating_sub(2);
+        let valid = match &packet.plan_images.stages[stage][side] {
+            PhysicalState::Bytes { bytes, .. } => bytes,
+            PhysicalState::Absent => panic!("present fixture"),
+        };
+        let closing = valid.iter().rposition(|byte| *byte == b'}').unwrap();
+        let mut duplicate = valid[..closing].to_vec();
+        duplicate.extend_from_slice(br#", "opaque":"e2992-parse-canary"}"#);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&duplicate).unwrap(),
+            serde_json::from_slice::<Value>(valid).unwrap()
+        );
+        let image = PhysicalState::from_bytes(duplicate.clone());
+        if slot == 0 {
+            std::fs::write(paths[side], &duplicate).unwrap();
+        } else if slot == 1 {
+            packet.before_tuple[side] = image;
+        } else {
+            packet.plan_images.stages[slot - 2][side] = image;
+        }
+        let envelope = serde_json::to_vec(&packet).unwrap();
+        std::fs::write(fixture.r(), &envelope).unwrap();
+        let originals = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
+        E2992_CANARY_MAP_CALLS.with(|count| count.set(0));
+        let error =
+            execute_reserved_config_pair(&d, &st, &fixture.r(), &request.operation_id)
+                .unwrap_err();
+        assert!(
+            matches!(&error, PreparedPairError::DuplicateJsonMember(message) if message.contains("duplicateJsonMember:") && message.contains(paths[side].to_str().unwrap()) && message.contains("repeated JSON object members"))
+        );
+        assert!(!error.to_string().contains("canary"));
+        let called = Cell::new(false);
+        let classified = update_config_pair_guarded_classified(
+            &d,
+            &st,
+            &fixture.r(),
+            &[],
+            None,
+            Some(&|_, _| {
+                called.set(true);
+                Ok(())
+            }),
+            &|_| {
+                called.set(true);
+            },
+            |_, _| {
+                called.set(true);
+                Ok(())
+            },
+            &|_| {
+                called.set(true);
+                Ok(())
+            },
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&classified, ConfigWriteError::DuplicateJsonMember(message)
+            if message.contains(paths[side].to_str().unwrap()))
+        );
+        assert!(!called.get());
+        assert_eq!(E2992_CANARY_MAP_CALLS.with(Cell::get), 0);
+        assert_eq!(std::fs::read(&d).unwrap(), originals[0]);
+        assert_eq!(std::fs::read(&st).unwrap(), originals[1]);
+        assert_eq!(std::fs::read(fixture.r()).unwrap(), envelope);
+        if slot != 0 {
+            let mut physical = PhysicalState::from_bytes(envelope.clone());
+            let before = packet.clone();
+            let error = reconcile_pair_activity_guarded(
+                &d,
+                &st,
+                &fixture.r(),
+                &mut packet,
+                &mut physical,
+                &PairTargetGuard::new(&|| Ok(())),
+            )
+            .unwrap_err();
+            assert!(matches!(error, PreparedPairError::DuplicateJsonMember(_)));
+            assert_eq!(packet, before);
+            assert_eq!(std::fs::read(&d).unwrap(), originals[0]);
+            assert_eq!(std::fs::read(&st).unwrap(), originals[1]);
+            assert_eq!(E2992_CANARY_MAP_CALLS.with(Cell::get), 0);
+            assert_eq!(std::fs::read(fixture.r()).unwrap(), envelope);
         }
     }
 

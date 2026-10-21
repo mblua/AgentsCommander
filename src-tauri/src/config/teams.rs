@@ -2165,97 +2165,7 @@ mod tests {
         // would correctly refuse the duplicate fixture.
         for side in 0..2 {
             for slot in 0..7 {
-                use crate::config::settings::{
-                    identity_reference_protected_revision, IdentityReferencePhysicalState,
-                };
-                use sha2::{Digest, Sha256};
-                let (tmp, paths) = make_coordinator_fixture(false);
-                let ac_root = tmp.path().join("proj-a").join(".ac");
-                let room = ac_root.join("wg-1-dev-team");
-                let replica = room.join("__agent_tech-lead");
-                let (d, st, reservation) =
-                    crate::config::settings::identity_reference_pair_paths(&replica);
-                std::fs::write(&st, b"{}").unwrap();
-                let files = [&d, &st];
-                let original = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
-                let tuple = original
-                    .clone()
-                    .map(IdentityReferencePhysicalState::from_bytes);
-                let protected = identity_reference_protected_revision(&tuple).unwrap();
-                let protected_images = vec![protected; 5];
-                let mappings = "a".repeat(64);
-                let digest = format!(
-                    "{:x}",
-                    Sha256::digest(
-                        serde_json::to_vec(&(1u32, &protected_images, &mappings)).unwrap()
-                    )
-                );
-                let resolved = files.map(|path| {
-                    let value = std::fs::canonicalize(path.parent().unwrap())
-                        .unwrap()
-                        .join(path.file_name().unwrap())
-                        .to_string_lossy()
-                        .into_owned();
-                    if cfg!(windows) {
-                        value.to_lowercase()
-                    } else {
-                        value
-                    }
-                });
-                let target = format!(
-                    "{:x}",
-                    Sha256::digest(serde_json::to_vec(&resolved).unwrap())
-                );
-                let mut envelope = serde_json::json!({
-                    "version": 2, "operationId": "pending-coordinator", "sourcePhysicalKey": "fixture",
-                    "planDigest": digest, "physicalTargetIdentity": target, "protectedPolicyVersion": 1,
-                    "mappingsDigest": mappings, "beforeTuple": tuple, "protectedImages": protected_images,
-                    "changedSides": [false, false], "timestampFloor": null, "activityIntent": null,
-                    "planImages": {"stages": vec![tuple.clone(); 5]},
-                });
-                let control = serde_json::to_vec(&envelope).unwrap();
-                std::fs::write(&reservation, &control).unwrap();
-                assert!(resolve_wg_coordinator_replica_checked(&ac_root, &room)
-                    .unwrap()
-                    .is_none());
-                assert_eq!(std::fs::read(&reservation).unwrap(), control);
-                assert_eq!(std::fs::read(&d).unwrap(), original[0]);
-                assert_eq!(std::fs::read(&st).unwrap(), original[1]);
-                let closing = original[side]
-                    .iter()
-                    .rposition(|byte| *byte == b'}')
-                    .unwrap();
-                let mut bytes = original[side][..closing].to_vec();
-                if closing > 1 {
-                    bytes.push(b',');
-                }
-                bytes.extend_from_slice(br#""unknown-canary":"secret-canary","unknown-canary":0}"#);
-                let image =
-                    serde_json::to_value(IdentityReferencePhysicalState::from_bytes(bytes.clone()))
-                        .unwrap();
-                match slot {
-                    0 => std::fs::write(files[side], bytes).unwrap(),
-                    1 => envelope["beforeTuple"][side] = image,
-                    _ => envelope["planImages"]["stages"][slot - 2][side] = image,
-                }
-                let packet = serde_json::to_vec(&envelope).unwrap();
-                std::fs::write(&reservation, &packet).unwrap();
-                let captured = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
-                for error in [
-                    resolve_wg_coordinator_replica_checked(&ac_root, &room).unwrap_err(),
-                    verified_wg_coordinator_target_checked(
-                        "proj-a:wg-1-dev-team/tech-lead",
-                        &paths,
-                    )
-                    .unwrap_err(),
-                ] {
-                    assert!(error.contains("duplicateJsonMember:"));
-                    assert!(error.contains(files[side].to_str().unwrap()));
-                    assert!(!error.contains("canary"));
-                }
-                assert_eq!(std::fs::read(&d).unwrap(), captured[0]);
-                assert_eq!(std::fs::read(&st).unwrap(), captured[1]);
-                assert_eq!(std::fs::read(&reservation).unwrap(), packet);
+                assert_pending_coordinator_duplicate_rejected(side, slot);
             }
         }
         for invalid in [
@@ -2292,6 +2202,100 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    fn assert_pending_coordinator_duplicate_rejected(side: usize, slot: usize) {
+        use crate::config::settings::{
+            identity_reference_protected_revision, IdentityReferencePhysicalState,
+        };
+        use sha2::{Digest, Sha256};
+        let (tmp, paths) = make_coordinator_fixture(false);
+        let ac_root = tmp.path().join("proj-a").join(".ac");
+        let room = ac_root.join("wg-1-dev-team");
+        let replica = room.join("__agent_tech-lead");
+        let (d, st, reservation) =
+            crate::config::settings::identity_reference_pair_paths(&replica);
+        std::fs::write(&st, b"{}").unwrap();
+        let files = [&d, &st];
+        let original = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
+        let tuple = original
+            .clone()
+            .map(IdentityReferencePhysicalState::from_bytes);
+        let protected = identity_reference_protected_revision(&tuple).unwrap();
+        let protected_images = vec![protected; 5];
+        let mappings = "a".repeat(64);
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&(1u32, &protected_images, &mappings)).unwrap()
+            )
+        );
+        let resolved = files.map(|path| {
+            let value = std::fs::canonicalize(path.parent().unwrap())
+                .unwrap()
+                .join(path.file_name().unwrap())
+                .to_string_lossy()
+                .into_owned();
+            if cfg!(windows) {
+                value.to_lowercase()
+            } else {
+                value
+            }
+        });
+        let target = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&resolved).unwrap())
+        );
+        let mut envelope = serde_json::json!({
+            "version": 2, "operationId": "pending-coordinator", "sourcePhysicalKey": "fixture",
+            "planDigest": digest, "physicalTargetIdentity": target, "protectedPolicyVersion": 1,
+            "mappingsDigest": mappings, "beforeTuple": tuple, "protectedImages": protected_images,
+            "changedSides": [false, false], "timestampFloor": null, "activityIntent": null,
+            "planImages": {"stages": vec![tuple.clone(); 5]},
+        });
+        let control = serde_json::to_vec(&envelope).unwrap();
+        std::fs::write(&reservation, &control).unwrap();
+        assert!(resolve_wg_coordinator_replica_checked(&ac_root, &room)
+            .unwrap()
+            .is_none());
+        assert_eq!(std::fs::read(&reservation).unwrap(), control);
+        assert_eq!(std::fs::read(&d).unwrap(), original[0]);
+        assert_eq!(std::fs::read(&st).unwrap(), original[1]);
+        let closing = original[side]
+            .iter()
+            .rposition(|byte| *byte == b'}')
+            .unwrap();
+        let mut bytes = original[side][..closing].to_vec();
+        if closing > 1 {
+            bytes.push(b',');
+        }
+        bytes.extend_from_slice(br#""unknown-canary":"secret-canary","unknown-canary":0}"#);
+        let image =
+            serde_json::to_value(IdentityReferencePhysicalState::from_bytes(bytes.clone()))
+                .unwrap();
+        match slot {
+            0 => std::fs::write(files[side], bytes).unwrap(),
+            1 => envelope["beforeTuple"][side] = image,
+            _ => envelope["planImages"]["stages"][slot - 2][side] = image,
+        }
+        let packet = serde_json::to_vec(&envelope).unwrap();
+        std::fs::write(&reservation, &packet).unwrap();
+        let captured = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
+        for error in [
+            resolve_wg_coordinator_replica_checked(&ac_root, &room).unwrap_err(),
+            verified_wg_coordinator_target_checked(
+                "proj-a:wg-1-dev-team/tech-lead",
+                &paths,
+            )
+            .unwrap_err(),
+        ] {
+            assert!(error.contains("duplicateJsonMember:"));
+            assert!(error.contains(files[side].to_str().unwrap()));
+            assert!(!error.contains("canary"));
+        }
+        assert_eq!(std::fs::read(&d).unwrap(), captured[0]);
+        assert_eq!(std::fs::read(&st).unwrap(), captured[1]);
+        assert_eq!(std::fs::read(&reservation).unwrap(), packet);
     }
 
     use super::*;
