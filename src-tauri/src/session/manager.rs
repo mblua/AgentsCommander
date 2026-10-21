@@ -3612,6 +3612,12 @@ fn finalize_prompt_domain(
     if !exclusive {
         entry.blocked = true;
         entry.last_prompt = None;
+    } else if !prepared.continuation && !prepared.fresh {
+        // Admission reserves this pair for configured, unattributed identity.
+        // A durable fresh marker cannot establish that external selector.
+        entry.blocked = true;
+        entry.last_prompt = None;
+        row.last_prompt = None;
     } else if prepared.fresh || row.start_fresh_on_restore {
         state.prompt_seed_blocked.insert(id);
         // Startup fresh markers cannot disprove persisted duplicate recipes
@@ -3632,10 +3638,6 @@ fn finalize_prompt_domain(
         if !entry.blocked && row.last_prompt.is_some() {
             entry.last_prompt = row.last_prompt.clone();
         }
-    } else {
-        // A configured external resume/identity is not AC's verified decision.
-        entry.blocked = true;
-        entry.last_prompt = None;
     }
     state.prompt_keys.insert(id, prepared.key);
     if let Some(source) = predecessor {

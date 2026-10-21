@@ -5547,10 +5547,12 @@ fn commit_selection_transition_with_carrier_permit() {
 
         assert_eq!(restored.match_tier, None);
         assert_eq!(restored.original_profile_letter, None);
+        assert_eq!(restored.effective_profile.as_deref(), Some("A"));
         let id = Uuid::parse_str(&restored.id).unwrap();
         let stored = manager.read().await.get_session(id).await.unwrap();
         assert_eq!(stored.match_tier, None);
         assert_eq!(stored.original_profile_letter, None);
+        assert_eq!(stored.effective_profile.as_deref(), Some("A"));
         guard.finish();
         coordinator.close_and_join().await;
     }

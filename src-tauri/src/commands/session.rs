@@ -1452,6 +1452,45 @@ fn should_inject_continue(
     !already_has_continue
 }
 
+/// Inspect the configured argv before AC adds its own launch controls. No
+/// injection can also mean a first conversation, which must remain retainable.
+fn configured_prompt_identity(
+    kind: Option<CodingAgentKind>,
+    shell: &str,
+    shell_args: &[String],
+) -> bool {
+    let tokens: Vec<&str> = shell_args
+        .iter()
+        .flat_map(|arg| arg.split_whitespace())
+        .collect();
+    match kind {
+        Some(CodingAgentKind::Claude) => {
+            let full_cmd = format!("{} {}", shell, shell_args.join(" "));
+            !should_inject_fresh_session_id(true, true, &full_cmd)
+        }
+        Some(CodingAgentKind::Codex) => {
+            codex_tokens_have_resume(&tokens, 0)
+                || (codex_has_explicit_subcommand(&tokens, 0)
+                    && tokens
+                        .iter()
+                        .any(|token| token.eq_ignore_ascii_case("fork")))
+        }
+        Some(CodingAgentKind::Antigravity) => antigravity_tokens_have_resume(&tokens, 0),
+        Some(CodingAgentKind::Pi) => locate_pi_command(shell, shell_args)
+            .ok()
+            .flatten()
+            .is_some_and(|location| pi_has_explicit_session_control(&location.option_tokens)),
+        Some(CodingAgentKind::Muse) => tokens.iter().any(|token| {
+            CodingAgentKind::Muse
+                .profile()
+                .resume_tokens
+                .iter()
+                .any(|control| token.eq_ignore_ascii_case(control))
+        }),
+        _ => false,
+    }
+}
+
 /// (#756) Decide whether to pass a launcher-minted `--session-id <uuid>` to a
 /// Claude spawn. Pure function; mirrors `should_inject_continue`'s token scan.
 ///
@@ -2580,6 +2619,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
 
         let mut shell_args = shell_args;
         let mut effective_continuation = false;
+        let configured_identity = configured_prompt_identity(agent_kind, &shell, &shell_args);
         let full_cmd = format!("{} {}", shell, shell_args.join(" "));
         // #260: single detector (session/profile.rs). Replaces the old
         // starts_with triple; this is the SAME call `strip_auto_injected_args`
@@ -3436,6 +3476,14 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             }
         }
 
+        // A configured selector is never evidence of AC-attributed continuation,
+        // even when an injector also happened to add a control of its own.
+        effective_continuation &= !configured_identity;
+        let prompt_fresh = !configured_identity
+            && (!effective_continuation
+                || skip_auto_resume
+                || pending_start_fresh == Some(true)
+                || fresh_forced_by_mirror);
         let key = if session.backend_kind == crate::pty::backend::SessionBackendKind::LocalProcess {
             crate::config::sessions_persistence::prompt_key(
                 &cwd,
@@ -3462,7 +3510,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             key,
             initial,
             effective_continuation,
-            skip_auto_resume || pending_start_fresh == Some(true) || fresh_forced_by_mirror,
+            prompt_fresh,
             !defer_inline_finalization,
         )
         .await?;
@@ -18304,6 +18352,164 @@ pub(crate) mod reader_demand_tests {
             h.close().await;
             next.close().await;
         }
+    }
+
+    async fn issue_3145_open_claude_without_forced_fresh(
+        harness: &RestartHarness,
+        cwd: &std::path::Path,
+    ) -> SessionInfo {
+        let cwd = cwd.to_string_lossy().into_owned();
+        let spawn = build_configured_agent_spawn_for_cwd(&harness.settings, "claude", &cwd, None)
+            .unwrap()
+            .unwrap();
+        create_session_inner(
+            harness.app.handle(),
+            &harness.manager,
+            &harness.pty,
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            cwd,
+            Some("initial conversation".into()),
+            Some("claude".into()),
+            None,
+            true,
+            Vec::new(),
+            false,
+            Some(spawn),
+            None,
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn issue_3145_initial_claude_launch_retains_input_after_close_reload_resume() {
+        for accepted in ["A", ""] {
+            let fixture = room_fixture();
+            configure_room(fixture.room_path(), true);
+            let first = restart_harness(&fixture);
+            let projects =
+                first.claude_projects_dir(&first.claude_config_dir, fixture.coordinator_path());
+            assert!(
+                !projects.exists(),
+                "first conversation has no resume probe directory"
+            );
+            let initial =
+                issue_3145_open_claude_without_forced_fresh(&first, fixture.coordinator_path())
+                    .await;
+            let initial_args = initial
+                .effective_shell_args
+                .as_deref()
+                .unwrap_or(&initial.shell_args);
+            assert!(!initial_args
+                .iter()
+                .flat_map(|arg| arg.split_whitespace())
+                .map(|arg| arg.trim_matches('"'))
+                .any(|arg| arg == "--continue" || arg == "-c"));
+            let id = Uuid::parse_str(&initial.id).unwrap();
+            let manager = first.manager.read().await.clone();
+            let retained = manager.retained_prompt_snapshot().await.unwrap();
+            assert_eq!(retained.len(), 1);
+            assert!(
+                !retained.values().next().unwrap().blocked,
+                "AC-3145-006: natural first launch must not poison retention"
+            );
+            manager.set_last_prompt(id, accepted.into()).await;
+            destroy_session_inner(first.app.handle(), id).await.unwrap();
+            assert!(manager.list_sessions().await.is_empty());
+            let checkpoint = tempfile::tempdir().unwrap();
+            crate::config::sessions_persistence::persist_current_state_to_dir_result(
+                &manager,
+                checkpoint.path(),
+            )
+            .await
+            .unwrap();
+            let next = restart_harness(&fixture);
+            let next_manager = next.manager.read().await.clone();
+            crate::config::sessions_persistence::initialize_prompt_retention_in_dir(
+                &next_manager,
+                checkpoint.path(),
+            )
+            .await;
+            assert!(next_manager.list_sessions().await.is_empty());
+            // Only the provider's pre-existing launch probe is mocked. The PTY,
+            // create, close, sidecar reload and publication paths are production.
+            std::fs::create_dir_all(
+                next.claude_projects_dir(&next.claude_config_dir, fixture.coordinator_path()),
+            )
+            .unwrap();
+            let resumed =
+                issue_3145_open_claude_without_forced_fresh(&next, fixture.coordinator_path())
+                    .await;
+            let resume_args = resumed
+                .effective_shell_args
+                .as_deref()
+                .unwrap_or(&resumed.shell_args);
+            assert!(resume_args
+                .iter()
+                .flat_map(|arg| arg.split_whitespace())
+                .any(|arg| arg.trim_matches('"') == "--continue"));
+            assert_eq!(
+                resumed.last_prompt.as_deref(),
+                Some(accepted),
+                "AC-3145-006: input survives close and reload into effective resume"
+            );
+            next.release_all(Uuid::parse_str(&resumed.id).unwrap())
+                .await;
+            first.close().await;
+            next.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn issue_3145_configured_external_resume_stays_blocked_after_close_reload() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let mut first = restart_harness(&fixture);
+        first.set_claude_command("claude --continue").await;
+        let initial =
+            issue_3145_open_claude_without_forced_fresh(&first, fixture.coordinator_path()).await;
+        let id = Uuid::parse_str(&initial.id).unwrap();
+        let manager = first.manager.read().await.clone();
+        manager.set_last_prompt(id, "unattributed".into()).await;
+        assert!(
+            manager
+                .retained_prompt_snapshot()
+                .await
+                .unwrap()
+                .values()
+                .next()
+                .unwrap()
+                .blocked
+        );
+        destroy_session_inner(first.app.handle(), id).await.unwrap();
+        let checkpoint = tempfile::tempdir().unwrap();
+        crate::config::sessions_persistence::persist_current_state_to_dir_result(
+            &manager,
+            checkpoint.path(),
+        )
+        .await
+        .unwrap();
+        let next = restart_harness(&fixture);
+        let next_manager = next.manager.read().await.clone();
+        crate::config::sessions_persistence::initialize_prompt_retention_in_dir(
+            &next_manager,
+            checkpoint.path(),
+        )
+        .await;
+        std::fs::create_dir_all(
+            next.claude_projects_dir(&next.claude_config_dir, fixture.coordinator_path()),
+        )
+        .unwrap();
+        let resumed =
+            issue_3145_open_claude_without_forced_fresh(&next, fixture.coordinator_path()).await;
+        assert_eq!(resumed.last_prompt, None);
+        next.release_all(Uuid::parse_str(&resumed.id).unwrap())
+            .await;
+        first.close().await;
+        next.close().await;
     }
 
     const PHASE4_BOT_ID: &str = "phase4-bot";
