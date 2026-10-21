@@ -7010,6 +7010,14 @@ mod derived_agent_binding_tests {
                 serde_json::to_value(&failed).unwrap(),
             )
             .await;
+        // Recipe JSON omits origin; retain its RAM witness through the same
+        // binding metadata API used by production failed-recipe refresh.
+        failed_manager
+            .refresh_failed_binding_recipes(vec![(
+                failed.binding_metadata().unwrap().unwrap(),
+                serde_json::to_value(&failed).unwrap(),
+            )])
+            .await;
         let failed_snapshot = snapshot_sessions(&failed_manager).await;
         assert_eq!(failed_snapshot.len(), 1);
         assert_eq!(
