@@ -30912,6 +30912,7 @@ mod tests {
             assert_eq!(
                 OVERLAY_INELIGIBLE_DISK_KEYS,
                 &[
+                    "agentFileSourceByMenu",
                     "archivedProjectPaths",
                     "archivedProjectPathsRelativeToInstance",
                     "projectPath",
@@ -30922,26 +30923,29 @@ mod tests {
                     "terminalSnapshotsEnabled",
                 ]
             );
-            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[0], FIELD_ARCHIVED);
-            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[1], FIELD_ARCHIVED_REL);
-            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[2], FIELD_PROJECT_PATH);
-            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[3], FIELD_PROJECT_PATH_REL);
-            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[4], FIELD_PROJECT_PATHS);
-            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[5], FIELD_PROJECT_PATHS_REL);
-            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[6], "rootToken");
+            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[0], "agentFileSourceByMenu");
+            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[1], FIELD_ARCHIVED);
+            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[2], FIELD_ARCHIVED_REL);
+            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[3], FIELD_PROJECT_PATH);
+            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[4], FIELD_PROJECT_PATH_REL);
+            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[5], FIELD_PROJECT_PATHS);
+            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[6], FIELD_PROJECT_PATHS_REL);
+            assert_eq!(OVERLAY_INELIGIBLE_DISK_KEYS[7], "rootToken");
             assert_eq!(
-                OVERLAY_INELIGIBLE_DISK_KEYS[7],
+                OVERLAY_INELIGIBLE_DISK_KEYS[8],
                 FIELD_TERMINAL_SNAPSHOTS_ENABLED
             );
             // `rootToken` is the serialized name of the field it protects.
             let with_token = AppSettings {
                 root_token: Some("t".to_string()),
+                agent_file_source_by_menu: Some(AgentFileSourcePreferences::default()),
                 ..AppSettings::default()
             };
             let Value::Object(object) = serde_json::to_value(&with_token).unwrap() else {
                 unreachable!()
             };
             assert!(object.contains_key("rootToken"));
+            assert!(object.contains_key("agentFileSourceByMenu"));
         }
 
         // S10
@@ -30950,6 +30954,7 @@ mod tests {
             assert_eq!(
                 OVERLAY_INELIGIBLE_LEGACY_KEYS,
                 &[
+                    "agentFileSourceByMenu",
                     "sidebarAlwaysOnTop",
                     "sidebarZoom",
                     "startOnlyCoordinators",
@@ -30958,6 +30963,7 @@ mod tests {
             );
             let settings = AppSettings {
                 legacy_start_only_coordinators: Some(true),
+                agent_file_source_by_menu: Some(AgentFileSourcePreferences::default()),
                 terminal_geometry: Some(WindowGeometry {
                     x: 0.0,
                     y: 0.0,
