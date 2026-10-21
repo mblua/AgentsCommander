@@ -1225,7 +1225,12 @@ async fn persist_prepared_locked(
     mode: PersistMode,
 ) -> Result<(), String> {
     handle_orphan_drops(mgr, dir, &prep.drops, mode).await;
-    save_sessions_to_dir(dir, &prep.kept)?;
+    if let Err(error) = save_sessions_to_dir(dir, &prep.kept) {
+        if let Some(mgr) = mgr {
+            mgr.disable_prompt_reuse().await;
+        }
+        return Err(error);
+    }
     if let Some(mgr) = mgr {
         flush_retained_prompts_locked(mgr, dir).await?;
     }
