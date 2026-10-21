@@ -17,6 +17,37 @@ use crate::session::selection::{
     SessionSelection,
 };
 
+/// Verified host directory and exact launch profiles; IO stays with admission.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PromptKey {
+    pub canonical_cwd: String,
+    pub agent_id: String,
+    pub requested_profile: Option<String>,
+    pub effective_profile: String,
+}
+
+impl PromptKey {
+    fn matches(&self, row: &Session) -> bool {
+        row.agent_id.as_ref() == Some(&self.agent_id)
+            && row.requested_profile == self.requested_profile
+            && row.effective_profile.as_ref() == Some(&self.effective_profile)
+            && row.backend_kind == SessionBackendKind::LocalProcess
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RetainedPrompt {
+    pub last_prompt: Option<String>,
+    pub blocked: bool,
+}
+
+struct PendingPrompt {
+    key: PromptKey,
+    continuation: bool,
+    fresh: bool,
+    allow_retained_lookup: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct PendingCreateBinding {
     session_id: Uuid,
@@ -247,6 +278,70 @@ fn stable_carrier_equal(a: &Session, b: &Session) -> bool {
 }
 impl Drop for CarrierStateWrite<'_> {
     fn drop(&mut self) {
+        let incompatible: Vec<_> = self
+            .state
+            .prompt_keys
+            .iter()
+            .filter(|(id, key)| {
+                self.state
+                    .sessions
+                    .get(id)
+                    .is_none_or(|row| !key.matches(row))
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in incompatible {
+            self.state.prompt_keys.remove(&id);
+        }
+        // Clearing/fresh intent invalidates retained text in the same write.
+        // Re-arming alone never copies the old row back into the cache.
+        let fresh_keys: Vec<_> = self
+            .state
+            .sessions
+            .values()
+            .filter(|row| {
+                row.start_fresh_on_restore
+                    && self
+                        .before
+                        .get(&row.id)
+                        .is_some_and(|old| !old.start_fresh_on_restore)
+            })
+            .filter_map(|row| self.state.prompt_keys.get(&row.id).cloned())
+            .collect();
+        for key in fresh_keys {
+            let owners = self
+                .state
+                .prompt_keys
+                .values()
+                .filter(|candidate| **candidate == key)
+                .count();
+            self.state.retained_prompts.insert(
+                key,
+                RetainedPrompt {
+                    last_prompt: None,
+                    blocked: owners > 1,
+                },
+            );
+        }
+        let cleared_rows: Vec<_> = self
+            .state
+            .sessions
+            .values()
+            .filter(|row| {
+                row.start_fresh_on_restore
+                    && self
+                        .before
+                        .get(&row.id)
+                        .is_some_and(|old| !old.start_fresh_on_restore)
+            })
+            .map(|row| row.id)
+            .collect();
+        for id in cleared_rows {
+            self.state.prompt_seed_blocked.insert(id);
+            if let Some(row) = self.state.sessions.get_mut(&id) {
+                row.last_prompt = None;
+            }
+        }
         let now = std::time::Instant::now();
         let removed: Vec<Uuid> = self
             .before
@@ -255,6 +350,9 @@ impl Drop for CarrierStateWrite<'_> {
             .copied()
             .collect();
         for id in &removed {
+            self.state.prompt_keys.remove(id);
+            self.state.pending_prompts.remove(id);
+            self.state.prompt_seed_blocked.remove(id);
             self.tracker.invalidate_manager_row(*id, now);
             // Retain the version tombstone: same-UUID recreation never resets it.
             if let Some(next) = self
@@ -326,6 +424,7 @@ impl Drop for CarrierStateWrite<'_> {
 pub struct SessionManager {
     response_close: crate::pty::manager::ResponseCloseState,
     state: Arc<RwLock<SessionManagerState>>,
+    pub(crate) prompt_initialization: Arc<tokio::sync::OnceCell<()>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -391,6 +490,12 @@ pub(crate) struct CodingAgentBinding {
 }
 
 struct SessionManagerState {
+    retained_prompts: HashMap<PromptKey, RetainedPrompt>,
+    prompt_keys: HashMap<Uuid, PromptKey>,
+    pending_prompts: HashMap<Uuid, PendingPrompt>,
+    prompt_seed_blocked: HashSet<Uuid>,
+    prompts_writable: bool,
+    prompts_reusable: bool,
     coding_agent_bindings: HashMap<Uuid, String>,
     binding_seeds: HashMap<String, serde_json::Value>,
     binding_origins: HashMap<String, serde_json::Value>,
@@ -438,9 +543,14 @@ pub(crate) struct LifecycleMutations {
     mark_exited: Vec<(Uuid, i32)>,
     detached_intent: Vec<(Uuid, bool)>,
     finalizations: Vec<FinalizeMutation>,
+    prompt_transfers: Vec<(Uuid, PendingCreateBinding)>,
 }
 
 impl LifecycleMutations {
+    pub(crate) fn transfer_prompt(&mut self, source: Uuid, target: PendingCreateBinding) {
+        self.prompt_transfers.push((source, target));
+    }
+
     pub(crate) fn remove(&mut self, session_id: Uuid) {
         self.removals.push(session_id);
     }
@@ -606,7 +716,14 @@ impl SessionManager {
         let epoch = Uuid::new_v4();
         Self {
             response_close: crate::pty::manager::ResponseCloseState::default(),
+            prompt_initialization: Arc::new(tokio::sync::OnceCell::new()),
             state: Arc::new(RwLock::new(SessionManagerState {
+                retained_prompts: HashMap::new(),
+                prompt_keys: HashMap::new(),
+                pending_prompts: HashMap::new(),
+                prompt_seed_blocked: HashSet::new(),
+                prompts_writable: false,
+                prompts_reusable: false,
                 coding_agent_bindings: HashMap::new(),
                 binding_seeds: HashMap::new(),
                 binding_origins: HashMap::new(),
@@ -1531,13 +1648,168 @@ impl SessionManager {
     }
 
     pub async fn set_last_prompt(&self, id: Uuid, prompt: String) {
-        let mut state = self.state.write().await;
+        let permit = acquire_carrier_mutation_permit().await;
+        let mut state = self.carrier_state_write(&permit).await;
         if state.pending_create.contains_key(&id) {
             return;
         }
         if let Some(s) = state.sessions.get_mut(&id) {
-            s.last_prompt = Some(prompt);
+            s.last_prompt = Some(prompt.clone());
+            state.prompt_seed_blocked.remove(&id);
+            if let Some(key) = state.prompt_keys.get(&id).cloned() {
+                let exclusive = prompt_domain_exclusive(&state, &key, Some(id));
+                let entry = state.retained_prompts.entry(key).or_default();
+                if exclusive && !entry.blocked {
+                    entry.last_prompt = Some(prompt);
+                } else {
+                    entry.last_prompt = None;
+                    entry.blocked = true;
+                }
+            }
         }
+    }
+
+    pub(crate) async fn install_retained_prompts(
+        &self,
+        entries: Option<HashMap<PromptKey, RetainedPrompt>>,
+    ) {
+        let mut state = self.state.write().await;
+        state.prompts_writable = entries.is_some();
+        state.prompts_reusable = entries.is_some();
+        state.retained_prompts = entries.unwrap_or_default();
+    }
+
+    pub(crate) async fn retained_prompt_snapshot(
+        &self,
+    ) -> Option<HashMap<PromptKey, RetainedPrompt>> {
+        let state = self.state.read().await;
+        state
+            .prompts_writable
+            .then(|| state.retained_prompts.clone())
+    }
+
+    pub(crate) async fn disable_prompt_reuse(&self) {
+        self.state.write().await.prompts_reusable = false;
+    }
+
+    pub(crate) async fn forget_retained_prompt(&self, key: &PromptKey) {
+        self.state.write().await.retained_prompts.remove(key);
+    }
+
+    pub(crate) async fn block_retained_prompt_domains(&self, keys: Vec<PromptKey>) {
+        let mut state = self.state.write().await;
+        for key in keys {
+            state.retained_prompts.insert(
+                key,
+                RetainedPrompt {
+                    last_prompt: None,
+                    blocked: true,
+                },
+            );
+        }
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "P05 production paths use the explicit-permit initializer"
+        )
+    )]
+    pub(crate) async fn initialize_pending_prompt(
+        &self,
+        binding: PendingCreateBinding,
+        key: Option<PromptKey>,
+        initial: Option<String>,
+        continuation: bool,
+        fresh: bool,
+        allow_retained_lookup: bool,
+    ) -> Result<(), String> {
+        let permit = acquire_carrier_mutation_permit().await;
+        self.initialize_pending_prompt_with_carrier_permit(
+            &permit,
+            binding,
+            key,
+            initial,
+            continuation,
+            fresh,
+            allow_retained_lookup,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn initialize_pending_prompt_with_carrier_permit(
+        &self,
+        permit: &CarrierMutationPermit,
+        binding: PendingCreateBinding,
+        key: Option<PromptKey>,
+        initial: Option<String>,
+        continuation: bool,
+        fresh: bool,
+        allow_retained_lookup: bool,
+    ) -> Result<(), String> {
+        let mut state = self.carrier_state_write(permit).await;
+        if !binding_matches(&state, binding) {
+            return Err("pending prompt capability mismatch".to_string());
+        }
+        let row = state
+            .sessions
+            .get_mut(&binding.session_id)
+            .ok_or_else(|| "pending prompt row missing".to_string())?;
+        row.last_prompt = if continuation && !fresh {
+            initial
+        } else {
+            None
+        };
+        if let Some(key) = key.filter(|key| key.matches(row)) {
+            state.pending_prompts.insert(
+                binding.session_id,
+                PendingPrompt {
+                    key,
+                    continuation,
+                    fresh,
+                    allow_retained_lookup,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn seed_if_absent_with_carrier_permit(
+        &self,
+        permit: &CarrierMutationPermit,
+        id: Uuid,
+        key: &PromptKey,
+        prompt: String,
+    ) -> bool {
+        let mut state = self.carrier_state_write(permit).await;
+        if state.pending_create.contains_key(&id)
+            || state.prompt_seed_blocked.contains(&id)
+            || !prompt_domain_exclusive(&state, key, Some(id))
+            || state
+                .retained_prompts
+                .get(key)
+                .is_some_and(|entry| entry.blocked)
+        {
+            return false;
+        }
+        let Some(row) = state.sessions.get_mut(&id) else {
+            return false;
+        };
+        if !key.matches(row) || row.start_fresh_on_restore || row.last_prompt.is_some() {
+            return false;
+        }
+        row.last_prompt = Some(prompt.clone());
+        state.prompt_keys.insert(id, key.clone());
+        state.retained_prompts.insert(
+            key.clone(),
+            RetainedPrompt {
+                last_prompt: Some(prompt),
+                blocked: false,
+            },
+        );
+        true
     }
 
     /// #1088 - write the scraper's latest context-usage percent onto one
@@ -3071,6 +3343,7 @@ impl SessionManager {
             ));
         }
         state.pending_create.remove(&binding.session_id);
+        state.pending_prompts.remove(&binding.session_id);
         state.sessions.remove(&binding.session_id);
         retire_coding_agent_binding(&mut state, binding.session_id);
         state.order.retain(|id| *id != binding.session_id);
@@ -3181,6 +3454,20 @@ impl SessionManager {
             state.revision
         };
 
+        // Every fallible check runs before either row receives transferred text.
+        if !matches!(
+            (target_mode, target_id, target_status.as_ref()),
+            (SelectionMode::None, None, _)
+                | (SelectionMode::Live, Some(_), _)
+                | (
+                    SelectionMode::Dormant,
+                    Some(_),
+                    Some(SessionStatus::Exited(_))
+                )
+        ) {
+            return Err("invalid canonical selection target".to_string());
+        }
+        apply_commit_prompt_domains(&mut state, &mutations, cause);
         let mut result = CommitResult::default();
         let mut changed_ids = HashSet::new();
         // #1149 - ids only. The record itself is built after every fallible exit
@@ -3193,12 +3480,6 @@ impl SessionManager {
                     state.pending_create.remove(&binding.session_id);
                     clear_failed_recipe_for_runtime_binding(&mut state, binding.session_id);
                     if let Some(record) = state.sessions.get_mut(&binding.session_id) {
-                        if matches!(record.status, SessionStatus::Exited(_)) {
-                            return Err(format!(
-                                "live finalization became exited before commit: {}",
-                                binding.session_id
-                            ));
-                        }
                         record.status = SessionStatus::Running;
                         finalized_live_ids.push(binding.session_id);
                         result.finalized_rows.push(SessionInfo::from(&*record));
@@ -3248,6 +3529,9 @@ impl SessionManager {
         for id in mutations.removals {
             if let Some(record) = state.sessions.remove(&id) {
                 state.order.retain(|candidate| *candidate != id);
+                state.prompt_keys.remove(&id);
+                state.prompt_seed_blocked.remove(&id);
+                state.pending_prompts.remove(&id);
                 state.pending_create.remove(&id);
                 retire_coding_agent_binding(&mut state, id);
                 result.removed_rows.push(SessionInfo::from(&record));
@@ -3279,7 +3563,7 @@ impl SessionManager {
                     let target = state
                         .sessions
                         .get_mut(&id)
-                        .ok_or_else(|| format!("live target disappeared during commit: {id}"))?;
+                        .expect("selection target validated before mutations");
                     target.status = SessionStatus::Active;
                     changed_ids.insert(id);
                     SessionSelection::live(state.epoch, next_revision, cause, id)
@@ -3291,7 +3575,7 @@ impl SessionManager {
                     };
                     SessionSelection::dormant(state.epoch, next_revision, cause, id, code, has_pty)
                 }
-                _ => return Err("invalid canonical selection target".to_string()),
+                _ => unreachable!("selection target prevalidated"),
             };
             result.selection = Some(state.selection.clone());
         }
@@ -3495,6 +3779,129 @@ fn append_finalized_live_activity(
 /// Lifecycle mutation sets in removals, exits, finalizations order.
 type LifecycleMutationSets = (HashSet<Uuid>, HashSet<Uuid>, HashSet<Uuid>);
 
+fn prompt_domain_exclusive(
+    state: &SessionManagerState,
+    key: &PromptKey,
+    owner: Option<Uuid>,
+) -> bool {
+    state
+        .prompt_keys
+        .iter()
+        .all(|(id, candidate)| Some(*id) == owner || candidate != key)
+}
+
+fn apply_commit_prompt_domains(
+    state: &mut SessionManagerState,
+    mutations: &LifecycleMutations,
+    cause: SelectionCause,
+) {
+    let mut predecessors: HashMap<_, _> = mutations
+        .prompt_transfers
+        .iter()
+        .map(|(source, target)| (target.session_id, *source))
+        .collect();
+    // Fresh restart is also one succession, even though it transfers no text.
+    if matches!(cause, SelectionCause::Restart(_)) {
+        for mutation in &mutations.finalizations {
+            let binding = match mutation {
+                FinalizeMutation::Live(binding, _) | FinalizeMutation::Dormant(binding, _, _) => {
+                    binding
+                }
+            };
+            if let Some(target) = state.pending_prompts.get(&binding.session_id) {
+                if let Some(source) = mutations
+                    .removals
+                    .iter()
+                    .find(|id| state.prompt_keys.get(id) == Some(&target.key))
+                {
+                    predecessors.insert(binding.session_id, *source);
+                }
+            }
+        }
+    }
+    for (source, target) in &mutations.prompt_transfers {
+        let latest = state
+            .sessions
+            .get(source)
+            .and_then(|row| row.last_prompt.clone());
+        state
+            .sessions
+            .get_mut(&target.session_id)
+            .expect("validated pending target")
+            .last_prompt = latest;
+    }
+    for mutation in &mutations.finalizations {
+        let binding = match mutation {
+            FinalizeMutation::Live(binding, _) | FinalizeMutation::Dormant(binding, _, _) => {
+                *binding
+            }
+        };
+        finalize_prompt_domain(
+            state,
+            binding.session_id,
+            predecessors.get(&binding.session_id).copied(),
+            !matches!(cause, SelectionCause::Restore),
+        );
+    }
+}
+
+fn finalize_prompt_domain(
+    state: &mut SessionManagerState,
+    id: Uuid,
+    predecessor: Option<Uuid>,
+    allow_fresh_reopen: bool,
+) {
+    let Some(prepared) = state.pending_prompts.remove(&id) else {
+        return;
+    };
+    let Some(row) = state.sessions.get(&id) else {
+        return;
+    };
+    if !prepared.key.matches(row) {
+        return;
+    }
+    let exclusive = prompt_domain_exclusive(state, &prepared.key, predecessor);
+    let entry = state
+        .retained_prompts
+        .entry(prepared.key.clone())
+        .or_default();
+    let row = state.sessions.get_mut(&id).expect("pending row exists");
+    if !exclusive {
+        entry.blocked = true;
+        entry.last_prompt = None;
+    } else if !prepared.continuation && !prepared.fresh {
+        // Admission reserves this pair for configured, unattributed identity.
+        // A durable fresh marker cannot establish that external selector.
+        entry.blocked = true;
+        entry.last_prompt = None;
+        row.last_prompt = None;
+    } else if prepared.fresh || row.start_fresh_on_restore {
+        state.prompt_seed_blocked.insert(id);
+        // Startup fresh markers cannot disprove persisted duplicate recipes
+        // whose manager rows have not been restored yet.
+        if allow_fresh_reopen {
+            entry.blocked = false;
+        }
+        entry.last_prompt = None;
+        row.last_prompt = None;
+    } else if prepared.continuation {
+        if prepared.allow_retained_lookup
+            && row.last_prompt.is_none()
+            && !entry.blocked
+            && state.prompts_reusable
+        {
+            row.last_prompt = entry.last_prompt.clone();
+        }
+        if !entry.blocked && row.last_prompt.is_some() {
+            entry.last_prompt = row.last_prompt.clone();
+        }
+    }
+    state.prompt_keys.insert(id, prepared.key);
+    if let Some(source) = predecessor {
+        state.prompt_keys.remove(&source);
+    }
+}
+
 fn validate_lifecycle_mutations(
     state: &SessionManagerState,
     mutations: &LifecycleMutations,
@@ -3595,6 +4002,47 @@ fn validate_lifecycle_mutations(
                         binding.session_id
                     ));
                 }
+            }
+        }
+    }
+    validate_unique_ids(
+        "prompt transfer source",
+        mutations.prompt_transfers.iter().map(|(id, _)| *id),
+    )?;
+    validate_unique_ids(
+        "prompt transfer target",
+        mutations
+            .prompt_transfers
+            .iter()
+            .map(|(_, binding)| binding.session_id),
+    )?;
+    for (source, target) in &mutations.prompt_transfers {
+        let from = state
+            .sessions
+            .get(source)
+            .ok_or("prompt transfer source missing")?;
+        let to = state
+            .sessions
+            .get(&target.session_id)
+            .ok_or("prompt transfer target missing")?;
+        if !removals.contains(source)
+            || !finalizations.contains(&target.session_id)
+            || !binding_matches(state, *target)
+            || from.start_fresh_on_restore
+            || to.start_fresh_on_restore
+            || from.agent_id != to.agent_id
+            || from.requested_profile != to.requested_profile
+            || from.effective_profile != to.effective_profile
+            || from.working_directory != to.working_directory
+        {
+            return Err("invalid prompt transfer".to_string());
+        }
+        if let (Some(from), Some(to)) = (
+            state.prompt_keys.get(source),
+            state.pending_prompts.get(&target.session_id),
+        ) {
+            if *from != to.key || !to.continuation || to.fresh {
+                return Err("incompatible prompt transfer domain".to_string());
             }
         }
     }
@@ -3975,6 +4423,310 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn issue_3145_pending(
+        manager: &SessionManager,
+        cwd: &str,
+        initial: Option<&str>,
+        fresh: bool,
+    ) -> (Session, PendingCreateBinding, PromptKey) {
+        let (row, binding) = manager
+            .create_transaction_pending_session(
+                "codex".into(),
+                Vec::new(),
+                cwd.into(),
+                Some("codex".into()),
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        manager
+            .set_pending_profile_metadata(
+                binding,
+                Some("A".into()),
+                Some("B".into()),
+                Vec::new(),
+                true,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let key = PromptKey {
+            canonical_cwd: cwd.into(),
+            agent_id: "codex".into(),
+            requested_profile: Some("A".into()),
+            effective_profile: "B".into(),
+        };
+        manager
+            .initialize_pending_prompt(
+                binding,
+                Some(key.clone()),
+                initial.map(str::to_string),
+                !fresh,
+                fresh,
+                true,
+            )
+            .await
+            .unwrap();
+        (row, binding, key)
+    }
+
+    async fn issue_3145_publish(
+        manager: &SessionManager,
+        binding: PendingCreateBinding,
+    ) -> SessionInfo {
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_live(binding, live_witness(binding.session_id));
+        manager
+            .commit_selection_transition(
+                &CommitCapability::for_test(),
+                CommitDecision::Keep,
+                SelectionCause::Restore,
+                mutations,
+            )
+            .await
+            .unwrap()
+            .finalized_rows
+            .remove(0)
+    }
+
+    #[tokio::test]
+    async fn issue_3145_restart_commit_uses_latest_source_and_rejects_partial_failure() {
+        let manager = SessionManager::new();
+        manager.install_retained_prompts(Some(HashMap::new())).await;
+        let (source, binding, _) = issue_3145_pending(&manager, "domain", Some("A"), false).await;
+        issue_3145_publish(&manager, binding).await;
+        let (target, pending, _) = issue_3145_pending(&manager, "domain", None, false).await;
+        // An external input between pending preparation and commit must win.
+        manager.set_last_prompt(source.id, "B".into()).await;
+        let mut invalid = LifecycleMutations::default();
+        invalid.finalize_live(pending, live_witness(target.id));
+        invalid.transfer_prompt(source.id, pending); // missing removal
+        assert!(manager
+            .commit_selection_transition(
+                &CommitCapability::for_test(),
+                CommitDecision::Keep,
+                SelectionCause::Restore,
+                invalid
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            manager
+                .get_pending_session(pending)
+                .await
+                .unwrap()
+                .last_prompt,
+            None
+        );
+        assert_eq!(
+            manager
+                .get_session(source.id)
+                .await
+                .unwrap()
+                .last_prompt
+                .as_deref(),
+            Some("B")
+        );
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_live(pending, live_witness(target.id));
+        mutations.remove(source.id);
+        mutations.transfer_prompt(source.id, pending);
+        let result = manager
+            .commit_selection_transition(
+                &CommitCapability::for_test(),
+                CommitDecision::Keep,
+                SelectionCause::Restore,
+                mutations,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.finalized_rows[0].last_prompt.as_deref(), Some("B"));
+        assert!(manager.get_session(source.id).await.is_none());
+        assert_eq!(
+            manager.list_sessions().await[0].last_prompt.as_deref(),
+            Some("B")
+        );
+        assert_eq!(
+            crate::config::sessions_persistence::snapshot_sessions(&manager).await[0]
+                .last_prompt
+                .as_deref(),
+            Some("B")
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_3145_pending_rollback_never_associates_or_accepts_public_input() {
+        let manager = SessionManager::new();
+        manager.install_retained_prompts(Some(HashMap::new())).await;
+        let (row, binding, _) = issue_3145_pending(&manager, "domain", Some("A"), false).await;
+        manager.set_last_prompt(row.id, "B".into()).await;
+        assert_eq!(
+            manager
+                .get_pending_session(binding)
+                .await
+                .unwrap()
+                .last_prompt
+                .as_deref(),
+            Some("A")
+        );
+        manager.rollback_pending_create(binding).await.unwrap();
+        assert!(manager.retained_prompt_snapshot().await.unwrap().is_empty());
+        assert!(manager.state.read().await.pending_prompts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn issue_3145_failed_checkpoint_disables_lookup_but_direct_input_still_works() {
+        let manager = SessionManager::new();
+        let (row, binding, key) = issue_3145_pending(&manager, "domain", None, false).await;
+        manager
+            .install_retained_prompts(Some(HashMap::from([(
+                key.clone(),
+                RetainedPrompt {
+                    last_prompt: Some("A".into()),
+                    blocked: false,
+                },
+            )])))
+            .await;
+        manager.disable_prompt_reuse().await;
+        assert_eq!(
+            issue_3145_publish(&manager, binding).await.last_prompt,
+            None
+        );
+        manager.set_last_prompt(row.id, "B".into()).await;
+        assert_eq!(
+            manager
+                .get_session(row.id)
+                .await
+                .unwrap()
+                .last_prompt
+                .as_deref(),
+            Some("B")
+        );
+        assert_eq!(
+            manager.retained_prompt_snapshot().await.unwrap()[&key]
+                .last_prompt
+                .as_deref(),
+            Some("B")
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_3145_ambiguity_is_sticky_and_fresh_exclusive_reopens_domain() {
+        let manager = SessionManager::new();
+        manager.install_retained_prompts(Some(HashMap::new())).await;
+        let (first, binding, key) = issue_3145_pending(&manager, "domain", Some("A"), false).await;
+        issue_3145_publish(&manager, binding).await;
+        let (second, pending, _) = issue_3145_pending(&manager, "domain", None, false).await;
+        let mut dormant = LifecycleMutations::default();
+        dormant.finalize_dormant(pending, dormant_witness(second.id), 0);
+        manager
+            .commit_selection_transition(
+                &CommitCapability::for_test(),
+                CommitDecision::Keep,
+                SelectionCause::Restore,
+                dormant,
+            )
+            .await
+            .unwrap();
+        assert!(manager.retained_prompt_snapshot().await.unwrap()[&key].blocked);
+        let mut remove = LifecycleMutations::default();
+        remove.remove(second.id);
+        manager
+            .commit_selection_transition(
+                &CommitCapability::for_test(),
+                CommitDecision::Keep,
+                SelectionCause::Restore,
+                remove,
+            )
+            .await
+            .unwrap();
+        manager.set_last_prompt(first.id, "B".into()).await;
+        assert!(manager.retained_prompt_snapshot().await.unwrap()[&key].blocked);
+        let (fresh, pending, _) = issue_3145_pending(&manager, "domain", Some("old"), true).await;
+        let mut replace = LifecycleMutations::default();
+        replace.finalize_live(pending, live_witness(fresh.id));
+        replace.remove(first.id);
+        manager
+            .commit_selection_transition(
+                &CommitCapability::for_test(),
+                CommitDecision::Keep,
+                SelectionCause::Restart(crate::session::selection::TrustedRestartIntent::User),
+                replace,
+            )
+            .await
+            .unwrap();
+        let snapshot = manager.retained_prompt_snapshot().await.unwrap();
+        assert!(!snapshot[&key].blocked);
+        assert!(snapshot[&key].last_prompt.is_none());
+        manager.set_last_prompt(fresh.id, String::new()).await;
+        assert_eq!(
+            manager.retained_prompt_snapshot().await.unwrap()[&key]
+                .last_prompt
+                .as_deref(),
+            Some("")
+        );
+        manager.set_start_fresh_on_restore(fresh.id, true).await;
+        manager.clear_start_fresh_on_restore_if_set(fresh.id).await;
+        assert_eq!(
+            manager.retained_prompt_snapshot().await.unwrap()[&key].last_prompt,
+            None
+        );
+        assert_eq!(
+            manager.get_session(fresh.id).await.unwrap().last_prompt,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_3145_seed_and_setter_share_permit_and_empty_is_existing() {
+        let manager = SessionManager::new();
+        manager.install_retained_prompts(Some(HashMap::new())).await;
+        let (row, binding, key) = issue_3145_pending(&manager, "domain", None, false).await;
+        issue_3145_publish(&manager, binding).await;
+        let permit = acquire_carrier_mutation_permit().await;
+        assert!(
+            manager
+                .seed_if_absent_with_carrier_permit(&permit, row.id, &key, "A".into())
+                .await
+        );
+        let mut setter = Box::pin(manager.set_last_prompt(row.id, "N".into()));
+        use std::future::Future;
+        let waker = futures::task::noop_waker();
+        let mut context = std::task::Context::from_waker(&waker);
+        assert!(setter.as_mut().poll(&mut context).is_pending());
+        assert_eq!(
+            manager
+                .get_session(row.id)
+                .await
+                .unwrap()
+                .last_prompt
+                .as_deref(),
+            Some("A")
+        );
+        drop(permit);
+        setter.await;
+        let permit = acquire_carrier_mutation_permit().await;
+        assert!(
+            !manager
+                .seed_if_absent_with_carrier_permit(&permit, row.id, &key, "old".into())
+                .await
+        );
+        drop(permit);
+        manager.set_last_prompt(row.id, String::new()).await;
+        let permit = acquire_carrier_mutation_permit().await;
+        assert!(
+            !manager
+                .seed_if_absent_with_carrier_permit(&permit, row.id, &key, "old".into())
+                .await
+        );
+    }
     use crate::session::selection::TrustedCreateIntent;
 
     struct P44WriteBackend {
