@@ -6008,12 +6008,7 @@ mod tests {
             )
             .unwrap();
         }
-        for directory in [
-            "My-Default",
-            ".claude",
-            "memory/default-nested",
-            "plans/default-only",
-        ] {
+        for directory in [".claude", "memory/default-nested", "plans/default-only"] {
             std::fs::create_dir_all(source.join(directory)).unwrap();
             std::fs::write(source.join(directory).join("excluded"), b"private").unwrap();
         }
@@ -6044,8 +6039,12 @@ mod tests {
                 0
             );
         }
+        let root_names = std::fs::read_dir(&first.root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert!(root_names.iter().any(|name| name == "my-default"));
         for excluded in [
-            "My-Default",
             ".claude",
             "memory-archive",
             "unknown",
@@ -6053,7 +6052,10 @@ mod tests {
             "empty",
             "default-file",
         ] {
-            assert!(!first.root.join(excluded).exists(), "{excluded}");
+            assert!(
+                !root_names.iter().any(|name| name == excluded),
+                "{excluded}"
+            );
         }
         let config: serde_json::Value =
             serde_json::from_slice(&std::fs::read(first.root.join("config.json")).unwrap())
@@ -6074,6 +6076,27 @@ mod tests {
         );
         cleanup_owned_copy_artifacts(&second).unwrap();
         assert!(!second.root.exists());
+    }
+
+    #[test]
+    fn issue_3142_uppercase_default_excluded_in_independent_source() {
+        // AC-3142-002: case aliases cannot coexist in a Windows source root.
+        let (_tmp, project, source, destination) = issue_3068_fixture();
+        std::fs::create_dir(source.join("My-Default")).unwrap();
+        std::fs::write(source.join("My-Default/private"), b"excluded payload").unwrap();
+        let before = issue_3068_inventory(&source);
+        assert!(before.contains_key(Path::new("My-Default/private")));
+        assert!(!before.contains_key(Path::new("my-default")));
+        let owned =
+            copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_copy").unwrap();
+        let root_names = std::fs::read_dir(&owned.root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert!(!root_names.iter().any(|name| name == "My-Default"));
+        assert!(!root_names.iter().any(|name| name == "my-default"));
+        assert_eq!(before, issue_3068_inventory(&source));
+        cleanup_owned_copy_artifacts(&owned).unwrap();
     }
 
     #[test]
