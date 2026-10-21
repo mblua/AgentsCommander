@@ -8075,7 +8075,10 @@ mod tests {
         assert!(disk.archived_project_paths.contains(&missing));
         assert!(disk.project_paths_persistence_error.is_none());
         assert!(!disk.project_paths.contains(&missing));
-        assert_eq!(std::fs::read(&project_path).unwrap(), published_project_bytes);
+        assert_eq!(
+            std::fs::read(&project_path).unwrap(),
+            published_project_bytes
+        );
         assert_eq!(std::fs::read(&path).unwrap(), before);
         assert_eq!(std::fs::read(&source_path).unwrap(), before_source);
         assert!(!owner.identity().managed_operations_enabled);
