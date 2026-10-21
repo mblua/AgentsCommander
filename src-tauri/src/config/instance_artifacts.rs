@@ -1136,19 +1136,16 @@ mod tests {
     #[test]
     fn issue_3145_retained_prompt_artifacts_are_ignored() {
         for (name, kind) in [
-            (super::RETAINED_PROMPTS, super::ArtifactKind::File),
-            (
-                "last-prompts.retained.json.*.tmp",
-                super::ArtifactKind::Glob,
-            ),
+            (RETAINED_PROMPTS, ArtifactKind::File),
+            ("last-prompts.retained.json.*.tmp", ArtifactKind::Glob),
         ] {
-            let rows: Vec<_> = super::INSTANCE_ARTIFACTS
+            let rows: Vec<_> = INSTANCE_ARTIFACTS
                 .iter()
                 .filter(|row| row.name == name)
                 .collect();
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].kind, kind);
-            assert_eq!(rows[0].disposition, super::Disposition::Ignore);
+            assert_eq!(rows[0].disposition, Disposition::Ignore);
         }
     }
     use super::*;
