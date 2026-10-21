@@ -435,9 +435,19 @@ pub(crate) fn update_config_pair_guarded<F>(
 where
     F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
 {
-    update_config_pair_guarded_classified(decisions, state, reservation, state_keys,
-        nonpending_preflight, cleanup, on_stage, mutate, finish, activity)
-        .map_err(|error| error.to_string())
+    update_config_pair_guarded_classified(
+        decisions,
+        state,
+        reservation,
+        state_keys,
+        nonpending_preflight,
+        cleanup,
+        on_stage,
+        mutate,
+        finish,
+        activity,
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -488,9 +498,20 @@ pub(super) fn update_config_pair_inner<F>(
 where
     F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
 {
-    update_config_pair_inner_classified(decisions, state, reservation, state_keys, cleanup,
-        on_stage, mutate, finish, activity, nonpending_preflight, publish)
-        .map_err(|error| error.to_string())
+    update_config_pair_inner_classified(
+        decisions,
+        state,
+        reservation,
+        state_keys,
+        cleanup,
+        on_stage,
+        mutate,
+        finish,
+        activity,
+        nonpending_preflight,
+        publish,
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -598,7 +619,9 @@ where
                     || current[1] != PhysicalState::Absent
                     || !timestamp_only_overlay(&proposed[1]).map_err(ConfigWriteError::from)?
                 {
-                    return Err(ConfigWriteError::Ordinary("targetTransitionPending: PAIR is reserved".to_string()));
+                    return Err(ConfigWriteError::Ordinary(
+                        "targetTransitionPending: PAIR is reserved".to_string(),
+                    ));
                 }
             }
             let input = timestamp_value(&proposed[1])
@@ -611,7 +634,9 @@ where
                 .as_deref()
                 .is_some_and(|old| timestamp_cmp(&input, old).is_ok_and(|order| order.is_lt()))
             {
-                return Err(ConfigWriteError::Ordinary("targetTransitionPending: timestamp cannot decrease".to_string()));
+                return Err(ConfigWriteError::Ordinary(
+                    "targetTransitionPending: timestamp cannot decrease".to_string(),
+                ));
             }
             land_pair_activity(
                 decisions,
@@ -629,7 +654,9 @@ where
 
     let both = || format!("{} and {}", decisions.display(), state.display());
     let read = |path: &Path| {
-        read_pair_side(path).map_err(|e| e.contextualize(|message| format!("Config pair {} blocked: {}", both(), message)))
+        read_pair_side(path).map_err(|e| {
+            e.contextualize(|message| format!("Config pair {} blocked: {}", both(), message))
+        })
     };
     let mut decisions_map = read(decisions)?;
     let mut state_map = read(state)?;
@@ -658,7 +685,8 @@ where
         on_stage,
         ["after_caller_state_publish", "after_caller_decisions_write"],
         publish,
-    ).map_err(ConfigWriteError::Ordinary)
+    )
+    .map_err(ConfigWriteError::Ordinary)
 }
 
 /// Exact private disk image. Absence is distinct from an existing empty object.
@@ -812,7 +840,9 @@ impl std::fmt::Display for ConfigWriteError {
 }
 
 impl From<String> for ConfigWriteError {
-    fn from(message: String) -> Self { Self::Ordinary(message) }
+    fn from(message: String) -> Self {
+        Self::Ordinary(message)
+    }
 }
 
 impl ConfigWriteError {
@@ -838,7 +868,6 @@ impl From<PreparedPairError> for ConfigWriteError {
         }
     }
 }
-
 
 #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 fn prepared_pair_image(
@@ -1576,7 +1605,10 @@ impl PairReservation {
     }
 }
 
-fn check_configuration_physical(path: &Path, image: &PhysicalState) -> Result<(), PreparedPairError> {
+fn check_configuration_physical(
+    path: &Path,
+    image: &PhysicalState,
+) -> Result<(), PreparedPairError> {
     if let PhysicalState::Bytes { bytes, .. } = image {
         if PhysicalState::from_bytes(bytes.clone()) != *image {
             return Err(PreparedPairError::InvalidPlan("physical digest mismatch"));
@@ -1586,7 +1618,10 @@ fn check_configuration_physical(path: &Path, image: &PhysicalState) -> Result<()
     Ok(())
 }
 
-fn check_configuration_pair_images(paths: [&Path; 2], plan: &PreparedConfigPairPlan) -> Result<(), PreparedPairError> {
+fn check_configuration_pair_images(
+    paths: [&Path; 2],
+    plan: &PreparedConfigPairPlan,
+) -> Result<(), PreparedPairError> {
     for tuple in plan.stages() {
         for side in 0..2 {
             check_configuration_physical(paths[side], &tuple[side])?;
@@ -1707,7 +1742,13 @@ fn publish_pair_reservation(
     physical: &mut PhysicalState,
     packet: &PairReservation,
 ) -> Result<(), PreparedPairError> {
-    publish_pair_reservation_guarded(paths, path, physical, packet, &PairTargetGuard::new(&|| Ok(())))
+    publish_pair_reservation_guarded(
+        paths,
+        path,
+        physical,
+        packet,
+        &PairTargetGuard::new(&|| Ok(())),
+    )
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1843,7 +1884,13 @@ where
     }
     candidate.recognize(&current)?;
     let mut physical = PhysicalState::Absent;
-    publish_pair_reservation_guarded([decisions, state], reservation, &mut physical, &candidate, &guard)?;
+    publish_pair_reservation_guarded(
+        [decisions, state],
+        reservation,
+        &mut physical,
+        &candidate,
+        &guard,
+    )?;
     guard.check()?;
     Ok(candidate)
 }
@@ -2010,7 +2057,8 @@ pub(crate) fn verify_reserved_config_pair_guarded(
     let _reservation = acquire_config_file_write_lock(reservation, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
     guard.check()?;
-    let (packet, _) = read_pair_reservation([decisions, state], reservation)?.ok_or(PreparedPairError::Conflict)?;
+    let (packet, _) = read_pair_reservation([decisions, state], reservation)?
+        .ok_or(PreparedPairError::Conflict)?;
     validate_pair_binding(decisions, state, &packet)?;
     if packet.operation_id != operation_id || packet.plan_digest != plan_digest {
         return Err(PreparedPairError::Conflict);
@@ -2066,8 +2114,8 @@ fn execute_reserved_config_pair_with_validation(
     let _reservation = acquire_config_file_write_lock(reservation, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
     guard.check()?;
-    let (mut packet, mut physical) =
-        read_pair_reservation([decisions, state], reservation)?.ok_or(PreparedPairError::Conflict)?;
+    let (mut packet, mut physical) = read_pair_reservation([decisions, state], reservation)?
+        .ok_or(PreparedPairError::Conflict)?;
     validate_pair_binding(decisions, state, &packet)?;
     if packet.operation_id != operation_id {
         return Err(PreparedPairError::Conflict);
@@ -2082,7 +2130,14 @@ fn execute_reserved_config_pair_with_validation(
     )?;
     guard.check()?;
     let start = packet.recognize(&read_pair_tuple(decisions, state)?)?;
-    confirm_pair_activity_floor_guarded(decisions, state, reservation, &mut packet, &mut physical, &guard)?;
+    confirm_pair_activity_floor_guarded(
+        decisions,
+        state,
+        reservation,
+        &mut packet,
+        &mut physical,
+        &guard,
+    )?;
     for stage in start + 1..5 {
         guard.check()?;
         let current = read_pair_tuple(decisions, state)?;
@@ -2128,7 +2183,14 @@ fn execute_reserved_config_pair_with_validation(
             on_stage(stage)?;
         }
     }
-    confirm_pair_activity_floor_guarded(decisions, state, reservation, &mut packet, &mut physical, &guard)?;
+    confirm_pair_activity_floor_guarded(
+        decisions,
+        state,
+        reservation,
+        &mut packet,
+        &mut physical,
+        &guard,
+    )?;
     guard.check()?;
     if packet.recognize(&read_pair_tuple(decisions, state)?)? != 4 {
         return Err(PreparedPairError::Conflict);
@@ -2149,10 +2211,8 @@ fn confirm_pair_activity_floor_guarded(
     guard.check()?;
     let captured = read_config_pair_physical(state)?;
     check_configuration_physical(state, &captured)?;
-    let floor = merge_monotonic_activity(&[
-        packet.timestamp_floor.clone(),
-        timestamp_value(&captured)?,
-    ])?;
+    let floor =
+        merge_monotonic_activity(&[packet.timestamp_floor.clone(), timestamp_value(&captured)?])?;
     if floor != packet.timestamp_floor {
         packet.timestamp_floor = floor;
         publish_pair_reservation_guarded([decisions, state], reservation, physical, packet, guard)?;
@@ -2278,7 +2338,8 @@ pub(crate) fn release_reserved_config_pair_guarded(
     if proof.target_id != pair_target_identity(decisions, state)? {
         return Err(PreparedPairError::Conflict);
     }
-    let Some((mut packet, mut physical)) = read_pair_reservation([decisions, state], reservation)? else {
+    let Some((mut packet, mut physical)) = read_pair_reservation([decisions, state], reservation)?
+    else {
         let current = read_pair_tuple(decisions, state)?;
         guard.check()?;
         return Ok(current);
@@ -2745,13 +2806,11 @@ fn read_pair_side(path: &Path) -> Result<Map<String, Value>, ConfigWriteError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
         Err(e) => return Err(format!("Failed to read {}: {}", path.display(), e).into()),
     };
-    check_configuration_json(path, content.as_bytes()).map_err(ConfigWriteError::DuplicateJsonMember)?;
+    check_configuration_json(path, content.as_bytes())
+        .map_err(ConfigWriteError::DuplicateJsonMember)?;
     match serde_json::from_str::<Value>(&content) {
         Ok(Value::Object(map)) => Ok(map),
-        Ok(_) => Err(format!(
-            "Local config {} must be a JSON object",
-            path.display()
-        ).into()),
+        Ok(_) => Err(format!("Local config {} must be a JSON object", path.display()).into()),
         Err(e) => Err(format!("Failed to parse {}: {}", path.display(), e).into()),
     }
 }
@@ -5774,7 +5833,8 @@ mod pair_activity_tests {
             for slot in 0..7 {
                 let fixture = Fixture::new(false);
                 for path in [fixture.d(), fixture.s()] {
-                    let mut value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    let mut value: Value =
+                        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
                     value["opaque"] = json!("e2992-parse-canary");
                     fixture.write(&path, value);
                 }
@@ -5791,8 +5851,10 @@ mod pair_activity_tests {
                 let closing = valid.iter().rposition(|byte| *byte == b'}').unwrap();
                 let mut duplicate = valid[..closing].to_vec();
                 duplicate.extend_from_slice(br#", "opaque":"e2992-parse-canary"}"#);
-                assert_eq!(serde_json::from_slice::<Value>(&duplicate).unwrap(),
-                    serde_json::from_slice::<Value>(valid).unwrap());
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&duplicate).unwrap(),
+                    serde_json::from_slice::<Value>(valid).unwrap()
+                );
                 let image = PhysicalState::from_bytes(duplicate.clone());
                 if slot == 0 {
                     std::fs::write(paths[side], &duplicate).unwrap();
@@ -5805,18 +5867,42 @@ mod pair_activity_tests {
                 std::fs::write(fixture.r(), &envelope).unwrap();
                 let originals = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
                 E2992_CANARY_MAP_CALLS.with(|count| count.set(0));
-                let error = execute_reserved_config_pair(&d, &st, &fixture.r(), &request.operation_id).unwrap_err();
-                assert!(matches!(&error, PreparedPairError::DuplicateJsonMember(message) if message.contains("duplicateJsonMember:") && message.contains(paths[side].to_str().unwrap()) && message.contains("repeated JSON object members")));
+                let error =
+                    execute_reserved_config_pair(&d, &st, &fixture.r(), &request.operation_id)
+                        .unwrap_err();
+                assert!(
+                    matches!(&error, PreparedPairError::DuplicateJsonMember(message) if message.contains("duplicateJsonMember:") && message.contains(paths[side].to_str().unwrap()) && message.contains("repeated JSON object members"))
+                );
                 assert!(!error.to_string().contains("canary"));
                 let called = Cell::new(false);
                 let classified = update_config_pair_guarded_classified(
-                    &d, &st, &fixture.r(), &[], None,
-                    Some(&|_, _| { called.set(true); Ok(()) }), &|_| { called.set(true); },
-                    |_, _| { called.set(true); Ok(()) },
-                    &|_| { called.set(true); Ok(()) }, None,
-                ).unwrap_err();
-                assert!(matches!(&classified, ConfigWriteError::DuplicateJsonMember(message)
-                    if message.contains(paths[side].to_str().unwrap())));
+                    &d,
+                    &st,
+                    &fixture.r(),
+                    &[],
+                    None,
+                    Some(&|_, _| {
+                        called.set(true);
+                        Ok(())
+                    }),
+                    &|_| {
+                        called.set(true);
+                    },
+                    |_, _| {
+                        called.set(true);
+                        Ok(())
+                    },
+                    &|_| {
+                        called.set(true);
+                        Ok(())
+                    },
+                    None,
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(&classified, ConfigWriteError::DuplicateJsonMember(message)
+                    if message.contains(paths[side].to_str().unwrap()))
+                );
                 assert!(!called.get());
                 assert_eq!(E2992_CANARY_MAP_CALLS.with(Cell::get), 0);
                 assert_eq!(std::fs::read(&d).unwrap(), originals[0]);
@@ -5825,7 +5911,15 @@ mod pair_activity_tests {
                 if slot != 0 {
                     let mut physical = PhysicalState::from_bytes(envelope.clone());
                     let before = packet.clone();
-                    let error = reconcile_pair_activity_guarded(&d, &st, &fixture.r(), &mut packet, &mut physical, &PairTargetGuard::new(&|| Ok(()))).unwrap_err();
+                    let error = reconcile_pair_activity_guarded(
+                        &d,
+                        &st,
+                        &fixture.r(),
+                        &mut packet,
+                        &mut physical,
+                        &PairTargetGuard::new(&|| Ok(())),
+                    )
+                    .unwrap_err();
                     assert!(matches!(error, PreparedPairError::DuplicateJsonMember(_)));
                     assert_eq!(packet, before);
                     assert_eq!(std::fs::read(&d).unwrap(), originals[0]);
@@ -5843,9 +5937,22 @@ mod pair_activity_tests {
         let request = fixture.request();
         let mut packet = fixture.reserve(&request).unwrap();
         let mut physical = PhysicalState::from_bytes(std::fs::read(fixture.r()).unwrap());
-        reconcile_pair_activity_guarded(&fixture.d(), &fixture.s(), &fixture.r(),
-            &mut packet, &mut physical, &PairTargetGuard::new(&|| Ok(()))).unwrap();
-        execute_reserved_config_pair(&fixture.d(), &fixture.s(), &fixture.r(), &request.operation_id).unwrap();
+        reconcile_pair_activity_guarded(
+            &fixture.d(),
+            &fixture.s(),
+            &fixture.r(),
+            &mut packet,
+            &mut physical,
+            &PairTargetGuard::new(&|| Ok(())),
+        )
+        .unwrap();
+        execute_reserved_config_pair(
+            &fixture.d(),
+            &fixture.s(),
+            &fixture.r(),
+            &request.operation_id,
+        )
+        .unwrap();
         for invalid in 0..6 {
             let fixture = Fixture::new(false);
             let request = fixture.request();
@@ -5862,7 +5969,8 @@ mod pair_activity_tests {
             let bytes = serde_json::to_vec(&envelope).unwrap();
             std::fs::write(fixture.r(), &bytes).unwrap();
             let before = fixture.tuple();
-            let error = read_pair_reservation([&fixture.d(), &fixture.s()], &fixture.r()).unwrap_err();
+            let error =
+                read_pair_reservation([&fixture.d(), &fixture.s()], &fixture.r()).unwrap_err();
             assert!(!matches!(error, PreparedPairError::DuplicateJsonMember(_)));
             assert_eq!(fixture.tuple(), before);
             assert_eq!(std::fs::read(fixture.r()).unwrap(), bytes);
@@ -5872,17 +5980,45 @@ mod pair_activity_tests {
             let d = fixture.d();
             let st = fixture.s();
             let paths = [&d, &st];
-            std::fs::write(paths[side], br#"{"unknown-canary":"secret-canary","unknown-canary":0}"#).unwrap();
+            std::fs::write(
+                paths[side],
+                br#"{"unknown-canary":"secret-canary","unknown-canary":0}"#,
+            )
+            .unwrap();
             let original = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
             let called = Cell::new(false);
             let error = update_config_pair_inner_classified(
-                &d, &st, None, &[], Some(&|_, _| { called.set(true); Ok(()) }),
-                &|_| { called.set(true); }, |_, _| { called.set(true); Ok(()) },
-                &|_| { called.set(true); Ok(()) }, None, None,
-                &|_, _| { called.set(true); Ok(()) },
-            ).unwrap_err();
-            assert!(matches!(&error, ConfigWriteError::DuplicateJsonMember(message)
-                if message.contains(paths[side].to_str().unwrap()) && message.contains("repeated JSON object members")));
+                &d,
+                &st,
+                None,
+                &[],
+                Some(&|_, _| {
+                    called.set(true);
+                    Ok(())
+                }),
+                &|_| {
+                    called.set(true);
+                },
+                |_, _| {
+                    called.set(true);
+                    Ok(())
+                },
+                &|_| {
+                    called.set(true);
+                    Ok(())
+                },
+                None,
+                None,
+                &|_, _| {
+                    called.set(true);
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&error, ConfigWriteError::DuplicateJsonMember(message)
+                if message.contains(paths[side].to_str().unwrap()) && message.contains("repeated JSON object members"))
+            );
             assert!(!error.to_string().contains("canary"));
             assert!(!called.get());
             assert_eq!(std::fs::read(&d).unwrap(), original[0]);
@@ -5891,11 +6027,23 @@ mod pair_activity_tests {
         let fixture = Fixture::new(false);
         let error = prepare_config_pair_plan_inner(fixture.tuple(), None, |_, _| {
             Err("duplicateJsonMember: callback remains ordinary".into())
-        }).unwrap_err();
+        })
+        .unwrap_err();
         assert!(matches!(error, PreparedPairError::Preparation(_)));
-        let error = update_config_pair_inner_classified(&fixture.d(), &fixture.s(), None,
-            &[], None, &|_| {}, |_, _| Err("duplicateJsonMember: ordinary callback".into()),
-            &|_| Ok(()), None, None, &publish_temp_config).unwrap_err();
+        let error = update_config_pair_inner_classified(
+            &fixture.d(),
+            &fixture.s(),
+            None,
+            &[],
+            None,
+            &|_| {},
+            |_, _| Err("duplicateJsonMember: ordinary callback".into()),
+            &|_| Ok(()),
+            None,
+            None,
+            &publish_temp_config,
+        )
+        .unwrap_err();
         assert!(matches!(error, ConfigWriteError::Ordinary(_)));
     }
 
@@ -5943,7 +6091,10 @@ mod pair_activity_tests {
             read_pair_tuple(&self.d(), &self.s()).unwrap()
         }
         fn packet(&self) -> PairReservation {
-            read_pair_reservation([&self.d(), &self.s()], &self.r()).unwrap().unwrap().0
+            read_pair_reservation([&self.d(), &self.s()], &self.r())
+                .unwrap()
+                .unwrap()
+                .0
         }
         fn request(&self) -> PairReservationRequest {
             PairReservationRequest {
@@ -6010,7 +6161,8 @@ mod pair_activity_tests {
             let _d = acquire_config_file_write_lock(&self.d(), CONFIG_LOCK_TIMEOUT).unwrap();
             let _s = acquire_config_file_write_lock(&self.s(), CONFIG_LOCK_TIMEOUT).unwrap();
             let _r = acquire_config_file_write_lock(&self.r(), CONFIG_LOCK_TIMEOUT).unwrap();
-            let (mut packet, mut physical) = read_pair_reservation([&self.d(), &self.s()], &self.r())?.unwrap();
+            let (mut packet, mut physical) =
+                read_pair_reservation([&self.d(), &self.s()], &self.r())?.unwrap();
             land_pair_activity(
                 &self.d(),
                 &self.s(),

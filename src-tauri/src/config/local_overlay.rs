@@ -401,7 +401,14 @@ impl LocalSettingsOverlay {
         check: fn(&std::path::Path, &[u8]) -> Result<(), String>,
     ) -> Result<Self, String> {
         check(overlay_path, contents)?;
-        Ok(Self::from_overlay_bytes_paired(base, contents, ineligible_disk, ineligible_legacy, derived, pairs))
+        Ok(Self::from_overlay_bytes_paired(
+            base,
+            contents,
+            ineligible_disk,
+            ineligible_legacy,
+            derived,
+            pairs,
+        ))
     }
 
     pub(crate) fn from_overlay_bytes_paired(
@@ -761,17 +768,31 @@ mod tests {
         let overlay_path = temp.path().join("settings.local.json");
         let path = overlay_path.as_path();
         let error = LocalSettingsOverlay::from_overlay_bytes_paired_checked(
-            &mut base, br#"{"x":2,"unknown-canary":"value-canary","unknown-canary":0}"#,
-            &[], &[], &[], &[], path, crate::path_identity::validate_ac_configuration_json,
-        ).unwrap_err();
+            &mut base,
+            br#"{"x":2,"unknown-canary":"value-canary","unknown-canary":0}"#,
+            &[],
+            &[],
+            &[],
+            &[],
+            path,
+            crate::path_identity::validate_ac_configuration_json,
+        )
+        .unwrap_err();
         assert!(error.contains("duplicateJsonMember:"));
         assert!(error.contains("settings.local.json"));
         assert!(!error.contains("canary"));
         assert_eq!(base, before);
         LocalSettingsOverlay::from_overlay_bytes_paired_checked(
-            &mut base, br#"{"x":2}"#, &[], &[], &[], &[], path,
+            &mut base,
+            br#"{"x":2}"#,
+            &[],
+            &[],
+            &[],
+            &[],
+            path,
             crate::path_identity::validate_ac_configuration_json,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(base["x"], 2);
     }
 

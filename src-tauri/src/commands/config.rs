@@ -2292,7 +2292,9 @@ fn scope_fault_code(fault: crate::config::replica_identity::ReplicaConfigFault) 
     use crate::config::replica_identity::ReplicaConfigFault;
     match fault {
         ReplicaConfigFault::ConfigUnreadable => ScopeFaultCode::ConfigUnreadable,
-        ReplicaConfigFault::ConfigNotJson | ReplicaConfigFault::DuplicateJsonMember => ScopeFaultCode::ConfigNotJson,
+        ReplicaConfigFault::ConfigNotJson | ReplicaConfigFault::DuplicateJsonMember => {
+            ScopeFaultCode::ConfigNotJson
+        }
         ReplicaConfigFault::ConfigNotObject => ScopeFaultCode::ConfigNotObject,
         ReplicaConfigFault::IdentityMissing => ScopeFaultCode::IdentityMissing,
         ReplicaConfigFault::IdentityMismatch => ScopeFaultCode::IdentityMismatch,
@@ -2554,7 +2556,10 @@ fn enumerate_profile_assignment_targets(
                 &replica_dir,
             ) {
                 Ok(read) => read,
-                Err((crate::config::replica_identity::ReplicaConfigFault::DuplicateJsonMember, message)) => {
+                Err((
+                    crate::config::replica_identity::ReplicaConfigFault::DuplicateJsonMember,
+                    message,
+                )) => {
                     return Err(message);
                 }
                 Err((fault, _message)) => {

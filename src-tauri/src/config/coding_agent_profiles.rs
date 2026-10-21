@@ -47,7 +47,9 @@ pub struct ProfileSelectionResolution {
 }
 
 fn read_json_object_checked(path: &Path) -> Result<Option<Value>, String> {
-    let Ok(bytes) = std::fs::read(path) else { return Ok(None); };
+    let Ok(bytes) = std::fs::read(path) else {
+        return Ok(None);
+    };
     crate::config::agent_config::check_configuration_json(path, &bytes)?;
     Ok(serde_json::from_slice::<Value>(&bytes).ok())
 }
@@ -56,7 +58,9 @@ fn read_json_object_checked(path: &Path) -> Result<Option<Value>, String> {
 /// `profileContentHash` is served from the state file first.
 fn read_tooling_config_checked(agent_dir: &Path) -> Result<Option<Value>, String> {
     let read = |path: &Path| -> Result<Option<String>, String> {
-        let Ok(bytes) = std::fs::read(path) else { return Ok(None); };
+        let Ok(bytes) = std::fs::read(path) else {
+            return Ok(None);
+        };
         crate::config::agent_config::check_configuration_json(path, &bytes)?;
         Ok(String::from_utf8(bytes).ok())
     };
@@ -73,14 +77,20 @@ fn read_tooling_config_checked(agent_dir: &Path) -> Result<Option<Value>, String
         serde_json::from_str::<crate::config::agent_config::AgentLocalConfig>(&text).ok()?;
         serde_json::from_str::<Value>(&text).ok()
     });
-    if decisions.is_none() && state.is_none() { return Ok(None); }
-    Ok(Some(crate::config::agent_config::overlay_agent_local_state(
-        decisions.unwrap_or_else(|| serde_json::json!({})), state,
-    )))
+    if decisions.is_none() && state.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(
+        crate::config::agent_config::overlay_agent_local_state(
+            decisions.unwrap_or_else(|| serde_json::json!({})),
+            state,
+        ),
+    ))
 }
 
 fn read_tooling_string_checked(agent_dir: &Path, key: &str) -> Result<Option<String>, String> {
-    Ok(read_tooling_config_checked(agent_dir)?.and_then(|value| value.get("tooling")?.get(key)?.as_str().map(str::to_string)))
+    Ok(read_tooling_config_checked(agent_dir)?
+        .and_then(|value| value.get("tooling")?.get(key)?.as_str().map(str::to_string)))
 }
 
 fn read_tooling_string(agent_dir: &Path, key: &str) -> Option<String> {
@@ -268,25 +278,36 @@ fn validated_replica_origin(replica_dir: &Path) -> Result<(PathBuf, PathBuf), St
     validated_replica_origin_classified(replica_dir).map_err(|(_, message)| message)
 }
 
-fn validated_replica_origin_classified(replica_dir: &Path) -> Result<(PathBuf, PathBuf), (crate::config::replica_identity::ReplicaConfigFault, String)> {
-    let ordinary = |message| (crate::config::replica_identity::ReplicaConfigFault::LocationInvalid, message);
+fn validated_replica_origin_classified(
+    replica_dir: &Path,
+) -> Result<(PathBuf, PathBuf), (crate::config::replica_identity::ReplicaConfigFault, String)> {
+    let ordinary = |message| {
+        (
+            crate::config::replica_identity::ReplicaConfigFault::LocationInvalid,
+            message,
+        )
+    };
     let replica_dir = canonical_existing_dir(replica_dir, "Room replica").map_err(ordinary)?;
     let dir_name = replica_dir
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("Room replica '{}' has no valid name", replica_dir.display())).map_err(ordinary)?;
+        .ok_or_else(|| format!("Room replica '{}' has no valid name", replica_dir.display()))
+        .map_err(ordinary)?;
     if !dir_name.starts_with("__agent_") {
         return Err(ordinary(format!(
             "Room replica '{}' must be named '__agent_<name>'",
             replica_dir.display()
         )));
     }
-    let wg_dir = replica_dir.parent().ok_or_else(|| {
-        format!(
-            "Room replica '{}' has no parent room",
-            replica_dir.display()
-        )
-    }).map_err(ordinary)?;
+    let wg_dir = replica_dir
+        .parent()
+        .ok_or_else(|| {
+            format!(
+                "Room replica '{}' has no parent room",
+                replica_dir.display()
+            )
+        })
+        .map_err(ordinary)?;
     let wg_name = wg_dir
         .file_name()
         .and_then(|name| name.to_str())
@@ -298,18 +319,24 @@ fn validated_replica_origin_classified(replica_dir: &Path) -> Result<(PathBuf, P
         )));
     }
 
-    let persisted_identity =
-        read_json_object_checked(&replica_dir.join("config.json"))
-            .map_err(|message| (crate::config::replica_identity::ReplicaConfigFault::DuplicateJsonMember, message))?.and_then(|config| {
+    let persisted_identity = read_json_object_checked(&replica_dir.join("config.json"))
+        .map_err(|message| {
+            (
+                crate::config::replica_identity::ReplicaConfigFault::DuplicateJsonMember,
+                message,
+            )
+        })?
+        .and_then(|config| {
             config
                 .get("identity")
                 .and_then(|value| value.as_str())
                 .map(str::to_string)
         });
-    let identity = crate::config::replica_identity::validate_or_repair_wg_replica_identity_classified(
-        &replica_dir,
-        persisted_identity.as_deref(),
-    )?;
+    let identity =
+        crate::config::replica_identity::validate_or_repair_wg_replica_identity_classified(
+            &replica_dir,
+            persisted_identity.as_deref(),
+        )?;
     let origin = validate_authoritative_matrix_dir(&identity.matrix_dir).map_err(ordinary)?;
     Ok((replica_dir, origin))
 }
@@ -370,14 +397,22 @@ fn origin_matrix_dir_for_launch_path(launch_path: &Path) -> Result<Option<PathBu
     origin_matrix_dir_for_launch_path_classified(launch_path).map_err(|(_, message)| message)
 }
 
-fn origin_matrix_dir_for_launch_path_classified(launch_path: &Path) -> Result<Option<PathBuf>, (crate::config::replica_identity::ReplicaConfigFault, String)> {
+fn origin_matrix_dir_for_launch_path_classified(
+    launch_path: &Path,
+) -> Result<Option<PathBuf>, (crate::config::replica_identity::ReplicaConfigFault, String)> {
     let Some(dir_name) = launch_path.file_name().and_then(|name| name.to_str()) else {
         return Ok(None);
     };
 
     if dir_name.starts_with("_agent_") {
-        return validate_authoritative_matrix_dir(launch_path).map(Some)
-            .map_err(|message| (crate::config::replica_identity::ReplicaConfigFault::LocationInvalid, message));
+        return validate_authoritative_matrix_dir(launch_path)
+            .map(Some)
+            .map_err(|message| {
+                (
+                    crate::config::replica_identity::ReplicaConfigFault::LocationInvalid,
+                    message,
+                )
+            });
     }
 
     if !dir_name.starts_with("__agent_") {
@@ -414,12 +449,24 @@ pub struct ReplicaProfileRead {
 }
 
 pub fn read_replica_profile_result(launch_path: &Path) -> ReplicaProfileRead {
-    read_replica_profile_result_checked(launch_path).unwrap_or(ReplicaProfileRead { profile: None, warning: None })
+    read_replica_profile_result_checked(launch_path).unwrap_or(ReplicaProfileRead {
+        profile: None,
+        warning: None,
+    })
 }
 
-pub fn read_replica_profile_result_checked(launch_path: &Path) -> Result<ReplicaProfileRead, String> {
+pub fn read_replica_profile_result_checked(
+    launch_path: &Path,
+) -> Result<ReplicaProfileRead, String> {
     let config = read_tooling_config_checked(launch_path)?;
-    let field = |key: &str| config.as_ref()?.get("tooling")?.get(key)?.as_str().map(str::to_string);
+    let field = |key: &str| {
+        config
+            .as_ref()?
+            .get("tooling")?
+            .get(key)?
+            .as_str()
+            .map(str::to_string)
+    };
     let v2 = field("profile");
     let legacy = field("instanceProfileOverride");
     let v2_normalized = v2.as_deref().and_then(normalize_profile_letter);
@@ -443,11 +490,15 @@ pub fn read_replica_profile_checked(launch_path: &Path) -> Result<Option<String>
     Ok(read_replica_profile_result_checked(launch_path)?.profile)
 }
 
-pub fn read_replica_current_coding_agent_checked(launch_path: &Path) -> Result<Option<String>, String> {
+pub fn read_replica_current_coding_agent_checked(
+    launch_path: &Path,
+) -> Result<Option<String>, String> {
     read_tooling_string_checked(launch_path, "currentCodingAgent")
 }
 
-pub fn read_replica_profile_content_hash_checked(launch_path: &Path) -> Result<Option<String>, String> {
+pub fn read_replica_profile_content_hash_checked(
+    launch_path: &Path,
+) -> Result<Option<String>, String> {
     read_tooling_string_checked(launch_path, "profileContentHash")
 }
 
@@ -928,12 +979,18 @@ pub(crate) fn selection_state_from_value(config: &Value, identity: &str) -> Repl
 /// #1939 - strict read-only view of `replica_dir`'s stored selection. Uses the
 /// existing strict reader (bounded path-safe read, duplicate-free JSON, object
 /// and identity validation); every strict-read failure becomes `Invalid`.
-pub fn read_replica_selection_state_checked(replica_dir: &Path) -> Result<ReplicaSelectionState, String> {
-    use crate::config::replica_identity::{read_wg_replica_config_read_only_classified, ReplicaConfigFault};
+pub fn read_replica_selection_state_checked(
+    replica_dir: &Path,
+) -> Result<ReplicaSelectionState, String> {
+    use crate::config::replica_identity::{
+        read_wg_replica_config_read_only_classified, ReplicaConfigFault,
+    };
     match read_wg_replica_config_read_only_classified(replica_dir) {
         Ok((config, identity)) => Ok(selection_state_from_value(&config, &identity.identity)),
         Err((ReplicaConfigFault::DuplicateJsonMember, message)) => Err(message),
-        Err((_, error)) => Ok(ReplicaSelectionState::Invalid { diagnostic: format!("{}: {}", replica_dir.display(), error) }),
+        Err((_, error)) => Ok(ReplicaSelectionState::Invalid {
+            diagnostic: format!("{}: {}", replica_dir.display(), error),
+        }),
     }
 }
 
@@ -1596,9 +1653,9 @@ pub(crate) fn prepare_identity_reference_patch(
     crate::config::settings::IdentityReferenceError,
 > {
     use crate::config::settings::{IdentityReferenceError, IdentityReferencePhysicalState};
-    let state_path = crate::config::agent_config::state_file_path(
-        decisions.parent().ok_or(IdentityReferenceError::InvalidPlan("PAIR target has no parent"))?
-    );
+    let state_path = crate::config::agent_config::state_file_path(decisions.parent().ok_or(
+        IdentityReferenceError::InvalidPlan("PAIR target has no parent"),
+    )?);
     crate::config::agent_config::prepare_and_reserve_identity_reference_pair_guarded(
         decisions,
         request,
@@ -2188,11 +2245,14 @@ pub fn resolve_profile_selection(
         .as_ref()
         .map(|validated| validated.origin_matrix_dir.as_path());
     let agent_name = launch_path.and_then(agent_name_from_dir);
-    let instance_read = launch_path.map(read_replica_profile_result_checked).transpose()?;
+    let instance_read = launch_path
+        .map(read_replica_profile_result_checked)
+        .transpose()?;
     let instance_profile_override = instance_read.as_ref().and_then(|read| read.profile.clone());
     let origin_default_profile = origin_matrix_dir
         .map(|path| read_tooling_string_checked(path, "defaultProfile"))
-        .transpose()?.flatten()
+        .transpose()?
+        .flatten()
         .and_then(|value| normalize_profile_letter(&value));
     let agent_default_profile = agent_name
         .as_ref()
@@ -2362,17 +2422,27 @@ pub fn resolve_profile_checked(
     let instance_override = match launch_path {
         Some(path) => {
             let read = read_replica_profile_result_checked(path)?;
-            if let Some(warning) = read.warning { warnings.push(warning); }
+            if let Some(warning) = read.warning {
+                warnings.push(warning);
+            }
             normalize_profile_from_source(read.profile, &mut warnings, "instance override")
         }
         None => None,
     };
-    let origin_default = match launch_path.map(origin_matrix_dir_for_launch_path_classified).transpose() {
+    let origin_default = match launch_path
+        .map(origin_matrix_dir_for_launch_path_classified)
+        .transpose()
+    {
         Ok(Some(Some(origin))) => normalize_profile_from_source(
-            read_tooling_string_checked(&origin, "defaultProfile")?, &mut warnings, "origin default",
+            read_tooling_string_checked(&origin, "defaultProfile")?,
+            &mut warnings,
+            "origin default",
         ),
         Ok(_) => None,
-        Err((crate::config::replica_identity::ReplicaConfigFault::DuplicateJsonMember, message)) => return Err(message),
+        Err((
+            crate::config::replica_identity::ReplicaConfigFault::DuplicateJsonMember,
+            message,
+        )) => return Err(message),
         Err((_, message)) => {
             warnings.push(format!("Ignoring origin default profile: {}", message));
             None
@@ -2456,15 +2526,23 @@ mod tests {
                 let st = crate::config::agent_config::state_file_path(dir);
                 std::fs::write(&st, b"{}").unwrap();
                 let paths = [&d, &st];
-                std::fs::write(paths[side], br#"{"unknown-canary":"value-canary","unknown-canary":0}"#).unwrap();
+                std::fs::write(
+                    paths[side],
+                    br#"{"unknown-canary":"value-canary","unknown-canary":0}"#,
+                )
+                .unwrap();
                 let before = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
                 let request = ProfileResolutionRequest {
-                    coding_agent_id: "codex", launch_path: Some(&fx.replica), agent_matrix_name: None,
-                    requested_profile: Some("A"), requested_profile_authoritative: true,
+                    coding_agent_id: "codex",
+                    launch_path: Some(&fx.replica),
+                    agent_matrix_name: None,
+                    requested_profile: Some("A"),
+                    requested_profile_authoritative: true,
                 };
                 for error in [
                     resolve_profile_checked(&fx.settings, request).unwrap_err(),
-                    resolve_profile_selection(&fx.settings, Some(&fx.replica), "codex", Some("A")).unwrap_err(),
+                    resolve_profile_selection(&fx.settings, Some(&fx.replica), "codex", Some("A"))
+                        .unwrap_err(),
                 ] {
                     assert!(error.contains("duplicateJsonMember:"));
                     assert!(error.contains(paths[side].to_str().unwrap()));
@@ -2481,12 +2559,21 @@ mod tests {
         let fx = selection_fixture();
         write_config(&fx.replica, &seed_selection_config("{}"));
         let request = || ProfileResolutionRequest {
-            coding_agent_id: "codex", launch_path: Some(&fx.replica), agent_matrix_name: None,
-            requested_profile: Some("B"), requested_profile_authoritative: false,
+            coding_agent_id: "codex",
+            launch_path: Some(&fx.replica),
+            agent_matrix_name: None,
+            requested_profile: Some("B"),
+            requested_profile_authoritative: false,
         };
-        assert_eq!(resolve_profile_checked(&fx.settings, request()).unwrap(), resolve_profile(&fx.settings, request()));
+        assert_eq!(
+            resolve_profile_checked(&fx.settings, request()).unwrap(),
+            resolve_profile(&fx.settings, request())
+        );
         write_config(&fx.replica, "{");
-        assert_eq!(resolve_profile_checked(&fx.settings, request()).unwrap(), resolve_profile(&fx.settings, request()));
+        assert_eq!(
+            resolve_profile_checked(&fx.settings, request()).unwrap(),
+            resolve_profile(&fx.settings, request())
+        );
     }
 
     use super::*;
@@ -4940,7 +5027,9 @@ mod transition_reference_tests {
             let st = temp.path().join("config.state.no-git.json");
             let paths = [d.as_path(), st.as_path()];
             let (source, mut before, mappings) = fixture();
-            before[side] = IdentityReferencePhysicalState::from_bytes(br#"{"unknown-canary":"value-canary","unknown-canary":0}"#.to_vec());
+            before[side] = IdentityReferencePhysicalState::from_bytes(
+                br#"{"unknown-canary":"value-canary","unknown-canary":0}"#.to_vec(),
+            );
             for index in 0..2 {
                 if let IdentityReferencePhysicalState::Bytes { bytes, .. } = &before[index] {
                     std::fs::write(paths[index], bytes).unwrap();
@@ -4948,28 +5037,38 @@ mod transition_reference_tests {
             }
             let target = SourceSelectionTarget {
                 root: temp.path().to_path_buf(),
-                decisions: d.clone(), state: st.clone(),
-                reservation: temp.path().join("config-identity-reservation.state.no-git.json"),
+                decisions: d.clone(),
+                state: st.clone(),
+                reservation: temp
+                    .path()
+                    .join("config-identity-reservation.state.no-git.json"),
                 physical_revision: before.clone(),
             };
             let request = crate::config::settings::IdentityReferenceRequest {
                 operation_id: "duplicate-admission".into(),
                 source_physical_key: "source-key".into(),
                 mappings_digest: "a".repeat(64),
-                before_protected: [crate::config::settings::IdentityReferenceProtectedRevision::Absent,
-                    crate::config::settings::IdentityReferenceProtectedRevision::Absent],
+                before_protected: [
+                    crate::config::settings::IdentityReferenceProtectedRevision::Absent,
+                    crate::config::settings::IdentityReferenceProtectedRevision::Absent,
+                ],
             };
-            let prepared = prepare_identity_reference_patch(&d, &request, &source, &mappings, &|| Ok(())).unwrap_err();
+            let prepared =
+                prepare_identity_reference_patch(&d, &request, &source, &mappings, &|| Ok(()))
+                    .unwrap_err();
             assert!(!target.reservation.exists());
             let errors = [
                 prepared,
                 identity_reference_value(paths[side], &before[side]).unwrap_err(),
-                plan_identity_reference_patch(before.clone(), paths, &source, &mappings).unwrap_err(),
+                plan_identity_reference_patch(before.clone(), paths, &source, &mappings)
+                    .unwrap_err(),
                 source_original_slots(&target).unwrap_err(),
                 source_target_is_affected(&target, &source, &mappings).unwrap_err(),
             ];
             for error in errors {
-                assert!(matches!(&error, crate::config::settings::IdentityReferenceError::DuplicateJsonMember(message) if message.contains("duplicateJsonMember:") && message.contains(paths[side].to_str().unwrap()) && message.contains("repeated JSON object members")));
+                assert!(
+                    matches!(&error, crate::config::settings::IdentityReferenceError::DuplicateJsonMember(message) if message.contains("duplicateJsonMember:") && message.contains(paths[side].to_str().unwrap()) && message.contains("repeated JSON object members"))
+                );
                 assert!(!error.to_string().contains("canary"));
             }
             for index in 0..2 {
@@ -4988,7 +5087,8 @@ mod transition_reference_tests {
         let state_path = temp.path().join("config.state.no-git.json");
         let paths = [decisions_path.as_path(), state_path.as_path()];
         let (source, before, mappings) = fixture();
-        let patch = plan_identity_reference_patch(before.clone(), paths, &source, &mappings).unwrap();
+        let patch =
+            plan_identity_reference_patch(before.clone(), paths, &source, &mappings).unwrap();
         assert_eq!(patch.before, before);
         assert_eq!(
             patch.after[0].pointer("/tooling/configurationRef/calculatedId"),
@@ -5198,7 +5298,12 @@ pub(crate) fn source_target_is_affected(
     source: &crate::config::settings::SourceRef,
     mappings: &[crate::config::settings::SourceIdentityMapping],
 ) -> Result<bool, crate::config::settings::IdentityReferenceError> {
-    let patch = plan_identity_reference_patch(target.physical_revision.clone(), [&target.decisions, &target.state], source, mappings)?;
+    let patch = plan_identity_reference_patch(
+        target.physical_revision.clone(),
+        [&target.decisions, &target.state],
+        source,
+        mappings,
+    )?;
     let original = [
         identity_reference_value(&target.decisions, &target.physical_revision[0])?,
         identity_reference_value(&target.state, &target.physical_revision[1])?,

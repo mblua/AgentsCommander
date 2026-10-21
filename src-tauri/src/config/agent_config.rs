@@ -284,7 +284,11 @@ pub fn read_last_agent_message_at_checked(repo_path: &str) -> Result<Option<Stri
         if let Some(bytes) = &bytes {
             check_configuration_json(&path, bytes)?;
         }
-        texts.push(bytes.as_ref().and_then(|bytes| String::from_utf8(bytes.clone()).ok()));
+        texts.push(
+            bytes
+                .as_ref()
+                .and_then(|bytes| String::from_utf8(bytes.clone()).ok()),
+        );
         let value = bytes
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
             .and_then(|value| {
@@ -308,8 +312,12 @@ pub fn read_last_agent_message_at_checked(repo_path: &str) -> Result<Option<Stri
     let mut texts = texts.into_iter();
     let decisions = texts.next().flatten();
     let state = texts.next().flatten();
-    if decisions.as_ref().is_some_and(|text| !typed_ok(text)) { return Ok(None); }
-    let config = merge_config_texts(decisions, state.filter(|text| typed_ok(text))).ok().flatten()
+    if decisions.as_ref().is_some_and(|text| !typed_ok(text)) {
+        return Ok(None);
+    }
+    let config = merge_config_texts(decisions, state.filter(|text| typed_ok(text)))
+        .ok()
+        .flatten()
         .and_then(|value| serde_json::from_value::<AgentLocalConfig>(value).ok());
     Ok(config.and_then(|cfg| cfg.tooling.last_agent_message_at))
 }
@@ -1101,7 +1109,9 @@ pub(super) fn check_configuration_json(path: &Path, bytes: &[u8]) -> Result<(), 
 }
 
 fn read_config_text_checked(path: &Path) -> Result<Option<String>, String> {
-    let Ok(bytes) = std::fs::read(path) else { return Ok(None); };
+    let Ok(bytes) = std::fs::read(path) else {
+        return Ok(None);
+    };
     check_configuration_json(path, &bytes)?;
     Ok(String::from_utf8(bytes).ok())
 }
@@ -1360,8 +1370,14 @@ where
     F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
 {
     update_agent_config_with_activity_and_publish_classified(
-        decisions, journal_dir, on_stage, mutate, activity, publish,
-    ).map_err(|error| error.to_string())
+        decisions,
+        journal_dir,
+        on_stage,
+        mutate,
+        activity,
+        publish,
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn update_agent_config_with_activity_and_publish_classified<F>(
@@ -1779,7 +1795,11 @@ mod tests {
             let d = temp.path().join("config.json");
             let st = state_file_path(temp.path());
             let paths = [&d, &st];
-            std::fs::write(paths[side], br#"{"unknown-canary":"value-canary","unknown-canary":0}"#).unwrap();
+            std::fs::write(
+                paths[side],
+                br#"{"unknown-canary":"value-canary","unknown-canary":0}"#,
+            )
+            .unwrap();
             let originals = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
             for error in [
                 read_agent_local_config_checked(temp.path()).unwrap_err(),
@@ -1793,35 +1813,51 @@ mod tests {
             let error = update_existing_agent_config_classified(&d, |_, _| {
                 called.set(true);
                 Ok(())
-            }).unwrap_err();
-            assert!(matches!(&error, AgentConfigWriteError::DuplicateJsonMember(message)
-                if message.contains(paths[side].to_str().unwrap())));
+            })
+            .unwrap_err();
+            assert!(
+                matches!(&error, AgentConfigWriteError::DuplicateJsonMember(message)
+                if message.contains(paths[side].to_str().unwrap()))
+            );
             assert!(!called.get());
             assert_eq!(std::fs::read(&d).unwrap(), originals[0]);
             assert_eq!(std::fs::read(&st).unwrap(), originals[1]);
         }
-        for name in ["config.json", crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME] {
+        for name in [
+            "config.json",
+            crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME,
+        ] {
             let repo = tempfile::tempdir().unwrap();
-            let dir = repo.path().join(crate::config::agent_local_dir_name().as_str());
+            let dir = repo
+                .path()
+                .join(crate::config::agent_local_dir_name().as_str());
             std::fs::create_dir(&dir).unwrap();
             let path = dir.join(name);
             let bytes = br#"{"unknown-canary":0,"unknown-canary":"value-canary"}"#;
             std::fs::write(&path, bytes).unwrap();
-            let error = read_last_agent_message_at_checked(repo.path().to_str().unwrap()).unwrap_err();
+            let error =
+                read_last_agent_message_at_checked(repo.path().to_str().unwrap()).unwrap_err();
             assert!(error.contains(path.to_str().unwrap()));
             assert!(!error.contains("canary"));
             assert_eq!(std::fs::read(path).unwrap(), bytes);
         }
         let temp = loader_fixture(Some(serde_json::json!({})), None);
-        let error = update_existing_agent_config_classified(&temp.path().join("config.json"), |_, _| {
-            Err("duplicateJsonMember: ordinary callback".to_string())
-        }).unwrap_err();
+        let error =
+            update_existing_agent_config_classified(&temp.path().join("config.json"), |_, _| {
+                Err("duplicateJsonMember: ordinary callback".to_string())
+            })
+            .unwrap_err();
         assert!(matches!(error, AgentConfigWriteError::Ordinary(_)));
         std::fs::write(temp.path().join("config.json"), b"{").unwrap();
-        assert!(read_agent_local_config_checked(temp.path()).unwrap().is_none());
+        assert!(read_agent_local_config_checked(temp.path())
+            .unwrap()
+            .is_none());
         let native_error = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
         assert!(native_error.is_eof());
-        assert_eq!(read_agent_local_config_json(temp.path()).unwrap_err(), native_error.to_string());
+        assert_eq!(
+            read_agent_local_config_json(temp.path()).unwrap_err(),
+            native_error.to_string()
+        );
     }
 
     use super::*;
@@ -2626,7 +2662,9 @@ mod tests {
             duplicate,
         )
         .expect("seed state");
-        assert!(read_agent_local_config_checked(temp.path()).unwrap_err().contains("duplicateJsonMember:"));
+        assert!(read_agent_local_config_checked(temp.path())
+            .unwrap_err()
+            .contains("duplicateJsonMember:"));
         assert!(read_agent_local_config(temp.path()).is_none());
     }
 
@@ -2648,7 +2686,9 @@ mod tests {
             r#"{"tooling":{"lastCodingAgent":"a","lastCodingAgent":"b"}}"#,
         )
         .expect("seed decisions");
-        assert!(read_agent_local_config_json(temp.path()).unwrap_err().contains("duplicateJsonMember:"));
+        assert!(read_agent_local_config_json(temp.path())
+            .unwrap_err()
+            .contains("duplicateJsonMember:"));
 
         // (2) an unrelated malformed tracked field is tolerated.
         let temp = loader_fixture(
@@ -2677,7 +2717,9 @@ mod tests {
             let temp = loader_fixture(Some(tracked.clone()), None);
             std::fs::write(temp.path().join(state_name), state).expect("seed state");
             if leg.starts_with('4') {
-                assert!(read_agent_local_config_json(temp.path()).unwrap_err().contains("duplicateJsonMember:"));
+                assert!(read_agent_local_config_json(temp.path())
+                    .unwrap_err()
+                    .contains("duplicateJsonMember:"));
             } else {
                 assert_eq!(raw(temp.path())["tooling"], tracked["tooling"], "leg {leg}");
             }
