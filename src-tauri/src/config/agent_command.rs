@@ -2783,7 +2783,7 @@ mod tests {
             .to_ascii_lowercase();
 
         use crate::config::config_seed::ConfigSeedTier;
-        // Workspace tiers outrank matrix tiers; profile beats base in each. The
+        // Matrix tiers outrank workspace tiers; profile beats base in each. The
         // matrix's bare `.claude` (the agent's own live config) is never a source.
         // #769 P2 + #1318 appends the absent-only CatalogDefault master LAST
         // (still pure path math; perform_config_seed gates it on absent-dest +
@@ -2812,16 +2812,6 @@ mod tests {
             });
         };
         tier_pair(
-            ConfigSeedTier::WorkspaceProfile,
-            ac_root,
-            format!("default_profile_{}.claude", letter),
-        );
-        tier_pair(
-            ConfigSeedTier::WorkspaceBase,
-            ac_root,
-            "default.claude".to_string(),
-        );
-        tier_pair(
             ConfigSeedTier::MatrixProfile,
             &matrix,
             format!("default_profile_{}.claude", letter),
@@ -2829,6 +2819,16 @@ mod tests {
         tier_pair(
             ConfigSeedTier::MatrixBase,
             &matrix,
+            "default.claude".to_string(),
+        );
+        tier_pair(
+            ConfigSeedTier::WorkspaceProfile,
+            ac_root,
+            format!("default_profile_{}.claude", letter),
+        );
+        tier_pair(
+            ConfigSeedTier::WorkspaceBase,
+            ac_root,
             "default.claude".to_string(),
         );
         tier_pair(
