@@ -4308,12 +4308,17 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 />
               </label>
               <div class="settings-hint">
-                {"AC seeds this folder from the first template present: " +
-                  "<workspace>/default_profile_<letter><dest>, " +
-                  "<workspace>/default<dest>, " +
-                  "<matrix>/default_profile_<letter><dest>, then " +
-                  "<matrix>/default<dest>. " +
-                  "It is overwritten on every spawn. Leave the folder blank to disable."}
+                At spawn, AC uses the first available template, in this order:
+                <ol>
+                  <li>Agent Matrix, current profile: <code>{".ac/_agent_<name>/default_profile_<letter><folder>"}</code></li>
+                  <li>Agent Matrix, base: <code>{".ac/_agent_<name>/default<folder>"}</code></li>
+                  <li>Project, current profile: <code>{".ac/default_profile_<letter><folder>"}</code></li>
+                  <li>Project, base: <code>{".ac/default<folder>"}</code></li>
+                </ol>
+                <code>{"<folder>"}</code> is the <strong>Config folder</strong> value above.{" "}
+                <code>{"<letter>"}</code> is the current profile letter, lowercase.{" "}
+                Within each level, the OS-specific template takes priority. The selected template replaces the entire destination folder on every spawn.{" "}
+                If no template is available, AC uses its built-in default only when the destination is missing. Leave <strong>Config folder</strong> blank to disable.
               </div>
             </Show>
             <label class="settings-field">
