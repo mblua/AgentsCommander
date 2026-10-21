@@ -2469,6 +2469,12 @@ fn start_native_restore_startup(
                     return;
                 }
             };
+            {
+                let manager = session_mgr_clone.read().await;
+                sessions_persistence::initialize_prompt_retention(&manager).await;
+                sessions_persistence::block_duplicate_restore_prompt_domains(&manager, &persisted)
+                    .await;
+            }
             let mut failed_recoverable: Vec<sessions_persistence::PersistedSession> = Vec::new();
             persisted.retain_mut(|ps| {
                 if let Err(error) = ps.capture_binding_seed(&settings_snapshot) {
@@ -2644,10 +2650,13 @@ fn start_native_restore_startup(
                                             ps.telegram_bot_id.as_deref(),
                                         )
                                         .await;
-                                        if let Some(ref prompt) = ps.last_prompt {
-                                            let mgr = session_mgr_clone.read().await;
-                                            mgr.set_last_prompt(uuid, prompt.clone()).await;
-                                        }
+                                        commands::session::seed_root_last_prompt(
+                                            &app_handle,
+                                            &session_mgr_clone,
+                                            uuid,
+                                            ps,
+                                        )
+                                        .await;
                                     }
                                     should_create = false;
                                 }
@@ -2763,6 +2772,7 @@ fn start_native_restore_startup(
                                         None,
                                         ps.binding_metadata()
                                             .expect("restore binding validated before spawn"),
+                                        Some(ps),
                                     )
                                     .await
                                     {
@@ -2778,13 +2788,6 @@ fn start_native_restore_startup(
                                                 ps.telegram_bot_id.as_deref(),
                                             )
                                             .await;
-                                            }
-
-                                            if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
-                                                if let Some(ref prompt) = ps.last_prompt {
-                                                    let mgr = session_mgr_clone.read().await;
-                                                    mgr.set_last_prompt(uuid, prompt.clone()).await;
-                                                }
                                             }
 
                                             if ps.was_detached {
@@ -2854,9 +2857,14 @@ fn start_native_restore_startup(
                                         ps.telegram_bot_id.as_deref(),
                                     )
                                     .await;
-                                    if let Some(ref prompt) = ps.last_prompt {
-                                        mgr.set_last_prompt(uuid, prompt.clone()).await;
-                                    }
+                                    drop(mgr);
+                                    commands::session::seed_root_last_prompt(
+                                        &app_handle,
+                                        &session_mgr_clone,
+                                        uuid,
+                                        ps,
+                                    )
+                                    .await;
                                 }
                                 if ps.was_active {
                                     active_id = Some(existing.id.clone());
@@ -3139,6 +3147,7 @@ fn start_native_restore_startup(
                         .flatten(),
                     ps.binding_metadata()
                         .expect("restore binding validated before spawn"),
+                    Some(ps),
                 )
                 .await
                 {
@@ -3161,12 +3170,6 @@ fn start_native_restore_startup(
                             .await;
                         }
 
-                        if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
-                            if let Some(ref prompt) = ps.last_prompt {
-                                let mgr = session_mgr_clone.read().await;
-                                mgr.set_last_prompt(uuid, prompt.clone()).await;
-                            }
-                        }
                         // (#1793) Pair the row with the session it just became;
                         // both are in hand, so no correlation key is needed.
                         if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
@@ -9554,6 +9557,7 @@ mod tests {
                 reason: "global unreadable decoy".into(),
             };
             persisted.is_root_agent = root;
+            persisted.last_prompt = Some("cached-prompt-decoy".into());
             let owner = config::settings::new_runtime_settings_state_at_path(host.clone(), &path)
                 .unwrap();
             let original = serde_json::to_value(&persisted).unwrap();
