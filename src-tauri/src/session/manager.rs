@@ -3226,53 +3226,7 @@ impl SessionManager {
         ) {
             return Err("invalid canonical selection target".to_string());
         }
-        let mut predecessors: HashMap<_, _> = mutations
-            .prompt_transfers
-            .iter()
-            .map(|(source, target)| (target.session_id, *source))
-            .collect();
-        // Fresh restart is also one succession, even though it transfers no text.
-        if matches!(cause, SelectionCause::Restart(_)) {
-            for mutation in &mutations.finalizations {
-                let binding = match mutation {
-                    FinalizeMutation::Live(binding, _)
-                    | FinalizeMutation::Dormant(binding, _, _) => binding,
-                };
-                if let Some(target) = state.pending_prompts.get(&binding.session_id) {
-                    if let Some(source) = mutations
-                        .removals
-                        .iter()
-                        .find(|id| state.prompt_keys.get(id) == Some(&target.key))
-                    {
-                        predecessors.insert(binding.session_id, *source);
-                    }
-                }
-            }
-        }
-        for (source, target) in &mutations.prompt_transfers {
-            let latest = state
-                .sessions
-                .get(source)
-                .and_then(|row| row.last_prompt.clone());
-            state
-                .sessions
-                .get_mut(&target.session_id)
-                .expect("validated pending target")
-                .last_prompt = latest;
-        }
-        for mutation in &mutations.finalizations {
-            let binding = match mutation {
-                FinalizeMutation::Live(binding, _) | FinalizeMutation::Dormant(binding, _, _) => {
-                    *binding
-                }
-            };
-            finalize_prompt_domain(
-                &mut state,
-                binding.session_id,
-                predecessors.get(&binding.session_id).copied(),
-                !matches!(cause, SelectionCause::Restore),
-            );
-        }
+        apply_commit_prompt_domains(&mut state, &mutations, cause);
         let mut result = CommitResult::default();
         let mut changed_ids = HashSet::new();
         // #1149 - ids only. The record itself is built after every fallible exit
@@ -3586,6 +3540,61 @@ fn prompt_domain_exclusive(
         .prompt_keys
         .iter()
         .all(|(id, candidate)| Some(*id) == owner || candidate != key)
+}
+
+fn apply_commit_prompt_domains(
+    state: &mut SessionManagerState,
+    mutations: &LifecycleMutations,
+    cause: SelectionCause,
+) {
+    let mut predecessors: HashMap<_, _> = mutations
+        .prompt_transfers
+        .iter()
+        .map(|(source, target)| (target.session_id, *source))
+        .collect();
+    // Fresh restart is also one succession, even though it transfers no text.
+    if matches!(cause, SelectionCause::Restart(_)) {
+        for mutation in &mutations.finalizations {
+            let binding = match mutation {
+                FinalizeMutation::Live(binding, _) | FinalizeMutation::Dormant(binding, _, _) => {
+                    binding
+                }
+            };
+            if let Some(target) = state.pending_prompts.get(&binding.session_id) {
+                if let Some(source) = mutations
+                    .removals
+                    .iter()
+                    .find(|id| state.prompt_keys.get(id) == Some(&target.key))
+                {
+                    predecessors.insert(binding.session_id, *source);
+                }
+            }
+        }
+    }
+    for (source, target) in &mutations.prompt_transfers {
+        let latest = state
+            .sessions
+            .get(source)
+            .and_then(|row| row.last_prompt.clone());
+        state
+            .sessions
+            .get_mut(&target.session_id)
+            .expect("validated pending target")
+            .last_prompt = latest;
+    }
+    for mutation in &mutations.finalizations {
+        let binding = match mutation {
+            FinalizeMutation::Live(binding, _) | FinalizeMutation::Dormant(binding, _, _) => {
+                *binding
+            }
+        };
+        finalize_prompt_domain(
+            state,
+            binding.session_id,
+            predecessors.get(&binding.session_id).copied(),
+            !matches!(cause, SelectionCause::Restore),
+        );
+    }
 }
 
 fn finalize_prompt_domain(
