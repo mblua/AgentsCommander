@@ -7940,9 +7940,8 @@ mod tests {
             assert!(output.status.success(), "{output:?}");
             return;
         }
-        let config = std::path::PathBuf::from(
-            std::env::var_os("AGENTSCOMMANDER_TEST_CONFIG_DIR").unwrap(),
-        );
+        let config =
+            std::path::PathBuf::from(std::env::var_os("AGENTSCOMMANDER_TEST_CONFIG_DIR").unwrap());
         let (temp, cwd, _) = strict_target_fixture();
         let (_outside, outside_cwd, _) = strict_target_fixture();
         let project = temp.path().join("project").to_string_lossy().into_owned();
@@ -7953,12 +7952,14 @@ mod tests {
         host.root_token = Some("gate-fixture".into());
         host.archived_project_paths = vec![project.clone(), missing.clone()];
         std::fs::write(&path, serde_json::to_vec(&host).unwrap()).unwrap();
-        let owner = crate::config::settings::new_runtime_settings_state_at_path(host.clone(), &path)
-            .unwrap();
+        let owner =
+            crate::config::settings::new_runtime_settings_state_at_path(host.clone(), &path)
+                .unwrap();
         assert!(!owner.identity().managed_operations_enabled);
         assert_eq!(
             owner.runtime_source_settings_path().unwrap(),
-            std::fs::canonicalize(&config).unwrap()
+            std::fs::canonicalize(&config)
+                .unwrap()
                 .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME)
         );
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
@@ -7985,7 +7986,10 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("Cannot start a session in archived project"), "{error}");
+        assert!(
+            error.contains("Cannot start a session in archived project"),
+            "{error}"
+        );
         assert_eq!(std::fs::read(&path).unwrap(), before);
         assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 0);
         assert!(session_mgr.read().await.list_sessions().await.is_empty());
@@ -8022,19 +8026,21 @@ mod tests {
         assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
         assert_eq!(session_mgr.read().await.list_sessions().await.len(), 1);
         let current = owner.read().await;
-        assert!(current.project_paths.iter().any(|root|
-            crate::config::projects::normalize_for_compare(root)
-                == crate::config::projects::normalize_for_compare(&project)
-        ));
+        assert!(current
+            .project_paths
+            .iter()
+            .any(|root| crate::config::projects::normalize_for_compare(root)
+                == crate::config::projects::normalize_for_compare(&project)));
         assert!(!current.archived_project_paths.contains(&project));
         assert!(current.archived_project_paths.contains(&missing));
         drop(current);
         assert_ne!(std::fs::read(&path).unwrap(), before);
         let disk = crate::config::settings::load_settings_from_path(&path);
-        assert!(disk.project_paths.iter().any(|root|
-            crate::config::projects::normalize_for_compare(root)
-                == crate::config::projects::normalize_for_compare(&project)
-        ));
+        assert!(disk
+            .project_paths
+            .iter()
+            .any(|root| crate::config::projects::normalize_for_compare(root)
+                == crate::config::projects::normalize_for_compare(&project)));
         assert!(!disk.archived_project_paths.contains(&project));
         assert!(disk.archived_project_paths.contains(&missing));
         assert!(!owner.identity().managed_operations_enabled);
@@ -8929,8 +8935,9 @@ mod tests {
         )));
         let app = session_test_app(host.clone(), sessions.clone(), pty.clone());
         app.unmanage::<crate::config::settings::SettingsState>();
-        let owner = crate::config::settings::new_runtime_settings_state_at_path(host.clone(), &path)
-            .unwrap();
+        let owner =
+            crate::config::settings::new_runtime_settings_state_at_path(host.clone(), &path)
+                .unwrap();
         assert!(app.manage(owner));
         let transaction =
             crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
@@ -8999,12 +9006,8 @@ mod tests {
         let g_seed: crate::config::sessions_persistence::CodingAgentBindingSeed =
             serde_json::from_value(g_spawn.source_seed.unwrap()).unwrap();
         let g_ref = g_seed.configuration_ref.unwrap();
-        let snapshot = crate::config::settings::capture_runtime_source(
-            &host,
-            &path,
-            &g_ref.source,
-        )
-        .unwrap();
+        let snapshot =
+            crate::config::settings::capture_runtime_source(&host, &path, &g_ref.source).unwrap();
         let ticket = crate::config::settings::SourceSelectionTicket {
             configuration_ref: g_ref.clone(),
             expected_source_revision: snapshot.revision,
@@ -9099,7 +9102,12 @@ mod tests {
         assert_eq!(backend.spawn_count.load(Ordering::SeqCst), spawn_count);
         assert_eq!(events.lock().unwrap().len(), 1);
         assert_eq!(
-            manager.get_session(replacement).await.unwrap().last_prompt.as_deref(),
+            manager
+                .get_session(replacement)
+                .await
+                .unwrap()
+                .last_prompt
+                .as_deref(),
             Some("B")
         );
         close_test_coordinator(&app).await;

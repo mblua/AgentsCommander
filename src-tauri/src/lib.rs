@@ -9515,7 +9515,10 @@ mod tests {
         let start = settings
             .find("pub(crate) fn load_runtime_settings_state()")
             .unwrap();
-        let end = settings[start..].find("pub fn new_settings_state(").unwrap() + start;
+        let end = settings[start..]
+            .find("pub fn new_settings_state(")
+            .unwrap()
+            + start;
         let helper = &settings[start..end];
         assert_eq!(helper.matches("settings_path()").count(), 1);
         assert_eq!(helper.matches("load_settings_from_path(&path)").count(), 1);
@@ -9543,12 +9546,9 @@ mod tests {
                 .unwrap()
                 .configuration_ref
                 .unwrap();
-            let decoy_snapshot = config::settings::capture_runtime_source(
-                &decoy,
-                &decoy_path,
-                &decoy_ref.source,
-            )
-            .unwrap();
+            let decoy_snapshot =
+                config::settings::capture_runtime_source(&decoy, &decoy_path, &decoy_ref.source)
+                    .unwrap();
             host.agents = config::settings::agent_file_projection(&decoy_snapshot)
                 .unwrap()
                 .agents;
@@ -9558,8 +9558,8 @@ mod tests {
             };
             persisted.is_root_agent = root;
             persisted.last_prompt = Some("cached-prompt-decoy".into());
-            let owner = config::settings::new_runtime_settings_state_at_path(host.clone(), &path)
-                .unwrap();
+            let owner =
+                config::settings::new_runtime_settings_state_at_path(host.clone(), &path).unwrap();
             let original = serde_json::to_value(&persisted).unwrap();
             let mut positive = persisted.clone();
             assert!(super::resolve_current_persisted_restore(

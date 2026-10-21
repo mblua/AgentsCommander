@@ -19092,7 +19092,8 @@ fn verify_runtime_settings_directory(
         Ok(()) | Err(crate::path_identity::PathRule::ComponentIsLink) => {}
         Err(_) => return Err("runtime_directory_rejected".into()),
     }
-    let physical_parent = std::fs::canonicalize(parent).map_err(|_| "runtime_directory_rejected")?;
+    let physical_parent =
+        std::fs::canonicalize(parent).map_err(|_| "runtime_directory_rejected")?;
     crate::path_identity::verify_directory(&physical_parent)
 }
 
@@ -19182,9 +19183,8 @@ mod tests {
         let Ok(mode) = std::env::var("AC_E2432_STARTUP_CHILD") else {
             return;
         };
-        let config = std::path::PathBuf::from(
-            std::env::var_os("AGENTSCOMMANDER_TEST_CONFIG_DIR").unwrap(),
-        );
+        let config =
+            std::path::PathBuf::from(std::env::var_os("AGENTSCOMMANDER_TEST_CONFIG_DIR").unwrap());
         assert_eq!(config.exists(), mode == "existing");
         let owner = super::load_runtime_settings_state();
         let loaded = owner.blocking_current_snapshot().unwrap();
@@ -19198,10 +19198,9 @@ mod tests {
             owner.runtime_source_settings_path().unwrap(),
             physical.join(super::SETTINGS_FILE_NAME)
         );
-        let raw: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(config.join(super::SETTINGS_FILE_NAME)).unwrap(),
-        )
-        .unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(config.join(super::SETTINGS_FILE_NAME)).unwrap())
+                .unwrap();
         if mode == "existing" {
             assert!(loaded.voice_to_text_enabled);
             assert!(loaded.restore_coordinator_wake_state);

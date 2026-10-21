@@ -6758,12 +6758,25 @@ mod tests {
             }
             assert_eq!(e2432_manager_fingerprint(&manager).await, before_rejection);
             // The rejected commit has returned and dropped its guard; rollback has not run.
-            assert_eq!(manager.aggregate_snapshot().await.binding_seeds, before_seeds);
             assert_eq!(
-                manager.get_session(old).await.unwrap().last_prompt.as_deref(),
+                manager.aggregate_snapshot().await.binding_seeds,
+                before_seeds
+            );
+            assert_eq!(
+                manager
+                    .get_session(old)
+                    .await
+                    .unwrap()
+                    .last_prompt
+                    .as_deref(),
                 Some("B")
             );
-            assert!(manager.get_pending_session(pending).await.unwrap().last_prompt.is_none());
+            assert!(manager
+                .get_pending_session(pending)
+                .await
+                .unwrap()
+                .last_prompt
+                .is_none());
             manager.rollback_pending_create(pending).await.unwrap();
             let retained = manager.coding_agent_binding(old).await.unwrap();
             assert_eq!(retained.seed, concurrent.seed);
