@@ -260,7 +260,12 @@ const RailButton: Component<{
   onClick: (event: MouseEvent) => void;
 }> = (props) => {
   let node!: HTMLButtonElement;
-  onMount(() => props.observation.node(node, () => props.observation.entity(props.projectPath, props.button.selection)));
+  onMount(() => {
+    // Logical identity is fixed for this row, including disposal diagnostics.
+    const path = props.projectPath;
+    const selection = props.button.selection;
+    props.observation.node(node, () => props.observation.entity(path, selection));
+  });
   return (<button
     ref={(el) => { node = el; props.onRef?.(el); }}
     class="workgroup-group-rail-button"
@@ -338,6 +343,14 @@ const RailButton: Component<{
   </button>);
 };
 
+function buttonIdentity(button: GroupButton): string {
+  return JSON.stringify([button.selection.kind, button.selection.kind === "group" ? button.selection.id : null]);
+}
+
+function favoriteIdentity(entry: FavoriteEntry): string {
+  return JSON.stringify([entry.project.path, entry.button.selection.kind, entry.button.selection.kind === "group" ? entry.button.selection.id : null]);
+}
+
 type FavoriteEntry =
   | { kind: "group"; project: ProjectState; group: WorkgroupGroup; button: GroupButton }
   | { kind: "nonstop"; project: ProjectState; button: GroupButton };
@@ -399,41 +412,47 @@ const FavoritesRailSection: Component<{
         </button>
         <Show when={!collapsed()}>
           <div class="workgroup-group-rail-favorites-scroll">
-            <For each={entries()}>
-              {(entry) => (
-                <RailButton
-                  observation={props.observation}
-                  projectPath={entry.project.path}
-                  button={entry.button}
-                  testIds={
-                    entry.kind === "nonstop"
-                      ? nonStopFavoriteRailTestIds(entry.project.folderName)
-                      : favoriteRailTestIds(entry.project.folderName, entry.group.id)
-                  }
-                  selected={isSelected(entry.project.path, entry.button)}
-                  onContextMenu={(event) =>
-                    props.onOpenContextMenu(
-                      event,
-                      entry.kind === "nonstop"
-                        ? { kind: "nonstop", projectPath: entry.project.path }
-                        : {
-                            kind: "group",
-                            projectPath: entry.project.path,
-                            groupId: entry.group.id,
-                          }
-                    )
-                  }
-                  onClick={(event) => {
-                    const before = props.observation.selection();
-                    const fields = props.observation.entity(entry.project.path, entry.button.selection);
-                    props.observation.emit("handler-enter", { ...fields, ...before, trusted: event.isTrusted, phase: "idle" });
-                    selectFromRail(entry.project, entry.button.selection);
-                    const after = props.observation.selection();
-                    props.observation.emit("handler-end", { ...fields, ...after, trusted: event.isTrusted, phase: "idle",
-                      outcome: sameSelection(before, after) ? "unchanged" : "applied" });
-                  }}
-                />
-              )}
+            <For each={entries().map(favoriteIdentity)}>
+              {(key) => {
+                const current = () => entries().find(entry => favoriteIdentity(entry) === key);
+                let row: HTMLButtonElement | undefined;
+                return <Show when={current()}>{(entry) => (
+                  <RailButton
+                    onRef={el => { row = el; }}
+                    observation={props.observation}
+                    projectPath={entry().project.path}
+                    button={entry().button}
+                    testIds={
+                      entry().kind === "nonstop"
+                        ? nonStopFavoriteRailTestIds(entry().project.folderName)
+                        : favoriteRailTestIds(entry().project.folderName, entry().button.groupId!)
+                    }
+                    selected={isSelected(entry().project.path, entry().button)}
+                    onContextMenu={(event) =>
+                      row?.isConnected && current() && props.onOpenContextMenu(
+                        event,
+                        entry().kind === "nonstop"
+                          ? { kind: "nonstop", projectPath: entry().project.path }
+                          : {
+                              kind: "group",
+                              projectPath: entry().project.path,
+                              groupId: entry().button.groupId!,
+                            }
+                      )
+                    }
+                    onClick={(event) => {
+                      if (!row?.isConnected || !current()) return;
+                      const before = props.observation.selection();
+                      const fields = props.observation.entity(entry().project.path, entry().button.selection);
+                      props.observation.emit("handler-enter", { ...fields, ...before, trusted: event.isTrusted, phase: "idle" });
+                      selectFromRail(entry().project, entry().button.selection);
+                      const after = props.observation.selection();
+                      props.observation.emit("handler-end", { ...fields, ...after, trusted: event.isTrusted, phase: "idle",
+                        outcome: sameSelection(before, after) ? "unchanged" : "applied" });
+                    }}
+                  />
+              )}</Show>;
+              }}
             </For>
           </div>
         </Show>
@@ -507,7 +526,10 @@ const ProjectRailSection: Component<{
   let suppressClickGroupId: string | null = null;
   let projectEl: HTMLDivElement | undefined;
   const groupButtonEls = new Map<string, HTMLButtonElement>();
-  onMount(() => { if (projectEl) props.observation.node(projectEl, () => props.observation.entity(props.project.path), true); });
+  onMount(() => {
+    const path = props.project.path;
+    if (projectEl) props.observation.node(projectEl, () => props.observation.entity(path), true);
+  });
 
   const clearHoldTimer = () => {
     if (holdTimer !== null) {
@@ -534,6 +556,8 @@ const ProjectRailSection: Component<{
 
   createEffect(() => {
     const validIds = new Set(config().groups.map((group) => group.id));
+    const current = reorderState();
+    if (current && !validIds.has(current.groupId)) cancelReorder(false);
     for (const id of groupButtonEls.keys()) {
       if (!validIds.has(id)) groupButtonEls.delete(id);
     }
@@ -733,42 +757,53 @@ const ProjectRailSection: Component<{
       </Show>
 
       <Show when={!collapsed()}>
-        <For each={previewButtons()}>
-          {(button) => (
-            <RailButton
-              observation={props.observation}
-              projectPath={props.project.path}
-              button={button}
-              testIds={projectRailTestIds(button.key)}
-              selected={isSelected(props.project.path, button)}
-              reorderState={reorderState()}
-              onRef={(el) => {
-                if (button.groupId) groupButtonEls.set(button.groupId, el);
-              }}
-              onPointerDown={(event) => startPress(event, button)}
-              onPointerMove={movePress}
-              onPointerUp={finishPress}
-              onPointerCancel={cancelPress}
-              onContextMenu={(event) =>
-                openContextMenu(event, railContextTargetFor(props.project.path, button))
-              }
-              onClick={(event) => {
-                const before = props.observation.selection();
-                const fields = props.observation.entity(props.project.path, button.selection);
-                props.observation.emit("handler-enter", { ...fields, ...before, phase: reorderState()?.phase ?? "idle", trusted: event.isTrusted });
-                if (button.groupId && suppressClickGroupId === button.groupId) {
-                  suppressClickGroupId = null;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  props.observation.emit("handler-end", { ...fields, ...props.observation.selection(), phase: reorderState()?.phase ?? "idle", trusted: event.isTrusted, outcome: "suppressed" });
-                  return;
+        <For each={previewButtons().map(buttonIdentity)}>
+          {(key) => {
+            const current = () => previewButtons().find(button => buttonIdentity(button) === key);
+            let row: HTMLButtonElement | undefined;
+            let groupId: string | null = null;
+            onCleanup(() => {
+              if (groupId && groupButtonEls.get(groupId) === row) groupButtonEls.delete(groupId);
+            });
+            return <Show when={current()}>{(button) => (
+              <RailButton
+                observation={props.observation}
+                projectPath={props.project.path}
+                button={button()}
+                testIds={projectRailTestIds(button().key)}
+                selected={isSelected(props.project.path, button())}
+                reorderState={reorderState()}
+                onRef={(el) => {
+                  row = el;
+                  groupId = button().groupId;
+                  if (groupId) groupButtonEls.set(groupId, el);
+                }}
+                onPointerDown={(event) => row?.isConnected && current() && startPress(event, button())}
+                onPointerMove={movePress}
+                onPointerUp={finishPress}
+                onPointerCancel={cancelPress}
+                onContextMenu={(event) =>
+                  row?.isConnected && current() && openContextMenu(event, railContextTargetFor(props.project.path, button()))
                 }
-                selectFromRail(props.project, button.selection);
-                const after = props.observation.selection();
-                props.observation.emit("handler-end", { ...fields, ...after, phase: reorderState()?.phase ?? "idle", trusted: event.isTrusted, outcome: sameSelection(before, after) ? "unchanged" : "applied" });
-              }}
-            />
-          )}
+                onClick={(event) => {
+                  if (!row?.isConnected || !current()) return;
+                  const before = props.observation.selection();
+                  const fields = props.observation.entity(props.project.path, button().selection);
+                  props.observation.emit("handler-enter", { ...fields, ...before, phase: reorderState()?.phase ?? "idle", trusted: event.isTrusted });
+                  if (button().groupId && suppressClickGroupId === button().groupId) {
+                    suppressClickGroupId = null;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    props.observation.emit("handler-end", { ...fields, ...props.observation.selection(), phase: reorderState()?.phase ?? "idle", trusted: event.isTrusted, outcome: "suppressed" });
+                    return;
+                  }
+                  selectFromRail(props.project, button().selection);
+                  const after = props.observation.selection();
+                  props.observation.emit("handler-end", { ...fields, ...after, phase: reorderState()?.phase ?? "idle", trusted: event.isTrusted, outcome: sameSelection(before, after) ? "unchanged" : "applied" });
+                }}
+              />
+          )}</Show>;
+          }}
         </For>
       </Show>
 
@@ -1059,11 +1094,11 @@ const RoomGroupRail: Component<RoomGroupRailProps> = (props) => {
       <FavoritesRailSection observation={observation} projects={props.projects} onOpenContextMenu={openContextMenu} />
 
       <div class="workgroup-group-rail-scroll">
-        <For each={props.projects}>
-          {(project) => (
+        <For each={props.projects.map(project => project.path)}>
+          {(path) => (
             <ProjectRailSection
               observation={observation}
-              project={project}
+              project={props.projects.find(project => project.path === path)!}
               showProjectLabel={true}
               onOpenContextMenu={openContextMenu}
             />
