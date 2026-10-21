@@ -20585,21 +20585,14 @@ mod tests {
         scenario: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
         match scenario {
-            "native-waiter-context" | "native-waiter-seed" => {
-                Box::pin(retained_exited_respawn_native_waiter_cell(
-                    pty,
-                    scenario == "native-waiter-seed",
-                ))
-            }
+            "native-waiter-context" | "native-waiter-seed" => Box::pin(
+                retained_exited_respawn_native_waiter_cell(pty, scenario == "native-waiter-seed"),
+            ),
             "lifetime-source-panic" => Box::pin(retained_exited_respawn_lifetime_cell(pty, inline)),
             "root-full" => Box::pin(retained_exited_respawn_root_full_cell(pty, inline)),
-            "root-poison" | "root-close-first" => {
-                Box::pin(retained_exited_respawn_root_refusal_cell(
-                    pty,
-                    inline,
-                    scenario == "root-poison",
-                ))
-            }
+            "root-poison" | "root-close-first" => Box::pin(
+                retained_exited_respawn_root_refusal_cell(pty, inline, scenario == "root-poison"),
+            ),
             "queued-drain"
             | "cleanup-claim-first"
             | "cleanup-finalize-first"
@@ -20607,23 +20600,25 @@ mod tests {
             | "cleanup-unknown-veto" => {
                 Box::pin(retained_exited_respawn_queued_cell(pty, inline, scenario))
             }
-            "root-reservation-refusal" => Box::pin(retained_exited_respawn_reservation_refusal_cell()),
-            "entry-root-reclaim" => Box::pin(retained_exited_respawn_entry_root_reclaim_cell()),
-            "entry-restart-reclaim" => Box::pin(retained_exited_respawn_entry_restart_reclaim_cell()),
-            "call-before-accept" | "call-after-accept" => {
-                Box::pin(retained_exited_respawn_caller_cell(
-                    pty,
-                    inline,
-                    scenario == "call-before-accept",
-                ))
+            "root-reservation-refusal" => {
+                Box::pin(retained_exited_respawn_reservation_refusal_cell())
             }
+            "entry-root-reclaim" => Box::pin(retained_exited_respawn_entry_root_reclaim_cell()),
+            "entry-restart-reclaim" => {
+                Box::pin(retained_exited_respawn_entry_restart_reclaim_cell())
+            }
+            "call-before-accept" | "call-after-accept" => Box::pin(
+                retained_exited_respawn_caller_cell(pty, inline, scenario == "call-before-accept"),
+            ),
             "submit-refused" | "submit-channel-close" => {
                 Box::pin(retained_exited_respawn_submit_refused_cell(
                     pty,
                     scenario == "submit-channel-close",
                 ))
             }
-            "recv-after-release" => Box::pin(retained_exited_respawn_receive_after_release_cell(pty)),
+            "recv-after-release" => {
+                Box::pin(retained_exited_respawn_receive_after_release_cell(pty))
+            }
             "pty-held-stop" | "pty-held-rollback" | "pty-cancel-held" => {
                 Box::pin(retained_exited_respawn_pty_held_cell(scenario))
             }
