@@ -11585,6 +11585,7 @@ fn commit_selection_transition_with_carrier_permit() {
             let seed = CodingAgentBindingSeed {
                 identity_revision: format!("r1:0:{}", "a".repeat(64)),
                 original_agent_id: "original".into(),
+                configuration_ref: None,
             };
             let origin = serde_json::json!({"sessionsPath":"C:/sessions.json","rawFileSHA256":"original-bytes","originalOrdinal":if root { 1 } else { 0 }});
             let cwd = if root { "C:/root" } else { "C:/deferred" };

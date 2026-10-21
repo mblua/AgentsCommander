@@ -1522,6 +1522,56 @@ pub(crate) fn load_sessions_from_dir(dir: &Path) -> Vec<PersistedSession> {
 pub struct CodingAgentBindingSeed {
     pub identity_revision: String,
     pub original_agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration_ref: Option<crate::config::settings::ConfigurationRef>,
+}
+
+impl CodingAgentBindingSeed {
+    fn validate_source(&self) -> Result<(), String> {
+        let Some(reference) = &self.configuration_ref else {
+            return if self.identity_revision.starts_with("s1:") {
+                Err("invalid_coding_agent_binding_seed".into())
+            } else {
+                Ok(())
+            };
+        };
+        let suffix = format!(":{}", reference.calculated_id);
+        let digest = self
+            .identity_revision
+            .strip_prefix("s1:")
+            .and_then(|value| value.strip_suffix(&suffix));
+        let valid_digest = digest.is_some_and(|value| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        });
+        let full_identity = |value: &str| {
+            value.strip_prefix("cid1:").is_some_and(|value| {
+                value.len() == 64
+                    && value
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+        };
+        if !valid_digest
+            || reference.version != 1
+            || reference.source.context_root.is_empty()
+            || self.original_agent_id.is_empty()
+            || reference.legacy_entry_hint.as_deref() != Some(self.original_agent_id.as_str())
+            || !full_identity(&reference.calculated_id)
+            || !reference
+                .profile_calculated_id
+                .as_deref()
+                .is_some_and(full_identity)
+            || reference.requested_profile.as_ref().is_some_and(|letter| {
+                crate::config::settings::normalize_profile_letter(letter).as_ref() != Some(letter)
+            })
+        {
+            return Err("invalid_coding_agent_binding_seed".into());
+        }
+        Ok(())
+    }
 }
 
 fn capture_binding_origins(path: &Path, bytes: &[u8], sessions: &mut [PersistedSession]) {
@@ -1566,6 +1616,9 @@ impl PersistedSession {
             .as_ref()
             .map(|id| {
                 Uuid::parse_str(id).map_err(|_| "invalid_coding_agent_binding".to_string())?;
+                if let Some(seed) = &self.coding_agent_binding_seed {
+                    seed.validate_source()?;
+                }
                 if self.coding_agent_binding_seed.as_ref().is_some_and(|seed| {
                     seed.identity_revision.is_empty() || seed.original_agent_id.is_empty()
                 }) {
@@ -1590,6 +1643,9 @@ impl PersistedSession {
         &mut self,
         settings: &crate::config::settings::AppSettings,
     ) -> Result<(), String> {
+        if let Some(seed) = &self.coding_agent_binding_seed {
+            seed.validate_source()?;
+        }
         if self.coding_agent_binding_seed.is_none() {
             if let Some(agent_id) = self.agent_id.as_ref() {
                 self.coding_agent_binding_seed = Some(CodingAgentBindingSeed {
@@ -1597,6 +1653,7 @@ impl PersistedSession {
                         settings, agent_id,
                     )?,
                     original_agent_id: agent_id.clone(),
+                    configuration_ref: None,
                 });
             }
         }
@@ -10367,6 +10424,274 @@ mod tests {
 #[cfg(test)]
 mod derived_agent_binding_tests {
     use super::*;
+    use std::sync::Arc;
+
+    // No process is spawned by this carrier fixture; every host-effect method
+    // panics so the dormant snapshot control cannot silently become a spawn test.
+    struct SourceCarrierBackend;
+
+    impl crate::pty::backend::PtyBackend for SourceCarrierBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn spawn(
+            &self,
+            _: crate::pty::backend::BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            panic!("unexpected spawn")
+        }
+        fn write(
+            &self,
+            _: &crate::pty::manager::BackendWriteAuthority,
+            _: Uuid,
+            _: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
+            panic!("unexpected write")
+        }
+        fn resize(&self, _: Uuid, _: u16, _: u16) -> Result<(), crate::errors::AppError> {
+            panic!("unexpected resize")
+        }
+        fn kill(&self, _: Uuid) -> Result<(), crate::errors::AppError> {
+            panic!("unexpected kill")
+        }
+        fn has_session(&self, _: Uuid) -> bool {
+            false
+        }
+        fn get_screen_snapshot(&self, _: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+        fn get_pty_size(&self, _: Uuid) -> Option<(u16, u16)> {
+            None
+        }
+        fn get_screen_rows(&self, _: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
+        }
+        fn register_response_watcher(&self, _: Uuid, _: String, _: PathBuf) {
+            panic!("unexpected watcher")
+        }
+        fn terminate_job_for_session(&self, _: Uuid) -> bool {
+            panic!("unexpected termination")
+        }
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
+
+    #[tokio::test]
+    async fn e2432_source_seed_roundtrip_decoy() {
+        use crate::config::settings::{
+            configuration_identity, SourceFamily, SourceKind, SourceRef, SourceRole, SourceScope,
+        };
+        use crate::session::selection::{DormantRestoreRequest, SelectionCoordinator};
+        use sha2::{Digest, Sha256};
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let f_path = dir.path().join("F.json");
+        let g_path = dir.path().join("G.json");
+        let row = serde_json::json!({"id":"original", "label":"Same ID", "command":"codex", "color":"red"});
+        let base = configuration_identity("codex", &[]);
+        let file = |command: &str| {
+            serde_json::to_vec(&serde_json::json!({
+            "agents": [row.clone()],
+            "profilesByBaseHash": {(base.clone()): {"A": {"command": command, "env": {"SOURCE": command}, "enabled": true}}}
+        })).unwrap()
+        };
+        let f_bytes = file("F-cell");
+        std::fs::write(&f_path, &f_bytes).unwrap();
+        std::fs::write(&g_path, file("G-cell")).unwrap();
+        let mut f_cell = crate::config::settings::empty_profile_cell();
+        f_cell.command = "F-cell".into();
+        f_cell.env.insert("SOURCE".into(), "F-cell".into());
+        let seed = CodingAgentBindingSeed {
+            identity_revision: format!("s1:{:x}:{base}", Sha256::digest(&f_bytes)),
+            original_agent_id: "original".into(),
+            configuration_ref: Some(crate::config::settings::ConfigurationRef {
+                version: 1,
+                source: SourceRef {
+                    family: SourceFamily::Agents,
+                    role: SourceRole::Catalog,
+                    scope: SourceScope::Project,
+                    kind: SourceKind::CatalogProject,
+                    context_root: f_path.to_string_lossy().into_owned(),
+                },
+                calculated_id: base.clone(),
+                requested_profile: None,
+                profile_calculated_id: Some(crate::config::settings::pair_identity(
+                    "codex",
+                    &[],
+                    &f_cell,
+                )),
+                legacy_entry_hint: Some("original".into()),
+            }),
+        };
+        let mut original = recipe("F recipe", dir.path().to_str().unwrap());
+        original.coding_agent_binding_id = Some(Uuid::new_v4().to_string());
+        original.coding_agent_binding_seed = Some(seed.clone());
+        let path = dir.path().join("sessions.json");
+        let raw = serde_json::to_vec(&vec![original.clone()]).unwrap();
+        std::fs::write(&path, &raw).unwrap();
+        // An empty global configuration cannot bootstrap the same stable ID.
+        let settings = crate::config::settings::AppSettings::default();
+        assert!(
+            crate::config::settings::bootstrap_binding_revision(&settings, "original").is_err()
+        );
+        let mut loaded = load_sessions_from_path_with_settings(&path, Some(&settings)).remove(0);
+        let origin = loaded.coding_agent_binding_origin.clone();
+        assert_eq!(
+            origin.as_ref().unwrap()["rawFileSHA256"],
+            format!("{:x}", Sha256::digest(&raw))
+        );
+        assert_eq!(
+            origin.as_ref().unwrap()["sessionsPath"],
+            path.to_string_lossy().as_ref()
+        );
+        assert_eq!(origin.as_ref().unwrap()["originalOrdinal"], 0);
+        std::fs::write(&g_path, file("G-edited-cell")).unwrap();
+        loaded.capture_binding_seed(&settings).unwrap();
+        assert_eq!(loaded.coding_agent_binding_seed.as_ref(), Some(&seed));
+        assert_eq!(
+            loaded.coding_agent_binding_id,
+            original.coding_agent_binding_id
+        );
+        assert_eq!(loaded.coding_agent_binding_origin, origin);
+        assert_eq!(std::fs::read(&f_path).unwrap(), f_bytes);
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let coordinator =
+            SelectionCoordinator::new(manager.clone(), tokio_util::sync::CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(manager.clone())
+            .manage(crate::DetachedSessionsState::default())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let pty = Arc::new(std::sync::Mutex::new(
+            crate::pty::manager::PtyManager::new_for_test(Arc::new(SourceCarrierBackend)),
+        ));
+        assert!(app.manage(pty));
+        coordinator.start(app.handle().clone()).unwrap();
+        let guard = coordinator.submit_restore_first().await.unwrap();
+        let transaction = guard.transaction(app.handle().clone());
+        let info = transaction
+            .restore_dormant_inline(DormantRestoreRequest {
+                persisted: loaded.clone(),
+                working_directory: loaded.working_directory.clone(),
+                is_coordinator: false,
+                is_root_agent: false,
+            })
+            .await
+            .unwrap();
+        let handle = manager.read().await.clone();
+        let live_snapshot = snapshot_sessions(&handle).await;
+        let live = live_snapshot
+            .iter()
+            .find(|row| row.id.as_deref() == Some(info.id.as_str()))
+            .unwrap();
+        assert_eq!(live.coding_agent_binding_seed.as_ref(), Some(&seed));
+        assert_eq!(
+            live.coding_agent_binding_id,
+            original.coding_agent_binding_id
+        );
+        assert_eq!(live.coding_agent_binding_origin, origin);
+        let failed = sanitize_failed_recoverable(live);
+        assert_eq!(failed.coding_agent_binding_seed.as_ref(), Some(&seed));
+        let failed_manager = SessionManager::new();
+        failed_manager
+            .enroll_failed_binding_recipe_for_test(
+                failed.coding_agent_binding_id.clone().unwrap(),
+                serde_json::to_value(&failed).unwrap(),
+            )
+            .await;
+        // Recipe JSON omits origin; retain its RAM witness through the same
+        // binding metadata API used by production failed-recipe refresh.
+        failed_manager
+            .refresh_failed_binding_recipes(vec![(
+                failed.binding_metadata().unwrap().unwrap(),
+                serde_json::to_value(&failed).unwrap(),
+            )])
+            .await;
+        let failed_snapshot = snapshot_sessions(&failed_manager).await;
+        assert_eq!(failed_snapshot.len(), 1);
+        assert_eq!(
+            failed_snapshot[0].coding_agent_binding_seed.as_ref(),
+            Some(&seed)
+        );
+        assert_eq!(failed_snapshot[0].coding_agent_binding_origin, origin);
+        save_sessions_to_dir(dir.path(), &failed_snapshot).unwrap();
+        let restored = load_sessions_from_path_with_settings(&path, Some(&settings)).remove(0);
+        assert_eq!(restored.coding_agent_binding_seed.as_ref(), Some(&seed));
+        assert_eq!(
+            restored.coding_agent_binding_id,
+            original.coding_agent_binding_id
+        );
+        // A new durable read captures a new byte witness; the old RAM witness
+        // was preserved across snapshot/failure, and is never serialized.
+        assert_ne!(restored.coding_agent_binding_origin, origin);
+        assert!(serde_json::to_value(&failed)
+            .unwrap()
+            .get("codingAgentBindingOrigin")
+            .is_none());
+        drop(transaction);
+        drop(guard);
+        coordinator.close_and_join().await;
+    }
+
+    #[test]
+    fn e2432_source_seed_malformed_refuses_without_downgrade_and_old_bytes_omit_ref() {
+        let old = serde_json::json!({"identityRevision":"r1:old", "originalAgentId":"original"});
+        let legacy: CodingAgentBindingSeed = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(serde_json::to_value(legacy).unwrap(), old);
+        let mut ps = recipe("invalid", "C:/invalid");
+        ps.coding_agent_binding_id = Some(Uuid::new_v4().to_string());
+        ps.coding_agent_binding_seed = Some(CodingAgentBindingSeed {
+            identity_revision: format!("s1:{}:cid1:{}", "a".repeat(64), "b".repeat(64)),
+            original_agent_id: "original".into(),
+            configuration_ref: None,
+        });
+        let before = serde_json::to_value(&ps).unwrap();
+        assert!(ps
+            .capture_binding_seed(&crate::config::settings::AppSettings::default())
+            .is_err());
+        assert!(ps.binding_metadata().is_err());
+        assert_eq!(serde_json::to_value(&ps).unwrap(), before);
+        let reference = serde_json::json!({
+            "version": 1,
+            "source": {"family":"agents", "role":"catalog", "scope":"project", "kind":"catalogProject", "contextRoot":"F"},
+            "calculatedId": format!("cid1:{}", "b".repeat(64)),
+            "requestedProfile": null,
+            "profileCalculatedId": format!("cid1:{}", "c".repeat(64)),
+            "legacyEntryHint": "original"
+        });
+        for field in [
+            "version",
+            "calculatedId",
+            "requestedProfile",
+            "profileCalculatedId",
+            "legacyEntryHint",
+        ] {
+            let mut invalid = reference.clone();
+            invalid[field] = match field {
+                "version" => serde_json::json!(2),
+                "calculatedId" => format!("cid1:{}", "d".repeat(64)).into(),
+                "requestedProfile" => "invalid".into(),
+                "profileCalculatedId" => format!("pid1:{}", "c".repeat(64)).into(),
+                _ => "decoy".into(),
+            };
+            ps.coding_agent_binding_seed
+                .as_mut()
+                .unwrap()
+                .configuration_ref = Some(serde_json::from_value(invalid).unwrap());
+            let before = serde_json::to_value(&ps).unwrap();
+            assert!(ps
+                .capture_binding_seed(&crate::config::settings::AppSettings::default())
+                .is_err());
+            assert!(ps.binding_metadata().is_err());
+            assert_eq!(serde_json::to_value(&ps).unwrap(), before);
+            assert_eq!(
+                sanitize_failed_recoverable(&ps).coding_agent_binding_seed,
+                ps.coding_agent_binding_seed
+            );
+        }
+    }
 
     fn recipe(name: &str, cwd: &str) -> PersistedSession {
         PersistedSession {
@@ -10476,6 +10801,7 @@ mod derived_agent_binding_tests {
         ps.coding_agent_binding_seed = Some(CodingAgentBindingSeed {
             identity_revision: format!("r1:0:{}", "a".repeat(64)),
             original_agent_id: "original".into(),
+            configuration_ref: None,
         });
         ps.id = Some(Uuid::new_v4().to_string());
         ps.created_at = Some("old-runtime-date".into());
@@ -10615,6 +10941,7 @@ mod derived_agent_binding_tests {
             invalid.coding_agent_binding_seed = Some(CodingAgentBindingSeed {
                 identity_revision: String::new(),
                 original_agent_id: "original".into(),
+                configuration_ref: None,
             });
             invalid.capture_binding_seed(&settings).unwrap();
             assert_eq!(
@@ -10648,6 +10975,7 @@ mod derived_agent_binding_tests {
         ps.coding_agent_binding_seed = Some(CodingAgentBindingSeed {
             identity_revision: String::new(),
             original_agent_id: "original".into(),
+            configuration_ref: None,
         });
         assert_eq!(
             ps.binding_metadata().unwrap_err(),
@@ -10671,6 +10999,7 @@ mod derived_agent_binding_tests {
         failed.coding_agent_binding_seed = Some(CodingAgentBindingSeed {
             identity_revision: format!("r1:0:{}", "a".repeat(64)),
             original_agent_id: "original".into(),
+            configuration_ref: None,
         });
         failed.id = Some("stale-runtime".into());
         failed.status = Some(SessionStatus::Running);
