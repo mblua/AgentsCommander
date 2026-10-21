@@ -9492,6 +9492,7 @@ mod tests {
     }
 
     fn e2432_assert_current_source_restore(root: bool, deferred: bool) {
+        use super::{config, prepare_persisted_restore, resolve_current_persisted_restore};
         use crate::commands::session::{e2432_physical_restore_fixture, SourceRestoreMode};
         let temp = tempfile::tempdir().unwrap();
         let (mut host, path, mut persisted) =
