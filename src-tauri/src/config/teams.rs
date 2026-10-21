@@ -2071,12 +2071,12 @@ mod tests {
     fn e2992_duplicate_json_coordinator_checked_and_atomic_discovery() {
         for side in 0..3 {
             let (tmp, paths) = make_coordinator_fixture(false);
-            let ac_root = tmp.path().join("proj-a/.ac");
+            let ac_root = tmp.path().join("proj-a").join(".ac");
             let room = ac_root.join("wg-1-dev-team");
             let replica = room.join("__agent_tech-lead");
             let d = replica.join("config.json");
             let st = replica.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
-            let team = ac_root.join("_team_dev-team/config.json");
+            let team = ac_root.join("_team_dev-team").join("config.json");
             std::fs::write(&st, b"{}").unwrap();
             let files = [&d, &st, &team];
             std::fs::write(files[side], br#"{"unknown-canary":"value-canary","unknown-canary":0}"#).unwrap();
@@ -2110,7 +2110,7 @@ mod tests {
                 use crate::config::settings::{IdentityReferencePhysicalState, identity_reference_protected_revision};
                 use sha2::{Digest, Sha256};
                 let (tmp, paths) = make_coordinator_fixture(false);
-                let ac_root = tmp.path().join("proj-a/.ac");
+                let ac_root = tmp.path().join("proj-a").join(".ac");
                 let room = ac_root.join("wg-1-dev-team");
                 let replica = room.join("__agent_tech-lead");
                 let (d, st, reservation) = crate::config::settings::identity_reference_pair_paths(&replica);
