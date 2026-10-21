@@ -514,18 +514,6 @@ pub(crate) const RETAINED_PROMPTS: &str = "last-prompts.retained.json";
 
 pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
     InstanceArtifact {
-        name: RETAINED_PROMPTS,
-        kind: ArtifactKind::File,
-        disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: private retained last prompts",
-    },
-    InstanceArtifact {
-        name: "last-prompts.retained.json.*.tmp",
-        kind: ArtifactKind::Glob,
-        disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: retained prompt atomic temporaries",
-    },
-    InstanceArtifact {
         name: SET_ASIDE_GLOB,
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
@@ -865,6 +853,18 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::Dir,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: per-instance runtime state directories",
+    },
+    InstanceArtifact {
+        name: RETAINED_PROMPTS,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: private retained last prompts",
+    },
+    InstanceArtifact {
+        name: "last-prompts.retained.json.*.tmp",
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: retained prompt atomic temporaries",
     },
     InstanceArtifact {
         name: LOGS_DIR_NAME,
