@@ -1,3 +1,5 @@
+use super::super::session::SessionRepo;
+use super::carrier::RaiseRollbackOutcome;
 use super::*;
 
 async fn row(manager: &SessionManager, name: &str, coordinator: bool) -> Session {
