@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "a8e662fa8559e7e2",
+      "id": "7bc50d3cc3933110",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::api::audit",
@@ -68,7 +68,6 @@
         "agentscommander_lib::pty::manager",
         "agentscommander_lib::pty::menu_guard",
         "agentscommander_lib::pty::output",
-        "agentscommander_lib::pty::remote_watcher",
         "agentscommander_lib::pty::terminal_snapshot",
         "agentscommander_lib::pty::watchers",
         "agentscommander_lib::pty::watchers::frame",
