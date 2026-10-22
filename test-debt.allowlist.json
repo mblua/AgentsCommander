@@ -210,7 +210,7 @@
       "resolution": "Run manually with AC_STAGE_D_LOCK_ORDER_DRIVE=1 cargo test --lib -- --ignored --test-threads=1 --exact cli::workgroup::tests::cli_workgroup_lock_order_inversion_driver."
     },
     {
-      "id": "rust:src-tauri/src/config/seed_manifest.rs::stage_e_conformance::bench_adversarial_parser_memory_stays_bounded",
+      "id": "rust:src-tauri/src/config/seed_manifest/stage_e_conformance.rs::bench_adversarial_parser_memory_stays_bounded",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 1064,
