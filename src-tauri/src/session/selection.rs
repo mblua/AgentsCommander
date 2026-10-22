@@ -11121,6 +11121,15 @@ mod tests {
         for entry in std::fs::read_dir(dir).expect("read Rust source directory") {
             let entry = entry.expect("read Rust source entry");
             let path = entry.path();
+            // Test-only files (`foo/tests.rs`, `foo/tests/`, `foo/<name>_tests.rs`) hold
+            // what `production_prefix` cuts off when the tests live inline.
+            let stem = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("");
+            if stem == "tests" || stem.ends_with("_tests") {
+                continue;
+            }
             if path.is_dir() {
                 collect_rust_sources(&path, files);
             } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
