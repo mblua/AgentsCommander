@@ -2859,9 +2859,7 @@ async fn window_screenshot_each_request_uses_a_fresh_local_result() {
                     });
                     match worker.await {
                         Ok(result) => result,
-                        Err(_) => {
-                            Err(crate::screenshot::WindowScreenshotCaptureError::Unavailable)
-                        }
+                        Err(_) => Err(crate::screenshot::WindowScreenshotCaptureError::Unavailable),
                     }
                 } else {
                     drop(lease);
@@ -6217,7 +6215,12 @@ fn real_host_and_api_daemon_paths_enforce_secondary_leakage_confinement() {
         let api_shutdown = tokio_util::sync::CancellationToken::new();
         let start = crate::api::start_server_on_listener(
             reserved_loopback_listener(),
-            fixture.app.as_ref().expect("fixture app is alive").handle().clone(),
+            fixture
+                .app
+                .as_ref()
+                .expect("fixture app is alive")
+                .handle()
+                .clone(),
             Arc::clone(&fixture.session_manager),
             Arc::clone(&fixture.pty_manager),
             api_shutdown.clone(),
@@ -6418,9 +6421,8 @@ fn real_host_and_api_daemon_paths_enforce_secondary_leakage_confinement() {
         assert!(payload_has_sentinel(&api_success.result));
 
         let malformed_api_request_id = Uuid::new_v4().to_string();
-        let malformed_target = format!(
-            "../../{MALFORMED_TARGET_SENTINEL}/{CALLER_PATH_SENTINEL}/secret.png"
-        );
+        let malformed_target =
+            format!("../../{MALFORMED_TARGET_SENTINEL}/{CALLER_PATH_SENTINEL}/secret.png");
         let malformed_api_bytes = serde_json::to_vec(&serde_json::json!({
             "apiVersion": "1",
             "requestId": malformed_api_request_id,
@@ -6428,14 +6430,13 @@ fn real_host_and_api_daemon_paths_enforce_secondary_leakage_confinement() {
             "format": "json"
         }))
         .expect("malformed API request bytes");
-        let (malformed_api_status, malformed_api_headers, malformed_api_response) =
-            post_api_bytes(
-                &client,
-                address,
-                &fixture.api_coordinator_token.secret,
-                malformed_api_bytes,
-            )
-            .await;
+        let (malformed_api_status, malformed_api_headers, malformed_api_response) = post_api_bytes(
+            &client,
+            address,
+            &fixture.api_coordinator_token.secret,
+            malformed_api_bytes,
+        )
+        .await;
         assert_eq!(malformed_api_status, StatusCode::BAD_REQUEST);
         assert_eq!(
             malformed_api_headers[reqwest::header::CACHE_CONTROL],
@@ -6475,10 +6476,7 @@ fn real_host_and_api_daemon_paths_enforce_secondary_leakage_confinement() {
         .await;
 
         let uncorrelated_filename = Uuid::new_v4().to_string();
-        assert_ne!(
-            uncorrelated_filename,
-            host_uncorrelated_request.request_id
-        );
+        assert_ne!(uncorrelated_filename, host_uncorrelated_request.request_id);
         let uncorrelated_bytes = serde_json::to_vec(&host_uncorrelated_request)
             .expect("uncorrelated host request bytes");
         assert!(contains_raw(
@@ -6510,7 +6508,10 @@ fn real_host_and_api_daemon_paths_enforce_secondary_leakage_confinement() {
         )
         .await;
         assert_eq!(api_final_status, StatusCode::CONFLICT);
-        assert_eq!(api_final_headers[reqwest::header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            api_final_headers[reqwest::header::CACHE_CONTROL],
+            "no-store"
+        );
         assert_eq!(api_final_headers[reqwest::header::PRAGMA], "no-cache");
         assert_canaries_absent_except(
             &api_final_bytes,
@@ -6681,9 +6682,8 @@ fn snapshot_production_panic_boundaries_are_payload_free() {
         ];
         canaries.sort();
         canaries.dedup();
-        let canary_file = PathBuf::from(
-            std::env::var_os(PANIC_CANARY_FILE_ENV).expect("panic canary file path"),
-        );
+        let canary_file =
+            PathBuf::from(std::env::var_os(PANIC_CANARY_FILE_ENV).expect("panic canary file path"));
         std::fs::write(
             canary_file,
             serde_json::to_vec(&canaries).expect("panic canary manifest"),
@@ -6695,7 +6695,12 @@ fn snapshot_production_panic_boundaries_are_payload_free() {
         let api_shutdown = tokio_util::sync::CancellationToken::new();
         let start = crate::api::start_server_on_listener(
             reserved_loopback_listener(),
-            fixture.app.as_ref().expect("fixture app is alive").handle().clone(),
+            fixture
+                .app
+                .as_ref()
+                .expect("fixture app is alive")
+                .handle()
+                .clone(),
             Arc::clone(&fixture.session_manager),
             Arc::clone(&fixture.pty_manager),
             api_shutdown.clone(),
@@ -6755,10 +6760,7 @@ fn snapshot_production_panic_boundaries_are_payload_free() {
             move || std::panic::panic_any(blocking_panic_payload),
         )
         .await;
-        assert_eq!(
-            blocking_result,
-            Err(TerminalSnapshotReasonCode::Internal)
-        );
+        assert_eq!(blocking_result, Err(TerminalSnapshotReasonCode::Internal));
         blocking_audit.finalize_failure(TerminalSnapshotReasonCode::Internal);
         drop(blocking_permit);
 
