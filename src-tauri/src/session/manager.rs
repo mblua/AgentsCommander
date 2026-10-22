@@ -825,6 +825,3 @@ impl SessionManager {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod response_close_carrier_tests;
