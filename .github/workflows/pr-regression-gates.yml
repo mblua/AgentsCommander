@@ -111,6 +111,16 @@ jobs:
           npm run sanitizing:line_length -- --base-ref "${GATE_BASE_REF:-origin/main}"
           npm run sanitizing:file_size -- --base-ref "${GATE_BASE_REF:-origin/main}"
 
+      - name: "Check sanitizing layout and boundary regressions (#3168)"
+        timeout-minutes: 10
+        env:
+          GATE_BASE_REF: ${{ github.event.pull_request.base.ref && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        run: |
+          npm run sanitizing:file_layout -- --base-ref "${GATE_BASE_REF:-origin/main}"
+          npm run sanitizing:tauri_edge -- --base-ref "${GATE_BASE_REF:-origin/main}"
+          npm run sanitizing:global_state -- --base-ref "${GATE_BASE_REF:-origin/main}"
+          npm run sanitizing:process_env -- --base-ref "${GATE_BASE_REF:-origin/main}"
+
   rust-regression:
     name: rust-regression
     # Skip branch-deletion push events while still requiring pull request validation.

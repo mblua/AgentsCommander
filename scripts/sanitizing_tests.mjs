@@ -375,3 +375,243 @@ test('absolute test attributes resolve without shadowing or hiding later product
   assert.equal(a.items[0].testOnly, false); assert.ok(a.attributes[0].signals.some(s => s.name === '::tokio::test'));
   assert.throws(() => scanRust('x.rs', '#[::] fn t(){}'), e => e.exit === 3);
 });
+
+// P02 uses the same snapshot contract. Pure tree controls keep every subrule's
+// counterfactual explicit; real Git controls below exercise the landed OID API.
+import { runGate as layoutGate } from './sanitizing_file_layout.mjs';
+import { runGate as edgeGate } from './sanitizing_tauri_edge.mjs';
+import { runGate as globalsGate } from './sanitizing_global_state.mjs';
+import { runGate as processGate } from './sanitizing_process_env.mjs';
+const rustRoot = 'src-tauri/src/';
+function trees(base, head = base) {
+  const tree = files => new Map(Object.entries(files).map(([path, text]) => [path,{path,text,mode:'100644',type:'blob'}]));
+  return { baseTree: tree(base), headTree: tree(head), baseOid: 'base-fixture', headOid: 'head-fixture',
+    refOid: 'ref-fixture', requestedRef:'fixture', readBlob: e => e?.text ?? '', assertStableHead() {} };
+}
+function control(gate, rule, name, before, mutation) {
+  const p = rustRoot + name, base = {[p]:before};
+  assert.equal(gate(trees(base)).exit,0);
+  const result = gate(trees(base,{[p]:mutation}));
+  assert.equal(result.exit,1,JSON.stringify(result));
+  assert.ok(result.diagnostics.some(d=>d.status==='FAIL' && d.rule===rule && d.line>0 && d.path===p && d.remedy),JSON.stringify(result));
+  assert.equal(gate(trees(base,base)).exit,0);
+  return result;
+}
+test('05 every independent counter: PASS → FAIL with diagnostic → restored PASS', () => {
+  for (const [rule,p,clean,bad] of [
+    ['mod_rs','mod.rs','', 'fn f() {}'],
+    ['test_files','x.rs','fn f() {}', '#[test]\nfn f() {}'],
+    ['inline_mod','x.rs','mod x;', 'mod x {}'],
+    ['path','x.rs','mod x;', '#[path="other.rs"]\nmod x;'],
+    ['glob','x.rs','use a::b;', 'use a::{b::*,c::*};'],
+    ['pub_mod','x.rs','mod x;', 'pub\nmod x;'],
+    ['pub_super_mod','x.rs','mod x;', 'pub(super)\nmod x;'],
+    ['pub_in_mod','x.rs','mod x;', 'pub(in crate::a)\nmod x;'],
+  ]) {
+    if (rule==='mod_rs') {
+      const old = rustRoot+'old.rs', added=rustRoot+p;
+      assert.equal(layoutGate(trees({[old]:clean})).exit,0);
+      const r=layoutGate(trees({[old]:clean},{[old]:clean,[added]:bad}));
+      assert.equal(r.exit,1); assert.ok(r.diagnostics.some(d=>d.rule===rule));
+      assert.equal(layoutGate(trees({[old]:clean})).exit,0);
+    } else control(layoutGate,rule,p,clean,bad);
+  }
+});
+test('05 grouped globs, test/path cfg_attr, async aliases, integration and visibility boundaries', () => {
+  for(const attr of ['#[tokio::test]','#[async_std::test]','use tokio::test as check; #[check]','#[cfg_attr(feature="x",tokio::test)]'])
+    control(layoutGate,'test_files','x.rs','fn f() {}',attr+' async fn f() {}');
+  control(layoutGate,'path','x.rs','mod a;','#[cfg_attr(unix,path="a.rs")] mod a;');
+  const m=layoutGate(trees({}, {[rustRoot+'tests.rs']:'use super::*; #[test] fn f() {}'}));
+  assert.equal(m.exit,0,JSON.stringify(m));
+  assert.equal(layoutGate(trees({}, {[rustRoot+'tests/x.rs']:'#[test] fn f() {}'})).exit,0);
+  assert.equal(layoutGate(trees({}, {'src-tauri/tests/it.rs':'#[test] fn f() {}'})).exit,0);
+  control(layoutGate,'glob','tests.rs','use super::*;','use super::*; use x::*;');
+  assert.equal(layoutGate(trees({}, {[rustRoot+'lib.rs']:'pub mod a; pub(crate) mod b;'})).exit,0);
+  const r=layoutGate(trees({}, {[rustRoot+'x.rs']:'use a::{b::*,c::*,d::{e::*,f}};'}));
+  assert.equal(r.totals[1].glob,3);
+});
+test('05 debt equal/improved/worse and strict compensated new file, C8 ratchet only', () => {
+  const p=rustRoot+'old.rs',q=rustRoot+'new.rs',bad='mod a {}';
+  assert.equal(layoutGate(trees({[p]:bad},{[p]:''})).exit,0);
+  control(layoutGate,'inline_mod','old.rs',bad,bad+'mod b {}');
+  assert.equal(layoutGate(trees({[p]:bad},{[p]:'',[q]:bad})).exit,1);
+  // Visibility has a global ratchet, not an invented strict new-file prohibition.
+  assert.equal(layoutGate(trees({[p]:'pub mod a;'},{[q]:'pub mod a;'})).exit,0);
+});
+test('06 every counter and exact boundary, alias imports and homonymous methods', () => {
+  for(const [rule,bad] of [
+    ['tauri_files','fn f(x: tauri::AppHandle) {}'],
+    ['emit_files','fn f(x: X) { x.emit("event",0); }'],
+    ['state_files','fn f(x: X) { x.state::<X>(); }'],
+    ['command_files','#[cfg_attr(unix,tauri::command)] fn f() {}'],
+    ['disk_commands','#[tauri::command] fn f() { std::fs::read("a"); }'],
+  ]) control(edgeGate,rule,'x.rs','fn f() {}',bad);
+  for(const p of ['lib.rs','main.rs','commands.rs','events.rs','commands/a.rs','events/a.rs'])
+    assert.equal(edgeGate(trees({}, {[rustRoot+p]:'fn f(x: tauri::AppHandle) { x.emit("a",0); x.state::<X>(); }'})).exit,0,p);
+  for(const p of ['cli/a.rs','api/a.rs','web/a.rs','window.rs'])
+    control(edgeGate,'tauri_files',p,'','use tauri::AppHandle as Handle; fn f(x: Handle) {}');
+  control(edgeGate,'disk_commands','commands.rs','use tauri::command as cmd; #[cmd] fn f() {}',
+    'use tauri::command as cmd; use std::fs::read as disk; #[cmd] fn f() { disk("a"); }');
+});
+test('06 new disk command in existing file cannot hide behind reductions; cfg identity and renames', () => {
+  const p=rustRoot+'commands.rs';
+  const old='#[tauri::command] fn old() { fs::read("a"); }';
+  for(const bad of ['#[tauri::command] fn fresh() { fs::read("a"); }',
+    '#[cfg(unix)] #[tauri::command] fn old() { fs::read("a"); } #[cfg(windows)] #[tauri::command] fn old() { fs::read("a"); }']) {
+    const r=control(edgeGate,'new_disk_command','commands.rs',old,bad);
+    assert.ok(r.diagnostics.some(d=>d.rule==='new_disk_command'));
+  }
+  assert.equal(edgeGate(trees({[p]:old},{[p]:old.replace('fs::read("a");','')})).exit,0);
+  assert.equal(edgeGate(trees({}, {[p]:'#[tauri::command] fn f() { #[cfg(test)] fn test_only() { fs::read("a"); } }'})).exit,0);
+});
+test('08 static mutation, state wrappers/aliases/multiline and thread_local each reject increase', () => {
+  for(const bad of [
+    'static mut X: usize = 0;', 'static X: std::sync::Mutex<u8> = Mutex::new(0);',
+    'static X: Arc<RwLock<u8>> = init();','static X: AtomicUsize = init();',
+    'static X: OnceCell<X> = init();','static X: Lazy<X> = init();',
+    'use std::sync::Mutex as M; static\nX: M<u8> = M::new(0);',
+    'thread_local! { static X: Cell<u8> = Cell::new(0); }',
+    'thread_local! { static X: RefCell<u8> = RefCell::new(0); }',
+  ]) control(globalsGate,'globals','x.rs','',bad);
+  const p=rustRoot+'old.rs',q=rustRoot+'new.rs',bad='static X: Mutex<u8> = init();';
+  assert.equal(globalsGate(trees({[p]:bad},{[p]:''})).exit,0);
+  control(globalsGate,'globals','old.rs',bad,bad+'static Y: OnceLock<X> = init();');
+  assert.equal(globalsGate(trees({[p]:bad},{[q]:bad})).exit,1);
+  assert.equal(globalsGate(trees({}, {[p]:'static N: usize = 0; static S: &str = "x";'})).exit,0);
+});
+const regexImports='use std::sync::{LazyLock,OnceLock}; use regex::Regex; ';
+const lazyRegex='static RE: LazyLock<Regex> = LazyLock::new(|| { Regex::new("a").unwrap() });';
+const onceRegex='fn f() { static RE: OnceLock<Regex> = OnceLock::new(); RE.get_or_init(|| Regex::new("a").expect("valid")); }';
+test('08 only demonstrated literal Regex initialization/usage is exempt', () => {
+  for(const source of [lazyRegex,onceRegex,onceRegex.replace('RE.get_or_init','RE.get_or_init'),
+    lazyRegex.replace('unwrap()','expect("valid")'),lazyRegex.replace('|| {','|| {{{').replace(' });','}} });')]) {
+    const r=globalsGate(trees({}, {[rustRoot+'x.rs']:regexImports+source}));
+    assert.equal(r.exit,0,JSON.stringify(r));
+  }
+  const variants=[
+    lazyRegex.replace('"a"','runtime()'),lazyRegex.replace('Regex>','Mutex<Regex>>'),
+    lazyRegex.replace('Regex::new','let x=0; Regex::new'),lazyRegex.replace('||','|x|'),
+    onceRegex.replace(' RE.get_or_init(|| Regex::new("a").expect("valid"));',''),
+    onceRegex.replace('get_or_init','get_or_try_init'),onceRegex.replace('RE.get_or_init','RE.set'),
+    onceRegex.replace('RE.get_or_init','take(&RE); RE.get_or_init'),
+    onceRegex.replace('Regex::new("a")','Regex::new(runtime())'),
+    'static RE: OnceLock<Regex> = OnceLock::new();',
+    'static RULES: OnceLock<CompiledRules> = OnceLock::new();',
+    lazyRegex.replace('LazyLock','OnceCell'),
+  ];
+  for(const bad of variants) control(globalsGate,'globals','x.rs',regexImports+lazyRegex,regexImports+bad);
+  const alias='use std::sync::LazyLock as L; use regex::Regex as R; static RE: L<R> = L::new(|| R::new(r"a").unwrap());';
+  assert.equal(globalsGate(trees({}, {[rustRoot+'x.rs']:alias})).exit,0);
+});
+test('09 independent counters, absolute write, exact ownership and aliases/shadow', () => {
+  control(processGate,'launch_files','x.rs','fn f() {}','use tokio::process::Command as C; fn f() { C::new("x"); }');
+  control(processGate,'env_read_files','x.rs','fn f() {}','use std::env::var as read; fn f() { read("x"); }');
+  control(processGate,'env_write','x.rs','fn f() {}','use std::env as e; fn f() { e::set_var("x","y"); }');
+  for(const p of ['process.rs','process/a.rs','pty/mod.rs','pty/a.rs']) {
+    assert.equal(processGate(trees({}, {[rustRoot+p]:'fn f() { Command::new("x").env("x","y"); }'})).exit,0);
+    control(processGate,'env_read_files',p,'','fn f() { std::env::var_os("x"); }');
+    control(processGate,'env_write',p,'','fn f() { std::env::remove_var("x"); }');
+  }
+  for(const p of ['config.rs','config/a.rs','lib.rs','main.rs']) {
+    assert.equal(processGate(trees({}, {[rustRoot+p]:'fn f() { std::env::var("x"); }'})).exit,0);
+    control(processGate,'launch_files',p,'','fn f() { std::process::Command::new("x"); }');
+  }
+  assert.equal(processGate(trees({}, {[rustRoot+'main.rs']:'fn f() { std::env::set_var("x","y"); }'})).exit,0);
+  const bad={[rustRoot+'pty/a.rs']:'fn f() { env::set_var("x","y"); }'};
+  assert.equal(processGate(trees(bad)).exit,1);
+  const shadow='use std::env::var as read; fn f(read: F) { read("x"); }';
+  assert.equal(processGate(trees({}, {[rustRoot+'x.rs']:shadow})).exit,0);
+});
+test('P02 production predicates preserve following code; comments/strings and tests do not signal', () => {
+  for(const [gate,bad,rule] of [[edgeGate,'tauri::AppHandle::new();','tauri_files'],
+    [globalsGate,'static X: Mutex<X> = init();','globals'],[processGate,'env::var("x");','env_read_files']]) {
+    for(const cfg of ['test','all(test,unix)','any(test,test)']) {
+      const s=`#[cfg(${cfg})] fn test_only() { ${bad} }`;
+      assert.equal(gate(trees({}, {[rustRoot+'x.rs']:s})).exit,0);
+      control(gate,rule,'x.rs',s,s+` fn production() { ${bad} }`);
+    }
+    for(const cfg of ['any(has_embedded_dist,test)','not(test)','all()','any()'])
+      control(gate,rule,'x.rs','',`#[cfg(${cfg})] fn production() { ${bad} }`);
+    control(gate,rule,'x.rs','',`#[cfg_attr(unix,cfg(test))] fn production() { ${bad} }`);
+    for(const attr of ['#[test]','#[tokio::test]','#[async_std::test]','use tokio::test as check; #[check]']) {
+      const s=`${attr} async fn test_fn() { ${bad} }`;
+      assert.equal(gate(trees({}, {[rustRoot+'x.rs']:s})).exit,0);
+      control(gate,rule,'x.rs',s,s+` fn production() { ${bad} }`);
+    }
+    const inert='// '+bad+'\nfn f() { let x = r###"'+bad+'"###; }';
+    assert.equal(gate(trees({}, {[rustRoot+'x.rs']:inert})).exit,0);
+    for(const p of ['tests.rs','x_tests.rs','tests/a.rs']) assert.equal(gate(trees({}, {[rustRoot+p]:`fn f() { ${bad} }`})).exit,0);
+  }
+});
+test('09 compensated new launch/env read files fail; unchanged/down debt passes independently', () => {
+  for(const [rule,code] of [['launch_files','Command::new("x");'],['env_read_files','env::var("x");']]) {
+    const p=rustRoot+'old.rs',q=rustRoot+'new.rs',before=`fn f() { ${code} }`;
+    assert.equal(processGate(trees({[p]:before},{[p]:''})).exit,0);
+    const r=processGate(trees({[p]:before},{[q]:before}));
+    assert.equal(r.exit,1);assert.ok(r.diagnostics.some(d=>d.rule===rule));
+    const up=processGate(trees({[p]:before},{[p]:before,[q]:before}));
+    assert.equal(up.exit,1); assert.ok(up.diagnostics.some(d=>d.rule===rule));
+  }
+});
+test('P02 actual Git OID mutation/reversion and ERROR precedence for every detector', t => {
+  const f=fixture(t);
+  for(const [gate,p,code] of [[layoutGate,'layout.rs','mod inline {}'],[edgeGate,'edge.rs','fn f(x: tauri::AppHandle) {}'],
+    [globalsGate,'global.rs','static X: Mutex<X> = init();'],[processGate,'env.rs','fn f() { env::var("x"); }']]) {
+    sequence(f,gate,rustRoot+p,'',code);
+    const s=f.snapshot(); s.assertStableHead=()=>{throw Error('HEAD drift');};
+    assert.equal(gate(s).exit,3);
+    const malformed=trees({}, {[rustRoot+p]:'#[cfg(test,unix)] fn f() {}'});
+    assert.equal(gate(malformed).exit,3);
+    const broken=trees({}, {[rustRoot+p]:''});broken.readBlob=()=>{throw Error('invalid UTF8/mode/blob');};
+    assert.equal(gate(broken).exit,3);
+  }
+});
+
+test('P02 relevant ambiguous aliases count with diagnostics instead of erasing the previous import', () => {
+  for(const [gate,rule,source] of [
+    [processGate,'env_read_files','use std::env::var as read; use other::read; fn f() { read("x"); }'],
+    [edgeGate,'tauri_files','use tauri::AppHandle as Handle; use other::Handle; fn f(x: Handle) {}'],
+    [globalsGate,'globals','use std::sync::Mutex as M; use other::M; static X: M<u8> = init();'],
+    [globalsGate,'globals','use std::sync::atomic::AtomicUsize as A; use other::A; static X: A = init();'],
+    [globalsGate,'globals','#[cfg(unix)] use std::sync::atomic::AtomicU64 as Ctr; #[cfg(not(unix))] use other::Ctr; static X: Ctr = Ctr::new(0);'],
+    [layoutGate,'test_files','use tokio::test as check; use other::check; #[check] fn f() {}'],
+  ]) {
+    const r=control(gate,rule,'x.rs','',source);
+    assert.ok(r.diagnostics.some(d=>d.status==='WARN'),JSON.stringify(r));
+  }
+});
+
+test('P02 absolute paths retain syntactic signals', () => {
+  for(const [gate,rule,code] of [[edgeGate,'tauri_files','fn f(x: ::tauri::AppHandle) {}'],
+    [globalsGate,'globals','static X: ::std::sync::Mutex<u8> = init();'],
+    [processGate,'env_read_files','fn f() { ::std::env::var("x"); }'],
+    [processGate,'launch_files','fn f() { ::tokio::process::Command::new("x"); }']]) control(gate,rule,'x.rs','',code);
+});
+test('06 existing command may gain disk when another loses it; only NEW command has strict condition', () => {
+  const p=rustRoot+'commands.rs';
+  const base='#[tauri::command] fn a() { fs::read("a"); } #[tauri::command] fn b() {}';
+  const head='#[tauri::command] fn a() {} #[tauri::command] fn b() { fs::read("a"); }';
+  const r=edgeGate(trees({[p]:base},{[p]:head}));assert.equal(r.exit,0,JSON.stringify(r));
+});
+
+test('08 absolute readonly Regex aliases and conservative lock escape/alias/init cases', () => {
+  const absolute='static RE: ::std::sync::LazyLock<::regex::Regex> = ::std::sync::LazyLock::new(|| ::regex::Regex::new("a").unwrap());';
+  assert.equal(globalsGate(trees({}, {[rustRoot+'x.rs']:absolute})).exit,0);
+  for(const bad of [onceRegex.replace('RE.get_or_init','let alias = &RE; alias.get_or_init'),
+    onceRegex.replace('OnceLock::new()','runtime()'),onceRegex.replace('static RE:','pub static RE:'),
+    onceRegex.replace('RE.get_or_init','let alias = RE; alias.get_or_init')])
+    control(globalsGate,'globals','x.rs',regexImports+onceRegex,regexImports+bad);
+});
+test('P02 explicit aliases obey local shadowing and grouped imports', () => {
+  const cases=[
+    [processGate,'use std::{env::{self as e,var as read},process::Command as C}; fn f(){ e::var("x"); read("x"); C::new("x"); }'],
+    [edgeGate,'use tauri::{self as t,AppHandle as H}; fn f(x: H){ t::f(); }'],
+    [globalsGate,'use std::sync::{Mutex as M,RwLock as R}; static X: Option<M<R<u8>>> = init();'],
+  ];
+  for(const [gate,source] of cases) assert.equal(gate(trees({}, {[rustRoot+'x.rs']:source})).exit,1);
+  for(const [gate,source] of [
+    [processGate,'use std::process::Command; fn f(){ struct Command; Command::new("x"); }'],
+  ]) assert.equal(gate(trees({}, {[rustRoot+'x.rs']:source})).exit,0);
+  assert.equal(edgeGate(trees({}, {[rustRoot+'commands.rs']:'use std::fs::read; #[tauri::command] fn f(read: F) { read("x"); }'})).exit,0);
+  assert.equal(layoutGate(trees({}, {[rustRoot+'x.rs']:'// mod a {} #[test]\nfn f(){ let x="use a::*;"; }'})).exit,0);
+});
