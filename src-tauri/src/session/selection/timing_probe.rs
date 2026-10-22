@@ -1,3 +1,6 @@
+//! #2475 - test-only timing instrumentation (the parent also gates it on test).
+#![cfg(test)]
+
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::ThreadId;
