@@ -26,7 +26,7 @@ use builders::{
 #[cfg(test)]
 use builders::{
     build_root_agent_context_at, render_root_skills_list, render_root_template_text,
-    root_conditions, root_runtime_values, ROOT_CONTEXT_TEST_CONFIG,
+    root_conditions, root_runtime_values,
 };
 #[cfg(all(test, target_os = "windows"))]
 use default_context::WINDOWS_SHELL_ROUTING;
@@ -70,10 +70,7 @@ pub use materialize::{
 use repos::agent_repos_header;
 pub use repos::git_ceiling_directories_for_session_root;
 pub(crate) use repos::is_canonical_agent_matrix_dir;
-use repos::{
-    detect_git_branch, render_agent_repos_string, resolved_paths_include_path,
-    write_combined_context_file,
-};
+use repos::{render_agent_repos_string, resolved_paths_include_path, write_combined_context_file};
 use skill_index::{
     collect_skill_index, discover_skill_index, display_path, resolve_skill_owner_root,
     sanitize_skill_metadata_for_context, truncate_chars, SkillIndex, SkillMetadata,
@@ -831,6 +828,44 @@ pub(crate) fn is_replica_agent_dir(cwd: &str) -> bool {
         .and_then(|name| name.to_str())
         .map(|name| name.starts_with("__agent_"))
         .unwrap_or(false)
+}
+
+// Thread-local configuration injection keeps successful Root acceptance tests
+// inside isolated fixtures; it is absent from production builds. Identity still
+// requires the supplied directory to match the configured canonical Root path.
+#[cfg(test)]
+thread_local! {
+    static ROOT_CONTEXT_TEST_CONFIG: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Detect git branch for a given directory path.
+fn detect_git_branch(dir: &str) -> Option<String> {
+    #[cfg(windows)]
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let mut cmd = std::process::Command::new("git");
+    crate::pty::credentials::scrub_credentials_from_std_command(&mut cmd);
+    crate::config::agent_path::apply_search_path_to_std_command(&mut cmd);
+    cmd.args(["-C", dir, "branch", "--show-current"]);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    match cmd.output() {
+        Ok(out) if out.status.success() => {
+            let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if branch.is_empty() || branch == "HEAD" {
+                None
+            } else {
+                Some(branch)
+            }
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::ROOT_CONTEXT_TEST_CONFIG;
 use super::{
     append_budget_summary, detect_git_branch, discover_skill_index, display_path,
     ensure_session_context_with_config, is_replica_agent_dir, managed_template_local_override,
@@ -202,15 +204,6 @@ pub(crate) fn root_context_candidate(root: &str) -> bool {
         || std::fs::canonicalize(root).ok().is_some_and(|path| {
             super::super::root_agent::is_root_agent_dir_name(&display_path(&path))
         })
-}
-
-// Thread-local configuration injection keeps successful Root acceptance tests
-// inside isolated fixtures; it is absent from production builds. Identity still
-// requires the supplied directory to match the configured canonical Root path.
-#[cfg(test)]
-thread_local! {
-    pub(crate) static ROOT_CONTEXT_TEST_CONFIG: std::cell::RefCell<Option<PathBuf>> =
-        const { std::cell::RefCell::new(None) };
 }
 
 pub(crate) fn root_context_config_dir() -> Result<PathBuf, String> {
