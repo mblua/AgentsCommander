@@ -1,4 +1,21 @@
-use super::*;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::config::agent_command::is_safe_instructions_filename;
+use crate::config::settings::{
+    validate_agent_command_text, validate_config_seed_dest, validate_env_rows,
+    validate_identity_snapshot, AppSettings, CodingAgentEnv, ConfigSeedConfig,
+    IdentitySnapshotEntry, IdentityValidationError, ProfileCellConfig,
+};
+
+use super::{
+    load_catalog_report, load_catalog_report_for_settings_with_config_dir, local_catalog_path,
+    parse_strict_json, project_catalog_path, validate_update_command_string, CatalogUnavailable,
+    BUILTIN_TESTED_LEVEL, CATALOG_DIR_NAME, CATALOG_MANIFEST_FILENAME, CATALOG_SCHEMA_VERSION,
+    EMBEDDED_DEFAULT_CATALOG_JSON,
+};
 
 /// #2736 - wire strings are `"high" | "medium" | "low"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

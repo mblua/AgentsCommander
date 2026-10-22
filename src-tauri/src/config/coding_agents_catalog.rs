@@ -36,31 +36,26 @@
 //! masters. Already-seeded user-owned files are NEVER rewritten or trimmed by a
 //! `false` row; the read gate covers them.
 
-use std::collections::{HashMap, HashSet};
-use std::fmt;
-use std::fs::File;
-use std::io::Write as _;
+use std::sync::atomic::AtomicU64;
+use std::time::Duration;
+
+#[cfg(test)]
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Instant;
 
-use chrono::{DateTime, Utc};
-use serde::de::{self, Visitor};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+#[cfg(test)]
+use chrono::Utc;
 
-use crate::config::agent_command::is_safe_instructions_filename;
+#[cfg(test)]
 use crate::config::naming_migration;
+#[cfg(test)]
 use crate::config::seed_manifest::{
-    acquire_project_gate_soft, has_catalog_publication, ManifestActivationToken,
-    ManifestPathIdentity, ProjectSeedManifestGuard, PublishedManifestRow, SoftProjectGate,
-    SEED_MANIFEST_FILENAME,
+    has_catalog_publication, ManifestActivationToken, ManifestPathIdentity,
+    ProjectSeedManifestGuard, PublishedManifestRow, SEED_MANIFEST_FILENAME,
 };
-use crate::config::settings::{
-    validate_agent_command_text, validate_config_seed_dest, validate_env_rows,
-    validate_identity_snapshot, AppSettings, CodingAgentEnv, CodingAgentEnvSource,
-    ConfigSeedConfig, IdentitySnapshotEntry, IdentityValidationError, ProfileCellConfig,
-};
+#[cfg(test)]
+use crate::config::settings::{AppSettings, CodingAgentEnvSource};
 
 mod definition;
 mod initialization;

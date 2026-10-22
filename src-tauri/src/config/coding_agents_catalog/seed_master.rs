@@ -1,4 +1,15 @@
-use super::*;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
+
+use serde::Serialize;
+
+use crate::config::seed_manifest::ManifestActivationToken;
+
+use super::{
+    acquire_catalog_lock, active_builtin_agent_support, catalog_dir,
+    ensure_seeded_for_project_with_token, is_supported_builtin, publish_replace, CatalogPaths,
+    RESEED_LOCK, SEED_TEMP_COUNTER,
+};
 
 // ---------------------------------------------------------------------------
 // #769 Phase 2 - dest-keyed config-folder masters + the re-seed button.

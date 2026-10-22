@@ -1,4 +1,17 @@
-use super::*;
+use std::fs::File;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
+use std::time::Instant;
+
+#[cfg(test)]
+use super::take_catalog_path_fault;
+use super::{
+    catalog_dir, catalog_lock_timeout, inject_catalog_failure, is_reparse_point,
+    publication_temp_name_for_destination, CATALOG_LOCK_FILENAME, CATALOG_LOCK_POLL_INTERVAL,
+    CATALOG_MANIFEST_FILENAME, LOCAL_CATALOG_FILENAME, MIGRATION_BACKUP_FILENAME,
+    MIGRATION_JOURNAL_FILENAME, SEED_TEMP_COUNTER,
+};
 
 // ---------------------------------------------------------------------------
 // #1968 write machinery: directory/lock discipline, exclusive publication,

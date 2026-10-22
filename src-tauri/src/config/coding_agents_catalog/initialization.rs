@@ -1,4 +1,23 @@
-use super::*;
+use std::path::Path;
+
+use chrono::{DateTime, Utc};
+
+use crate::config::naming_migration;
+use crate::config::seed_manifest::{
+    acquire_project_gate_soft, has_catalog_publication, ManifestActivationToken,
+    ManifestPathIdentity, ProjectSeedManifestGuard, PublishedManifestRow, SoftProjectGate,
+};
+
+use super::{
+    acquire_catalog_lock, analyze_base_bytes, catalog_diagnostic, catalog_dir, ensure_catalog_dir,
+    ensure_seeded_masters, fresh_initialize_catalog, migrate_legacy, read_instance_legacy_source,
+    read_optional_regular_file, recover_interrupted_migration, refresh_managed_base,
+    resume_backup_only_migration, CatalogBaseKind, CatalogDiagnostic, CatalogInitOutcome,
+    CatalogPaths, CATALOG_DIR_NAME, CATALOG_LOCK_FILENAME, CATALOG_MANIFEST_FILENAME,
+    LOCAL_CATALOG_FILENAME, MIGRATION_BACKUP_FILENAME, MIGRATION_JOURNAL_FILENAME,
+    MIGRATION_SOURCE_INSTANCE, MIGRATION_SOURCE_PROJECT, REPORT_CODE_MIGRATION_CONFLICT,
+    REPORT_CODE_REFRESH_FAILED,
+};
 
 /// Which surface is being initialized. `Project` keeps the complete project
 /// state machine above it (recovery, migration, seed-manifest ownership);

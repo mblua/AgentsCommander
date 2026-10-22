@@ -1,4 +1,14 @@
-use super::*;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::config::seed_manifest::{has_catalog_publication, SEED_MANIFEST_FILENAME};
+use crate::config::settings::AppSettings;
+
+use super::{
+    manifest_path, primary_project_root, read_catalog_snapshot, resolve_catalog_snapshot,
+    CatalogReadScope, CodingAgentDefinition, REPORT_CODE_PUBLICATION_UNTRACKED,
+};
 
 // ---------------------------------------------------------------------------
 // #1963 P1 - persisted-only catalog report (read-only diagnostic view).

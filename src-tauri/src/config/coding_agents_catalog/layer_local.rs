@@ -1,4 +1,16 @@
-use super::*;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+
+use crate::config::settings::{CodingAgentEnv, CodingAgentEnvSource, ConfigSeedConfig};
+
+use super::{
+    active_builtin_agent_support, catalog_diagnostic, definition_problem_reason,
+    expect_json_object, expect_json_string, is_supported_builtin, parse_catalog_schema2,
+    parse_strict_json, reject_unknown_json_fields, validate_catalog_key, validate_definition,
+    validate_install_commands, CatalogDiagnostic, CodingAgentDefinition, IdleBurstConfig,
+    InstallCommands, LayerDescription, LocalFieldPatch, CATALOG_SCHEMA_VERSION,
+    REPORT_CODE_INVALID_DEFINITION,
+};
 
 /// #2736 - a local `installCommands` patch. For the three per-OS keys,
 /// `None` = absent (inherit), `Some(None)` = explicit `null` (clear).

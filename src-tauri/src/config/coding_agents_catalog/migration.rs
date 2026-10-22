@@ -1,4 +1,24 @@
-use super::*;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+use crate::config::settings::{CodingAgentEnv, ConfigSeedConfig};
+
+use super::{
+    analyze_base_bytes, build_managed_base_bytes, build_managed_base_bytes_with_original,
+    catalog_diagnostic, compose_local_layer, definition_problem_reason, expect_json_object,
+    inject_catalog_failure, managed_base_is_stale, managed_content_sha256,
+    original_catalog_command, parse_local_layer, parse_strict_json, publish_exclusive,
+    publish_replace, push_unknown_field_warnings, raw_install_commands_problem,
+    raw_update_commands_problem, read_instance_legacy_source, read_optional_regular_file,
+    reject_unknown_json_fields, sha256_hex, supported_shipped_definitions, validate_definition,
+    BaseAnalysis, CatalogDiagnostic, CatalogPaths, CodingAgentDefinition, IdleBurstConfig,
+    InstallCommands, LayerDescription, CATALOG_MANIFEST_FILENAME, CATALOG_SCHEMA_VERSION,
+    KNOWN_DEFINITION_FIELDS, LOCAL_STUB_BYTES, MIGRATION_JOURNAL_VERSION,
+    REPORT_CODE_REFRESH_FAILED,
+};
 
 // ---------------------------------------------------------------------------
 // Legacy extraction, migration, recovery and refresh.

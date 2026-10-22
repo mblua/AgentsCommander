@@ -1,4 +1,27 @@
-use super::*;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use crate::config::agent_command::is_safe_instructions_filename;
+use crate::config::settings::{
+    validate_agent_command_text, validate_config_seed_dest, validate_env_rows,
+};
+
+use super::{
+    apply_support_gate, catalog_diagnostic, compose_local_layer, local_catalog_path,
+    managed_content_sha256, manifest_path, migration_journal_path, parse_catalog_schema2,
+    parse_local_layer, parse_migration_journal, parse_strict_json, project_catalog_path,
+    read_instance_legacy_source, read_optional_regular_file, sha256_hex,
+    supported_shipped_definitions, validate_catalog_key, validate_definition,
+    validate_idle_burst_config, validate_install_commands, CatalogDiagnostic, CatalogReadScope,
+    CatalogSourceContext, CodingAgentDefinition, LayerDescription, ManagedCatalogMarker,
+    CATALOG_SCHEMA_VERSION, KNOWN_CONFIG_SEED_FIELDS, KNOWN_DEFINITION_FIELDS, KNOWN_ENV_FIELDS,
+    KNOWN_INSTALL_COMMANDS_FIELDS, KNOWN_ROOT_FIELDS, LOCAL_IDLE_BURST_FIELDS,
+    MANAGED_MARKER_FIELDS, MANAGED_OWNER, MANAGED_VERSION, MIGRATION_SOURCE_INSTANCE,
+    REPORT_CODE_BASE_INVALID, REPORT_CODE_BASE_UNAVAILABLE, REPORT_CODE_DUPLICATE_KEY,
+    REPORT_CODE_INVALID_DEFINITION, REPORT_CODE_LOCAL_INVALID, REPORT_CODE_MANAGED_BASE_EDITED,
+    REPORT_CODE_MIGRATION_CONFLICT, REPORT_CODE_MIGRATION_PENDING, REPORT_CODE_PROJECT_INVALID,
+    REPORT_CODE_REFRESH_FAILED,
+};
 
 // ---------------------------------------------------------------------------
 // Base analysis: ownership, content identity and readability.

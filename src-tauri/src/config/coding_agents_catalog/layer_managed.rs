@@ -1,4 +1,18 @@
-use super::*;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use serde::de::Visitor;
+use serde::{de, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fmt;
+
+use crate::config::settings::{CodingAgentEnv, ConfigSeedConfig};
+
+use super::{
+    active_builtin_agent_support, catalog_dir, embedded_default_catalog, is_supported_builtin,
+    unknown_field_names, CodingAgentDefinition, ConfigSeedPatch, IdleBurstConfig, InstallCommands,
+    InstallCommandsPatch, CATALOG_SCHEMA_VERSION,
+};
 
 // ---------------------------------------------------------------------------
 // #1968 P5 - managed base, local overrides and recoverable migration.
