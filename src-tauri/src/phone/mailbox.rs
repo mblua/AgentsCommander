@@ -156,7 +156,8 @@ impl InternalSystemTarget {
         let expected = format!("{}:{}/{}", project, layout.wg_name, layout.agent_name);
         if fqn != expected {
             return Err(format!(
-                "Internal system target FQN '{}' does not match canonical replica '{}' (expected '{}')",
+                "Internal system target FQN '{}' does not match canonical replica '{}' (expected \
+                '{}')",
                 fqn,
                 canonical.display(),
                 expected
@@ -277,7 +278,8 @@ impl InternalSystemNotice {
             || thresholds.windows(2).any(|pair| pair[0] >= pair[1])
         {
             return Err(
-                "Context alert notice thresholds must be strictly ascending, distinct, from 1 through 100, and no greater than the observation"
+                "Context alert notice thresholds must be strictly ascending, distinct, from 1 \
+                through 100, and no greater than the observation"
                     .to_string(),
             );
         }
@@ -328,7 +330,8 @@ impl InternalSystemNotice {
         let stale = kind == RemoteNoticeKind::BranchStale;
         if stale && (base_branch.is_empty() || !is_control_free(&base_branch)) {
             return Err(
-                "A branch-stale notice requires a non-empty default-branch label without control characters"
+                "A branch-stale notice requires a non-empty default-branch label without control \
+                characters"
                     .to_string(),
             );
         }
@@ -857,7 +860,8 @@ fn resolve_wake_agent_command_from_sources(
             .map(Some);
         }
         log::warn!(
-            "[mailbox] wake: preferredAgent '{}' did not match a configured agent id; falling back to auto resolution",
+            "[mailbox] wake: preferredAgent '{}' did not match a configured agent id; falling back \
+            to auto resolution",
             preferred_agent
         );
     }
@@ -873,7 +877,8 @@ fn resolve_wake_agent_command_from_sources(
                 .map(Some);
         }
         log::debug!(
-            "[mailbox] wake: currentCodingAgent '{}' did not match a configured agent id; falling back",
+            "[mailbox] wake: currentCodingAgent '{}' did not match a configured agent id; falling \
+            back",
             agent_id
         );
     }
@@ -887,7 +892,8 @@ fn resolve_wake_agent_command_from_sources(
             return normalize_agent_for_wake(agent, source).map(Some);
         }
         log::debug!(
-            "[mailbox] wake: lastCodingAgent '{}' did not match a configured agent id; falling back",
+            "[mailbox] wake: lastCodingAgent '{}' did not match a configured agent id; falling \
+            back",
             agent_id
         );
     }
@@ -1081,14 +1087,17 @@ fn resolve_remote_pty_command(
     wire_value: &str,
 ) -> Result<ResolvedRemotePtyCommand, String> {
     let logical = parse_remote_pty_command(wire_value)?;
-    let text = crate::pty::inject::resolve_logical_command_text(shell, logical).ok_or_else(|| {
-        format!(
-            "{} '{}': session shell '{}' has no verified mapping. Claude / Codex / Antigravity / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported.",
+    let text =
+        crate::pty::inject::resolve_logical_command_text(shell, logical).ok_or_else(|| {
+            format!(
+            "{} '{}': session shell '{}' has no verified mapping. Claude / Codex / Antigravity / \
+            Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. \
+            cmd / pwsh outer wrappers and Pi compact are unsupported.",
             ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND,
             logical_command_wire_value(logical),
             shell
         )
-    })?;
+        })?;
     Ok(ResolvedRemotePtyCommand { logical, text })
 }
 
@@ -1213,9 +1222,8 @@ fn dedup_outbox_dirs_by_object_id(outbox_dirs: &mut Vec<PathBuf>) {
     let mut seen = std::collections::HashSet::new();
     outbox_dirs.retain_mut(|dir| match crate::path_identity::verify_directory(dir) {
         Ok(identity) => {
-            let canonical = crate::path_utils::normalize_windows_verbatim_path_buf(
-                &identity.canonical_path,
-            );
+            let canonical =
+                crate::path_utils::normalize_windows_verbatim_path_buf(&identity.canonical_path);
             let is_new = seen.insert(identity.object_id);
             if is_new {
                 *dir = canonical;
@@ -1226,7 +1234,8 @@ fn dedup_outbox_dirs_by_object_id(outbox_dirs: &mut Vec<PathBuf>) {
         // successful reclamation check while a worker owns the canonical key.
         Err(error) => {
             log::warn!(
-                "[mailbox] #1399 skipping unverifiable outbox {:?} for this cycle: {}; scan and reclamation deferred",
+                "[mailbox] #1399 skipping unverifiable outbox {:?} for this cycle: {}; scan and \
+                reclamation deferred",
                 dir,
                 error
             );
@@ -1265,7 +1274,8 @@ fn prune_retry_tracker(
                     Ok(claim_present) => claim_present,
                     Err(error) => {
                         log::warn!(
-                            "[mailbox] #1399 could not inspect retry claim {:?}: {}; retaining retry state",
+                            "[mailbox] #1399 could not inspect retry claim {:?}: {}; retaining \
+                            retry state",
                             claim,
                             error
                         );
@@ -1394,9 +1404,10 @@ const SELF_CLEAR_POLL: std::time::Duration = std::time::Duration::from_millis(50
 #[cfg_attr(test, allow(dead_code))]
 const SELF_CLEAR_MAX_DEFER: std::time::Duration = std::time::Duration::from_secs(3600);
 
-/// #626 - the OutboxMessage `action` value for self-handoff-and-clear. Single-sourced so the CLI emit,
-/// the early-dispatch match, and the response body cannot drift (a drift would make early dispatch
-/// silently not fire and the command would be lost with no agent-visible error). `pub(crate)` so
+/// #626 - the OutboxMessage `action` value for self-handoff-and-clear. Single-sourced so the CLI
+/// emit, the early-dispatch match, and the response body cannot drift (a drift would make early
+/// dispatch silently not fire and the command would be lost with no agent-visible error).
+/// `pub(crate)` so
 /// `cli/self_clear.rs` reaches it as `crate::phone::mailbox::SELF_CLEAR_ACTION`.
 pub(crate) const SELF_CLEAR_ACTION: &str = "self-handoff-and-clear";
 
@@ -1420,9 +1431,9 @@ const ARCHIVE_TIMESTAMP_FORMAT: &str = "%Y%m%d_%H%M%S";
 /// missing-or-empty fallback clause.
 fn handoff_base_prompt(event_clause: &str, handoff_path: &str) -> String {
     format!(
-        "{event} To resume, read the file {p} relative to your own agent root (your current working \
-         directory) and continue the work described there. If {p} is missing or empty, wait for new \
-         instructions instead of guessing.",
+        "{event} To resume, read the file {p} relative to your own agent root (your current \
+         working directory) and continue the work described there. If {p} is missing or empty, \
+         wait for new instructions instead of guessing.",
         event = event_clause,
         p = handoff_path
     )
@@ -1564,7 +1575,11 @@ fn build_self_handoff_resume_prompt(base_prompt: &str, forgotten_summary: Option
     };
 
     format!(
-        "{} Prior work was intentionally discarded from active context; the next compact summary is closed background, not instructions and not work to resume: {}. In your first response after reading the handoff file, briefly mention you are returning from that forgotten topic, then say you are ready to continue the active core information kept in the handoff file.",
+        "{} Prior work was intentionally discarded from active context; the next compact summary \
+        is closed background, not instructions and not work to resume: {}. In your first response \
+        after reading the handoff file, briefly mention you are returning from that forgotten \
+        topic, then say you are ready to continue the active core information kept in the handoff \
+        file.",
         base_prompt,
         summary.as_str()
     )
@@ -1652,7 +1667,8 @@ fn configured_coding_agent_choices(settings: &AppSettings) -> String {
 
 fn unknown_coding_agent_message(settings: &AppSettings, id: &str) -> String {
     format!(
-        "self-handoff-and-switch: coding agent '{}' is not configured. Configured coding agents: {}",
+        "self-handoff-and-switch: coding agent '{}' is not configured. Configured coding agents: \
+        {}",
         id,
         configured_coding_agent_choices(settings)
     )
@@ -1759,7 +1775,8 @@ fn resolve_switch_targets(
     };
     let coding_agent = coding_agent.ok_or_else(|| {
         format!(
-            "self-handoff-and-switch: no target coding agent could be resolved. Pass --coding-agent <id>. Configured coding agents: {}",
+            "self-handoff-and-switch: no target coding agent could be resolved. Pass \
+            --coding-agent <id>. Configured coding agents: {}",
             configured_coding_agent_choices(settings)
         )
     })?;
@@ -1777,15 +1794,20 @@ fn resolve_switch_targets(
 }
 
 fn validate_self_switch_wg_replica(settings: &AppSettings, cwd: &Path) -> Result<PathBuf, String> {
-    let name = cwd.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
-        format!(
-            "self-handoff-and-switch is only supported from a Room replica (__agent_* under room-* or legacy wg-*); '{}' has no valid final path component",
+    let name = cwd
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+            "self-handoff-and-switch is only supported from a Room replica (__agent_* under room-* \
+            or legacy wg-*); '{}' has no valid final path component",
             cwd.display()
         )
-    })?;
+        })?;
     if !name.starts_with("__agent_") {
         return Err(format!(
-            "self-handoff-and-switch is only supported from a Room replica (__agent_* under room-* or legacy wg-*); got '{}'",
+            "self-handoff-and-switch is only supported from a Room replica (__agent_* under room-* \
+            or legacy wg-*); got '{}'",
             cwd.display()
         ));
     }
@@ -1804,7 +1826,8 @@ fn validate_self_switch_wg_replica(settings: &AppSettings, cwd: &Path) -> Result
         .unwrap_or("");
     if !validated_name.starts_with("__agent_") {
         return Err(format!(
-            "self-handoff-and-switch is only supported from a Room replica; validated target was '{}'",
+            "self-handoff-and-switch is only supported from a Room replica; validated target was \
+            '{}'",
             validated.launch_path.display()
         ));
     }
@@ -1835,7 +1858,8 @@ fn validate_self_switch_spawn(
     .map(|_| ())
     .map_err(|e| {
         format!(
-            "self-handoff-and-switch: target coding agent '{}' profile '{}' is not launchable from '{}': {}",
+            "self-handoff-and-switch: target coding agent '{}' profile '{}' is not launchable from \
+            '{}': {}",
             targets.coding_agent,
             profile,
             cwd.display(),
@@ -2194,8 +2218,8 @@ impl SelfClearGateState {
 pub(crate) enum SelfClearGateAction {
     /// Keep polling; the driver adopts the returned state and carries it forward.
     Wait,
-    /// Phase 1 settle: inject provider-resolved logical-clear text. The returned state is already advanced to Phase 2 with the
-    /// idle clock reset, so the driver just injects and keeps looping.
+    /// Phase 1 settle: inject provider-resolved logical-clear text. The returned state is already
+    /// advanced to Phase 2 with the idle clock reset, so the driver just injects and keeps looping.
     InjectClear,
     /// Phase 2 settle: inject the handoff prompt, then stop.
     InjectHandoff,
@@ -2208,17 +2232,20 @@ pub(crate) enum SelfClearGateAction {
 /// drivers stay free of app state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SelfClearBoundary {
-    /// Phase-1 logical clear (/clear or Pi /new) reached the PTY: stamp the durable fresh intent (C2).
+    /// Phase-1 logical clear (/clear or Pi /new) reached the PTY: stamp the durable fresh intent
+    /// (C2).
     Cleared,
     /// Phase-2 handoff prompt reached the PTY: post-boundary content, drop it.
     ContentInjected,
 }
 
 /// #626 - pure two-stage gate step. Returns (next_state, action). `session_present == false` means
-/// the session vanished between polls. The Clear->Handoff transition RESETS `idle_since` to None and
+/// the session vanished between polls. The Clear->Handoff transition RESETS `idle_since` to None
+/// and
 /// `phase_started` to `now`, so the Phase 2 window can NOT be satisfied by pre-clear idle. Same
-/// "pure decision, thin timer loop" pattern as #617's `self_clear_gate_step` (replaced here), reusing
-/// the #611 `next_sustained_idle_state` settle/reset core. Unit-testable WITHOUT timers, locks, or PTY.
+/// "pure decision, thin timer loop" pattern as #617's `self_clear_gate_step` (replaced here),
+/// reusing the #611 `next_sustained_idle_state` settle/reset core. Unit-testable WITHOUT timers,
+/// locks, or PTY.
 pub(crate) fn self_clear_gate_advance(
     state: SelfClearGateState,
     session_present: bool,
@@ -2275,13 +2302,15 @@ pub(crate) fn self_clear_gate_advance(
 }
 
 /// #626/#629/#636 - archive `<root>/<stem>.md` to `<root>/self-clear/<timestamp>_<stem>.md`. No-op
-/// (`Ok(None)`) if `<stem>.md` is absent. Creates the `self-clear/` subdir on demand. `timestamp` is
-/// supplied by the caller so this is deterministic in tests. Returns the archived path on success.
-/// `std::fs::rename` is atomic within the same filesystem (the agent root and its `self-clear/` child
-/// share it). On Windows a source held open without FILE_SHARE_DELETE yields ERROR_SHARING_VIOLATION
-/// (os error 32); the caller treats any `Err` as a non-fatal warn (no clobber, the source stays). NO
-/// retries (a retry loop would block the caller). Consumers: SELF-FORGET.md at queue time (#626) and
-/// SELF-HANDOFF.md immediately before the Phase-2 prompt inject (#749, via `archive_handoff_for_inject`).
+/// (`Ok(None)`) if `<stem>.md` is absent. Creates the `self-clear/` subdir on demand. `timestamp`
+/// is supplied by the caller so this is deterministic in tests. Returns the archived path on
+/// success.
+/// `std::fs::rename` is atomic within the same filesystem (the agent root and its `self-clear/`
+/// child share it). On Windows a source held open without FILE_SHARE_DELETE yields
+/// ERROR_SHARING_VIOLATION (os error 32); the caller treats any `Err` as a non-fatal warn (no
+/// clobber, the source stays). NO retries (a retry loop would block the caller). Consumers:
+/// SELF-FORGET.md at queue time (#626) and SELF-HANDOFF.md immediately before the Phase-2 prompt
+/// inject (#749, via `archive_handoff_for_inject`).
 fn archive_root_md(
     root: &std::path::Path,
     stem: &str,
@@ -2347,7 +2376,8 @@ fn archive_handoff_for_inject(
         }
         Ok(None) => {
             log::warn!(
-                "[mailbox] {}: SELF-HANDOFF.md vanished from {} between the queue-time gate and phase 2; the prompt will point at the root file",
+                "[mailbox] {}: SELF-HANDOFF.md vanished from {} between the queue-time gate and \
+                phase 2; the prompt will point at the root file",
                 action,
                 root.display()
             );
@@ -2355,7 +2385,8 @@ fn archive_handoff_for_inject(
         }
         Err(e) => {
             log::warn!(
-                "[mailbox] {}: pre-inject SELF-HANDOFF.md archive failed for {} (non-fatal; the prompt will point at the root file): {}",
+                "[mailbox] {}: pre-inject SELF-HANDOFF.md archive failed for {} (non-fatal; the \
+                prompt will point at the root file): {}",
                 action,
                 root.display(),
                 e
@@ -2380,7 +2411,8 @@ fn restore_handoff_after_failed_inject(
     let src = root.join(SELF_HANDOFF_ROOT_NAME);
     if src.exists() {
         log::warn!(
-            "[mailbox] {}: not restoring {} after failed inject; a new SELF-HANDOFF.md already exists at the root",
+            "[mailbox] {}: not restoring {} after failed inject; a new SELF-HANDOFF.md already \
+            exists at the root",
             action,
             archived.display()
         );
@@ -2394,7 +2426,8 @@ fn restore_handoff_after_failed_inject(
             src.display()
         ),
         Err(e) => log::warn!(
-            "[mailbox] {}: failed to restore {} to the root after failed inject (non-fatal; re-issue needs the file recreated or recovered from self-clear/): {}",
+            "[mailbox] {}: failed to restore {} to the root after failed inject (non-fatal; \
+            re-issue needs the file recreated or recovered from self-clear/): {}",
             action,
             archived.display(),
             e
@@ -2453,7 +2486,8 @@ fn capture_self_forget_summary(root: &std::path::Path) -> Option<ForgottenSummar
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => {
             log::warn!(
-                "[mailbox] self-handoff: failed to open SELF-FORGET.md summary from {} (non-fatal): {}",
+                "[mailbox] self-handoff: failed to open SELF-FORGET.md summary from {} \
+                (non-fatal): {}",
                 path.display(),
                 e
             );
@@ -2482,7 +2516,8 @@ fn capture_self_forget_summary(root: &std::path::Path) -> Option<ForgottenSummar
         }
         Err(e) => {
             log::warn!(
-                "[mailbox] self-handoff: SELF-FORGET.md summary from {} is not valid UTF-8 (non-fatal): {}",
+                "[mailbox] self-handoff: SELF-FORGET.md summary from {} is not valid UTF-8 \
+                (non-fatal): {}",
                 path.display(),
                 e
             );
@@ -3379,7 +3414,8 @@ fn write_atomic_pty_metadata(destination: &Path, bytes: &[u8]) -> Result<(), &'s
         if let Ok(parent_handle) = std::fs::File::open(parent) {
             if let Err(error) = parent_handle.sync_all() {
                 log::debug!(
-                    "[pty-input] metadata parent sync failed code=artifact_unclaimed error_kind={:?}",
+                    "[pty-input] metadata parent sync failed code=artifact_unclaimed \
+                    error_kind={:?}",
                     error.kind()
                 );
             }
@@ -3390,7 +3426,8 @@ fn write_atomic_pty_metadata(destination: &Path, bytes: &[u8]) -> Result<(), &'s
         if let Err(error) = std::fs::remove_file(&temp) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 log::debug!(
-                    "[pty-input] metadata temp cleanup failed code=artifact_unclaimed error_kind={:?}",
+                    "[pty-input] metadata temp cleanup failed code=artifact_unclaimed \
+                    error_kind={:?}",
                     error.kind()
                 );
             }
@@ -3514,11 +3551,22 @@ impl MailboxPoller {
 // Only primitive/static/UUID diagnostics; expressions remain lazy when disabled.
 macro_rules! response_diag {
     ($stage:literal, $outcome:expr, $id:expr) => {
-        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+        if log::log_enabled!(
+            target: "agentscommander_lib::response_close_diag",
+            log::Level::Debug
+        ) {
             if let Some(id) = $id {
-                log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag stage={} outcome={} site={} id={}", $stage, $outcome, line!(), id);
+                log::debug!(
+                    target: "agentscommander_lib::response_close_diag",
+                    "response_close_diag stage={} outcome={} site={} id={}",
+                    $stage, $outcome, line!(), id
+                );
             } else {
-                log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag stage={} outcome={} site={} id=unknown", $stage, $outcome, line!());
+                log::debug!(
+                    target: "agentscommander_lib::response_close_diag",
+                    "response_close_diag stage={} outcome={} site={} id=unknown",
+                    $stage, $outcome, line!()
+                );
             }
         }
     };
@@ -3526,7 +3574,10 @@ macro_rules! response_diag {
 macro_rules! response_diag_result {
     ($value:expr, $stage:literal, $id:expr) => {{
         let result = $value;
-        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+        if log::log_enabled!(
+            target: "agentscommander_lib::response_close_diag",
+            log::Level::Debug
+        ) {
             let outcome = match &result {
                 Ok(_) => "ok",
                 Err(crate::pty::manager::ResponseCloseError::Unavailable) => "unavailable",
@@ -3546,11 +3597,16 @@ fn response_diag_emit_lazy(
     id: impl FnOnce() -> Option<Uuid>,
     site: u32,
 ) {
-    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+    if log::log_enabled!(
+        target: "agentscommander_lib::response_close_diag",
+        log::Level::Debug
+    ) {
         if let Some(id) = id() {
-            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag stage={} outcome={} site={} id={}", stage, outcome(), site, id);
+            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag \
+                stage={} outcome={} site={} id={}", stage, outcome(), site, id);
         } else {
-            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag stage={} outcome={} site={} id=unknown", stage, outcome(), site);
+            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag \
+                stage={} outcome={} site={} id=unknown", stage, outcome(), site);
         }
     }
 }
@@ -3575,7 +3631,10 @@ fn response_diag_result_ref<T>(
     id: impl FnOnce() -> Option<Uuid>,
     site: u32,
 ) {
-    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+    if log::log_enabled!(
+        target: "agentscommander_lib::response_close_diag",
+        log::Level::Debug
+    ) {
         let outcome = match value {
             Ok(_) => "ok",
             Err(crate::pty::manager::ResponseCloseError::Unavailable) => "unavailable",
@@ -3587,7 +3646,10 @@ fn response_diag_result_ref<T>(
     }
 }
 fn response_diag_debug_only(action: impl FnOnce()) {
-    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+    if log::log_enabled!(
+        target: "agentscommander_lib::response_close_diag",
+        log::Level::Debug
+    ) {
         action();
     }
 }
@@ -3635,7 +3697,19 @@ fn with_verified_response_pair<T>(
     publish: impl FnOnce(&Session, &Session) -> T,
 ) -> Option<T> {
     response_diag_debug_only(|| {
-        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag site={} outcome=observed stage=verified_pair scope=stage_current id=unknown member={} coordinator={} current_member_version={:?} current_coordinator_version={:?} captured_member_version={} captured_coordinator_version={} token_backend_role_physical_checks=not_evaluated", line!(), member.session_id, coordinator.session_id, current.versions.get(&member.session_id), current.versions.get(&coordinator.session_id), member.carrier_version, coordinator.carrier_version);
+        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag \
+            site={} outcome=observed stage=verified_pair scope=stage_current id=unknown member={} \
+            coordinator={} current_member_version={:?} current_coordinator_version={:?} \
+            captured_member_version={} captured_coordinator_version={} \
+            token_backend_role_physical_checks=not_evaluated",
+            line!(),
+            member.session_id,
+            coordinator.session_id,
+            current.versions.get(&member.session_id),
+            current.versions.get(&coordinator.session_id),
+            member.carrier_version,
+            coordinator.carrier_version
+        );
     });
     let member_row = response_diag_option_local!(
         current_response_row(current, member),
@@ -3730,7 +3804,19 @@ fn with_verified_response_pair<T>(
         return None;
     }
     response_diag_debug_only(|| {
-        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag site={} outcome=observed stage=verified_pair scope=stage_current member={} coordinator={} captured_member_version={} captured_coordinator_version={} current_member_version={:?} current_coordinator_version={:?} token_backend_role_physical_generation_checks=true", line!(), member.session_id, coordinator.session_id, member.carrier_version, coordinator.carrier_version, current.versions.get(&member.session_id), current.versions.get(&coordinator.session_id));
+        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag \
+            site={} outcome=observed stage=verified_pair scope=stage_current member={} \
+            coordinator={} captured_member_version={} captured_coordinator_version={} \
+            current_member_version={:?} current_coordinator_version={:?} \
+            token_backend_role_physical_generation_checks=true",
+            line!(),
+            member.session_id,
+            coordinator.session_id,
+            member.carrier_version,
+            coordinator.carrier_version,
+            current.versions.get(&member.session_id),
+            current.versions.get(&coordinator.session_id)
+        );
     });
     response_diag_local!("verified_pair", "callback_reached", None::<Uuid>);
     Some(publish(member_row, coordinator_row))
@@ -3769,7 +3855,15 @@ impl Drop for ResponseCandidateDisposal {
                             None::<Uuid>
                         );
                         response_diag_debug_only(|| {
-                            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag stage=candidate_disposal outcome=false_submission_invoked site={} id=unknown member={} coordinator={}", line!(), candidate.member.session_id, candidate.coordinator.session_id);
+                            log::debug!(
+                                target: "agentscommander_lib::response_close_diag",
+                                "response_close_diag stage=candidate_disposal \
+                                 outcome=false_submission_invoked site={} id=unknown member={} \
+                                 coordinator={}",
+                                line!(),
+                                candidate.member.session_id,
+                                candidate.coordinator.session_id
+                            );
                         });
                         self.0
                             .state
@@ -4976,8 +5070,10 @@ impl MailboxPoller {
             Uuid::parse_str(&msg.id).ok()
         );
         let mut work = ResponseWakeWork {
-            diagnostic_message_id: if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-            {
+            diagnostic_message_id: if log::log_enabled!(
+                target: "agentscommander_lib::response_close_diag",
+                log::Level::Debug
+            ) {
                 Uuid::parse_str(&msg.id).ok()
             } else {
                 None
@@ -5314,7 +5410,8 @@ impl MailboxPoller {
             if let Err(error) = std::fs::remove_file(&path) {
                 if error.kind() != std::io::ErrorKind::NotFound {
                     log::debug!(
-                        "[pty-input] stale request temp cleanup failed id={} code=artifact_unclaimed error_kind={:?}",
+                        "[pty-input] stale request temp cleanup failed id={} \
+                        code=artifact_unclaimed error_kind={:?}",
                         injection_id,
                         error.kind()
                     );
@@ -5511,7 +5608,8 @@ impl MailboxPoller {
                 // may have stranded its claim until its guard's outcome
                 // drains, and the condition must be greppable.
                 log::error!(
-                    "[mailbox] #1399 wake worker task failed (a claim may be stranded until its outcome drains): {}",
+                    "[mailbox] #1399 wake worker task failed (a claim may be stranded until its \
+                    outcome drains): {}",
                     error
                 );
             }
@@ -5563,7 +5661,8 @@ impl MailboxPoller {
                 Ok(state) => state,
                 Err(error) => {
                     log::warn!(
-                        "[mailbox] #1399 could not settle owned claim {:?}: {}; outcome remains pending",
+                        "[mailbox] #1399 could not settle owned claim {:?}: {}; outcome remains \
+                        pending",
                         claim,
                         error
                     );
@@ -5897,11 +5996,11 @@ impl MailboxPoller {
                             // privileged PTY-input envelope is rejected before
                             // any authority resolution; the queue grants no
                             // other capability.
-                            let _ =
-                                Self::reject_raw_file(
-                                    &path,
-                                    "Co-managed origin may carry only a wake; privileged PTY input is rejected",
-                                );
+                            let _ = Self::reject_raw_file(
+                                &path,
+                                "Co-managed origin may carry only a wake; privileged PTY input \
+                                    is rejected",
+                            );
                             self.retry_tracker.remove(&path);
                             continue;
                         }
@@ -6296,7 +6395,8 @@ impl MailboxPoller {
         if let Err(error) = std::fs::remove_file(path) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 log::warn!(
-                    "[pty-input] unavailable-store source cleanup failed id={} code=artifact_unclaimed",
+                    "[pty-input] unavailable-store source cleanup failed id={} \
+                    code=artifact_unclaimed",
                     payload.injection_id
                 );
             }
@@ -6456,7 +6556,8 @@ impl MailboxPoller {
             }
             Err(_) => {
                 log::debug!(
-                    "[pty-input] correlated ingress persistence deferred id={} code=store_transient",
+                    "[pty-input] correlated ingress persistence deferred id={} \
+                    code=store_transient",
                     payload.injection_id
                 );
                 return true;
@@ -7385,239 +7486,660 @@ impl MailboxPoller {
         // Borrow the lexical observer through the whole existing dispatch
         // body. This is polled inline, with no new task or accepted core.
         let failed = async {
-        let store = match &state.store {
-            Ok(store) => Arc::clone(store),
-            Err(_) => return false,
-        };
-        let shutdown = app
-            .try_state::<crate::shutdown::ShutdownSignal>()
-            .map(|signal| signal.token().clone())
-            .unwrap_or_else(tokio_util::sync::CancellationToken::new);
-        let _operation_lock = match store.try_operation_lock(injection_id) {
-            Ok(Some(lock)) => lock,
-            _ => return false,
-        };
-        let _active = match state.active_operations.try_register(injection_id) {
-            Some(active) => active,
-            None => return false,
-        };
-        let initial = match store
-            .query_pty_input_by_injection_offloaded(injection_id.to_string())
-            .await
-        {
-            Ok(Some(result)) if !result.terminal => result,
-            _ => return false,
-        };
-        let target = match initial.target.clone() {
-            Some(target) => target,
-            None => return false,
-        };
-        let _response_delivery = match store.begin_response_delivery(&target) {
-            Ok(reservation) => reservation,
-            Err(_) => return false,
-        };
-        let target_gate = match &state.target_gate {
-            Ok(gate) => Arc::clone(gate),
-            Err(_) => return false,
-        };
-        // Startup restore must finish before this dispatch owns target guards.
-        // No claim or payload has been consumed at this point.
-        if let Some(coordinator) =
-            app.try_state::<crate::session::selection::SelectionCoordinator>()
-        {
-            if coordinator.wait_for_restore_release().await.is_err() {
-                return false;
+            let store = match &state.store {
+                Ok(store) => Arc::clone(store),
+                Err(_) => return false,
+            };
+            let shutdown = app
+                .try_state::<crate::shutdown::ShutdownSignal>()
+                .map(|signal| signal.token().clone())
+                .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+            let _operation_lock = match store.try_operation_lock(injection_id) {
+                Ok(Some(lock)) => lock,
+                _ => return false,
+            };
+            let _active = match state.active_operations.try_register(injection_id) {
+                Some(active) => active,
+                None => return false,
+            };
+            let initial = match store
+                .query_pty_input_by_injection_offloaded(injection_id.to_string())
+                .await
+            {
+                Ok(Some(result)) if !result.terminal => result,
+                _ => return false,
+            };
+            let target = match initial.target.clone() {
+                Some(target) => target,
+                None => return false,
+            };
+            let _response_delivery = match store.begin_response_delivery(&target) {
+                Ok(reservation) => reservation,
+                Err(_) => return false,
+            };
+            let target_gate = match &state.target_gate {
+                Ok(gate) => Arc::clone(gate),
+                Err(_) => return false,
+            };
+            // Startup restore must finish before this dispatch owns target guards.
+            // No claim or payload has been consumed at this point.
+            if let Some(coordinator) =
+                app.try_state::<crate::session::selection::SelectionCoordinator>()
+            {
+                if coordinator.wait_for_restore_release().await.is_err() {
+                    return false;
+                }
             }
-        }
-        let mut target_stripe = Some(match target_gate.try_target_lock(&target) {
-            Ok(Some(lock)) => lock,
-            _ => return false,
-        });
-        let initial_expires = match initial
-            .expires_at
-            .as_deref()
-            .and_then(|value| crate::phone::types::parse_canonical_pty_timestamp(value).ok())
-        {
-            Some(expires) => expires,
-            None => {
-                if store
-                    .terminalize_pty_input_offloaded(
-                        injection_id.to_string(),
-                        S::Rejected,
-                        Some(C::StoreCorrupt),
-                        chrono::Utc::now(),
-                    )
-                    .await
-                    .is_err()
-                {
-                    log::warn!(
+            let mut target_stripe = Some(match target_gate.try_target_lock(&target) {
+                Ok(Some(lock)) => lock,
+                _ => return false,
+            });
+            let initial_expires =
+                match initial.expires_at.as_deref().and_then(|value| {
+                    crate::phone::types::parse_canonical_pty_timestamp(value).ok()
+                }) {
+                    Some(expires) => expires,
+                    None => {
+                        if store
+                            .terminalize_pty_input_offloaded(
+                                injection_id.to_string(),
+                                S::Rejected,
+                                Some(C::StoreCorrupt),
+                                chrono::Utc::now(),
+                            )
+                            .await
+                            .is_err()
+                        {
+                            log::warn!(
                         "[pty-input] invalid initial deadline id={} code=terminal_store_failed",
                         injection_id
                     );
-                }
-                return false;
-            }
-        };
-        let mut target_guard = Some(
-            match await_pty_input_before_deadline(
-                initial_expires,
-                &shutdown,
-                target_gate.acquire_exact(&target),
-            )
-            .await
-            {
-                Ok(guard) => guard,
-                Err(PtyInputPreBoundaryStop::Shutdown) => return false,
-                Err(PtyInputPreBoundaryStop::Expired) => {
-                    if store
-                        .terminalize_pty_input_offloaded(
-                            injection_id.to_string(),
-                            S::Rejected,
-                            Some(C::Expired),
-                            chrono::Utc::now(),
-                        )
-                        .await
-                        .is_err()
-                    {
-                        log::warn!(
+                        }
+                        return false;
+                    }
+                };
+            let mut target_guard = Some(
+                match await_pty_input_before_deadline(
+                    initial_expires,
+                    &shutdown,
+                    target_gate.acquire_exact(&target),
+                )
+                .await
+                {
+                    Ok(guard) => guard,
+                    Err(PtyInputPreBoundaryStop::Shutdown) => return false,
+                    Err(PtyInputPreBoundaryStop::Expired) => {
+                        if store
+                            .terminalize_pty_input_offloaded(
+                                injection_id.to_string(),
+                                S::Rejected,
+                                Some(C::Expired),
+                                chrono::Utc::now(),
+                            )
+                            .await
+                            .is_err()
+                        {
+                            log::warn!(
                         "[pty-input] target-wait expiry failed id={} code=terminal_store_failed",
                         injection_id
                     );
+                        }
+                        return false;
                     }
-                    return false;
-                }
-            },
-        );
-        {
-            let (Some(stripe), Some(exact)) = (target_stripe.as_ref(), target_guard.as_ref())
-            else {
-                return false;
-            };
-            if target_gate
-                .target_ownership(&target, stripe, exact)
-                .is_err()
+                },
+            );
             {
-                return false;
-            }
-        }
-        let lease_owner = Uuid::new_v4().to_string();
-        let claimed = match store
-            .claim_pty_input_offloaded(
-                source_plane,
-                Some(injection_id.to_string()),
-                lease_owner.clone(),
-                chrono::Utc::now(),
-            )
-            .await
-        {
-            Ok(Some(claimed)) => claimed,
-            _ => return false,
-        };
-        let expires = match crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at)
-        {
-            Ok(expires) => expires,
-            Err(_) => {
-                if store
-                    .terminalize_pty_input_offloaded(
-                        injection_id.to_string(),
-                        S::Rejected,
-                        Some(C::StoreCorrupt),
-                        chrono::Utc::now(),
-                    )
-                    .await
+                let (Some(stripe), Some(exact)) = (target_stripe.as_ref(), target_guard.as_ref())
+                else {
+                    return false;
+                };
+                if target_gate
+                    .target_ownership(&target, stripe, exact)
                     .is_err()
                 {
-                    log::warn!(
-                        "[pty-input] corrupt-expiry rejection failed id={} code=terminal_store_failed",
-                        injection_id
-                    );
+                    return false;
                 }
-                return false;
             }
-        };
-        let mut heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
-            Arc::clone(&store),
-            injection_id.to_string(),
-            lease_owner.clone(),
-            expires,
-        );
-        if expires <= chrono::Utc::now() {
-            reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, C::Expired)
-                .await;
-            return false;
-        }
-        match refresh_pty_claim_for_resume(&store, &initial, &claimed).await {
-            Ok(PtyClaimRefresh::Current) => {}
-            Ok(PtyClaimRefresh::Terminal) => {
-                heartbeat.finish().await;
-                return false;
-            }
-            Err(code) => {
-                finish_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    &lease_owner,
-                    code,
+            let lease_owner = Uuid::new_v4().to_string();
+            let claimed = match store
+                .claim_pty_input_offloaded(
+                    source_plane,
+                    Some(injection_id.to_string()),
+                    lease_owner.clone(),
+                    chrono::Utc::now(),
                 )
-                .await;
-                return false;
-            }
-        }
-        let mut prepared_replacement = None;
-        let mut owned_work: Option<OwnedPtyWorkTransfer> = None;
-        let (selected, spawned, verified_target, session_manager, pty_manager) = loop {
-            if app
-                .try_state::<Arc<crate::RestoreInProgress>>()
-                .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
+                .await
             {
-                let observed = finish_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    &lease_owner,
-                    C::RestoreInProgress,
-                )
-                .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                Ok(Some(claimed)) => claimed,
+                _ => return false,
+            };
+            let expires =
+                match crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at) {
+                    Ok(expires) => expires,
+                    Err(_) => {
+                        if store
+                            .terminalize_pty_input_offloaded(
+                                injection_id.to_string(),
+                                S::Rejected,
+                                Some(C::StoreCorrupt),
+                                chrono::Utc::now(),
+                            )
+                            .await
+                            .is_err()
+                        {
+                            log::warn!(
+                                "[pty-input] corrupt-expiry rejection failed id={} \
+                        code=terminal_store_failed",
+                                injection_id
+                            );
+                        }
+                        return false;
+                    }
+                };
+            let mut heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
+                Arc::clone(&store),
+                injection_id.to_string(),
+                lease_owner.clone(),
+                expires,
+            );
+            if expires <= chrono::Utc::now() {
+                reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, C::Expired)
+                    .await;
                 return false;
             }
-            if app
-                .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
-                .is_some_and(|guard| guard.blocks_agent(&claimed.target_fqn))
-            {
-                let observed = finish_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    &lease_owner,
-                    C::PurgeInProgress,
-                )
-                .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, &mut owned_work, observed).await;
-                return false;
+            match refresh_pty_claim_for_resume(&store, &initial, &claimed).await {
+                Ok(PtyClaimRefresh::Current) => {}
+                Ok(PtyClaimRefresh::Terminal) => {
+                    heartbeat.finish().await;
+                    return false;
+                }
+                Err(code) => {
+                    finish_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        &lease_owner,
+                        code,
+                    )
+                    .await;
+                    return false;
+                }
             }
+            let mut prepared_replacement = None;
+            let mut owned_work: Option<OwnedPtyWorkTransfer> = None;
+            let (selected, spawned, verified_target, session_manager, pty_manager) = loop {
+                if app
+                    .try_state::<Arc<crate::RestoreInProgress>>()
+                    .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
+                {
+                    let observed = finish_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        &lease_owner,
+                        C::RestoreInProgress,
+                    )
+                    .await;
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    return false;
+                }
+                if app
+                    .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+                    .is_some_and(|guard| guard.blocks_agent(&claimed.target_fqn))
+                {
+                    let observed = finish_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        &lease_owner,
+                        C::PurgeInProgress,
+                    )
+                    .await;
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    return false;
+                }
 
-            let verified_route =
-                if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
-                    self.validate_claimed_host_authority(app, &claimed).await
-                } else {
-                    match self
-                        .validate_claimed_api_authority(app, &claimed, api_client_store)
-                        .await
+                let verified_route =
+                    if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
+                        self.validate_claimed_host_authority(app, &claimed).await
+                    } else {
+                        match self
+                            .validate_claimed_api_authority(app, &claimed, api_client_store)
+                            .await
+                        {
+                            Ok(route) => route,
+                            Err(_) => {
+                                let observed = finish_pty_input_before_boundary(
+                                    &store,
+                                    &mut heartbeat,
+                                    injection_id,
+                                    &lease_owner,
+                                    C::StoreTransient,
+                                )
+                                .await;
+                                drop(target_guard.take());
+                                drop(target_stripe.take());
+                                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                                return false;
+                            }
+                        }
+                    };
+                let Some(verified_route) = verified_route else {
+                    let code = if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli
                     {
-                        Ok(route) => route,
-                        Err(_) => {
+                        C::AuthorityChanged
+                    } else {
+                        C::ApiBindingMismatch
+                    };
+                    let observed = reject_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        code,
+                    )
+                    .await;
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    return false;
+                };
+                if verified_route.target.canonical_fqn != target {
+                    let observed = reject_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        C::AuthorityChanged,
+                    )
+                    .await;
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    return false;
+                }
+                let verified_sender = verified_route.sender;
+                let verified_target = verified_route.target;
+
+                let session_manager = app
+                    .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                    .inner()
+                    .clone();
+                let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+                let sessions = {
+                    let guard = session_manager.read().await;
+                    guard.list_sessions().await
+                };
+                let mut matching: Vec<SessionInfo> = sessions
+                    .into_iter()
+                    .filter(|session| {
+                        crate::config::teams::agent_fqn_from_path(&session.working_directory)
+                            == claimed.target_fqn
+                    })
+                    .collect();
+                matching.sort_by(|left, right| {
+                    fn rank(status: &SessionStatus) -> u8 {
+                        match status {
+                            SessionStatus::Active => 0,
+                            SessionStatus::Running => 1,
+                            SessionStatus::Idle => 2,
+                            SessionStatus::Exited(_) => 3,
+                        }
+                    }
+                    rank(&left.status)
+                        .cmp(&rank(&right.status))
+                        .then_with(|| right.created_at.cmp(&left.created_at))
+                        .then_with(|| left.id.cmp(&right.id))
+                });
+
+                let pty_profile_settings = app.state::<SettingsState>().read().await.clone();
+                let mut eligible = Vec::new();
+                let mut saw_supported_busy = false;
+                let mut saw_live_unsupported = false;
+                let mut saw_live_inconsistent = false;
+                let mut saw_live_temporary = false;
+                for session in &matching {
+                    if matches!(session.status, SessionStatus::Exited(_)) {
+                        continue;
+                    }
+                    if session
+                        .name
+                        .starts_with(crate::session::session::TEMP_SESSION_PREFIX)
+                    {
+                        saw_live_temporary = true;
+                        continue;
+                    }
+                    let Ok(id) = Uuid::parse_str(&session.id) else {
+                        saw_live_unsupported = true;
+                        continue;
+                    };
+                    let (live, route_backend, route_identities) = {
+                        let manager = pty_manager
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner());
+                        (
+                            manager.has_session(id),
+                            manager.backend_kind(id),
+                            manager.route_identities(id),
+                        )
+                    };
+                    let path_matches =
+                        route_identities.is_some_and(|(cwd_identity, replica_anchor, _)| {
+                            let current_cwd = crate::path_identity::verify_directory(Path::new(
+                                &session.working_directory,
+                            ));
+                            let current_target = crate::config::teams::verify_pty_input_replica_cwd(
+                                Path::new(&session.working_directory),
+                            );
+                            matches!(
+                                (cwd_identity, current_cwd),
+                                (Some(saved), Ok(current))
+                                    if crate::path_identity::same_object(&saved, &current)
+                            ) && matches!(
+                                (replica_anchor, current_target),
+                                (Some(saved), Ok(current))
+                                    if current.canonical_fqn == verified_target.canonical_fqn
+                                        && current.authority_fingerprint
+                                            == verified_target.authority_fingerprint
+                                        && crate::path_identity::same_object(
+                                            &saved,
+                                            &verified_target.replica_identity,
+                                        )
+                            )
+                        });
+                    if !live || route_backend != Some(session.backend_kind) || !path_matches {
+                        saw_live_inconsistent = true;
+                        continue;
+                    }
+                    if !session_has_current_pty_submission_provenance(
+                        session,
+                        &pty_profile_settings,
+                    ) {
+                        saw_live_unsupported = true;
+                        continue;
+                    }
+                    if session.waiting_for_input {
+                        eligible.push(session.clone());
+                    } else {
+                        saw_supported_busy = true;
+                    }
+                }
+                let (selected, spawned) = if let Some(selected) = eligible.into_iter().next() {
+                    (selected, false)
+                } else if saw_supported_busy {
+                    let observed = reject_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        C::Busy,
+                    )
+                    .await;
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    return false;
+                } else if saw_live_temporary {
+                    let observed = reject_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        C::NonpersistentLiveSession,
+                    )
+                    .await;
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    return false;
+                } else if saw_live_inconsistent {
+                    if claimed.attempt < 5 {
+                        let observed = finish_pty_input_before_boundary(
+                            &store,
+                            &mut heartbeat,
+                            injection_id,
+                            &lease_owner,
+                            C::SessionRace,
+                        )
+                        .await;
+                        drop(target_guard.take());
+                        drop(target_stripe.take());
+                        finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    } else {
+                        let observed = reject_pty_input_before_boundary(
+                            &store,
+                            &mut heartbeat,
+                            injection_id,
+                            C::InconsistentSession,
+                        )
+                        .await;
+                        drop(target_guard.take());
+                        drop(target_stripe.take());
+                        finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    }
+                    return false;
+                } else if saw_live_unsupported {
+                    let observed = reject_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        C::UnsupportedSession,
+                    )
+                    .await;
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    return false;
+                } else {
+                    #[cfg(test)]
+                    let fixture_control = self
+                        .test_hooks
+                        .as_ref()
+                        .and_then(MailboxTestHooks::replacement_fixture_control)
+                        .filter(|control| {
+                            !control
+                                .ticket_only
+                                .load(std::sync::atomic::Ordering::Acquire)
+                        });
+                    #[cfg(test)]
+                    let fixture_lease = if fixture_control.is_some() {
+                        let (Some(exact), Some(stripe)) =
+                            (target_guard.take(), target_stripe.take())
+                        else {
+                            heartbeat.finish().await;
+                            return false;
+                        };
+                        Some(Arc::new(crate::commands::session::FixturePtyCutLease {
+                            gate: target_gate.clone(),
+                            target: target.clone(),
+                            exact,
+                            stripe,
+                        }))
+                    } else {
+                        None
+                    };
+                    let spawn = {
+                        #[cfg(test)]
+                        let (stripe, exact) = match fixture_lease.as_ref() {
+                            Some(lease) => (Some(&lease.stripe), Some(&lease.exact)),
+                            None => (target_stripe.as_ref(), target_guard.as_ref()),
+                        };
+                        #[cfg(not(test))]
+                        let (stripe, exact) = (target_stripe.as_ref(), target_guard.as_ref());
+                        let (Some(stripe), Some(exact)) = (stripe, exact) else {
+                            heartbeat.finish().await;
+                            return false;
+                        };
+                        let target_ownership =
+                            match target_gate.target_ownership(&target, stripe, exact) {
+                                Ok(proof) => proof,
+                                Err(_) => {
+                                    heartbeat.finish().await;
+                                    return false;
+                                }
+                            };
+                        await_pty_input_before_deadline(
+                            expires,
+                            &shutdown,
+                            self.spawn_pty_input_target(
+                                app,
+                                &claimed,
+                                &matching,
+                                &verified_sender,
+                                &verified_target,
+                                source_plane,
+                                api_client_store,
+                                &target_ownership,
+                                &initial,
+                                prepared_replacement.take(),
+                                &mut source_executor,
+                                #[cfg(test)]
+                                fixture_lease.as_ref(),
+                            ),
+                        )
+                        .await
+                    };
+                    #[cfg(test)]
+                    if let Some(lease) = fixture_lease {
+                        let restored = Arc::try_unwrap(lease);
+                        let worker_still_holds_clone = restored.is_err();
+                        let receipt_missing = fixture_control.as_ref().is_some_and(|control| {
+                            control.submitted.load(std::sync::atomic::Ordering::Acquire)
+                                && !control.received.load(std::sync::atomic::Ordering::Acquire)
+                        });
+                        match restored {
+                            Ok(lease) if !receipt_missing => {
+                                target_guard = Some(lease.exact);
+                                target_stripe = Some(lease.stripe);
+                            }
+                            other => {
+                                drop(other);
+                                if let Some(control) = fixture_control.as_ref() {
+                                    control.restoration_shared.store(
+                                        worker_still_holds_clone,
+                                        std::sync::atomic::Ordering::Release,
+                                    );
+                                    control
+                                        .restoration_failed
+                                        .store(true, std::sync::atomic::Ordering::Release);
+                                }
+                                // This cut precedes every Retained/timeout/error
+                                // handoff, even if the owner already has a stop or
+                                // rollback receipt. A submitted job without actual
+                                // receive has no source-side work authority.
+                                heartbeat.finish().await;
+                                return false;
+                            }
+                        }
+                    }
+                    match spawn {
+                        Ok(Ok(PtySpawnStep::Created(session))) => (session, true),
+                        Ok(Ok(PtySpawnStep::OwnedCreated(session, continuation))) => {
+                            let Some(effect) = continuation.start_effect(
+                                crate::session::selection::LifecycleEffectSlot::WorkTransfer,
+                            ) else {
+                                drop(target_guard.take());
+                                drop(target_stripe.take());
+                                heartbeat.finish().await;
+                                return false;
+                            };
+                            owned_work = Some((continuation, effect));
+                            (session, true)
+                        }
+                        Ok(Ok(PtySpawnStep::Retained {
+                            continuation,
+                            failed,
+                        })) => {
+                            drop(target_guard.take());
+                            drop(target_stripe.take());
+                            let stop = continuation.source_stop();
+                            let rolled_back = continuation.precommit_rollback_completed();
+                            if stop.is_none() && !rolled_back {
+                                heartbeat.finish().await;
+                                return failed;
+                            }
+                            let effect = continuation.start_effect(
+                                crate::session::selection::LifecycleEffectSlot::WorkTransfer,
+                            );
+                            use crate::session::selection::OwnedSourceStop as Stop;
+                            let observed = match stop {
+                                Some(Stop::Terminal) => {
+                                    heartbeat.finish().await;
+                                    true
+                                }
+                                reason => {
+                                    let code = match reason {
+                                        Some(Stop::AuthorityChanged) => C::AuthorityChanged,
+                                        Some(Stop::StoreTransient) => C::StoreTransient,
+                                        Some(Stop::Expired) => C::Expired,
+                                        Some(Stop::LeaseLost) => C::LeaseLost,
+                                        Some(Stop::Terminal) => unreachable!(),
+                                        None => C::SpawnFailedSafe,
+                                    };
+                                    finish_pty_input_before_boundary(
+                                        &store,
+                                        &mut heartbeat,
+                                        injection_id,
+                                        &lease_owner,
+                                        code,
+                                    )
+                                    .await
+                                }
+                            };
+                            if let Some(effect) = effect {
+                                let manager = app
+                                    .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                                    .read()
+                                    .await
+                                    .clone();
+                                let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+                                if rolled_back {
+                                    continuation
+                                        .finish_rolled_back_work(&manager, &pty, effect, observed)
+                                        .await;
+                                } else {
+                                    continuation
+                                        .finish_observed_work_transfer(
+                                            &manager, &pty, effect, observed,
+                                        )
+                                        .await;
+                                }
+                            }
+                            return failed;
+                        }
+                        Ok(Ok(PtySpawnStep::RetainedUnowned)) => {
+                            drop(target_guard.take());
+                            drop(target_stripe.take());
+                            heartbeat.finish().await;
+                            return false;
+                        }
+                        Ok(Ok(PtySpawnStep::NeedReacquire(prepared))) => {
+                            prepared_replacement = prepared;
+                            // The spawn block ended the proof borrow above.
+                            drop(target_guard.take());
+                            drop(target_stripe.take());
+                            let Some((stripe, exact)) = reacquire_pty_dispatch_target(
+                                app,
+                                (&store, &initial, &claimed),
+                                (&target_gate, &verified_target, PtyReacquireGoal::Spawn),
+                                (expires, &shutdown),
+                                &mut heartbeat,
+                            )
+                            .await
+                            else {
+                                return false;
+                            };
+                            target_stripe = Some(stripe);
+                            target_guard = Some(exact);
+                            continue;
+                        }
+                        Ok(Err(code)) => {
                             let observed = finish_pty_input_before_boundary(
                                 &store,
                                 &mut heartbeat,
                                 injection_id,
                                 &lease_owner,
-                                C::StoreTransient,
+                                code,
                             )
                             .await;
                             drop(target_guard.take());
@@ -7625,151 +8147,164 @@ impl MailboxPoller {
                             finish_owned_pty_work(app, &mut owned_work, observed).await;
                             return false;
                         }
+                        Err(PtyInputPreBoundaryStop::Expired) => {
+                            let observed = reject_pty_input_before_boundary(
+                                &store,
+                                &mut heartbeat,
+                                injection_id,
+                                C::Expired,
+                            )
+                            .await;
+                            drop(target_guard.take());
+                            drop(target_stripe.take());
+                            finish_owned_pty_work(app, &mut owned_work, observed).await;
+                            return false;
+                        }
+                        Err(PtyInputPreBoundaryStop::Shutdown) => {
+                            heartbeat.finish().await;
+                            return false;
+                        }
                     }
                 };
-            let Some(verified_route) = verified_route else {
-                let code = if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
-                    C::AuthorityChanged
-                } else {
-                    C::ApiBindingMismatch
-                };
-                let observed =
-                    reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, code)
-                        .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, &mut owned_work, observed).await;
-                return false;
-            };
-            if verified_route.target.canonical_fqn != target {
-                let observed = reject_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    C::AuthorityChanged,
-                )
-                .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, &mut owned_work, observed).await;
-                return false;
-            }
-            let verified_sender = verified_route.sender;
-            let verified_target = verified_route.target;
-
-            let session_manager = app
-                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-                .inner()
-                .clone();
-            let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-            let sessions = {
-                let guard = session_manager.read().await;
-                guard.list_sessions().await
-            };
-            let mut matching: Vec<SessionInfo> = sessions
-                .into_iter()
-                .filter(|session| {
-                    crate::config::teams::agent_fqn_from_path(&session.working_directory)
-                        == claimed.target_fqn
-                })
-                .collect();
-            matching.sort_by(|left, right| {
-                fn rank(status: &SessionStatus) -> u8 {
-                    match status {
-                        SessionStatus::Active => 0,
-                        SessionStatus::Running => 1,
-                        SessionStatus::Idle => 2,
-                        SessionStatus::Exited(_) => 3,
-                    }
-                }
-                rank(&left.status)
-                    .cmp(&rank(&right.status))
-                    .then_with(|| right.created_at.cmp(&left.created_at))
-                    .then_with(|| left.id.cmp(&right.id))
-            });
-
-            let pty_profile_settings = app.state::<SettingsState>().read().await.clone();
-            let mut eligible = Vec::new();
-            let mut saw_supported_busy = false;
-            let mut saw_live_unsupported = false;
-            let mut saw_live_inconsistent = false;
-            let mut saw_live_temporary = false;
-            for session in &matching {
-                if matches!(session.status, SessionStatus::Exited(_)) {
-                    continue;
-                }
-                if session
-                    .name
-                    .starts_with(crate::session::session::TEMP_SESSION_PREFIX)
+                let selected_id = Uuid::parse_str(&selected.id).ok();
+                if owned_work.is_none()
+                    && selected_id.is_some_and(|id| {
+                        crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
+                            &claimed.target_fqn,
+                            id,
+                        )
+                    })
                 {
-                    saw_live_temporary = true;
-                    continue;
-                }
-                let Ok(id) = Uuid::parse_str(&session.id) else {
-                    saw_live_unsupported = true;
-                    continue;
-                };
-                let (live, route_backend, route_identities) = {
-                    let manager = pty_manager
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    (
-                        manager.has_session(id),
-                        manager.backend_kind(id),
-                        manager.route_identities(id),
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    let Some(id) = selected_id else {
+                        heartbeat.finish().await;
+                        return false;
+                    };
+                    let Some((stripe, exact)) = reacquire_pty_dispatch_target(
+                        app,
+                        (&store, &initial, &claimed),
+                        (
+                            &target_gate,
+                            &verified_target,
+                            PtyReacquireGoal::Published(id),
+                        ),
+                        (expires, &shutdown),
+                        &mut heartbeat,
                     )
-                };
-                let path_matches = route_identities.is_some_and(|(cwd_identity, replica_anchor, _)| {
-                let current_cwd = crate::path_identity::verify_directory(
-                    Path::new(&session.working_directory),
-                );
-                let current_target = crate::config::teams::verify_pty_input_replica_cwd(
-                    Path::new(&session.working_directory),
-                );
-                matches!((cwd_identity, current_cwd), (Some(saved), Ok(current)) if crate::path_identity::same_object(&saved, &current))
-                    && matches!((replica_anchor, current_target), (Some(saved), Ok(current))
-                        if current.canonical_fqn == verified_target.canonical_fqn
-                            && current.authority_fingerprint == verified_target.authority_fingerprint
-                            && crate::path_identity::same_object(&saved, &verified_target.replica_identity))
-            });
-                if !live || route_backend != Some(session.backend_kind) || !path_matches {
-                    saw_live_inconsistent = true;
+                    .await
+                    else {
+                        return false;
+                    };
+                    target_stripe = Some(stripe);
+                    target_guard = Some(exact);
                     continue;
                 }
-                if !session_has_current_pty_submission_provenance(session, &pty_profile_settings) {
-                    saw_live_unsupported = true;
-                    continue;
+                break (
+                    selected,
+                    spawned,
+                    verified_target,
+                    session_manager,
+                    pty_manager,
+                );
+            };
+            let selected_id = match Uuid::parse_str(&selected.id) {
+                Ok(id) => id,
+                Err(_) => {
+                    let observed = reject_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        C::InconsistentSession,
+                    )
+                    .await;
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    return false;
                 }
-                if session.waiting_for_input {
-                    eligible.push(session.clone());
-                } else {
-                    saw_supported_busy = true;
+            };
+            let readiness = await_pty_input_before_deadline(
+                expires,
+                &shutdown,
+                self.wait_for_pty_input_ready(
+                    app,
+                    &claimed,
+                    &verified_target,
+                    selected_id,
+                    spawned,
+                    source_plane,
+                    api_client_store,
+                    &heartbeat,
+                ),
+            )
+            .await;
+            match readiness {
+                Ok(Ok(())) => {}
+                Ok(Err(code)) => {
+                    let observed = finish_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        &lease_owner,
+                        code,
+                    )
+                    .await;
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    return false;
+                }
+                Err(PtyInputPreBoundaryStop::Expired) => {
+                    let observed = reject_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        C::Expired,
+                    )
+                    .await;
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    return false;
+                }
+                Err(PtyInputPreBoundaryStop::Shutdown) => {
+                    heartbeat.finish().await;
+                    return false;
                 }
             }
-            let (selected, spawned) = if let Some(selected) = eligible.into_iter().next() {
-                (selected, false)
-            } else if saw_supported_busy {
-                let observed =
-                    reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, C::Busy)
-                        .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, &mut owned_work, observed).await;
-                return false;
-            } else if saw_live_temporary {
-                let observed = reject_pty_input_before_boundary(
+            if !matches!(
+                store
+                    .renew_pty_input_lease_offloaded(
+                        injection_id.to_string(),
+                        lease_owner.clone(),
+                        chrono::Utc::now(),
+                    )
+                    .await,
+                Ok(true)
+            ) {
+                let observed = finish_pty_input_before_boundary(
                     &store,
                     &mut heartbeat,
                     injection_id,
-                    C::NonpersistentLiveSession,
+                    &lease_owner,
+                    pty_input_lease_failure_code(expires),
                 )
                 .await;
                 drop(target_guard.take());
                 drop(target_stripe.take());
                 finish_owned_pty_work(app, &mut owned_work, observed).await;
                 return false;
-            } else if saw_live_inconsistent {
-                if claimed.attempt < 5 {
+            }
+            let permit = match await_pty_input_before_deadline(
+                expires,
+                &shutdown,
+                PtyManager::acquire_input_writer(&pty_manager, selected_id),
+            )
+            .await
+            {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => {
                     let observed = finish_pty_input_before_boundary(
                         &store,
                         &mut heartbeat,
@@ -7781,463 +8316,29 @@ impl MailboxPoller {
                     drop(target_guard.take());
                     drop(target_stripe.take());
                     finish_owned_pty_work(app, &mut owned_work, observed).await;
-                } else {
+                    return false;
+                }
+                Err(PtyInputPreBoundaryStop::Expired) => {
                     let observed = reject_pty_input_before_boundary(
                         &store,
                         &mut heartbeat,
                         injection_id,
-                        C::InconsistentSession,
+                        C::Expired,
                     )
                     .await;
                     drop(target_guard.take());
                     drop(target_stripe.take());
                     finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    return false;
                 }
-                return false;
-            } else if saw_live_unsupported {
-                let observed = reject_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    C::UnsupportedSession,
-                )
-                .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, &mut owned_work, observed).await;
-                return false;
-            } else {
-                #[cfg(test)]
-                let fixture_control = self
-                    .test_hooks
-                    .as_ref()
-                    .and_then(MailboxTestHooks::replacement_fixture_control)
-                    .filter(|control| {
-                        !control
-                            .ticket_only
-                            .load(std::sync::atomic::Ordering::Acquire)
-                    });
-                #[cfg(test)]
-                let fixture_lease = if fixture_control.is_some() {
-                    let (Some(exact), Some(stripe)) = (target_guard.take(), target_stripe.take())
-                    else {
-                        heartbeat.finish().await;
-                        return false;
-                    };
-                    Some(Arc::new(crate::commands::session::FixturePtyCutLease {
-                        gate: target_gate.clone(),
-                        target: target.clone(),
-                        exact,
-                        stripe,
-                    }))
-                } else {
-                    None
-                };
-                let spawn = {
-                    #[cfg(test)]
-                    let (stripe, exact) = match fixture_lease.as_ref() {
-                        Some(lease) => (Some(&lease.stripe), Some(&lease.exact)),
-                        None => (target_stripe.as_ref(), target_guard.as_ref()),
-                    };
-                    #[cfg(not(test))]
-                    let (stripe, exact) = (target_stripe.as_ref(), target_guard.as_ref());
-                    let (Some(stripe), Some(exact)) = (stripe, exact) else {
-                        heartbeat.finish().await;
-                        return false;
-                    };
-                    let target_ownership =
-                        match target_gate.target_ownership(&target, stripe, exact) {
-                            Ok(proof) => proof,
-                            Err(_) => {
-                                heartbeat.finish().await;
-                                return false;
-                            }
-                        };
-                    await_pty_input_before_deadline(
-                        expires,
-                        &shutdown,
-                        self.spawn_pty_input_target(
-                            app,
-                            &claimed,
-                            &matching,
-                            &verified_sender,
-                            &verified_target,
-                            source_plane,
-                            api_client_store,
-                            &target_ownership,
-                            &initial,
-                            prepared_replacement.take(),
-                            &mut source_executor,
-                            #[cfg(test)]
-                            fixture_lease.as_ref(),
-                        ),
-                    )
-                    .await
-                };
-                #[cfg(test)]
-                if let Some(lease) = fixture_lease {
-                    let restored = Arc::try_unwrap(lease);
-                    let worker_still_holds_clone = restored.is_err();
-                    let receipt_missing = fixture_control.as_ref().is_some_and(|control| {
-                        control.submitted.load(std::sync::atomic::Ordering::Acquire)
-                            && !control.received.load(std::sync::atomic::Ordering::Acquire)
-                    });
-                    match restored {
-                        Ok(lease) if !receipt_missing => {
-                            target_guard = Some(lease.exact);
-                            target_stripe = Some(lease.stripe);
-                        }
-                        other => {
-                            drop(other);
-                            if let Some(control) = fixture_control.as_ref() {
-                                control.restoration_shared.store(worker_still_holds_clone, std::sync::atomic::Ordering::Release);
-                                control.restoration_failed.store(true, std::sync::atomic::Ordering::Release);
-                            }
-                            // This cut precedes every Retained/timeout/error
-                            // handoff, even if the owner already has a stop or
-                            // rollback receipt. A submitted job without actual
-                            // receive has no source-side work authority.
-                            heartbeat.finish().await;
-                            return false;
-                        }
-                    }
-                }
-                match spawn {
-                    Ok(Ok(PtySpawnStep::Created(session))) => (session, true),
-                    Ok(Ok(PtySpawnStep::OwnedCreated(session, continuation))) => {
-                        let Some(effect) = continuation.start_effect(
-                            crate::session::selection::LifecycleEffectSlot::WorkTransfer,
-                        ) else {
-                            drop(target_guard.take());
-                            drop(target_stripe.take());
-                            heartbeat.finish().await;
-                            return false;
-                        };
-                        owned_work = Some((continuation, effect));
-                        (session, true)
-                    }
-                    Ok(Ok(PtySpawnStep::Retained { continuation, failed })) => {
-                        drop(target_guard.take());
-                        drop(target_stripe.take());
-                        let stop = continuation.source_stop();
-                        let rolled_back = continuation.precommit_rollback_completed();
-                        if stop.is_none() && !rolled_back {
-                            heartbeat.finish().await;
-                            return failed;
-                        }
-                        let effect = continuation.start_effect(
-                            crate::session::selection::LifecycleEffectSlot::WorkTransfer,
-                        );
-                        use crate::session::selection::OwnedSourceStop as Stop;
-                        let observed = match stop {
-                            Some(Stop::Terminal) => {
-                                heartbeat.finish().await;
-                                true
-                            }
-                            reason => {
-                                let code = match reason {
-                                    Some(Stop::AuthorityChanged) => C::AuthorityChanged,
-                                    Some(Stop::StoreTransient) => C::StoreTransient,
-                                    Some(Stop::Expired) => C::Expired,
-                                    Some(Stop::LeaseLost) => C::LeaseLost,
-                                    Some(Stop::Terminal) => unreachable!(),
-                                    None => C::SpawnFailedSafe,
-                                };
-                                finish_pty_input_before_boundary(
-                                    &store,
-                                    &mut heartbeat,
-                                    injection_id,
-                                    &lease_owner,
-                                    code,
-                                )
-                                .await
-                            }
-                        };
-                        if let Some(effect) = effect {
-                            let manager = app
-                                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-                                .read()
-                                .await
-                                .clone();
-                            let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-                            if rolled_back {
-                                continuation
-                                    .finish_rolled_back_work(&manager, &pty, effect, observed)
-                                    .await;
-                            } else {
-                                continuation
-                                    .finish_observed_work_transfer(&manager, &pty, effect, observed)
-                                    .await;
-                            }
-                        }
-                        return failed;
-                    }
-                    Ok(Ok(PtySpawnStep::RetainedUnowned)) => {
-                        drop(target_guard.take());
-                        drop(target_stripe.take());
-                        heartbeat.finish().await;
-                        return false;
-                    }
-                    Ok(Ok(PtySpawnStep::NeedReacquire(prepared))) => {
-                        prepared_replacement = prepared;
-                        // The spawn block ended the proof borrow above.
-                        drop(target_guard.take());
-                        drop(target_stripe.take());
-                        let Some((stripe, exact)) = reacquire_pty_dispatch_target(
-                            app,
-                            (&store, &initial, &claimed),
-                            (&target_gate, &verified_target, PtyReacquireGoal::Spawn),
-                            (expires, &shutdown),
-                            &mut heartbeat,
-                        )
-                        .await
-                        else {
-                            return false;
-                        };
-                        target_stripe = Some(stripe);
-                        target_guard = Some(exact);
-                        continue;
-                    }
-                    Ok(Err(code)) => {
-                        let observed = finish_pty_input_before_boundary(
-                            &store,
-                            &mut heartbeat,
-                            injection_id,
-                            &lease_owner,
-                            code,
-                        )
-                        .await;
-                        drop(target_guard.take());
-                        drop(target_stripe.take());
-                        finish_owned_pty_work(app, &mut owned_work, observed).await;
-                        return false;
-                    }
-                    Err(PtyInputPreBoundaryStop::Expired) => {
-                        let observed = reject_pty_input_before_boundary(
-                            &store,
-                            &mut heartbeat,
-                            injection_id,
-                            C::Expired,
-                        )
-                        .await;
-                        drop(target_guard.take());
-                        drop(target_stripe.take());
-                        finish_owned_pty_work(app, &mut owned_work, observed).await;
-                        return false;
-                    }
-                    Err(PtyInputPreBoundaryStop::Shutdown) => {
-                        heartbeat.finish().await;
-                        return false;
-                    }
-                }
-            };
-            let selected_id = Uuid::parse_str(&selected.id).ok();
-            if owned_work.is_none()
-                && selected_id.is_some_and(|id| {
-                    crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
-                        &claimed.target_fqn,
-                        id,
-                    )
-                })
-            {
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                let Some(id) = selected_id else {
+                Err(PtyInputPreBoundaryStop::Shutdown) => {
                     heartbeat.finish().await;
                     return false;
-                };
-                let Some((stripe, exact)) = reacquire_pty_dispatch_target(
-                    app,
-                    (&store, &initial, &claimed),
-                    (
-                        &target_gate,
-                        &verified_target,
-                        PtyReacquireGoal::Published(id),
-                    ),
-                    (expires, &shutdown),
-                    &mut heartbeat,
-                )
-                .await
-                else {
-                    return false;
-                };
-                target_stripe = Some(stripe);
-                target_guard = Some(exact);
-                continue;
-            }
-            break (selected, spawned, verified_target, session_manager, pty_manager);
-        };
-        let selected_id = match Uuid::parse_str(&selected.id) {
-            Ok(id) => id,
-            Err(_) => {
-                let observed = reject_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    C::InconsistentSession,
-                )
-                .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, &mut owned_work, observed).await;
-                return false;
-            }
-        };
-        let readiness = await_pty_input_before_deadline(
-            expires,
-            &shutdown,
-            self.wait_for_pty_input_ready(
-                app,
-                &claimed,
-                &verified_target,
-                selected_id,
-                spawned,
-                source_plane,
-                api_client_store,
-                &heartbeat,
-            ),
-        )
-        .await;
-        match readiness {
-            Ok(Ok(())) => {}
-            Ok(Err(code)) => {
-                let observed = finish_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    &lease_owner,
-                    code,
-                )
-                .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, &mut owned_work, observed).await;
-                return false;
-            }
-            Err(PtyInputPreBoundaryStop::Expired) => {
-                let observed = reject_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    C::Expired,
-                )
-                .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, &mut owned_work, observed).await;
-                return false;
-            }
-            Err(PtyInputPreBoundaryStop::Shutdown) => {
-                heartbeat.finish().await;
-                return false;
-            }
-        }
-        if !matches!(
-            store
-                .renew_pty_input_lease_offloaded(
-                    injection_id.to_string(),
-                    lease_owner.clone(),
-                    chrono::Utc::now(),
-                )
-                .await,
-            Ok(true)
-        ) {
-            let observed = finish_pty_input_before_boundary(
-                &store,
-                &mut heartbeat,
-                injection_id,
-                &lease_owner,
-                pty_input_lease_failure_code(expires),
-            )
-            .await;
-            drop(target_guard.take());
-            drop(target_stripe.take());
-            finish_owned_pty_work(app, &mut owned_work, observed).await;
-            return false;
-        }
-        let permit = match await_pty_input_before_deadline(
-            expires,
-            &shutdown,
-            PtyManager::acquire_input_writer(&pty_manager, selected_id),
-        )
-        .await
-        {
-            Ok(Ok(permit)) => permit,
-            Ok(Err(_)) => {
-                let observed = finish_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    &lease_owner,
-                    C::SessionRace,
-                )
-                .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, &mut owned_work, observed).await;
-                return false;
-            }
-            Err(PtyInputPreBoundaryStop::Expired) => {
-                let observed = reject_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    C::Expired,
-                )
-                .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, &mut owned_work, observed).await;
-                return false;
-            }
-            Err(PtyInputPreBoundaryStop::Shutdown) => {
-                heartbeat.finish().await;
-                return false;
-            }
-        };
-        let final_api_guard =
-            if source_plane == crate::phone::types::PtyInputSourcePlane::ContainerApi {
-                let Some(client_store) = api_client_store else {
-                    let observed = reject_pty_input_before_boundary(
-                        &store,
-                        &mut heartbeat,
-                        injection_id,
-                        C::AuthorityChanged,
-                    )
-                    .await;
-                    drop(target_guard.take());
-                    drop(target_stripe.take());
-                    drop(permit);
-                    finish_owned_pty_work(app, &mut owned_work, observed).await;
-                    return false;
-                };
-                let (Some(client_id), Some(generation)) = (
-                    claimed.authority_client_id.as_deref(),
-                    claimed.authority_client_generation.as_deref(),
-                ) else {
-                    let observed = reject_pty_input_before_boundary(
-                        &store,
-                        &mut heartbeat,
-                        injection_id,
-                        C::AuthorityChanged,
-                    )
-                    .await;
-                    drop(target_guard.take());
-                    drop(target_stripe.take());
-                    drop(permit);
-                    finish_owned_pty_work(app, &mut owned_work, observed).await;
-                    return false;
-                };
-                match client_store
-                    .load_active_binding_fresh_offloaded(
-                        client_id.to_string(),
-                        generation.to_string(),
-                        crate::api::auth::SCOPE_PTY_INPUT,
-                    )
-                    .await
-                {
-                    Ok(Some(guard)) => Some(guard),
-                    Ok(None) => {
+                }
+            };
+            let final_api_guard =
+                if source_plane == crate::phone::types::PtyInputSourcePlane::ContainerApi {
+                    let Some(client_store) = api_client_store else {
                         let observed = reject_pty_input_before_boundary(
                             &store,
                             &mut heartbeat,
@@ -8250,14 +8351,16 @@ impl MailboxPoller {
                         drop(permit);
                         finish_owned_pty_work(app, &mut owned_work, observed).await;
                         return false;
-                    }
-                    Err(_) => {
-                        let observed = finish_pty_input_before_boundary(
+                    };
+                    let (Some(client_id), Some(generation)) = (
+                        claimed.authority_client_id.as_deref(),
+                        claimed.authority_client_generation.as_deref(),
+                    ) else {
+                        let observed = reject_pty_input_before_boundary(
                             &store,
                             &mut heartbeat,
                             injection_id,
-                            &lease_owner,
-                            C::StoreTransient,
+                            C::AuthorityChanged,
                         )
                         .await;
                         drop(target_guard.take());
@@ -8265,202 +8368,89 @@ impl MailboxPoller {
                         drop(permit);
                         finish_owned_pty_work(app, &mut owned_work, observed).await;
                         return false;
+                    };
+                    match client_store
+                        .load_active_binding_fresh_offloaded(
+                            client_id.to_string(),
+                            generation.to_string(),
+                            crate::api::auth::SCOPE_PTY_INPUT,
+                        )
+                        .await
+                    {
+                        Ok(Some(guard)) => Some(guard),
+                        Ok(None) => {
+                            let observed = reject_pty_input_before_boundary(
+                                &store,
+                                &mut heartbeat,
+                                injection_id,
+                                C::AuthorityChanged,
+                            )
+                            .await;
+                            drop(target_guard.take());
+                            drop(target_stripe.take());
+                            drop(permit);
+                            finish_owned_pty_work(app, &mut owned_work, observed).await;
+                            return false;
+                        }
+                        Err(_) => {
+                            let observed = finish_pty_input_before_boundary(
+                                &store,
+                                &mut heartbeat,
+                                injection_id,
+                                &lease_owner,
+                                C::StoreTransient,
+                            )
+                            .await;
+                            drop(target_guard.take());
+                            drop(target_stripe.take());
+                            drop(permit);
+                            finish_owned_pty_work(app, &mut owned_work, observed).await;
+                            return false;
+                        }
                     }
-                }
+                } else {
+                    None
+                };
+            let final_authority = if let Some(fresh) = final_api_guard.as_ref() {
+                self.validate_claimed_api_authority_with_fresh(app, &claimed, fresh)
+                    .await
             } else {
-                None
+                self.validate_claimed_host_authority(app, &claimed).await
             };
-        let final_authority = if let Some(fresh) = final_api_guard.as_ref() {
-            self.validate_claimed_api_authority_with_fresh(app, &claimed, fresh)
-                .await
-        } else {
-            self.validate_claimed_host_authority(app, &claimed).await
-        };
-        let Some(final_authority) = final_authority else {
-            let observed = reject_pty_input_before_boundary(
-                &store,
-                &mut heartbeat,
-                injection_id,
-                C::AuthorityChanged,
-            )
-            .await;
-            drop(target_guard.take());
-            drop(target_stripe.take());
-            drop(permit);
-            finish_owned_pty_work(app, &mut owned_work, observed).await;
-            return false;
-        };
-        if final_authority.target.authority_fingerprint != verified_target.authority_fingerprint
-            || !crate::path_identity::same_object(
-                &final_authority.target.replica_identity,
-                &verified_target.replica_identity,
-            )
-        {
-            let observed = reject_pty_input_before_boundary(
-                &store,
-                &mut heartbeat,
-                injection_id,
-                C::AuthorityChanged,
-            )
-            .await;
-            drop(target_guard.take());
-            drop(target_stripe.take());
-            drop(permit);
-            finish_owned_pty_work(app, &mut owned_work, observed).await;
-            return false;
-        }
-        if self
-            .validate_selected_pty_target(
-                app,
-                &claimed,
-                &verified_target,
-                selected_id,
-                selected.backend_kind,
-            )
-            .await
-            .is_none()
-        {
-            let observed = finish_pty_input_before_boundary(
-                &store,
-                &mut heartbeat,
-                injection_id,
-                &lease_owner,
-                C::SessionRace,
-            )
-            .await;
-            drop(target_guard.take());
-            drop(target_stripe.take());
-            drop(permit);
-            finish_owned_pty_work(app, &mut owned_work, observed).await;
-            return false;
-        }
-        if heartbeat.failed() {
-            let code = if expires <= chrono::Utc::now() {
-                C::Expired
-            } else {
-                C::LeaseLost
-            };
-            let observed = finish_pty_input_before_boundary(
-                &store,
-                &mut heartbeat,
-                injection_id,
-                &lease_owner,
-                code,
-            )
-            .await;
-            drop(target_guard.take());
-            drop(target_stripe.take());
-            drop(permit);
-            finish_owned_pty_work(app, &mut owned_work, observed).await;
-            return false;
-        }
-        if !matches!(
-            store
-                .renew_pty_input_lease_offloaded(
-                    injection_id.to_string(),
-                    lease_owner.clone(),
-                    chrono::Utc::now(),
+            let Some(final_authority) = final_authority else {
+                let observed = reject_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    C::AuthorityChanged,
                 )
-                .await,
-            Ok(true)
-        ) {
-            let observed = finish_pty_input_before_boundary(
-                &store,
-                &mut heartbeat,
-                injection_id,
-                &lease_owner,
-                pty_input_lease_failure_code(expires),
-            )
-            .await;
-            drop(target_guard.take());
-            drop(target_stripe.take());
-            drop(permit);
-            finish_owned_pty_work(app, &mut owned_work, observed).await;
-            return false;
-        }
-        if !heartbeat.finish().await {
-            let observed = finish_pty_input_before_boundary(
-                &store,
-                &mut heartbeat,
-                injection_id,
-                &lease_owner,
-                pty_input_lease_failure_code(expires),
-            )
-            .await;
-            drop(target_guard.take());
-            drop(target_stripe.take());
-            drop(permit);
-            finish_owned_pty_work(app, &mut owned_work, observed).await;
-            return false;
-        }
-        let backend_name = match selected.backend_kind {
-            SessionBackendKind::LocalProcess => "localProcess",
-            SessionBackendKind::ContainerTransport => "containerTransport",
-        };
-        let payload = match store
-            .begin_pty_actuating_offloaded(
-                injection_id.to_string(),
-                lease_owner.clone(),
-                selected.id.clone(),
-                backend_name.to_string(),
-                chrono::Utc::now(),
-            )
-            .await
-        {
-            Ok(payload) => payload,
-            Err(crate::api::message_store::MessageStoreError::ActuationCommitAmbiguous) => {
-                let terminal = store
-                    .terminalize_pty_input_offloaded(
-                        injection_id.to_string(),
-                        S::Indeterminate,
-                        Some(C::TerminalStoreFailed),
-                        chrono::Utc::now(),
-                    )
-                    .await;
-                let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
-                drop(final_api_guard);
+                .await;
                 drop(target_guard.take());
                 drop(target_stripe.take());
                 drop(permit);
                 finish_owned_pty_work(app, &mut owned_work, observed).await;
-                if terminal.is_err() {
-                    log::error!(
-                        "[pty-input] ambiguous boundary reconciliation failed id={} code=terminal_store_failed",
-                        injection_id
-                    );
-                }
                 return false;
-            }
-            Err(_) => {
-                reject_pty_input_before_boundary(
+            };
+            if final_authority.target.authority_fingerprint != verified_target.authority_fingerprint
+                || !crate::path_identity::same_object(
+                    &final_authority.target.replica_identity,
+                    &verified_target.replica_identity,
+                )
+            {
+                let observed = reject_pty_input_before_boundary(
                     &store,
                     &mut heartbeat,
                     injection_id,
-                    C::StoreTransient,
+                    C::AuthorityChanged,
                 )
                 .await;
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                drop(permit);
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
                 return false;
             }
-        };
-        let post_authority = if let Some(fresh) = final_api_guard.as_ref() {
-            self.validate_claimed_api_authority_with_fresh(app, &claimed, fresh)
-                .await
-        } else {
-            self.validate_claimed_host_authority(app, &claimed).await
-        };
-        let payload_matches = initial.payload_bytes == Some(payload.len() as u64)
-            && initial.payload_sha256.as_deref()
-                == Some(crate::phone::types::sha256_hex(&payload).as_str());
-        let post_valid = payload_matches
-            && post_authority.is_some_and(|route| {
-                route.sender.authority_fingerprint == final_authority.sender.authority_fingerprint
-                    && route.target.authority_fingerprint == verified_target.authority_fingerprint
-                    && crate::path_identity::same_object(
-                        &route.target.replica_identity,
-                        &verified_target.replica_identity,
-                    )
-            })
-            && self
+            if self
                 .validate_selected_pty_target(
                     app,
                     &claimed,
@@ -8469,43 +8459,162 @@ impl MailboxPoller {
                     selected.backend_kind,
                 )
                 .await
-                .is_some();
-        if !post_valid {
-            let terminal = store
-                .terminalize_pty_input_offloaded(
-                    injection_id.to_string(),
-                    S::Indeterminate,
-                    Some(C::FinalRevalidationFailed),
-                    chrono::Utc::now(),
+                .is_none()
+            {
+                let observed = finish_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    &lease_owner,
+                    C::SessionRace,
                 )
                 .await;
-            let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
-            drop(final_api_guard);
-            drop(target_guard.take());
-            drop(target_stripe.take());
-            drop(permit);
-            finish_owned_pty_work(app, &mut owned_work, observed).await;
-            if terminal.is_err() {
-                log::error!(
-                    "[pty-input] post-boundary terminalization failed id={} code=terminal_store_failed",
-                    injection_id
-                );
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                drop(permit);
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
             }
-            return false;
-        }
-        let manager = {
-            let guard = session_manager.read().await;
-            guard.clone()
-        };
-        let idle_detector = app
-            .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
-            .inner()
-            .clone();
-        let authority_id = match crate::phone::types::parse_canonical_uuid_v4(
-            &claimed.authority_session_id,
-        ) {
-            Ok(id) => id,
-            Err(_) => {
+            if heartbeat.failed() {
+                let code = if expires <= chrono::Utc::now() {
+                    C::Expired
+                } else {
+                    C::LeaseLost
+                };
+                let observed = finish_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    &lease_owner,
+                    code,
+                )
+                .await;
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                drop(permit);
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
+            }
+            if !matches!(
+                store
+                    .renew_pty_input_lease_offloaded(
+                        injection_id.to_string(),
+                        lease_owner.clone(),
+                        chrono::Utc::now(),
+                    )
+                    .await,
+                Ok(true)
+            ) {
+                let observed = finish_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    &lease_owner,
+                    pty_input_lease_failure_code(expires),
+                )
+                .await;
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                drop(permit);
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
+            }
+            if !heartbeat.finish().await {
+                let observed = finish_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    &lease_owner,
+                    pty_input_lease_failure_code(expires),
+                )
+                .await;
+                drop(target_guard.take());
+                drop(target_stripe.take());
+                drop(permit);
+                finish_owned_pty_work(app, &mut owned_work, observed).await;
+                return false;
+            }
+            let backend_name = match selected.backend_kind {
+                SessionBackendKind::LocalProcess => "localProcess",
+                SessionBackendKind::ContainerTransport => "containerTransport",
+            };
+            let payload = match store
+                .begin_pty_actuating_offloaded(
+                    injection_id.to_string(),
+                    lease_owner.clone(),
+                    selected.id.clone(),
+                    backend_name.to_string(),
+                    chrono::Utc::now(),
+                )
+                .await
+            {
+                Ok(payload) => payload,
+                Err(crate::api::message_store::MessageStoreError::ActuationCommitAmbiguous) => {
+                    let terminal = store
+                        .terminalize_pty_input_offloaded(
+                            injection_id.to_string(),
+                            S::Indeterminate,
+                            Some(C::TerminalStoreFailed),
+                            chrono::Utc::now(),
+                        )
+                        .await;
+                    let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
+                    drop(final_api_guard);
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    drop(permit);
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    if terminal.is_err() {
+                        log::error!(
+                            "[pty-input] ambiguous boundary reconciliation failed id={} \
+                        code=terminal_store_failed",
+                            injection_id
+                        );
+                    }
+                    return false;
+                }
+                Err(_) => {
+                    reject_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        C::StoreTransient,
+                    )
+                    .await;
+                    return false;
+                }
+            };
+            let post_authority = if let Some(fresh) = final_api_guard.as_ref() {
+                self.validate_claimed_api_authority_with_fresh(app, &claimed, fresh)
+                    .await
+            } else {
+                self.validate_claimed_host_authority(app, &claimed).await
+            };
+            let payload_matches = initial.payload_bytes == Some(payload.len() as u64)
+                && initial.payload_sha256.as_deref()
+                    == Some(crate::phone::types::sha256_hex(&payload).as_str());
+            let post_valid = payload_matches
+                && post_authority.is_some_and(|route| {
+                    route.sender.authority_fingerprint
+                        == final_authority.sender.authority_fingerprint
+                        && route.target.authority_fingerprint
+                            == verified_target.authority_fingerprint
+                        && crate::path_identity::same_object(
+                            &route.target.replica_identity,
+                            &verified_target.replica_identity,
+                        )
+                })
+                && self
+                    .validate_selected_pty_target(
+                        app,
+                        &claimed,
+                        &verified_target,
+                        selected_id,
+                        selected.backend_kind,
+                    )
+                    .await
+                    .is_some();
+            if !post_valid {
                 let terminal = store
                     .terminalize_pty_input_offloaded(
                         injection_id.to_string(),
@@ -8522,26 +8631,102 @@ impl MailboxPoller {
                 finish_owned_pty_work(app, &mut owned_work, observed).await;
                 if terminal.is_err() {
                     log::error!(
-                        "[pty-input] boundary terminalization failed id={} code=terminal_store_failed",
+                        "[pty-input] post-boundary terminalization failed id={} \
+                    code=terminal_store_failed",
                         injection_id
                     );
                 }
                 return false;
             }
-        };
-        let authority_backend = match source_plane {
-            crate::phone::types::PtyInputSourcePlane::HostCli => SessionBackendKind::LocalProcess,
-            crate::phone::types::PtyInputSourcePlane::ContainerApi => {
-                SessionBackendKind::ContainerTransport
-            }
-        };
-        let authority_container_backend = pty_manager
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .container_backend();
-        let authority_route = match PtyManager::authority_route_proof(&pty_manager, authority_id) {
-            Ok(proof) => proof,
-            Err(_) => {
+            let manager = {
+                let guard = session_manager.read().await;
+                guard.clone()
+            };
+            let idle_detector = app
+                .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+                .inner()
+                .clone();
+            let authority_id =
+                match crate::phone::types::parse_canonical_uuid_v4(&claimed.authority_session_id) {
+                    Ok(id) => id,
+                    Err(_) => {
+                        let terminal = store
+                            .terminalize_pty_input_offloaded(
+                                injection_id.to_string(),
+                                S::Indeterminate,
+                                Some(C::FinalRevalidationFailed),
+                                chrono::Utc::now(),
+                            )
+                            .await;
+                        let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
+                        drop(final_api_guard);
+                        drop(target_guard.take());
+                        drop(target_stripe.take());
+                        drop(permit);
+                        finish_owned_pty_work(app, &mut owned_work, observed).await;
+                        if terminal.is_err() {
+                            log::error!(
+                                "[pty-input] boundary terminalization failed id={} \
+                        code=terminal_store_failed",
+                                injection_id
+                            );
+                        }
+                        return false;
+                    }
+                };
+            let authority_backend = match source_plane {
+                crate::phone::types::PtyInputSourcePlane::HostCli => {
+                    SessionBackendKind::LocalProcess
+                }
+                crate::phone::types::PtyInputSourcePlane::ContainerApi => {
+                    SessionBackendKind::ContainerTransport
+                }
+            };
+            let authority_container_backend = pty_manager
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .container_backend();
+            let authority_route =
+                match PtyManager::authority_route_proof(&pty_manager, authority_id) {
+                    Ok(proof) => proof,
+                    Err(_) => {
+                        let terminal = store.terminalize_pty_input(
+                            injection_id,
+                            S::Indeterminate,
+                            Some(C::FinalRevalidationFailed),
+                            chrono::Utc::now(),
+                        );
+                        let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
+                        drop(final_api_guard);
+                        drop(target_guard.take());
+                        drop(target_stripe.take());
+                        drop(permit);
+                        finish_owned_pty_work(app, &mut owned_work, observed).await;
+                        if terminal.is_err() {
+                            log::error!(
+                                "[pty-input] boundary terminalization failed id={} \
+                        code=terminal_store_failed",
+                                injection_id
+                            );
+                        }
+                        return false;
+                    }
+                };
+            let expected_api_binding = final_api_guard.as_ref().and_then(|fresh| {
+                let root =
+                    crate::path_identity::verify_directory(Path::new(&fresh.client.bound_root))
+                        .ok()?;
+                Some((
+                    fresh.client.client_id.clone(),
+                    fresh.client.credential_generation.clone()?,
+                    fresh.client.bound_session_id.clone()?,
+                    root.object_id,
+                    fresh.presented_token_hash.clone(),
+                ))
+            });
+            if source_plane == crate::phone::types::PtyInputSourcePlane::ContainerApi
+                && expected_api_binding.is_none()
+            {
                 let terminal = store.terminalize_pty_input(
                     injection_id,
                     S::Indeterminate,
@@ -8556,180 +8741,46 @@ impl MailboxPoller {
                 finish_owned_pty_work(app, &mut owned_work, observed).await;
                 if terminal.is_err() {
                     log::error!(
-                        "[pty-input] boundary terminalization failed id={} code=terminal_store_failed",
-                        injection_id
-                    );
-                }
-                return false;
-            }
-        };
-        let expected_api_binding = final_api_guard.as_ref().and_then(|fresh| {
-            let root =
-                crate::path_identity::verify_directory(Path::new(&fresh.client.bound_root)).ok()?;
-            Some((
-                fresh.client.client_id.clone(),
-                fresh.client.credential_generation.clone()?,
-                fresh.client.bound_session_id.clone()?,
-                root.object_id,
-                fresh.presented_token_hash.clone(),
-            ))
-        });
-        if source_plane == crate::phone::types::PtyInputSourcePlane::ContainerApi
-            && expected_api_binding.is_none()
-        {
-            let terminal = store.terminalize_pty_input(
-                injection_id,
-                S::Indeterminate,
-                Some(C::FinalRevalidationFailed),
-                chrono::Utc::now(),
-            );
-            let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
-            drop(final_api_guard);
-            drop(target_guard.take());
-            drop(target_stripe.take());
-            drop(permit);
-            finish_owned_pty_work(app, &mut owned_work, observed).await;
-            if terminal.is_err() {
-                log::error!(
                     "[pty-input] boundary terminalization failed id={} code=terminal_store_failed",
                     injection_id
                 );
-            }
-            return false;
-        }
-        let boundary_settings = app.state::<SettingsState>().inner().clone();
-        let owned_route = owned_work
-            .as_ref()
-            .and_then(|_| PtyManager::snapshot_route_proof(&pty_manager, selected_id).ok());
-        let boundary_carrier = crate::session::manager::acquire_carrier_mutation_permit().await;
-        let owned_token = owned_work
-            .as_ref()
-            .and_then(|(continuation, _)| continuation.launch_token());
-        let owned_current = match owned_work.as_ref() {
-            Some((continuation, _)) => {
-                manager
-                    .with_current_carrier_snapshot(&boundary_carrier, |current| {
-                        owned_token.is_some()
-                            && continuation.current_completion_region(
-                                &boundary_carrier,
-                                current,
-                                &pty_manager,
-                            )
-                    })
-                    .await
-            }
-            None => true,
-        };
-        if !owned_current {
-            drop(boundary_carrier);
-            let observed = store
-                .terminalize_pty_input_offloaded(
-                    injection_id.to_string(),
-                    S::Indeterminate,
-                    Some(C::FinalRevalidationFailed),
-                    chrono::Utc::now(),
-                )
-                .await
-                .is_ok_and(|result| result.terminal);
-            drop(final_api_guard);
-            drop(target_guard.take());
-            drop(target_stripe.take());
-            drop(permit);
-            finish_owned_pty_work(app, &mut owned_work, observed).await;
-            return false;
-        }
-        let boundary_write = match manager
-            .prepare_pty_input_boundary_with_carrier_permit(
-                &boundary_carrier,
-                selected_id,
-                &verified_target,
-                selected.backend_kind,
-                authority_id,
-                &final_authority.sender,
-                authority_backend,
-                &authority_route,
-                &permit,
-                &idle_detector,
-                &boundary_settings,
-                |session, settings| {
-                    owned_token.is_none_or(|token| session.token == token)
-                        && owned_work.as_ref().is_none_or(|(continuation, _)| {
-                            owned_route.as_ref().is_some_and(|proof| {
-                                continuation.matches_captured_launch_route(proof)
-                            })
-                        })
-                        && session_has_current_pty_submission_provenance(
-                            &SessionInfo::from(session),
-                            settings,
-                        )
-                },
-                || {
-                    if expires <= chrono::Utc::now()
-                        || app
-                            .try_state::<Arc<crate::RestoreInProgress>>()
-                            .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
-                        || app
-                            .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
-                            .is_some_and(|guard| guard.blocks_agent(&claimed.target_fqn))
-                    {
-                        return false;
-                    }
-                    match (&source_plane, expected_api_binding.as_ref()) {
-                        (crate::phone::types::PtyInputSourcePlane::HostCli, None) => true,
-                        (
-                            crate::phone::types::PtyInputSourcePlane::ContainerApi,
-                            Some((
-                                client_id,
-                                generation,
-                                bound_session_id,
-                                root_object,
-                                token_hash,
-                            )),
-                        ) => {
-                            let binding =
-                                authority_container_backend.credential_binding(authority_id);
-                            binding.is_some_and(|binding| {
-                                binding.client_id == *client_id
-                                    && binding.credential_generation == *generation
-                                    && binding.bound_session_id == *bound_session_id
-                                    && binding.bound_root_object_id == *root_object
-                                    && crate::api::auth::constant_time_eq(
-                                        &binding.credential_token_hash,
-                                        token_hash,
-                                    )
-                            })
-                        }
-                        _ => false,
-                    }
-                },
-            )
-            .await
-        {
-            Ok(guard) => {
-                drop(boundary_carrier);
-                Ok(crate::pty::inject::write_exact_agent_input_first(
-                    guard, &payload,
-                ))
-            }
-            Err(_) => {
-                drop(boundary_carrier);
-                // The guard-bearing Result ends in this match. Only the
-                // observed terminal boolean survives to the work handoff await.
-                let terminal = store.terminalize_pty_input(
-                    injection_id,
-                    S::Indeterminate,
-                    Some(C::FinalRevalidationFailed),
-                    chrono::Utc::now(),
-                );
-                if terminal.is_err() {
-                    log::error!("[pty-input] boundary terminalization failed id={} code=terminal_store_failed", injection_id);
                 }
-                Err(terminal.as_ref().is_ok_and(|result| result.terminal))
+                return false;
             }
-        };
-        let text_write_succeeded = match boundary_write {
-            Ok(written) => written,
-            Err(observed) => {
+            let boundary_settings = app.state::<SettingsState>().inner().clone();
+            let owned_route = owned_work
+                .as_ref()
+                .and_then(|_| PtyManager::snapshot_route_proof(&pty_manager, selected_id).ok());
+            let boundary_carrier = crate::session::manager::acquire_carrier_mutation_permit().await;
+            let owned_token = owned_work
+                .as_ref()
+                .and_then(|(continuation, _)| continuation.launch_token());
+            let owned_current = match owned_work.as_ref() {
+                Some((continuation, _)) => {
+                    manager
+                        .with_current_carrier_snapshot(&boundary_carrier, |current| {
+                            owned_token.is_some()
+                                && continuation.current_completion_region(
+                                    &boundary_carrier,
+                                    current,
+                                    &pty_manager,
+                                )
+                        })
+                        .await
+                }
+                None => true,
+            };
+            if !owned_current {
+                drop(boundary_carrier);
+                let observed = store
+                    .terminalize_pty_input_offloaded(
+                        injection_id.to_string(),
+                        S::Indeterminate,
+                        Some(C::FinalRevalidationFailed),
+                        chrono::Utc::now(),
+                    )
+                    .await
+                    .is_ok_and(|result| result.terminal);
                 drop(final_api_guard);
                 drop(target_guard.take());
                 drop(target_stripe.take());
@@ -8737,71 +8788,184 @@ impl MailboxPoller {
                 finish_owned_pty_work(app, &mut owned_work, observed).await;
                 return false;
             }
-        };
-        // Keep the fresh registry lock through the synchronous first-write
-        // boundary so a concurrent revocation linearizes before or after it,
-        // never between the final authority check and the text write.
-        drop(final_api_guard);
-        let outcome =
-            crate::pty::inject::submit_exact_agent_input_with_permit(&permit, text_write_succeeded)
-                .await;
-        let (status, reason) = match outcome {
-            crate::pty::inject::AgentSubmitOutcome::TextWriteFailed => {
-                (S::Indeterminate, Some(C::TextWriteFailed))
-            }
-            crate::pty::inject::AgentSubmitOutcome::RequiredEnterFailed => {
-                (S::Indeterminate, Some(C::RequiredEnterFailed))
-            }
-            crate::pty::inject::AgentSubmitOutcome::Submitted {
-                redundant_enter_failed,
-            } => {
-                let metadata = if payload == b"/clear" {
-                    crate::commands::pty::stamp_fresh_boundary_to_session(app, selected_id).await
-                } else if payload == b"/compact" {
-                    crate::commands::pty::BoundaryMetadataOutcome::Unchanged
-                } else {
-                    crate::commands::pty::note_post_boundary_content_to_session(app, selected_id)
-                        .await
-                };
-                let reason = if metadata == crate::commands::pty::BoundaryMetadataOutcome::Failed {
-                    Some(C::BoundaryMetadataFailed)
-                } else {
-                    redundant_enter_failed.then_some(C::RedundantEnterFailed)
-                };
-                (S::Injected, reason)
-            }
-        };
-        let result = match store
-            .terminalize_pty_input_offloaded(
-                injection_id.to_string(),
-                status,
-                reason,
-                chrono::Utc::now(),
+            let boundary_write = match manager
+                .prepare_pty_input_boundary_with_carrier_permit(
+                    &boundary_carrier,
+                    selected_id,
+                    &verified_target,
+                    selected.backend_kind,
+                    authority_id,
+                    &final_authority.sender,
+                    authority_backend,
+                    &authority_route,
+                    &permit,
+                    &idle_detector,
+                    &boundary_settings,
+                    |session, settings| {
+                        owned_token.is_none_or(|token| session.token == token)
+                            && owned_work.as_ref().is_none_or(|(continuation, _)| {
+                                owned_route.as_ref().is_some_and(|proof| {
+                                    continuation.matches_captured_launch_route(proof)
+                                })
+                            })
+                            && session_has_current_pty_submission_provenance(
+                                &SessionInfo::from(session),
+                                settings,
+                            )
+                    },
+                    || {
+                        if expires <= chrono::Utc::now()
+                            || app
+                                .try_state::<Arc<crate::RestoreInProgress>>()
+                                .is_some_and(|flag| {
+                                    flag.0.load(std::sync::atomic::Ordering::SeqCst)
+                                })
+                            || app
+                                .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+                                .is_some_and(|guard| guard.blocks_agent(&claimed.target_fqn))
+                        {
+                            return false;
+                        }
+                        match (&source_plane, expected_api_binding.as_ref()) {
+                            (crate::phone::types::PtyInputSourcePlane::HostCli, None) => true,
+                            (
+                                crate::phone::types::PtyInputSourcePlane::ContainerApi,
+                                Some((
+                                    client_id,
+                                    generation,
+                                    bound_session_id,
+                                    root_object,
+                                    token_hash,
+                                )),
+                            ) => {
+                                let binding =
+                                    authority_container_backend.credential_binding(authority_id);
+                                binding.is_some_and(|binding| {
+                                    binding.client_id == *client_id
+                                        && binding.credential_generation == *generation
+                                        && binding.bound_session_id == *bound_session_id
+                                        && binding.bound_root_object_id == *root_object
+                                        && crate::api::auth::constant_time_eq(
+                                            &binding.credential_token_hash,
+                                            token_hash,
+                                        )
+                                })
+                            }
+                            _ => false,
+                        }
+                    },
+                )
+                .await
+            {
+                Ok(guard) => {
+                    drop(boundary_carrier);
+                    Ok(crate::pty::inject::write_exact_agent_input_first(
+                        guard, &payload,
+                    ))
+                }
+                Err(_) => {
+                    drop(boundary_carrier);
+                    // The guard-bearing Result ends in this match. Only the
+                    // observed terminal boolean survives to the work handoff await.
+                    let terminal = store.terminalize_pty_input(
+                        injection_id,
+                        S::Indeterminate,
+                        Some(C::FinalRevalidationFailed),
+                        chrono::Utc::now(),
+                    );
+                    if terminal.is_err() {
+                        log::error!(
+                            "[pty-input] boundary terminalization failed id={} \
+                        code=terminal_store_failed",
+                            injection_id
+                        );
+                    }
+                    Err(terminal.as_ref().is_ok_and(|result| result.terminal))
+                }
+            };
+            let text_write_succeeded = match boundary_write {
+                Ok(written) => written,
+                Err(observed) => {
+                    drop(final_api_guard);
+                    drop(target_guard.take());
+                    drop(target_stripe.take());
+                    drop(permit);
+                    finish_owned_pty_work(app, &mut owned_work, observed).await;
+                    return false;
+                }
+            };
+            // Keep the fresh registry lock through the synchronous first-write
+            // boundary so a concurrent revocation linearizes before or after it,
+            // never between the final authority check and the text write.
+            drop(final_api_guard);
+            let outcome = crate::pty::inject::submit_exact_agent_input_with_permit(
+                &permit,
+                text_write_succeeded,
             )
-            .await
-        {
-            Ok(result) => result,
-            Err(_) => {
-                log::error!(
-                    "[pty-input] terminal persistence failed id={} code=terminal_store_failed",
+            .await;
+            let (status, reason) = match outcome {
+                crate::pty::inject::AgentSubmitOutcome::TextWriteFailed => {
+                    (S::Indeterminate, Some(C::TextWriteFailed))
+                }
+                crate::pty::inject::AgentSubmitOutcome::RequiredEnterFailed => {
+                    (S::Indeterminate, Some(C::RequiredEnterFailed))
+                }
+                crate::pty::inject::AgentSubmitOutcome::Submitted {
+                    redundant_enter_failed,
+                } => {
+                    let metadata = if payload == b"/clear" {
+                        crate::commands::pty::stamp_fresh_boundary_to_session(app, selected_id)
+                            .await
+                    } else if payload == b"/compact" {
+                        crate::commands::pty::BoundaryMetadataOutcome::Unchanged
+                    } else {
+                        crate::commands::pty::note_post_boundary_content_to_session(
+                            app,
+                            selected_id,
+                        )
+                        .await
+                    };
+                    let reason =
+                        if metadata == crate::commands::pty::BoundaryMetadataOutcome::Failed {
+                            Some(C::BoundaryMetadataFailed)
+                        } else {
+                            redundant_enter_failed.then_some(C::RedundantEnterFailed)
+                        };
+                    (S::Injected, reason)
+                }
+            };
+            let result = match store
+                .terminalize_pty_input_offloaded(
+                    injection_id.to_string(),
+                    status,
+                    reason,
+                    chrono::Utc::now(),
+                )
+                .await
+            {
+                Ok(result) => result,
+                Err(_) => {
+                    log::error!(
+                        "[pty-input] terminal persistence failed id={} code=terminal_store_failed",
+                        injection_id
+                    );
+                    return false;
+                }
+            };
+            crate::api::audit::record_pty_input_result("terminal", &result);
+            drop(target_guard.take());
+            drop(target_stripe.take());
+            drop(permit);
+            finish_owned_pty_work(app, &mut owned_work, result.terminal).await;
+            if app.emit("pty_input_status", &result).is_err() {
+                log::warn!(
+                    "[pty-input] status event failed id={} code=boundary_metadata_failed",
                     injection_id
                 );
-                return false;
             }
-        };
-        crate::api::audit::record_pty_input_result("terminal", &result);
-        drop(target_guard.take());
-        drop(target_stripe.take());
-        drop(permit);
-        finish_owned_pty_work(app, &mut owned_work, result.terminal).await;
-        if app.emit("pty_input_status", &result).is_err() {
-            log::warn!(
-                "[pty-input] status event failed id={} code=boundary_metadata_failed",
-                injection_id
-            );
+            false
         }
-        false
-        }.await;
+        .await;
         source_executor.returned(failed);
     }
 
@@ -9922,7 +10086,8 @@ impl MailboxPoller {
         };
 
         // For repo outboxes (not app-outbox), validate that msg.from matches the outbox owner.
-        // This prevents tokenless spoofing: a message in repo X's outbox must claim to be from repo X.
+        // This prevents tokenless spoofing: a message in repo X's outbox must claim to be from repo
+        // X.
         //
         // §DR5 lenient fallback: if `msg.from` is unqualified (legacy) and its LOCAL
         // part matches `expected_from`'s local part, accept — §AR2-norm below then
@@ -9938,16 +10103,18 @@ impl MailboxPoller {
             if let Some(repo_path) = outbox_dir.parent().and_then(|p| p.parent()) {
                 let derived = sender_name_for_session_cwd(&repo_path.to_string_lossy());
                 if !anti_spoof_accept(&msg.from, &derived) {
-                    return Ok(std::ops::ControlFlow::Break(self
-                        .reject_message(
+                    return Ok(std::ops::ControlFlow::Break(
+                        self.reject_message(
                             path,
                             &msg,
                             &format!(
-                                "Outbox-sender mismatch: outbox belongs to '{}' but message claims '{}'",
+                                "Outbox-sender mismatch: outbox belongs to '{}' but message claims \
+                                '{}'",
                                 derived, msg.from
                             ),
                         )
-                        .await));
+                        .await,
+                    ));
                 }
                 expected_from = Some(derived);
             }
@@ -10059,18 +10226,21 @@ impl MailboxPoller {
                     drop(mgr);
                     if let Some(session_id) = self.find_active_session(app, &msg.from).await {
                         log::warn!(
-                            "[mailbox] Stale token from '{}' matches active session {}, but env-only credentials cannot be refreshed in-place",
+                            "[mailbox] Stale token from '{}' matches active session {}, but \
+                            env-only credentials cannot be refreshed in-place",
                             msg.from,
                             session_id
                         );
                     }
-                    return Ok(std::ops::ControlFlow::Break(self
-                        .reject_message(
+                    return Ok(std::ops::ControlFlow::Break(
+                        self.reject_message(
                             path,
                             msg,
-                            "Invalid session token. Env-only credentials cannot be refreshed into a live process; restart or respawn the sender session.",
+                            "Invalid session token. Env-only credentials cannot be refreshed into \
+                            a live process; restart or respawn the sender session.",
                         )
-                        .await));
+                        .await,
+                    ));
                 }
                 Some(session) => {
                     saw_session_token = true;
@@ -10112,7 +10282,8 @@ impl MailboxPoller {
             drop(mgr);
             if let Some(session_id) = self.find_active_session(app, &msg.from).await {
                 log::warn!(
-                    "[mailbox] Malformed token from '{}' matches active session {}, but env-only credentials cannot be refreshed in-place",
+                    "[mailbox] Malformed token from '{}' matches active session {}, but env-only \
+                    credentials cannot be refreshed in-place",
                     msg.from,
                     session_id
                 );
@@ -10121,7 +10292,8 @@ impl MailboxPoller {
                 .reject_message(
                     path,
                     msg,
-                    "Malformed session token. Env-only credentials cannot be refreshed into a live process; restart or respawn the sender session.",
+                    "Malformed session token. Env-only credentials cannot be refreshed into a live \
+                    process; restart or respawn the sender session.",
                 )
                 .await));
         }
@@ -10137,7 +10309,8 @@ impl MailboxPoller {
         path: &Path,
         msg: &OutboxMessage,
     ) -> OutboxStage<OutboxAuthenticationFacts> {
-        // Check if token is the master token or root token (bypasses anti-spoofing + team validation)
+        // Check if token is the master token or root token (bypasses anti-spoofing + team
+        // validation)
         let is_master = if let Some(ref token_str) = msg.token {
             let master = app.state::<MasterToken>();
             if master.matches(token_str) {
@@ -10197,7 +10370,8 @@ impl MailboxPoller {
         // fields from a replica outbox keep today's behaviour untouched.
         if origin == OutboxOrigin::CoManaged && (msg.action.is_some() || msg.command.is_some()) {
             log::warn!(
-                "[mailbox] Co-managed origin rejected a message carrying action={:?} command={:?} msg={}",
+                "[mailbox] Co-managed origin rejected a message carrying action={:?} command={:?} \
+                msg={}",
                 msg.action,
                 msg.command,
                 msg.id
@@ -11477,7 +11651,8 @@ impl MailboxPoller {
             };
             let Some(shell) = shell else {
                 log::warn!(
-                    "[mailbox] wake: candidate {} vanished during logical-command preflight, trying next",
+                    "[mailbox] wake: candidate {} vanished during logical-command preflight, \
+                    trying next",
                     session_id
                 );
                 return Ok(None);
@@ -11645,7 +11820,8 @@ impl MailboxPoller {
                         pending_exited_communication = communication;
                         spawn_with_resume = true;
                         log::debug!(
-                            "[mailbox] wake: deferring Exited destroy for {} (status={:?}) pending later Inject success",
+                            "[mailbox] wake: deferring Exited destroy for {} (status={:?}) pending \
+                            later Inject success",
                             session_id,
                             status
                         );
@@ -11671,7 +11847,8 @@ impl MailboxPoller {
         {
             spawn_with_resume = true;
             log::debug!(
-                "[mailbox] wake: all CWD candidates for '{}' are phantoms or lost to race; enabling auto-resume on spawn-persistent",
+                "[mailbox] wake: all CWD candidates for '{}' are phantoms or lost to race; \
+                enabling auto-resume on spawn-persistent",
                 msg.to
             );
         }
@@ -11739,7 +11916,8 @@ impl MailboxPoller {
             .await
             .map_err(|e| {
                 format!(
-                    "Failed to spawn session for '{}': command from {} resolved raw_command={:?}, shell={:?}, args={:?}: {}",
+                    "Failed to spawn session for '{}': command from {} resolved raw_command={:?}, \
+                    shell={:?}, args={:?}: {}",
                     msg.to, spawn_source, spawn_raw, spawn_shell, spawn_args, e
                 )
             })?;
@@ -11888,12 +12066,14 @@ impl MailboxPoller {
                 .load(std::sync::atomic::Ordering::SeqCst);
             return if restoring {
                 Err(format!(
-                    "Root Agent session not yet restored for '{}'; daemon restart in progress — will retry.",
+                    "Root Agent session not yet restored for '{}'; daemon restart in progress — \
+                    will retry.",
                     msg.to
                 ))
             } else {
                 Err(format!(
-                    "No live Root Agent session for '{}'. The Root Agent must be running locally to receive messages — ask the user to launch it.",
+                    "No live Root Agent session for '{}'. The Root Agent must be running locally \
+                    to receive messages — ask the user to launch it.",
                     msg.to
                 ))
             };
@@ -11922,7 +12102,8 @@ impl MailboxPoller {
                 // below still fires with the correct spawn_with_resume flag.
                 // (grinch G.M5 option (c).)
                 log::error!(
-                    "[mailbox] wake: failed to destroy exited session {} (orphan will linger until AC3): {}",
+                    "[mailbox] wake: failed to destroy exited session {} (orphan will linger until \
+                    AC3): {}",
                     exited_id,
                     e
                 );
@@ -12022,9 +12203,15 @@ impl MailboxPoller {
                     let blocked = tokio::select! {
                         biased;
                         _ = cancellation.cancelled() => {
-                            return Err("Context alert delivery was canceled before live injection".to_string());
+                            return Err(
+                                "Context alert delivery was canceled before live injection"
+                                    .to_string(),
+                            );
                         }
-                        reason = crate::pty::inject::internal_notice_block_reason(app, session_id) => reason,
+                        reason = crate::pty::inject::internal_notice_block_reason(
+                            app,
+                            session_id,
+                        ) => reason,
                     };
                     if cancellation.is_cancelled() {
                         return Err(
@@ -12037,7 +12224,10 @@ impl MailboxPoller {
                     tokio::select! {
                         biased;
                         _ = cancellation.cancelled() => {
-                            return Err("Context alert delivery was canceled during live settle".to_string());
+                            return Err(
+                                "Context alert delivery was canceled during live settle"
+                                    .to_string(),
+                            );
                         }
                         _ = self.settle_internal_live_before_inject(app, session_id) => {}
                     }
@@ -12059,7 +12249,8 @@ impl MailboxPoller {
                         Ok(()) => return Ok(()),
                         Err(error) if err_is_pty_session_missing(&error) => {
                             log::warn!(
-                                "[context-alert] coordinator session {} vanished before injection: {}",
+                                "[context-alert] coordinator session {} vanished before injection: \
+                                {}",
                                 session_id,
                                 error
                             );
@@ -12241,7 +12432,9 @@ impl MailboxPoller {
         let spawn_result = tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
-                return Err("Context alert delivery was canceled during background spawn".to_string());
+                return Err(
+                    "Context alert delivery was canceled during background spawn".to_string(),
+                );
             }
             result = &mut spawn => result,
         };
@@ -12282,7 +12475,9 @@ impl MailboxPoller {
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
-                return Err("Context alert delivery was canceled during spawned-session settle".to_string());
+                return Err(
+                    "Context alert delivery was canceled during spawned-session settle".to_string(),
+                );
             }
             result = self.wait_for_spawned_wake_idle(app, session_id) => {
                 result?;
@@ -12648,7 +12843,8 @@ impl MailboxPoller {
                 ..
             } => {
                 log::info!(
-                    "[remote-activity] delivered coordinatorSession={} project={} kind={:?} repo={} branch={} sha={}",
+                    "[remote-activity] delivered coordinatorSession={} project={} kind={:?} \
+                    repo={} branch={} sha={}",
                     session_id,
                     project.unwrap_or(""),
                     kind,
@@ -12967,9 +13163,10 @@ impl MailboxPoller {
             Some(session_name),                // readable name, no [temp] prefix
             resolved_command.agent_id.clone(), // links to agent config
             spawn_label,                       // human-readable label
-            skip_tooling_save, // #1635-2 D5: dispatch-flag wakes suppress lastCodingAgent persistence
-            Vec::new(),        // git_repos
-            skip_auto_resume,  // see deliver_wake top
+            // #1635-2 D5: dispatch-flag wakes suppress lastCodingAgent persistence
+            skip_tooling_save,
+            Vec::new(),       // git_repos
+            skip_auto_resume, // see deliver_wake top
             resolved_spawn,
             // #1271 - the configured host shell paired with the resolved agent,
             // built from the same settings snapshot that produced the spawn.
@@ -13142,7 +13339,8 @@ impl MailboxPoller {
                     // #2586 D3 - readiness exists only on this `Ok` branch.
                     if start.elapsed() >= max_wait {
                         log::warn!(
-                            "[mailbox] wake: timeout waiting for session {} to reach sustained idle; injecting anyway (waiting_for_input={}, rendered={})",
+                            "[mailbox] wake: timeout waiting for session {} to reach sustained \
+                            idle; injecting anyway (waiting_for_input={}, rendered={})",
                             session_id,
                             waiting,
                             rendered
@@ -13154,7 +13352,8 @@ impl MailboxPoller {
                 SettleAction::Wait => {
                     if was_settling && !ready {
                         log::info!(
-                            "[mailbox] wake: session {} left the settle window during settle (waiting_for_input={}, rendered={}); re-waiting",
+                            "[mailbox] wake: session {} left the settle window during settle \
+                            (waiting_for_input={}, rendered={}); re-waiting",
                             session_id,
                             waiting,
                             rendered
@@ -13209,7 +13408,8 @@ impl MailboxPoller {
                     .await
                     .expect("remove test session after logical-command preflight");
             }
-            return SettleReadiness::Unknown; // hooked tests exercise the inject wiring, not real timers
+            // hooked tests exercise the inject wiring, not real timers
+            return SettleReadiness::Unknown;
         }
 
         let Some(idle) = app.try_state::<std::sync::Arc<crate::pty::idle_detector::IdleDetector>>()
@@ -13335,7 +13535,8 @@ impl MailboxPoller {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "Keep the original peer injection flags, settle policy and borrowed response context"
+        reason = "Keep the original peer injection flags, settle policy and borrowed response \
+            context"
     )]
     async fn inject_into_pty_with_response<R: tauri::Runtime>(
         &self,
@@ -13480,7 +13681,8 @@ impl MailboxPoller {
                             .await
                     {
                         log::warn!(
-                            "[mailbox] Failed to inject follow-up after logical {} resolved as {} for session {}: {}",
+                            "[mailbox] Failed to inject follow-up after logical {} resolved as {} \
+                            for session {}: {}",
                             command_owned,
                             resolved_text,
                             session_id,
@@ -13584,7 +13786,15 @@ impl MailboxPoller {
             }
         });
         response_diag_debug_only(|| {
-            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag site={} outcome=observed stage=inject_presence id=unknown member={} prepared={} attempt={} work={}", line!(), session_id, prepared.is_some(), attempt.is_some(), response.is_some());
+            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag \
+                site={} outcome=observed stage=inject_presence id=unknown member={} prepared={} \
+                attempt={} work={}",
+                line!(),
+                session_id,
+                prepared.is_some(),
+                attempt.is_some(),
+                response.is_some()
+            );
         });
         let mut diagnostic_prewrite_reached = false;
         crate::pty::inject::inject_peer_wake_with_current_facts(
@@ -13938,7 +14148,8 @@ impl MailboxPoller {
             .collect();
         if matches.len() > 1 {
             log::warn!(
-                "[mailbox] root recipient: {} root sessions found ({}); routing to first. Persistence dedup should converge.",
+                "[mailbox] root recipient: {} root sessions found ({}); routing to first. \
+                Persistence dedup should converge.",
                 matches.len(),
                 matches
                     .iter()
@@ -13956,7 +14167,8 @@ impl MailboxPoller {
 
         if !is_viable_root_recipient(&candidate.status, has_pty) {
             log::warn!(
-                "[mailbox] root recipient: not viable (id={} status={:?} has_pty={}); preserving record, no destroy",
+                "[mailbox] root recipient: not viable (id={} status={:?} has_pty={}); preserving \
+                record, no destroy",
                 id,
                 candidate.status,
                 has_pty
@@ -14120,7 +14332,8 @@ impl MailboxPoller {
         // no_match / restore_in_progress paths.
         if !session_ids.is_empty() {
             log::info!(
-                "[mailbox] close-session: {} {} session(s) for '{}' (requested by '{}', timeout={}s)",
+                "[mailbox] close-session: {} {} session(s) for '{}' (requested by '{}', \
+                timeout={}s)",
                 if force {
                     "force-killing"
                 } else {
@@ -14186,7 +14399,8 @@ impl MailboxPoller {
                 crate::config::sessions_persistence::persist_current_state_result(&mgr).await
             {
                 log::warn!(
-                    "[mailbox] close-session: failed to persist cleaned sessions.json after no_match: {}",
+                    "[mailbox] close-session: failed to persist cleaned sessions.json after \
+                    no_match: {}",
                     e
                 );
             }
@@ -14267,13 +14481,16 @@ impl MailboxPoller {
                     let response_path = responses_dir.join(format!("{}.json", rid));
                     if let Err(e) = std::fs::write(&response_path, &json) {
                         log::warn!(
-                            "[mailbox] Failed to write close-session response to outbox-relative path {:?}: {}",
-                            response_path, e
+                            "[mailbox] Failed to write close-session response to outbox-relative \
+                            path {:?}: {}",
+                            response_path,
+                            e
                         );
                     }
                 } else {
                     log::warn!(
-                        "[mailbox] close-session: cannot derive outbox-relative responses dir from message path {:?}",
+                        "[mailbox] close-session: cannot derive outbox-relative responses dir from \
+                        message path {:?}",
                         path
                     );
                 }
@@ -14287,7 +14504,8 @@ impl MailboxPoller {
                 let response_path = responses_dir.join(format!("{}.json", rid));
                 if let Err(e) = std::fs::write(&response_path, &json) {
                     log::warn!(
-                        "[mailbox] Failed to write close-session response to resolved-sender path: {}",
+                        "[mailbox] Failed to write close-session response to resolved-sender path: \
+                        {}",
                         e
                     );
                 }
@@ -14709,7 +14927,9 @@ impl MailboxPoller {
             "peers": decision.peers.iter().map(|p| {
                 let outcome = if failed_ids.iter().any(|f| p.session_ids.contains(f)) {
                     "failed"
-                } else if already_closed_ids.iter().any(|c| p.session_ids.contains(c)) && !closed_ids.iter().any(|c| p.session_ids.contains(c)) {
+                } else if already_closed_ids.iter().any(|c| p.session_ids.contains(c))
+                    && !closed_ids.iter().any(|c| p.session_ids.contains(c))
+                {
                     "already_closed"
                 } else if closed_ids.iter().any(|c| p.session_ids.contains(c)) {
                     "closed"
@@ -14758,8 +14978,10 @@ impl MailboxPoller {
                     let response_path = responses_dir.join(format!("{}.json", rid));
                     if let Err(e) = std::fs::write(&response_path, &json) {
                         log::warn!(
-                            "[mailbox] Failed to write purge-wg response to outbox-relative path {:?}: {}",
-                            response_path, e
+                            "[mailbox] Failed to write purge-wg response to outbox-relative path \
+                            {:?}: {}",
+                            response_path,
+                            e
                         );
                     }
                 }
@@ -14817,7 +15039,8 @@ impl MailboxPoller {
                     .reject_message(
                         path,
                         msg,
-                        "self-clear: no live session owns this token; restart or respawn the session",
+                        "self-clear: no live session owns this token; restart or respawn the \
+                        session",
                     )
                     .await;
             }
@@ -14844,7 +15067,10 @@ impl MailboxPoller {
                         path,
                         msg,
                         &format!(
-                            "self-handoff-and-clear: session shell '{}' has no verified logical-clear mapping. Claude / Codex / Antigravity / Cursor agent direct shells use /clear; exact Pi uses /new. cmd / pwsh outer wrappers remain unsupported.",
+                            "self-handoff-and-clear: session shell '{}' has no verified \
+                            logical-clear mapping. Claude / Codex / Antigravity / Cursor agent \
+                            direct shells use /clear; exact Pi uses /new. cmd / pwsh outer \
+                            wrappers remain unsupported.",
                             session.shell
                         ),
                     )
@@ -14852,9 +15078,10 @@ impl MailboxPoller {
             }
         };
 
-        // 2b. #626 existence gate - REFUSE if the agent did not write its handoff notes. Clearing with
-        //     no SELF-HANDOFF.md would wipe context with no way to resume (the agent would post-clear
-        //     read a nonexistent file = blank). Queue-time intent guard (not transactional): the real
+        // 2b. #626 existence gate - REFUSE if the agent did not write its handoff notes. Clearing
+        // with
+        // no SELF-HANDOFF.md would wipe context with no way to resume (the agent would post-clear
+        // read a nonexistent file = blank). Queue-time intent guard (not transactional): the real
         //     read-time safety net is the handoff prompt's "if missing or empty, wait" clause
         //     (self_clear_handoff_base_prompt). Use .is_file() so a stray directory named
         //     SELF-HANDOFF.md does not pass. Runs BEFORE the idempotency insert and the archive, so
@@ -14867,8 +15094,8 @@ impl MailboxPoller {
                     path,
                     msg,
                     &format!(
-                        "self-handoff-and-clear: SELF-HANDOFF.md not found in your root ({}); write it before \
-                         requesting self-handoff-and-clear.",
+                        "self-handoff-and-clear: SELF-HANDOFF.md not found in your root ({}); \
+                         write it before requesting self-handoff-and-clear.",
                         session.working_directory
                     ),
                 )
@@ -14893,12 +15120,13 @@ impl MailboxPoller {
         //    decision policy is covered separately by the pure `self_clear_gate_advance` tests.
         //    Durations are passed in so a future integration test can drive it fast.
         if newly_inserted {
-            // #626 - archive SELF-FORGET.md so the next cycle starts fresh. Best-effort: a failure must
-            // not block the clear/handoff. The agent already wrote SELF-HANDOFF.md (existence-gated above),
-            // so SELF-FORGET.md is present iff the agent kept one. FOLD-3: runs in ALL cfgs (NOT inside the
-            // cfg(not(test)) spawn) so the harness archive assertion can pass. Decoupled from clear
-            // success (queue-time): an abandoned cycle leaves SELF-FORGET archived but uncleared; content is
-            // preserved in self-clear/<ts>_SELF-FORGET.md, re-issue continues normally.
+            // #626 - archive SELF-FORGET.md so the next cycle starts fresh. Best-effort: a failure
+            // must not block the clear/handoff. The agent already wrote SELF-HANDOFF.md
+            // (existence-gated above), so SELF-FORGET.md is present iff the agent kept one. FOLD-3:
+            // runs in ALL cfgs (NOT inside the cfg(not(test)) spawn) so the harness archive
+            // assertion can pass. Decoupled from clear success (queue-time): an abandoned cycle
+            // leaves SELF-FORGET archived but uncleared; content is preserved in
+            // self-clear/<ts>_SELF-FORGET.md, re-issue continues normally.
             let root = std::path::Path::new(&session.working_directory);
             let forgotten_summary = capture_self_forget_summary(root);
             let ts = chrono::Local::now()
@@ -14911,7 +15139,8 @@ impl MailboxPoller {
                 ),
                 Ok(None) => {} // no SELF-FORGET.md; nothing to archive
                 Err(e) => log::warn!(
-                    "[mailbox] self-handoff-and-clear: SELF-FORGET.md archive failed for session {} (non-fatal): {}",
+                    "[mailbox] self-handoff-and-clear: SELF-FORGET.md archive failed for session \
+                    {} (non-fatal): {}",
                     session_id,
                     e
                 ),
@@ -15092,7 +15321,8 @@ impl MailboxPoller {
                     .reject_message(
                         path,
                         msg,
-                        "self-handoff-and-switch requires a valid session token; restart or respawn the session",
+                        "self-handoff-and-switch requires a valid session token; restart or \
+                        respawn the session",
                     )
                     .await;
             }
@@ -15109,7 +15339,8 @@ impl MailboxPoller {
                     .reject_message(
                         path,
                         msg,
-                        "self-handoff-and-switch: no live session owns this token; restart or respawn the session",
+                        "self-handoff-and-switch: no live session owns this token; restart or \
+                        respawn the session",
                     )
                     .await;
             }
@@ -15133,7 +15364,9 @@ impl MailboxPoller {
                     path,
                     msg,
                     &format!(
-                        "self-handoff-and-switch: session shell '{}' is not a supported source shell (Claude / Codex / Antigravity direct family, Cursor agent, or Pi); switch is not supported here",
+                        "self-handoff-and-switch: session shell '{}' is not a supported source \
+                        shell (Claude / Codex / Antigravity direct family, Cursor agent, or Pi); \
+                        switch is not supported here",
                         session.shell
                     ),
                 )
@@ -15174,7 +15407,8 @@ impl MailboxPoller {
                     path,
                     msg,
                     &format!(
-                        "self-handoff-and-switch: SELF-HANDOFF.md not found in your root ({}); write it before requesting self-handoff-and-switch.",
+                        "self-handoff-and-switch: SELF-HANDOFF.md not found in your root ({}); \
+                        write it before requesting self-handoff-and-switch.",
                         replica_path.display()
                     ),
                 )
@@ -15204,7 +15438,8 @@ impl MailboxPoller {
                 ),
                 Ok(None) => {}
                 Err(e) => log::warn!(
-                    "[mailbox] self-handoff-and-switch: SELF-FORGET.md archive failed for session {} (non-fatal): {}",
+                    "[mailbox] self-handoff-and-switch: SELF-FORGET.md archive failed for session \
+                    {} (non-fatal): {}",
                     session_id,
                     e
                 ),
@@ -15234,7 +15469,8 @@ impl MailboxPoller {
             #[cfg(test)]
             let _ = &forgotten_summary;
             log::info!(
-                "[mailbox] self-handoff-and-switch queued for session {} target coding agent '{}' profile '{}' (from '{}')",
+                "[mailbox] self-handoff-and-switch queued for session {} target coding agent '{}' \
+                profile '{}' (from '{}')",
                 session_id,
                 targets.coding_agent,
                 targets.profile,
@@ -15286,7 +15522,8 @@ impl MailboxPoller {
                     .reject_message(
                         path,
                         msg,
-                        "self-handoff-and-restart requires a valid session token; restart or respawn the session",
+                        "self-handoff-and-restart requires a valid session token; restart or \
+                        respawn the session",
                     )
                     .await;
             }
@@ -15304,7 +15541,8 @@ impl MailboxPoller {
                     .reject_message(
                         path,
                         msg,
-                        "self-handoff-and-restart: no live session owns this token; restart or respawn the session",
+                        "self-handoff-and-restart: no live session owns this token; restart or \
+                        respawn the session",
                     )
                     .await;
             }
@@ -15344,7 +15582,8 @@ impl MailboxPoller {
                     path,
                     msg,
                     &format!(
-                        "self-handoff-and-restart: SELF-HANDOFF.md not found in your root ({}); write it before requesting self-handoff-and-restart.",
+                        "self-handoff-and-restart: SELF-HANDOFF.md not found in your root ({}); \
+                        write it before requesting self-handoff-and-restart.",
                         session.working_directory
                     ),
                 )
@@ -15396,7 +15635,8 @@ impl MailboxPoller {
                         path,
                         msg,
                         &format!(
-                            "self-handoff-and-restart: coding agent '{}' profile '{}' is not launchable from '{}': {}",
+                            "self-handoff-and-restart: coding agent '{}' profile '{}' is not \
+                            launchable from '{}': {}",
                             recipe.agent,
                             recipe.profile.as_deref().unwrap_or("<inherited>"),
                             preflight_cwd,
@@ -15435,7 +15675,8 @@ impl MailboxPoller {
                 ),
                 Ok(None) => {} // no SELF-FORGET.md; nothing to archive
                 Err(e) => log::warn!(
-                    "[mailbox] self-handoff-and-restart: SELF-FORGET.md archive failed for session {} (non-fatal): {}",
+                    "[mailbox] self-handoff-and-restart: SELF-FORGET.md archive failed for session \
+                    {} (non-fatal): {}",
                     session_id,
                     e
                 ),
@@ -15467,7 +15708,8 @@ impl MailboxPoller {
             #[cfg(test)]
             let _ = &forgotten_summary;
             log::info!(
-                "[mailbox] self-handoff-and-restart queued for session {} coding agent '{}' profile '{}' (from '{}')",
+                "[mailbox] self-handoff-and-restart queued for session {} coding agent '{}' \
+                profile '{}' (from '{}')",
                 session_id,
                 recipe.agent,
                 recipe.profile.as_deref().unwrap_or("<inherited>"),
@@ -15486,11 +15728,11 @@ impl MailboxPoller {
             .await
     }
 
-    /// #626 - thin timer driver around `self_clear_gate_advance`. Fire-and-forget. Drives both phases
-    /// on the stable `session_id`, injecting provider-resolved logical-clear text, then (#749)
-    /// archiving `SELF-HANDOFF.md` and injecting the handoff prompt that names the archived path,
-    /// and ALWAYS de-registers on exit. No "inject anyway" fallback - a busy or never-idle session
-    /// is never cleared (the user-approved "30s sustained idle" semantic).
+    /// #626 - thin timer driver around `self_clear_gate_advance`. Fire-and-forget. Drives both
+    /// phases on the stable `session_id`, injecting provider-resolved logical-clear text, then
+    /// (#749) archiving `SELF-HANDOFF.md` and injecting the handoff prompt that names the archived
+    /// path, and ALWAYS de-registers on exit. No "inject anyway" fallback - a busy or never-idle
+    /// session is never cleared (the user-approved "30s sustained idle" semantic).
     #[allow(clippy::too_many_arguments)]
     #[cfg_attr(test, allow(dead_code))]
     async fn run_self_clear_after_sustained_idle<R: tauri::Runtime>(
@@ -15521,8 +15763,9 @@ impl MailboxPoller {
 
         let app_for_inject = app.clone();
         let inject = move |session_id: Uuid, prompt: String| {
+            use crate::pty::inject::inject_text_into_session;
             let app = app_for_inject.clone();
-            async move { crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await }
+            async move { inject_text_into_session(&app, session_id, &prompt).await }
         };
 
         let app_for_boundary = app.clone();
@@ -15610,7 +15853,8 @@ impl MailboxPoller {
                 SelfClearGateAction::Wait => continue,
                 SelfClearGateAction::InjectClear => {
                     log::info!(
-                        "[mailbox] self-handoff-and-clear: session {} idle >={}s; injecting {} (phase 1)",
+                        "[mailbox] self-handoff-and-clear: session {} idle >={}s; injecting {} \
+                        (phase 1)",
                         session_id,
                         settle.as_secs(),
                         clear_text
@@ -15618,7 +15862,8 @@ impl MailboxPoller {
                     // The idle-to-final-Enter race matches the remote logical-clear path.
                     if let Err(e) = inject(session_id, clear_text.to_string()).await {
                         log::warn!(
-                            "[mailbox] self-handoff-and-clear: {} injection failed for session {}: {}",
+                            "[mailbox] self-handoff-and-clear: {} injection failed for session {}: \
+                            {}",
                             clear_text,
                             session_id,
                             e
@@ -15632,7 +15877,8 @@ impl MailboxPoller {
                 }
                 SelfClearGateAction::InjectHandoff => {
                     log::info!(
-                        "[mailbox] self-handoff-and-clear: session {} idle >={}s post-clear; injecting handoff prompt (phase 2)",
+                        "[mailbox] self-handoff-and-clear: session {} idle >={}s post-clear; \
+                        injecting handoff prompt (phase 2)",
                         session_id,
                         settle.as_secs()
                     );
@@ -15656,7 +15902,8 @@ impl MailboxPoller {
                     // Greppable abandon line so a silently-dropped clear/handoff is diagnosable.
                     // The CLI already warned the caller it is best-effort.
                     log::warn!(
-                        "[mailbox] self-handoff-and-clear ABANDONED for session {}: {} (agent may re-issue)",
+                        "[mailbox] self-handoff-and-clear ABANDONED for session {}: {} (agent may \
+                        re-issue)",
                         session_id,
                         reason
                     );
@@ -15665,7 +15912,8 @@ impl MailboxPoller {
             }
         }
 
-        // Always de-register (handoff injected / destroy / cap-expiry / clear-inject-fail all land here).
+        // Always de-register (handoff injected / destroy / cap-expiry / clear-inject-fail all land
+        // here).
         pending
             .0
             .lock()
@@ -15761,8 +16009,9 @@ impl MailboxPoller {
 
         let app_for_inject = app.clone();
         let inject = move |session_id: Uuid, prompt: String| {
+            use crate::pty::inject::inject_text_into_session;
             let app = app_for_inject.clone();
-            async move { crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await }
+            async move { inject_text_into_session(&app, session_id, &prompt).await }
         };
 
         let app_for_boundary = app.clone();
@@ -15849,8 +16098,9 @@ impl MailboxPoller {
 
         // #1632: deliberately inert. A restart reproduces the running recipe; it must not write
         // the Selection UI's coding-agent or profile assignment, and it could not serve the Root
-        // Agent or an origin matrix agent even if it wanted to (`set_replica_coding_agent_selection`
-        // rejects any launch path whose final component does not start with `__agent_`).
+        // Agent or an origin matrix agent even if it wanted to
+        // (`set_replica_coding_agent_selection` rejects any launch path whose final component does
+        // not start with `__agent_`).
         let persist = move |_cwd: PathBuf, _agent: String, _profile: String| async move {
             Ok::<(), String>(())
         };
@@ -15894,8 +16144,9 @@ impl MailboxPoller {
 
         let app_for_inject = app.clone();
         let inject = move |session_id: Uuid, prompt: String| {
+            use crate::pty::inject::inject_text_into_session;
             let app = app_for_inject.clone();
-            async move { crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await }
+            async move { inject_text_into_session(&app, session_id, &prompt).await }
         };
 
         let app_for_boundary = app.clone();
@@ -16005,7 +16256,8 @@ impl MailboxPoller {
                 SelfClearGateAction::Wait => continue,
                 SelfClearGateAction::InjectClear => {
                     log::info!(
-                        "[mailbox] {}: session {} idle >={}s; {} with coding agent '{}' profile '{}' (phase 1)",
+                        "[mailbox] {}: session {} idle >={}s; {} with coding agent '{}' profile \
+                        '{}' (phase 1)",
                         flavor.action,
                         session_id,
                         settle.as_secs(),
@@ -16018,20 +16270,20 @@ impl MailboxPoller {
                     // held across the persist, the adjacent restart await and the
                     // pending-alias bookkeeping, and is released when this arm ends,
                     // before the phase-2 settling and handoff injection.
-                    let _turn = match crate::session::selection::acquire_selection_operation_turn()
-                        .await
-                    {
-                        Ok(turn) => turn,
-                        Err(error) => {
-                            log::warn!(
-                                "[mailbox] {}: selection operation turn unavailable for session {}: {}",
+                    let _turn =
+                        match crate::session::selection::acquire_selection_operation_turn().await {
+                            Ok(turn) => turn,
+                            Err(error) => {
+                                log::warn!(
+                                "[mailbox] {}: selection operation turn unavailable for session \
+                                {}: {}",
                                 flavor.action,
                                 session_id,
                                 error
                             );
-                            break;
-                        }
-                    };
+                                break;
+                            }
+                        };
                     if let Err(e) =
                         persist(cwd.clone(), target_agent.clone(), target_profile.clone()).await
                     {
@@ -16050,7 +16302,8 @@ impl MailboxPoller {
                             Ok(uuid) => uuid,
                             Err(e) => {
                                 log::warn!(
-                                    "[mailbox] {}: restarted session id '{}' could not be parsed: {}",
+                                    "[mailbox] {}: restarted session id '{}' could not be parsed: \
+                                    {}",
                                     flavor.action,
                                     id,
                                     e
@@ -16085,7 +16338,8 @@ impl MailboxPoller {
                 }
                 SelfClearGateAction::InjectHandoff => {
                     log::info!(
-                        "[mailbox] {}: session {} idle >={}s {}; injecting handoff prompt (phase 2)",
+                        "[mailbox] {}: session {} idle >={}s {}; injecting handoff prompt (phase \
+                        2)",
                         flavor.action,
                         session_id,
                         settle.as_secs(),
@@ -16113,7 +16367,8 @@ impl MailboxPoller {
                 }
                 SelfClearGateAction::Abandon(reason) => {
                     log::warn!(
-                        "[mailbox] {} ABANDONED for original session {} current session {}: {} (agent may re-issue)",
+                        "[mailbox] {} ABANDONED for original session {} current session {}: {} \
+                        (agent may re-issue)",
                         flavor.action,
                         original_session_id,
                         session_id,
@@ -16356,7 +16611,8 @@ impl MailboxPoller {
         }
     }
 
-    /// Gracefully close a session: inject exit command, poll for Exited, fallback to force on timeout.
+    /// Gracefully close a session: inject exit command, poll for Exited, fallback to force on
+    /// timeout.
     async fn graceful_close_session<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -16429,8 +16685,10 @@ impl MailboxPoller {
         loop {
             if start.elapsed() >= timeout {
                 log::warn!(
-                    "[mailbox] close-session: graceful timeout ({}s) for session {}, falling back to force",
-                    timeout_secs, sid
+                    "[mailbox] close-session: graceful timeout ({}s) for session {}, falling back \
+                    to force",
+                    timeout_secs,
+                    sid
                 );
                 return self.force_close_session(app, sid).await;
             }
@@ -16623,8 +16881,11 @@ impl MailboxPoller {
             1 => Some(matches.pop().unwrap()),
             _ => {
                 log::warn!(
-                    "[mailbox] resolve_repo_path('{}'): {} candidates, refusing arbitrary pick: {:?}",
-                    agent_name, matches.len(), matches
+                    "[mailbox] resolve_repo_path('{}'): {} candidates, refusing arbitrary pick: \
+                    {:?}",
+                    agent_name,
+                    matches.len(),
+                    matches
                 );
                 None
             }
@@ -16651,7 +16912,8 @@ impl MailboxPoller {
         let resolved_command = self.resolve_agent_command(app, msg).await?;
         let resolved_command = resolved_command.ok_or_else(|| {
             format!(
-                "No agent command resolved for '{}'; preferredAgent={:?}. Configure lastCodingAgent or agents in settings.",
+                "No agent command resolved for '{}'; preferredAgent={:?}. Configure \
+                lastCodingAgent or agents in settings.",
                 msg.to, msg.preferred_agent
             )
         })?;
@@ -17049,7 +17311,8 @@ impl MailboxPoller {
                     Ok(None) => (None, None),
                     Err(e) => {
                         log::error!(
-                            "[session-requests] Failed to rebuild configured agent command for '{}': {}",
+                            "[session-requests] Failed to rebuild configured agent command for \
+                            '{}': {}",
                             request.session_name,
                             e
                         );
@@ -17229,7 +17492,8 @@ fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
 
     if bytes.starts_with(&[0xFF, 0xFE]) {
         log::warn!(
-            "[bom] UTF-16 LE BOM detected in {:?} — decoding to UTF-8 (writer should use UTF-8 without BOM)",
+            "[bom] UTF-16 LE BOM detected in {:?} — decoding to UTF-8 (writer should use UTF-8 \
+            without BOM)",
             path
         );
         let u16_data: Vec<u16> = bytes[2..]
@@ -17241,7 +17505,8 @@ fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
         Ok(String::from_utf16_lossy(&u16_data))
     } else if bytes.starts_with(&[0xFE, 0xFF]) {
         log::warn!(
-            "[bom] UTF-16 BE BOM detected in {:?} — decoding to UTF-8 (writer should use UTF-8 without BOM)",
+            "[bom] UTF-16 BE BOM detected in {:?} — decoding to UTF-8 (writer should use UTF-8 \
+            without BOM)",
             path
         );
         let u16_data: Vec<u16> = bytes[2..]

@@ -78,9 +78,10 @@ fn internal_notice_validates_and_formats_exact_trusted_line() {
     )
     .unwrap();
     assert_eq!(
-            format_wake_content(WakeContent::InternalSystem(&notice)),
-            "\n[AC context alert] `dev-rust` in `wg-2-dev-team` reached threshold(s): 50%, 75%, 90%. No action taken; you decide any follow-up.\n\r"
-        );
+        format_wake_content(WakeContent::InternalSystem(&notice)),
+        "\n[AC context alert] `dev-rust` in `wg-2-dev-team` reached threshold(s): 50%, 75%, \
+            90%. No action taken; you decide any follow-up.\n\r"
+    );
     for (member, workgroup, observed, thresholds) in [
         ("../escape", "wg-2-dev-team", 91, vec![50]),
         ("dev-rust", "wg-0-dev-team", 91, vec![50]),
@@ -94,15 +95,16 @@ fn internal_notice_validates_and_formats_exact_trusted_line() {
         ("dev-rust", "wg-2-dev-team", 50, vec![75]),
     ] {
         assert!(
-                InternalSystemNotice::for_context_alert(
-                    member.to_string(),
-                    workgroup.to_string(),
-                    observed,
-                    thresholds,
-                )
-                .is_err(),
-                "invalid notice case must be rejected: member={member} workgroup={workgroup} observed={observed}"
-            );
+            InternalSystemNotice::for_context_alert(
+                member.to_string(),
+                workgroup.to_string(),
+                observed,
+                thresholds,
+            )
+            .is_err(),
+            "invalid notice case must be rejected: member={member} workgroup={workgroup} \
+                observed={observed}"
+        );
     }
 }
 
@@ -215,25 +217,32 @@ fn remote_activity_line_renders_every_token() {
         .unwrap()
         .line();
     assert_eq!(
-            started,
-            "[AgentsCommander] CI started on mblua/AgentsCommander feature/2083-2064-remote-alerts (commit abcdef1) at 2026-09-15 23:18:43-03:00. Status notice only; no action is required."
-        );
+        started,
+        "[AgentsCommander] CI started on mblua/AgentsCommander feature/2083-2064-remote-alerts \
+            (commit abcdef1) at 2026-09-15 23:18:43-03:00. Status notice only; no action is \
+            required."
+    );
 
     let finished = remote_activity_notice(RemoteNoticeKind::CiFinished, "", None, None)
         .unwrap()
         .line();
     assert_eq!(
-            finished,
-            "[AgentsCommander] CI finished on mblua/AgentsCommander feature/2083-2064-remote-alerts (commit abcdef1) at 2026-09-15 23:18:43-03:00. AgentsCommander does not track pass or fail: run 'gh run list --branch feature/2083-2064-remote-alerts' before acting on this."
-        );
+        finished,
+        "[AgentsCommander] CI finished on mblua/AgentsCommander \
+            feature/2083-2064-remote-alerts (commit abcdef1) at 2026-09-15 23:18:43-03:00. \
+            AgentsCommander does not track pass or fail: run 'gh run list --branch \
+            feature/2083-2064-remote-alerts' before acting on this."
+    );
 
     let stale = remote_activity_notice(RemoteNoticeKind::BranchStale, "main", Some(4), None)
         .unwrap()
         .line();
     assert_eq!(
-            stale,
-            "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 commits behind main as of 2026-09-15 23:18:43-03:00. If CI runs on this branch, it is validating an out-of-date base."
-        );
+        stale,
+        "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 \
+            commits behind main as of 2026-09-15 23:18:43-03:00. If CI runs on this branch, it is \
+            validating an out-of-date base."
+    );
     // The 40-character SHA goes to the query, never to the text.
     assert!(!stale.contains("abcdef1abcdef1"));
 }
@@ -257,9 +266,12 @@ fn blind_gap_suffix_is_concatenated_only_when_present() {
     .unwrap()
     .line();
     assert_eq!(
-            with,
-            "[AgentsCommander] CI started on mblua/AgentsCommander feature/2083-2064-remote-alerts (commit abcdef1) at 2026-09-15 23:18:43-03:00. Status notice only; no action is required. AgentsCommander could not reach GitHub for 47 minutes; the previous confirmed state is from 2026-09-15 22:31:02-03:00."
-        );
+        with,
+        "[AgentsCommander] CI started on mblua/AgentsCommander feature/2083-2064-remote-alerts \
+            (commit abcdef1) at 2026-09-15 23:18:43-03:00. Status notice only; no action is \
+            required. AgentsCommander could not reach GitHub for 47 minutes; the previous \
+            confirmed state is from 2026-09-15 22:31:02-03:00."
+    );
 }
 
 #[test]
@@ -331,9 +343,10 @@ fn context_alert_line_is_byte_identical_to_before() {
     )
     .unwrap();
     assert_eq!(
-            notice.line(),
-            "[AC context alert] `dev-rust` in `wg-2-dev-team` reached threshold(s): 50%, 75%, 90%. No action taken; you decide any follow-up."
-        );
+        notice.line(),
+        "[AC context alert] `dev-rust` in `wg-2-dev-team` reached threshold(s): 50%, 75%, 90%. \
+            No action taken; you decide any follow-up."
+    );
 }
 
 #[test]
@@ -399,7 +412,8 @@ fn inject_internal_system_notice_log_line_is_unchanged_for_context_alert() {
         .expect("the tests module boundary");
     let production = lines[..boundary].join("\n");
 
-    let context_literal = "\"[context-alert] delivered coordinatorSession={} project={} workgroup={} member={} observed={} thresholds={:?}\"";
+    let context_literal = "\"[context-alert] delivered coordinatorSession={} project={} \
+        workgroup={} member={} observed={} thresholds={:?}\"";
     assert_eq!(
         production.matches(context_literal).count(),
         1,
@@ -772,11 +786,14 @@ fn resolve_remote_pty_command_rejects_pi_compact_and_lookalikes() {
     for (shell, command) in [("pi", "compact"), ("pip", "clear"), ("cmd.exe", "clear")] {
         let error = resolve_remote_pty_command(shell, command).unwrap_err();
         assert_eq!(
-                error,
-                format!(
-                    "Cannot execute logical remote command '{command}': session shell '{shell}' has no verified mapping. Claude / Codex / Antigravity / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported."
-                )
-            );
+            error,
+            format!(
+                "Cannot execute logical remote command '{command}': session shell '{shell}' \
+                    has no verified mapping. Claude / Codex / Antigravity / Cursor agent direct \
+                    shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh \
+                    outer wrappers and Pi compact are unsupported."
+            )
+        );
     }
 }
 
@@ -800,8 +817,9 @@ fn is_permanent_delivery_error_classifies_only_terminal_shapes() {
         "Unsupported logical remote command 'Clear'. Allowed values: clear, compact"
     ));
     assert!(is_permanent_delivery_error(
-            "Cannot execute logical remote command 'compact': session shell 'pi' has no verified mapping."
-        ));
+        "Cannot execute logical remote command 'compact': session shell 'pi' has no verified \
+            mapping."
+    ));
     assert!(is_permanent_delivery_error(
         "Could not resolve inbox for agent 'missing'"
     ));
@@ -1245,10 +1263,13 @@ fn make_root_route_fixture(spoofed_coordinator_identity: bool) -> (tempfile::Tem
     }
 
     std::fs::write(
-            team_dir.join("config.json"),
-            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead"}"#,
-        )
-        .unwrap();
+        team_dir.join("config.json"),
+        concat!(
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"#,
+            r#""coordinator":"../_agent_tech-lead"}"#,
+        ),
+    )
+    .unwrap();
     let tech_lead_identity = if spoofed_coordinator_identity {
         "../../_agent_dev-rust"
     } else {
@@ -1433,10 +1454,13 @@ fn make_mailbox_fixture_in(temp: tempfile::TempDir) -> MailboxFixture {
     }
 
     std::fs::write(
-            team_dir.join("config.json"),
-            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead"}"#,
-        )
-        .unwrap();
+        team_dir.join("config.json"),
+        concat!(
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"#,
+            r#""coordinator":"../_agent_tech-lead"}"#,
+        ),
+    )
+    .unwrap();
     std::fs::write(
         sender_cwd.join("config.json"),
         r#"{"identity":"../../_agent_tech-lead"}"#,
@@ -1884,7 +1908,8 @@ async fn response_request_physical_cwd_boundary() {
                 .to_string_lossy()
                 .into_owned();
                 for role in [member_id, sender] {
-                    // The first case reaches the real write boundary; each later case changes one fact.
+                    // The first case reaches the real write boundary; each later case changes one
+                    // fact.
                     for failure in 0..7 {
                         let mut snapshot = positive.clone();
                         let mut prepared = PreparedResponseRequest {
@@ -2997,7 +3022,8 @@ async fn assert_retained_pty_preboundary_rejections(
             );
             assert!(pty_spawn_scope_may_resume(app, &route.target).await);
             let mut source = SourceExecutorGuard::unbound();
-            let actual = poller.spawn_pty_input_target(
+            let actual = poller
+                .spawn_pty_input_target(
                     app,
                     &claimed,
                     &matching,
@@ -3010,7 +3036,8 @@ async fn assert_retained_pty_preboundary_rejections(
                     prepared,
                     &mut source,
                     None,
-                ).await;
+                )
+                .await;
             let expected = if case == "backend" || case == "prepared" {
                 C::AuthorityChanged
             } else {
@@ -3047,7 +3074,9 @@ async fn assert_retained_pty_preboundary_rejections(
                 rusqlite::Connection::open(fixture._temp.path().join("retained-respawn.sqlite3"))
                     .unwrap();
             let counts: (i64, i64, i64) = connection.query_row(
-                "SELECT attempt,(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND status='retry'),(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND status='rejected') FROM pty_input_operations WHERE injection_id=?1",
+                "SELECT attempt,(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND \
+                status='retry'),(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND \
+                status='rejected') FROM pty_input_operations WHERE injection_id=?1",
                 [&injection], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
             assert_eq!(counts, (claimed.attempt, 0, 1));
             assert_eq!(coordinator.fixture_root_count(), Some(0));
@@ -3091,7 +3120,9 @@ async fn assert_retained_pty_preboundary_rejections(
                 .await
                 .unwrap();
             *app.state::<SettingsState>().write().await = original_settings.clone();
-            }).await.expect("entire preboundary operation must finish before its 20s deadline");
+        })
+        .await
+        .expect("entire preboundary operation must finish before its 20s deadline");
     }
     assert_eq!(
         observe_pty_spawn_scope(app, &route.target).await.1,
@@ -3141,7 +3172,8 @@ async fn retained_root_reclaim_operation(
             .kill_for_kind(previous, SessionBackendKind::LocalProcess)
             .unwrap();
         if operation == 33 {
-            // Real legacy exit mutation selects WakeDormant; the first case selects DiscardMissingPty.
+            // Real legacy exit mutation selects WakeDormant; the first case selects
+            // DiscardMissingPty.
             manager.mark_exited(previous, 0).await;
             assert_eq!(
                 manager.get_session(previous).await.unwrap().status,
@@ -3316,38 +3348,76 @@ fn retained_failure_action(
         ReplacementFixtureAction as Action, ReplacementFixtureCut as Cut,
     };
     match scenario {
-            "pre-finalize" | "post-carry-runtime" | "post-rename-physical" | "post-retire-runtime" =>
-                Some(Action::Pause { cut: physical_cut.unwrap(), resume: physical_gate.take().expect("selected physical gate") }),
-            "pre-context" => Some(Action::Pause { cut: Cut::ContextNativeEnter, resume: context_gate.take().expect("selected context gate") }),
-            "native-context-panic" => Some(Action::PanicOnce { cut: Cut::ContextNativeEnter }),
-            "native-seed-panic" => Some(Action::PanicOnce { cut: Cut::SeedNativeEnter }),
-            "pre-backend" => { backend.fail_spawn.store(true, Ordering::SeqCst); None }
-            "pre-binder" => Some(Action::BindPreparedTwice),
-            "pre-rollback-error" => {
-                backend.fail_kill_once.store(true, Ordering::SeqCst);
-                Some(Action::SimulatedPrecommitFailure)
-            }
-            "base-missing" => Some(Action::FixtureStopExactB),
-            "panic-spawn" => Some(Action::PanicOnce { cut: Cut::BeforeBackendSpawn }),
-            "panic-before-commit" => Some(Action::PanicOnce { cut: Cut::BeforeCommit }),
-            "panic-commit-before-disarm" => Some(Action::CommitBeforeDisarmPanicOnce),
-            "panic-baseline" => Some(Action::PanicOnce { cut: Cut::AfterDisarm }),
-            "panic-carry" => Some(Action::PanicOnce { cut: Cut::BeforeCarry }),
-            "panic-rename" => Some(Action::PanicOnce { cut: Cut::BeforePublication }),
-            "panic-readback" => Some(Action::PublicationLeaf(crate::config::sessions_persistence::FixturePublicationActionKind::PanicOnce)),
-            "post-readback-fault" => Some(Action::PublicationLeaf(crate::config::sessions_persistence::FixturePublicationActionKind::CorruptFixtureLeafOnce)),
-            "panic-retire" => Some(Action::PanicOnce { cut: Cut::BeforeRetirement }),
-            "base-continue-loss" => {
-                let (sender, receiver) = tokio::sync::oneshot::channel();
-                *control.baseline_gate.lock().unwrap() = Some(receiver); drop(sender); None
-            }
-            "release-lost" if inline => {
-                let (sender, receiver) = tokio::sync::oneshot::channel();
-                *control.before_release_gate.lock().unwrap() = Some(receiver); drop(sender); None
-            }
-            "recv-live-source" if inline => { control.drop_receiver.store(true, Ordering::Release); None }
-            _ => panic!("unknown finite failure scenario {scenario}"),
+        "pre-finalize" | "post-carry-runtime" | "post-rename-physical" | "post-retire-runtime" => {
+            Some(Action::Pause {
+                cut: physical_cut.unwrap(),
+                resume: physical_gate.take().expect("selected physical gate"),
+            })
         }
+        "pre-context" => Some(Action::Pause {
+            cut: Cut::ContextNativeEnter,
+            resume: context_gate.take().expect("selected context gate"),
+        }),
+        "native-context-panic" => Some(Action::PanicOnce {
+            cut: Cut::ContextNativeEnter,
+        }),
+        "native-seed-panic" => Some(Action::PanicOnce {
+            cut: Cut::SeedNativeEnter,
+        }),
+        "pre-backend" => {
+            backend.fail_spawn.store(true, Ordering::SeqCst);
+            None
+        }
+        "pre-binder" => Some(Action::BindPreparedTwice),
+        "pre-rollback-error" => {
+            backend.fail_kill_once.store(true, Ordering::SeqCst);
+            Some(Action::SimulatedPrecommitFailure)
+        }
+        "base-missing" => Some(Action::FixtureStopExactB),
+        "panic-spawn" => Some(Action::PanicOnce {
+            cut: Cut::BeforeBackendSpawn,
+        }),
+        "panic-before-commit" => Some(Action::PanicOnce {
+            cut: Cut::BeforeCommit,
+        }),
+        "panic-commit-before-disarm" => Some(Action::CommitBeforeDisarmPanicOnce),
+        "panic-baseline" => Some(Action::PanicOnce {
+            cut: Cut::AfterDisarm,
+        }),
+        "panic-carry" => Some(Action::PanicOnce {
+            cut: Cut::BeforeCarry,
+        }),
+        "panic-rename" => Some(Action::PanicOnce {
+            cut: Cut::BeforePublication,
+        }),
+        "panic-readback" => Some(Action::PublicationLeaf(
+            crate::config::sessions_persistence::FixturePublicationActionKind::PanicOnce,
+        )),
+        "post-readback-fault" => {
+            use crate::config::sessions_persistence::FixturePublicationActionKind as Kind;
+            Some(Action::PublicationLeaf(Kind::CorruptFixtureLeafOnce))
+        }
+        "panic-retire" => Some(Action::PanicOnce {
+            cut: Cut::BeforeRetirement,
+        }),
+        "base-continue-loss" => {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            *control.baseline_gate.lock().unwrap() = Some(receiver);
+            drop(sender);
+            None
+        }
+        "release-lost" if inline => {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            *control.before_release_gate.lock().unwrap() = Some(receiver);
+            drop(sender);
+            None
+        }
+        "recv-live-source" if inline => {
+            control.drop_receiver.store(true, Ordering::Release);
+            None
+        }
+        _ => panic!("unknown finite failure scenario {scenario}"),
+    }
 }
 
 #[cfg(test)]
@@ -3452,7 +3522,8 @@ async fn retained_failure_context_controller(
 #[cfg(test)]
 #[expect(
     clippy::too_many_arguments,
-    reason = "P05 verifies the actual setup result and notification/rollback/runtime evidence without bundling owners."
+    reason = "P05 verifies the actual setup result and notification/rollback/runtime evidence \
+        without bundling owners."
 )]
 async fn assert_retained_setup_failure(
     ordinary: Option<Result<OutboxMessage, String>>,
@@ -3598,7 +3669,8 @@ fn assert_retained_failed_rollback(
 #[cfg(test)]
 #[expect(
     clippy::too_many_arguments,
-    reason = "P05 preserves each committed-loss and physical-publication assertion with original owners borrowed."
+    reason = "P05 preserves each committed-loss and physical-publication assertion with original \
+        owners borrowed."
 )]
 async fn assert_retained_committed_failure(
     scenario: &str,
@@ -3710,7 +3782,8 @@ async fn assert_retained_cleanup_finalized(
 #[cfg(test)]
 #[expect(
     clippy::too_many_arguments,
-    reason = "P05 verifies actual stopped-source cleanup and runtime counters while original gate/backend owners remain in caller."
+    reason = "P05 verifies actual stopped-source cleanup and runtime counters while original \
+        gate/backend owners remain in caller."
 )]
 async fn assert_retained_cleanup_common(
     app: &tauri::AppHandle<tauri::test::MockRuntime>,
@@ -3845,7 +3918,8 @@ fn assert_retained_source_receipt_order(
 #[cfg(test)]
 #[expect(
     clippy::too_many_arguments,
-    reason = "P05 compares current B communication and source ownership using the original actual observations."
+    reason = "P05 compares current B communication and source ownership using the original actual \
+        observations."
 )]
 async fn assert_retained_source_newer_result(
     fixture: &MailboxFixture,
@@ -3940,7 +4014,8 @@ async fn assert_retained_source_positive(
 #[cfg(test)]
 #[expect(
     clippy::too_many_arguments,
-    reason = "P05 preserves sealed-entry assertions on the same fixture, source operation and retained owner."
+    reason = "P05 preserves sealed-entry assertions on the same fixture, source operation and \
+        retained owner."
 )]
 async fn assert_retained_source_sealed(
     fixture: &MailboxFixture,
@@ -4020,7 +4095,8 @@ fn assert_retained_source_lifetime(
 #[cfg(test)]
 #[expect(
     clippy::too_many_arguments,
-    reason = "P05 reuses one operation within the same fixture and whole66 history using the unchanged outer scenario."
+    reason = "P05 reuses one operation within the same fixture and whole66 history using the \
+        unchanged outer scenario."
 )]
 async fn retained_source_operation(
     fixture: &MailboxFixture,
@@ -4235,7 +4311,8 @@ async fn retained_source_operation(
             wait_observed.send(()).unwrap();
             tokio::select! {
                 biased;
-                _ = &mut waiting => panic!("not-ready operation reacquired before real state change"),
+                _ = &mut waiting => panic!("not-ready operation reacquired before real state \
+                    change"),
                 done = delivery_gate => done.expect("whole first source returned"),
             }
             // The first source has released its guards; the suspended
@@ -4302,9 +4379,14 @@ async fn retained_source_operation(
         let connection =
             rusqlite::Connection::open(fixture._temp.path().join("retained-respawn.sqlite3"))
                 .unwrap();
-        let (attempt, retries): (i64, i64) = connection.query_row(
-                    "SELECT attempt,(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND status='retry') FROM pty_input_operations WHERE injection_id=?1",
-                    [&waiting_id], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        let (attempt, retries): (i64, i64) = connection
+            .query_row(
+                "SELECT attempt,(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 \
+                    AND status='retry') FROM pty_input_operations WHERE injection_id=?1",
+                [&waiting_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert_eq!((attempt, retries), (claimed.attempt, 0));
     };
     let controller = async {
@@ -4745,12 +4827,15 @@ async fn retained_exited_respawn_native_waiter_cell(pty: bool, seed: bool) {
             panic_source,
         );
         tokio::time::timeout(Duration::from_secs(20), async {
-                tokio::select! {
-                    biased;
-                    () = &mut delivery => panic!("source waiter unexpectedly returned before actual source unwind"),
-                    binding = controller => binding,
-                }
-            }).await.expect("actual native enter and accepted-source unwind")
+            tokio::select! {
+                biased;
+                () = &mut delivery => panic!("source waiter unexpectedly returned before \
+                    actual source unwind"),
+                binding = controller => binding,
+            }
+        })
+        .await
+        .expect("actual native enter and accepted-source unwind")
         // Only now does the scope drop the outer result-cell waiter as housekeeping.
     };
     assert_retained_native_paused(
@@ -5449,69 +5534,117 @@ async fn retained_exited_respawn_root_full_cell(pty: bool, inline: bool) {
     assert_eq!(coordinator.fixture_root_count(), Some(0));
     for (index, (route, previous, target)) in retired.iter().enumerate() {
         tokio::time::timeout(Duration::from_secs(20), async {
-                let control = Arc::new(ReplacementFixtureControl::default());
-                control.ticket_only.store(!inline, Ordering::Release);
-                if index < 65 {
-                    control.actions.lock().unwrap().push(Action::PanicOnce { cut: Cut::SourceCoreEntered });
+            let control = Arc::new(ReplacementFixtureControl::default());
+            control.ticket_only.store(!inline, Ordering::Release);
+            if index < 65 {
+                control.actions.lock().unwrap().push(Action::PanicOnce {
+                    cut: Cut::SourceCoreEntered,
+                });
+            }
+            let hooks = MailboxTestHooks::default();
+            *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+            let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+            let injection = pty.then(|| {
+                enqueue_shared_pty_engine_operation(
+                    &store,
+                    route,
+                    sender,
+                    b"root-full-retained-source",
+                )
+            });
+            let mut message = wake_message_to_target();
+            message.id = format!("root-full-{index}-{}", Uuid::new_v4());
+            message.to = target.clone();
+            let actual_delivery = async {
+                if let Some(injection) = injection.as_deref() {
+                    poller
+                        .dispatch_pty_input_operation(
+                            app,
+                            &state,
+                            injection,
+                            crate::phone::types::PtyInputSourcePlane::HostCli,
+                            None,
+                        )
+                        .await;
+                } else {
+                    let actual = poller.deliver_wake(app, &message).await;
+                    if index == 65 {
+                        let busy = crate::session::selection::SelectionCoordinatorError::Busy;
+                        assert!(
+                            actual.unwrap_err().contains(&busy.to_string()),
+                            "actual full root maps to Busy"
+                        );
+                    }
                 }
-                let hooks = MailboxTestHooks::default();
-                *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
-                let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
-                let injection = pty.then(|| enqueue_shared_pty_engine_operation(
-                    &store, route, sender, b"root-full-retained-source"));
-                let mut message = wake_message_to_target();
-                message.id = format!("root-full-{index}-{}", Uuid::new_v4());
-                message.to = target.clone();
-                let actual_delivery = async {
-                    if let Some(injection) = injection.as_deref() {
-                        poller.dispatch_pty_input_operation(app, &state, injection,
-                            crate::phone::types::PtyInputSourcePlane::HostCli, None).await;
-                    } else {
-                        let actual = poller.deliver_wake(app, &message).await;
-                        if index == 65 {
-                            assert!(actual.unwrap_err().contains(
-                                &crate::session::selection::SelectionCoordinatorError::Busy.to_string()),
-                                "actual full root maps to Busy");
+            };
+            if index < 65 {
+                let stopped = async {
+                    loop {
+                        if control
+                            .observe_owner(&coordinator)
+                            .is_some_and(|owner| owner.source_stopped)
+                        {
+                            break;
                         }
+                        tokio::task::yield_now().await;
                     }
                 };
-                if index < 65 {
-                    let stopped = async {
-                        loop {
-                            if control.observe_owner(&coordinator).is_some_and(|owner| owner.source_stopped) { break; }
-                            tokio::task::yield_now().await;
-                        }
-                    };
-                    tokio::select! {
-                        () = actual_delivery => panic!("real accepted-core panic leaves its outer waiter ambiguous"),
-                        () = stopped => {},
-                    }
-                    let receipt = retained_source_wait_cut(&control, Cut::SourceCoreEntered).await;
-                    let owner = control.observe_owner(&coordinator).unwrap();
-                    assert!(owner.source_stopped && !owner.terminal && !owner.transferred);
-                    assert_eq!(owner.effects_started, 0, "no finalization/native capacity consumed");
-                    assert!(manager.get_pending_session(receipt.binding.unwrap()).await.is_none());
-                    assert!(!control.submitted.load(Ordering::Acquire));
-                    assert!(shared_engine_writes(app, receipt.binding.unwrap().session_id()).is_empty());
-                    assert_eq!(coordinator.fixture_root_count(), Some(index + 1));
-                } else {
-                    actual_delivery.await;
-                    assert_eq!(coordinator.fixture_root_count(), Some(65));
-                    assert!(control.receipts.lock().unwrap().is_empty(), "refused attempt was never accepted");
+                tokio::select! {
+                    () = actual_delivery => panic!("real accepted-core panic leaves its outer \
+                        waiter ambiguous"),
+                    () = stopped => {},
                 }
-                assert!(manager.get_session(*previous).await.is_some());
-                assert!(hooks.spawn_calls.lock().unwrap().is_empty());
-                assert!(hooks.destroy_calls.lock().unwrap().is_empty());
-                if let Some(injection) = injection {
-                    let actual = store.query_pty_input_by_injection(&injection).unwrap().unwrap();
-                    assert_ne!(actual.status, crate::phone::types::PtyInputPublicStatus::Injected);
-                    assert!(!actual.terminal, "retained work cannot claim a terminal handoff");
-                    if index == 65 {
-                        assert_eq!(actual.reason.map(|reason| reason.code),
-                            Some(crate::phone::types::PtyInputReasonCode::StoreTransient));
-                    }
+                let receipt = retained_source_wait_cut(&control, Cut::SourceCoreEntered).await;
+                let owner = control.observe_owner(&coordinator).unwrap();
+                assert!(owner.source_stopped && !owner.terminal && !owner.transferred);
+                assert_eq!(
+                    owner.effects_started, 0,
+                    "no finalization/native capacity consumed"
+                );
+                assert!(manager
+                    .get_pending_session(receipt.binding.unwrap())
+                    .await
+                    .is_none());
+                assert!(!control.submitted.load(Ordering::Acquire));
+                assert!(
+                    shared_engine_writes(app, receipt.binding.unwrap().session_id()).is_empty()
+                );
+                assert_eq!(coordinator.fixture_root_count(), Some(index + 1));
+            } else {
+                actual_delivery.await;
+                assert_eq!(coordinator.fixture_root_count(), Some(65));
+                assert!(
+                    control.receipts.lock().unwrap().is_empty(),
+                    "refused attempt was \
+                        never accepted"
+                );
+            }
+            assert!(manager.get_session(*previous).await.is_some());
+            assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+            assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+            if let Some(injection) = injection {
+                let actual = store
+                    .query_pty_input_by_injection(&injection)
+                    .unwrap()
+                    .unwrap();
+                assert_ne!(
+                    actual.status,
+                    crate::phone::types::PtyInputPublicStatus::Injected
+                );
+                assert!(
+                    !actual.terminal,
+                    "retained work cannot claim a terminal handoff"
+                );
+                if index == 65 {
+                    assert_eq!(
+                        actual.reason.map(|reason| reason.code),
+                        Some(crate::phone::types::PtyInputReasonCode::StoreTransient)
+                    );
                 }
-            }).await.expect("same-history root member admission/refusal");
+            }
+        })
+        .await
+        .expect("same-history root member admission/refusal");
     }
     assert_eq!(coordinator.fixture_root_count(), Some(65));
     let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
@@ -7077,10 +7210,14 @@ async fn shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_targe
         terminal_result.reason.as_ref().map(|reason| reason.code),
         Some(reason)
     );
-    let (attempt, retries): (i64, i64) = connection.query_row(
-            "SELECT attempt, (SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND status='retry') FROM pty_input_operations WHERE injection_id=?1",
-            [&terminal_id], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
+    let (attempt, retries): (i64, i64) = connection
+        .query_row(
+            "SELECT attempt, (SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND \
+            status='retry') FROM pty_input_operations WHERE injection_id=?1",
+            [&terminal_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
     assert_eq!(attempt, terminal_claim.attempt);
     assert_eq!(retries, 0);
     assert_eq!(
@@ -7199,7 +7336,28 @@ async fn shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_targe
         enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"must remain queued");
     let connection = rusqlite::Connection::open(&database).unwrap();
     let snapshot = || {
-        connection.query_row("SELECT status,attempt,lease_owner,lease_until,payload,queued_at,updated_at,actuating_at,selected_session_id FROM pty_input_operations WHERE injection_id=?1", [&injection_id], |r| Ok((r.get::<_, String>(0)?,r.get::<_, i64>(1)?,r.get::<_, Option<String>>(2)?,r.get::<_, Option<String>>(3)?,r.get::<_, Option<Vec<u8>>>(4)?,r.get::<_, String>(5)?,r.get::<_, String>(6)?,r.get::<_, Option<String>>(7)?,r.get::<_, Option<String>>(8)?))).unwrap()
+        connection
+            .query_row(
+                "SELECT \
+                 status,attempt,lease_owner,lease_until,payload,queued_at,updated_at,\
+                 actuating_at,selected_session_id FROM pty_input_operations WHERE \
+                 injection_id=?1",
+                [&injection_id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, Option<Vec<u8>>>(4)?,
+                        r.get::<_, String>(5)?,
+                        r.get::<_, String>(6)?,
+                        r.get::<_, Option<String>>(7)?,
+                        r.get::<_, Option<String>>(8)?,
+                    ))
+                },
+            )
+            .unwrap()
     };
     let before = snapshot();
     let hooks = MailboxTestHooks::default();
@@ -7529,7 +7687,24 @@ async fn shared_pty_engine_worker_drains_promptly_on_shutdown_without_writing() 
             b"one-poll durable body",
         );
         let conn = rusqlite::Connection::open(&path).unwrap();
-        let original = conn.query_row("SELECT sender_fqn,target_fqn,op_id,request_fingerprint,payload,status FROM pty_input_operations WHERE injection_id=?1", [&injection_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<Vec<u8>>>(4)?, row.get::<_, String>(5)?))).unwrap();
+        let original = conn
+            .query_row(
+                "SELECT \
+            sender_fqn,target_fqn,op_id,request_fingerprint,payload,status FROM \
+            pty_input_operations WHERE injection_id=?1",
+                [&injection_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<Vec<u8>>>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .unwrap();
         assert_eq!(original.1, member.target);
         let scenario_target = original.1.clone();
         let scenario_key = format!("pty:{}:{}:{}", original.0.len(), original.0, original.2);
@@ -7566,7 +7741,24 @@ async fn shared_pty_engine_worker_drains_promptly_on_shutdown_without_writing() 
         assert_eq!(state.target_gate.as_ref().unwrap().exact_entry_count(), 0);
         drop(held_permit);
         // Phase1 durable snapshot precedes synthetic counter diagnostic.
-        let preserved = conn.query_row("SELECT sender_fqn,target_fqn,op_id,request_fingerprint,payload,status FROM pty_input_operations WHERE injection_id=?1", [&injection_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<Vec<u8>>>(4)?, row.get::<_, String>(5)?))).unwrap();
+        let preserved = conn
+            .query_row(
+                "SELECT \
+            sender_fqn,target_fqn,op_id,request_fingerprint,payload,status FROM \
+            pty_input_operations WHERE injection_id=?1",
+                [&injection_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<Vec<u8>>>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .unwrap();
         assert_eq!(
             (&preserved.0, &preserved.1, &preserved.2, &preserved.3),
             (&original.0, &original.1, &original.2, &original.3)
@@ -7732,7 +7924,24 @@ async fn shared_pty_engine_worker_drains_promptly_on_shutdown_without_writing() 
         }
 
         // Diagnostic leaves the phase1 SQL snapshot byte-identical.
-        let after = conn.query_row("SELECT sender_fqn,target_fqn,op_id,request_fingerprint,payload,status FROM pty_input_operations WHERE injection_id=?1", [&injection_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<Vec<u8>>>(4)?, row.get::<_, String>(5)?))).unwrap();
+        let after = conn
+            .query_row(
+                "SELECT \
+            sender_fqn,target_fqn,op_id,request_fingerprint,payload,status FROM \
+            pty_input_operations WHERE injection_id=?1",
+                [&injection_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<Vec<u8>>>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .unwrap();
         assert_eq!(after, preservation_snapshot);
     }
 }
@@ -9085,9 +9294,13 @@ async fn internal_live_delivery_uses_exact_payload_guard_and_system_bookkeeping(
         &[coordinator_id]
     );
     assert_eq!(
-            hooks.internal_payloads.lock().unwrap().as_slice(),
-            &["\n[AC context alert] `dev-rust` in `wg-1-dev-team` reached threshold(s): 50%, 75%. No action taken; you decide any follow-up.\n\r".to_string()]
-        );
+        hooks.internal_payloads.lock().unwrap().as_slice(),
+        &[
+            "\n[AC context alert] `dev-rust` in `wg-1-dev-team` reached threshold(s): 50%, 75%. \
+                No action taken; you decide any follow-up.\n\r"
+                .to_string()
+        ]
+    );
     assert_eq!(
         hooks.internal_bookkeeping.lock().unwrap().as_slice(),
         &[InternalSystemBookkeeping {
@@ -11564,7 +11777,8 @@ fn gate_advance_session_destroyed_abandons_even_when_idle() {
     let base = std::time::Instant::now();
     let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
     let max = std::time::Duration::from_secs(3600);
-    // session_present == false wins over everything, even waiting_for_input == true, in BOTH phases.
+    // session_present == false wins over everything, even waiting_for_input == true, in BOTH
+    // phases.
     let clear = SelfClearGateState {
         phase: SelfClearPhase::Clear,
         idle_since: Some(base),
@@ -11653,7 +11867,8 @@ fn gate_advance_clear_first_idle_starts_clock_without_injecting() {
     let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
     let max = std::time::Duration::from_secs(3600);
     let now = base + std::time::Duration::from_secs(1);
-    // idle, clock not yet started -> Wait with idle_since = Some(now), still Clear, NOT InjectClear.
+    // idle, clock not yet started -> Wait with idle_since = Some(now), still Clear, NOT
+    // InjectClear.
     let (next, action) =
         self_clear_gate_advance(SelfClearGateState::new(base), true, true, now, settle, max);
     assert_eq!(action, SelfClearGateAction::Wait);
@@ -11672,7 +11887,8 @@ fn gate_advance_clear_idle_held_injects_clear_and_resets_to_handoff() {
         idle_since: Some(base),
         phase_started: base,
     };
-    // idle held >= settle in Clear -> InjectClear AND state advanced to Handoff with BOTH clocks reset.
+    // idle held >= settle in Clear -> InjectClear AND state advanced to Handoff with BOTH clocks
+    // reset.
     let (next, action) = self_clear_gate_advance(state, true, true, inject_now, settle, max);
     assert_eq!(action, SelfClearGateAction::InjectClear);
     assert_eq!(next.phase, SelfClearPhase::Handoff);
@@ -11795,10 +12011,11 @@ fn self_clear_handoff_prompt_is_single_line_self_contained() {
             "handoff prompt must stay em-dash-free"
         );
         assert_eq!(
-                prompt.matches(path).count(),
-                2,
-                "the prompt must name the file in the read instruction AND the missing-or-empty clause: {prompt}"
-            );
+            prompt.matches(path).count(),
+            2,
+            "the prompt must name the file in the read instruction AND the missing-or-empty \
+                clause: {prompt}"
+        );
         assert!(prompt.contains("missing or empty"));
         assert_eq!(build_self_clear_handoff_prompt(path, None), prompt);
     }
@@ -11827,10 +12044,11 @@ fn self_switch_handoff_prompt_is_single_line_self_contained() {
         assert!(!prompt.contains('\n'));
         assert!(!prompt.contains('\u{2014}'));
         assert_eq!(
-                prompt.matches(path).count(),
-                2,
-                "the prompt must name the file in the read instruction AND the missing-or-empty clause: {prompt}"
-            );
+            prompt.matches(path).count(),
+            2,
+            "the prompt must name the file in the read instruction AND the missing-or-empty \
+                clause: {prompt}"
+        );
         assert!(prompt.contains("missing or empty"));
         assert_eq!(build_self_switch_handoff_prompt(path, None), prompt);
     }
@@ -12216,7 +12434,8 @@ fn archive_root_md_forget_target_exists_errs_without_clobber() {
 
 #[test]
 fn archive_root_md_self_handoff_present_moves_to_self_clear_with_prefixed_name() {
-    // #629/#636 - the new consumer: SELF-HANDOFF.md is archived into self-clear/ with the same helper.
+    // #629/#636 - the new consumer: SELF-HANDOFF.md is archived into self-clear/ with the same
+    // helper.
     let temp = tempfile::TempDir::new().unwrap();
     let src = temp.path().join("SELF-HANDOFF.md");
     std::fs::write(&src, "resume: finish step 4\nthen run gates").unwrap();
@@ -12408,8 +12627,8 @@ fn seed_self_handoff(cwd: &Path) {
 }
 
 /// #626/#636 - count archived SELF-FORGET files in `cwd/self-clear/` (suffix match; the wall-clock
-/// timestamp prefix in the real archive name is unpredictable, so the harness asserts by suffix, not
-/// exact name). Returns 0 if `self-clear/` does not exist (read_dir errors -> unwrap_or(0)).
+/// timestamp prefix in the real archive name is unpredictable, so the harness asserts by suffix,
+/// not exact name). Returns 0 if `self-clear/` does not exist (read_dir errors -> unwrap_or(0)).
 fn count_forget_archives(cwd: &Path) -> usize {
     std::fs::read_dir(cwd.join("self-clear"))
         .map(|rd| {
@@ -12946,7 +13165,8 @@ async fn handle_self_clear_valid_token_queues() {
     );
     assert!(pending_self_clear_contains(&app, session_id).await);
     assert_eq!(pending_self_clear_len(&app).await, 1);
-    // #626/#636: SELF-FORGET.md archived to exactly one self-clear/<ts>_SELF-FORGET.md, original gone.
+    // #626/#636: SELF-FORGET.md archived to exactly one self-clear/<ts>_SELF-FORGET.md, original
+    // gone.
     assert!(
         !cwd.join("SELF-FORGET.md").is_file(),
         "SELF-FORGET.md must be archived away on queue"
@@ -13211,10 +13431,11 @@ async fn handle_self_clear_root_agent_is_allowed() {
     std::fs::create_dir_all(&cwd).unwrap();
     let (session_id, token) = seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
     seed_self_handoff(&cwd); // #626 existence gate
-                             // #617 follow-up: the Root Agent exclusion was removed. A token-authorized
-                             // self-clear from the Root must now queue like any other coding-agent
-                             // session. Identity is still resolved solely by find_by_token, so this can
-                             // only ever clear the session that owns the presented token.
+                             // #617 follow-up: the Root Agent exclusion was removed. A
+                             // token-authorized self-clear from the Root must now queue like any
+                             // other coding-agent session. Identity is still resolved solely by
+                             // find_by_token, so this can only ever clear the session that owns the
+                             // presented token.
     {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
@@ -15303,10 +15524,11 @@ fn self_restart_handoff_prompt_is_single_line_self_contained() {
         assert!(!prompt.contains('\n'));
         assert!(!prompt.contains('\u{2014}'));
         assert_eq!(
-                prompt.matches(path).count(),
-                2,
-                "the prompt must name the file in the read instruction AND the missing-or-empty clause: {prompt}"
-            );
+            prompt.matches(path).count(),
+            2,
+            "the prompt must name the file in the read instruction AND the missing-or-empty \
+                clause: {prompt}"
+        );
         assert!(prompt.contains("missing or empty"));
         assert!(prompt.contains("self-handoff-and-restart"), "{prompt}");
         assert_eq!(build_self_restart_handoff_prompt(path, None), prompt);
@@ -15449,10 +15671,13 @@ async fn handle_self_restart_valid_token_queues_without_selection_write() {
     // discriminating rather than vacuous: the response must carry the LIVE recipe (never
     // the cell), and the cells must survive the call untouched.
     std::fs::write(
-            fixture.replica.join("config.json"),
-            r#"{"identity":"../../_agent_dev-rust","tooling":{"currentCodingAgent":"codex","profile":"C"}}"#,
-        )
-        .unwrap();
+        fixture.replica.join("config.json"),
+        concat!(
+            r#"{"identity":"../../_agent_dev-rust","#,
+            r#""tooling":{"currentCodingAgent":"codex","profile":"C"}}"#,
+        ),
+    )
+    .unwrap();
 
     let (path, msg) = build_self_restart_message_with_from(
         &fixture.replica,
@@ -16889,8 +17114,8 @@ fn clear_root_self_clear_artifacts(cwd: &Path, msg_id: &str, request_id: &str) {
             .join("responses")
             .join(format!("{}.json", request_id)),
     );
-    // Defensive: drop any stale <ts>_SELF-FORGET.md archive under the shared root's self-clear/ (none
-    // is created in the normal e2e flow since neither test seeds SELF-FORGET.md).
+    // Defensive: drop any stale <ts>_SELF-FORGET.md archive under the shared root's self-clear/
+    // (none is created in the normal e2e flow since neither test seeds SELF-FORGET.md).
     if let Ok(rd) = std::fs::read_dir(cwd.join("self-clear")) {
         for entry in rd.flatten() {
             if entry
@@ -17111,9 +17336,10 @@ async fn process_message_root_self_restart_with_canonical_sender_queues() {
     // class this lock does NOT cover: the directories that builder creates are not under the
     // Root dir at all.
     assert!(
-            !wake_agents().iter().any(|a| a.id == "pi"),
-            "T23 requires 'pi' to be unconfigured so the step-6 pre-flight never touches the shared Root dir"
-        );
+        !wake_agents().iter().any(|a| a.id == "pi"),
+        "T23 requires 'pi' to be unconfigured so the step-6 pre-flight never touches the \
+            shared Root dir"
+    );
 
     let root_cwd =
         PathBuf::from(crate::config::root_agent::root_agent_dir().expect("resolve root agent dir"));
@@ -17306,11 +17532,12 @@ fn err_is_pty_session_missing_matches_actual_apperror_format() {
 #[test]
 fn classify_injection_error_defers_menu_guard_and_fails_everything_else() {
     assert_eq!(
-            classify_injection_error(
-                "menu_guard_deferred: session 2ced5ccf-1234-5678-9abc-def012345678 is blocked by interactive menu"
-            ),
-            (log::Level::Debug, "deferred")
-        );
+        classify_injection_error(
+            "menu_guard_deferred: session 2ced5ccf-1234-5678-9abc-def012345678 is blocked by \
+                interactive menu"
+        ),
+        (log::Level::Debug, "deferred")
+    );
     // Positive control: a real PTY write failure stays ERROR.
     assert_eq!(
         classify_injection_error(
@@ -18492,9 +18719,12 @@ async fn remote_pi_compact_existing_session_has_no_actuation() {
         .unwrap_err();
 
     assert_eq!(
-            error,
-            "Cannot execute logical remote command 'compact': session shell 'pi' has no verified mapping. Claude / Codex / Antigravity / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported."
-        );
+        error,
+        "Cannot execute logical remote command 'compact': session shell 'pi' has no verified \
+            mapping. Claude / Codex / Antigravity / Cursor agent direct shells use /clear and \
+            /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact \
+            are unsupported."
+    );
     assert!(mock_pty_writes_for(&app, session_id).is_empty());
     assert!(events.lock().unwrap().is_empty());
     let manager = {
@@ -19212,9 +19442,12 @@ async fn poll_rejects_terminal_logical_command_on_first_attempt() {
         .join("poll-pi-compact.reason.txt");
     let reason = std::fs::read_to_string(reason_path).unwrap();
     assert_eq!(
-            reason,
-            "Cannot execute logical remote command 'compact': session shell 'pi' has no verified mapping. Claude / Codex / Antigravity / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported."
-        );
+        reason,
+        "Cannot execute logical remote command 'compact': session shell 'pi' has no verified \
+            mapping. Claude / Codex / Antigravity / Cursor agent direct shells use /clear and \
+            /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact \
+            are unsupported."
+    );
     assert!(!reason.contains("Undeliverable after"));
     assert!(!poller.retry_tracker.contains_key(&source));
     assert!(hooks.events.lock().unwrap().is_empty());
@@ -21284,9 +21517,11 @@ async fn ten_guard_drops_reach_terminal_rejection() {
 
             let reason = std::fs::read(&rejected_reason).unwrap();
             assert_eq!(
-                    reason,
-                    b"Undeliverable after 10 attempts. Last error: wake worker ended without reporting an outcome"
-                );
+                reason,
+                "Undeliverable after 10 attempts. Last error: wake worker ended without \
+                    reporting an outcome"
+                    .as_bytes()
+            );
         }
     }
 }
@@ -23583,9 +23818,11 @@ fn issue_2129_branch_stale_line_renders_a_qualified_base() {
     .expect("a branch-stale notice")
     .line();
     assert_eq!(
-            resolved,
-            "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 commits behind main on GitHub as of 2026-09-15 23:18:43-03:00. If CI runs on this branch, it is validating an out-of-date base."
-        );
+        resolved,
+        "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 \
+            commits behind main on GitHub as of 2026-09-15 23:18:43-03:00. If CI runs on this \
+            branch, it is validating an out-of-date base."
+    );
 
     let sentinel = remote_activity_notice(
         RemoteNoticeKind::BranchStale,
@@ -23596,9 +23833,11 @@ fn issue_2129_branch_stale_line_renders_a_qualified_base() {
     .expect("a branch-stale notice")
     .line();
     assert_eq!(
-            sentinel,
-            "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 commits behind the default branch on GitHub as of 2026-09-15 23:18:43-03:00. If CI runs on this branch, it is validating an out-of-date base."
-        );
+        sentinel,
+        "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 \
+            commits behind the default branch on GitHub as of 2026-09-15 23:18:43-03:00. If CI \
+            runs on this branch, it is validating an out-of-date base."
+    );
 
     // The helper hardcodes the branch, so the branch == base case is built
     // directly.
@@ -23615,9 +23854,11 @@ fn issue_2129_branch_stale_line_renders_a_qualified_base() {
     .expect("a branch-stale notice")
     .line();
     assert_eq!(
-            counterpart,
-            "[AgentsCommander] mblua/AgentsCommander main is now 4 commits behind its counterpart on GitHub as of 2026-09-15 23:18:43-03:00. If CI runs on this branch, it is validating an out-of-date base."
-        );
+        counterpart,
+        "[AgentsCommander] mblua/AgentsCommander main is now 4 commits behind its counterpart \
+            on GitHub as of 2026-09-15 23:18:43-03:00. If CI runs on this branch, it is validating \
+            an out-of-date base."
+    );
     assert_eq!(counterpart.matches("main").count(), 1);
 }
 
