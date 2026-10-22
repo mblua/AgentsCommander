@@ -236,3 +236,57 @@ test('cfg_attr expression-valued metadata stays production; invalid char escape 
   assert.equal(a.items[0].testOnly,false);assert.ok(a.attributes[0].signals.some(s=>s.name==='test'));
   const slash=String.fromCharCode(92);assert.throws(()=>lexRust('x.rs',"fn f(){let c='"+slash+"q';}"),e=>e.exit===3);
 });
+
+test('numeric tokens preserve ranges, tuple calls and Rust numeric literals', () => {
+  const source = 'fn f(){for i in 0..MAX { self.0.write_all(b); } for j in 1..=LIMIT { x.0.1.join("a"); state.1.push(v); }}';
+  const a = scanRust('x.rs', source);
+  const range = a.tokens.findIndex(t => t.text === '0');
+  assert.deepEqual(a.tokens.slice(range, range + 3).map(t => t.text), ['0', '..', 'MAX']);
+  const inclusive = a.tokens.findIndex(t => t.text === '..=');
+  assert.deepEqual(a.tokens.slice(inclusive - 1, inclusive + 2).map(t => t.text), ['1', '..=', 'LIMIT']);
+  for (const name of ['write_all', 'join', 'push']) {
+    assert.ok(a.productionTokens.some(t => t.name === name), name);
+    assert.ok(a.sites.find(s => s.operation.includes(name)).tokens.some(t => t.name === name), name);
+  }
+  assert.ok(a.tokens.some((t, i) => t.text === '0' && a.tokens[i + 1]?.text === '.' && a.tokens[i + 2]?.text === '1'));
+  for (const literal of ['1.5f32', '1e-3', '1E+3f64', '0x1F', '0xff_u8', '0b1010u8', '0o77', '1_000usize', '1.']) {
+    const tokens = lexRust('x.rs', literal).tokens;
+    assert.equal(tokens.length, 1, literal); assert.equal(tokens[0].kind, 'number'); assert.equal(tokens[0].text, literal);
+  }
+  for (const t of a.tokens) assert.equal(source.slice(t.start, t.end), t.text);
+});
+
+test('const generic parameters are not items; actual body constants stay visible', () => {
+  const sources = [
+    'impl<const N: usize> Foo<N> { const VALUE: usize = 1; fn a(){} }',
+    'struct A<const N: usize> { x: [u8; N] }',
+    'struct Tuple<T, const N: usize = { 2 + 1 }>([T; N]);',
+    'trait A<T, const N: usize> { const VALUE: usize; fn a(); }',
+    'enum A<const N: usize> { V([u8; N]) }',
+    'union A<const N: usize> { x: [u8; N] }',
+    'type A<const N: usize> = [u8; N];',
+    'fn a<T, const N: usize>() { const VALUE: usize = 1; }',
+  ];
+  for (const source of sources) {
+    const a = scanRust('x.rs', source);
+    assert.ok(!a.items.some(i => i.kind === 'const' && i.name === 'N'), source);
+    if (source.includes('VALUE')) assert.ok(a.items.some(i => i.kind === 'const' && i.name === 'VALUE'), source);
+    if (source.includes('fn a')) assert.ok(a.items.some(i => i.kind === 'fn' && i.name === 'a'), source);
+  }
+  assert.throws(() => scanRust('x.rs', 'impl<const N: usize> Foo<N> { const VALUE: usize }'), e => e.exit === 3);
+});
+
+test('absolute test attributes resolve without shadowing or hiding later production', () => {
+  for (const attribute of ['::tokio::test', '::async_std::test']) {
+    const a = scanRust('x.rs', `mod tokio {} #[${attribute}] async fn t(){work();} fn production(){work();}`);
+    const t = a.items.find(i => i.name === 't'), p = a.items.find(i => i.name === 'production');
+    assert.equal(t.directTest, true); assert.equal(a.isTestOffset(t.bodyStart + 1), true);
+    assert.equal(a.isTestOffset(t.start), false); assert.equal(p.testOnly, false);
+    assert.ok(a.productionTokens.some(token => token.name === 'production'));
+    const path = lexRust('x.rs', attribute).tokens;
+    assert.equal(a.resolvePath(path).path, attribute.slice(2));
+  }
+  const a = scanRust('x.rs', '#[cfg_attr(unix,::tokio::test)] fn production(){}');
+  assert.equal(a.items[0].testOnly, false); assert.ok(a.attributes[0].signals.some(s => s.name === '::tokio::test'));
+  assert.throws(() => scanRust('x.rs', '#[::] fn t(){}'), e => e.exit === 3);
+});

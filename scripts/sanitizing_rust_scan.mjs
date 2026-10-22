@@ -99,7 +99,13 @@ export function lexRust(path, text) {
       else { advance(i + c.length); while (i < text.length && identPart.test(String.fromCodePoint(text.codePointAt(i)))) advance(i + (text.codePointAt(i) > 0xffff ? 2 : 1)); }
       add('ident', start, i, tokenLine, { name: text.slice(start, i).replace(/^r#/, '') }); continue;
     }
-    if (/\d/.test(c)) { advance(i + 1); while (i < text.length && /[\w.]/.test(text[i])) advance(i + 1); add('number', start, i, tokenLine); continue; }
+    if (/\d/.test(c)) {
+      // A tuple index cannot absorb the following projection, call or range.
+      const numeric = tokens.at(-1)?.text === '.' ? /^\d[\d_]*/ :
+        /^(?:0(?:x[\da-fA-F_]+|o[0-7_]+|b[01_]+)|\d[\d_]*(?:\.(?!\.|[_\p{ID_Start}])[\d_]*)?(?:[eE][+-]?[\d_]+)?)(?:[_\p{ID_Start}][\p{ID_Continue}_]*)?/u;
+      advance(i + numeric.exec(text.slice(i))[0].length);
+      add('number', start, i, tokenLine); continue;
+    }
     const punctuation = ['::', '=>', '->', '==', '!=', '+=', '-=', '*=', '/=', '..=', '..', '&&', '||'].find(p => text.startsWith(p, i)) ?? c;
     advance(i + punctuation.length); const token = add('punct', start, i, tokenLine);
     if (opens[c]) stack.push(token.index);
@@ -124,8 +130,9 @@ export function parseMeta(tokens) {
   let i = 0;
   const fail = () => { throw new GateError(`line ${tokens[i]?.line ?? tokens.at(-1)?.line ?? 1}: invalid attribute meta`); };
   function parse() {
+    const absolute = tokens[i]?.text === '::'; if (absolute) i++;
     if (tokens[i]?.kind !== 'ident') fail();
-    let name = tokens[i++].name;
+    let name = (absolute ? '::' : '') + tokens[i++].name;
     while (tokens[i]?.text === '::') { i++; if (tokens[i]?.kind !== 'ident') fail(); name += '::' + tokens[i++].name; }
     const node = { name, args: null };
     if (tokens[i]?.text === '=') {
@@ -166,8 +173,11 @@ function attributeSignals(meta) {
 }
 const testPaths = new Set(['test', 'tokio::test', 'async_std::test']);
 const itemKinds = new Set(['fn', 'mod', 'struct', 'enum', 'union', 'trait', 'impl', 'const', 'static', 'type', 'use', 'extern', 'macro_rules']);
-const simplePath = tokens => tokens.length > 0 && tokens.every((t, i) => i % 2 === 0 ? t.kind === 'ident' : t.text === '::')
-  ? tokens.filter(t => t.kind === 'ident').map(t => t.name).join('::') : null;
+const simplePath = tokens => {
+  const absolute = tokens[0]?.text === '::', parts = absolute ? tokens.slice(1) : tokens;
+  return parts.length > 0 && parts.length % 2 === 1 && parts.every((t, i) => i % 2 === 0 ? t.kind === 'ident' : t.text === '::')
+    ? (absolute ? '::' : '') + parts.filter(t => t.kind === 'ident').map(t => t.name).join('::') : null;
+};
 function imports(tokens, prefix = []) {
   if (tokens[0]?.text === '::') tokens = tokens.slice(1);
   const open = tokens.findIndex(t => t.text === '{');
@@ -185,6 +195,7 @@ export function resolvePath(input, scope) {
   const at = typeof input === 'string' ? Infinity : input[0]?.start ?? Infinity;
   const text = typeof input === 'string' ? input : simplePath(input);
   if (!text) return { path: null, ambiguous: true, reason: 'non-simple path' };
+  if (text.startsWith('::')) return { path: text.slice(2), ambiguous: false };
   const parts = text.replace(/^::/, '').split('::'); let binding;
   for (let s = scope; s; s = s.parent) {
     if (s.bindings.has(parts[0])) {
@@ -209,7 +220,7 @@ export function resolvePath(input, scope) {
     if (other?.target) target = other.target + target.slice(first.length);
     else if (other && other.kind !== 'import') return { path: null, shadowed: true, ambiguous: false, binding };
   }
-  return { path: [target, ...parts.slice(1)].join('::'), ambiguous: false, binding };
+  return { path: [target, ...parts.slice(1)].join('::').replace(/^::/, ''), ambiguous: false, binding };
 }
 
 export function scanRust(path, text) {
@@ -242,6 +253,7 @@ export function scanRust(path, text) {
     let meta;
     if (relevant) meta = parseMeta(body);
     else { const call = body.findIndex(t => !['ident'].includes(t.kind) && t.text !== '::'); meta = { name: simplePath(call < 0 ? body : body.slice(0, call)) ?? body[0]?.name, args: null }; }
+    if (!meta.name) error(path, tokens[i].line, 'invalid attribute path');
     if (meta.name === 'cfg' && meta.args?.length !== 1) error(path, tokens[i].line, 'cfg requires one predicate');
     if (meta.name === 'cfg_attr' && (meta.args?.length ?? 0) < 2) error(path, tokens[i].line, 'cfg_attr requires predicate and attribute');
     const attr = { start: tokens[i].start, end: tokens[end].end, line: tokens[i].line, inner, meta,
@@ -256,21 +268,30 @@ export function scanRust(path, text) {
     if (prior && prior.kind !== 'shadow' && data.kind !== 'shadow' && data.kind !== 'local') data = { ...data, ambiguous: true, reason: 'duplicate binding' };
     scope.bindings.set(name, { ...data, name, scope, previous: prior });
   };
+  const genericConsts = new Set();
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i], kind = token.name;
     if (!itemKinds.has(kind) || insideAttribute(i) || inMacro(i) || tokens[i - 1]?.text === '::' || tokens[i - 1]?.text === '.') continue;
     if (['fn', 'mod', 'struct', 'enum', 'union', 'trait', 'type'].includes(kind) && tokens[i + 1]?.kind !== 'ident') continue;
     if (kind === 'const' && (tokens[i + 1]?.kind !== 'ident' || tokens[i - 1]?.text === '*')) continue;
+    if (kind === 'const' && genericConsts.has(i)) continue;
     if (items.some(item => item.kind === 'fn' && i > item.first && token.start < item.bodyStart)) continue;
     // const qualifiers and generic parameters are not standalone items.
     if (kind === 'const' && ['fn', 'unsafe', 'extern'].includes(tokens[i + 1]?.name)) continue;
     if (kind === 'extern' && tokens[i + 1]?.name !== 'crate' && tokens[i + 1]?.text !== '{') continue;
     if (kind === 'use' && tokens[i - 1]?.text === '<') continue;
-    let body = null, end = null, j = i + 1;
+    let body = null, end = null, j = i + 1, angleDepth = 0;
+    const genericHeader = ['fn', 'struct', 'enum', 'union', 'trait', 'impl', 'type'].includes(kind);
     for (; j < tokens.length; j++) {
       const t = tokens[j];
+      if (genericHeader) {
+        if (t.text === '<') angleDepth++;
+        else if (t.text === '>') angleDepth = Math.max(0, angleDepth - 1);
+        else if (angleDepth && t.name === 'const') genericConsts.add(j);
+      }
       if (t.text === ';') { end = j; break; }
       if (t.text === '{') {
+        if (angleDepth) { j = t.mate; continue; }
         if (kind === 'use' || ['const', 'static', 'type'].includes(kind)) { j = t.mate; continue; }
         body = j; end = t.mate; break;
       }
