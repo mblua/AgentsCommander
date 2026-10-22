@@ -4,8 +4,7 @@ use super::*;
 fn issue_2832_default_blocks_render_once_in_configured_order() {
     let (temp, root) = issue_2832_fixture();
     let source =
-        std::fs::read_to_string(temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME))
-            .unwrap();
+        std::fs::read_to_string(temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME)).unwrap();
     assert_eq!(
         source,
         crate::config::root_agent::default_root_context_template()
@@ -108,7 +107,13 @@ fn issue_2832_custom_context_arrays_order_and_raw_files() {
         .unwrap();
         assert_eq!(issue_2832_combined(&root, temp.path(), true), expected);
     }
-    std::fs::write(root.join("config.json"), serde_json::json!({"context":["extra.md", "../Context.root-agent.md", "Context.root-agent.md", "Role.md"]}).to_string()).unwrap();
+    std::fs::write(
+        root.join("config.json"),
+        serde_json::json!({"context":["extra.md", "../\
+        Context.root-agent.md", "Context.root-agent.md", "Role.md"]})
+        .to_string(),
+    )
+    .unwrap();
     let out = issue_2832_combined(&root, temp.path(), false);
     assert!(out.starts_with("EXTRA\n\n---\n\n# Context: Context.root-agent.md"));
     assert!(out.contains("RAW {{AGENT_ROOT}}\n{{#HOST_WINDOWS}}\nRAW CONDITION"));
@@ -155,7 +160,12 @@ fn issue_2832_missing_invalid_and_directory_bases_fail_before_overrides() {
 fn issue_2832_overrides_render_once_empty_suppresses_and_rejection_falls_back() {
     let (temp, root) = issue_2832_fixture();
     let overlay = temp.path().join("Context.root-agent.local.md");
-    std::fs::write(&overlay, "LOCAL {{AGENT_ROOT}} {{UNKNOWN}}\n{{#AUTO_SELF_CLEAR}}\nAUTHORED CLEAR\n{{/AUTO_SELF_CLEAR}}\n").unwrap();
+    std::fs::write(
+        &overlay,
+        "LOCAL {{AGENT_ROOT}} {{UNKNOWN}}\n{{#AUTO_SELF_CLEAR}}\nAUTHORED \
+        CLEAR\n{{/AUTO_SELF_CLEAR}}\n",
+    )
+    .unwrap();
     let on = issue_2832_combined(&root, temp.path(), true);
     assert!(on.contains("AUTHORED CLEAR"));
     assert!(on.contains("{{UNKNOWN}}"));
@@ -178,7 +188,9 @@ fn issue_2832_condition_errors_repetition_unknowns_and_single_pass_values() {
         ),
         ("APP_CONFIG_DIR", "config".to_string()),
     ]);
-    let source = "{{UNKNOWN}} {{AGENT_ROOT}} {{AGENT_ROOT}}\n{{#HOST_WINDOWS}}\nW\n{{/HOST_WINDOWS}}\n{{#HOST_WINDOWS}}\nW2\n{{/HOST_WINDOWS}}\n{{#HOST_LINUX}}\nL\n{{/HOST_LINUX}}\n{{#HOST_MACOS}}\nM\n{{/HOST_MACOS}}\n";
+    let source = "{{UNKNOWN}} {{AGENT_ROOT}} \
+        {{AGENT_ROOT}}\n{{#HOST_WINDOWS}}\nW\n{{/HOST_WINDOWS}}\n{{#HOST_WINDOWS}}\nW2\n{{/\
+        HOST_WINDOWS}}\n{{#HOST_LINUX}}\nL\n{{/HOST_LINUX}}\n{{#HOST_MACOS}}\nM\n{{/HOST_MACOS}}\n";
     for (predicates, wanted) in [
         ([true, false, false, false], "W\nW2\n"),
         ([false, true, false, false], "L\n"),
@@ -186,7 +198,13 @@ fn issue_2832_condition_errors_repetition_unknowns_and_single_pass_values() {
         ([false, false, false, false], ""),
     ] {
         let out = render_root_template_text(source, path, &values, predicates).unwrap();
-        assert_eq!(out, format!("{{{{UNKNOWN}}}} path/{{{{APP_CONFIG_DIR}}}}/{{{{#HOST_WINDOWS}}}} path/{{{{APP_CONFIG_DIR}}}}/{{{{#HOST_WINDOWS}}}}\n{wanted}"));
+        assert_eq!(
+            out,
+            format!(
+                "{{{{UNKNOWN}}}} path/{{{{APP_CONFIG_DIR}}}}/{{{{#HOST_WINDOWS}}}} \
+            path/{{{{APP_CONFIG_DIR}}}}/{{{{#HOST_WINDOWS}}}}\n{wanted}"
+            )
+        );
     }
     for malformed in [
         "{{/HOST_WINDOWS}}\n",
@@ -194,8 +212,7 @@ fn issue_2832_condition_errors_repetition_unknowns_and_single_pass_values() {
         "{{#HOST_WINDOWS}}\n{{#HOST_LINUX}}\n",
         "{{#HOST_WINDOWS}}\n{{/HOST_LINUX}}\n",
     ] {
-        let error =
-            render_root_template_text(malformed, path, &values, [false; 4]).unwrap_err();
+        let error = render_root_template_text(malformed, path, &values, [false; 4]).unwrap_err();
         assert!(error.contains("Context.root-agent.md:"));
     }
     assert_eq!(
@@ -215,7 +232,8 @@ fn issue_2832_condition_errors_repetition_unknowns_and_single_pass_values() {
 fn issue_2832_self_maintenance_is_authored_and_never_heading_rewritten() {
     let (temp, root) = issue_2832_fixture();
     let base = temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
-    let custom = "## Self-Maintenance custom heading\nKEEP THIS\n{{#AUTO_SELF_CLEAR}}\nAUTHORED AUTO\n{{/AUTO_SELF_CLEAR}}\n";
+    let custom = "## Self-Maintenance custom heading\nKEEP THIS\n{{#AUTO_SELF_CLEAR}}\nAUTHORED \
+        AUTO\n{{/AUTO_SELF_CLEAR}}\n";
     std::fs::write(&base, custom).unwrap();
     let on = issue_2832_combined(&root, temp.path(), true);
     let off = issue_2832_combined(&root, temp.path(), false);
@@ -250,9 +268,21 @@ fn issue_2832_modified_snapshots_survive_provisioning_and_final_materialization(
                 let (temp, root) = issue_2832_fixture();
                 let path = temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
                 std::fs::write(&path, &custom).unwrap();
-                let state_path = temp.path().join(crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
+                let state_path = temp.path().join(
+                    crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME,
+                );
                 if forged {
-                    let state = serde_json::json!({"schemaVersion":1,"templates":{"rootAgent":{"templateId":"rootAgent","currentVersion":8,"lastSeededSha256":format!("{:x}", Sha256::digest(custom.as_bytes()))}}});
+                    let state = serde_json::json!({
+                        "schemaVersion": 1,
+                        "templates": {
+                            "rootAgent": {
+                                "templateId": "rootAgent",
+                                "currentVersion": 8,
+                                "lastSeededSha256":
+                                    format!("{:x}", Sha256::digest(custom.as_bytes()))
+                            }
+                        }
+                    });
                     std::fs::write(&state_path, state.to_string()).unwrap();
                 } else {
                     std::fs::remove_file(&state_path).unwrap();
@@ -314,7 +344,8 @@ fn issue_2832_successful_root_resolver_and_direct_ensure_preserve_exclusions() {
             .map(move |name| dir.join(name))
         })
         .collect();
-    let authored = "## Self-Maintenance\nAUTHORED POLICY\n{{#AUTO_SELF_CLEAR}}\nAUTHORED AUTO\n{{/AUTO_SELF_CLEAR}}\n";
+    let authored = "## Self-Maintenance\nAUTHORED POLICY\n{{#AUTO_SELF_CLEAR}}\nAUTHORED \
+        AUTO\n{{/AUTO_SELF_CLEAR}}\n";
     let authored_off = "## Self-Maintenance\nAUTHORED POLICY\n";
     let local = "## Self-Maintenance\nAUTHORED LOCAL\n";
     let mut cases = 0;
@@ -407,7 +438,11 @@ fn issue_2832_successful_root_resolver_and_direct_ensure_preserve_exclusions() {
                         let path = ensure_session_context(&path_string(&root)).unwrap();
                         std::fs::read_to_string(path).unwrap()
                     });
-                    assert_eq!(direct, selected_off, "direct ensure renders selected file with auto=false, independently of context[]");
+                    assert_eq!(
+                        direct, selected_off,
+                        "direct ensure renders selected file with \
+                        auto=false, independently of context[]"
+                    );
                     for path in &protected {
                         if sentinels_present {
                             assert_eq!(
@@ -426,9 +461,7 @@ fn issue_2832_successful_root_resolver_and_direct_ensure_preserve_exclusions() {
         }
     }
     assert_eq!(cases, 28);
-    println!(
-        "issue_2832 production resolver/direct-ensure cases: {cases}, each repeated twice"
-    );
+    println!("issue_2832 production resolver/direct-ensure cases: {cases}, each repeated twice");
     // The seam changes only configuration, never accepts another Root path.
     let spoof = temp.path().join("ac-root-agent");
     std::fs::create_dir(&spoof).unwrap();
@@ -500,8 +533,7 @@ fn issue_2832_skill_budget_overflow_is_data_only_and_non_root_keeps_instructions
             .unwrap();
         let root = temp.path().join("ac-root-agent");
         std::fs::create_dir(&root).unwrap();
-        crate::config::seeded_context_templates::ensure_root_context_template(temp.path())
-            .unwrap();
+        crate::config::seeded_context_templates::ensure_root_context_template(temp.path()).unwrap();
         crate::config::root_agent::ensure_default_root_agent_skills_at(&root).unwrap();
         std::fs::write(
             root.join("config.json"),
@@ -574,12 +606,11 @@ fn issue_2832_skill_budget_overflow_is_data_only_and_non_root_keeps_instructions
             }],
             warnings: vec![],
         };
-        assert!(
-            render_root_skills_list(&missing_description).contains("No description metadata.")
-        );
+        assert!(render_root_skills_list(&missing_description).contains("No description metadata."));
         assert!(!render_root_skills_list(&missing_description).contains("inspect"));
-        assert!(render_skills_section(&missing_description)
-            .contains("inspect SKILL.md before use."));
+        assert!(
+            render_skills_section(&missing_description).contains("inspect SKILL.md before use.")
+        );
         assert!(crate::config::root_agent::default_root_context_template()
             .contains("inspect the canonical SKILL.md files if needed."));
         println!("issue_2832 overflow host-path padding: {path_width}");
@@ -601,7 +632,13 @@ fn issue_2832_runtime_skills_and_repos_refresh_without_instructional_helpers() {
         "new-skill",
         "---\nname: new-skill\ndescription: RUNTIME METADATA\n---\nBODY\n",
     );
-    std::fs::write(root.join("config.json"), serde_json::json!({"repos":["../repo-{{AGENT_ROOT}}"],"context":["../Context.root-agent.md"]}).to_string()).unwrap();
+    std::fs::write(
+        root.join("config.json"),
+        serde_json::json!({"repos":["../\
+        repo-{{AGENT_ROOT}}"],"context":["../Context.root-agent.md"]})
+        .to_string(),
+    )
+    .unwrap();
     let second = issue_2832_combined(&root, temp.path(), false);
     assert!(second.contains("RUNTIME METADATA"));
     assert!(second.contains("repo-{{AGENT_ROOT}}"));

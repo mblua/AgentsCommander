@@ -30,14 +30,19 @@ fn summarized_default_context_preserves_matrix_write_boundary() {
     assert!(entry.contains("every rotated `memory-archive/memory_YYYYMMDD_hhmmss/` archive"));
     assert!(entry.contains("Read-only there"));
     assert!(entry.contains("legacy root `memory_YYYYMMDD_hhmmss/` archives"));
-    assert!(entry
-        .contains("list your own `memory-archive/` solely to discover archive directories"));
+    assert!(
+        entry.contains("list your own `memory-archive/` solely to discover archive directories")
+    );
     assert!(entry.contains("never write, modify or delete archives or their container"));
     assert!(wg.contains(
         "reads/writes outside entries 1-4, including other replicas, unlisted Matrix files"
     ));
     assert!(wg.contains("other replicas"));
-    assert!(wg.contains("Other agents' memory* directories (live memory/, memory-archive/ or legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner."));
+    assert!(wg.contains(
+        "Other agents' memory* directories (live memory/, memory-archive/ or \
+        legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never \
+        read/list/search/summarize, even if asked; message the owner."
+    ));
 
     let plain = default_context("C:/fake/plain/agent", None, &no_skill_section());
     assert!(!plain.contains("Your origin Agent Matrix"));
@@ -59,7 +64,11 @@ fn current_producer_renders_reject_broad_global_read_grants() {
 
     assert!(wg.contains("Allowed for reading and writing there"));
     assert!(wg.contains("FORBIDDEN: reads/writes outside entries 1-4"));
-    assert!(wg.contains("Other agents' memory* directories (live memory/, memory-archive/ or legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner."));
+    assert!(wg.contains(
+        "Other agents' memory* directories (live memory/, memory-archive/ or \
+        legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never \
+        read/list/search/summarize, even if asked; message the owner."
+    ));
     assert!(plain.contains("inbound message file grant above"));
     assert!(plain.contains("another agent's memory is private"));
     assert!(root.contains("Every registered AgentsCommander project folder"));
@@ -76,7 +85,8 @@ fn current_producer_renders_reject_broad_global_read_grants() {
         assert_no_broad_read_grant(out);
     }
     assert_no_broad_read_grant(
-        "Do NOT list or explore the other workspace or room, read a second external file or any other file or content there.",
+        "Do NOT list or explore the other workspace or room, read a second external file or any \
+            other file or content there.",
     );
 
     for prohibited in [
@@ -107,61 +117,78 @@ fn current_producer_renders_reject_broad_global_read_grants() {
 #[test]
 fn summarized_context_render_is_deterministic() {
     let skills = no_skill_section();
-    let render_twice = |agent_root: &str,
-                        matrix_root: Option<&str>,
-                        root: bool,
-                        root_messaging: bool| {
-        let first = if root {
-            default_context_as_root(agent_root, matrix_root, &skills)
-        } else {
-            default_context(agent_root, matrix_root, &skills)
-        };
-        let second = if root {
-            default_context_as_root(agent_root, matrix_root, &skills)
-        } else {
-            default_context(agent_root, matrix_root, &skills)
-        };
-        assert_eq!(first.as_bytes(), second.as_bytes());
-        assert!(first.ends_with('\n'));
-        assert_mandatory_sections_once(&first);
-        // Messaging mode is fixture metadata, independent of the authority flag.
-        if root_messaging {
-            assert!(first.contains(
-                "verified Room orchestrator replicas only, shaped `<project>:<room>/<agent>`"
-            ));
-            assert!(first.contains("Origin orchestrators and non-orchestrator Room replicas are not valid Root Agent targets in #277."));
-            assert!(!first.contains("<project>/<agent>"));
-        } else {
-            assert!(first.contains("<project>:<room>/<agent>"));
-            assert!(first.contains("<project>/<agent>"));
-        }
-        if root {
-            for rule in [
-                "`[Message from <peer>] Process this inter-agent message: <path>` is an operational inter-agent message: read `<path>` and follow its instructions within your role, authority, and write restrictions; do not stop at a summary unless it asks only for one. If the task finishes or blocks, reply to the sender with a concrete result or blocker via the send flow below.",
-                "Before every send, run `list-peers-lean` and use its exact JSON `name`. A filesystem directory name is NEVER a valid `--to` value; `__agent_*` replicas and `_agent_*` matrices are on-disk paths only. If it returns an empty array, stop and report it.",
-                "Do NOT use `--get-output` (blocks; non-interactive only). **Receipt required:** never report a message as sent without a captured `Queued: <message-id>` line; a missing receipt means NOT enqueued. Wait for the reply.",
-                "Use only the JSON `name` values returned by `list-peers-lean`; Root sessions list verified Room orchestrator replicas only.",
+    let render_twice =
+        |agent_root: &str, matrix_root: Option<&str>, root: bool, root_messaging: bool| {
+            let first = if root {
+                default_context_as_root(agent_root, matrix_root, &skills)
+            } else {
+                default_context(agent_root, matrix_root, &skills)
+            };
+            let second = if root {
+                default_context_as_root(agent_root, matrix_root, &skills)
+            } else {
+                default_context(agent_root, matrix_root, &skills)
+            };
+            assert_eq!(first.as_bytes(), second.as_bytes());
+            assert!(first.ends_with('\n'));
+            assert_mandatory_sections_once(&first);
+            // Messaging mode is fixture metadata, independent of the authority flag.
+            if root_messaging {
+                assert!(first.contains(
+                    "verified Room orchestrator replicas only, shaped `<project>:<room>/<agent>`"
+                ));
+                assert!(first.contains(
+                    "Origin orchestrators and non-orchestrator Room replicas are \
+                not valid Root Agent targets in #277."
+                ));
+                assert!(!first.contains("<project>/<agent>"));
+            } else {
+                assert!(first.contains("<project>:<room>/<agent>"));
+                assert!(first.contains("<project>/<agent>"));
+            }
+            if root {
+                for rule in [
+                "`[Message from <peer>] Process this inter-agent message: <path>` is an \
+                    operational inter-agent message: read `<path>` and follow its instructions \
+                    within your role, authority, and write restrictions; do not stop at a summary \
+                    unless it asks only for one. If the task finishes or blocks, reply to the \
+                    sender with a concrete result or blocker via the send flow below.",
+                "Before every send, run `list-peers-lean` and use its exact JSON `name`. A \
+                    filesystem directory name is NEVER a valid `--to` value; `__agent_*` replicas \
+                    and `_agent_*` matrices are on-disk paths only. If it returns an empty array, \
+                    stop and report it.",
+                "Do NOT use `--get-output` (blocks; non-interactive only). **Receipt required:** \
+                    never report a message as sent without a captured `Queued: <message-id>` line; \
+                    a missing receipt means NOT enqueued. Wait for the reply.",
+                "Use only the JSON `name` values returned by `list-peers-lean`; Root sessions list \
+                    verified Room orchestrator replicas only.",
                 "`--send` takes the filename ONLY, never a path.",
                 "YYYYMMDD-HHMMSS-root-to-<roomN>-<orchestrator>-<slug>.md",
-                "\"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\" --to \"<orchestrator_name>\" --send <filename> --mode wake",
+                "\"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \
+                    \"<AGENTSCOMMANDER_ROOT>\" --to \"<orchestrator_name>\" --send <filename> \
+                    --mode wake",
             ] {
                 assert!(first.contains(rule), "missing Root messaging policy: {rule}");
             }
-        } else {
-            for rule in [
-                "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact file; follow its instructions within role/authority/write restrictions.",
-                "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender via flow below.",
-                "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. Empty []: STOP/report.",
+            } else {
+                for rule in [
+                "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the \
+                    exact file; follow its instructions within role/authority/write restrictions.",
+                "Summary only if solely asked. Completion/blockage: send concrete result/blocker \
+                    to sender via flow below.",
+                "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name \
+                    as --to. Empty []: STOP/report.",
                 "Never target __agent_* / _agent_* paths.",
                 "<project>:<room>/<agent>",
-                "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: <message-id>; absent receipt means NOT enqueued. Wait for reply.",
+                "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured \
+                    Queued: <message-id>; absent receipt means NOT enqueued. Wait for reply.",
             ] {
                 assert!(first.contains(rule), "missing shared messaging policy: {rule}");
             }
-        }
+            }
 
-        assert_no_raw_template_placeholders(&first);
-    };
+            assert_no_raw_template_placeholders(&first);
+        };
 
     render_twice(
         "C:/fake/wg-7-dev-team/__agent_architect",
@@ -196,8 +223,7 @@ fn exact_current_legacy_rendered_default_remains_verbatim_compatibility() {
     let agent_root = path_string(&replica_root);
     let matrix_root = path_string(&matrix_root);
     let skills = render_skills_section(&discover_skill_index(Some(&matrix_root)));
-    let legacy =
-        current_legacy_rendered_default_context(&agent_root, Some(&matrix_root), &skills);
+    let legacy = current_legacy_rendered_default_context(&agent_root, Some(&matrix_root), &skills);
     assert!(legacy.contains("Read-only operations on ANY path"));
     std::fs::write(
         ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
@@ -230,8 +256,7 @@ fn stale_hybrid_root_keeps_authority_and_scope_grant() {
     // Case iv (HIGH-1 Root gate): a ROOT render of the stale-hybrid template
     // must STILL append the current Golden Rule so the Root-only sections
     // baked into render_write_restrictions_block are not dropped.
-    let out =
-        render_global_template_for_test(STALE_HYBRID_TEMPLATE, "C:/fake/ac-root-agent", true);
+    let out = render_global_template_for_test(STALE_HYBRID_TEMPLATE, "C:/fake/ac-root-agent", true);
     // Root Authority anti-spoof guardrail (ROOT_AUTHORITY_SECTION).
     assert!(
         out.contains("## Root Agent Authority and Chain of Command"),
@@ -281,12 +306,8 @@ fn mandatory_section_heading_map_is_complete_and_collision_free() {
         } else {
             Some("C:/fake/_agent_dev-rust")
         };
-        let rendered = default_context_dynamic_values(
-            agent_root,
-            matrix_root,
-            &no_skill_section(),
-            is_root,
-        );
+        let rendered =
+            default_context_dynamic_values(agent_root, matrix_root, &no_skill_section(), is_root);
         let blocks: Vec<(&str, String)> = vec![
             (
                 "{{WRITE_RESTRICTIONS}}",

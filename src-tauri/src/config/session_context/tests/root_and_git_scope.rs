@@ -70,19 +70,32 @@ fn root_prologue_renders_every_mandatory_block_exactly_once() {
     // from rendered blocks, never from a template with tokens.
     assert_no_raw_template_placeholders(&out);
 
+    assert!(
+        out.contains("verified Room orchestrator replicas only, shaped `<project>:<room>/<agent>`")
+    );
     assert!(out.contains(
-        "verified Room orchestrator replicas only, shaped `<project>:<room>/<agent>`"
+        "Origin orchestrators and non-orchestrator Room replicas are not valid \
+        Root Agent targets in #277."
     ));
-    assert!(out.contains("Origin orchestrators and non-orchestrator Room replicas are not valid Root Agent targets in #277."));
     assert!(!out.contains("<project>/<agent>"));
     for rule in [
-        "`[Message from <peer>] Process this inter-agent message: <path>` is an operational inter-agent message: read `<path>` and follow its instructions within your role, authority, and write restrictions; do not stop at a summary unless it asks only for one. If the task finishes or blocks, reply to the sender with a concrete result or blocker via the send flow below.",
-        "Before every send, run `list-peers-lean` and use its exact JSON `name`. A filesystem directory name is NEVER a valid `--to` value; `__agent_*` replicas and `_agent_*` matrices are on-disk paths only. If it returns an empty array, stop and report it.",
-        "Do NOT use `--get-output` (blocks; non-interactive only). **Receipt required:** never report a message as sent without a captured `Queued: <message-id>` line; a missing receipt means NOT enqueued. Wait for the reply.",
-        "Use only the JSON `name` values returned by `list-peers-lean`; Root sessions list verified Room orchestrator replicas only.",
+        "`[Message from <peer>] Process this inter-agent message: <path>` is an operational \
+            inter-agent message: read `<path>` and follow its instructions within your role, \
+            authority, and write restrictions; do not stop at a summary unless it asks only for \
+            one. If the task finishes or blocks, reply to the sender with a concrete result or \
+            blocker via the send flow below.",
+        "Before every send, run `list-peers-lean` and use its exact JSON `name`. A filesystem \
+            directory name is NEVER a valid `--to` value; `__agent_*` replicas and `_agent_*` \
+            matrices are on-disk paths only. If it returns an empty array, stop and report it.",
+        "Do NOT use `--get-output` (blocks; non-interactive only). **Receipt required:** never \
+            report a message as sent without a captured `Queued: <message-id>` line; a missing \
+            receipt means NOT enqueued. Wait for the reply.",
+        "Use only the JSON `name` values returned by `list-peers-lean`; Root sessions list \
+            verified Room orchestrator replicas only.",
         "`--send` takes the filename ONLY, never a path.",
         "YYYYMMDD-HHMMSS-root-to-<roomN>-<orchestrator>-<slug>.md",
-        "\"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\" --to \"<orchestrator_name>\" --send <filename> --mode wake",
+        "\"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \
+            \"<AGENTSCOMMANDER_ROOT>\" --to \"<orchestrator_name>\" --send <filename> --mode wake",
     ] {
         assert!(out.contains(rule), "missing Root messaging policy: {rule}");
     }
@@ -429,9 +442,8 @@ fn pre_1072_legacy_without_matrix_classifies_stale_and_heals_once() {
 
     let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
     std::fs::write(&template_path, &legacy).expect("write pre-1072 template");
-    let first =
-        resolve_agent_context(&agent_root, None, &skills_section, &matrix_root, None, None)
-            .expect("resolve pre-1072 context");
+    let first = resolve_agent_context(&agent_root, None, &skills_section, &matrix_root, None, None)
+        .expect("resolve pre-1072 context");
     assert_eq!(first.matches(DIRECT_MATRIX_GIT_SCOPE).count(), 1);
     assert!(!first.contains(LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072));
     assert_eq!(

@@ -112,8 +112,7 @@ fn broken_agency_skill_install_is_repaired_and_reaches_the_context() {
     let skill_dir = root.join(SKILLS_DIR_NAME).join("agency-agents-roles");
     std::fs::create_dir_all(&skill_dir).expect("create skill dir");
 
-    let broken =
-        crate::config::root_agent::agency_pre_yaml_fix_snapshot().replace('\n', "\r\n");
+    let broken = crate::config::root_agent::agency_pre_yaml_fix_snapshot().replace('\n', "\r\n");
     std::fs::write(skill_dir.join("SKILL.md"), &broken).expect("seed the broken skill");
 
     crate::config::root_agent::ensure_default_root_agent_skills_at(&root)
@@ -184,7 +183,8 @@ fn legacy_intro_skills_section_still_classifies_stale_generated_and_heals() {
     std::fs::create_dir_all(&valid_skill).expect("create valid skill");
     std::fs::write(
         valid_skill.join(SKILL_MD_FILENAME),
-        "---\nname: gamma-skill\ndescription: Fixture skill for the legacy intro guard.\n---\n\nbody\n",
+        "---\nname: gamma-skill\ndescription: Fixture skill for the legacy intro \
+            guard.\n---\n\nbody\n",
     )
     .expect("write valid skill");
     let broken_skill = old_matrix.join(SKILLS_DIR_NAME).join("delta-skill");
@@ -388,7 +388,8 @@ fn pre_room_rename_skills_section_still_classifies_stale_generated_and_heals() {
     std::fs::create_dir_all(&valid_skill).expect("create valid skill");
     std::fs::write(
         valid_skill.join(SKILL_MD_FILENAME),
-        "---\nname: gamma-skill\ndescription: Fixture skill for the Room rename guard.\n---\n\nbody\n",
+        "---\nname: gamma-skill\ndescription: Fixture skill for the Room rename \
+            guard.\n---\n\nbody\n",
     )
     .expect("write valid skill");
     let broken_skill = old_matrix.join(SKILLS_DIR_NAME).join("delta-skill");
@@ -468,12 +469,12 @@ fn edited_pre_room_rename_skills_line_is_preserved_not_healed() {
     std::fs::create_dir_all(&skill).expect("create skill");
     std::fs::write(
         skill.join(SKILL_MD_FILENAME),
-        "---\nname: gamma-skill\ndescription: Fixture skill for the Room rename guard.\n---\n\nbody\n",
+        "---\nname: gamma-skill\ndescription: Fixture skill for the Room rename \
+            guard.\n---\n\nbody\n",
     )
     .expect("write skill");
 
-    let current_render =
-        render_skills_section(&discover_skill_index(Some(&path_string(&matrix))));
+    let current_render = render_skills_section(&discover_skill_index(Some(&path_string(&matrix))));
     // ONE mutated byte inside the frozen line: "skills/..." -> "skills/.._"
     let mutated = GENERATED_SKILLS_SECTION_REPLICA_LINE_BEFORE_ROOM_RENAME
         .replace("resolve skills/...", "resolve skills/..!");
@@ -481,8 +482,7 @@ fn edited_pre_room_rename_skills_line_is_preserved_not_healed() {
         mutated,
         GENERATED_SKILLS_SECTION_REPLICA_LINE_BEFORE_ROOM_RENAME
     );
-    let edited_section =
-        current_render.replace(GENERATED_SKILLS_SECTION_REPLICA_LINE, &mutated);
+    let edited_section = current_render.replace(GENERATED_SKILLS_SECTION_REPLICA_LINE, &mutated);
     assert_ne!(edited_section, current_render);
 
     let legacy = legacy_rendered_default_context_for_compat(
@@ -722,8 +722,7 @@ fn legacy_rendered_default_context_is_frozen() {
 
     // C2: the pre-#1072 reconstruction, the candidate that actually carries
     // the `StaleGenerated` outcome.
-    let c2 =
-        pre_1072_legacy_rendered_default_context_for_compat(AGENT_ROOT, Some(MATRIX_ROOT), "");
+    let c2 = pre_1072_legacy_rendered_default_context_for_compat(AGENT_ROOT, Some(MATRIX_ROOT), "");
     assert_eq!(
         c2.len(),
         9096,

@@ -229,12 +229,14 @@ fn discover_skill_index_valid_skills_are_sorted_and_metadata_rendered() {
     write_skill(
         &matrix_root,
         "zeta",
-        "---\nname: zeta\ndescription: Zeta description.\nwhen_to_use: Use for zeta tasks.\n---\nZETA_BODY_ONLY\n",
+        "---\nname: zeta\ndescription: Zeta description.\nwhen_to_use: Use for zeta \
+            tasks.\n---\nZETA_BODY_ONLY\n",
     );
     write_skill(
         &matrix_root,
         "alpha",
-        "---\nname: alpha\ndescription: Alpha description.\nwhen_to_use: Use for alpha tasks.\n---\nALPHA_BODY_ONLY\n",
+        "---\nname: alpha\ndescription: Alpha description.\nwhen_to_use: Use for alpha \
+            tasks.\n---\nALPHA_BODY_ONLY\n",
     );
 
     let index = discover_skill_index(Some(&path_string(&matrix_root)));
@@ -371,7 +373,8 @@ fn discover_skill_index_unknown_fields_are_ignored() {
     write_skill(
         &matrix_root,
         "portable",
-        "---\nname: portable\ndescription: Portable metadata.\nallowed-tools:\n  - Bash\nmodel: opus\nhooks:\n  pre: test\nunknown-key: value\n---\n",
+        "---\nname: portable\ndescription: Portable metadata.\nallowed-tools:\n  - Bash\nmodel: \
+            opus\nhooks:\n  pre: test\nunknown-key: value\n---\n",
     );
 
     let index = discover_skill_index(Some(&path_string(&matrix_root)));
@@ -455,14 +458,20 @@ fn issue_2868_discover_skill_index_skips_linked_skill_dirs_where_supported() {
     #[cfg(unix)]
     {
         if std::os::unix::fs::symlink(&target_dir, &linked_dir).is_err() {
-            eprintln!("UNAVAILABLE issue_2868 linked/dangling source fixture: requires supported exact-head CI; this host is not proof");
+            eprintln!(
+                "UNAVAILABLE issue_2868 linked/dangling source fixture: requires supported \
+                exact-head CI; this host is not proof"
+            );
             return;
         }
     }
     #[cfg(windows)]
     {
         if std::os::windows::fs::symlink_dir(&target_dir, &linked_dir).is_err() {
-            eprintln!("UNAVAILABLE issue_2868 linked/dangling source fixture: requires supported exact-head CI; this host is not proof");
+            eprintln!(
+                "UNAVAILABLE issue_2868 linked/dangling source fixture: requires supported \
+                exact-head CI; this host is not proof"
+            );
             return;
         }
     }
@@ -480,7 +489,12 @@ fn issue_2868_discover_skill_index_skips_linked_skill_dirs_where_supported() {
     std::fs::rename(&linked_dir, &source).unwrap();
     let target_skill = target_dir.join("linked-secret");
     std::fs::create_dir(&target_skill).unwrap();
-    std::fs::write(target_skill.join("SKILL.md"), "---\nname: linked-secret\ndescription: LINK_TARGET_METADATA_2868\n---\nLINK_TARGET_BODY_2868\n").unwrap();
+    std::fs::write(
+        target_skill.join("SKILL.md"),
+        "---\nname: linked-secret\ndescription: \
+        LINK_TARGET_METADATA_2868\n---\nLINK_TARGET_BODY_2868\n",
+    )
+    .unwrap();
     std::fs::write(target_dir.join("sentinel"), "TARGET_SENTINEL").unwrap();
     write_skill(
         Path::new(&matrix),
@@ -555,9 +569,9 @@ fn render_skills_section_uses_root_agent_scope_for_root_agent_skills() {
         skills: vec![SkillMetadata {
             folder_name: "role-skill-boundary-audit".to_string(),
             name: "role-skill-boundary-audit".to_string(),
-            entrypoint_path:
-                "C:/project/.ac/ac-root-agent/skills/role-skill-boundary-audit/SKILL.md"
-                    .to_string(),
+            entrypoint_path: "C:/project/.ac/ac-root-agent/skills/role-skill-boundary-audit/\
+                    SKILL.md"
+                .to_string(),
             description: Some("Root skill metadata.".to_string()),
             when_to_use: None,
             metadata_warnings: Vec::new(),

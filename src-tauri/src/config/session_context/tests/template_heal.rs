@@ -24,21 +24,25 @@ fn default_context_replica_with_matrix_and_messaging_renders_entries_three_throu
     );
     assert!(
         out.contains(
-            "All filesystem access not authorized by entries 1-6 is OFF-LIMITS, except user-explicit AgentsCommander CLI commands below."
+            "All filesystem access not authorized by entries 1-6 is OFF-LIMITS, except \
+                user-explicit AgentsCommander CLI commands below."
         ),
         "entries-1-6 closure missing, got:\n{}",
         out
     );
     assert!(
         out.contains(
-            "FORBIDDEN: reads/writes outside entries 1-6, including other replicas, unlisted Matrix files, workspace/project parents, user home, arbitrary paths."
+            "FORBIDDEN: reads/writes outside entries 1-6, including other replicas, unlisted \
+                Matrix files, workspace/project parents, user home, arbitrary paths."
         ),
         "Workgroup write boundary missing, got:\n{}",
         out
     );
     assert!(
         out.contains(
-            "Other agents' memory* directories (live memory/, memory-archive/ or legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner."
+            "Other agents' memory* directories (live memory/, memory-archive/ or legacy \
+                memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never \
+                read/list/search/summarize, even if asked; message the owner."
         ),
         "Workgroup read boundary missing, got:\n{}",
         out
@@ -121,19 +125,26 @@ fn default_context_uses_template_renderer_without_unexpanded_placeholders() {
             assert!(out.contains(
                 "verified Room orchestrator replicas only, shaped `<project>:<room>/<agent>`"
             ));
-            assert!(out.contains("Origin orchestrators and non-orchestrator Room replicas are not valid Root Agent targets in #277."));
+            assert!(out.contains(
+                "Origin orchestrators and non-orchestrator Room replicas are not \
+                valid Root Agent targets in #277."
+            ));
             assert!(!out.contains("<project>/<agent>"));
         } else {
             assert!(out.contains("<project>:<room>/<agent>"));
             assert!(out.contains("<project>/<agent>"));
         }
         for rule in [
-        "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact file; follow its instructions within role/authority/write restrictions.",
-        "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender via flow below.",
-        "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. Empty []: STOP/report.",
+        "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact \
+            file; follow its instructions within role/authority/write restrictions.",
+        "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender \
+            via flow below.",
+        "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. \
+            Empty []: STOP/report.",
         "Never target __agent_* / _agent_* paths.",
         "<project>:<room>/<agent>",
-        "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: <message-id>; absent receipt means NOT enqueued. Wait for reply.",
+        "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: \
+            <message-id>; absent receipt means NOT enqueued. Wait for reply.",
     ] {
         assert!(out.contains(rule), "missing shared messaging policy: {rule}");
     }
@@ -150,13 +161,17 @@ fn default_context_does_not_duplicate_mandatory_sections() {
 
     assert_mandatory_sections_once(&out);
     for rule in [
-        "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact file; follow its instructions within role/authority/write restrictions.",
-        "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender via flow below.",
-        "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. Empty []: STOP/report.",
+        "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact \
+            file; follow its instructions within role/authority/write restrictions.",
+        "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender \
+            via flow below.",
+        "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. \
+            Empty []: STOP/report.",
         "Never target __agent_* / _agent_* paths.",
         "<project>:<room>/<agent>",
         "<project>/<agent>",
-        "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: <message-id>; absent receipt means NOT enqueued. Wait for reply.",
+        "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: \
+            <message-id>; absent receipt means NOT enqueued. Wait for reply.",
     ] {
         assert!(out.contains(rule), "missing shared messaging policy: {rule}");
     }
@@ -218,13 +233,17 @@ fn custom_agent_template_is_used_for_wg_replica() {
     assert!(!content.contains("Narrow exception — room messaging directory"));
     assert!(content.contains("Template skill."));
     for rule in [
-        "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact file; follow its instructions within role/authority/write restrictions.",
-        "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender via flow below.",
-        "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. Empty []: STOP/report.",
+        "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact \
+            file; follow its instructions within role/authority/write restrictions.",
+        "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender \
+            via flow below.",
+        "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. \
+            Empty []: STOP/report.",
         "Never target __agent_* / _agent_* paths.",
         "<project>:<room>/<agent>",
         "<project>/<agent>",
-        "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: <message-id>; absent receipt means NOT enqueued. Wait for reply.",
+        "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: \
+            <message-id>; absent receipt means NOT enqueued. Wait for reply.",
     ] {
         assert!(content.contains(rule), "missing shared messaging policy: {rule}");
     }
@@ -298,13 +317,17 @@ fn missing_global_template_placeholders_are_force_appended() {
 
     assert!(content.contains("CUSTOM_ONLY"));
     for rule in [
-        "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact file; follow its instructions within role/authority/write restrictions.",
-        "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender via flow below.",
-        "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. Empty []: STOP/report.",
+        "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact \
+            file; follow its instructions within role/authority/write restrictions.",
+        "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender \
+            via flow below.",
+        "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. \
+            Empty []: STOP/report.",
         "Never target __agent_* / _agent_* paths.",
         "<project>:<room>/<agent>",
         "<project>/<agent>",
-        "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: <message-id>; absent receipt means NOT enqueued. Wait for reply.",
+        "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: \
+            <message-id>; absent receipt means NOT enqueued. Wait for reply.",
     ] {
         assert!(content.contains(rule), "missing shared messaging policy: {rule}");
     }
@@ -422,7 +445,8 @@ fn stale_generated_legacy_default_with_generated_skills_regenerates_current_cont
     write_skill(
         &old_matrix,
         "legacy-skill",
-        "---\nname: legacy-skill\ndescription: Legacy skill description.\nwhen_to_use: Use legacy contexts.\n---\nLegacy skill body.\n",
+        "---\nname: legacy-skill\ndescription: Legacy skill description.\nwhen_to_use: Use legacy \
+            contexts.\n---\nLegacy skill body.\n",
     );
 
     let old_skills_section =
@@ -481,7 +505,8 @@ fn edited_legacy_skills_section_preserves_custom_template_content() {
     );
     let edited = legacy.replace(
         "No valid skills with parseable SKILL.md frontmatter were discovered.",
-        "No valid skills with parseable SKILL.md frontmatter were discovered.\nKEEP_CUSTOM_SKILLS_RULE_IN_CONTEXT",
+        "No valid skills with parseable SKILL.md frontmatter were \
+            discovered.\nKEEP_CUSTOM_SKILLS_RULE_IN_CONTEXT",
     );
     assert_ne!(edited, legacy);
     std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), edited)
@@ -533,7 +558,12 @@ fn generated_shaped_manual_legacy_skills_content_is_preserved() {
         &old_skills_section,
     );
     let manual_skills = format!(
-        "{}Canonical skills root: `{}`\n\nWhen running from a workgroup replica, resolve skills/... against the origin Agent Matrix path above, not against the replica CWD.\n\n### Available Skills\n\n- `manual-ops-rule` - KEEP_MANUAL_SKILLS_RULE_IN_CONTEXT\n  Scope: canonical Agent Matrix\n  Entrypoint: `C:/notes/manual-rule/SKILL.md`\n\n### Skill Discovery Warnings\n\n- Skipped skill `manual-warning`: KEEP_MANUAL_WARNING_IN_CONTEXT",
+        "{}Canonical skills root: `{}`\n\nWhen running from a workgroup replica, resolve \
+            skills/... against the origin Agent Matrix path above, not against the replica \
+            CWD.\n\n### Available Skills\n\n- `manual-ops-rule` - \
+            KEEP_MANUAL_SKILLS_RULE_IN_CONTEXT\n  Scope: canonical Agent Matrix\n  Entrypoint: \
+            `C:/notes/manual-rule/SKILL.md`\n\n### Skill Discovery Warnings\n\n- Skipped skill \
+            `manual-warning`: KEEP_MANUAL_WARNING_IN_CONTEXT",
         GENERATED_SKILLS_SECTION_INTRO,
         canonical_display_path(&old_matrix.join(SKILLS_DIR_NAME))
     );
@@ -589,8 +619,7 @@ fn edited_legacy_rendered_default_preserves_custom_template_content() {
         Some(&path_string(&old_matrix)),
         &no_skill_section(),
     );
-    let edited =
-        format!("{legacy}\n\n## Project Rules\n\nKEEP_CUSTOM_PROJECT_RULES_IN_CONTEXT\n");
+    let edited = format!("{legacy}\n\n## Project Rules\n\nKEEP_CUSTOM_PROJECT_RULES_IN_CONTEXT\n");
     let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
     std::fs::write(&template_path, &edited).expect("write edited rendered legacy template");
 
@@ -643,8 +672,7 @@ fn inline_edited_legacy_rendered_default_preserves_custom_template_content() {
     );
     assert_ne!(edited, legacy);
     let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-    std::fs::write(&template_path, &edited)
-        .expect("write inline edited rendered legacy template");
+    std::fs::write(&template_path, &edited).expect("write inline edited rendered legacy template");
 
     let materialized = materialize_agent_context_file(
         &path_string(&new_replica),
@@ -882,8 +910,7 @@ fn current_tokenized_default_on_disk_is_not_rewritten() {
     std::fs::create_dir_all(&replica_root).expect("create replica root");
 
     let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-    std::fs::write(&template_path, get_default_agent_template())
-        .expect("write tokenized default");
+    std::fs::write(&template_path, get_default_agent_template()).expect("write tokenized default");
 
     let rendered = resolve_agent_context(
         &path_string(&replica_root),
@@ -922,8 +949,7 @@ fn root_never_reads_creates_syncs_or_heals_a_ac_ancestor_global() {
         "PROJECT_GLOBAL_SENTINEL {{AGENT_ROOT}}\n"
     );
     std::fs::remove_file(&sentinel).unwrap();
-    build_root_agent_context_at(&path_string(&root), root.parent().unwrap(), None, false)
-        .unwrap();
+    build_root_agent_context_at(&path_string(&root), root.parent().unwrap(), None, false).unwrap();
     for filename in [
         GLOBAL_CONTEXT_TEMPLATE_FILENAME,
         COORDINATOR_CONTEXT_TEMPLATE_FILENAME,

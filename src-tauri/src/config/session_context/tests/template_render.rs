@@ -33,11 +33,8 @@ Use the session environment.
 fn legacy_inline_template_does_not_double() {
     // Case i: a non-root (replica) render of the stale-hybrid template must
     // NOT emit a second copy of any inline governance section.
-    let out = render_global_template_for_test(
-        STALE_HYBRID_TEMPLATE,
-        "C:/fake/__agent_dev-rust",
-        false,
-    );
+    let out =
+        render_global_template_for_test(STALE_HYBRID_TEMPLATE, "C:/fake/__agent_dev-rust", false);
     assert_eq!(count_section_headings(&out, "## GOLDEN RULE"), 1, "{out}");
     assert_eq!(count_section_headings(&out, "## CLI executable"), 1);
     assert_eq!(count_section_headings(&out, "## Session credentials"), 1);
@@ -65,8 +62,7 @@ Credentials are in environment variables.
 
 {{SKILLS_SECTION}}
 "#;
-    let out =
-        render_global_template_for_test(missing_session, "C:/fake/__agent_dev-rust", false);
+    let out = render_global_template_for_test(missing_session, "C:/fake/__agent_dev-rust", false);
     // `## CLI executable` was inline -> deduped to one copy.
     assert_eq!(count_section_headings(&out, "## CLI executable"), 1);
     // `## Session credentials` was absent -> the safety net appended it once.
@@ -81,7 +77,8 @@ Credentials are in environment variables.
     // backtick reference mid-line (no real heading line, no token). A raw
     // `contains` would false-positive and skip the append; line-anchoring
     // must still append the real messaging block.
-    let backtick_trap = r#"# AgentsCommander Context
+    let backtick_trap = concat!(
+        r#"# AgentsCommander Context
 
 ## CLI executable
 
@@ -89,10 +86,12 @@ Credentials are in environment variables.
 
 ## Self-discovery via --help
 
-For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List available peers`) are the authoritative reference.
+For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List available "#,
+        r#"peers`) are the authoritative reference.
 
 {{SKILLS_SECTION}}
-"#;
+"#
+    );
     let out = render_global_template_for_test(backtick_trap, "C:/fake/__agent_dev-rust", false);
     // The real messaging block was appended (its h3 sub-heading proves it is
     // the rendered block, not the mid-line backtick reference). The backtick
@@ -170,7 +169,10 @@ fn default_agent_template_keeps_coarse_placeholder_order_after_summarization() {
 /// the messaging token, byte-for-byte, with no U+2014.
 #[test]
 fn default_agent_template_carries_answering_section_once_after_messaging() {
-    const SECTION: &str = "## Answering\n\nDraft, count words, then rewrite to half or fewer; report both counts. Paths, commands, digests, figures, and quoted evidence are exempt: not counted, not cut. Never cut a fact to reach half; stop at the smallest size that keeps every fact and say so.\n\nUse plain, easy language.";
+    const SECTION: &str = "## Answering\n\nDraft, count words, then rewrite to half or fewer; \
+        report both counts. Paths, commands, digests, figures, and quoted evidence are exempt: not \
+        counted, not cut. Never cut a fact to reach half; stop at the smallest size that keeps \
+        every fact and say so.\n\nUse plain, easy language.";
     let template = get_default_agent_template();
     assert_eq!(template.matches(SECTION).count(), 1, "{template}");
     let messaging = template
@@ -263,9 +265,7 @@ fn summarized_fine_placeholder_fixture_renders_supported_shapes() {
     assert!(wg.contains("filename ONLY, never a path"));
     assert!(wg.contains("YYYYMMDD-HHMMSS-<roomN>-<you>-to-<roomN>-<peer>-<slug>.md"));
     assert!(plain.contains("Do NOT search the filesystem for one."));
-    assert!(
-        plain.contains("read that file, act, and report here instead of using `send --send`")
-    );
+    assert!(plain.contains("read that file, act, and report here instead of using `send --send`"));
 
     let values = default_context_dynamic_values(
         "C:/fake/room-7-dev-team/__agent_architect",

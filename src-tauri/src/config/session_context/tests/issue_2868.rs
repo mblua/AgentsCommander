@@ -94,7 +94,10 @@ fn issue_2868_team_final_cache_option_a_custom_override_refresh_and_collisions()
                 display_path(&canonical_or_original(&current.join("team-skills")))
             );
             assert_eq!(content.matches(&grant).count(), 1);
-            assert!(content.contains("This amendment grants no write permission and no access to external link/reference targets"));
+            assert!(content.contains(
+                "This amendment grants no write permission and no access to \
+                external link/reference targets"
+            ));
             assert_eq!(
                 issue_2868_cache(root),
                 content,
@@ -325,7 +328,9 @@ fn issue_2868_generated_custom_and_override_append_only_once_without_authored_mu
     for authored in [
         "CUSTOM_NO_RULE_OR_PLACEHOLDER\n",
         "CUSTOM_WITH_SKILLS\n{{SKILLS_SECTION}}\n",
-        "## GOLDEN RULE — Repository Access Restrictions\nABSOLUTE AND NON-NEGOTIABLE: Only entries 1-6 are allowed. All other reads forbidden; refuse them. Nothing else under .ac is readable.\nCUSTOM_EXCLUSIVE\n",
+        "## GOLDEN RULE — Repository Access Restrictions\nABSOLUTE AND NON-NEGOTIABLE: Only \
+            entries 1-6 are allowed. All other reads forbidden; refuse them. Nothing else under \
+            .ac is readable.\nCUSTOM_EXCLUSIVE\n",
     ] {
         std::fs::write(&base, authored).unwrap();
         for _ in 0..2 {
@@ -542,8 +547,7 @@ fn issue_2868_legacy_classifier_and_healing_keep_agent_only_inputs() {
     );
     let index = discover_skill_index(Some(&matrix));
     let current_skills = render_skills_section(&index);
-    let current =
-        current_legacy_rendered_default_context(&root, Some(&matrix), &current_skills);
+    let current = current_legacy_rendered_default_context(&root, Some(&matrix), &current_skills);
     let old_intro = current_skills.replacen(
         GENERATED_SKILLS_SECTION_INTRO,
         LEGACY_GENERATED_SKILLS_SECTION_INTRO,
@@ -557,22 +561,13 @@ fn issue_2868_legacy_classifier_and_healing_keep_agent_only_inputs() {
         current.clone(),
         legacy_rendered_default_context_for_compat(&root, Some(&matrix), &old_intro),
         legacy_rendered_default_context_for_compat(&root, Some(&matrix), &pre_room),
-        pre_1072_legacy_rendered_default_context_for_compat(
-            &root,
-            Some(&matrix),
-            &current_skills,
-        ),
+        pre_1072_legacy_rendered_default_context_for_compat(&root, Some(&matrix), &current_skills),
         "CUSTOM_PRESERVED\n".to_string(),
     ];
     let before: Vec<_> = cases
         .iter()
         .map(|text| {
-            classify_legacy_rendered_default_context(
-                text,
-                &root,
-                Some(&matrix),
-                &current_skills,
-            )
+            classify_legacy_rendered_default_context(text, &root, Some(&matrix), &current_skills)
         })
         .collect();
     issue_2868_write_project_skill(
@@ -586,12 +581,8 @@ fn issue_2868_legacy_classifier_and_healing_keep_agent_only_inputs() {
     );
     let template = ac.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
     for (text, expected) in cases.iter().zip(before) {
-        let classified = classify_legacy_rendered_default_context(
-            text,
-            &root,
-            Some(&matrix),
-            &current_skills,
-        );
+        let classified =
+            classify_legacy_rendered_default_context(text, &root, Some(&matrix), &current_skills);
         assert_eq!(
             std::mem::discriminant(&classified),
             std::mem::discriminant(&expected)

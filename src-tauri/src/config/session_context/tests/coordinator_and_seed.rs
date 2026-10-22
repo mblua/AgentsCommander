@@ -38,7 +38,8 @@ fn legacy_default_heuristic_rejects_both_repos_headings() {
             !looks_like_generated_legacy_default_context(&normalize_context_for_compat(
                 &with_heading
             )),
-            "a rendered context carrying {heading} must never be treated as a stale generated default"
+            "a rendered context carrying {heading} must never be treated as a stale generated \
+                default"
         );
     }
 }
@@ -53,7 +54,10 @@ fn deprecated_repos_context_token_is_skipped_without_generated_file() {
     std::fs::create_dir_all(&replica_root).expect("create replica root");
     std::fs::write(
         replica_root.join("config.json"),
-        r#"{"identity":"../../_agent_dev-rust","context":["$AGENTSCOMMANDER_CONTEXT","$REPOS_WORKSPACE_INFO"]}"#,
+        concat!(
+            r#"{"identity":"../../_agent_dev-rust","context":["$AGENTSCOMMANDER_CONTEXT","#,
+            r#""$REPOS_WORKSPACE_INFO"]}"#
+        ),
     )
     .expect("write replica config");
 
@@ -174,7 +178,10 @@ fn privileged_pty_context_is_added_only_to_verified_workgroup_coordinator() {
     }
     std::fs::write(
         team.join("config.json"),
-        r#"{"coordinator":"../_agent_tech-lead","agents":["../_agent_dev-rust","../_agent_tech-lead"]}"#,
+        concat!(
+            r#"{"coordinator":"../_agent_tech-lead","agents":["../_agent_dev-rust","#,
+            r#""../_agent_tech-lead"]}"#
+        ),
     )
     .expect("write team config");
     std::fs::write(
@@ -205,10 +212,9 @@ fn privileged_pty_context_is_added_only_to_verified_workgroup_coordinator() {
     );
     assert!(coordinator_content.contains("CUSTOM_COORDINATOR_BYTES"));
 
-    let member_content =
-        resolve_session_context_content(&path_string(&member), true, false, None)
-            .expect("resolve member context")
-            .expect("member context");
+    let member_content = resolve_session_context_content(&path_string(&member), true, false, None)
+        .expect("resolve member context")
+        .expect("member context");
     assert!(!member_content.contains("## Privileged PTY Input"));
     assert_eq!(
         std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
@@ -260,7 +266,9 @@ fn coordinator_template_carries_cross_workgroup_rule() {
     // test while violating the approved rule, and that qualifier is the whole
     // point. The looser anchor count rejects a second, differently worded
     // variant, which the exact count alone accepts.
-    const RULE: &str = "- To reach another room, message its orchestrator, never its members, and only when your role, the user, or the Root Agent authorizes it; replying to an orchestrator who messaged you first is always authorized.\n";
+    const RULE: &str = "- To reach another room, message its orchestrator, never its members, and \
+        only when your role, the user, or the Root Agent authorizes it; replying to an \
+        orchestrator who messaged you first is always authorized.\n";
     let tpl = get_default_coordinator_template();
     assert_eq!(
         tpl.matches(RULE).count(),
@@ -270,7 +278,8 @@ fn coordinator_template_carries_cross_workgroup_rule() {
     assert_eq!(
         tpl.matches("- To reach another room,").count(),
         1,
-        "exactly one cross-workgroup bullet may exist; a second variant contradicts the approved rule"
+        "exactly one cross-workgroup bullet may exist; a second variant contradicts the approved \
+            rule"
     );
     assert!(
         !tpl.contains('\u{2014}'),
@@ -303,16 +312,10 @@ fn materialized_context_gates_self_maintenance_directive_by_flag() {
     assert!(on_content.contains("max 240 char forgotten summary"));
     assert!(on_content.contains("closed background"));
 
-    let off = materialize_agent_context_file_with_filename(
-        &cwd,
-        "CLAUDE.md",
-        &[],
-        false,
-        false,
-        None,
-    )
-    .expect("materialize OFF")
-    .expect("context path");
+    let off =
+        materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, false, None)
+            .expect("materialize OFF")
+            .expect("context path");
     let off_content = std::fs::read_to_string(&off).expect("read OFF context");
     assert!(!off_content.contains("## Self-Maintenance"));
     assert!(!off_content.contains("max 240 char forgotten summary"));
@@ -327,16 +330,10 @@ fn materialized_replica_context_carries_answering_section() {
     std::fs::create_dir_all(&matrix_root).expect("create matrix root");
     let cwd = path_string(&matrix_root);
     for filename in ["CLAUDE.md", "AGENTS.md"] {
-        let path = materialize_agent_context_file_with_filename(
-            &cwd,
-            filename,
-            &[],
-            false,
-            false,
-            None,
-        )
-        .expect("materialize")
-        .expect("context path");
+        let path =
+            materialize_agent_context_file_with_filename(&cwd, filename, &[], false, false, None)
+                .expect("materialize")
+                .expect("context path");
         let content = std::fs::read_to_string(&path).expect("read context");
         assert_eq!(
             count_section_headings(&content, "## Answering"),
@@ -365,10 +362,9 @@ fn coordinator_on_disk_legacy_self_maintenance_is_stripped_and_replaced() {
     .expect("write legacy coordinator template");
     let cwd = path_string(&matrix_root);
 
-    let on =
-        materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, true, None)
-            .expect("materialize ON")
-            .expect("context path");
+    let on = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, true, None)
+        .expect("materialize ON")
+        .expect("context path");
     let on_content = std::fs::read_to_string(&on).expect("read ON context");
     assert_eq!(
         on_content.matches("## Self-Maintenance").count(),
@@ -541,8 +537,7 @@ fn managed_read_never_falls_back_to_an_ungated_direct_create() {
 
     for synchronization in [Err("injected synchronization failure".to_string()), Ok(())] {
         let mut on_publication =
-            |_: &'static str,
-             _: crate::config::seeded_context_templates::ContextPublication| {};
+            |_: &'static str, _: crate::config::seeded_context_templates::ContextPublication| {};
         let result = read_or_create_context_template_with_sync(
             &path_string(&matrix_root),
             GLOBAL_CONTEXT_TEMPLATE_FILENAME,
@@ -806,13 +801,17 @@ fn empty_agent_template_falls_back_to_mandatory_blocks() {
     assert!(content.contains("## Inter-Agent Messaging"));
     assert!(!content.contains("COORDINATOR_ONLY"));
     for rule in [
-        "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact file; follow its instructions within role/authority/write restrictions.",
-        "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender via flow below.",
-        "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. Empty []: STOP/report.",
+        "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact \
+            file; follow its instructions within role/authority/write restrictions.",
+        "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender \
+            via flow below.",
+        "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. \
+            Empty []: STOP/report.",
         "Never target __agent_* / _agent_* paths.",
         "<project>:<room>/<agent>",
         "<project>/<agent>",
-        "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: <message-id>; absent receipt means NOT enqueued. Wait for reply.",
+        "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: \
+            <message-id>; absent receipt means NOT enqueued. Wait for reply.",
     ] {
         assert!(content.contains(rule), "missing shared messaging policy: {rule}");
     }

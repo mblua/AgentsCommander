@@ -158,8 +158,7 @@ fn root_context_builder_emits_the_prologue_without_any_config() {
     )
     .unwrap();
     std::fs::write(root.join("Role.md"), "ROLE").unwrap();
-    let built =
-        build_root_agent_context_at(&path_string(&root), temp.path(), None, false).unwrap();
+    let built = build_root_agent_context_at(&path_string(&root), temp.path(), None, false).unwrap();
     let content = std::fs::read_to_string(&built).unwrap();
     assert!(content.contains("# AgentsCommander Root Runtime Context"));
     assert!(content.contains("## GOLDEN RULE"));
@@ -374,7 +373,10 @@ fn agent_repos_placeholder_via_legacy_token_uses_repaired_replica_config() {
     .expect("write repos-only template");
     std::fs::write(
         replica_root.join("config.json"),
-        r#"{"identity":"../../_agent_dev-rust","context":["$AGENTSCOMMANDER_CONTEXT"],"repos":["../repo-Example"]}"#,
+        concat!(
+            r#"{"identity":"../../_agent_dev-rust","context":["$AGENTSCOMMANDER_CONTEXT"],"#,
+            r#""repos":["../repo-Example"]}"#
+        ),
     )
     .expect("write replica config");
 
@@ -501,7 +503,10 @@ fn render_repos_only_template(template: &str) -> String {
         .expect("write repos-only template");
     std::fs::write(
         replica_root.join("config.json"),
-        r#"{"identity":"../../_agent_dev-rust","context":["$AGENTSCOMMANDER_CONTEXT"],"repos":["../repo-Example"]}"#,
+        concat!(
+            r#"{"identity":"../../_agent_dev-rust","context":["$AGENTSCOMMANDER_CONTEXT"],"#,
+            r#""repos":["../repo-Example"]}"#
+        ),
     )
     .expect("write replica config");
 

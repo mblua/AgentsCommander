@@ -84,8 +84,7 @@ fn a_stale_base_is_still_self_healed_while_the_session_gets_the_override() {
         .join("__agent_old-agent");
     std::fs::create_dir_all(&old_matrix).expect("old matrix");
     std::fs::create_dir_all(&old_replica).expect("old replica");
-    let old_skills =
-        render_skills_section(&discover_skill_index(Some(&path_string(&old_matrix))));
+    let old_skills = render_skills_section(&discover_skill_index(Some(&path_string(&old_matrix))));
     let legacy = legacy_rendered_default_context_for_compat(
         &path_string(&old_replica),
         Some(&path_string(&old_matrix)),
@@ -168,8 +167,7 @@ fn a_local_md_for_an_unmanaged_filename_is_ignored() {
     std::fs::write(&seed, "CACHE SEED\n").expect("seed");
     let role = fixture.replica_root.join("Role.md");
     std::fs::write(&role, "BASE ROLE\n").expect("role");
-    std::fs::write(fixture.replica_root.join("Role.local.md"), "LOCAL ROLE\n")
-        .expect("override");
+    std::fs::write(fixture.replica_root.join("Role.local.md"), "LOCAL ROLE\n").expect("override");
 
     let resolved_paths = vec![
         ("ac-context-seed.md".to_string(), seed),
@@ -241,9 +239,8 @@ fn an_override_does_not_substitute_for_a_missing_root_base() {
     )
     .expect("config");
 
-    let error =
-        build_root_agent_context_at(&path_string(&root_agent), &ac_root, None, false)
-            .expect_err("a missing base is still a hard error");
+    let error = build_root_agent_context_at(&path_string(&root_agent), &ac_root, None, false)
+        .expect_err("a missing base is still a hard error");
     assert!(
         error.contains("Root Agent has missing context files"),
         "{error}"
@@ -444,9 +441,8 @@ fn an_unavailable_gate_creates_no_base_and_still_serves_the_override() {
     // acquire times out and reports `Unavailable`. This costs the default
     // gate timeout in wall clock, which is why this test is slow.
     let project_root = project_root_of(&fixture);
-    let held =
-        crate::config::seed_manifest::ProjectSeedManifestGuard::acquire(&project_root)
-            .expect("hold the project gate");
+    let held = crate::config::seed_manifest::ProjectSeedManifestGuard::acquire(&project_root)
+        .expect("hold the project gate");
 
     let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
     let resolved = resolve_global_activated(&fixture, Some(&token)).expect("resolve");
@@ -480,15 +476,10 @@ fn the_coordinator_base_absent_case_behaves_the_same_under_both_gate_states() {
     .expect("override");
 
     let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
-    let resolved = resolve_session_context_content_with_activation(
-        &cwd,
-        true,
-        false,
-        None,
-        Some(&token),
-    )
-    .expect("resolve")
-    .expect("some content");
+    let resolved =
+        resolve_session_context_content_with_activation(&cwd, true, false, None, Some(&token))
+            .expect("resolve")
+            .expect("some content");
     assert!(resolved.contains("LOCAL COORDINATOR BODY"), "{resolved}");
     let created = std::fs::read_to_string(&base_path).expect("the base was created");
     assert_eq!(created, get_default_coordinator_template());
@@ -510,18 +501,12 @@ fn the_coordinator_base_absent_case_behaves_the_same_under_both_gate_states() {
     )
     .expect("override");
     let project_root = project_root_of(&fixture);
-    let held =
-        crate::config::seed_manifest::ProjectSeedManifestGuard::acquire(&project_root)
-            .expect("hold the project gate");
-    let resolved = resolve_session_context_content_with_activation(
-        &cwd,
-        true,
-        false,
-        None,
-        Some(&token),
-    )
-    .expect("resolve")
-    .expect("some content");
+    let held = crate::config::seed_manifest::ProjectSeedManifestGuard::acquire(&project_root)
+        .expect("hold the project gate");
+    let resolved =
+        resolve_session_context_content_with_activation(&cwd, true, false, None, Some(&token))
+            .expect("resolve")
+            .expect("some content");
     held.release();
     assert!(resolved.contains("LOCAL COORDINATOR BODY"), "{resolved}");
     assert!(

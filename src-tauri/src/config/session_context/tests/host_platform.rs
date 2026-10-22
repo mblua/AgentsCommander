@@ -60,9 +60,15 @@ fn default_context_embeds_host_platform_rules_block() {
         None,
         &no_skill_section(),
     );
-    assert!(out.contains(r#"## Host Platform Rules
+    assert!(out.contains(concat!(
+        r#"## Host Platform Rules
 
-Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for all shell work and every AgentsCommander CLI invocation; avoid PowerShell whenever Git Bash is available. Only if PowerShell is unavoidable, wrap with `& 'C:\Program Files\Git\bin\bash.exe' -lc '...'` and capture CLI output with `2>&1 | Out-String`."#));
+Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for all shell work and "#,
+        r#"every AgentsCommander CLI invocation; avoid PowerShell whenever Git Bash is "#,
+        r#"available. Only if PowerShell is unavoidable, wrap with `& 'C:\Program "#,
+        r#"Files\Git\bin\bash.exe' -lc '...'` and capture CLI output with `2>&1 | "#,
+        r#"Out-String`."#
+    )));
     assert!(out.contains("bash.exe"));
     assert!(out.contains("2>&1 | Out-String"));
     assert!(out.contains("**Windows:** see **Host Platform Rules** above."));
@@ -250,8 +256,8 @@ fn render_seeds_missing_platform_file_absent_only() {
     std::fs::create_dir_all(&replica).expect("create replica layout");
     let filename = host_platform_rules_filename();
     let default = host_platform_rules_default();
-    let state_path = ac
-        .join(crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
+    let state_path =
+        ac.join(crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
 
     let render = |replica: &std::path::Path| {
         render_agent_context_template_inner(
@@ -384,10 +390,8 @@ fn host_platform_rules_empty_file_falls_back_to_embedded_default() {
         "an empty pre-existing file must never be overwritten"
     );
     assert!(
-        !ac.join(
-            crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME
-        )
-        .exists(),
+        !ac.join(crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME)
+            .exists(),
         "an unowned empty file must not create a state entry"
     );
 }
@@ -424,10 +428,8 @@ fn render_with_container_mounts_never_seeds_platform_files() {
         );
     }
     assert!(
-        !ac.join(
-            crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME
-        )
-        .exists(),
+        !ac.join(crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME)
+            .exists(),
         "no state file may be created for a container session"
     );
 }
@@ -443,8 +445,8 @@ fn deleted_platform_file_is_reseeded_absent_only() {
     std::fs::create_dir_all(&replica).expect("create replica layout");
     let filename = host_platform_rules_filename();
     let default = host_platform_rules_default();
-    let state_path = ac
-        .join(crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
+    let state_path =
+        ac.join(crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
 
     let render = |replica: &std::path::Path| {
         render_agent_context_template_inner(
@@ -465,8 +467,7 @@ fn deleted_platform_file_is_reseeded_absent_only() {
         std::fs::read_to_string(ac.join(filename)).expect("read seeded host file"),
         default
     );
-    let state_before =
-        std::fs::read_to_string(&state_path).expect("read state before deletion");
+    let state_before = std::fs::read_to_string(&state_path).expect("read state before deletion");
 
     std::fs::remove_file(ac.join(filename)).expect("delete host platform file");
     let out2 = render(&replica);

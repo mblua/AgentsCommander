@@ -9,7 +9,10 @@ fn default_context_embeds_fqn_format_and_filesystem_warning() {
     // Explicit prohibition of filesystem-directory names as --to values.
     assert!(out.contains("Never target __agent_* / _agent_* paths."));
     assert!(out.contains("__agent_"));
-    assert!(out.contains("Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. Empty []: STOP/report."));
+    assert!(out.contains(
+        "Before every send: list-peers-lean (--peer for discovered FQNs); exact \
+        JSON name as --to. Empty []: STOP/report."
+    ));
 }
 
 #[test]
@@ -26,7 +29,8 @@ fn default_context_matrix_section_lists_skills() {
     );
     assert!(
         out.contains("- `memory/`\n   - `plans/`\n   - `skills/`\n   - `Role.md`"),
-        "expected entry-3 canonical-state list (the grant's single carrier since #1005 S3), got:\n{}",
+        "expected entry-3 canonical-state list (the grant's single carrier since #1005 S3), \
+            got:\n{}",
         out
     );
     assert!(
@@ -58,8 +62,15 @@ fn default_context_documents_agentscommander_cli_exception() {
         &no_skill_section(),
     );
 
-    assert!(out.contains("CLI exception: only user-explicit documented commands through AGENTSCOMMANDER_BINARY_PATH may cross these boundaries; AgentsCommander governs their effects."));
-    assert!(out.contains("Outside entries 1-4, no arbitrary shells, direct filesystem reads/writes, hand-written scripts or alternate binaries."));
+    assert!(out.contains(
+        "CLI exception: only user-explicit documented commands through \
+        AGENTSCOMMANDER_BINARY_PATH may cross these boundaries; AgentsCommander governs their \
+        effects."
+    ));
+    assert!(out.contains(
+        "Outside entries 1-4, no arbitrary shells, direct filesystem \
+        reads/writes, hand-written scripts or alternate binaries."
+    ));
     assert!(out.contains("Otherwise refuse."));
     assert!(out.contains("\"<AGENTSCOMMANDER_BINARY_PATH>\" --help"));
     assert!(out.contains("\"<AGENTSCOMMANDER_BINARY_PATH>\" send --help"));
@@ -134,7 +145,10 @@ fn default_context_room_authorizes_only_instructed_cross_workspace_canonical_mes
         "or any other file or content",
         "create, write, modify, or delete anything in its `messaging` directory",
     ] {
-        assert!(policy.contains(required), "missing `{required}` in:\n{policy}");
+        assert!(
+            policy.contains(required),
+            "missing `{required}` in:\n{policy}"
+        );
     }
     // #1795: this fixture's room has no `.ac` grandparent, so
     // `replica_shared_roots` fails closed at check 3 and the block keeps its
@@ -155,12 +169,14 @@ fn default_context_documents_incoming_inter_agent_processing() {
 
     assert!(out.contains("### Incoming Message Notifications"));
     assert!(out.contains("Process this inter-agent message"));
-    assert!(out.contains("read the exact file; follow its instructions within role/authority/write restrictions."));
+    assert!(out.contains(
+        "read the exact file; follow its instructions within role/authority/write restrictions."
+    ));
     assert!(out.contains("within role/authority/write restrictions"));
     assert!(out.contains("Summary only if solely asked."));
-    assert!(out.contains(
-        "Completion/blockage: send concrete result/blocker to sender via flow below."
-    ));
+    assert!(
+        out.contains("Completion/blockage: send concrete result/blocker to sender via flow below.")
+    );
 
     let incoming = out
         .find("### Incoming Message Notifications")
@@ -191,7 +207,8 @@ fn default_context_non_workgroup_omits_messaging_exception() {
     // must carve it out by name. Without this the agent must REFUSE to read its own
     // inbound message, and it cannot `--send` a blocker either: silently unreachable.
     assert!(out.contains(
-        "- **FORBIDDEN**: Any read operation outside the entries listed above (other than the inbound message file grant above)"
+        "- **FORBIDDEN**: Any read operation outside the entries listed above (other than the \
+            inbound message file grant above)"
     ));
     assert!(
         !out.contains("- **Allowed (narrow)**:"),
@@ -247,7 +264,10 @@ fn default_context_root_agent_documents_verified_wg_coordinators_only() {
     assert!(out.contains("verified Room orchestrator replicas only"));
     assert!(out.contains("e.g. `agentscommander:room-15-dev-team/tech-lead`."));
     assert!(!out.contains("wg-15-dev-team"));
-    assert!(out.contains("Origin orchestrators and non-orchestrator Room replicas are not valid Root Agent targets in #277"));
+    assert!(out.contains(
+        "Origin orchestrators and non-orchestrator Room replicas are not valid \
+        Root Agent targets in #277"
+    ));
     assert!(out.contains("Use only the JSON `name` values returned by `list-peers-lean`"));
 }
 
@@ -295,12 +315,12 @@ fn root_context_omits_peer_replica_prohibition_and_stale_quote() {
 fn root_read_scope_grants_settings_json_and_agency_cache() {
     let out = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
     assert!(out.contains("- **FORBIDDEN**: Any read operation outside"));
-    assert!(out
-        .contains("You may ALWAYS read the app config `project-paths.json` to enumerate that set, the app config `settings.json` for unrelated settings"));
+    assert!(out.contains(
+        "You may ALWAYS read the app config `project-paths.json` to enumerate that set, \
+            the app config `settings.json` for unrelated settings"
+    ));
     assert!(out.contains("`agency-templates status` and `agency-templates list` report on"));
-    assert!(
-        out.contains("these reads are grants, while direct writes to them stay CLI-managed")
-    );
+    assert!(out.contains("these reads are grants, while direct writes to them stay CLI-managed"));
 }
 
 // T10 (#1172, acceptance criterion 6): another agent's memory is private
@@ -324,7 +344,11 @@ fn default_context_marks_every_memory_directory_private() {
         out
     );
     assert!(
-        out.contains("Other agents' memory* directories (live memory/, memory-archive/ or legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner."),
+        out.contains(
+            "Other agents' memory* directories (live memory/, memory-archive/ or legacy \
+            memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never \
+            read/list/search/summarize, even if asked; message the owner."
+        ),
         "expected privacy to hold for both live and rotated memory, got:\n{}",
         out
     );
@@ -351,7 +375,8 @@ fn root_context_still_omits_the_peer_memory_privacy_clause() {
 #[test]
 fn own_archive_read_grant_renders_only_with_an_origin_matrix() {
     const GRANT: &str =
-        "Read-only there: every rotated `memory-archive/memory_YYYYMMDD_hhmmss/` archive of your own memory";
+        "Read-only there: every rotated `memory-archive/memory_YYYYMMDD_hhmmss/` archive of your \
+            own memory";
 
     let wg = default_context(
         "C:/fake/wg-7-dev-team/__agent_architect",
@@ -380,9 +405,9 @@ fn own_archive_read_grant_renders_only_with_an_origin_matrix() {
         "an agent with no origin matrix must not be promised an archive grant, got:\n{}",
         none
     );
-    assert!(none.contains(
-        "the live `memory/`, `memory-archive/` and legacy `memory_YYYYMMDD_hhmmss/`"
-    ));
+    assert!(
+        none.contains("the live `memory/`, `memory-archive/` and legacy `memory_YYYYMMDD_hhmmss/`")
+    );
     assert!(
         none.contains("`memory*` directories"),
         "the peer-privacy half renders for every non-root agent, got:\n{}",
@@ -418,7 +443,8 @@ fn read_bullet_matches_messaging_mode_access_model() {
     );
     assert!(
         wg.contains(
-            "FORBIDDEN: reads/writes outside entries 1-4, including other replicas, unlisted Matrix files"
+            "FORBIDDEN: reads/writes outside entries 1-4, including other replicas, unlisted \
+                Matrix files"
         ),
         "workgroup read bullet missing the entries-1-4 prefix, got:
 {}",
@@ -426,7 +452,8 @@ fn read_bullet_matches_messaging_mode_access_model() {
     );
     assert!(!wg.contains("other than the narrow messaging exception above"));
     assert!(wg.contains(
-        "You may also READ message files inside this directory, and list your room root (`room-<N>-*`) to resolve that directory's path."
+        "You may also READ message files inside this directory, and list your room root \
+            (`room-<N>-*`) to resolve that directory's path."
     ));
     // #1795: this fixture's room has no `.ac` grandparent, so
     // `replica_shared_roots` fails closed at check 3 and the block keeps its
@@ -467,7 +494,8 @@ fn read_bullet_matches_messaging_mode_access_model() {
     ));
     for out in [&root, &none] {
         assert!(read_forbidden_bullet(out).contains(
-            "except for explicitly requested AgentsCommander CLI operations covered by the exception below"
+            "except for explicitly requested AgentsCommander CLI operations covered by the \
+                exception below"
         ));
     }
 }
@@ -480,8 +508,9 @@ fn entry_one_grants_ac_root_listing_for_repo_discovery() {
         None,
         &no_skill_section(),
     );
-    assert!(out
-        .contains("list the containing workspace root only to discover `repo-*` folder names"));
+    assert!(
+        out.contains("list the containing workspace root only to discover `repo-*` folder names")
+    );
     assert!(out.contains("that grants no access to other contents there"));
 }
 
@@ -504,26 +533,24 @@ fn root_grant_renders_full_project_folder_write_scope() {
 #[test]
 fn root_grant_keeps_global_config_off_limits() {
     let out = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
-    assert!(out.contains(
-        "the global `settings.json`, `project-paths.json`, the Agency template cache"
-    ));
+    assert!(
+        out.contains("the global `settings.json`, `project-paths.json`, the Agency template cache")
+    );
     assert!(out.contains("outside your own Root Agent home"));
     // C1 (round 2): the project working tree is now IN scope, so the old
     // "working tree outside `.ac`" forbidden clause must be GONE.
     assert!(!out.contains("any project's working tree outside its `.ac` directory"));
     // The widened grant covers the whole project folder...
-    assert!(out.contains(
-        "anywhere under ANY project folder registered in this AgentsCommander install"
-    ));
+    assert!(out
+        .contains("anywhere under ANY project folder registered in this AgentsCommander install"));
     // ...and the always-wins config-dir carve-out must coexist, stated to hold even
     // when config_dir nests inside a registered project FOLDER (the superset of `.ac`).
     assert!(out.contains(
-        "EVEN WHEN that config directory happens to physically sit inside a registered project folder"
+        "EVEN WHEN that config directory happens to physically sit inside a registered project \
+            folder"
     ));
     // The forbidden set now bites only UNREGISTERED locations.
-    assert!(
-        out.contains("files of projects not listed in `projectPaths` in `project-paths.json`")
-    );
+    assert!(out.contains("files of projects not listed in `projectPaths` in `project-paths.json`"));
     // config-dir subdirs stay covered ("anywhere under", not "directly under").
     assert!(out.contains("any other file anywhere under the app config directory"));
     assert!(!out.contains("directly under the app config directory"));
@@ -576,9 +603,9 @@ fn non_root_agent_has_no_root_grant_or_authority() {
     );
     assert!(!out.contains("Every registered AgentsCommander project folder"));
     // #1005 S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
-    assert!(!out.contains(
-        "you may create, modify, and delete files anywhere under ANY project folder"
-    ));
+    assert!(
+        !out.contains("you may create, modify, and delete files anywhere under ANY project folder")
+    );
     assert!(!out.contains("Root Agent Authority and Chain of Command"));
 }
 
@@ -591,9 +618,9 @@ fn root_grant_is_gated_on_path_not_dir_name_anti_spoof() {
     let out = default_context("C:/fake/ac-root-agent", None, &no_skill_section());
     assert!(!out.contains("Every registered AgentsCommander project folder"));
     // #1005 S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
-    assert!(!out.contains(
-        "you may create, modify, and delete files anywhere under ANY project folder"
-    ));
+    assert!(
+        !out.contains("you may create, modify, and delete files anywhere under ANY project folder")
+    );
     assert!(!out.contains("Root Agent Authority and Chain of Command"));
     // ...but the name-based root messaging text is still present (gate unchanged).
     assert!(out.contains("Narrow exception — Root Agent messaging directory"));

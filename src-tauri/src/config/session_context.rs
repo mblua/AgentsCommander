@@ -5414,5 +5414,3 @@ pub(crate) fn is_replica_agent_dir(cwd: &str) -> bool {
 
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod token_accounting;

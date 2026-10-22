@@ -276,11 +276,13 @@ fn golden_rule_room_replica_renders_entries_five_and_six_on_disk() {
         "missing status is null",
         "Direct filesystem access",
         "partial backups",
-        "TASK-status.jsonl, history, backups, partial backups, lock, stages, TASK-clean.pending.json, TASK-status.* and TASK.md.lock",
+        "TASK-status.jsonl, history, backups, partial backups, lock, stages, \
+            TASK-clean.pending.json, TASK-status.* and TASK.md.lock",
         "Get returns complete task/latest status; missing status is null",
         "--text replaces complete status: remaining tickets, follow-ups, continuation",
         "Use returned revision/new request UUID",
-        "Retry uncertain writes with identical ID/base revision/text: exact last-request retry replays receipt",
+        "Retry uncertain writes with identical ID/base revision/text: exact last-request retry \
+            replays receipt",
         "Overtaken retry/revision conflict: read/reconcile before new UUID",
         "No peer-memory/other-room access",
         "TASK-clean.pending.json",
@@ -427,9 +429,19 @@ fn golden_rule_non_replica_under_a_room_keeps_the_four_entry_text() {
         let values =
             default_context_dynamic_values(agent_root, matrix_root, &no_skill_section(), false);
         let out = render_write_restrictions_block(agent_root, &values);
-        assert!(out.contains("FORBIDDEN: reads/writes outside entries 1-4, including other replicas, unlisted Matrix files"));
-        assert!(out.contains("Other agents' memory* directories (live memory/, memory-archive/ or legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner."));
-        assert!(out.contains("CLI exception: only user-explicit documented commands through AGENTSCOMMANDER_BINARY_PATH"));
+        assert!(out.contains(
+            "FORBIDDEN: reads/writes outside entries 1-4, including other \
+            replicas, unlisted Matrix files"
+        ));
+        assert!(out.contains(
+            "Other agents' memory* directories (live memory/, memory-archive/ or \
+            legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never \
+            read/list/search/summarize, even if asked; message the owner."
+        ));
+        assert!(out.contains(
+            "CLI exception: only user-explicit documented commands through \
+            AGENTSCOMMANDER_BINARY_PATH"
+        ));
 
         assert!(
             out.contains("4. **Messaging access:**"),

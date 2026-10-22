@@ -16,7 +16,11 @@ fn materialize_replica_context_repairs_stale_identity_before_role_injection() {
     .expect("write Role.md");
     std::fs::write(
         replica_root.join("config.json"),
-        r#"{"identity":"../../../../agentscommander-old/.ac/_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT","../../../../agentscommander-old/.ac/_agent_tech-lead/Role.md"]}"#,
+        concat!(
+            r#"{"identity":"../../../../agentscommander-old/.ac/_agent_tech-lead","#,
+            r#""context":["$AGENTSCOMMANDER_CONTEXT","#,
+            r#""../../../../agentscommander-old/.ac/_agent_tech-lead/Role.md"]}"#
+        ),
     )
     .expect("write replica config");
 
@@ -73,7 +77,8 @@ fn materialize_agent_context_file_includes_skills_for_direct_matrix_context() {
     write_skill(
         &matrix_root,
         "runtime",
-        "---\nname: runtime\ndescription: Direct runtime skill metadata.\nwhen_to_use: Use directly from the canonical matrix.\n---\nDIRECT_BODY_SHOULD_NOT_RENDER\n",
+        "---\nname: runtime\ndescription: Direct runtime skill metadata.\nwhen_to_use: Use \
+            directly from the canonical matrix.\n---\nDIRECT_BODY_SHOULD_NOT_RENDER\n",
     );
 
     let materialized = materialize_agent_context_file(
@@ -84,8 +89,7 @@ fn materialize_agent_context_file_includes_skills_for_direct_matrix_context() {
     .expect("materialize context")
     .expect("context path");
     let materialized_path = PathBuf::from(&materialized);
-    let content =
-        std::fs::read_to_string(&materialized_path).expect("read materialized context");
+    let content = std::fs::read_to_string(&materialized_path).expect("read materialized context");
 
     assert_eq!(
         materialized_path.file_name().and_then(|name| name.to_str()),
@@ -446,7 +450,10 @@ fn non_role_context_source_keeps_frontmatter() {
     .expect("write notes.md");
     std::fs::write(
         replica_root.join("config.json"),
-        r#"{"identity":"../../_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT","notes.md"]}"#,
+        concat!(
+            r#"{"identity":"../../_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT","#,
+            r#""notes.md"]}"#
+        ),
     )
     .expect("write replica config");
 
@@ -510,11 +517,14 @@ fn materialize_root_context_seeds_boundary_audit_skill_without_prior_bootstrap()
     std::fs::create_dir_all(&root).expect("create root");
     std::fs::write(
         root.join("config.json"),
-        r#"{"tooling":{},"context":["$AGENTSCOMMANDER_CONTEXT","../Context.root-agent.md","Role.md"]}"#,
+        concat!(
+            r#"{"tooling":{},"context":["$AGENTSCOMMANDER_CONTEXT","#,
+            r#""../Context.root-agent.md","#,
+            r#""Role.md"]}"#
+        ),
     )
     .expect("write config");
-    std::fs::write(root.join("Role.md"), "# Root Role\n\nROOT_ROLE_BODY\n")
-        .expect("write role");
+    std::fs::write(root.join("Role.md"), "# Root Role\n\nROOT_ROLE_BODY\n").expect("write role");
     std::fs::write(
         temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME),
         "# Root Context\n\nROOT_TEMPLATE_BODY\n{{SKILLS_LIST}}\n",
@@ -572,11 +582,14 @@ fn materialize_root_context_never_consumes_a_ac_ancestor_global_template() {
     std::fs::write(&global_template_path, sentinel).expect("write global template");
     std::fs::write(
         root.join("config.json"),
-        r#"{"tooling":{},"context":["$AGENTSCOMMANDER_CONTEXT","../Context.root-agent.md","Role.md"]}"#,
+        concat!(
+            r#"{"tooling":{},"context":["$AGENTSCOMMANDER_CONTEXT","#,
+            r#""../Context.root-agent.md","#,
+            r#""Role.md"]}"#
+        ),
     )
     .expect("write config");
-    std::fs::write(root.join("Role.md"), "# Root Role\n\nROOT_ROLE_BODY\n")
-        .expect("write role");
+    std::fs::write(root.join("Role.md"), "# Root Role\n\nROOT_ROLE_BODY\n").expect("write role");
     std::fs::write(
         root.parent()
             .expect("root parent")
@@ -649,8 +662,7 @@ fn materialize_agent_context_file_ignores_standalone_agent_named_directory() {
         "standalone _agent_* directories are not canonical Agent Matrix roots"
     );
     assert_eq!(
-        std::fs::read_to_string(standalone_root.join("AGENTS.md"))
-            .expect("read existing prompt"),
+        std::fs::read_to_string(standalone_root.join("AGENTS.md")).expect("read existing prompt"),
         existing_context
     );
 }

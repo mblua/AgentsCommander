@@ -162,7 +162,7 @@
       "resolution": "Run manually with `cargo test --lib measure_default_context_size_for_workgroup_replica -- --ignored --nocapture` to read the savings snapshot."
     },
     {
-      "id": "rust:src-tauri/src/config/session_context/token_accounting.rs::token_accounting_report",
+      "id": "rust:src-tauri/src/config/session_context/tests/token_accounting.rs::token_accounting_report",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 1005,

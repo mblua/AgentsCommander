@@ -16,6 +16,7 @@ mod shared_locations;
 mod skill_index;
 mod template_heal;
 mod template_render;
+mod token_accounting;
 
 fn issue_2832_fixture() -> (tempfile::TempDir, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
@@ -153,7 +154,8 @@ fn assert_no_broad_read_grant(out: &str) {
         "Read the entire filesystem",
     ];
     const EXPLICIT_PROHIBITIVE_CROSS_WORKSPACE_READ: &str =
-        "Do NOT list or explore the other workspace or room, read a second external file or any other file or content there";
+        "Do NOT list or explore the other workspace or room, read a second external file or any \
+            other file or content there";
 
     let normalized = normalize(out);
     for fragment in EXPLICIT_BROAD_GRANTS {
@@ -187,11 +189,9 @@ fn assert_no_broad_read_grant(out: &str) {
                 other => other,
             })
             .collect();
-        let is_read_like =
-            |token: &str| matches!(token, "read" | "access" | "inspect" | "search");
+        let is_read_like = |token: &str| matches!(token, "read" | "access" | "inspect" | "search");
         let is_quantifier = |token: &str| matches!(token, "any" | "all");
-        let is_universe =
-            |token: &str| matches!(token, "path" | "file" | "directory" | "location");
+        let is_universe = |token: &str| matches!(token, "path" | "file" | "directory" | "location");
 
         for (read_index, token) in tokens.iter().enumerate() {
             if !is_read_like(token) {
@@ -260,7 +260,8 @@ fn assert_no_broad_read_grant(out: &str) {
 /// trailing descriptor (exercises the prefix match) and the Self-discovery
 /// prose carries the realistic backtick reference to `## Inter-Agent
 /// Messaging` (exercises line-anchoring over `contains`).
-const STALE_HYBRID_TEMPLATE: &str = r#"# AgentsCommander Context
+const STALE_HYBRID_TEMPLATE: &str = concat!(
+    r#"# AgentsCommander Context
 
 You are running inside an AgentsCommander session.
 
@@ -278,7 +279,8 @@ You may ONLY modify files in the entries listed below:
 
 - **Allowed**: Read-only operations on ANY path
 - **Allowed**: Full read/write inside your own replica root ({{AGENT_ROOT}})
-{{MATRIX_ALLOWED}}{{MESSAGING_ALLOWED}}- **FORBIDDEN**: Any write operation outside {{FORBIDDEN_SCOPE}}.
+{{MATRIX_ALLOWED}}{{MESSAGING_ALLOWED}}- **FORBIDDEN**: Any write operation outside "#,
+    r#"{{FORBIDDEN_SCOPE}}.
 
 **Clarification on git operations:** {{GIT_SCOPE}}
 
@@ -294,7 +296,8 @@ Your AgentsCommander credentials are in environment variables.
 
 ## Self-discovery via --help
 
-For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List available peers`) are the authoritative reference.
+For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List available "#,
+    r#"peers`) are the authoritative reference.
 
 ## Session credentials
 
@@ -315,7 +318,8 @@ Resolve the exact agent name via `list-peers-lean`.
 ### List available peers
 
 Run list-peers-lean.
-"#;
+"#
+);
 
 /// Render a raw global-context template through the function under change,
 /// with an explicit `is_root_agent` flag. A temp-dir round trip cannot force
@@ -365,10 +369,7 @@ fn seed_stale_managed_context_files(agent_root: &Path) {
     }
 }
 
-fn assert_only_selected_managed_context_file_exists(
-    agent_root: &Path,
-    expected_filename: &str,
-) {
+fn assert_only_selected_managed_context_file_exists(agent_root: &Path, expected_filename: &str) {
     for filename in MANAGED_CONTEXT_FILENAMES {
         let filename = *filename;
         assert_eq!(
@@ -501,7 +502,17 @@ fn issue_2868_assert_permission(content: &str, root: &Path) {
         &canonical_or_original(root.parent().expect("project .ac parent"))
             .join(root.file_name().expect("project skills basename")),
     );
-    let paragraph = format!("Filesystem authorization amendment: You MAY READ {root} and its descendants, including skill bodies and supporting resources. This is an explicit additional exception to every preceding filesystem restriction in this context, including the GOLDEN RULE absolute/exclusive entry ranges, the forbidden-read scope, the refusal instruction, and any statement that nothing else under .ac is readable. Those restrictions remain in force for all other paths. This amendment grants no write permission and no access to external link/reference targets; those require an existing independent permission. Private agent state and TASK.md write protection remain unchanged. This read authorization also applies when no preceding filesystem rule exists.");
+    let paragraph = format!(
+        "Filesystem authorization amendment: You MAY READ {root} and its \
+        descendants, including skill bodies and supporting resources. This is an explicit \
+        additional exception to every preceding filesystem restriction in this context, including \
+        the GOLDEN RULE absolute/exclusive entry ranges, the forbidden-read scope, the refusal \
+        instruction, and any statement that nothing else under .ac is readable. Those restrictions \
+        remain in force for all other paths. This amendment grants no write permission and no \
+        access to external link/reference targets; those require an existing independent \
+        permission. Private agent state and TASK.md write protection remain unchanged. This read \
+        authorization also applies when no preceding filesystem rule exists."
+    );
     assert_eq!(content.matches(&paragraph).count(), 1, "{content}");
     assert_eq!(content.matches("## Project Skills").count(), 1);
 }
