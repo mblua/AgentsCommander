@@ -1055,12 +1055,16 @@ fn append_copy_provenance(
         .file_name()
         .and_then(|v| v.to_str())
         .ok_or("Invalid source project name")?;
-    value["copies"].as_array_mut().ok_or("Invalid copy provenance copies")?.push(serde_json::json!({
-        "sourceProjectName": name,
-        "sourceProjectPath": crate::path_utils::path_to_string_without_windows_verbatim_prefix(source_project),
-        "sourceAgentRef": source_ref,
-        "copiedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-    }));
+    value["copies"]
+        .as_array_mut()
+        .ok_or("Invalid copy provenance copies")?
+        .push(serde_json::json!({
+            "sourceProjectName": name,
+            "sourceProjectPath":
+                crate::path_utils::path_to_string_without_windows_verbatim_prefix(source_project),
+            "sourceAgentRef": source_ref,
+            "copiedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        }));
     Ok(value)
 }
 
@@ -1778,7 +1782,8 @@ pub(crate) fn resolve_agent_ref(ac_root: &Path, raw_agent: &str) -> Result<Strin
     }
     if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains(':') {
         return Err(format!(
-            "Invalid agent reference '{}': team configs must use portable refs like '_agent_name' or 'name', not filesystem paths",
+            "Invalid agent reference '{}': team configs must use portable refs like '_agent_name' \
+             or 'name', not filesystem paths",
             raw_agent
         ));
     }
@@ -2092,7 +2097,8 @@ pub(crate) fn acquire_lifecycle_project_gate(
             path,
             source,
         }) => Err(format!(
-            "Project is busy; retry the deletion (seed-manifest lock I/O at {} after contention: {})",
+            "Project is busy; retry the deletion (seed-manifest lock I/O at {} after contention: \
+             {})",
             path.display(),
             source
         )),
@@ -2100,7 +2106,8 @@ pub(crate) fn acquire_lifecycle_project_gate(
             // Pre-contention capability or other lock-acquisition error: preserve
             // the existing deletion behavior as untracked degradation.
             log::warn!(
-                "[entity_creation] #1063 lifecycle removal proceeding without seed-manifest gate (untracked): {}",
+                "[entity_creation] #1063 lifecycle removal proceeding without seed-manifest gate \
+                 (untracked): {}",
                 other
             );
             Ok(None)
@@ -2391,7 +2398,8 @@ where
             // the existing success/error contract.
             cleanup?;
             log::info!(
-                "[entity_creation] Deleted agent matrix identity '{}' at '{}' (targets={}, team_configs={})",
+                "[entity_creation] Deleted agent matrix identity '{}' at '{}' (targets={}, \
+                 team_configs={})",
                 plan.agent_ref,
                 plan.origin_dir.display(),
                 plan.targets.len(),
@@ -2406,7 +2414,8 @@ where
         AgentDeleteTransactionOutcome::Blocked { target, raw_error } => {
             // Blocker diagnostics run after every synchronous guard is released.
             log::info!(
-                "[entity_creation] delete_agent_matrix: file-in-use detected for '{}' on rename probe",
+                "[entity_creation] delete_agent_matrix: file-in-use detected for '{}' on rename \
+                 probe",
                 target.label
             );
             let report = crate::commands::wg_delete_diagnostic::diagnose_delete_root_blockers(
@@ -2565,7 +2574,8 @@ fn workdir_blocks_delete(workdir: &str, target_keys: &[String]) -> bool {
 /// session ids, names, statuses, or working directories.
 fn format_post_stage_live_error(still_staged: &[StagedAgentDeleteTarget]) -> String {
     format!(
-        "Cannot delete agent while a session is active under a delete target; retry after it exits.{}",
+        "Cannot delete agent while a session is active under a delete target; retry after it \
+         exits.{}",
         still_staged_suffix(still_staged)
     )
 }
@@ -2660,7 +2670,8 @@ fn persist_agent_delete_metadata_blocking(
         let current = read_team_config_bytes(&mutation.config_path)?;
         if current != mutation.before_json {
             return Err(format!(
-                "Team '{}' config changed under the lock before agent delete; aborting without writes",
+                "Team '{}' config changed under the lock before agent delete; aborting without \
+                 writes",
                 mutation.team_name
             ));
         }
@@ -2982,7 +2993,8 @@ fn collect_agent_team_mutations_raw(
                 let raw = String::from_utf8_lossy(&before_json);
                 if raw_text_mentions_agent_token(&raw, agent_name, agent_ref) {
                     return Err(format!(
-                        "Cannot delete agent '{}': cannot verify team '{}' references because config.json is invalid: {}",
+                        "Cannot delete agent '{}': cannot verify team '{}' references because \
+                         config.json is invalid: {}",
                         agent_name, team_name, e
                     ));
                 }
@@ -3067,7 +3079,8 @@ fn collect_agent_team_mutations_raw(
     if !coordinator_blockers.is_empty() {
         coordinator_blockers.sort();
         return Err(format!(
-            "Cannot delete agent '{}': orchestrator of team(s): {}. Reassign the orchestrator first.",
+            "Cannot delete agent '{}': orchestrator of team(s): {}. Reassign the orchestrator \
+             first.",
             agent_name,
             coordinator_blockers.join(", ")
         ));
@@ -3448,7 +3461,8 @@ fn format_agent_delete_post_stage_live_failure(
     match dir_rollback_result {
         Ok(()) => live_error,
         Err(rollback) => format!(
-            "Agent delete post-stage live-session check failed and rollback also failed. Live-session error: {}. Rollback error: {}",
+            "Agent delete post-stage live-session check failed and rollback also failed. \
+             Live-session error: {}. Rollback error: {}",
             live_error, rollback
         ),
     }
@@ -4006,7 +4020,8 @@ where
             .collect::<Vec<_>>()
             .join("\n");
         return Err(format!(
-            "Cannot delete team: the following repos have pending work:\n{}\n\nCommit or push changes before deleting.",
+            "Cannot delete team: the following repos have pending work:\n{}\n\nCommit or push \
+             changes before deleting.",
             list
         ));
     }
@@ -4177,7 +4192,8 @@ pub async fn delete_workgroup(
                 .join("\n");
             // DIRTY_REPOS: prefix is a sentinel the frontend uses to detect this error type
             return Err(format!(
-                "DIRTY_REPOS:Cannot delete room: the following repos have pending work:\n{}\n\nCommit or push changes before deleting.",
+                "DIRTY_REPOS:Cannot delete room: the following repos have pending \
+                 work:\n{}\n\nCommit or push changes before deleting.",
                 list
             ));
         }
@@ -4274,7 +4290,8 @@ pub(crate) async fn delete_workgroup_dir_backend_with_outcome(
         WgDeleteOutcome::Blocked(e) => {
             let raw = e.to_string();
             log::info!(
-                "[entity_creation] delete_workgroup: file-in-use detected for '{}' on rename probe, running blocker diagnostic on intact tree",
+                "[entity_creation] delete_workgroup: file-in-use detected for '{}' on rename \
+                 probe, running blocker diagnostic on intact tree",
                 workgroup_name
             );
             let report = crate::commands::wg_delete_diagnostic::diagnose_blockers(
@@ -4390,7 +4407,8 @@ pub async fn update_team(
         }
     }
 
-    // Refresh coordinator flags — a team edit can add/remove the coordinator or change its target.
+    // Refresh coordinator flags — a team edit can add/remove the coordinator or change its
+    // target.
     emit_coordinator_refresh(&app, session_mgr.inner()).await;
 
     Ok(())
@@ -4850,7 +4868,8 @@ pub(crate) fn try_atomic_delete_wg_with_remove(
         Ok(()) => {
             if let Err(e) = remove_dir_all(&temp_path) {
                 log::warn!(
-                    "[entity_creation] Renamed workgroup '{}' to '{}' but remove_dir_all failed: {}. \
+                    "[entity_creation] Renamed workgroup '{}' to '{}' but remove_dir_all \
+                     failed: {}. \
                      User-visible WG is gone; orphan remains on disk.",
                     wg_dir.display(),
                     temp_path.display(),
@@ -4896,7 +4915,8 @@ async fn stage_agent_delete_targets(
         Ok(staged) => Ok(staged),
         Err(AgentDeleteStageError::Blocked { target, raw_error }) => {
             log::info!(
-                "[entity_creation] delete_agent_matrix: file-in-use detected for '{}' on rename probe",
+                "[entity_creation] delete_agent_matrix: file-in-use detected for '{}' on rename \
+                 probe",
                 target.label
             );
             let report = crate::commands::wg_delete_diagnostic::diagnose_delete_root_blockers(
@@ -5064,7 +5084,8 @@ fn format_stage_rollback_failed(
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "Agent delete staging failed and rollback also failed. Hidden cleanup dirs remain: {}. Original error: {}. Rollback error: {}",
+        "Agent delete staging failed and rollback also failed. Hidden cleanup dirs remain: {}. \
+         Original error: {}. Rollback error: {}",
         hidden_paths, original_error, rollback_error
     )
 }
