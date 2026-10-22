@@ -8,8 +8,10 @@ fn write(path: &Path, value: &Value) {
 }
 
 fn source() -> Value {
-    json!({"agents":[{"id":"same","label":"Own","color":"#123456","baseCommand":"tool","extension":{"keep":null}}],
-            "codingAgentProfiles":{"profilesByAgent":{"same":{"B":{"additionalArguments":"--own","opaque":{"keep":true}}}},"profileLabelsByAgent":{"same":{"B":"Own B"}}},
+    json!({"agents":[{"id":"same","label":"Own","color":"#123456","baseCommand":"tool","extensio\
+        n":{"keep":null}}],
+            "codingAgentProfiles":{"profilesByAgent":{"same":{"B":{"additionalArguments":"--own","o\
+                paque":{"keep":true}}}},"profileLabelsByAgent":{"same":{"B":"Own B"}}},
             "unrelated":{"preserve":[1,null]}})
 }
 
@@ -46,7 +48,8 @@ fn e2432_p02_registered_scoped_save_raw_alias_and_fresh_revision() {
     let main = std::fs::read(&path).unwrap();
     let hash = configuration_identity("tool", &[]);
     let edit = edits(
-        json!({"rows":[{"entryHint":"same","action":"upsert","patch":{"baseCommand":"tool --new"}}],"profileSets":[]}),
+        json!({"rows":[{"entryHint":"same","action":"upsert","patch":{"baseCommand":"tool \
+            --new"}}],"profileSets":[]}),
     );
     let report = owner
         .with_operation_blocking("p02-save", |current, guard| {
@@ -94,7 +97,8 @@ fn e2432_p02_cas_forgery_and_overlay_reject_before_publish() {
             let overlay = path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME);
             write(
                 &overlay,
-                &json!({"agents":[{"id":"overlay","label":"Other","color":"red","baseCommand":"other"}]}),
+                &json!({"agents":[{"id":"overlay","label":"Other","color":"red","baseCommand":"othe\
+                    r"}]}),
             );
         }
         let report = owner
@@ -143,7 +147,8 @@ fn e2432_p02_inventory_keeps_instance_catalogs_under_primary_project() {
     let mut instance = context.clone();
     instance.project = false;
     instance.catalog_root = path.parent().unwrap().canonicalize().unwrap();
-    let catalog = json!({"schemaVersion":1,"agents":[{"key":"same","baseCommand":"tool","label":"Catalog","color":"blue"}]});
+    let catalog = json!({"schemaVersion":1,"agents":[{"key":"same","baseCommand":"tool","label":"Ca\
+        talog","color":"blue"}]});
     for ctx in [&context, &instance] {
         for kind in [SourceKind::CatalogBase, SourceKind::CatalogPersonal] {
             write(&ctx.locator(&ctx.source(kind)).unwrap(), &catalog);
@@ -288,10 +293,12 @@ fn e2432_p02_partial_remove_rows_stay_raw_and_profile_deletion_is_hash_scoped() 
     let source = context.source(SourceKind::CatalogPersonal);
     let catalog = context.locator(&source).unwrap();
     let raw = json!({"schemaVersion":1,"agents":[
-            {"key":"same","baseCommand":"tool","label":"Own","color":"blue","unknown":{"keep":null}},
+            {"key":"same","baseCommand":"tool","label":"Own","color":"blue","unknown":{"kee\
+                p":null}},
             {"key":"partial","label":"Incomplete","unknown":42},
             {"key":"removed","remove":true,"opaque":[null]}],"extension":{"keep":true},
-            "codingAgentProfiles":{"same":{"B":{"notes":"own","opaque":42}}},"profileLabels":{"same":{"B":"Own"}}});
+            "codingAgentProfiles":{"same":{"B":{"notes":"own","opaque":42}}},"profileLabels":{"sam\
+                e":{"B":"Own"}}});
     write(&catalog, &raw);
     let snapshot = read_agent_file_snapshot(&context, &source).unwrap();
     assert_eq!(snapshot.availability, SourceAvailability::Available);
@@ -309,7 +316,8 @@ fn e2432_p02_partial_remove_rows_stay_raw_and_profile_deletion_is_hash_scoped() 
         .unwrap()
         .is_empty());
     let bad = edits(
-        json!({"rows":[{"entryHint":"same","action":"upsert","patch":{"id":"forged"}}],"profileSets":[]}),
+        json!({"rows":[{"entryHint":"same","action":"upsert","patch":{"id":"forged"}}],"profileSet\
+            s":[]}),
     );
     assert!(prepare_agent_file_edits(&raw, false, &bad).is_err());
 }
@@ -318,7 +326,8 @@ fn e2432_p02_profile_edits_preserve_unknowns_and_reject_duplicate_or_orphan_targ
     let raw = source();
     let hash = configuration_identity("tool", &[]);
     let valid = edits(
-        json!({"rows":[],"profileSets":[{"baseHash":hash,"cells":{"B":{"additionalArguments":"--edited"}},"labels":{"B":"Edited"}}]}),
+        json!({"rows":[],"profileSets":[{"baseHash":hash,"cells":{"B":{"additionalArguments":"--edi\
+            ted"}},"labels":{"B":"Edited"}}]}),
     );
     let after = prepare_agent_file_edits(&raw, true, &valid).unwrap();
     assert_eq!(
@@ -327,9 +336,12 @@ fn e2432_p02_profile_edits_preserve_unknowns_and_reject_duplicate_or_orphan_targ
     );
     for bad in [
         json!({"rows":[],"profileSets":[{"baseHash":"unknown","cells":{},"labels":{}}]}),
-        json!({"rows":[],"profileSets":[{"baseHash":hash,"cells":{},"labels":{}},{"baseHash":hash,"cells":{},"labels":{}}]}),
-        json!({"rows":[{"entryHint":"same","action":"delete","patch":{}},{"entryHint":"same","action":"delete","patch":{}}],"profileSets":[]}),
-        json!({"rows":[],"profileSets":[{"baseHash":hash,"cells":{"B":{"newUnknown":true}},"labels":{}}]}),
+        json!({"rows":[],"profileSets":[{"baseHash":hash,"cells":{},"labels":{}},{"baseHash":hash,"\
+            cells":{},"labels":{}}]}),
+        json!({"rows":[{"entryHint":"same","action":"delete","patch":{}},{"entryHint":"same","actio\
+            n":"delete","patch":{}}],"profileSets":[]}),
+        json!({"rows":[],"profileSets":[{"baseHash":hash,"cells":{"B":{"newUnknown":true}},"label\
+            s":{}}]}),
     ] {
         assert!(prepare_agent_file_edits(&raw, true, &edits(bad)).is_err());
     }
@@ -350,7 +362,8 @@ fn e2432_p02_registered_atomic_failure_retains_actual_revision_and_owner() {
     let target = context.locator(&before.source).unwrap();
     let bytes = std::fs::read(agents_instance_path(&path)).unwrap();
     let edit = edits(
-        json!({"rows":[{"entryHint":"same","action":"upsert","patch":{"label":"Edited"}}],"profileSets":[]}),
+        json!({"rows":[{"entryHint":"same","action":"upsert","patch":{"label":"Edited"}}],"profileS\
+            ets":[]}),
     );
     let report = owner
         .with_operation_blocking("p02-registered-atomic-failure", |current, guard| {

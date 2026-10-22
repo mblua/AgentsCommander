@@ -1,0 +1,29 @@
+{
+  "defaultShell": "test-shell",
+  "defaultShellArgs": [],
+  "rootToken": "issue-1757-fixture-token",
+  "agents": [
+    {
+      "id": "codex",
+      "label": "Codex",
+      "command": "codex",
+      "color": "#000000",
+      "blockingMenus": [
+        {
+          "pattern": "^\\s*Do you trust the contents of this directory\\?",
+          "notification": "codex is waiting for you to answer the folder-trust menu in this terminal",
+          "enabled": true,
+          "capturedAgainst": "codex 0.x / Linux"
+        }
+      ]
+    }
+  ],
+  "codingAgentProfiles": {
+    "schemaVersion": 2,
+    "profileSlots": { "A": { "label": "" } },
+    "defaultProfileByAgent": {},
+    "profilesByAgent": {
+      "codex": { "A": { "enabled": true, "command": "", "env": {}, "notes": "" } }
+    }
+  }
+}

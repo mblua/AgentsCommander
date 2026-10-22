@@ -803,8 +803,10 @@ fn id_hash_schema_missing_null_and_nonstring_preserve_valid_settings() {
     for malformed_agents in [
         serde_json::json!({}),
         serde_json::json!([null]),
-        serde_json::json!([{"id": "a", "label": "A", "command": 42, "color": "red", "id_hash": false}]),
-        serde_json::json!([{"id": "a", "label": "A", "command": "tool", "color": "red", "envs": {}, "id_hash": false}]),
+        serde_json::json!([{"id": "a", "label": "A", "command": 42, "color": "red", "id_has\
+            h": false}]),
+        serde_json::json!([{"id": "a", "label": "A", "command": "tool", "color": "red", "env\
+            s": {}, "id_hash": false}]),
     ] {
         let mut malformed = baseline.clone();
         malformed["agents"] = malformed_agents;
@@ -863,7 +865,8 @@ fn p03_readers_select_sidecar_without_migration_and_preserve_unrelated_on_confli
     let path = temp.path().join("settings.json");
     let a = real_ac_project_path(temp.path(), "A");
     let b = real_ac_project_path(temp.path(), "B");
-    let legacy = serde_json::json!({"defaultShell":"sentinel","defaultShellArgs":[],"agents":[],"projectPaths":[a],"projectPath":a});
+    let legacy = serde_json::json!({"defaultShell":"sentinel","defaultShellArgs":[],"agents":[],"pr\
+        ojectPaths":[a],"projectPath":a});
     std::fs::write(&path, legacy.to_string()).unwrap();
     let original = std::fs::read(&path).unwrap();
     assert_eq!(
@@ -918,7 +921,10 @@ fn p03_preserve_and_cas_strip_six_keys_and_do_not_write_project_drafts() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("settings.json");
     let a = real_ac_project_path(temp.path(), "A");
-    let raw = serde_json::json!({"defaultShell":"sentinel","defaultShellArgs":[],"agents":[],"projectPaths":[a],"projectPathsRelativeToInstance":[null],"projectPath":a,"projectPathRelativeToInstance":null,"archivedProjectPaths":[],"archivedProjectPathsRelativeToInstance":[],"defaultShell":"sentinel"});
+    let raw = serde_json::json!({"defaultShell":"sentinel","defaultShellArgs":[],"agents":[],"proje\
+        ctPaths":[a],"projectPathsRelativeToInstance":[null],"projectPath":a,"projectPathRelativeTo\
+        Instance":null,"archivedProjectPaths":[],"archivedProjectPathsRelativeToInstance":[],"defau\
+        ltShell":"sentinel"});
     std::fs::write(&path, raw.to_string()).unwrap();
     let original = std::fs::read(&path).unwrap();
     let mut settings = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
@@ -1007,10 +1013,12 @@ fn p03_loader_reader_first_holds_lock_until_capture_and_decode() {
     let path = temp.path().join("settings.json");
     let a = real_ac_project_path(temp.path(), "A");
     std::fs::write(
-            &path,
-            serde_json::json!({"defaultShell":"sentinel","defaultShellArgs":[],"agents":[],"projectPaths":[a]}).to_string(),
-        )
-        .unwrap();
+        &path,
+        serde_json::json!({"defaultShell":"sentinel","defaultShellArgs":[],"agents":[],"project\
+                Paths":[a]})
+        .to_string(),
+    )
+    .unwrap();
     let (captured_tx, captured_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let reader_path = path.clone();
@@ -1059,10 +1067,12 @@ fn p03_loader_migrator_first_timeout_never_authorizes_and_retry_recovers() {
     let path = temp.path().join("settings.json");
     let a = real_ac_project_path(temp.path(), "A");
     std::fs::write(
-            &path,
-            serde_json::json!({"defaultShell":"sentinel","defaultShellArgs":[],"agents":[],"projectPaths":[a]}).to_string(),
-        )
-        .unwrap();
+        &path,
+        serde_json::json!({"defaultShell":"sentinel","defaultShellArgs":[],"agents":[],"project\
+                Paths":[a]})
+        .to_string(),
+    )
+    .unwrap();
     let (published_tx, published_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let writer_path = path.clone();
@@ -1095,7 +1105,8 @@ fn p03_setup_rollback_restores_exact_raw_projection_under_same_token() {
     let path = temp.path().join("settings.json");
     let a = real_ac_project_path(temp.path(), "A");
     let b = real_ac_project_path(temp.path(), "B");
-    let raw = serde_json::json!({"defaultShell":"sentinel","defaultShellArgs":[],"agents":[],"projectPath":a,"projectPaths":[a,"C:/missing"],"projectPathsRelativeToInstance":[null,null]});
+    let raw = serde_json::json!({"defaultShell":"sentinel","defaultShellArgs":[],"agents":[],"proje\
+        ctPath":a,"projectPaths":[a,"C:/missing"],"projectPathsRelativeToInstance":[null,null]});
     std::fs::write(&path, raw.to_string()).unwrap();
     let mut token =
         super::begin_project_paths_transaction_at_path(&super::AppSettings::default(), &path)
@@ -1115,7 +1126,8 @@ fn p03_setup_rollback_restores_exact_raw_projection_under_same_token() {
 
 #[test]
 fn project_migration_fault_reopen_and_backup_recovery() {
-    let raw = serde_json::json!({"projectPaths":["C:/missing"],"projectPath":null,"unknown":{"keep":true}});
+    let raw = serde_json::json!({"projectPaths":["C:/missing"],"projectPath":null,"unknown":{"kee\
+        p":true}});
     for point in [
         "backup_create",
         "backup_prefix",
@@ -1383,7 +1395,7 @@ fn p03_labeled_migration_keeps_raw_bytes_and_logical_conflict_paths() {
     let io = temp.path().join("physical/settings.json");
     let label = temp.path().join("logical/settings.json");
     std::fs::create_dir_all(io.parent().unwrap()).unwrap();
-    let original = br####"{"roomNumberMask":"###","projectPaths":["missing"],"projectPath":null,"projectPathsRelativeToInstance":[null],"archivedProjectPaths":["archived"]}"####;
+    let original = include_bytes!("tests/fixtures/archived_project_paths_settings.json");
     std::fs::write(&io, original).unwrap();
     let _transaction = super::empty_project_transaction(&io, "test-lock").unwrap();
     super::ensure_project_paths_migrated_at_labeled_path(&io, &label, &mut |_, _| Ok(())).unwrap();
@@ -1733,7 +1745,8 @@ fn e2432_n1_captured_sidecar_home_is_not_overlay_or_default_authority() {
     let path = b3_settings_path(temp.path());
     let defaults = serde_json::to_value(super::AppSettings::default()).unwrap();
     let sidecar_path = super::agents_instance_path(&path);
-    let mut sidecar = serde_json::json!({"agents":defaults["agents"],"codingAgentProfiles":defaults["codingAgentProfiles"]});
+    let mut sidecar = serde_json::json!({"agents":defaults["agents"],"codingAgentProfile\
+        s":defaults["codingAgentProfiles"]});
     sidecar["codingAgentProfiles"]["codexHomeKeyByAgent"] =
         serde_json::json!({"overlay-only":"physical-home"});
     b3_write(&sidecar_path, &sidecar);
@@ -1786,7 +1799,8 @@ fn e2432_n1_stale_overlay_ownership_and_present_main_stay_refused() {
         match case {
             "changed-value" => b3_write(
                 &overlay,
-                &serde_json::json!({"agents":[{"id":"overlay-only","label":"Overlay","color":"red","command":"changed"}]}),
+                &serde_json::json!({"agents":[{"id":"overlay-only","label":"Overlay","color":"re\
+                    d","command":"changed"}]}),
             ),
             "changed-ownership" => b3_write(&overlay, &n1_test_overlay("profiles")),
             "typed-invalid" => b3_write(&overlay, &serde_json::json!({"agents":"not-an-array"})),
@@ -1873,7 +1887,8 @@ fn e2432_round7_schema2_load_migrates_without_old_markers() {
         let mut raw = serde_json::Value::Object(b3_object(&owner));
         raw["codingAgentProfiles"] = serde_json::json!({
             "schemaVersion":2,
-            "profilesByAgent":{"alpha":{"A":{"command":"--model x","notes":"retained","opaque":{"null":null}}}},
+            "profilesByAgent":{"alpha":{"A":{"command":"--model \
+                x","notes":"retained","opaque":{"null":null}}}},
             "profileLabelsByAgent":{"alpha":{"A":"Own"}},
             "profileSlots":{"A":{"label":"Slot","opaque":[null,3]}},
             "defaultProfileByAgent":{"matrix":"A"},
@@ -2339,7 +2354,8 @@ fn e2432_round7_read_only_catalog_decoys_never_supply_migration_data() {
         let locator = context.locator(&source).unwrap();
         std::fs::create_dir_all(locator.parent().unwrap()).unwrap();
         let decoy = serde_json::json!({"schemaVersion":2,
-                "agents":[{"key":"alpha","label":"Decoy","description":"Independent","color":"#112233","baseCommand":"claude"}],
+                "agents":[{"key":"alpha","label":"Decoy","description":"Independent","color":"#1122\
+                    33","baseCommand":"claude"}],
                 "codingAgentProfiles":{"alpha":{"A":{"notes":"independent decoy"}}}});
         b3_write(&locator, &decoy);
         catalogs.push((source, locator.clone(), std::fs::read(locator).unwrap()));
@@ -3409,8 +3425,12 @@ fn project_migration_raw_matrix_and_noop_reopen() {
         serde_json::json!({}),
         serde_json::json!({"projectPath":"C:/singular-only"}),
         serde_json::json!({"projectPaths":null,"projectPath":null,"archivedProjectPaths":[]}),
-        serde_json::json!({"projectPaths":["C:/gone","D:/missing","//server/share/missing"],"projectPathsRelativeToInstance":["../gone",null,"../conflict"],"projectPath":"C:/gone","projectPathRelativeToInstance":"../gone","archivedProjectPaths":["C:/archived-missing"],"archivedProjectPathsRelativeToInstance":["../archived-missing"]}),
-        serde_json::json!({"projectPaths":42,"projectPathsRelativeToInstance":{},"archivedProjectPaths":[null,7],"projectPath":true}),
+        serde_json::json!({"projectPaths":["C:/gone","D:/missing","//server/share/missing"],"projec\
+            tPathsRelativeToInstance":["../gone",null,"../conflict"],"projectPath":"C:/gone","proje\
+            ctPathRelativeToInstance":"../gone","archivedProjectPaths":["C:/archived-missing"],"arc\
+            hivedProjectPathsRelativeToInstance":["../archived-missing"]}),
+        serde_json::json!({"projectPaths":42,"projectPathsRelativeToInstance":{},"archivedProjectPa\
+            ths":[null,7],"projectPath":true}),
     ];
     for mut raw in cases {
         raw["unrelatedUnknown"] = serde_json::json!({"nested":[null,42,"unchanged"]});
@@ -3544,7 +3564,8 @@ fn project_transaction_refreshes_after_barrier_controlled_second_writer() {
     for project in [&a, &b] {
         std::fs::create_dir_all(project.join(".ac")).unwrap();
     }
-    let raw = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agents": [], "projectPaths": [a], "projectPath": a});
+    let raw = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agent\
+        s": [], "projectPaths": [a], "projectPath": a});
     std::fs::write(&path, raw.to_string()).unwrap();
     let mut stale = super::AppSettings::default();
     super::refresh_and_decode_project_paths_from_path(&mut stale, &path).unwrap();
@@ -3561,7 +3582,8 @@ fn project_transaction_refreshes_after_barrier_controlled_second_writer() {
     });
     barrier.wait();
     // This writer owns the file lock before the repair can acquire it.
-    let fresh = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agents": [], "projectPaths": [a, b], "projectPath": a});
+    let fresh = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agent\
+        s": [], "projectPaths": [a, b], "projectPath": a});
     super::write_value_atomic(&fresh, &path).unwrap();
     drop(lock);
     let repaired = worker.join().unwrap();
@@ -3576,7 +3598,9 @@ fn project_transaction_refreshes_after_barrier_controlled_second_writer() {
 fn project_transaction_timeout_preserves_bytes_and_live_paths() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("settings.json");
-    let bytes = b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[],\"projectPaths\":[]}";
+    let bytes =
+        b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[],\"projectP\
+        aths\":[]}";
     std::fs::write(&path, bytes).unwrap();
     let _lock = super::SettingsFileLock::acquire(&path, std::time::Duration::from_secs(1)).unwrap();
     let mut current = super::AppSettings {
@@ -3600,7 +3624,8 @@ fn project_fresh_repair_retains_missing_raw_registration() {
     let active = temp.path().join("active");
     let missing = temp.path().join("missing").to_string_lossy().into_owned();
     std::fs::create_dir_all(active.join(".ac")).unwrap();
-    let raw = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agents": [], "projectPaths": [active, missing], "projectPath": active});
+    let raw = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agent\
+        s": [], "projectPaths": [active, missing], "projectPath": active});
     std::fs::write(&path, raw.to_string()).unwrap();
     let mut current = super::AppSettings::default();
     super::repair_fresh_project_paths_at_path(&mut current, &path).unwrap();
@@ -3615,7 +3640,12 @@ fn project_fresh_repair_retains_missing_raw_registration() {
 fn project_transaction_keeps_candidate_separate_on_precommit_failure() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("settings.json");
-    std::fs::write(&path, b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[],\"projectPaths\":[]}").unwrap();
+    std::fs::write(
+        &path,
+        b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[]\
+        ,\"projectPaths\":[]}",
+    )
+    .unwrap();
     let current = super::AppSettings::default();
     let mut transaction = super::begin_project_paths_transaction_at_path(&current, &path).unwrap();
     let mut candidate = transaction.fresh_settings().clone();
@@ -3635,7 +3665,12 @@ fn project_transaction_keeps_candidate_separate_on_precommit_failure() {
 fn project_transaction_uncertain_commit_adopts_only_revalidated_disk() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("settings.json");
-    std::fs::write(&path, b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[],\"projectPaths\":[]}").unwrap();
+    std::fs::write(
+        &path,
+        b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[]\
+        ,\"projectPaths\":[]}",
+    )
+    .unwrap();
     let mut transaction =
         super::begin_project_paths_transaction_at_path(&super::AppSettings::default(), &path)
             .unwrap();
@@ -3649,7 +3684,8 @@ fn project_transaction_uncertain_commit_adopts_only_revalidated_disk() {
         )
     };
     // Model a completed publication followed by uncertain readback.
-    let published = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agents": [], "projectPaths": [], "sidebarStyle": "published"});
+    let published = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agent\
+        s": [], "projectPaths": [], "sidebarStyle": "published"});
     super::write_value_atomic(&published, &path).unwrap();
     assert!(transaction.handle_commit_result(Err(error())).is_err());
     assert_eq!(
@@ -3680,10 +3716,11 @@ fn project_fresh_repair_clears_unavailable_only_after_valid_read() {
     assert!(super::repair_fresh_project_paths_at_path(&mut current, &path).is_err());
     assert!(current.project_paths_persistence_error.is_some());
     std::fs::write(
-            &path,
-            b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[],\"projectPaths\":[],\"archivedProjectPaths\":[]}",
-        )
-        .unwrap();
+        &path,
+        b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[],\"projectPath\
+                s\":[],\"archivedProjectPaths\":[]}",
+    )
+    .unwrap();
     super::repair_fresh_project_paths_at_path(&mut current, &path).unwrap();
     assert!(current.project_paths_persistence_error.is_none());
     assert!(current.project_paths.is_empty());
@@ -4389,53 +4426,66 @@ fn general_settings_outward_compatibility_matrix() {
         "settings_save_failed",
     );
     assert_general_outward(
-            super::SettingsSaveError::io(
-                super::SettingsSaveStage::PreserveDiskGate,
-                path,
-                None,
-                std::io::Error::new(std::io::ErrorKind::PermissionDenied, "reader source"),
-                super::SettingsSaveLegacyOutward::DiskRead(
-                    "Failed to read C:/issue-1330/settings.json for a project-preserving save (aborting to avoid dropping a project): reader source".to_string(),
-                ),
+        super::SettingsSaveError::io(
+            super::SettingsSaveStage::PreserveDiskGate,
+            path,
+            None,
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "reader source"),
+            super::SettingsSaveLegacyOutward::DiskRead(
+                "Failed to read C:/issue-1330/settings.json for a project-preserving save \
+                        (aborting to avoid dropping a project): reader source"
+                    .to_string(),
             ),
-            "Failed to read C:/issue-1330/settings.json for a project-preserving save (aborting to avoid dropping a project): reader source",
-        );
+        ),
+        "Failed to read C:/issue-1330/settings.json for a project-preserving save (aborting to \
+                avoid dropping a project): reader source",
+    );
     assert_general_outward(
-            super::SettingsSaveError::json(
-                super::SettingsSaveStage::PreserveDiskGate,
-                path,
-                None,
-                serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
-                super::SettingsSaveLegacyOutward::DiskJson(
-                    "Refusing to overwrite C:/issue-1330/settings.json: the existing settings file is not valid JSON (EOF while parsing an object at line 1 column 1)".to_string(),
-                ),
+        super::SettingsSaveError::json(
+            super::SettingsSaveStage::PreserveDiskGate,
+            path,
+            None,
+            serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+            super::SettingsSaveLegacyOutward::DiskJson(
+                "Refusing to overwrite C:/issue-1330/settings.json: the existing settings file \
+                        is not valid JSON (EOF while parsing an object at line 1 column \
+                        1)"
+                .to_string(),
             ),
-            "Refusing to overwrite C:/issue-1330/settings.json: the existing settings file is not valid JSON (EOF while parsing an object at line 1 column 1)",
-        );
+        ),
+        "Refusing to overwrite C:/issue-1330/settings.json: the existing settings file is not \
+                valid JSON (EOF while parsing an object at line 1 column 1)",
+    );
     assert_general_outward(
-            super::SettingsSaveError::semantic(
-                super::SettingsSaveStage::PreserveDiskGate,
-                path,
-                None,
-                super::SettingsSaveReason::DiskJsonNotObject,
-                super::SettingsSaveLegacyOutward::DiskJsonNotObject(
-                    "Refusing to overwrite C:/issue-1330/settings.json: the existing settings root is not a JSON object".to_string(),
-                ),
+        super::SettingsSaveError::semantic(
+            super::SettingsSaveStage::PreserveDiskGate,
+            path,
+            None,
+            super::SettingsSaveReason::DiskJsonNotObject,
+            super::SettingsSaveLegacyOutward::DiskJsonNotObject(
+                "Refusing to overwrite C:/issue-1330/settings.json: the existing settings root \
+                        is not a JSON object"
+                    .to_string(),
             ),
-            "Refusing to overwrite C:/issue-1330/settings.json: the existing settings root is not a JSON object",
-        );
+        ),
+        "Refusing to overwrite C:/issue-1330/settings.json: the existing settings root is not \
+                a JSON object",
+    );
     assert_general_outward(
-            super::SettingsSaveError::semantic(
-                super::SettingsSaveStage::ReconcileDiskGate,
-                path,
-                None,
-                super::SettingsSaveReason::DiskSettingsValidationRejected,
-                super::SettingsSaveLegacyOutward::DiskValidation(
-                    "Refusing to overwrite present settings whose non-project fields are invalid: invalid type: string \"invalid\", expected a boolean".to_string(),
-                ),
+        super::SettingsSaveError::semantic(
+            super::SettingsSaveStage::ReconcileDiskGate,
+            path,
+            None,
+            super::SettingsSaveReason::DiskSettingsValidationRejected,
+            super::SettingsSaveLegacyOutward::DiskValidation(
+                "Refusing to overwrite present settings whose non-project fields are invalid: \
+                        invalid type: string \"invalid\", expected a boolean"
+                    .to_string(),
             ),
-            "Refusing to overwrite present settings whose non-project fields are invalid: invalid type: string \"invalid\", expected a boolean",
-        );
+        ),
+        "Refusing to overwrite present settings whose non-project fields are invalid: invalid \
+                type: string \"invalid\", expected a boolean",
+    );
     let serialize_source = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
     assert_general_outward(
         super::SettingsSaveError::json(
@@ -4805,22 +4855,25 @@ fn preserve_disk_gate_failures_are_typed_and_do_not_overwrite() {
         std::fs::write(&path, contents).unwrap();
         let original = std::fs::read(&path).unwrap();
         let expected = match case {
-                "malformed" => {
-                    let source =
-                        serde_json::from_str::<serde_json::Value>(contents).unwrap_err();
-                    format!(
-                        "Refusing to overwrite {}: the existing settings file is not valid JSON ({})",
-                        path.display(),
-                        source
-                    )
-                }
-                "non_object" => format!(
-                    "Refusing to overwrite {}: the existing settings root is not a JSON object",
-                    path.display()
-                ),
-                "invalid_terminal_snapshot_setting" => "Refusing to overwrite present settings whose non-project fields are invalid: invalid type: string \"invalid\", expected a boolean".to_string(),
-                _ => unreachable!(),
-            };
+            "malformed" => {
+                let source = serde_json::from_str::<serde_json::Value>(contents).unwrap_err();
+                format!(
+                    "Refusing to overwrite {}: the existing settings file is not valid JSON \
+                            ({})",
+                    path.display(),
+                    source
+                )
+            }
+            "non_object" => format!(
+                "Refusing to overwrite {}: the existing settings root is not a JSON object",
+                path.display()
+            ),
+            "invalid_terminal_snapshot_setting" => "Refusing to overwrite present settings \
+                    whose non-project fields are invalid: invalid type: string \"invalid\", \
+                    expected a boolean"
+                .to_string(),
+            _ => unreachable!(),
+        };
 
         let error = super::save_settings_value(
             &super::AppSettings::default(),
@@ -4919,9 +4972,10 @@ fn reconcile_disk_gate_failure_uses_reconcile_stage_and_legacy_outward() {
     let outward =
         super::report_settings_save_error(error, super::SettingsSaveReportSurface::GeneralSettings);
     assert_eq!(
-            outward,
-            "Refusing to overwrite present settings whose non-project fields are invalid: invalid type: string \"invalid\", expected a boolean"
-        );
+        outward,
+        "Refusing to overwrite present settings whose non-project fields are invalid: invalid \
+                type: string \"invalid\", expected a boolean"
+    );
     assert_ne!(outward, "terminal_snapshot_setting_invalid");
     let records = CapturedRecordsSnapshot::snapshot(&records);
     assert_eq!(records.len(), 1);
@@ -4950,22 +5004,25 @@ fn project_refresh_compatibility_adapter_maps_typed_failures_once() {
         std::fs::write(&path, contents).unwrap();
         let original = std::fs::read(&path).unwrap();
         let expected = match case {
-                "malformed" => {
-                    let source =
-                        serde_json::from_str::<serde_json::Value>(contents).unwrap_err();
-                    format!(
-                        "Refusing to overwrite {}: the existing settings file is not valid JSON ({})",
-                        path.display(),
-                        source
-                    )
-                }
-                "non_object" => format!(
-                    "Refusing to overwrite {}: the existing settings root is not a JSON object",
-                    path.display()
-                ),
-                "invalid_terminal_snapshot_setting" => "Refusing to overwrite present settings whose non-project fields are invalid: invalid type: string \"invalid\", expected a boolean".to_string(),
-                _ => unreachable!(),
-            };
+            "malformed" => {
+                let source = serde_json::from_str::<serde_json::Value>(contents).unwrap_err();
+                format!(
+                    "Refusing to overwrite {}: the existing settings file is not valid JSON \
+                            ({})",
+                    path.display(),
+                    source
+                )
+            }
+            "non_object" => format!(
+                "Refusing to overwrite {}: the existing settings root is not a JSON object",
+                path.display()
+            ),
+            "invalid_terminal_snapshot_setting" => "Refusing to overwrite present settings \
+                    whose non-project fields are invalid: invalid type: string \"invalid\", \
+                    expected a boolean"
+                .to_string(),
+            _ => unreachable!(),
+        };
         let mut settings = super::AppSettings::default();
         let before = serde_json::to_value(&settings).unwrap();
 
@@ -4994,10 +5051,11 @@ fn project_refresh_compatibility_adapter_maps_typed_failures_once() {
     std::fs::create_dir(&path).unwrap();
     let source = std::fs::read_to_string(&path).unwrap_err();
     let expected = format!(
-            "Failed to read {} for a project-preserving save (aborting to avoid dropping a project): {}",
-            path.display(),
-            source
-        );
+        "Failed to read {} for a project-preserving save (aborting to avoid dropping a \
+                project): {}",
+        path.display(),
+        source
+    );
     let mut settings = super::AppSettings::default();
     let before = serde_json::to_value(&settings).unwrap();
 
@@ -5549,7 +5607,11 @@ fn issue_2859_preflight_timeout_rejects_malformed_wire_values_at_both_levels() {
         "1e999",
     ] {
         let row = format!(
-            r##"{{"id":"row","label":"Row","command":"codex","color":"#000000","preflightTimeoutSeconds":{raw}}}"##
+            concat!(
+                r##"{{"id":"row","label":"Row","command":"codex","color":"#000000","##,
+                r##""preflightTimeoutSeconds":{raw}}}"##
+            ),
+            raw = raw
         );
         let cell = format!(r#"{{"preflightTimeoutSeconds":{raw}}}"#);
         assert!(serde_json::from_str::<AgentConfig>(&row).is_err(), "{raw}");
@@ -6377,7 +6439,8 @@ fn legacy_profiles_shape_detection_is_exact() {
             serde_json::json!({"codingAgentProfiles": {
                 "schemaVersion": 2,
                 "profileSlots": {"A": {"label": "x"}},
-                "profilesByAgent": {"claude": {"A": {"enabled": true, "command": "--m", "env": {}, "notes": ""}}},
+                "profilesByAgent": {"claude": {"A": {"enabled": true, "command": "--m", "en\
+                    v": {}, "notes": ""}}},
                 "profileLabelsByAgent": {"claude": {"A": "L"}}
             }}),
             false,
@@ -6391,7 +6454,8 @@ fn legacy_profiles_shape_detection_is_exact() {
             false,
         ),
         (
-            serde_json::json!({"codingAgentProfiles": {"profilesByAgent": {"claude": {"A": ["argv"]}}}}),
+            serde_json::json!({"codingAgentProfiles": {"profilesByAgent": {"claude": {"A": ["arg\
+                v"]}}}}),
             false,
         ),
         (
@@ -6411,19 +6475,23 @@ fn legacy_profiles_shape_detection_is_exact() {
             true,
         ),
         (
-            serde_json::json!({"codingAgentProfiles": {"schemaVersion": 2, "profileSlots": {"A": {"name": "Baseline"}}}}),
+            serde_json::json!({"codingAgentProfiles": {"schemaVersion": 2, "profileSlots": {"A": {"\
+                name": "Baseline"}}}}),
             true,
         ),
         (
-            serde_json::json!({"codingAgentProfiles": {"profileSlots": {"A": {"label": "x", "name": "y"}}}}),
+            serde_json::json!({"codingAgentProfiles": {"profileSlots": {"A": {"label": "x", "nam\
+                e": "y"}}}}),
             true,
         ),
         (
-            serde_json::json!({"codingAgentProfiles": {"schemaVersion": 2, "profilesByAgent": {"claude": {"A": {"argv": ["--model", "x"]}}}}}),
+            serde_json::json!({"codingAgentProfiles": {"schemaVersion": 2, "profilesByAgent": {"cla\
+                ude": {"A": {"argv": ["--model", "x"]}}}}}),
             true,
         ),
         (
-            serde_json::json!({"codingAgentProfiles": {"profilesByAgent": {"claude": {"B": {"args": []}}}}}),
+            serde_json::json!({"codingAgentProfiles": {"profilesByAgent": {"claude": {"B": {"arg\
+                s": []}}}}}),
             true,
         ),
     ];
@@ -6857,10 +6925,11 @@ fn validate_agent_commands_rejects_wrapped_muse_collision_before_spawn() {
         let settings = settings_with_agents(&[("Muse", command)]);
         let err = validate_agent_commands(&settings).unwrap_err();
         assert_eq!(
-                err,
-                "Agent \"Muse\": Codex commands must not include resume or --last; AgentsCommander injects codex resume --last automatically",
-                "command={command:?}"
-            );
+            err,
+            "Agent \"Muse\": Codex commands must not include resume or --last; AgentsCommander \
+                    injects codex resume --last automatically",
+            "command={command:?}"
+        );
     }
 }
 
@@ -7997,8 +8066,9 @@ fn save_settings_preserve_keeps_disk_project_paths_on_passthrough() {
     assert_eq!(reloaded.project_paths, vec![a.clone(), x.clone()]); // X preserved, not clobbered
     assert_eq!(reloaded.project_path.as_deref(), Some(a.as_str()));
     assert_eq!(reloaded.sidebar_style, "deep-space"); // unrelated field persisted
-                                                      // #1077: the returned settings carry the SELECTED (validated) projection,
-                                                      // which equals the preserved disk list because both dirs are real.
+
+    // #1077: the returned settings carry the SELECTED (validated) projection,
+    // which equals the preserved disk list because both dirs are real.
     assert_eq!(written.project_paths, vec![a.clone(), x.clone()]);
     assert_eq!(written.project_path.as_deref(), Some(a.as_str()));
 }
@@ -9061,8 +9131,9 @@ fn profile_labels_default_to_empty_and_always_serialize() {
 #[test]
 fn repair_prunes_invalid_letter_label_overrides_and_keeps_valid() {
     let mut settings = settings_with_agents(&[("Codex", "codex")]); // id = agent-0
-                                                                    // Pre-seed the A cell so the config is otherwise repair-clean; the only
-                                                                    // change repair makes is dropping the invalid-letter overrides.
+
+    // Pre-seed the A cell so the config is otherwise repair-clean; the only
+    // change repair makes is dropping the invalid-letter overrides.
     settings.coding_agent_profiles.profiles_by_agent.insert(
         "agent-0".to_string(),
         BTreeMap::from([("A".to_string(), super::empty_profile_cell())]),
@@ -9116,7 +9187,8 @@ fn repair_keeps_orphan_agent_id_label_override() {
 #[test]
 fn repair_with_valid_label_map_does_not_flip_changed() {
     let mut settings = settings_with_agents(&[("Codex", "codex")]); // id = agent-0
-                                                                    // Make the config otherwise repair-clean: agent-0 already holds its A cell.
+
+    // Make the config otherwise repair-clean: agent-0 already holds its A cell.
     settings.coding_agent_profiles.profiles_by_agent.insert(
         "agent-0".to_string(),
         BTreeMap::from([("A".to_string(), super::empty_profile_cell())]),
@@ -9507,9 +9579,10 @@ fn issue_1757_respects_a_disabled_hooks_entry() {
     )]);
 
     assert!(
-            !super::apply_issue_1757_migration(&mut settings),
-            "the presence test ignores the enabled flag, so enabled: false is a durable off switch (D9)"
-        );
+        !super::apply_issue_1757_migration(&mut settings),
+        "the presence test ignores the enabled flag, so enabled: false is a durable off switch \
+                (D9)"
+    );
     assert_eq!(settings.agents[0].blocking_menus, Some(vec![disabled]));
 }
 
@@ -9547,35 +9620,7 @@ fn issue_1757_ignores_non_codex_agents() {
 // own flag is the only thing that can drive the write.
 #[test]
 fn a_pre_1757_pristine_codex_array_is_dropped_by_the_export() {
-    const FIXTURE: &str = r##"{
-  "defaultShell": "test-shell",
-  "defaultShellArgs": [],
-  "rootToken": "issue-1757-fixture-token",
-  "agents": [
-    {
-      "id": "codex",
-      "label": "Codex",
-      "command": "codex",
-      "color": "#000000",
-      "blockingMenus": [
-        {
-          "pattern": "^\\s*Do you trust the contents of this directory\\?",
-          "notification": "codex is waiting for you to answer the folder-trust menu in this terminal",
-          "enabled": true,
-          "capturedAgainst": "codex 0.x / Linux"
-        }
-      ]
-    }
-  ],
-  "codingAgentProfiles": {
-    "schemaVersion": 2,
-    "profileSlots": { "A": { "label": "" } },
-    "defaultProfileByAgent": {},
-    "profilesByAgent": {
-      "codex": { "A": { "enabled": true, "command": "", "env": {}, "notes": "" } }
-    }
-  }
-}"##;
+    const FIXTURE: &str = include_str!("tests/fixtures/pristine_codex_array_settings.json");
 
     // Tripwire: a single-backslash escape here is not legal JSON, the load would
     // fall back to default_settings_with_overlay with zero agents, and this test
@@ -10326,7 +10371,8 @@ fn derived_agent_id_home_load_uses_physical_origin_under_overlay() {
     b3_write(&b3_sidecar_path(logical.path()), &source);
     b3_write(
         &b3_overlay_path(physical.path()),
-        &serde_json::json!({"codingAgentProfiles": {"codexHomeKeyByAgent": {"alpha": "overlay-forged"}}}),
+        &serde_json::json!({"codingAgentProfiles": {"codexHomeKeyByAgent": {"alpha": "overlay-forge\
+            d"}}}),
     );
     let contents = serde_json::to_string(&b3_migrated_fixture()).unwrap();
     let (loaded, _) = super::parse_settings_json_with_projection_labeled(
@@ -10900,7 +10946,8 @@ fn issue_3047_pair_load_save_fixed_point_and_untrusted_metadata() {
             };
             let mut raw = serde_json::Value::Object(b3_object(&physical));
             raw["codingAgentProfiles"]["profilesByAgent"] = serde_json::json!({
-                "alpha":{"A":{"additionalArguments":"--model x","id_hash":supplied,"id_hash_debug":supplied,
+                "alpha":{"A":{"additionalArguments":"--model \
+                    x","id_hash":supplied,"id_hash_debug":supplied,
                     "sentinel":{"keep":true}}}
             });
             b3_write(&physical, &raw);
@@ -10938,7 +10985,8 @@ fn issue_3047_pair_load_save_fixed_point_and_untrusted_metadata() {
                 [&super::configuration_identity("claude", &[])]["A"];
             assert_eq!(
                 stored_cell,
-                &serde_json::json!({"additionalArguments":"--model x","enabled":true,"env":{},"notes":"","sentinel":{"keep":true}})
+                &serde_json::json!({"additionalArguments":"--model \
+                    x","enabled":true,"env":{},"notes":"","sentinel":{"keep":true}})
             );
             assert_eq!(
                 written.coding_agent_profiles.profiles_by_agent["alpha"]["A"].id_hash_debug,
@@ -10997,7 +11045,8 @@ fn assert_issue_3047_pair_projection_rejection(
         assert_eq!(error.target_path.as_path(), sidecar_path);
         assert!(matches!(&error.legacy_outward,
                 super::SettingsSaveLegacyOutward::DiskRead(text)
-                if text.contains("Refusing to overwrite") && text.contains("undecodable agents array")));
+                if text.contains("Refusing to overwrite") && text.contains("undecodable agents \
+                    array")));
     } else {
         assert_eq!(error.target_path.as_path(), path);
         assert!(matches!(
@@ -11095,7 +11144,8 @@ fn issue_3047_pair_unresolvable_first_row_and_empty_physical_base() {
         let agents = serde_json::json!([first, {"id":"a","baseCommand":"valid"}]);
         let before = agents.clone();
         let mut profiles = serde_json::json!({"profilesByAgent":{
-            "a":{"A":{"command":"--model x","id_hash":"stale","id_hash_debug":["stale"],"unknown":1}}
+            "a":{"A":{"command":"--model \
+                x","id_hash":"stale","id_hash_debug":["stale"],"unknown":1}}
         }});
         super::refresh_physical_pair_id_hashes(Some(&agents), &mut profiles);
         assert!(profiles["profilesByAgent"]["a"]["A"]
@@ -11181,7 +11231,8 @@ fn check_issue_3047_pair_ownership_case(sidecar: bool, protected: &str) {
     raw["codingAgentProfiles"] = serde_json::json!({
         "schemaVersion": 2,
         "sentinel": {"sibling": 23},
-        "profilesByAgent": {"alpha":{"A":{"command":"--model x","id_hash":"physical", "id_hash_debug":["forged-physical"], "sentinel":17}}}
+        "profilesByAgent": {"alpha":{"A":{"command":"--model \
+            x","id_hash":"physical", "id_hash_debug":["forged-physical"], "sentinel":17}}}
     });
     b3_write(&physical, &raw);
     if protected != "neither" {
@@ -11322,13 +11373,15 @@ fn issue_3047_pair_ownership_matrix_and_base_or_profile_only_edits() {
         }
         let overlay = match case {
             "present-absent" => {
-                serde_json::json!({"codingAgentProfiles":{"identityByAgent":{"o":"1234567890abcdef"}}})
+                serde_json::json!({"codingAgentProfiles":{"identityByAgent":{"o":"1234567890abcde\
+                    f"}}})
             }
             "absent-present" => {
                 serde_json::json!({"agents":[b3_agent("alpha", "Effective only")]})
             }
             _ => {
-                serde_json::json!({"codingAgentProfiles":{"profilesByAgent":{"o":{"A":{"command":"--model x"}}}}})
+                serde_json::json!({"codingAgentProfiles":{"profilesByAgent":{"o":{"A":{"command":"-\
+                    -model x"}}}}})
             }
         };
         if case == "sidecar-empty" {
@@ -11601,7 +11654,10 @@ fn id_hash_activation_malformed_real_fields_refuse_overwrite() {
         // unrelated-settings snapshot; it does not always return Err.
         let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
         assert!(
-            matches!(&loaded.agents_layer, super::AgentsLayerState::Unreadable { path: failed, .. } if failed == &sidecar),
+            matches!(
+                &loaded.agents_layer,
+                super::AgentsLayerState::Unreadable { path: failed, .. } if failed == &sidecar
+            ),
             "{bad}"
         );
         assert!(loaded.agents.is_empty(), "{bad}");
@@ -11903,7 +11959,8 @@ fn id_hash_activation_legacy_before_is_read_when_only_profiles_are_externalized(
     b3_write(
         &b3_sidecar_path(temp.path()),
         &serde_json::json!({
-            "codingAgentProfiles": base.as_object_mut().unwrap().remove("codingAgentProfiles").unwrap()
+            "codingAgentProfiles": base.as_object_mut().unwrap().remove("codingAgentProfile\
+                s").unwrap()
         }),
     );
     b3_write(&path, &base);
@@ -12483,8 +12540,11 @@ fn b3_assert_split_matches_seed(path: &std::path::Path, seeded: &[u8], skip: &[&
     let mut seed = seed.as_object().unwrap().clone();
     let physical_agents = seed.get("agents").cloned();
     let ambiguous_rows = super::physical_profile_rows(
-            &serde_json::json!({"agents":physical_agents.clone().unwrap_or_else(|| serde_json::json!([]))}), true,
-        ).is_err();
+        &serde_json::json!({"agent\
+                s":physical_agents.clone().unwrap_or_else(|| serde_json::json!([]))}),
+        true,
+    )
+    .is_err();
     let mut disk = b3_object(path);
     let sidecar = b3_object(&super::agents_instance_path(path));
     for key in super::AGENTS_INSTANCE_KEYS {

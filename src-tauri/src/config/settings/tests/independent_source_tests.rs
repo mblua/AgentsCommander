@@ -69,7 +69,8 @@ impl Fixture {
             ], "codingAgentProfiles":{"schemaVersion":2,"profilesByAgent":{"K":{
                 "A":{"command":"--alpha", "env":{"MODE":"alpha"}},
                 "B":{"command":"--beta", "env":{"MODE":"beta"}}
-            }, "J":{"A":{"command":"--other"}}}}, "foreign":{"null":null,"array":[false,1,{"deep":"keep"}]}});
+            }, "J":{"A":{"command":"--other"}}}}, "foreign":{"null":null,"array":[false,1,{"deep":"\
+                keep"}]}});
         registered["codingAgentProfiles"]["profileLabelsByAgent"] = json!({"K":{"B":"Original"}});
         let mut settings = settings;
         settings["codingAgentProfiles"]["defaultProfileByAgent"] = json!({"N":"B","N-prime":"A"});
@@ -493,7 +494,10 @@ fn legacy_origin_contract_missing_duplicate_nonstring_ids_unknown() {
 #[test]
 fn legacy_origin_contract_identity_orphan_and_ancestor_nonobject() {
     let fixture = Fixture::new();
-    fixture.overlay(&json!({"codingAgentProfiles":{"identityByAgent":{"K":"not-a-proof"},"profilesByAgent":{"orphan":{"B":{"command":"x"}}}}}));
+    fixture.overlay(
+        &json!({"codingAgentProfiles":{"identityByAgent":{"K":"not-a-proof"},"profilesB\
+        yAgent":{"orphan":{"B":{"command":"x"}}}}}),
+    );
     let (_, origin) = fixture.origin();
     assert_eq!(
         origin.require_disjoint([LegacyOriginUnit::Profile("K".into(), "A".into())]),
@@ -541,7 +545,10 @@ fn legacy_origin_contract_absent_map_ancestor_is_not_disjoint() {
         serde_json::to_vec(&raw).unwrap(),
     )
     .unwrap();
-    fixture.overlay(&json!({"codingAgentProfiles":{"defaultProfileByAgent":{"N-prime":"B"}, "identityByAgent":{"K":"personal"}}}));
+    fixture.overlay(
+        &json!({"codingAgentProfiles":{"defaultProfileByAgent":{"N-prime":"B"}, "identi\
+        tyByAgent":{"K":"personal"}}}),
+    );
     let (_, origin) = fixture.origin();
     assert!(origin.applied_paths.contains(&vec![
         "codingAgentProfiles".into(),
@@ -904,7 +911,11 @@ fn source_invalid_bytes_are_not_absent_and_schema1_patch_not_composed() {
         assert_eq!(snapshot.snapshot.availability, SourceAvailability::Invalid);
         assert_eq!(snapshot.snapshot.revision, source_bytes_revision(b"broken"));
         assert!(snapshot.candidate_template.is_none());
-        std::fs::write(&path, br#"{"schemaVersion":1,"agents":[{"key":"own","label":"Own","description":"","color":"red","command":"own"}]}"#).unwrap();
+        std::fs::write(
+            &path,
+            include_bytes!("fixtures/independent_source_own_agent.json"),
+        )
+        .unwrap();
         let snapshot = read_source_snapshot(&fixture.context, &source).unwrap();
         if kind == SourceKind::CatalogBase {
             assert!(snapshot.snapshot.capabilities.available_read);

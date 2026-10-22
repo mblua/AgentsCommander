@@ -399,10 +399,10 @@ fn export_keeps_an_existing_local_entry_and_preserves_unknown_keys() {
     ];
     let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
     std::fs::write(
-                blocking_menus_local_path(&path),
-                r#"{"extra": true, "byAgent": {"codex": [{"pattern": "^custom-1905", "notification": "custom 1905 notification", "enabled": true, "capturedAgainst": "test"}]}}"#,
-            )
-            .unwrap();
+        blocking_menus_local_path(&path),
+        include_str!("fixtures/blocking_menus_extra_local.json"),
+    )
+    .unwrap();
 
     let settings = load_settings_from_path(&path);
 
@@ -632,7 +632,7 @@ fn a_restart_between_the_two_writes_finishes_the_export() {
     ];
     let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
     // The exact on-disk state T11 leaves after its first load.
-    let local_text = r#"{"schemaVersion": 1, "byAgent": {"mine": [{"pattern": "^custom-1905", "notification": "custom 1905 notification", "enabled": true, "capturedAgainst": "test"}]}}"#;
+    let local_text = include_str!("fixtures/blocking_menus_t11_local.json");
     std::fs::write(blocking_menus_local_path(&path), local_text).unwrap();
 
     let settings = load_settings_from_path(&path);

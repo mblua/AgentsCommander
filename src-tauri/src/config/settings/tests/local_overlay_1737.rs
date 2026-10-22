@@ -244,180 +244,8 @@ const S6_FIXTURE_JSON: &str = r##"{
 /// #2306 P1: re-captured - the loader finalizes every registered agent to
 /// an explicit contiguous `order`, so the control carries codex at 0 and
 /// claude at 1.
-const EXPECTED_NON_PROJECT_SETTINGS_JSON: &str = r##"{
-  "activityLogEnabled": true,
-  "agentAutoUpdateByCommand": {},
-  "agentGroupKillPrivateBytes": 12884901888,
-  "agentGroupWarnPrivateBytes": 8589934592,
-  "agentProcessKillPrivateBytes": 12884901888,
-  "agentTemplatesPath": null,
-  "agents": [
-    {
-      "color": "#112233",
-      "command": "codex",
-      "envs": [],
-      "id": "codex",
-      "isolatedHome": false,
-      "label": "Codex",
-      "order": 0
-    },
-    {
-      "color": "#445566",
-      "command": "claude",
-      "envs": [],
-      "id": "claude",
-      "isolatedHome": false,
-      "label": "Claude",
-      "order": 1
-    }
-  ],
-  "alwaysShowSelectedWorkgroup": true,
-  "apiServerBind": "127.0.0.1",
-  "apiServerEnabled": false,
-  "apiServerPort": 8124,
-  "autoGenerateTaskTitle": true,
-  "autoSelfClearByAgent": {},
-  "autoSelfClearEnabled": true,
-  "branchStalenessEnabled": true,
-  "branchStalenessIntervalSecs": 260,
-  "branchStalenessNotifyOrchestrator": true,
-  "ciActivityEnabled": true,
-  "ciActivityNotifyOrchestrator": true,
-  "ciSweepMinIntervalSecs": 30,
-  "coManagedEnabled": false,
-  "codingAgentProfiles": {
-    "defaultProfileByAgent": {},
-    "identityByAgent": {
-      "claude": "57bf1d23533f9c40",
-      "codex": "460361e30eb7c7a5"
-    },
-    "profileLabelsByAgent": {},
-    "profileSlots": {
-      "A": {
-        "label": ""
-      }
-    },
-    "profilesByAgent": {
-      "claude": {
-        "A": {
-          "command": "",
-          "enabled": true,
-          "env": {},
-          "notes": ""
-        }
-      },
-      "codex": {
-        "A": {
-          "command": "",
-          "enabled": true,
-          "env": {},
-          "notes": ""
-        }
-      }
-    },
-    "schemaVersion": 2
-  },
-  "containerCredentialsFromHost": true,
-  "coordSortByActivity": false,
-  "coordinatorAutoCloseEnabled": true,
-  "coordinatorAutoCloseMinutes": 60,
-  "coordinatorAutoCloseSkipTelegramAssigned": false,
-  "coordinatorCascadeCloseEnabled": true,
-  "coordinatorIdleBadgeRedMinutes": 60,
-  "coordinatorIdleBadgeYellowMinutes": 30,
-  "darkfactoryZoom": 1.0,
-  "defaultShell": "gate8-shell",
-  "defaultShellArgs": [
-    "-NoLogo",
-    "-NoProfile"
-  ],
-  "geminiApiKey": "",
-  "geminiModel": "gemini-2.5-flash",
-  "gitSweepConcurrency": 1,
-  "gitSweepMinIntervalSecs": 10,
-  "guideZoom": 1.0,
-  "jevApiKey": "",
-  "jevEndpoint": "https://api.typesafe.ai/v1/systemone",
-  "jevMargin": 0.15000000596046448,
-  "jevModel": "jev-1.13.0",
-  "jevThreshold": 0.699999988079071,
-  "jevTimeoutSecs": 20,
-  "logLevel": "info",
-  "mainAlwaysOnTop": false,
-  "mainGeometry": {
-    "height": 400.0,
-    "width": 300.0,
-    "x": 1.0,
-    "y": 2.0
-  },
-  "mainResourceMonitorAttached": false,
-  "mainSidebarSide": "right",
-  "mainSidebarWidth": 240.0,
-  "mainWindowDisplayState": "normal",
-  "mainZoom": 1.25,
-  "maxConcurrentAgentProcesses": 32,
-  "menuGuardEnabled": true,
-  "npmUpdateNotificationsEnabled": true,
-  "onboardingDismissed": false,
-  "railCollapsedProjects": [],
-  "railFavoritesCollapsed": false,
-  "raiseTerminalOnClick": true,
-  "remoteAgentHelpEnabled": true,
-  "remoteBlockingMenusEnabled": true,
-  "resourceBackoffPolling": true,
-  "resourceKeepLastSnapshot": true,
-  "resourceMonitorEnabled": true,
-  "resourceWatchdogAction": "warn",
-  "restartResumeAgentPrompt": ".",
-  "restartResumeOrchestratorPrompt": "AgentsCommander was restarted. Continue with the work that was in flight.",
-  "restartResumeWakeWorkingAgents": false,
-  "restoreCoordinatorWakeState": false,
-  "roomNumberMask": "#",
-  "screenshotCaptureHotkey": "Ctrl+Q",
-  "selectedRowRailColor": "#FFFFFF",
-  "selectedRowRailWidth": "9px",
-  "sidebarAlwaysOnTop": false,
-  "sidebarCompactHotkey": "Ctrl+Shift+E",
-  "sidebarStyle": "noir-minimal",
-  "sidebarZoom": 1.0,
-  "soundsEnabled": true,
-  "specBoardEnabled": false,
-  "teamIdleBeepEnabled": true,
-  "telegramBots": [],
-  "telegramNetworkPollErrorLogging": {
-    "firstFailureLevel": "warn",
-    "recoveryLevel": "info",
-    "sustainedAfterSeconds": 60,
-    "sustainedLevel": "error",
-    "sustainedRepeatSeconds": 60,
-    "transientRepeatLevel": "debug"
-  },
-  "terminalSnapshotsEnabled": true,
-  "terminalZoom": 1.0,
-  "themeLight": false,
-  "typingHoldSeconds": 30,
-  "voiceAutoExecute": true,
-  "voiceAutoExecuteDelay": 15,
-  "voiceToTextEnabled": false,
-  "watchers": {
-    "w1": {
-      "dedupe": "row",
-      "dedupeWindowMs": 2000,
-      "enabled": true,
-      "mode": "state",
-      "pattern": "^ready"
-    }
-  },
-  "watchersGeometry": {
-    "height": 400.0,
-    "width": 300.0,
-    "x": 10.0,
-    "y": 20.0
-  },
-  "webServerBind": "127.0.0.1",
-  "webServerEnabled": false,
-  "webServerPort": 8123
-}"##;
+const EXPECTED_NON_PROJECT_SETTINGS_JSON: &str =
+    include_str!("fixtures/s6_expected_non_project_settings.json");
 
 fn s6_normalized_non_project_settings() -> String {
     let temp = tempfile::tempdir().unwrap();
@@ -865,10 +693,11 @@ fn reconcile_with_the_file_absent_writes_no_overlay_value() {
 
     save_settings_with_project_paths_to_path(&settings, &path).unwrap();
     assert_eq!(
-                disk_object(&path)["watchers"]["a"]["dedupeWindowMs"],
-                json!(500),
-                "the absent-file reconcile arm seeds `out` from the live settings, so restore_base is load-bearing"
-            );
+        disk_object(&path)["watchers"]["a"]["dedupeWindowMs"],
+        json!(500),
+        "the absent-file reconcile arm seeds `out` from the live settings, so restore_base \
+                    is load-bearing"
+    );
 }
 
 // S19

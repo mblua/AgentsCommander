@@ -131,7 +131,8 @@ fn p02_duplicate_ambiguity_refuses_before_all_ordinary_publishers() {
             assert!(
                 matches!(&error.legacy_outward,
                     SettingsSaveLegacyOutward::DiskValidation(reason)
-                        if reason.contains("duplicate agent ID 'dup'") && reason.contains("unprovable row correspondence")),
+                        if reason.contains("duplicate agent ID \
+                            'dup'") && reason.contains("unprovable row correspondence")),
                 "{mutation}: {error}"
             );
             assert_eq!(files(dir.path()), before, "{sidecar}/{mutation}");

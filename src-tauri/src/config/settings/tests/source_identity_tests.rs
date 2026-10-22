@@ -265,8 +265,10 @@ fn identity_revision_absent_is_not_empty_bytes_and_rejects_mixed_union() {
 
 #[test]
 fn identity_serde_companion_carriers_ticket_and_snapshot() {
-    let pair = serde_json::json!({"codingAgentId":"legacy", "requestedProfile":"B", "selectionLocked":true});
-    let physical = serde_json::json!({"tracked":{"kind":"absent"},"state":{"kind":"bytes","sha256":"full-state-digest"}});
+    let pair = serde_json::json!({"codingAgentId":"legacy", "requestedProfile":"B", "selectionLocke\
+        d":true});
+    let physical = serde_json::json!({"tracked":{"kind":"absent"},"state":{"kind":"bytes","sha25\
+        6":"full-state-digest"}});
     let state = SourceSelectionState {
         legacy_pair: pair.clone(),
         configuration_ref: Some(configuration_ref()),

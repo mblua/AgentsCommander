@@ -25,7 +25,10 @@ fn source_membership_fixed_encoding_vector_and_ordered_registry() {
     let (source, mut topology) = fixture();
     let bytes =
         source_inventory_projection("C", &source, "source-key", "context", &topology).unwrap();
-    assert_eq!(bytes, br#"["p03-member-inventory-v1","C",1,["agents","registered","instance","registeredInstance","C"],"source-key","context",["P","Q"],[],[],[],[],[]]"#);
+    assert_eq!(
+        bytes,
+        include_bytes!("fixtures/p03_member_inventory_c.json")
+    );
     let before = source_inventory_digest("C", &source, "source-key", "context", &topology).unwrap();
     topology.registry.reverse();
     assert_ne!(

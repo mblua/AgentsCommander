@@ -55,7 +55,9 @@ fn p02_literal_selection_matrix_and_frozen_whitespace() {
     ] {
         selected(new, old, expected);
     }
-    let whitespace = "\u{9}\u{A}\u{B}\u{C}\u{D} \u{A0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}";
+    let whitespace = "\u{9}\u{A}\u{B}\u{C}\u{D} \
+        \u{A0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\
+        \u{2009}\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}";
     for w in whitespace.chars() {
         let w = w.to_string();
         selected(Some(&w), Some("legacy"), "legacy");
@@ -97,8 +99,12 @@ fn p02_present_malformed_peer_rejects_and_absence_keeps_required_default() {
 
 #[test]
 fn p02_retention_uses_authoritative_legacy_by_identity_and_is_fixed_point() {
-    let before = json!({"agents":[{"id":"one","command":"locked"}],"codingAgentProfiles":{"profilesByAgent":{"one":{"A":{"command":"--locked"}}}}});
-    let mut after = json!({"agents":[{"id":"fresh","baseCommand":"fresh","command":"forged"},{"id":"one","baseCommand":"edited","command":"stale"}],"codingAgentProfiles":{"profilesByAgent":{"one":{"A":{"additionalArguments":"--edited","command":"--stale"},"B":{"command":"--new"}}}}});
+    let before = json!({"agents":[{"id":"one","command":"locked"}],"codingAgentProfiles":{"profiles\
+        ByAgent":{"one":{"A":{"command":"--locked"}}}}});
+    let mut after = json!({"agents":[{"id":"fresh","baseCommand":"fresh","command":"forged"},{"i\
+        d":"one","baseCommand":"edited","command":"stale"}],"codingAgentProfiles":{"profilesByAgen\
+        t":{"one":{"A":{"additionalArguments":"--edited","command":"--stale"},"B":{"command":"--ne\
+        w"}}}}});
     retain_configuration_commands(&mut after, &before, "id", false, true, true).unwrap();
     assert_eq!(after["agents"][1]["command"], "locked");
     assert_eq!(after["agents"][1]["baseCommand"], "edited");

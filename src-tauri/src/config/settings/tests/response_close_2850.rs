@@ -612,8 +612,7 @@ fn room_idle_confirmation_malformed_overlay_falls_back_without_changing_disk() {
 }
 
 #[tokio::test]
-async fn room_idle_confirmation_invalid_explicit_updates_reject_before_either_writer_and_keep_live_and_disk(
-) {
+async fn room_idle_invalid_explicit_updates_reject_before_writers_keep_live_and_disk() {
     let temp = tempfile::tempdir().unwrap();
     let path = seed(temp.path(), Some(&base_fixture()), None);
     let original = load_settings_from_path(&path);

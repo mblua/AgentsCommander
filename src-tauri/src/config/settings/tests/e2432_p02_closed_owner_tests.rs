@@ -37,7 +37,8 @@ fn fixture() -> Fixture {
     .unwrap();
     write(
         &catalog,
-        &json!({"schemaVersion":1,"agents":[{"key":"own","baseCommand":"catalog-tool","label":"Catalog","color":"blue","unknown":[null]}],"extension":{"keep":true}}),
+        &json!({"schemaVersion":1,"agents":[{"key":"own","baseCommand":"catalog-tool","label":"Cata\
+            log","color":"blue","unknown":[null]}],"extension":{"keep":true}}),
     );
     let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
     let list = match owner
@@ -843,7 +844,10 @@ fn e2432_p02_simulated_windows_lease_failure_invalidates_catalog_authority() {
 fn e2432_p02_new_catalog_row_requires_complete_owned_fields() {
     let f = fixture();
     let before = std::fs::read(&f.catalog).unwrap();
-    let incomplete: AgentFileEdits = serde_json::from_value(json!({"rows":[{"entryHint":"added","action":"upsert","patch":{"label":"Incomplete"}}],"profileSets":[]})).unwrap();
+    let incomplete: AgentFileEdits =
+        serde_json::from_value(json!({"rows":[{"entryHint":"added","ac\
+        tion":"upsert","patch":{"label":"Incomplete"}}],"profileSets":[]}))
+        .unwrap();
     let rejected = f
         .owner
         .save_catalog_source_blocking(
@@ -855,7 +859,11 @@ fn e2432_p02_new_catalog_row_requires_complete_owned_fields() {
         .unwrap();
     assert_eq!(rejected.outcome, AgentFileSaveOutcome::Rejected);
     assert_eq!(std::fs::read(&f.catalog).unwrap(), before);
-    let complete: AgentFileEdits = serde_json::from_value(json!({"rows":[{"entryHint":"added","action":"upsert","patch":{"label":"Added","description":"Own","color":"blue","baseCommand":"catalog-tool"}}],"profileSets":[]})).unwrap();
+    let complete: AgentFileEdits =
+        serde_json::from_value(json!({"rows":[{"entryHint":"added","acti\
+        on":"upsert","patch":{"label":"Added","description":"Own","color":"blue","baseCommand":"cat\
+        alog-tool"}}],"profileSets":[]}))
+        .unwrap();
     let committed = f
         .owner
         .save_catalog_source_blocking(
@@ -881,11 +889,11 @@ fn e2432_p02_new_catalog_row_requires_complete_owned_fields() {
 #[test]
 fn e2432_p02_selected_catalog_raw_gates_reject_before_publish() {
     let invalids = vec![
-            br#"{"schemaVersion":1,"agents":[],"unknown":1,"unknown":2}"#.to_vec(),
-            br#"{"schemaVersion":1,"agents":[],"legacyProfileOrphans":null}"#.to_vec(),
-            br#"{"schemaVersion":1,"agents":[{"key":"one","baseCommand":"tool"},{"key":"two","baseCommand":"tool"}],"codingAgentProfiles":{"one":{"B":{"notes":"first"}},"two":{"B":{"notes":"other"}}}}"#.to_vec(),
-            br#"{"schemaVersion":1,"agents":[],"managed":{}}"#.to_vec(),
-        ];
+        br#"{"schemaVersion":1,"agents":[],"unknown":1,"unknown":2}"#.to_vec(),
+        br#"{"schemaVersion":1,"agents":[],"legacyProfileOrphans":null}"#.to_vec(),
+        include_bytes!("fixtures/e2432_two_tool_agents.json").to_vec(),
+        br#"{"schemaVersion":1,"agents":[],"managed":{}}"#.to_vec(),
+    ];
     for bytes in invalids {
         let f = fixture();
         std::fs::write(&f.catalog, &bytes).unwrap();

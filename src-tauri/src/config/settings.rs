@@ -1544,7 +1544,16 @@ fn decode_physical_catalog(
 
 fn duplicate_profile_document(bytes: &[u8], path: &Path) -> Option<String> {
     serde_json::from_slice::<Value>(bytes).ok()?;
-    crate::config::coding_agents_catalog::parse_strict_json(bytes).err().map(|reason| format!("duplicateJsonMember: {}: {reason}; no files changed; correct the ambiguous file externally", path.display()))
+    crate::config::coding_agents_catalog::parse_strict_json(bytes)
+        .err()
+        .map(|reason| {
+            format!(
+                "dupl\
+        icateJsonMember: {}: {reason}; no files changed; correct the ambiguous file \
+        externally",
+                path.display()
+            )
+        })
 }
 
 type RegisteredProfileDocument = (PathBuf, Option<Vec<u8>>);
@@ -2483,8 +2492,10 @@ pub(crate) struct SourceDiscoveryWitness {
 
 #[cfg(test)]
 thread_local! {
-    static SOURCE_TRANSITION_PUBLICATIONS: std::cell::Cell<[usize; 3]> = const { std::cell::Cell::new([0; 3]) };
-    static SOURCE_COORDINATION_ACQUISITIONS: std::cell::Cell<[usize; 2]> = const { std::cell::Cell::new([0, 0]) };
+    static SOURCE_TRANSITION_PUBLICATIONS: std::cell::Cell<[usize; 3]> =
+        const { std::cell::Cell::new([0; 3]) };
+    static SOURCE_COORDINATION_ACQUISITIONS: std::cell::Cell<[usize; 2]> =
+        const { std::cell::Cell::new([0, 0]) };
 }
 
 /// Calling-thread oracle only: driver fixtures and local reload execute synchronously
@@ -5876,7 +5887,8 @@ pub struct AppSettings {
     /// Backend physical identity inputs captured before typed repair/defaulting.
     #[serde(skip, default)]
     pub(crate) coding_agent_identity_physical: Option<Arc<Value>>,
-    /// Sidebar visual style: "noir-minimal", "card-sections", "command-center", "deep-space", "arctic-ops", "obsidian-mesh", "neon-circuit"
+    /// Sidebar visual style: "noir-minimal", "card-sections", "command-center", "deep-space",
+    /// "arctic-ops", "obsidian-mesh", "neon-circuit"
     #[serde(default = "default_sidebar_style")]
     pub sidebar_style: String,
     /// #1796 - selected-row rail width. A whole number from 1 to 14, optionally
@@ -5907,7 +5919,8 @@ pub struct AppSettings {
     #[serde(default = "default_true")]
     pub always_show_selected_workgroup: bool,
     /// Optional logger filter expression. Applied at startup if `RUST_LOG` is unset.
-    /// Uses standard `env_logger` filter syntax (e.g. `info,agentscommander_lib::config::teams=trace`).
+    /// Uses standard `env_logger` filter syntax
+    /// (e.g. `info,agentscommander_lib::config::teams=trace`).
     /// Phase 1 of #93 — settings-level control with `RUST_LOG` env override (backwards-compat).
     /// Phase 2 (UI dropdown) and Phase 3 (live reload) are deferred per the issue.
     #[serde(default)]
@@ -6507,7 +6520,8 @@ fn repair_loaded_response_close_settings(settings: &mut AppSettings, source: &st
         .contains(&settings.response_close_idle_seconds)
     {
         log::warn!(
-            "Invalid responseCloseIdleSeconds={} from {source}: expected 1..=3600; using 30 in memory",
+            "Invalid responseCloseIdleSeconds={} from {source}: expected 1..=3600; using 30 in \
+                memory",
             settings.response_close_idle_seconds
         );
         settings.response_close_idle_seconds = DEFAULT_RESPONSE_CLOSE_IDLE_SECONDS;
@@ -6528,7 +6542,8 @@ fn repair_loaded_room_idle_confirmation_settings(settings: &mut AppSettings, sou
         .contains(&settings.room_idle_confirmation_seconds)
     {
         log::warn!(
-            "Invalid roomIdleConfirmationSeconds={} from {source}: expected 1..=3600; using 15 in memory",
+            "Invalid roomIdleConfirmationSeconds={} from {source}: expected 1..=3600; using 15 in \
+                memory",
             settings.room_idle_confirmation_seconds
         );
         settings.room_idle_confirmation_seconds = DEFAULT_ROOM_IDLE_CONFIRMATION_SECONDS;
@@ -6695,7 +6710,8 @@ pub const BLOCKING_MENUS_SCHEMA_VERSION: u32 = 1;
 /// #1925 (D2) - the published file: one pinned literal with the source ref `main` and a
 /// `v1` segment that must equal `BLOCKING_MENUS_SCHEMA_VERSION`; a test pins both.
 pub(crate) const REMOTE_BLOCKING_MENUS_URL: &str =
-    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/blocking-menus/v1/settings-blocking-menus.json";
+    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/blocking-menus/v\
+        1/settings-blocking-menus.json";
 /// #1925 (D2) - the ref the URL pins; the cached note names it.
 pub(crate) const REMOTE_BLOCKING_MENUS_SOURCE_REF: &str = "main";
 /// #1925 (D5) - hard cap on the downloaded body, checked while reading and on acceptance.
@@ -6796,7 +6812,8 @@ pub(crate) fn validate_remote_blocking_menus_file(
     let total: usize = file.by_command.values().map(Vec::len).sum();
     if total > REMOTE_BLOCKING_MENUS_MAX_ENTRIES {
         return Err(format!(
-            "holds {total} entries; more than {REMOTE_BLOCKING_MENUS_MAX_ENTRIES} entries are not allowed"
+            "holds {total} entries; more than {REMOTE_BLOCKING_MENUS_MAX_ENTRIES} entries are not \
+                allowed"
         ));
     }
     for (stem, entries) in &file.by_command {
@@ -6813,7 +6830,8 @@ pub(crate) fn validate_remote_blocking_menus_file(
             }
             if config.notification.len() > REMOTE_NOTIFICATION_MAX_BYTES {
                 return Err(format!(
-                    "entry {stem}[{index}]: notification longer than {REMOTE_NOTIFICATION_MAX_BYTES} bytes"
+                    "entry {stem}[{index}]: notification longer than \
+                        {REMOTE_NOTIFICATION_MAX_BYTES} bytes"
                 ));
             }
             if config.notification.chars().any(char::is_control) {
@@ -6990,7 +7008,9 @@ pub(crate) fn write_remote_blocking_menus_cache(
     fetched_at: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), String> {
     file.note = Some(format!(
-        "Downloaded by AgentsCommander from {source_url} (source ref {REMOTE_BLOCKING_MENUS_SOURCE_REF}) at {}. Replaced by the next accepted download and ignored at start if it fails validation; put your own patterns in {}.",
+        "Downloaded by AgentsCommander from {source_url} (source ref \
+            {REMOTE_BLOCKING_MENUS_SOURCE_REF}) at {}. Replaced by the next accepted download and \
+            ignored at start if it fails validation; put your own patterns in {}.",
         fetched_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         crate::config::instance_artifacts::BLOCKING_MENUS_LOCAL_FILE_NAME
     ));
@@ -7321,7 +7341,8 @@ pub(crate) const REMOTE_AGENT_HELP_SOURCE_REF: &str = "main";
 /// `REMOTE_AGENT_HELP_SOURCE_REF` (P6's) and whose `v1` segment must equal
 /// `AGENT_HELP_SCHEMA_VERSION`; T1 pins both.
 pub(crate) const REMOTE_AGENT_HELP_URL: &str =
-    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/agent-help/v1/agent-help.json";
+    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/agent-help/v1/ag\
+        ent-help.json";
 
 /// #2133 (D4) - hard caps on the downloaded layer. Every cap counts UTF-8 bytes
 /// (`str::len()`), not characters; TypeScript's `.length` counts UTF-16 code units instead.
@@ -7466,7 +7487,9 @@ pub(crate) fn write_remote_agent_help_cache(
     fetched_at: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), String> {
     file.note = Some(format!(
-        "Downloaded by AgentsCommander from {source_url} (source ref {REMOTE_AGENT_HELP_SOURCE_REF}) at {}. Replaced by the next accepted download and ignored at start if it fails validation; put your own help in agent-help.local.json.",
+        "Downloaded by AgentsCommander from {source_url} (source ref \
+            {REMOTE_AGENT_HELP_SOURCE_REF}) at {}. Replaced by the next accepted download and \
+            ignored at start if it fails validation; put your own help in agent-help.local.json.",
         fetched_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     ));
     let bytes = pretty_json_bytes(&file).map_err(|e| e.to_string())?;
@@ -7636,7 +7659,13 @@ fn export_blocking_menus_with_startup(
             .iter()
             .filter(|a| a.blocking_menus.is_some())
         {
-            log::info!("[settings-migration] #1905 - agent '{}' carries blockingMenus inside an overlay-owned agents array; it keeps applying from there and is not exported; move it to {} to use the new file", agent.id, BLOCKING_MENUS_LOCAL_FILE_NAME);
+            log::info!(
+                "[settings-migration] #1905 - agent '{}' carries blockingMenus inside an \
+                overlay-owned agents array; it keeps applying from there and is not exported; move \
+                it to {} to use the new file",
+                agent.id,
+                BLOCKING_MENUS_LOCAL_FILE_NAME
+            );
         }
         return false;
     }
@@ -7655,7 +7684,14 @@ fn export_blocking_menus_with_startup(
         let current = (agent.command.as_str(), entries);
         if let Some(previous) = by_id.insert(agent.id.as_str(), current) {
             if previous != current {
-                return abort_blocking_menus_export(&local_path, &format!("two agents share the id '{}' with different blockingMenus arrays or commands", agent.id));
+                return abort_blocking_menus_export(
+                    &local_path,
+                    &format!(
+                        "two agents share the id \
+                    '{}' with different blockingMenus arrays or commands",
+                        agent.id
+                    ),
+                );
             }
         }
     }
@@ -7858,7 +7894,8 @@ impl AgentsLayerState {
 /// #2716 (B3, option C) - the CLI's answer: the list is unknown, not empty.
 pub(crate) fn agents_unreadable_cli_error(path: &Path) -> String {
     format!(
-        "Coding agents are unavailable: AgentsCommander could not read {}. Fix or delete that file and restart.",
+        "Coding agents are unavailable: AgentsCommander could not read {}. Fix or delete that file \
+            and restart.",
         path.display()
     )
 }
@@ -7866,7 +7903,9 @@ pub(crate) fn agents_unreadable_cli_error(path: &Path) -> String {
 /// #2716 (B3, option C) - notice 1: the startup dialog, raised by the error log.
 pub(crate) fn agents_unreadable_startup_notice(path: &Path) -> String {
     format!(
-        "Coding agents are unavailable: AgentsCommander could not read {}. Agent sessions will not start until this file is fixed or deleted. Every other setting is unchanged. While this file is unreadable, changes to your sessions are not saved.",
+        "Coding agents are unavailable: AgentsCommander could not read {}. Agent sessions will not \
+            start until this file is fixed or deleted. Every other setting is unchanged. While \
+            this file is unreadable, changes to your sessions are not saved.",
         path.display()
     )
 }
@@ -7874,7 +7913,8 @@ pub(crate) fn agents_unreadable_startup_notice(path: &Path) -> String {
 /// #2716 (B3, option C) - notice 3: the error every spawn entry point returns.
 pub(crate) fn agents_unreadable_session_error(path: &Path) -> String {
     format!(
-        "Cannot start this coding agent: AgentsCommander could not read {}. Fix or delete that file and restart.",
+        "Cannot start this coding agent: AgentsCommander could not read {}. Fix or delete that \
+            file and restart.",
         path.display()
     )
 }
@@ -8142,7 +8182,8 @@ pub(crate) fn export_agents_to_instance_file(
         .owns_top_level(OVERLAY_KEY_AGENTS)
     {
         log::info!(
-            "[settings-migration] #2716 - the overlay {} owns agents; agents and codingAgentProfiles stay in {} and are not exported",
+            "[settings-migration] #2716 - the overlay {} owns agents; agents and \
+                codingAgentProfiles stay in {} and are not exported",
             settings_path
                 .with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME)
                 .display(),
@@ -8157,7 +8198,8 @@ pub(crate) fn export_agents_to_instance_file(
         }
         Ok(Some(_)) => {
             log::warn!(
-                "[settings-migration] #2716 - {} still carries agents or codingAgentProfiles while {} exists; the agents file wins and is not overwritten",
+                "[settings-migration] #2716 - {} still carries agents or codingAgentProfiles while \
+                    {} exists; the agents file wins and is not overwritten",
                 settings_path.display(),
                 path.display()
             );
@@ -9343,7 +9385,8 @@ fn legacy_profiles_shape_present(root: &Map<String, Value>) -> bool {
     {
         return true;
     }
-    if matches!(p.get("schemaVersion"), Some(Value::Number(n)) if n.as_f64().is_some_and(|v| v < 2.0))
+    if matches!(p.get("schemaVersio\
+        n"), Some(Value::Number(n)) if n.as_f64().is_some_and(|v| v < 2.0))
     {
         return true;
     }
@@ -9572,8 +9615,10 @@ type SettingsPathHook = Option<Box<dyn Fn(&Path)>>;
 
 #[cfg(test)]
 thread_local! {
-    static PROJECT_SOURCE_CAPTURE_HOOK: std::cell::RefCell<SettingsPathHook> = std::cell::RefCell::new(None);
-    static SETTINGS_PRESERVE_LOCK_HOOK: std::cell::RefCell<SettingsPathHook> = std::cell::RefCell::new(None);
+    static PROJECT_SOURCE_CAPTURE_HOOK: std::cell::RefCell<SettingsPathHook> =
+        std::cell::RefCell::new(None);
+    static SETTINGS_PRESERVE_LOCK_HOOK: std::cell::RefCell<SettingsPathHook> =
+        std::cell::RefCell::new(None);
 }
 
 fn capture_project_settings(
@@ -10054,7 +10099,10 @@ fn coding_agent_identity_physical_from_raw(
         "agents": value.get("agents"),
         "codingAgentProfiles": value.get("codingAgentProfiles"),
         "quotaSources": value.get("quotaSources"),
-        "groupOwnership": { "instanceGroups": physical_groups, "overlayPaths": overlay.owned_paths().iter().filter(|path| path.first().is_some_and(|key| ["agents", "codingAgentProfiles", "quotaSources"].contains(&key.as_str()))).collect::<Vec<_>>() },
+        "groupOwnership": { "instanceGroups": physical_groups, "overlayPath\
+            s": overlay.owned_paths().iter().filter(|path| path.first().is_some_and(|key| ["agent\
+            s", "codingAgentProfiles", "quotaSource\
+            s"].contains(&key.as_str()))).collect::<Vec<_>>() },
     })
 }
 
@@ -10731,7 +10779,8 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
             let f = f.trim();
             if !f.is_empty() && !crate::config::agent_command::is_safe_instructions_filename(f) {
                 return Err(format!(
-                    "Agent \"{}\" instructions filename is invalid: must be a bare .md filename with no path separators",
+                    "Agent \"{}\" instructions filename is invalid: must be a bare .md filename \
+                        with no path separators",
                     agent.label
                 ));
             }
@@ -10756,7 +10805,8 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
                         );
                     } else {
                         log::warn!(
-                            "[config-seed] agent \"{}\" dest '{}' ends with an OS token; it names the same template folder as the OS variant of dest '{}'",
+                            "[config-seed] agent \"{}\" dest '{}' ends with an OS token; it names \
+                                the same template folder as the OS variant of dest '{}'",
                             agent.label,
                             seed.dest.trim(),
                             stem
@@ -10855,7 +10905,8 @@ pub(crate) fn validate_agent_command_text(context: &str, command: &str) -> Resul
     if let Some(codex_idx) = find_provider_token(&tokens, "codex") {
         if codex_has_manual_resume(&tokens, codex_idx) {
             return Err(format!(
-                "{context}: Codex commands must not include resume or --last; AgentsCommander injects codex resume --last automatically"
+                "{context}: Codex commands must not include resume or --last; AgentsCommander \
+                    injects codex resume --last automatically"
             ));
         }
     }
@@ -10865,7 +10916,8 @@ pub(crate) fn validate_agent_command_text(context: &str, command: &str) -> Resul
     {
         if antigravity_has_manual_resume(&tokens, antigravity_idx) {
             return Err(format!(
-                "{context}: Antigravity commands must not include --continue or -c; AgentsCommander injects agy --continue automatically"
+                "{context}: Antigravity commands must not include --continue or -c; \
+                    AgentsCommander injects agy --continue automatically"
             ));
         }
     }
@@ -11129,7 +11181,8 @@ fn persist_loaded_settings_migrations(
                 Ok(()) => true,
                 Err(e) => {
                     log::error!(
-                        "Failed to persist settings v2 migration backup; leaving settings.json untouched: {}",
+                        "Failed to persist settings v2 migration backup; leaving settings.json \
+                            untouched: {}",
                         e
                     );
                     false
@@ -11211,7 +11264,8 @@ fn rotate_settings_backups_labeled(settings_path: &Path, label: &Path, previous:
             Ok(metadata) => {
                 if !metadata.is_file() {
                     log::warn!(
-                        "[settings] #2058 aborting backup rotation: slot {:?} is not a regular file",
+                        "[settings] #2058 aborting backup rotation: slot {:?} is not a regular \
+                            file",
                         settings_backup_path(label, index)
                     );
                     return;
@@ -11398,9 +11452,17 @@ fn load_settings_for_cli_strict_from_path(path: Option<&Path>) -> Result<AppSett
     let mut settings = match path {
         None => AppSettings::default(),
         Some(path) => {
-            let (settings, _, _) = capture_project_settings(path, false).map_err(|error| format!("settings source could not be parsed or selected ({error}); refusing to modify it"))?;
+            let (settings, _, _) = capture_project_settings(path, false).map_err(|error| {
+                format!(
+                    "s\
+                ettings source could not be parsed or selected ({error}); refusing to modify it"
+                )
+            })?;
             if let Some(error) = &settings.project_paths_persistence_error {
-                return Err(format!("settings source could not be parsed or selected ({error}); refusing to modify it"));
+                return Err(format!(
+                    "settings source could not be parsed or selected ({error}); \
+                    refusing to modify it"
+                ));
             }
             settings
         }
@@ -11474,13 +11536,18 @@ fn apply_issue_248_migration(settings: &mut AppSettings) {
         if !settings.restore_coordinator_wake_state {
             settings.restore_coordinator_wake_state = legacy;
             log::info!(
-                "[settings-migration] #248 — translated legacy startOnlyCoordinators={} → restoreCoordinatorWakeState={}",
-                legacy, settings.restore_coordinator_wake_state
+                "[settings-migration] #248 — translated legacy startOnlyCoordinators={} → \
+                    restoreCoordinatorWakeState={}",
+                legacy,
+                settings.restore_coordinator_wake_state
             );
         } else if legacy != settings.restore_coordinator_wake_state {
             log::warn!(
-                "[settings-migration] #248 — conflicting state on disk: legacy startOnlyCoordinators={} but restoreCoordinatorWakeState={} already set; keeping the new value, dropping legacy",
-                legacy, settings.restore_coordinator_wake_state
+                "[settings-migration] #248 — conflicting state on disk: legacy \
+                    startOnlyCoordinators={} but restoreCoordinatorWakeState={} already set; \
+                    keeping the new value, dropping legacy",
+                legacy,
+                settings.restore_coordinator_wake_state
             );
         }
         // else: legacy and new agree → silent drop, no log.
@@ -11630,7 +11697,8 @@ pub(crate) const OVERLAY_KEY_MAIN_GEOMETRY: &str = "mainGeometry";
 pub(crate) const OVERLAY_KEY_MAIN_DISPLAY_STATE: &str = "mainWindowDisplayState";
 pub(crate) const OVERLAY_KEY_MAIN_ZOOM: &str = "mainZoom";
 pub(crate) const OVERLAY_KEY_RESTORE_COORDINATOR_WAKE_STATE: &str = "restoreCoordinatorWakeState";
-#[allow(dead_code)] // read only from test code: the suppressions name the five constants individually
+// Read only from test code: the suppressions name the five constants individually.
+#[allow(dead_code)]
 pub(crate) const OVERLAY_MIGRATION_DESTINATION_KEYS: &[&str] = &[
     OVERLAY_KEY_AGENTS,
     OVERLAY_KEY_MAIN_ALWAYS_ON_TOP,
@@ -12712,7 +12780,8 @@ fn render_settings_save_diagnostic(diagnostic: &SettingsSaveDiagnostic) -> Strin
         .map(|value| value.to_string())
         .unwrap_or_else(|| "none".to_string());
     format!(
-        "settings_save_failure code={} stage={} reason={} pid={} target_path={} temp_path={} source_kind={} io_kind={} raw_os_error={} json_category={} json_line={} json_column={}",
+        "settings_save_failure code={} stage={} reason={} pid={} target_path={} temp_path={} \
+            source_kind={} io_kind={} raw_os_error={} json_category={} json_line={} json_column={}",
         diagnostic.code,
         diagnostic.stage,
         diagnostic.reason,
@@ -12733,8 +12802,9 @@ type SettingsSaveDiagnosticCapture = Box<dyn Fn(&str)>;
 
 #[cfg(test)]
 thread_local! {
-    static SETTINGS_SAVE_DIAGNOSTIC_CAPTURE: std::cell::RefCell<Option<SettingsSaveDiagnosticCapture>> =
-        std::cell::RefCell::new(None);
+    static SETTINGS_SAVE_DIAGNOSTIC_CAPTURE: std::cell::RefCell<
+        Option<SettingsSaveDiagnosticCapture>,
+    > = std::cell::RefCell::new(None);
 }
 
 #[cfg(test)]
@@ -12775,7 +12845,8 @@ fn read_disk_object_and_contents_for_write_typed(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(source) => {
             let outward = format!(
-                "Failed to read {} for a project-preserving save (aborting to avoid dropping a project): {source}",
+                "Failed to read {} for a project-preserving save (aborting to avoid dropping a \
+                    project): {source}",
                 path.display()
             );
             Err(SettingsSaveError::io(
@@ -12789,7 +12860,8 @@ fn read_disk_object_and_contents_for_write_typed(
         Ok(contents) => {
             let value: Value = serde_json::from_str(&contents).map_err(|source| {
                 let outward = format!(
-                    "Refusing to overwrite {}: the existing settings file is not valid JSON ({source})",
+                    "Refusing to overwrite {}: the existing settings file is not valid JSON \
+                        ({source})",
                     path.display()
                 );
                 SettingsSaveError::json(
@@ -13015,7 +13087,8 @@ fn raw_project_source_from_bytes(
         );
         if legacy_settings_diagnostic {
             error.legacy_outward = SettingsSaveLegacyOutward::DiskRead(format!(
-                "settings.json exists but could not be parsed ({}: {reason}); refusing to modify it - fix or remove the file first",
+                "settings.json exists but could not be parsed ({}: {reason}); refusing to modify \
+                    it - fix or remove the file first",
                 label.display()
             ));
         }
@@ -13100,8 +13173,17 @@ fn select_project_source_from_raw(
         Some(source) => {
             let projection = raw_project_projection(&source.object);
             if !legacy_projection.is_empty() && legacy_projection != projection {
-                return Err(project_migration_error_labeled(destination_path, destination_label, SettingsSaveStage::ProjectPathsRefreshDiskGate,
-                    &format!("project_paths_conflict; source={}; destination={}; preserve both files and reconcile raw projections to equality", label.display(), destination_label.display())));
+                return Err(project_migration_error_labeled(
+                    destination_path,
+                    destination_label,
+                    SettingsSaveStage::ProjectPathsRefreshDiskGate,
+                    &format!(
+                        "project_paths_conflict; source={}; destination={}; preserve both \
+                        files and reconcile raw projections to equality",
+                        label.display(),
+                        destination_label.display()
+                    ),
+                ));
             }
             projection
         }
@@ -13142,8 +13224,21 @@ fn publish_project_migration_backup_labeled(
     let backup_label =
         label.with_file_name(super::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME);
     let mismatch = || {
-        project_migration_error_labeled(&backup, &backup_label, SettingsSaveStage::PostWriteVerify,
-        &format!("project_paths_backup_mismatch; source={}; destination={}; backup={}; stop all AC/old processes, preserve copies and orphan temps, rename backup without overwrite to project-paths.pre-migration.recovered-<UTC>-<unique>.no-git.json, verify intended legacy projection and retry", label.display(), project_paths_path(label).display(), backup_label.display()))
+        project_migration_error_labeled(
+            &backup,
+            &backup_label,
+            SettingsSaveStage::PostWriteVerify,
+            &format!(
+                "project_paths_backup_mismatch; source={}; destination={}; backup={}; stop all \
+            AC/old processes, preserve copies and orphan temps, rename backup without overwrite to \
+            project-paths.pre-migration.recovered-<UTC>-<unique>.no-git.json, verify intended \
+            legacy projection and \
+            retry",
+                label.display(),
+                project_paths_path(label).display(),
+                backup_label.display()
+            ),
+        )
     };
     if let Some(existing) =
         read_project_source_bytes_labeled_with_limit(&backup, &backup_label, 16 * 1024 * 1024)?
@@ -13727,7 +13822,8 @@ static SETTINGS_LOCK_DEBUG_TEST_HOOKS: OnceLock<SettingsLockDebugTestHooks> = On
 
 #[cfg(test)]
 thread_local! {
-    static SETTINGS_LOCK_DEBUG_TEST_UNLOCK_ERROR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SETTINGS_LOCK_DEBUG_TEST_UNLOCK_ERROR: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -13777,13 +13873,17 @@ fn settings_lock_debug_emit(event: &SettingsLockDebugEvent) {
     }
     let context = &event.context;
     log::debug!(target: module_path!(),
-        "settings-lock phase={} pid={} instance={} attempt={} operation={} origin={}:{}:{} acquisition_thread={:?} event_thread={:?} target={} sidecar={} path_truncated={} event_utc={} emitted_utc={} preparation_ms={:?} wait_ms={:?} hold_ms={:?} stage={} reason={:?} raw_os_error={:?} handle_closed={} lost_events={}",
+        "settings-lock phase={} pid={} instance={} attempt={} operation={} origin={}:{}:{} \
+            acquisition_thread={:?} event_thread={:?} target={} sidecar={} path_truncated={} \
+            event_utc={} emitted_utc={} preparation_ms={:?} wait_ms={:?} hold_ms={:?} stage={} \
+            reason={:?} raw_os_error={:?} handle_closed={} lost_events={}",
         event.phase, context.pid, context.instance, context.attempt,
         context.operation, context.caller.file(), context.caller.line(),
         context.caller.column(), context.thread, event.thread, context.target,
         context.sidecar, context.path_truncated, event.utc.to_rfc3339(),
         chrono::Utc::now().to_rfc3339(), event.preparation_ms, event.wait_ms,
-        event.hold_ms, if event.phase == "release" { "unlock" } else { "lock_acquire" }, event.reason, event.raw_os_error,
+        event.hold_ms, if event.phase == "release" { "unlock" } else { "lock_acquir\
+            e" }, event.reason, event.raw_os_error,
         matches!(event.phase, "release" | "timeout" | "acquire-error"),
         SETTINGS_LOCK_DEBUG_LOST.load(Ordering::Relaxed));
 }
@@ -14473,7 +14573,11 @@ fn retain_untransferred_registered_main_groups(
             out.remove(key);
         } else if let Some(raw) = raw {
             if !overlay.owns_top_level(key) && raw != destination {
-                log::warn!("[profiles] {}: retaining unselected shadowed {key}; raw value differs from registered sidecar", path.display());
+                log::warn!(
+                    "[profiles] {}: retaining unselected shadowed {key}; raw value differs \
+                    from registered sidecar",
+                    path.display()
+                );
             }
             out.insert(key.into(), raw.clone());
         } else {
@@ -15910,7 +16014,9 @@ pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
 
 #[cfg(test)]
 thread_local! {
-    static PROJECT_MIGRATION_ATOMIC_FAULT: std::cell::RefCell<Option<(PathBuf, SettingsSaveStage)>> = const { std::cell::RefCell::new(None) };
+    static PROJECT_MIGRATION_ATOMIC_FAULT: std::cell::RefCell<
+        Option<(PathBuf, SettingsSaveStage)>,
+    > = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -16200,7 +16306,8 @@ where
             if let Some(delay) = delay {
                 let raw_os_error = error.raw_os_error().unwrap_or_default();
                 log::warn!(
-                    "Windows settings atomic replace attempt {} of {} failed with raw OS error {}; retrying in {} ms",
+                    "Windows settings atomic replace attempt {} of {} failed with raw OS error {}; \
+                        retrying in {} ms",
                     failed_attempt,
                     total_attempts,
                     raw_os_error,
@@ -16508,7 +16615,9 @@ struct SettingsOwnerLeaseVerifyFault {
 
 #[cfg(all(test, windows))]
 thread_local! {
-    static SETTINGS_OWNER_LEASE_VERIFY_FAULT: std::cell::RefCell<Option<SettingsOwnerLeaseVerifyFault>> = const { std::cell::RefCell::new(None) };
+    static SETTINGS_OWNER_LEASE_VERIFY_FAULT: std::cell::RefCell<
+        Option<SettingsOwnerLeaseVerifyFault>,
+    > = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(all(test, windows))]
@@ -18764,7 +18873,8 @@ impl SourceInventoryProof {
 
 #[cfg(test)]
 thread_local! {
-    static SOURCE_FACTORY_GUARD_CUT: std::cell::Cell<(usize, Option<usize>)> = const { std::cell::Cell::new((0, None)) };
+    static SOURCE_FACTORY_GUARD_CUT: std::cell::Cell<(usize, Option<usize>)> =
+        const { std::cell::Cell::new((0, None)) };
 }
 
 #[cfg(test)]
@@ -20309,7 +20419,8 @@ type AgentFileTestHook = Box<dyn FnMut(&str, &Path)>;
 
 #[cfg(test)]
 thread_local! {
-    static AGENT_FILE_CHECKPOINT: std::cell::RefCell<Option<AgentFileTestHook>> = const { std::cell::RefCell::new(None) };
+    static AGENT_FILE_CHECKPOINT: std::cell::RefCell<Option<AgentFileTestHook>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 fn agent_file_checkpoint(stage: &str, path: &Path) {

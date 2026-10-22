@@ -13,7 +13,8 @@ fn derived_agent_id_binding_projection_ignores_presentation_and_sorts_ids() {
         "defaultShell": "test-shell",
         "defaultShellArgs": [],
         "agents": [
-            {"id":"alpha","label":"Alpha","command":"claude","color":"#112233","isolatedHome":false},
+            {"id":"alpha","label":"Alpha","command":"claude","color":"#112233","isolatedHom\
+                e":false},
             {"id":"beta","label":"Beta","command":"codex","color":"#445566","isolatedHome":false},
         ],
         "rootToken": "fixture-token",
@@ -139,8 +140,10 @@ fn derived_agent_id_binding_projection_changes_for_execution_home_and_quota() {
             "defaultShell": "test-shell",
             "defaultShellArgs": [],
             "agents": [
-                {"id":"alpha","label":"Alpha","command":"claude","color":"#112233","isolatedHome":false},
-                {"id":"beta","label":"Beta","command":"codex","color":"#445566","isolatedHome":false},
+                {"id":"alpha","label":"Alpha","command":"claude","color":"#112233","isolatedHom\
+                    e":false},
+                {"id":"beta","label":"Beta","command":"codex","color":"#445566","isolatedHom\
+                    e":false},
             ],
             "rootToken": "fixture-token",
         }),
@@ -189,9 +192,15 @@ fn derived_agent_id_binding_save_narrow_and_cas_return_physical_revision() {
     );
     // Unknown fields in an overlay-owned group must survive typed decode.
     let overlay_path = path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME);
-    std::fs::write(&overlay_path, serde_json::to_vec(&serde_json::json!({
-            "agents": [{"id":"alpha","label":"Overlay","command":"claude","color":"red","unknownIdentity":{"keep":7}}]
-        })).unwrap()).unwrap();
+    std::fs::write(
+        &overlay_path,
+        serde_json::to_vec(&serde_json::json!({
+            "agents": [{"id":"alpha","label":"Overlay","command":"claude","color":"red","unknownIde\
+                ntity":{"keep":7}}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let mut current = load_settings_for_cli_from_path(&path);
     assert_eq!(
         current.coding_agent_identity_physical.as_ref().unwrap()["agents"][0]["unknownIdentity"]
@@ -339,8 +348,10 @@ fn derived_agent_id_binding_projection_missing_physical_never_uses_typed_fallbac
             "defaultShell": "test-shell",
             "defaultShellArgs": [],
             "agents": [
-                {"id":"alpha","label":"Alpha","command":"claude","color":"#112233","isolatedHome":false},
-                {"id":"beta","label":"Beta","command":"codex","color":"#445566","isolatedHome":false},
+                {"id":"alpha","label":"Alpha","command":"claude","color":"#112233","isolatedHom\
+                    e":false},
+                {"id":"beta","label":"Beta","command":"codex","color":"#445566","isolatedHom\
+                    e":false},
             ],
             "rootToken": "fixture-token",
         }),

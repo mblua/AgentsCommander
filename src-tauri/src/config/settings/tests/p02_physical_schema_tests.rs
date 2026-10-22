@@ -6,7 +6,12 @@ fn p02_three_loaders_do_not_rewrite_and_locked_save_retains_legacy() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
     let main = json!({"defaultShell":"test-shell","defaultShellArgs":[],"rootToken":"base-token"});
-    let groups = json!({"agents":[{"id":"own","label":"Own","color":"#123456","baseCommand":"tool --current","command":"tool --legacy","order":0}],"codingAgentProfiles":{"schemaVersion":2,"profileSlots":{"A":{"label":""}},"defaultProfileByAgent":{},"profilesByAgent":{"own":{"A":{"enabled":true,"additionalArguments":"--current","command":"--legacy","env":{},"notes":"keep"}}},"profileLabelsByAgent":{}}});
+    let groups = json!({"agents":[{"id":"own","label":"Own","color":"#123456","baseCommand":"tool \
+        --current","command":"tool \
+        --legacy","order":0}],"codingAgentProfiles":{"schemaVersion":2,"profileSlots":{"A":{"labe\
+        l":""}},"defaultProfileByAgent":{},"profilesByAgent":{"own":{"A":{"enabled":true,"additiona\
+        lArguments":"--current","command":"--legacy","env":{},"notes":"keep"}}},"profileLabelsByAge\
+        nt":{}}});
     std::fs::write(&path, serde_json::to_vec_pretty(&main).unwrap()).unwrap();
     let sidecar = agents_instance_path(&path);
     std::fs::write(&sidecar, serde_json::to_vec_pretty(&groups).unwrap()).unwrap();

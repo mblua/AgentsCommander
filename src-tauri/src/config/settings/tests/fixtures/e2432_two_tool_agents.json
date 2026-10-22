@@ -1,0 +1,1 @@
+{"schemaVersion":1,"agents":[{"key":"one","baseCommand":"tool"},{"key":"two","baseCommand":"tool"}],"codingAgentProfiles":{"one":{"B":{"notes":"first"}},"two":{"B":{"notes":"other"}}}}
