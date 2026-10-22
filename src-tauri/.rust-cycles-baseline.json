@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "1a47b820001c6e30",
+      "id": "622a3f8263be1c62",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -38,7 +38,6 @@
         "agentscommander_lib::config::archive_gate",
         "agentscommander_lib::config::coding_agent_mutations",
         "agentscommander_lib::config::coding_agent_profiles",
-        "agentscommander_lib::config::coding_agents_catalog",
         "agentscommander_lib::config::config_seed",
         "agentscommander_lib::config::coordinator_clocks",
         "agentscommander_lib::config::daemon_pid",
