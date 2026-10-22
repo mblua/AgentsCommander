@@ -3256,6 +3256,15 @@ pub fn bad(agent_dir: &Path) -> Result<(), String> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
+            // Test-only files (`foo/tests.rs`, `foo/tests/`, `foo/<name>_tests.rs`) hold
+            // what `strip_test_modules` cuts off when the tests live inline.
+            let stem = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("");
+            if stem == "tests" || stem.ends_with("_tests") {
+                continue;
+            }
             if path.is_dir() {
                 scan_dir(&path, offenders);
                 continue;
