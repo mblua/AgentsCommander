@@ -4,6 +4,7 @@ use super::*;
 // #2232 phase 7: Co-managed supervisor tests
 // ══════════════════════════════════════════════════════════════════════
 
+/// Test 1: idle edge with the room disabled makes zero Jev calls, writes
 /// zero files, queues nothing, and `session_idle` carries `comanaged:false`.
 #[tokio::test]
 async fn idle_edge_with_a_disabled_room_makes_no_call_and_emits_comanaged_false() {

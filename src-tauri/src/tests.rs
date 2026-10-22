@@ -411,8 +411,6 @@ async fn spawn_jev_listener(scores: Vec<(&'static str, f32)>) -> (String, Arc<At
     (format!("http://127.0.0.1:{port}/v1/systemone"), hits)
 }
 
-/// Test 1: idle edge with the room disabled makes zero Jev calls, writes
-
 fn settings_with_agent() -> AppSettings {
     AppSettings {
         agents: vec![AgentConfig {
