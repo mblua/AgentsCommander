@@ -14,7 +14,7 @@ export function decode(bytes, context) {
 }
 function resolveGitExecutable({ cwd, env }) {
   const windows = process.platform === 'win32';
-  const pathKey = windows ? Object.keys(env).sort().find(key => key.toUpperCase() === 'PATH') : 'PATH';
+  const pathKey = windows ? Object.keys(env).sort(codeOrder).find(key => key.toUpperCase() === 'PATH') : 'PATH';
   const searchPath = (pathKey === undefined ? undefined : env[pathKey]) ??
     (windows ? process.env.PATH : '/usr/bin:/bin');
   const unavailable = detail => new GateError(`Git executable unavailable${detail ? `: ${detail}` : ''}; install Git/check PATH`);
