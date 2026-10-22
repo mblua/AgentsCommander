@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "7bc50d3cc3933110",
+      "id": "7c12f2a2226705b5",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::api::audit",
@@ -21,46 +21,23 @@
         "agentscommander_lib::cli::list_peers",
         "agentscommander_lib::co_managed",
         "agentscommander_lib::co_managed::route",
-        "agentscommander_lib::commands::ac_discovery",
         "agentscommander_lib::commands::config",
         "agentscommander_lib::commands::pty",
-        "agentscommander_lib::commands::repos",
         "agentscommander_lib::commands::resource_monitor",
         "agentscommander_lib::commands::role_templates",
         "agentscommander_lib::commands::session",
         "agentscommander_lib::commands::telegram",
-        "agentscommander_lib::commands::voice",
         "agentscommander_lib::commands::window",
         "agentscommander_lib::config::activity_log",
-        "agentscommander_lib::config::agent_command",
-        "agentscommander_lib::config::agent_memory",
         "agentscommander_lib::config::archive_gate",
         "agentscommander_lib::config::coding_agent_mutations",
-        "agentscommander_lib::config::coding_agent_profiles",
-        "agentscommander_lib::config::config_seed",
         "agentscommander_lib::config::coordinator_clocks",
         "agentscommander_lib::config::daemon_pid",
-        "agentscommander_lib::config::loops",
-        "agentscommander_lib::config::placeholders",
-        "agentscommander_lib::config::projects",
-        "agentscommander_lib::config::root_agent",
-        "agentscommander_lib::config::seed_manifest",
-        "agentscommander_lib::config::seeded_context_templates",
-        "agentscommander_lib::config::session_context",
         "agentscommander_lib::config::sessions_persistence",
-        "agentscommander_lib::config::settings",
-        "agentscommander_lib::config::teams",
-        "agentscommander_lib::logging",
-        "agentscommander_lib::loops::non_stop_watchdog",
-        "agentscommander_lib::phone::messaging",
         "agentscommander_lib::phone::types",
         "agentscommander_lib::pty::backend",
         "agentscommander_lib::pty::container_backend",
-        "agentscommander_lib::pty::container_paths",
-        "agentscommander_lib::pty::container_repos",
-        "agentscommander_lib::pty::container_runtime",
         "agentscommander_lib::pty::container_tokens",
-        "agentscommander_lib::pty::docker_runtime",
         "agentscommander_lib::pty::git_watcher",
         "agentscommander_lib::pty::idle_detector",
         "agentscommander_lib::pty::inject",
@@ -74,10 +51,7 @@
         "agentscommander_lib::pty::watchers::history",
         "agentscommander_lib::pty_wiring",
         "agentscommander_lib::reader_demand",
-        "agentscommander_lib::resource_monitor::registry",
-        "agentscommander_lib::resource_monitor::types",
         "agentscommander_lib::resource_monitor::watchdog",
-        "agentscommander_lib::resource_monitor::windows",
         "agentscommander_lib::restore",
         "agentscommander_lib::restore::native",
         "agentscommander_lib::session::auto_close",
@@ -102,6 +76,34 @@
       "members": [
         "agentscommander_lib::cli::create_agent",
         "agentscommander_lib::cli::create_agent_matrix"
+      ]
+    },
+    {
+      "id": "583db36b97dffa93",
+      "members": [
+        "agentscommander_lib::config::agent_command",
+        "agentscommander_lib::config::config_seed"
+      ]
+    },
+    {
+      "id": "fb5d961e19de6b15",
+      "members": [
+        "agentscommander_lib::config::projects",
+        "agentscommander_lib::config::root_agent",
+        "agentscommander_lib::config::seed_manifest",
+        "agentscommander_lib::config::seeded_context_templates",
+        "agentscommander_lib::config::session_context",
+        "agentscommander_lib::config::settings",
+        "agentscommander_lib::phone::messaging",
+        "agentscommander_lib::pty::container_paths",
+        "agentscommander_lib::pty::container_repos"
+      ]
+    },
+    {
+      "id": "936898c11aa1c0f6",
+      "members": [
+        "agentscommander_lib::resource_monitor::registry",
+        "agentscommander_lib::resource_monitor::windows"
       ]
     }
   ],
