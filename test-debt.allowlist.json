@@ -154,7 +154,7 @@
       "resolution": "Replace with executable CLI send to mailbox round-trip coverage."
     },
     {
-      "id": "rust:src-tauri/src/config/session_context.rs::tests::measure_default_context_size_for_workgroup_replica",
+      "id": "rust:src-tauri/src/config/session_context/tests/template_heal.rs::measure_default_context_size_for_workgroup_replica",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 519,
@@ -162,7 +162,7 @@
       "resolution": "Run manually with `cargo test --lib measure_default_context_size_for_workgroup_replica -- --ignored --nocapture` to read the savings snapshot."
     },
     {
-      "id": "rust:src-tauri/src/config/session_context.rs::token_accounting::token_accounting_report",
+      "id": "rust:src-tauri/src/config/session_context/token_accounting.rs::token_accounting_report",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 1005,

@@ -119,7 +119,7 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/config/session_context.rs::mod:token_accounting::summarized_default_context_meets_size_budget",
+      "id": "rust:src-tauri/src/config/session_context/token_accounting.rs::summarized_default_context_meets_size_budget",
       "sites": {
         "windows": [
           "24924aced08a"
