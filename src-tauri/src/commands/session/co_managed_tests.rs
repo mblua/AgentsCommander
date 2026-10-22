@@ -1,7 +1,10 @@
 use super::*;
 use crate::config::co_managed::{self, CoManagedState, OffReason};
 
-const TEAM_CONFIG: &str = r#"{"agents":["_agent_coordinator","_agent_member"],"coordinator":"_agent_coordinator","repos":[]}"#;
+const TEAM_CONFIG: &str = concat!(
+    r#"{"agents":["_agent_coordinator","_agent_member"],"#,
+    r#""coordinator":"_agent_coordinator","repos":[]}"#
+);
 
 pub(crate) struct RoomFixture {
     _temp: tempfile::TempDir,

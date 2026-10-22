@@ -1125,7 +1125,8 @@ pub(crate) fn resolve_claude_projects_dir_in(
     // Stem == "claude" → no wrapper, default base. This covers `claude`,
     // `claude.exe`, `C:\Tools\claude.cmd` (where the .cmd is the official
     // installer's launcher and writes nothing of its own), etc.
-    // executable_basename returns a lowercased stem; comparison is case-insensitive by construction.
+    // executable_basename returns a lowercased stem; comparison is case-insensitive by
+    // construction.
     if executable_basename(&claude_token) == "claude" {
         return default_base().map(|base| base.join("projects").join(&mangled));
     }
@@ -2097,7 +2098,8 @@ impl<R: tauri::Runtime> CoordinatorCreateTicket<R> {
         if self.session_may_exist {
             self.finish_ok();
             log::info!(
-                "[coordinator-create] create failed after spawn attempt; close markers stay cleared fqn={}",
+                "[coordinator-create] create failed after spawn attempt; close markers stay \
+                 cleared fqn={}",
                 self.fqn
             );
             return;
@@ -2147,7 +2149,8 @@ impl<R: tauri::Runtime> CoordinatorCreateTicket<R> {
         }
         if manual.is_some() || auto.is_some() {
             log::info!(
-                "[coordinator-create] restored close markers after failed create fqn={} auto={:?} manual={:?}",
+                "[coordinator-create] restored close markers after failed create fqn={} auto={:?} \
+                 manual={:?}",
                 self.fqn,
                 auto,
                 manual
@@ -3100,7 +3103,8 @@ async fn acquire_create_target_lease<R: tauri::Runtime>(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "P05 retains distinct result, marker, admission and original cleanup ownership without a context bundle."
+    reason = "P05 retains distinct result, marker, admission and original cleanup ownership \
+              without a context bundle."
 )]
 async fn finish_create_core_result<R: tauri::Runtime>(
     marker: Option<CoordinatorCreateTicket<R>>,
@@ -3804,10 +3808,11 @@ async fn create_session_inner_core<R: tauri::Runtime>(
                 };
                 if mirror_forces_fresh(skip_auto_resume, is_coordinator, pending.is_some()) {
                     log::info!(
-                    "[session] fresh-intent mirror pending for '{}' (boundary {}): forcing skip_auto_resume (#756)",
-                    fqn,
-                    pending.map(|d| d.to_rfc3339()).unwrap_or_default()
-                );
+                        "[session] fresh-intent mirror pending for '{}' (boundary {}): forcing \
+                     skip_auto_resume (#756)",
+                        fqn,
+                        pending.map(|d| d.to_rfc3339()).unwrap_or_default()
+                    );
                     skip_auto_resume = true;
                     fresh_forced_by_mirror = true;
                 }
@@ -4430,7 +4435,8 @@ async fn create_session_inner_core<R: tauri::Runtime>(
         );
         if let Some(probe) = resume_probe.as_ref() {
             log::info!(
-                "[session] claude-resume-decision {} cwd={:?} projects_dir={:?} filesystem={} exists={} skip_auto_resume={} -> inject_continue={}",
+                "[session] claude-resume-decision {} cwd={:?} projects_dir={:?} filesystem={} \
+                 exists={} skip_auto_resume={} -> inject_continue={}",
                 &id.to_string()[..8],
                 cwd,
                 resolved_claude_projects_dir,
@@ -4460,7 +4466,11 @@ async fn create_session_inner_core<R: tauri::Runtime>(
                         {
                             *last = format!("{} {}", last, continue_flag);
                             effective_continuation = true;
-                            log::info!("Auto-injected --continue for agent '{}' (prior conversation exists, cmd path)", aid);
+                            log::info!(
+                                "Auto-injected --continue for agent '{}' \
+                                 (prior conversation exists, cmd path)",
+                                aid
+                            );
                         }
                     }
                 } else {
@@ -4491,7 +4501,8 @@ async fn create_session_inner_core<R: tauri::Runtime>(
                         {
                             *last = format!("{} --session-id {}", last, fresh_session_id);
                             log::info!(
-                            "Auto-injected --session-id {} for agent '{}' (fresh spawn, cmd path, #756)",
+                            "Auto-injected --session-id {} for agent '{}' (fresh spawn, cmd path, \
+                             #756)",
                             fresh_session_id,
                             aid
                         );
@@ -4637,67 +4648,72 @@ async fn create_session_inner_core<R: tauri::Runtime>(
             let native_await_panic = owned_replacement
                 .as_ref()
                 .and_then(|owned| owned.fixture_take_native_await_panic(false));
-            let context_native = coordinator
-                .run_blocking_seed_work({
-                    let cwd = cwd.clone();
-                    // #1172 D5: capture the FINAL fresh-versus-resume decision. `skip_auto_resume`
-                    // is a `mut` parameter of this function whose only mutation is the #756 mirror
-                    // at :1470, ~500 lines above, so the value read here is final. `true` means AC
-                    // is deliberately NOT resuming: a fresh conversation begins.
-                    let start_fresh = skip_auto_resume;
-                    let target_filename = target_filename.clone();
-                    let managed_filenames = managed_filenames.clone();
-                    let container_repos = container_repos.clone();
-                    move || {
-                        #[cfg(test)]
-                        if let Some(control) = context_fixture.as_ref() { control.enter(); }
-                        // #1065 Stage F: production records the session-spawn context
-                        // read/sync and self-heal under the per-project gate (acquired
-                        // inside the blocking worker so the 10-second poll never blocks a
-                        // Tokio worker); a `#[cfg(test)]` lib build stays non-emitting.
-                        #[cfg(not(test))]
-                        let activation = Some(
-                            crate::config::seed_manifest::ManifestActivationToken::production(),
-                        );
-                        #[cfg(test)]
-                        let activation: Option<
-                            crate::config::seed_manifest::ManifestActivationToken,
-                        > = None;
-                        let context_result =
-                            crate::config::session_context::materialize_agent_context_file_with_filename_activated(
-                                &cwd,
-                                &target_filename,
-                                &managed_filenames,
-                                is_coordinator,
-                                auto_self_clear,
-                                container_repos.as_ref(),
-                                activation.as_ref(),
-                            );
-                        // #1172 - rotate the origin Agent Matrix's `memory/` for the fresh session
-                        // about to start, so it begins with a clean write target and the previous
-                        // session's memory is preserved under `memory-archive/memory_<ts>/`.
-                        //
-                        // Two gates, both load-bearing (D5):
-                        //   - `start_fresh`: a RESUME never rotates. This chokepoint also serves the
-                        //     app-startup restore path (`create_session_inner_for_restore`, :1239),
-                        //     which continues an existing conversation; emptying `memory/` under a
-                        //     resumed agent is the one outcome the user ruled out.
-                        //   - `is_ok()`: a launch that is about to roll back (:2016-2036) leaves no
-                        //     rotation behind.
-                        //
-                        // Never fails a launch: `rotate_origin_memory_at_spawn` returns `()` and every
-                        // error path inside it warns and returns.
-                        if start_fresh && context_result.is_ok() {
-                            crate::config::agent_memory::rotate_origin_memory_at_spawn(&cwd);
-                        }
-                        if let Some(effect) = context_effect {
-                            effect.complete(context_result.as_ref().map(|_| None).map_err(Clone::clone));
-                        }
-                        #[cfg(test)]
-                        if let Some(control) = context_fixture.as_ref() { control.returned(format!("{context_result:?}")); }
-                        context_result
+            let context_native = coordinator.run_blocking_seed_work({
+                let cwd = cwd.clone();
+                // #1172 D5: capture the FINAL fresh-versus-resume decision. `skip_auto_resume`
+                // is a `mut` parameter of this function whose only mutation is the #756 mirror
+                // at :1470, ~500 lines above, so the value read here is final. `true` means AC
+                // is deliberately NOT resuming: a fresh conversation begins.
+                let start_fresh = skip_auto_resume;
+                let target_filename = target_filename.clone();
+                let managed_filenames = managed_filenames.clone();
+                let container_repos = container_repos.clone();
+                move || {
+                    #[cfg(test)]
+                    if let Some(control) = context_fixture.as_ref() {
+                        control.enter();
                     }
-                });
+                    // #1065 Stage F: production records the session-spawn context
+                    // read/sync and self-heal under the per-project gate (acquired
+                    // inside the blocking worker so the 10-second poll never blocks a
+                    // Tokio worker); a `#[cfg(test)]` lib build stays non-emitting.
+                    #[cfg(not(test))]
+                    let activation =
+                        Some(crate::config::seed_manifest::ManifestActivationToken::production());
+                    #[cfg(test)]
+                    let activation: Option<
+                        crate::config::seed_manifest::ManifestActivationToken,
+                    > = None;
+                    use crate::config::session_context as ctx_file;
+                    let context_result =
+                        ctx_file::materialize_agent_context_file_with_filename_activated(
+                            &cwd,
+                            &target_filename,
+                            &managed_filenames,
+                            is_coordinator,
+                            auto_self_clear,
+                            container_repos.as_ref(),
+                            activation.as_ref(),
+                        );
+                    // #1172 - rotate the origin Agent Matrix's `memory/` for the fresh session
+                    // about to start, so it begins with a clean write target and the previous
+                    // session's memory is preserved under `memory-archive/memory_<ts>/`.
+                    //
+                    // Two gates, both load-bearing (D5):
+                    //   - `start_fresh`: a RESUME never rotates. This chokepoint also
+                    //     serves the app-startup restore path
+                    //     (`create_session_inner_for_restore`, :1239), which continues an
+                    //     existing conversation; emptying `memory/` under a resumed agent
+                    //     is the one outcome the user ruled out.
+                    //   - `is_ok()`: a launch that is about to roll back (:2016-2036)
+                    //     leaves no rotation behind.
+                    //
+                    // Never fails a launch: `rotate_origin_memory_at_spawn` returns `()`
+                    // and every error path inside it warns and returns.
+                    if start_fresh && context_result.is_ok() {
+                        crate::config::agent_memory::rotate_origin_memory_at_spawn(&cwd);
+                    }
+                    if let Some(effect) = context_effect {
+                        effect
+                            .complete(context_result.as_ref().map(|_| None).map_err(Clone::clone));
+                    }
+                    #[cfg(test)]
+                    if let Some(control) = context_fixture.as_ref() {
+                        control.returned(format!("{context_result:?}"));
+                    }
+                    context_result
+                }
+            });
             #[cfg(test)]
             let context_result =
                 crate::session::selection::await_fixture_native(context_native, native_await_panic)
@@ -5172,7 +5188,8 @@ async fn create_session_inner_core<R: tauri::Runtime>(
                 }
             } else {
                 log::warn!(
-                    "[coordinator-create] spawn failed after process launch; close markers stay cleared session={}",
+                    "[coordinator-create] spawn failed after process launch; close markers stay \
+                     cleared session={}",
                     id
                 );
             }
@@ -5253,7 +5270,8 @@ async fn create_session_inner_core<R: tauri::Runtime>(
                     loop {
                         if start.elapsed() >= max_wait {
                             log::warn!(
-                            "[session] Timeout waiting for idle before auto-title prompt injection for session {}",
+                            "[session] Timeout waiting for idle before auto-title prompt injection \
+                             for session {}",
                             session_id
                         );
                             break;
@@ -5834,7 +5852,8 @@ pub(crate) async fn attach_persisted_telegram_if_configured<R: tauri::Runtime>(
 
     if !exists {
         log::warn!(
-            "[telegram] Persisted bot '{}' for session {} no longer exists in settings; leaving bridge OFF",
+            "[telegram] Persisted bot '{}' for session {} no longer exists in settings; leaving \
+             bridge OFF",
             bot_id,
             session_id
         );
@@ -5858,7 +5877,8 @@ pub(crate) async fn attach_persisted_telegram_if_configured<R: tauri::Runtime>(
                 .await;
         } else {
             log::warn!(
-                "[telegram] Session {} already has Telegram bot '{}' attached; persisted bot '{}' will be cleared",
+                "[telegram] Session {} already has Telegram bot '{}' attached; persisted bot '{}' \
+                 will be cleared",
                 session_id,
                 info.bot_id,
                 bot_id
@@ -5917,7 +5937,8 @@ pub(crate) async fn preserve_deferred_telegram_intent_if_valid(
             .await;
     } else {
         log::warn!(
-            "[telegram] Persisted bot '{}' for deferred session '{}' no longer exists in settings; leaving bridge OFF",
+            "[telegram] Persisted bot '{}' for deferred session '{}' no longer exists in settings; \
+             leaving bridge OFF",
             bot_id,
             session_name
         );
@@ -5974,7 +5995,8 @@ pub(crate) async fn attach_local_config_telegram_if_any<R: tauri::Runtime>(
         }
         None => {
             log::warn!(
-                "[telegram] Configured bot label '{}' for session {} no longer exists in settings; leaving bridge OFF",
+                "[telegram] Configured bot label '{}' for session {} no longer exists in settings; \
+                 leaving bridge OFF",
                 bot_label,
                 session_id
             );
@@ -6350,26 +6372,73 @@ async fn commit_response_close<R: tauri::Runtime>(
         .inner()
         .clone();
     let permit = acquire_carrier_mutation_permit().await;
-    manager.with_current_carrier_snapshot(&permit, |current| {
-        let Some((member_row, coordinator_row)) = response_close_current_rows(current, &owner.registration) else { return false; };
-        if !crate::path_identity::verify_directory(std::path::Path::new(&member_row.working_directory))
-            .is_ok_and(|actual| crate::path_identity::same_object(&actual, member_route.saved_cwd()))
-            || !crate::path_identity::verify_directory(std::path::Path::new(&coordinator_row.working_directory))
-            .is_ok_and(|actual| crate::path_identity::same_object(&actual, coordinator_route.saved_cwd())) { return false; }
-        let now = std::time::Instant::now();
-        tracker.apply_settings(settings.response_close_enabled, settings.response_close_idle_seconds, now);
-        tracker.publish_manager_facts(member.clone(), true, crate::session::session::is_working(member_row), now);
-        tracker.publish_manager_facts(coordinator.clone(), false, crate::session::session::is_working(coordinator_row), now);
-        crate::config::settings::try_with_agents_layer_publication_state(&owner.registration.carrier.directory, |suppressed| {
-            if suppressed { return None; }
-            let _coordinator_guard = coordinator_authority.lock_verified(coordinator.backend, coordinator_route.saved_cwd(), coordinator_route.saved_replica()).ok()?;
-            if tracker.generation(coordinator.session_id) != Some(coordinator.generation) { return None; }
-            crate::config::sessions_persistence::with_confirmed_carrier(&permit, &owner.registration.carrier, current,
-                crate::config::sessions_persistence::CarrierCheckpointTransition::BeginClosing, |_| {
-                    member_authority.try_commit_response_close(&tracker, &owner.ticket, now).ok()
-                })
-        }).ok().flatten().is_some()
-    }).await
+    use crate::config::sessions_persistence::{
+        with_confirmed_carrier, CarrierCheckpointTransition,
+    };
+    use crate::config::settings::try_with_agents_layer_publication_state;
+    use crate::path_identity::{same_object, verify_directory};
+    use crate::session::session::is_working;
+    manager
+        .with_current_carrier_snapshot(&permit, |current| {
+            let Some((member_row, coordinator_row)) =
+                response_close_current_rows(current, &owner.registration)
+            else {
+                return false;
+            };
+            let member_cwd = Path::new(&member_row.working_directory);
+            let coordinator_cwd = Path::new(&coordinator_row.working_directory);
+            if !verify_directory(member_cwd)
+                .is_ok_and(|actual| same_object(&actual, member_route.saved_cwd()))
+                || !verify_directory(coordinator_cwd)
+                    .is_ok_and(|actual| same_object(&actual, coordinator_route.saved_cwd()))
+            {
+                return false;
+            }
+            let now = std::time::Instant::now();
+            tracker.apply_settings(
+                settings.response_close_enabled,
+                settings.response_close_idle_seconds,
+                now,
+            );
+            tracker.publish_manager_facts(member.clone(), true, is_working(member_row), now);
+            tracker.publish_manager_facts(
+                coordinator.clone(),
+                false,
+                is_working(coordinator_row),
+                now,
+            );
+            let carrier = &owner.registration.carrier;
+            try_with_agents_layer_publication_state(&carrier.directory, |suppressed| {
+                if suppressed {
+                    return None;
+                }
+                let _coordinator_guard = coordinator_authority
+                    .lock_verified(
+                        coordinator.backend,
+                        coordinator_route.saved_cwd(),
+                        coordinator_route.saved_replica(),
+                    )
+                    .ok()?;
+                if tracker.generation(coordinator.session_id) != Some(coordinator.generation) {
+                    return None;
+                }
+                with_confirmed_carrier(
+                    &permit,
+                    carrier,
+                    current,
+                    CarrierCheckpointTransition::BeginClosing,
+                    |_| {
+                        member_authority
+                            .try_commit_response_close(&tracker, &owner.ticket, now)
+                            .ok()
+                    },
+                )
+            })
+            .ok()
+            .flatten()
+            .is_some()
+        })
+        .await
 }
 
 async fn execute_response_close_core<R: tauri::Runtime>(
@@ -6447,7 +6516,12 @@ async fn execute_response_close_core<R: tauri::Runtime>(
             .unwrap_or(ResponseCloseDisposition::ReconcilePending));
     }
     if let Some(error) = kill_error {
-        log::warn!("[session] teardown reported an error after PTY loss session={} source=ResponseClose: {}", binding.member.session_id, error);
+        log::warn!(
+            "[session] teardown reported an error after PTY loss session={} \
+             source=ResponseClose: {}",
+            binding.member.session_id,
+            error
+        );
     }
     run_response_close_auxiliary(transaction, &manager, &owner).await;
     let _ = owner.seal();
@@ -6623,61 +6697,134 @@ async fn settle_response_close<R: tauri::Runtime>(
         .inner()
         .clone();
     let permit = acquire_carrier_mutation_permit().await;
-    let settled = manager.with_current_carrier_snapshot(&permit, |current| {
-        let row = current.rows.iter().find(|row| row.id == binding.member.session_id && row.token == binding.member.token
-            && row.backend_kind == SessionBackendKind::LocalProcess && !current.pending_ids.contains(&row.id))?;
-        if !crate::path_identity::verify_directory(std::path::Path::new(&row.working_directory))
-            .is_ok_and(|actual| crate::path_identity::same_object(&actual, route.saved_cwd())) { return None; }
-        let _lifecycle = authority.lock_verified(SessionBackendKind::LocalProcess, route.saved_cwd(), route.saved_replica()).ok()?;
-        if tracker.generation(row.id) != Some(binding.member.generation) { return None; }
-        let absent = !owner.backend.has_session(row.id);
-        let dormant = absent && matches!(row.status, SessionStatus::Exited(0)) && !row.was_detached && current.selection.id() != Some(row.id);
-        let live = !absent && owner.kill_failed() && !matches!(row.status, SessionStatus::Exited(_))
-            && current.versions.get(&row.id).is_some_and(|version|
-                *version >= binding.member.carrier_version && *version < u64::MAX)
-            && owner.backend.context_session_liveness(row.id) == crate::pty::context_scrape::ContextSessionLiveness::Live;
-        if !dormant && !live { return None; }
-        let detached = app.state::<DetachedSessionsState>();
-        if dormant && detached.lock().ok()?.contains(&row.id) { return None; }
-        let retired_replica = if dormant {
-            Some(crate::session::manager::CarrierPhysicalIdentity::from(route.saved_replica()?.clone()))
-        } else { None };
-        crate::config::settings::try_with_agents_layer_publication_state(&owner.registration.carrier.directory, |suppressed| {
-            if suppressed { return None; }
-            crate::config::sessions_persistence::with_confirmed_carrier(&permit, &owner.registration.carrier, current,
-                if dormant {
-                    crate::config::sessions_persistence::CarrierCheckpointTransition::FinishDormant {
+    use crate::config::sessions_persistence::{
+        with_confirmed_carrier, CarrierCheckpointTransition,
+    };
+    use crate::config::settings::try_with_agents_layer_publication_state;
+    use crate::path_identity::{same_object, verify_directory};
+    use crate::pty::context_scrape::ContextSessionLiveness;
+    use crate::pty::manager::{
+        ResponseCloseCurrentSettlement, ResponseCloseSettlementEvidence,
+        ResponseCloseSettlementOutcome,
+    };
+    use crate::session::manager::CarrierPhysicalIdentity;
+    use crate::session::session::is_working;
+    let settled = manager
+        .with_current_carrier_snapshot(&permit, |current| {
+            let row = current.rows.iter().find(|row| {
+                row.id == binding.member.session_id
+                    && row.token == binding.member.token
+                    && row.backend_kind == SessionBackendKind::LocalProcess
+                    && !current.pending_ids.contains(&row.id)
+            })?;
+            if !verify_directory(Path::new(&row.working_directory))
+                .is_ok_and(|actual| same_object(&actual, route.saved_cwd()))
+            {
+                return None;
+            }
+            let _lifecycle = authority
+                .lock_verified(
+                    SessionBackendKind::LocalProcess,
+                    route.saved_cwd(),
+                    route.saved_replica(),
+                )
+                .ok()?;
+            if tracker.generation(row.id) != Some(binding.member.generation) {
+                return None;
+            }
+            let absent = !owner.backend.has_session(row.id);
+            let dormant = absent
+                && matches!(row.status, SessionStatus::Exited(0))
+                && !row.was_detached
+                && current.selection.id() != Some(row.id);
+            let live = !absent
+                && owner.kill_failed()
+                && !matches!(row.status, SessionStatus::Exited(_))
+                && current.versions.get(&row.id).is_some_and(|version| {
+                    *version >= binding.member.carrier_version && *version < u64::MAX
+                })
+                && owner.backend.context_session_liveness(row.id) == ContextSessionLiveness::Live;
+            if !dormant && !live {
+                return None;
+            }
+            let detached = app.state::<DetachedSessionsState>();
+            if dormant && detached.lock().ok()?.contains(&row.id) {
+                return None;
+            }
+            let retired_replica = if dormant {
+                Some(CarrierPhysicalIdentity::from(
+                    route.saved_replica()?.clone(),
+                ))
+            } else {
+                None
+            };
+            let carrier = &owner.registration.carrier;
+            try_with_agents_layer_publication_state(&carrier.directory, |suppressed| {
+                if suppressed {
+                    return None;
+                }
+                let transition = if dormant {
+                    CarrierCheckpointTransition::FinishDormant {
                         generation: binding.member.generation,
                         committed_version: binding.member.carrier_version,
                         replica: retired_replica.as_ref()?,
                     }
                 } else {
-                    crate::config::sessions_persistence::CarrierCheckpointTransition::FinishClosing
-                }, |stamp| {
+                    CarrierCheckpointTransition::FinishClosing
+                };
+                with_confirmed_carrier(&permit, carrier, current, transition, |stamp| {
                     let mut identity = binding.member.clone();
                     identity.carrier_version = stamp.version;
-                    tracker.publish_manager_facts(identity, !dormant, crate::session::session::is_working(row), std::time::Instant::now());
+                    tracker.publish_manager_facts(
+                        identity,
+                        !dormant,
+                        is_working(row),
+                        std::time::Instant::now(),
+                    );
                     let outcome = if dormant {
-                        crate::pty::manager::ResponseCloseSettlementOutcome::Dormant {
-                            exact_backend_absent: true, all_effects_completed: true, retained_exited_confirmed: true, selection_settled: true,
+                        ResponseCloseSettlementOutcome::Dormant {
+                            exact_backend_absent: true,
+                            all_effects_completed: true,
+                            retained_exited_confirmed: true,
+                            selection_settled: true,
                         }
                     } else {
-                        crate::pty::manager::ResponseCloseSettlementOutcome::ReopenAfterKillFailure {
-                            terminal_kill_failure: true, all_effects_terminal: true, original_backend_alive: true, original_manager_identity_intact: true,
+                        ResponseCloseSettlementOutcome::ReopenAfterKillFailure {
+                            terminal_kill_failure: true,
+                            all_effects_terminal: true,
+                            original_backend_alive: true,
+                            original_manager_identity_intact: true,
                         }
                     };
-                    tracker.finish_response_close(&owner.ticket, crate::pty::manager::ResponseCloseSettlementEvidence {
-                        committed_binding: binding.clone(),
-                        current_settlement: crate::pty::manager::ResponseCloseCurrentSettlement {
-                            current_carrier_version: stamp.version, confirmed_carrier_version: stamp.version,
-                            checkpoint_nonce: stamp.nonce, current_checkpoint_nonce: stamp.nonce,
-                            publication_epoch: stamp.epoch, current_publication_epoch: stamp.epoch,
-                        }, outcome,
-                    }).ok()?;
-                    Some(if dormant { ResponseCloseDisposition::Dormant } else { ResponseCloseDisposition::Reopened })
+                    let current_settlement = ResponseCloseCurrentSettlement {
+                        current_carrier_version: stamp.version,
+                        confirmed_carrier_version: stamp.version,
+                        checkpoint_nonce: stamp.nonce,
+                        current_checkpoint_nonce: stamp.nonce,
+                        publication_epoch: stamp.epoch,
+                        current_publication_epoch: stamp.epoch,
+                    };
+                    tracker
+                        .finish_response_close(
+                            &owner.ticket,
+                            ResponseCloseSettlementEvidence {
+                                committed_binding: binding.clone(),
+                                current_settlement,
+                                outcome,
+                            },
+                        )
+                        .ok()?;
+                    Some(if dormant {
+                        ResponseCloseDisposition::Dormant
+                    } else {
+                        ResponseCloseDisposition::Reopened
+                    })
                 })
-        }).ok().flatten()
-    }).await;
+            })
+            .ok()
+            .flatten()
+        })
+        .await;
     drop(permit);
     if let Some(disposition) = settled {
         response_effect_owners()
@@ -6848,7 +6995,8 @@ async fn execute_destroy_transaction_common<R: tauri::Runtime>(
                     };
                     if planned.contains(&candidate.id) {
                         log::info!(
-                            "[selection] fallback candidate={} status={:?} hasPty=false detached=false excluded=true reason=plannedForDestruction",
+                            "[selection] fallback candidate={} status={:?} hasPty=false \
+                             detached=false excluded=true reason=plannedForDestruction",
                             candidate.id,
                             candidate.status
                         );
@@ -6856,7 +7004,8 @@ async fn execute_destroy_transaction_common<R: tauri::Runtime>(
                     }
                     if matches!(candidate.status, SessionStatus::Exited(_)) {
                         log::info!(
-                            "[selection] fallback candidate={} status={:?} hasPty=false detached=false excluded=false reason=exited",
+                            "[selection] fallback candidate={} status={:?} hasPty=false \
+                             detached=false excluded=false reason=exited",
                             candidate.id,
                             candidate.status
                         );
@@ -6865,7 +7014,8 @@ async fn execute_destroy_transaction_common<R: tauri::Runtime>(
                     let runtime = transaction.runtime_snapshot(candidate.id);
                     if runtime.detached {
                         log::info!(
-                            "[selection] fallback candidate={} status={:?} hasPty={} detached=true excluded=false reason=detached",
+                            "[selection] fallback candidate={} status={:?} hasPty={} detached=true \
+                             excluded=false reason=detached",
                             candidate.id,
                             candidate.status,
                             runtime.has_pty
@@ -6874,7 +7024,8 @@ async fn execute_destroy_transaction_common<R: tauri::Runtime>(
                     }
                     if !runtime.has_pty {
                         log::info!(
-                            "[selection] fallback candidate={} status={:?} hasPty=false detached=false excluded=false reason=missingPty",
+                            "[selection] fallback candidate={} status={:?} hasPty=false \
+                             detached=false excluded=false reason=missingPty",
                             candidate.id,
                             candidate.status
                         );
@@ -7262,7 +7413,8 @@ pub(crate) fn matched_selection(
             if plain_shell_selection {
                 // Nothing else to launch: the session already is a plain shell.
                 log::warn!(
-                    "[agent-match] ignoring unresolvable currentCodingAgent '{}' in '{}'; restarting the saved shell",
+                    "[agent-match] ignoring unresolvable currentCodingAgent '{}' in '{}'; \
+                     restarting the saved shell",
                     reference,
                     cwd
                 );
@@ -7855,7 +8007,8 @@ async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
         // exempts by rule 1.
         crate::config::sessions_persistence::enforce_creation_gate(app, &cwd, enforcement).await?;
 
-        // 2. Strip auto-injected args before restart so the new session starts from the saved recipe.
+        // 2. Strip auto-injected args before restart so the new session starts from the saved
+        // recipe.
         let clean_args =
             crate::config::sessions_persistence::strip_auto_injected_args(&shell, &shell_args);
 
@@ -8402,7 +8555,11 @@ pub(crate) fn resolve_root_agent_command(
             path,
         ));
     }
-    Err("No resolvable coding agent is configured for the Root Agent. Configure a coding agent before launching the Root Agent.".to_string())
+    Err(
+        "No resolvable coding agent is configured for the Root Agent. \
+         Configure a coding agent before launching the Root Agent."
+            .to_string(),
+    )
 }
 
 fn resolve_agent_label(agent_id: &str, settings: &AppSettings) -> Option<String> {
@@ -8527,7 +8684,8 @@ fn resolve_actual_agent(
                 Ok(_) => {}
                 Err(e) => {
                     log::debug!(
-                        "[session] Requested agent_id='{}' command did not normalize during metadata resolution: {}",
+                        "[session] Requested agent_id='{}' command did not normalize during \
+                         metadata resolution: {}",
                         agent_id,
                         e
                     );
@@ -8550,7 +8708,8 @@ fn resolve_actual_agent(
             }
             Some(detected_id) => {
                 log::warn!(
-                    "[session] Requested agent_id='{}' did not match final shell-resolved agent '{}'; storing resolved agent instead",
+                    "[session] Requested agent_id='{}' did not match final shell-resolved agent \
+                     '{}'; storing resolved agent instead",
                     agent_id,
                     detected_id
                 );
@@ -8558,7 +8717,8 @@ fn resolve_actual_agent(
             }
             None => {
                 log::warn!(
-                    "[session] Requested agent_id='{}' did not validate against final launched shell; clearing actual agent metadata",
+                    "[session] Requested agent_id='{}' did not validate against final launched \
+                     shell; clearing actual agent metadata",
                     agent_id
                 );
                 return (None, None);
@@ -8582,19 +8742,19 @@ fn resolve_agent_from_shell(
     cmd_basenames.extend(shell_args.iter().map(|arg| executable_basename(arg)));
 
     for agent in &settings.agents {
-        let normalized = match crate::config::agent_command::normalize_legacy_agent_command(
-            &agent.command,
-        ) {
-            Ok(cmd) => cmd,
-            Err(e) => {
-                log::debug!(
-                    "[session] Skipping agent '{}' during shell auto-detection because its command is invalid: {}",
+        let normalized =
+            match crate::config::agent_command::normalize_legacy_agent_command(&agent.command) {
+                Ok(cmd) => cmd,
+                Err(e) => {
+                    log::debug!(
+                    "[session] Skipping agent '{}' during shell auto-detection because its command \
+                     is invalid: {}",
                     agent.id,
                     e
                 );
-                continue;
-            }
-        };
+                    continue;
+                }
+            };
         let agent_basename = executable_basename(&normalized.shell);
         if !agent_basename.is_empty() && cmd_basenames.contains(&agent_basename) {
             log::info!(
@@ -9708,7 +9868,9 @@ async fn execute_root_transaction_in_context<R: tauri::Runtime>(
                         activate_after: request.select_after,
                         intent: restart_intent,
                         communication_override: None,
-                        enforcement: crate::config::sessions_persistence::default_creation_gate_enforcement(),
+                        enforcement:
+                            crate::config::sessions_persistence::default_creation_gate_enforcement(
+                            ),
                     },
                     context,
                 )
@@ -10135,7 +10297,8 @@ pub(crate) async fn run_restart_resume(app: &AppHandle, mut targets: Vec<Restart
 async fn inject_restart_resume_prompt(app: &AppHandle, target: &RestartResumeTarget) {
     if let Err(error) = crate::pty::inject::validate_pty_input_text(&target.prompt) {
         log::warn!(
-            "[restart-resume] '{}' prompt rejected by the PTY text validator ({}); nothing injected",
+            "[restart-resume] '{}' prompt rejected by the PTY text validator ({}); nothing \
+             injected",
             target.name,
             error
         );

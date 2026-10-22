@@ -885,12 +885,15 @@ async fn derived_agent_id_binding_wake_restore_preserves_birth_seed_and_origin()
         crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
     let birth = crate::session::manager::CodingAgentBinding {
         id: Uuid::new_v4().to_string(),
-        seed: Some(
-            serde_json::json!({"identityRevision":format!("r1:0:{}", "a".repeat(64)),"originalAgentId":"claude"}),
-        ),
-        origin: Some(
-            serde_json::json!({"sessionsPath":"C:/original-sessions.json","rawFileSHA256":"physical-original","originalOrdinal":5}),
-        ),
+        seed: Some(serde_json::json!({
+            "identityRevision": format!("r1:0:{}", "a".repeat(64)),
+            "originalAgentId": "claude"
+        })),
+        origin: Some(serde_json::json!({
+            "sessionsPath": "C:/original-sessions.json",
+            "rawFileSHA256": "physical-original",
+            "originalOrdinal": 5
+        })),
     };
     let info = super::create_session_inner_for_restore(
         &transaction,
@@ -2386,10 +2389,13 @@ fn strict_target_fixture() -> (tempfile::TempDir, String, String) {
         std::fs::create_dir_all(directory).unwrap();
     }
     std::fs::write(
-            team.join("config.json"),
-            r#"{"agents":["../_agent_dev-one","../_agent_dev-two","../_agent_lead"],"coordinator":"../_agent_lead"}"#,
-        )
-        .unwrap();
+        team.join("config.json"),
+        concat!(
+            r#"{"agents":["../_agent_dev-one","../_agent_dev-two","../_agent_lead"],"#,
+            r#""coordinator":"../_agent_lead"}"#
+        ),
+    )
+    .unwrap();
     for (replica, identity) in [
         (&coordinator, "../../_agent_lead"),
         (&first, "../../_agent_dev-one"),
@@ -2783,9 +2789,10 @@ async fn before_project_gate_barrier_exposes_pending_create_to_deletion_snapshot
             .await
             .unwrap();
             assert!(
-                    workdirs.iter().any(|dir| dir == &cwd_str),
-                    "the deletion-only snapshot must include the pending create workdir; got {workdirs:?}"
-                );
+                workdirs.iter().any(|dir| dir == &cwd_str),
+                "the deletion-only snapshot must include the pending create workdir; got \
+                     {workdirs:?}"
+            );
         }
     };
 
@@ -4951,7 +4958,10 @@ fn create_session_inner_keeps_both_archive_activation_gates() {
         .next()
         .expect("production session source");
     let normalized = production.split_whitespace().collect::<String>();
-    let gate_call = "enforce_owned_unarchived_for_spawn(app,&cwd,&session_label,&create_owner,&create_manager,lifecycle_domain,inline_transaction,)";
+    let gate_call = concat!(
+        "enforce_owned_unarchived_for_spawn(app,&cwd,&session_label,&create_owner,",
+        "&create_manager,lifecycle_domain,inline_transaction,)"
+    );
     let count = normalized.matches(gate_call).count();
 
     assert_eq!(
@@ -5011,7 +5021,10 @@ fn rotate_origin_memory_at_spawn_has_one_gated_call_in_session_rs() {
         .next()
         .expect("production session source");
     let normalized = production.split_whitespace().collect::<String>();
-    let gated_call = "ifstart_fresh&&context_result.is_ok(){crate::config::agent_memory::rotate_origin_memory_at_spawn(&cwd);}";
+    let gated_call = concat!(
+        "ifstart_fresh&&context_result.is_ok(){",
+        "crate::config::agent_memory::rotate_origin_memory_at_spawn(&cwd);}"
+    );
 
     assert_eq!(
         normalized.matches(gated_call).count(),
@@ -5311,8 +5324,11 @@ fn create_session_inner_marks_spawning_until_spawn_returns() {
         .expect("production session source");
     let normalized = production.split_whitespace().collect::<String>();
     let first_gate = normalized
-            .find("enforce_owned_unarchived_for_spawn(app,&cwd,&session_label,&create_owner,&create_manager,lifecycle_domain,inline_transaction,).await?;")
-            .expect("first archive gate");
+        .find(concat!(
+            "enforce_owned_unarchived_for_spawn(app,&cwd,&session_label,&create_owner,",
+            "&create_manager,lifecycle_domain,inline_transaction,).await?;"
+        ))
+        .expect("first archive gate");
     let mark = normalized
         .find("letspawn_mark={")
         .expect("spawn mark immediately before pending-session creation");
@@ -7372,10 +7388,11 @@ fn resolve_claude_projects_dir_preserves_unknown_envvar_literal() {
     // false at the call site, but parse must succeed (return Some).
     let tmp = tempfile::tempdir().unwrap();
     let wrapper = write_wrapper(
-            tmp.path(),
-            "claude-mb.cmd",
-            "@echo off\r\nset CLAUDE_CONFIG_DIR=%AC_TEST_186_DEFINITELY_UNSET%\\\\.claude-mb\r\nclaude %*\r\n",
-        );
+        tmp.path(),
+        "claude-mb.cmd",
+        "@echo off\r\nset \
+             CLAUDE_CONFIG_DIR=%AC_TEST_186_DEFINITELY_UNSET%\\\\.claude-mb\r\nclaude %*\r\n",
+    );
     let resolved = super::resolve_claude_projects_dir(wrapper.to_str().unwrap(), &[], "C:\\x");
     let resolved = resolved.expect("parser must return Some even when var is unset");
     let s = resolved.to_string_lossy();
@@ -9775,9 +9792,11 @@ fn restart_resume_prompt_for_truth_table() {
                     Some(".")
                 };
                 assert_eq!(
-                        got, expected,
-                        "is_coordinator={is_coordinator} start_fresh_on_restore={start_fresh_on_restore} persisted_working={persisted_working}"
-                    );
+                    got, expected,
+                    "is_coordinator={is_coordinator} \
+                         start_fresh_on_restore={start_fresh_on_restore} \
+                         persisted_working={persisted_working}"
+                );
             }
         }
     }
@@ -10628,7 +10647,10 @@ async fn a_whitespace_current_coding_agent_is_absent() {
         Some("codex"),
     );
     assert!(
-        matches!(selection, super::MatchedSelection::Agent { ref agent_id, .. } if agent_id == "codex"),
+        matches!(
+            selection,
+            super::MatchedSelection::Agent { ref agent_id, .. } if agent_id == "codex"
+        ),
         "{selection:?}"
     );
     assert_saved_shell_restart("   ").await;
@@ -10642,7 +10664,10 @@ fn an_empty_current_coding_agent_is_absent_even_with_a_stored_agent() {
         Some("codex"),
     );
     assert!(
-        matches!(selection, super::MatchedSelection::Agent { ref agent_id, tier: None, .. } if agent_id == "codex"),
+        matches!(
+            selection,
+            super::MatchedSelection::Agent { ref agent_id, tier: None, .. } if agent_id == "codex"
+        ),
         "{selection:?}"
     );
 }
@@ -11003,14 +11028,16 @@ fn create_session_refuses_under_the_mark() {
     let temp = tempfile::tempdir().unwrap();
     let settings_path = temp.path().join(SETTINGS_FILE_NAME);
     std::fs::write(
-            &settings_path,
-            r##"{
+        &settings_path,
+        r##"{
                 "defaultShell": "test-shell",
                 "defaultShellArgs": [],
-                "agents": [{"id":"claude","label":"Claude Code","command":"claude","color":"#d97706"}]
+                "agents": [
+                    {"id":"claude","label":"Claude Code","command":"claude","color":"#d97706"}
+                ]
             }"##,
-        )
-        .unwrap();
+    )
+    .unwrap();
     let sidecar = temp.path().join(AGENTS_INSTANCE_FILE_NAME);
     std::fs::write(&sidecar, "{ not json").unwrap();
     let cfg = crate::config::settings::load_settings_from_path(&settings_path);
@@ -11054,7 +11081,10 @@ fn matched_selection_takes_the_descriptor_from_the_state_file() {
         None,
     );
     assert!(
-        matches!(&selection, super::MatchedSelection::Agent { agent_id, .. } if agent_id == "via-new"),
+        matches!(
+            &selection,
+            super::MatchedSelection::Agent { agent_id, .. } if agent_id == "via-new"
+        ),
         "{selection:?}"
     );
 }
@@ -11090,7 +11120,10 @@ fn inner_matched_selection_loads_once() {
             "recorded {loads:?}, expected exactly {expected:?}"
         );
         assert!(
-            matches!(&selection, super::MatchedSelection::Agent { agent_id, .. } if agent_id == want),
+            matches!(
+                &selection,
+                super::MatchedSelection::Agent { agent_id, .. } if agent_id == want
+            ),
             "want {want}: {selection:?}"
         );
     };
