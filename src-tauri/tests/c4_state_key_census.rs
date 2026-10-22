@@ -210,7 +210,7 @@ fn assert_frozen(id: &str, hits: &[Hit], pin: &Pin) {
 #[test]
 fn the_inventory_is_the_certified_file_set() {
     let sources = rust_sources();
-    assert_eq!(sources.len(), 241, "inventory count");
+    assert_eq!(sources.len(), 242, "inventory count");
     for (path, text) in &sources {
         assert!(path.starts_with("src-tauri/src/"), "path form: {path}");
         assert!(!path.contains('\\'), "path separator: {path}");
@@ -223,7 +223,7 @@ fn p1_is_frozen() {
     let pin = Pin {
         total: 124,
         distinct: 116,
-        sha256: "DF8A26FDF107A1810C1A8EF519EA4B71E4269A536648616FC4A22319D92C49DC",
+        sha256: "6B5DF655C03B778D55E7B1507FDBB7F7B1A2387F1FC1D0E3CDCFAF49C5997B0E",
         per_file: &[
             ("cli/list_peers.rs", 1),
             ("commands/ac_discovery.rs", 15),
@@ -237,7 +237,7 @@ fn p1_is_frozen() {
             ("config/root_agent.rs", 23),
             ("config/settings.rs", 1),
             ("loops/delivery.rs", 4),
-            ("phone/mailbox.rs", 8),
+            ("phone/mailbox/tests.rs", 8),
         ],
     };
     assert_frozen("P1", &line_census(QUOTED_KEY, Scope::NonOwners), &pin);
@@ -259,8 +259,8 @@ fn p3_is_frozen() {
     let pin = Pin {
         total: 2,
         distinct: 2,
-        sha256: "13BFB0417783751C46CBED5963ABA6012FA2E55B8D83841A8FC030AD8DB15D74",
-        per_file: &[("phone/mailbox.rs", 2)],
+        sha256: "0A7A491674AFC1EAA5CE27C4EEF9B6F2741B5C5F0C453678CB2587347DB18836",
+        per_file: &[("phone/mailbox.rs", 1), ("phone/mailbox/tests.rs", 1)],
     };
     assert_frozen("P3", &line_census(P3, Scope::All), &pin);
 }
@@ -270,11 +270,12 @@ fn p4_is_frozen() {
     let pin = Pin {
         total: 14,
         distinct: 12,
-        sha256: "F7D990ECFAB6053D12E954AB4E0ED7E57F3B713FDDD6A6299078F40B92A324CE",
+        sha256: "1573944AC698A282CBF3E268555D22901554AD2C84888E04B9217F0D04E6AA8E",
         per_file: &[
             ("cli/list_peers.rs", 4),
             ("config/agent_config.rs", 5),
-            ("phone/mailbox.rs", 5),
+            ("phone/mailbox.rs", 3),
+            ("phone/mailbox/tests.rs", 2),
         ],
     };
     assert_frozen("P4", &line_census(P4, Scope::All), &pin);
@@ -285,12 +286,13 @@ fn p5_is_frozen() {
     let pin = Pin {
         total: 20,
         distinct: 18,
-        sha256: "75087424486AC6B16AA2C091F654BCB76535CD285F089790C270B3035BE9C406",
+        sha256: "B59252D2AFDF25AD6FD80DFFDEFE8E67C64D6ACB8EB48071045BB076F8531AF8",
         per_file: &[
             ("cli/list_peers.rs", 4),
             ("config/agent_config.rs", 8),
             ("loops/delivery.rs", 1),
-            ("phone/mailbox.rs", 7),
+            ("phone/mailbox.rs", 4),
+            ("phone/mailbox/tests.rs", 3),
         ],
     };
     assert_frozen("P5", &whole_file_census(), &pin);
@@ -301,7 +303,7 @@ fn p6_is_frozen() {
     let pin = Pin {
         total: 48,
         distinct: 41,
-        sha256: "88461BC5FA6CE0D675ED21B4966F90D7A308BDF1A1330955A1F13CF55996F19C",
+        sha256: "50FE56F947EBA4265C6AD94C97E6B5F718D67ED06476F7B94A2239DADA075EBC",
         per_file: &[
             ("commands/ac_discovery.rs", 1),
             ("commands/config.rs", 2),
@@ -316,7 +318,8 @@ fn p6_is_frozen() {
             ("config/replica_identity.rs", 3),
             ("config/root_agent.rs", 2),
             ("config/settings.rs", 1),
-            ("phone/mailbox.rs", 4),
+            ("phone/mailbox.rs", 1),
+            ("phone/mailbox/tests.rs", 3),
         ],
     };
     assert_frozen("P6", &line_census(P6, Scope::All), &pin);

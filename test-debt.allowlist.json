@@ -58,7 +58,7 @@
       "resolution": "Replace the note with an executable attach and detach persistence regression test."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::tests::close_session_rejects_direct_outbox_write_with_unqualified_target",
+      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::close_session_rejects_direct_outbox_write_with_unqualified_target",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -66,7 +66,7 @@
       "resolution": "Convert to an end-to-end mailbox test when the fixture exists."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::tests::close_session_rejects_direct_outbox_write_with_unqualified_target",
+      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::close_session_rejects_direct_outbox_write_with_unqualified_target",
       "category": "placeholder-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -74,7 +74,7 @@
       "resolution": "Replace with executable full-pipeline close-session coverage."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::tests::deliver_wake_rejects_unqualified_to_with_cross_project_matches",
+      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::deliver_wake_rejects_unqualified_to_with_cross_project_matches",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -82,7 +82,7 @@
       "resolution": "Convert to an end-to-end mailbox wake routing test when the fixture exists."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::tests::deliver_wake_rejects_unqualified_to_with_cross_project_matches",
+      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::deliver_wake_rejects_unqualified_to_with_cross_project_matches",
       "category": "placeholder-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -90,7 +90,7 @@
       "resolution": "Replace with executable full-pipeline wake routing coverage."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::tests::resolve_repo_path_wg_fallback_honors_target_project",
+      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::resolve_repo_path_wg_fallback_honors_target_project",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -98,7 +98,7 @@
       "resolution": "Convert to an executable integration test when the AppHandle filesystem fixture exists."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::tests::resolve_repo_path_wg_fallback_honors_target_project",
+      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::resolve_repo_path_wg_fallback_honors_target_project",
       "category": "placeholder-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -106,7 +106,7 @@
       "resolution": "Replace with executable target-project fallback coverage."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::tests::resolve_repo_path_returns_none_on_ambiguous_unqualified",
+      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::resolve_repo_path_returns_none_on_ambiguous_unqualified",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -114,7 +114,7 @@
       "resolution": "Convert to an executable integration test when the mailbox fixture exists."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::tests::resolve_repo_path_returns_none_on_ambiguous_unqualified",
+      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::resolve_repo_path_returns_none_on_ambiguous_unqualified",
       "category": "placeholder-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -122,7 +122,7 @@
       "resolution": "Replace with executable ambiguous target coverage."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::tests::deliver_wake_spawned_session_name_has_no_colon",
+      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::deliver_wake_spawned_session_name_has_no_colon",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -130,7 +130,7 @@
       "resolution": "Convert to an executable integration test when the mailbox fixture exists."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::tests::deliver_wake_spawned_session_name_has_no_colon",
+      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::deliver_wake_spawned_session_name_has_no_colon",
       "category": "placeholder-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -138,7 +138,7 @@
       "resolution": "Replace with executable spawned-session naming coverage."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::tests::resolve_to_target_round_trip_integration",
+      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::resolve_to_target_round_trip_integration",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -146,7 +146,7 @@
       "resolution": "Convert to an executable full round-trip integration test when the fixture exists."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::tests::resolve_to_target_round_trip_integration",
+      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::resolve_to_target_round_trip_integration",
       "category": "placeholder-rust-test",
       "owner": "dev-rust",
       "issue": 228,
