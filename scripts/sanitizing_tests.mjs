@@ -426,6 +426,12 @@ test('05 grouped globs, test/path cfg_attr, async aliases, integration and visib
   assert.equal(layoutGate(trees({}, {[rustRoot+'tests/x.rs']:'#[test] fn f() {}'})).exit,0);
   assert.equal(layoutGate(trees({}, {'src-tauri/tests/it.rs':'#[test] fn f() {}'})).exit,0);
   control(layoutGate,'glob','tests.rs','use super::*;','use super::*; use x::*;');
+  // C6: foo/tests/<noun>.rs is part of foo/tests.rs; foo/x_tests.rs is not.
+  const c6=layoutGate(trees({}, {[rustRoot+'foo/tests/x.rs']:'use super::*; #[test] fn f() {}'}));
+  assert.equal(c6.exit,0,JSON.stringify(c6));
+  control(layoutGate,'glob','foo/tests/x.rs','use super::*;','use super::*; use x::*;');
+  control(layoutGate,'glob','foo/x_tests.rs','fn f() {}','use super::*;');
+  control(layoutGate,'test_files','foo/x_tests.rs','fn f() {}','#[test] fn f() {}');
   assert.equal(layoutGate(trees({}, {[rustRoot+'lib.rs']:'pub mod a; pub(crate) mod b;'})).exit,0);
   const r=layoutGate(trees({}, {[rustRoot+'x.rs']:'use a::{b::*,c::*,d::{e::*,f}};'}));
   assert.equal(r.totals[1].glob,3);
