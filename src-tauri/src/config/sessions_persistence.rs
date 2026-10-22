@@ -407,7 +407,8 @@ fn note_orphan_cwd(cwd: &str) -> bool {
         #[cfg(test)]
         bump_orphan_warned();
         log::warn!(
-            "[sessions] Dropping orphan persisted session at '{}' (outside current projectPaths); one WARN per orphan per run",
+            "[sessions] Dropping orphan persisted session at '{}' (outside current projectPaths); \
+             one WARN per orphan per run",
             cwd
         );
         true
@@ -674,7 +675,8 @@ pub(crate) fn rename_with_retry(tmp: &Path, dst: &Path) -> Result<(), (String, R
             Ok(()) => {
                 if attempt > 0 {
                     log::info!(
-                        "[sessions] rename succeeded after retry — op_id={} pid={} instance={} attempt={}/{} duration={:?}",
+                        "[sessions] rename succeeded after retry — op_id={} pid={} instance={} \
+                         attempt={}/{} duration={:?}",
                         op_id,
                         pid,
                         instance_id,
@@ -687,7 +689,8 @@ pub(crate) fn rename_with_retry(tmp: &Path, dst: &Path) -> Result<(), (String, R
             }
             Err(e) => {
                 log::debug!(
-                    "[sessions] rename attempt {}/{} failed — op_id={} pid={} os_error={:?} kind={:?}",
+                    "[sessions] rename attempt {}/{} failed — op_id={} pid={} os_error={:?} \
+                     kind={:?}",
                     attempt + 1,
                     RENAME_ATTEMPTS,
                     op_id,
@@ -1213,7 +1216,8 @@ fn rotate_orphan_archive(archive_path: &Path) {
             let to = numbered(i + 1);
             if let Err(e) = std::fs::rename(&from, &to) {
                 log::error!(
-                    "[sessions] orphan archive rotation: failed to rename {} to {}: {} (continuing)",
+                    "[sessions] orphan archive rotation: failed to rename {} to {}: {} \
+                     (continuing)",
                     from.display(),
                     to.display(),
                     e
@@ -1224,7 +1228,8 @@ fn rotate_orphan_archive(archive_path: &Path) {
 
     if let Err(e) = std::fs::rename(archive_path, numbered(1)) {
         log::error!(
-            "[sessions] orphan archive rotation: failed to rename {} to {}: {} (active file stays in place)",
+            "[sessions] orphan archive rotation: failed to rename {} to {}: {} (active file stays \
+             in place)",
             archive_path.display(),
             numbered(1).display(),
             e
@@ -1967,8 +1972,11 @@ fn load_sessions_from_path_with_settings(
                     match (ps.git_branch_source.take(), ps.git_branch_prefix.take()) {
                         (Some(source), Some(prefix)) if prefix != "multi-repo" => {
                             log::info!(
-                                "[sessions] Upgrading legacy single-repo session '{}' → git_repos[1]={{label:{}, source:{}}}",
-                                ps.name, prefix, source
+                                "[sessions] Upgrading legacy single-repo session '{}' → \
+                                 git_repos[1]={{label:{}, source:{}}}",
+                                ps.name,
+                                prefix,
+                                source
                             );
                             ps.git_repos.push(crate::session::session::SessionRepo {
                                 label: prefix,
@@ -1989,8 +1997,10 @@ fn load_sessions_from_path_with_settings(
                             let label =
                                 dir.strip_prefix("repo-").map(str::to_string).unwrap_or(dir);
                             log::warn!(
-                                "[sessions] Upgrading legacy session '{}' with source but no prefix; synthesized label '{}'",
-                                ps.name, label
+                                "[sessions] Upgrading legacy session '{}' with source but no \
+                                 prefix; synthesized label '{}'",
+                                ps.name,
+                                label
                             );
                             ps.git_repos.push(crate::session::session::SessionRepo {
                                 label,
@@ -2001,21 +2011,25 @@ fn load_sessions_from_path_with_settings(
                         }
                         (None, Some(prefix)) if prefix == "multi-repo" => {
                             log::info!(
-                                "[sessions] Legacy multi-repo session '{}' → git_repos left empty; DiscoveryBranchWatcher will backfill",
+                                "[sessions] Legacy multi-repo session '{}' → git_repos left empty; \
+                                 DiscoveryBranchWatcher will backfill",
                                 ps.name
                             );
                         }
                         (None, Some(other)) => {
                             log::warn!(
-                                "[sessions] Legacy session '{}' has unknown prefix '{}' without source; dropping",
-                                ps.name, other
+                                "[sessions] Legacy session '{}' has unknown prefix '{}' without \
+                                 source; dropping",
+                                ps.name,
+                                other
                             );
                         }
                         (None, None) => {}
                         (Some(_), Some(_)) => {
                             // prefix == "multi-repo" with a source — ambiguous legacy shape.
                             log::warn!(
-                                "[sessions] Legacy session '{}' had source + multi-repo prefix; leaving git_repos empty for discovery backfill",
+                                "[sessions] Legacy session '{}' had source + multi-repo prefix; \
+                                 leaving git_repos empty for discovery backfill",
                                 ps.name
                             );
                         }
@@ -2743,7 +2757,8 @@ pub(crate) fn retained_carrier_for_replacement(
         || !matches!(scope,
             CreateCarrierScope::Protected { session_id: actual, token, version: actual_version,
                 epoch, preparing_owner: None, .. }
-            if actual == session_id && token == row.token && actual_version == version && epoch == checkpoint.epoch)
+            if actual == session_id && token == row.token && actual_version == version
+                && epoch == checkpoint.epoch)
     {
         return None;
     }
@@ -2776,7 +2791,9 @@ pub(crate) fn manual_discard_carrier(
         .find(|row| row.id == session_id && !current.pending_ids.contains(&row.id))?;
     let version = *current.versions.get(&session_id)?;
     if !matches!(classify_lifecycle_carrier_scope(permit, Some(target), canonical_source),
-        CreateCarrierScope::Protected { session_id: id, token, version: actual, preparing_owner: None, .. }
+        CreateCarrierScope::Protected {
+            session_id: id, token, version: actual, preparing_owner: None, ..
+        }
         if id == session_id && token == row.token && actual == version)
     {
         return None;
@@ -2953,7 +2970,8 @@ pub(crate) fn renew_carrier_replacement(
     if !matches!(classify_create_carrier_scope(permit, &carrier.target,
         Path::new(&row.working_directory)), CreateCarrierScope::Protected {
             session_id, token, version: actual, preparing_owner: Some(owner), ..
-        } if session_id == row.id && token == row.token && actual == version && owner == owner_nonce)
+        } if session_id == row.id && token == row.token && actual == version
+            && owner == owner_nonce)
     {
         return None;
     }
@@ -3011,8 +3029,11 @@ pub(crate) fn current_protected_carrier(
     if version == u64::MAX {
         return None;
     }
-    if !matches!(classify_create_carrier_scope(permit, &carrier.target, Path::new(&row.working_directory)),
-        CreateCarrierScope::Protected { session_id, token, version: actual, preparing_owner: None, .. }
+    if !matches!(classify_create_carrier_scope(permit, &carrier.target,
+        Path::new(&row.working_directory)),
+        CreateCarrierScope::Protected {
+            session_id, token, version: actual, preparing_owner: None, ..
+        }
         if session_id == row.id && token == row.token && actual == version)
     {
         return None;
@@ -3795,7 +3816,16 @@ async fn save_file_snapshot_guarded(
             }
             SettledRenameAttempt::Recapture => return GuardedSaveAttempt::Recapture,
             SettledRenameAttempt::Failed(error) => {
-                log::debug!("[sessions] rename attempt {}/{} failed — op_id={} pid={} os_error={:?} kind={:?}", attempt + 1, RENAME_ATTEMPTS, write.op_id, write.pid, error.raw_os_error(), error.kind());
+                log::debug!(
+                    "[sessions] rename attempt {}/{} failed — op_id={} pid={} os_error={:?} \
+                     kind={:?}",
+                    attempt + 1,
+                    RENAME_ATTEMPTS,
+                    write.op_id,
+                    write.pid,
+                    error.raw_os_error(),
+                    error.kind()
+                );
                 if attempt + 1 == RENAME_ATTEMPTS {
                     return GuardedSaveAttempt::Completed(Err(write.terminal_error(&error)));
                 }
@@ -3961,9 +3991,14 @@ async fn save_current_snapshot_guarded(
             SettledRenameAttempt::Recapture => return GuardedSaveAttempt::Recapture,
             SettledRenameAttempt::Failed(error) => {
                 log::debug!(
-                    "[sessions] rename attempt {}/{} failed — op_id={} pid={} os_error={:?} kind={:?}",
-                    attempt + 1, RENAME_ATTEMPTS, write.op_id, write.pid,
-                    error.raw_os_error(), error.kind(),
+                    "[sessions] rename attempt {}/{} failed — op_id={} pid={} os_error={:?} \
+                     kind={:?}",
+                    attempt + 1,
+                    RENAME_ATTEMPTS,
+                    write.op_id,
+                    write.pid,
+                    error.raw_os_error(),
+                    error.kind(),
                 );
                 if attempt + 1 == RENAME_ATTEMPTS {
                     return GuardedSaveAttempt::Completed(Err(write.terminal_error(&error)));
@@ -4575,7 +4610,8 @@ fn deduplicate_preserving_affected(
 /// a `--continue` token is user-authored and has no injection provenance.
 ///
 /// Handles two injection modes:
-/// - **Direct-exec**: args are separate tokens like `["--continue", ...]` or `["resume", "--last", ...]`
+/// - **Direct-exec**: args are separate tokens like `["--continue", ...]` or
+///   `["resume", "--last", ...]`
 /// - **cmd.exe wrapper**: tokens may be separate args (`["/C", "codex", "resume", "--last"]`)
 ///   or embedded in a single arg string (`["/K", "git pull && codex resume --last"]`)
 pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<String> {
@@ -5126,7 +5162,10 @@ async fn persist_current_state_to_dir_for_project_paths_result_core(
                 if let Err(error) = prompt_checkpoint {
                     // The sessions rename already published a real carrier. A
                     // sidecar error cannot replace its receipt or reconciliation.
-                    log::warn!("[last-prompt] initial carrier checkpoint retained after sidecar failure: {error}");
+                    log::warn!(
+                        "[last-prompt] initial carrier checkpoint retained after sidecar \
+                         failure: {error}"
+                    );
                 }
                 drop(carrier_permit);
                 return Ok(wait_initial_publication(dir, initial).await);

@@ -41,7 +41,8 @@ static ORPHAN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(test)]
 #[expect(
     clippy::too_many_arguments,
-    reason = "P05 checks the same current snapshot and separately owned historical/physical facts without recapture."
+    reason = "P05 checks the same current snapshot and separately owned historical/physical facts \
+              without recapture."
 )]
 fn assert_retired_replacement_current_facts(
     permit: &crate::session::manager::CarrierMutationPermit,
@@ -237,7 +238,8 @@ fn assert_retired_replacement_preparing_owner(
     );
     assert!(
         matches!(super::classify_create_carrier_scope(permit, target, cwd),
-        super::CreateCarrierScope::Protected { preparing_owner: Some(actual), .. } if actual == owner)
+        super::CreateCarrierScope::Protected { preparing_owner: Some(actual), .. }
+            if actual == owner)
     );
     assert!(
         !super::retire_carrier_for_discard(permit, row.id),
@@ -303,22 +305,22 @@ async fn unavailable_project_state_refuses_creation_and_blocked_menu_mutation() 
         assert!(temp.path().is_absolute());
         let stdout_path = temp.path().join("child-stdout.log");
         let stderr_path = temp.path().join("child-stderr.log");
-        let mut child = std::process::Command::new(
-            std::env::current_exe().expect("compiled test executable"),
-        )
-        .args([
-            "--exact",
-            "config::sessions_persistence::tests::unavailable_project_state_refuses_creation_and_blocked_menu_mutation",
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .env("AGENTSCOMMANDER_CONFIG_DIR", temp.path())
-        .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", temp.path())
-        .env(CHILD_MARKER, temp.path())
-        .stdout(std::fs::File::create(&stdout_path).expect("child stdout file"))
-        .stderr(std::fs::File::create(&stderr_path).expect("child stderr file"))
-        .spawn()
-        .expect("spawn isolated F1 child");
+        let mut child =
+            std::process::Command::new(std::env::current_exe().expect("compiled test executable"))
+                .args([
+                    "--exact",
+                    "config::sessions_persistence::tests::\
+             unavailable_project_state_refuses_creation_and_blocked_menu_mutation",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("AGENTSCOMMANDER_CONFIG_DIR", temp.path())
+                .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", temp.path())
+                .env(CHILD_MARKER, temp.path())
+                .stdout(std::fs::File::create(&stdout_path).expect("child stdout file"))
+                .stderr(std::fs::File::create(&stderr_path).expect("child stderr file"))
+                .spawn()
+                .expect("spawn isolated F1 child");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let result = loop {
             match child.try_wait() {

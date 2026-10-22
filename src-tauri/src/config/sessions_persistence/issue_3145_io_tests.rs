@@ -5,7 +5,11 @@ async fn issue_3145_legacy_recipe_untouched_and_missing_directory_gc() {
     let directory = tempfile::tempdir().unwrap();
     let domain = directory.path().join("domain");
     std::fs::create_dir(&domain).unwrap();
-    let legacy = br#"[{"name":"legacy","shell":"shell","shell_args":[],"working_directory":"legacy","last_prompt":"A"}]"#;
+    let legacy = concat!(
+        r#"[{"name":"legacy","shell":"shell","shell_args":[],"#,
+        r#""working_directory":"legacy","last_prompt":"A"}]"#
+    )
+    .as_bytes();
     let path = directory.path().join("sessions.json");
     std::fs::write(&path, legacy).unwrap();
     let manager = SessionManager::new();

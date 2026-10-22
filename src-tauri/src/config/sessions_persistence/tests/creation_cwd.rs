@@ -43,7 +43,8 @@ fn archived_root_exemption_is_structural_even_when_root_resolves_through_symlink
     let missing_child = link.join("not-there").to_string_lossy().to_string();
     assert!(
         validate_session_creation_cwd(&missing_child, &[], &[archived_root]).is_ok(),
-        "archived-root exemption must hold when the root resolves through a symlink and the cwd does not exist"
+        "archived-root exemption must hold when the root resolves through a symlink and the cwd \
+         does not exist"
     );
 }
 

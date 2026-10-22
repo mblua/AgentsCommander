@@ -68,9 +68,12 @@ async fn e2432_source_seed_roundtrip_decoy() {
     let base = configuration_identity("codex", &[]);
     let file = |command: &str| {
         serde_json::to_vec(&serde_json::json!({
-        "agents": [row.clone()],
-        "profilesByBaseHash": {(base.clone()): {"A": {"command": command, "env": {"SOURCE": command}, "enabled": true}}}
-    })).unwrap()
+            "agents": [row.clone()],
+            "profilesByBaseHash": {(base.clone()): {"A": {
+                "command": command, "env": {"SOURCE": command}, "enabled": true
+            }}}
+        }))
+        .unwrap()
     };
     let f_bytes = file("F-cell");
     std::fs::write(&f_path, &f_bytes).unwrap();
@@ -229,7 +232,10 @@ fn e2432_source_seed_malformed_refuses_without_downgrade_and_old_bytes_omit_ref(
     assert_eq!(serde_json::to_value(&ps).unwrap(), before);
     let reference = serde_json::json!({
         "version": 1,
-        "source": {"family":"agents", "role":"catalog", "scope":"project", "kind":"catalogProject", "contextRoot":"F"},
+        "source": {
+            "family":"agents", "role":"catalog", "scope":"project",
+            "kind":"catalogProject", "contextRoot":"F"
+        },
         "calculatedId": format!("cid1:{}", "b".repeat(64)),
         "requestedProfile": null,
         "profileCalculatedId": format!("cid1:{}", "c".repeat(64)),
@@ -445,7 +451,9 @@ fn derived_agent_id_binding_unavailable_capture_keeps_raw_origin_and_recipe() {
         let settings_path = dir
             .path()
             .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
-        let row = serde_json::json!({"id":"original","label":"Original","command":"claude","color":"red"});
+        let row = serde_json::json!(
+            {"id":"original","label":"Original","command":"claude","color":"red"}
+        );
         let agents = if case == "ambiguous" {
             serde_json::json!([row.clone(), row])
         } else {
