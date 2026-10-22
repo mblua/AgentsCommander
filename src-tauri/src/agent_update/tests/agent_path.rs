@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent_update::plan::probe_command_install_state_in;
 
 #[cfg(unix)]
 fn agent_path_2589_executable(dir: &Path, name: &str, body: &str) -> PathBuf {
