@@ -90,6 +90,8 @@ pub(crate) use handoff::{
     PURGE_WG_ACTION, RAISE_HAND_ACTION, SELF_CLEAR_ACTION, SELF_CLEAR_SETTLE_SECS,
     SELF_RESTART_ACTION, SELF_SWITCH_ACTION,
 };
+#[cfg(all(test, target_os = "linux"))]
+use notice::canonical_cwd_owned_by_replica;
 #[cfg(test)]
 use notice::{
     container_body_override_for_delivery, derive_project_from_outbox_path, format_wake_content,
@@ -112,6 +114,8 @@ use poller::{
 };
 #[cfg(all(test, windows))]
 use poller::{reserve_response_request_at_write, PreparedResponseRequest};
+#[cfg(all(test, windows))]
+use pty_claim::with_verified_response_pair;
 #[cfg(test)]
 use pty_claim::{
     classify_outbox_document, finish_pty_input_before_boundary, pty_resume_metadata_matches,
@@ -119,10 +123,6 @@ use pty_claim::{
     InternalSystemBookkeeping, MailboxSpawnCall, MailboxTestEvent, MailboxTestHooks,
     PtyClaimRefresh, PtyReacquireGoal, ResponseWakeWork,
 };
-#[cfg(all(test, windows))]
-use pty_claim::with_verified_response_pair;
-#[cfg(all(test, target_os = "linux"))]
-use notice::canonical_cwd_owned_by_replica;
 pub(crate) use settle::is_deferred_internal_delivery_error;
 #[cfg(test)]
 use settle::{
