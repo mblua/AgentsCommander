@@ -100,6 +100,17 @@ jobs:
           GATE_BASE_REF: ${{ github.event.pull_request.base.ref && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
         run: npm run cog:baseline -- --base-ref "${GATE_BASE_REF:-origin/main}"
 
+      - name: "Check sanitizing text controls (#3167)"
+        timeout-minutes: 10
+        run: npm run sanitizing:self
+      - name: "Check sanitizing text regressions (#3167)"
+        timeout-minutes: 10
+        env:
+          GATE_BASE_REF: ${{ github.event.pull_request.base.ref && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        run: |
+          npm run sanitizing:line_length -- --base-ref "${GATE_BASE_REF:-origin/main}"
+          npm run sanitizing:file_size -- --base-ref "${GATE_BASE_REF:-origin/main}"
+
   rust-regression:
     name: rust-regression
     # Skip branch-deletion push events while still requiring pull request validation.
