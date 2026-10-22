@@ -21,7 +21,7 @@ pub use agent_matrix::{
     __tauri_command_name_create_agent_matrix, __tauri_command_name_delete_agent_matrix,
     create_agent_matrix, delete_agent_matrix,
 };
-#[cfg(all(test, windows))]
+#[cfg(test)]
 pub(crate) use delete_guard::is_file_in_use_error;
 pub(crate) use delete_guard::{
     metadata_is_link_or_reparse, validate_delete_root_not_link_or_reparse,
