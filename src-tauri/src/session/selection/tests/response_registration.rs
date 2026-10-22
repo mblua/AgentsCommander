@@ -1,3 +1,4 @@
+#[cfg(windows)]
 use super::*;
 
 #[cfg(windows)]
