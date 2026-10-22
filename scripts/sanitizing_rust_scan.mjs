@@ -358,7 +358,7 @@ export function scanRust(path, text) {
     }
   }
   const cfgTest = attrs => attrs.some(a => a.meta.name === 'cfg' && impliesTest(a.meta.args[0]));
-  const fileTest = /(?:^|\/)(?:tests\/|tests\.rs$)|_tests\.rs$/.test(path);
+  const fileTest = /(?:(?:^|\/)(?:tests\/|tests\.rs$)|_tests\.rs$)/.test(path);
   for (const item of items) {
     let cfg = cfgTest(item.attributes);
     for (let s = item.scope; s; s = s.parent) cfg ||= cfgTest(s.attributes);

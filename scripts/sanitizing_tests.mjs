@@ -118,6 +118,84 @@ test('Git failures/spawn/signal/timeout/maxBuffer and missing object cannot give
   assert.equal(lengthGate(f.snapshot(f.base,runner)).exit,3);
 });
 
+test('Git resolution selects a regular file in a directory with spaces without executing it', t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sanitizing-git-'));
+  t.after(() => { assert.equal(path.dirname(fs.realpathSync(cwd)), fs.realpathSync(os.tmpdir()));
+    fs.rmSync(cwd, {recursive:true}); });
+  const name = process.platform === 'win32' ? 'git.exe' : 'git';
+  const nonfile = path.join(cwd,'nonfile'), space = path.join(cwd,'Git space 😀');
+  fs.mkdirSync(nonfile); fs.mkdirSync(path.join(nonfile,name)); fs.mkdirSync(space);
+  const executable = path.join(space,name); fs.writeFileSync(executable,'not executed', {mode:0o755});
+  const script = `
+    import assert from 'node:assert/strict'; import cp from 'node:child_process';
+    import {syncBuiltinESMExports} from 'node:module';
+    cp.spawnSync = file => {assert.equal(file,${JSON.stringify(executable)}); return {status:0};};
+    syncBuiltinESMExports();
+    const {gitRunner} = await import(${JSON.stringify(new URL('./sanitizing_baseline.mjs', import.meta.url).href)});
+    assert.equal(gitRunner([], {cwd:${JSON.stringify(cwd)},env:{PATH:${JSON.stringify([nonfile,space].join(path.delimiter))}}}).status,0);
+  `;
+  const r = spawnSync(process.execPath,['--input-type=module','-e',script], {
+    stdio:['ignore','pipe','pipe'],timeout:120_000,maxBuffer:64*1024*1024,windowsHide:true,
+  });
+  assert.equal(r.error,undefined); assert.equal(r.signal,null); assert.equal(r.status,0,r.stderr?.toString());
+});
+test('Git resolution preserves env/options, PATH order and import without I/O', () => {
+  // Isolate builtin stubs in a Node child: no fake executable is ever launched.
+  const script = `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    import path from 'node:path';
+    import cp from 'node:child_process';
+    import { syncBuiltinESMExports } from 'node:module';
+    let available, attempted = [], calls = [], accessMode, failure;
+    fs.statSync = p => {
+      attempted.push(p);
+      if (failure) throw Object.assign(new Error('resolution failed'), {code: failure});
+      if (p !== available) throw Object.assign(new Error('missing'), {code: 'ENOENT'});
+      return {isFile: () => true};
+    };
+    fs.accessSync = (p, mode) => { assert.equal(p, available); accessMode = mode; };
+    cp.spawnSync = (file, args, options) => { calls.push({file,args,options}); return {status:0}; };
+    syncBuiltinESMExports();
+    const {gitRunner, createSnapshot} = await import(${JSON.stringify(new URL('./sanitizing_baseline.mjs', import.meta.url).href)});
+    assert.deepEqual(attempted, []); assert.deepEqual(calls, []);
+    const windows = process.platform === 'win32', cwd = process.cwd();
+    const executable = windows ? 'git.exe' : 'git';
+    const first = path.resolve(cwd, 'missing'), space = path.resolve(cwd, 'Git space 😀');
+    available = path.join(space, executable);
+    const env = {PATH: [first, windows ? '"' + space + '"' : space].join(path.delimiter),
+      GIT_CONFIG_NOSYSTEM:'1', GIT_CONFIG_GLOBAL:'fixture-only', GIT_TEMPLATE_DIR:'fixture-template'};
+    if (windows) env.Path = first; // PATH sorts before Path.
+    const args = ['rev-parse', 'HEAD'];
+    assert.equal(gitRunner(args, {cwd,env}).status, 0);
+    assert.deepEqual(attempted, [path.join(first, executable), available]);
+    assert.equal(accessMode, windows ? fs.constants.F_OK : fs.constants.X_OK);
+    assert.deepEqual(calls[0], {file:available,args,options:{cwd,env,
+      stdio:['ignore','pipe','pipe'],timeout:120000,maxBuffer:64*1024*1024,windowsHide:true}});
+    if (windows) { const onlyPath = {Path:space}; gitRunner(args,{cwd,env:onlyPath}); assert.equal(calls.at(-1).options.env,onlyPath); }
+    available = path.join(cwd, executable);
+    gitRunner(args, {cwd,env:{PATH:''}}); assert.equal(calls.at(-1).file,available);
+    available = path.resolve(cwd, 'relative', executable);
+    gitRunner(args, {cwd,env:{PATH:'relative'}}); assert.equal(calls.at(-1).file,available);
+    const inherited = windows ? process.env.PATH : '/usr/bin:/bin';
+    let inheritedDir = inherited.split(path.delimiter)[0];
+    if (windows && inheritedDir.startsWith('"') && inheritedDir.endsWith('"')) inheritedDir = inheritedDir.slice(1,-1);
+    available = path.resolve(cwd,inheritedDir,executable);
+    gitRunner(args,{cwd,env:{}}); assert.equal(calls.at(-1).file,available);
+    available = undefined; const before = calls.length;
+    const missing = {cwd,env:{PATH:first}};
+    assert.throws(() => gitRunner(args,missing), e => e.exit === 3 && e.message.includes('install Git/check PATH'));
+    assert.throws(() => createSnapshot({cwd,runner:a => gitRunner(a,missing)}), e => e.exit === 3);
+    failure = 'EIO';
+    assert.throws(() => gitRunner(args,missing), e => e.exit === 3 && /resolution failed/.test(e.message));
+    assert.equal(calls.length,before);
+  `;
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000, maxBuffer: 64 * 1024 * 1024, windowsHide: true,
+  });
+  assert.equal(r.error, undefined); assert.equal(r.signal, null); assert.equal(r.status, 0, r.stderr?.toString());
+});
+
 test('cfg truth table never cuts later production, cfg_attr remains production', () => {
   for (const [cfg, excluded] of [['test',true],['all(test,unix)',true],['any(has_embedded_dist,test)',false],['not(test)',false],['any(all(test,unix),test)',true],['all()',false],['any()',false],['not(not(test))',false]]) {
     const a=scanRust('x.rs',`#[cfg(${cfg})] mod m { fn hidden() {} } fn visible() {}`);
@@ -132,7 +210,14 @@ test('inner cfg is lexical, async direct/aliased tests exclude body only, test p
   assert.equal(a.items.find(i=>i.name==='a').testOnly,true);assert.equal(a.items.find(i=>i.name==='b').directTest,true);
   assert.equal(a.items.find(i=>i.name==='production').testOnly,false);
   const b=a.items.find(i=>i.name==='b');assert.equal(a.isTestOffset(b.bodyStart+1),true);assert.equal(a.isTestOffset(b.start),false);
-  for (const p of ['tests.rs','x_tests.rs','src/tests/x.rs']) assert.equal(scanRust(p,'fn p(){}').items[0].testOnly,true);
+  for (const [paths, excluded] of [
+    [['tests.rs','src/tests.rs','x_tests.rs','src/tests/x.rs'], true],
+    [['contest.rs','src/tests_extra/x.rs','a_tests.rs.bak'], false],
+  ]) for (const p of paths) {
+    const source = scanRust(p,'fn p(){}');
+    assert.equal(source.items[0].testOnly,excluded,p);
+    assert.equal(source.productionTokens.length === 0,excluded,p);
+  }
 });
 test('nested imports/self/as and nearest parameter/block bindings', () => {
   const a=scanRust('x.rs','use std::{fs::{self as disk,File as F},process::Command as C}; fn f(disk: Thing) { disk::write(); {use tokio::fs as disk;disk::write();} }');

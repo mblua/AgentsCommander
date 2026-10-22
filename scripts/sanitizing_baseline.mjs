@@ -1,5 +1,6 @@
 // Immutable Git inputs shared by the sanitizing gates. No import-time I/O.
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,8 +12,28 @@ export function decode(bytes, context) {
   try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
   catch { throw new GateError(`${context}: invalid UTF8; repair the Git input`); }
 }
+function resolveGitExecutable({ cwd, env }) {
+  const windows = process.platform === 'win32';
+  const pathKey = windows ? Object.keys(env).sort().find(key => key.toUpperCase() === 'PATH') : 'PATH';
+  const searchPath = (pathKey === undefined ? undefined : env[pathKey]) ??
+    (windows ? process.env.PATH : '/usr/bin:/bin');
+  const unavailable = detail => new GateError(`Git executable unavailable${detail ? `: ${detail}` : ''}; install Git/check PATH`);
+  // Search only the configured PATH; no implicit Windows cwd-first lookup.
+  for (let directory of (searchPath ?? '').split(path.delimiter)) {
+    if (windows && directory.startsWith('"') && directory.endsWith('"')) directory = directory.slice(1, -1);
+    const candidate = path.resolve(cwd, directory, windows ? 'git.exe' : 'git');
+    try {
+      if (!fs.statSync(candidate).isFile()) continue;
+      fs.accessSync(candidate, windows ? fs.constants.F_OK : fs.constants.X_OK);
+      return candidate;
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'].includes(error.code)) throw unavailable(error.message);
+    }
+  }
+  throw unavailable();
+}
 export function gitRunner(args, { cwd, env = process.env }) {
-  return spawnSync('git', args, {
+  return spawnSync(resolveGitExecutable({ cwd, env }), args, {
     cwd, env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000,
     maxBuffer: 64 * 1024 * 1024, windowsHide: true,
   });
