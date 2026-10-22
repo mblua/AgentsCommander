@@ -14,6 +14,7 @@ use terminal_snapshot_renderer::{
 use uuid::Uuid;
 
 use super::*;
+use crate::api::handlers::window_screenshot::WindowScreenshotCaptureFutureForTest;
 use crate::errors::AppError;
 use crate::pty::backend::{
     BackendSpawnSpec, PtyBackend, SessionBackendKind, TerminalScreenCopyRead,
@@ -26,29 +27,52 @@ use crate::session::session::{Session, SessionRepo};
 use crate::telegram::manager::OutputSenderMap;
 
 const ACCEPTANCE_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_ACCEPTANCE_CHILD";
-const ACCEPTANCE_TEST_NAME: &str = "pty::terminal_snapshot::tests::acceptance::real_host_and_api_daemon_paths_enforce_no_oracle_and_final_handoff";
+const ACCEPTANCE_TEST_NAME: &str = concat!(
+    "pty::terminal_snapshot::tests::acceptance::",
+    "real_host_and_api_daemon_paths_enforce_no_oracle_and_final_handoff",
+);
 const LEAKAGE_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_LEAKAGE_CHILD";
 const LEAKAGE_CANARY_FILE_ENV: &str = "AC_TERMINAL_SNAPSHOT_LEAKAGE_CANARY_FILE";
-const LEAKAGE_TEST_NAME: &str = "pty::terminal_snapshot::tests::acceptance::real_host_and_api_daemon_paths_enforce_secondary_leakage_confinement";
+const LEAKAGE_TEST_NAME: &str = concat!(
+    "pty::terminal_snapshot::tests::acceptance::",
+    "real_host_and_api_daemon_paths_enforce_secondary_leakage_confinement",
+);
 const PANIC_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_PANIC_CHILD";
 const PANIC_CANARY_FILE_ENV: &str = "AC_TERMINAL_SNAPSHOT_PANIC_CANARY_FILE";
-const PANIC_TEST_NAME: &str = "pty::terminal_snapshot::tests::acceptance::snapshot_production_panic_boundaries_are_payload_free";
+const PANIC_TEST_NAME: &str = concat!(
+    "pty::terminal_snapshot::tests::acceptance::",
+    "snapshot_production_panic_boundaries_are_payload_free",
+);
 const API_CANCELLATION_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_API_CANCELLATION_CHILD";
 const API_CANCELLATION_CANARY_FILE_ENV: &str = "AC_TERMINAL_SNAPSHOT_API_CANCELLATION_CANARY_FILE";
-const API_CANCELLATION_TEST_NAME: &str = "pty::terminal_snapshot::tests::acceptance::api_async_cancellation_reclaims_authority_without_disclosure";
+const API_CANCELLATION_TEST_NAME: &str = concat!(
+    "pty::terminal_snapshot::tests::acceptance::",
+    "api_async_cancellation_reclaims_authority_without_disclosure",
+);
 const COMMON_BLOCKING_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_COMMON_BLOCKING_CHILD";
 const COMMON_BLOCKING_CANARY_FILE_ENV: &str = "AC_TERMINAL_SNAPSHOT_COMMON_BLOCKING_CANARY_FILE";
-const COMMON_BLOCKING_TEST_NAME: &str = "pty::terminal_snapshot::tests::acceptance::common_blocking_late_completion_retains_authority_without_disclosure";
+const COMMON_BLOCKING_TEST_NAME: &str = concat!(
+    "pty::terminal_snapshot::tests::acceptance::",
+    "common_blocking_late_completion_retains_authority_without_disclosure",
+);
 const HOST_FINALIZER_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_HOST_FINALIZER_CHILD";
 const HOST_FINALIZER_CANARY_FILE_ENV: &str = "AC_TERMINAL_SNAPSHOT_HOST_FINALIZER_CANARY_FILE";
-const HOST_FINALIZER_TEST_NAME: &str = "pty::terminal_snapshot::tests::acceptance::synchronous_host_finalizer_retains_authority_through_late_completion";
+const HOST_FINALIZER_TEST_NAME: &str = concat!(
+    "pty::terminal_snapshot::tests::acceptance::",
+    "synchronous_host_finalizer_retains_authority_through_late_completion",
+);
 const HOST_CANCELLATION_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_HOST_CANCELLATION_CHILD";
 const HOST_CANCELLATION_CANARY_FILE_ENV: &str =
     "AC_TERMINAL_SNAPSHOT_HOST_CANCELLATION_CANARY_FILE";
-const HOST_CANCELLATION_TEST_NAME: &str = "pty::terminal_snapshot::tests::acceptance::host_timeout_cancellation_claims_only_the_unaccepted_request";
+const HOST_CANCELLATION_TEST_NAME: &str = concat!(
+    "pty::terminal_snapshot::tests::acceptance::",
+    "host_timeout_cancellation_claims_only_the_unaccepted_request",
+);
 const SCANNER_SHUTDOWN_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_SCANNER_SHUTDOWN_CHILD";
-const SCANNER_SHUTDOWN_TEST_NAME: &str =
-    "pty::terminal_snapshot::tests::acceptance::scanner_app_shutdown_owns_composed_host_phases";
+const SCANNER_SHUTDOWN_TEST_NAME: &str = concat!(
+    "pty::terminal_snapshot::tests::acceptance::",
+    "scanner_app_shutdown_owns_composed_host_phases",
+);
 const BODY_DISCONNECT_SENTINEL: &str = "ACSNAP_BODY_DISCONNECT_1173_C6Q4";
 const LATE_BLOCKING_PANIC_SENTINEL: &str = "ACSNAP_LATE_BLOCKING_PANIC_1173_R4M8";
 const SCREEN_SENTINEL: &str = "ACSNAP_CELL_CANARY_1173_Z9Q7";
@@ -277,7 +301,11 @@ impl ReplicaPaths {
         }
         std::fs::write(
             team.join("config.json"),
-            r#"{"agents":["../_agent_worker","../_agent_member-live","../_agent_member-exited","../_agent_member-tampered","../_agent_coordinator"],"coordinator":"../_agent_coordinator"}"#,
+            concat!(
+                r#"{"agents":["../_agent_worker","../_agent_member-live","#,
+                r#""../_agent_member-exited","../_agent_member-tampered","#,
+                r#""../_agent_coordinator"],"coordinator":"../_agent_coordinator"}"#,
+            ),
         )
         .expect("team config");
         for name in ["coordinator", "worker", "member-live", "member-exited"] {
@@ -729,7 +757,9 @@ fn create_mailbox_directories(root: &Path) {
 
 fn terminal_canary_output() -> Vec<u8> {
     format!(
-        "\u{1b}]0;{OSC_TITLE_SENTINEL}\u{7}\u{1b}]8;;https://snapshot.invalid/{OSC_HYPERLINK_SENTINEL}\u{1b}\\\u{1b}]8;;\u{1b}\\\u{1b}]52;c;{OSC_CLIPBOARD_SENTINEL}\u{7}{SCREEN_SENTINEL}"
+        "\u{1b}]0;{OSC_TITLE_SENTINEL}\u{7}\
+            \u{1b}]8;;https://snapshot.invalid/{OSC_HYPERLINK_SENTINEL}\
+            \u{1b}\\\u{1b}]8;;\u{1b}\\\u{1b}]52;c;{OSC_CLIPBOARD_SENTINEL}\u{7}{SCREEN_SENTINEL}"
     )
     .into_bytes()
 }
@@ -1546,7 +1576,8 @@ async fn authenticated_live_window_png_capture() {
             Err(error) => panic!("interactive detached client must connect: {error}"),
         };
         let request = format!(
-            "GET /api/v1/windows/{window_id}/screenshot HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {token}\r\nConnection: keep-alive\r\n\r\n"
+            "GET /api/v1/windows/{window_id}/screenshot HTTP/1.1\r\nHost: \
+                {address}\r\nAuthorization: Bearer {token}\r\nConnection: keep-alive\r\n\r\n"
         );
         if let Err(error) = stream.write_all(request.as_bytes()).await {
             panic!("interactive detached request must write: {error}");
@@ -1786,7 +1817,8 @@ async fn authenticated_live_window_png_capture() {
     };
     assert_eq!(
         delivered_before_close, 0,
-        "the manually closed client must receive no response bytes before the native worker finishes"
+        "the manually closed client must receive no response bytes before the native worker \
+            finishes"
     );
     {
         use tokio::io::AsyncWriteExt;
@@ -1871,7 +1903,8 @@ async fn authenticated_live_window_png_capture() {
     };
     assert!(
         post_release_png.starts_with(b"\x89PNG\r\n\x1a\n"),
-        "the post-release request must receive its own PNG response rather than a retained shared result"
+        "the post-release request must receive its own PNG response rather than a retained shared \
+            result"
     );
     drop(queued_client_one);
     drop(queued_client_two);
@@ -1919,7 +1952,7 @@ async fn window_screenshot_route_local_factory_success_is_raw_png_and_audited() 
     let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let capture_factory = std::sync::Arc::new({
         let calls = std::sync::Arc::clone(&calls);
-        move |window_id, _lease| -> crate::api::handlers::window_screenshot::WindowScreenshotCaptureFutureForTest {
+        move |window_id, _lease| -> WindowScreenshotCaptureFutureForTest {
             let calls = std::sync::Arc::clone(&calls);
             let expected_png = factory_png.clone();
             Box::pin(async move {
@@ -2050,7 +2083,7 @@ async fn window_screenshot_revocation_after_launch_does_not_cancel_in_flight_cap
         let calls = std::sync::Arc::clone(&calls);
         let launched = std::sync::Arc::clone(&launched);
         let release = std::sync::Arc::clone(&release);
-        move |window_id, lease| -> crate::api::handlers::window_screenshot::WindowScreenshotCaptureFutureForTest {
+        move |window_id, lease| -> WindowScreenshotCaptureFutureForTest {
             let calls = std::sync::Arc::clone(&calls);
             let launched = std::sync::Arc::clone(&launched);
             let release = std::sync::Arc::clone(&release);
@@ -2197,7 +2230,7 @@ async fn window_screenshot_route_local_factory_result_mappings_are_audited_and_r
         let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let capture_factory = std::sync::Arc::new({
             let calls = std::sync::Arc::clone(&calls);
-            move |window_id, _lease| -> crate::api::handlers::window_screenshot::WindowScreenshotCaptureFutureForTest {
+            move |window_id, _lease| -> WindowScreenshotCaptureFutureForTest {
                 let calls = std::sync::Arc::clone(&calls);
                 Box::pin(async move {
                     let mut calls = match calls.lock() {
@@ -2418,7 +2451,8 @@ async fn window_screenshot_route_local_factory_auth_and_raw_path_order_is_audite
             Err(error) => panic!("raw screenshot test client must connect: {error}"),
         };
         let request = format!(
-            "GET {path} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+            "GET {path} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer \
+                {token}\r\nConnection: close\r\n\r\n"
         );
         if let Err(error) = stream.write_all(request.as_bytes()).await {
             panic!("raw screenshot test request must write: {error}");
@@ -2446,7 +2480,7 @@ async fn window_screenshot_route_local_factory_auth_and_raw_path_order_is_audite
     let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let capture_factory = std::sync::Arc::new({
         let calls = std::sync::Arc::clone(&calls);
-        move |window_id, _lease| -> crate::api::handlers::window_screenshot::WindowScreenshotCaptureFutureForTest {
+        move |window_id, _lease| -> WindowScreenshotCaptureFutureForTest {
             let calls = std::sync::Arc::clone(&calls);
             Box::pin(async move {
                 let mut calls = match calls.lock() {
@@ -2582,7 +2616,7 @@ async fn window_screenshot_route_local_factory_queue_is_bounded_and_disconnect_r
         let calls = std::sync::Arc::clone(&calls);
         let active_started = std::sync::Arc::clone(&active_started);
         let release_active = std::sync::Arc::clone(&release_active);
-        move |window_id, lease| -> crate::api::handlers::window_screenshot::WindowScreenshotCaptureFutureForTest {
+        move |window_id, lease| -> WindowScreenshotCaptureFutureForTest {
             let calls = std::sync::Arc::clone(&calls);
             let active_started = std::sync::Arc::clone(&active_started);
             let release_active = std::sync::Arc::clone(&release_active);
@@ -2763,7 +2797,8 @@ async fn window_screenshot_each_request_uses_a_fresh_local_result() {
             Err(error) => panic!("detached fresh-result client must connect: {error}"),
         };
         let request = format!(
-            "GET /api/v1/windows/1/screenshot HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+            "GET /api/v1/windows/1/screenshot HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer \
+                {token}\r\nConnection: close\r\n\r\n"
         );
         if let Err(error) = stream.write_all(request.as_bytes()).await {
             panic!("detached fresh-result request must write: {error}");
@@ -2799,7 +2834,7 @@ async fn window_screenshot_each_request_uses_a_fresh_local_result() {
         let second_started = std::sync::Arc::clone(&second_started);
         let release_second = std::sync::Arc::clone(&release_second);
         let second_done = std::sync::Arc::clone(&second_done);
-        move |window_id, lease| -> crate::api::handlers::window_screenshot::WindowScreenshotCaptureFutureForTest {
+        move |window_id, lease| -> WindowScreenshotCaptureFutureForTest {
             let calls = std::sync::Arc::clone(&calls);
             let second_started = std::sync::Arc::clone(&second_started);
             let release_second = std::sync::Arc::clone(&release_second);
@@ -2995,7 +3030,7 @@ async fn window_screenshot_fresh_guard_is_released_before_queue_wait() {
     let capture_factory = std::sync::Arc::new({
         let active_started = std::sync::Arc::clone(&active_started);
         let release_active = std::sync::Arc::clone(&release_active);
-        move |window_id, lease| -> crate::api::handlers::window_screenshot::WindowScreenshotCaptureFutureForTest {
+        move |window_id, lease| -> WindowScreenshotCaptureFutureForTest {
             let active_started = std::sync::Arc::clone(&active_started);
             let release_active = std::sync::Arc::clone(&release_active);
             Box::pin(async move {
@@ -3164,7 +3199,7 @@ async fn window_screenshot_queued_revocation_blocks_launch_revalidation() {
         let calls = std::sync::Arc::clone(&calls);
         let active_started = std::sync::Arc::clone(&active_started);
         let release_active = std::sync::Arc::clone(&release_active);
-        move |window_id, lease| -> crate::api::handlers::window_screenshot::WindowScreenshotCaptureFutureForTest {
+        move |window_id, lease| -> WindowScreenshotCaptureFutureForTest {
             let calls = std::sync::Arc::clone(&calls);
             let active_started = std::sync::Arc::clone(&active_started);
             let release_active = std::sync::Arc::clone(&release_active);
@@ -4302,7 +4337,8 @@ fn scanner_app_shutdown_owns_composed_host_phases() {
                     stderr = stderr.replace(canary, "<redacted-canary>");
                 }
                 panic!(
-                    "isolated scanner shutdown phase={} failed; stdout={stdout:?}; stderr={stderr:?}",
+                    "isolated scanner shutdown phase={} failed; stdout={stdout:?}; \
+                        stderr={stderr:?}",
                     phase.label()
                 );
             }
@@ -6421,7 +6457,8 @@ fn real_host_and_api_daemon_paths_enforce_secondary_leakage_confinement() {
 
         let malformed_host_filename = Uuid::new_v4().to_string();
         let malformed_host_bytes = format!(
-            "{{\"kind\":\"terminal-snapshot\",\"requestId\":\"{malformed_host_filename}\",\"token\":\"{MALFORMED_BODY_SENTINEL}\""
+            "{{\"kind\":\"terminal-snapshot\",\"requestId\":\"{malformed_host_filename}\",\
+                \"token\":\"{MALFORMED_BODY_SENTINEL}\""
         )
         .into_bytes();
         assert!(contains_raw(
@@ -6673,7 +6710,8 @@ fn snapshot_production_panic_boundaries_are_payload_free() {
         let mut scanner = crate::phone::terminal_snapshot::SnapshotMailboxScanner::default();
 
         let api_panic_payload = format!(
-            "{API_PANIC_SENTINEL}|{PNG_PANIC_SENTINEL}|{BASE64_PANIC_SENTINEL}|{}|{CALLER_PATH_SENTINEL}|{SCREEN_SENTINEL}",
+            "{API_PANIC_SENTINEL}|{PNG_PANIC_SENTINEL}|{BASE64_PANIC_SENTINEL}|\
+                {}|{CALLER_PATH_SENTINEL}|{SCREEN_SENTINEL}",
             fixture.api_coordinator_token.secret
         );
         fixture
@@ -6704,7 +6742,8 @@ fn snapshot_production_panic_boundaries_are_payload_free() {
             .admit_requester("panic-boundary-requester".to_string())
             .expect("panic boundary permit");
         let blocking_panic_payload = format!(
-            "{BLOCKING_PANIC_SENTINEL}|{PNG_PANIC_SENTINEL}|{BASE64_PANIC_SENTINEL}|{}|{CALLER_PATH_SENTINEL}|{OSC_TITLE_SENTINEL}",
+            "{BLOCKING_PANIC_SENTINEL}|{PNG_PANIC_SENTINEL}|{BASE64_PANIC_SENTINEL}|\
+                {}|{CALLER_PATH_SENTINEL}|{OSC_TITLE_SENTINEL}",
             fixture.host_coordinator.token
         );
         let blocking_result: Result<(), TerminalSnapshotReasonCode> = run_blocking_with_deadline(
@@ -6724,7 +6763,8 @@ fn snapshot_production_panic_boundaries_are_payload_free() {
         drop(blocking_permit);
 
         let host_panic_payload = format!(
-            "{HOST_PANIC_SENTINEL}|{PNG_PANIC_SENTINEL}|{BASE64_PANIC_SENTINEL}|{}|{CALLER_PATH_SENTINEL}|{SCREEN_SENTINEL}",
+            "{HOST_PANIC_SENTINEL}|{PNG_PANIC_SENTINEL}|{BASE64_PANIC_SENTINEL}|\
+                {}|{CALLER_PATH_SENTINEL}|{SCREEN_SENTINEL}",
             fixture.host_coordinator.token
         );
         fixture
@@ -6788,8 +6828,10 @@ fn room_and_legacy_entity_names_are_both_accepted_and_distinct() {
 }
 
 const ROOM_ACCEPTANCE_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_ROOM_ACCEPTANCE_CHILD";
-const ROOM_ACCEPTANCE_TEST_NAME: &str =
-    "pty::terminal_snapshot::tests::acceptance::room_target_capture_and_cross_room_denial_use_the_discovered_fqn";
+const ROOM_ACCEPTANCE_TEST_NAME: &str = concat!(
+    "pty::terminal_snapshot::tests::acceptance::",
+    "room_target_capture_and_cross_room_denial_use_the_discovered_fqn",
+);
 
 /// #2317: an authorized same-room coordinator captures the discovered room
 /// member FQN, while a different room's coordinator is denied without content.
