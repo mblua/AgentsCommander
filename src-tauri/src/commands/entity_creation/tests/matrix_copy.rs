@@ -148,17 +148,43 @@ fn issue_3142_source_history_is_opaque_and_intact() {
         b"{\"schemaVersion\":1,\"copies\":[]}".as_slice(),
         b"not json".as_slice(),
         b"{\"schemaVersion\":2,\"copies\":[]}".as_slice(),
-        br#"{"schemaVersion":1,"copies":[{"sourceProjectName":"p","sourceProjectPath":"/p","sourceAgentRef":"_agent_a","copiedAt":"yesterday"}]}"#.as_slice(),
-        br#"{"schemaVersion":1,"copies":[{"sourceProjectName":"","sourceProjectPath":"/p","sourceAgentRef":"_agent_a","copiedAt":"2026-01-01T00:00:00Z"}]}"#.as_slice(),
-        br#"{"schemaVersion":1,"copies":[{"sourceProjectName":"p","sourceProjectPath":"/p","sourceAgentRef":"../a","copiedAt":"2026-01-01T00:00:00Z"}]}"#.as_slice(),
-        br#"{"schemaVersion":1,"copies":[{"sourceProjectName":"p","sourceProjectPath":"/p","sourceAgentRef":"_agent_a","copiedAt":"2026-01-01T00:00:00+02:00"}]}"#.as_slice(),
+        concat!(
+            r#"{"schemaVersion":1,"copies":[{"#,
+            r#""sourceProjectName":"p","sourceProjectPath":"/p","#,
+            r#""sourceAgentRef":"_agent_a","copiedAt":"yesterday"}]}"#,
+        )
+        .as_bytes(),
+        concat!(
+            r#"{"schemaVersion":1,"copies":[{"#,
+            r#""sourceProjectName":"","sourceProjectPath":"/p","#,
+            r#""sourceAgentRef":"_agent_a","copiedAt":"2026-01-01T00:00:00Z"}]}"#,
+        )
+        .as_bytes(),
+        concat!(
+            r#"{"schemaVersion":1,"copies":[{"#,
+            r#""sourceProjectName":"p","sourceProjectPath":"/p","#,
+            r#""sourceAgentRef":"../a","copiedAt":"2026-01-01T00:00:00Z"}]}"#,
+        )
+        .as_bytes(),
+        concat!(
+            r#"{"schemaVersion":1,"copies":[{"#,
+            r#""sourceProjectName":"p","sourceProjectPath":"/p","#,
+            r#""sourceAgentRef":"_agent_a","copiedAt":"2026-01-01T00:00:00+02:00"}]}"#,
+        )
+        .as_bytes(),
     ] {
         let (_tmp, project, source, destination) = issue_3068_fixture();
         std::fs::write(source.join(COPY_PROVENANCE_FILE), history).unwrap();
         let before = issue_3068_inventory(&source);
         let result = copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_copy");
         let owned = result.unwrap();
-        assert_eq!(issue_3068_history(&owned.root)["copies"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            issue_3068_history(&owned.root)["copies"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         cleanup_owned_copy_artifacts(&owned).unwrap();
         assert_eq!(before, issue_3068_inventory(&source));
     }

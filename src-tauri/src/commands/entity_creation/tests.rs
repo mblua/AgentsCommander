@@ -357,8 +357,12 @@ fn touch_dir(root: &Path, name: &str) {
 /// C4 (#2470): the seeded state file of every row that seeds one. All four
 /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
 #[rustfmt::skip]
-const C4_SEEDED_STATE: &str =
-    r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
+const C4_SEEDED_STATE: &str = concat!(
+    r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"#,
+    r#""lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"#,
+    r#""split":{"v":1,"keys":["lastCodingAgent","codingAgents","#,
+    r#""lastAgentMessageAt","profileContentHash"]}}"#,
+);
 
 /// C4 (#2470): the state file beside a tracked `config.json`.
 fn c4_state_path(tracked: &std::path::Path) -> std::path::PathBuf {

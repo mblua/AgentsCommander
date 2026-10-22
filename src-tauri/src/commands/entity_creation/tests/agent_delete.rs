@@ -122,7 +122,8 @@ fn gated_workgroup_delete_prunes_scope_with_activation_token() {
         "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
         "schema_version = 1\n",
         "coverage_version = 2\n",
-        "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n",
+        "coverage = [\"project_context_templates\", \"replica_config_folders\", ",
+        "\"coding_agent_catalog\"]\n",
         "\n",
         "[[files]]\n",
         "path = \".ac/wg-1-team/__agent_x/.claude/settings.json\"\n",
@@ -164,7 +165,8 @@ fn gated_workgroup_delete_prunes_scope_with_activation_token() {
             "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
             "schema_version = 1\n",
             "coverage_version = 2\n",
-            "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n",
+            "coverage = [\"project_context_templates\", \"replica_config_folders\", ",
+            "\"coding_agent_catalog\"]\n",
             "files = []\n"
         )
         .as_bytes(),
@@ -176,7 +178,8 @@ fn gated_workgroup_delete_prunes_scope_with_activation_token() {
         "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
         "schema_version = 1\n",
         "coverage_version = 2\n",
-        "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n",
+        "coverage = [\"project_context_templates\", \"replica_config_folders\", ",
+        "\"coding_agent_catalog\"]\n",
         "\n",
         "[[files]]\n",
         "path = \".ac/wg-2-team/__agent_y/.claude/settings.json\"\n",
@@ -290,7 +293,10 @@ async fn delete_agent_cascade_removes_team_repo_refs_and_replicas() {
             "agents": ["_agent_architect", "_agent_dev-rust", "../_agent_dev-rust"],
             "coordinator": "_agent_architect",
             "repos": [
-                { "url": "https://example.test/service.git", "agents": ["_agent_dev-rust", "_agent_architect"] },
+                {
+                    "url": "https://example.test/service.git",
+                    "agents": ["_agent_dev-rust", "_agent_architect"]
+                },
                 { "url": "https://example.test/docs.git", "agents": ["../_agent_dev-rust"] }
             ]
         }),

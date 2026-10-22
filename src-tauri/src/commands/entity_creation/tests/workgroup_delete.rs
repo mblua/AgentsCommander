@@ -169,7 +169,11 @@ fn validate_delete_root_rejects_reparse_root() {
         .expect("run mklink");
     if !output.status.success() {
         println!(
-            "skipping validate_delete_root reparse check; see docs/testing/destructive-filesystem-regression.md#helper-reparse-root-check: stdout: {} stderr: {}",
+            concat!(
+                "skipping validate_delete_root reparse check; see ",
+                "docs/testing/destructive-filesystem-regression.md#helper-reparse-root-check: ",
+                "stdout: {} stderr: {}",
+            ),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -321,7 +325,10 @@ fn temp_name_format_dodges_workgroup_filter() {
     );
     assert!(
         !crate::config::entity_prefix::has_entity_prefix(&temp_name),
-        "temp name must NOT match the widened room-/wg- discovery filter (would surface as a ghost room)"
+        concat!(
+            "temp name must NOT match the widened room-/wg- discovery filter ",
+            "(would surface as a ghost room)",
+        )
     );
 }
 

@@ -1,5 +1,7 @@
 use super::*;
 
+// ── #621 workgroup-delete clock + cache cleanup (integration) ──
+
 #[test]
 fn workgroup_removal_clears_clock_key_and_cache_sibling_intact() {
     use crate::config::coordinator_clocks::CoordinatorClocks;

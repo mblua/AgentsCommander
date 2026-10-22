@@ -12,7 +12,18 @@ fn build_role_content_no_template_matches_legacy() {
     let description = "Test agent description.";
     let desc_yaml = description.replace('\'', "''");
     let golden = format!(
-        "---\nname: '{}'\ndescription: '{}'\ntype: agent\n---\n\n# {}\n\n{}\n\n## Source of Truth\n\nThis role is defined in Role.md of your Agent Matrix at: .ac/_agent_{}/\nIf you are running as a replica, this file was generated from that source; the Agent Matrix is canonical.\n\n## Agent Memory Rule\n\nYour Agent Matrix's memory/, plans/, skills/, and Role.md are the single source of persistent knowledge. Use your replica folder only for replica-local scratch, inbox/outbox, and session artifacts. NEVER use external memory systems from the coding agent (e.g., ~/.claude/projects/memory/).\n",
+        concat!(
+            "---\nname: '{}'\ndescription: '{}'\ntype: agent\n---\n\n# {}\n\n{}\n\n",
+            "## Source of Truth\n\n",
+            "This role is defined in Role.md of your Agent Matrix at: .ac/_agent_{}/\n",
+            "If you are running as a replica, this file was generated from that source; ",
+            "the Agent Matrix is canonical.\n\n",
+            "## Agent Memory Rule\n\n",
+            "Your Agent Matrix's memory/, plans/, skills/, and Role.md are the single source ",
+            "of persistent knowledge. Use your replica folder only for replica-local scratch, ",
+            "inbox/outbox, and session artifacts. NEVER use external memory systems from the ",
+            "coding agent (e.g., ~/.claude/projects/memory/).\n",
+        ),
         safe_name, desc_yaml, safe_name, description, safe_name
     );
     let actual = build_role_content(safe_name, description, None);
@@ -100,7 +111,11 @@ fn build_role_content_with_template_inserts_role_profile() {
 fn build_role_content_keeps_mandatory_sections_last() {
     let template = crate::commands::role_templates::ResolvedRoleTemplate {
         id: "agency:tricky".into(),
-        body: "Body before.\n\n## Source of Truth\n\nLook-alike heading inside template.\n\n## Agent Memory Rule\n\nLook-alike heading.\n\nBody after.".into(),
+        body: concat!(
+            "Body before.\n\n## Source of Truth\n\nLook-alike heading inside template.\n\n",
+            "## Agent Memory Rule\n\nLook-alike heading.\n\nBody after.",
+        )
+        .into(),
         skills_src: None,
     };
     let out = build_role_content("alpha", "desc", Some(&template));
@@ -217,5 +232,3 @@ fn create_agent_matrix_from_role_requires_slug_identity() {
     assert!(err.contains("lowercase slug"), "unexpected error: {}", err);
     assert!(!ac_root.join("_agent_Tech Lead").exists());
 }
-
-// ── #621 workgroup-delete clock + cache cleanup (integration) ─────────────
