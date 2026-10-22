@@ -13,8 +13,12 @@ fn fixture() -> (tempfile::TempDir, SettingsState) {
         ..AppSettings::default()
     };
     std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
-    let source = json!({"agents":[{"id":"same","label":"Registered","color":"red","baseCommand":"tool"}],
-        "codingAgentProfiles":{"profilesByAgent":{"same":{"B":{"additionalArguments":"--registered"}}}}});
+    let source = json!({
+        "agents":[{"id":"same","label":"Registered","color":"red","baseCommand":"tool"}],
+        "codingAgentProfiles":{
+            "profilesByAgent":{"same":{"B":{"additionalArguments":"--registered"}}}
+        }
+    });
     std::fs::write(
         temp.path()
             .join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
@@ -158,7 +162,13 @@ async fn e2432_p02_contextless_default_ticket_and_source_decoys() {
     )
     .unwrap();
     std::fs::create_dir_all(catalog_path.parent().unwrap()).unwrap();
-    std::fs::write(&catalog_path, serde_json::to_vec(&json!({"schemaVersion":1,"agents":[{"key":"same","label":"Catalog","color":"blue","baseCommand":"tool"}],"profileSlots":{"C":{"label":"Own C"}},"codingAgentProfiles":{"same":{"C":{"additionalArguments":"--catalog"}}}})).unwrap()).unwrap();
+    let catalog = json!({
+        "schemaVersion":1,
+        "agents":[{"key":"same","label":"Catalog","color":"blue","baseCommand":"tool"}],
+        "profileSlots":{"C":{"label":"Own C"}},
+        "codingAgentProfiles":{"same":{"C":{"additionalArguments":"--catalog"}}}
+    });
+    std::fs::write(&catalog_path, serde_json::to_vec(&catalog).unwrap()).unwrap();
     let listed = list_agent_file_sources_inner(&owner).await.unwrap();
     let catalog_ref = listed
         .sources
@@ -191,7 +201,15 @@ async fn e2432_p02_public_save_normalizes_then_returns_fresh_and_rejects_stale()
     let before = read_agent_file_source_inner(&owner, list.sources.remove(0).source)
         .await
         .unwrap();
-    let edit: AgentFileEdits = serde_json::from_value(json!({"rows":[],"profileSets":[{"baseHash":configuration_identity("tool", &[]),"cells":{"B":{"additionalArguments":"--edited"}},"labels":{"B":"Edited"}}]})).unwrap();
+    let edit: AgentFileEdits = serde_json::from_value(json!({
+        "rows":[],
+        "profileSets":[{
+            "baseHash":configuration_identity("tool", &[]),
+            "cells":{"B":{"additionalArguments":"--edited"}},
+            "labels":{"B":"Edited"}
+        }]
+    }))
+    .unwrap();
     let reply = save_agent_file_source_inner(
         &owner,
         before.source.clone(),
@@ -258,7 +276,15 @@ async fn e2432_p02_project_personal_actual_save_and_primary_drift() {
     )
     .unwrap();
     std::fs::create_dir_all(catalog.parent().unwrap()).unwrap();
-    let raw = json!({"schemaVersion":2,"agents":[{"key":"same","label":"Catalog","description":"Own","color":"blue","baseCommand":"catalog-tool","extension":{"keep":null}}],"extension":{"preserve":42},"codingAgentProfiles":{"same":{"B":{"additionalArguments":"--own"}}}});
+    let raw = json!({
+        "schemaVersion":2,
+        "agents":[{
+            "key":"same","label":"Catalog","description":"Own","color":"blue",
+            "baseCommand":"catalog-tool","extension":{"keep":null}
+        }],
+        "extension":{"preserve":42},
+        "codingAgentProfiles":{"same":{"B":{"additionalArguments":"--own"}}}
+    });
     std::fs::write(&catalog, serde_json::to_vec(&raw).unwrap()).unwrap();
     let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
     let list = list_agent_file_sources_inner(&owner).await.unwrap();
@@ -275,7 +301,11 @@ async fn e2432_p02_project_personal_actual_save_and_primary_drift() {
         .await
         .unwrap();
     assert!(before.capabilities.editable_save);
-    let edit = serde_json::from_value(json!({"rows":[{"entryHint":"same","action":"upsert","patch":{"label":"Edited"}}],"profileSets":[]})).unwrap();
+    let edit = serde_json::from_value(json!({
+        "rows":[{"entryHint":"same","action":"upsert","patch":{"label":"Edited"}}],
+        "profileSets":[]
+    }))
+    .unwrap();
     let reply = save_agent_file_source_inner(
         &owner,
         source.clone(),
@@ -365,14 +395,29 @@ async fn e2432_p02_native_catalog_events_silent_registered_events_live() {
         ..AppSettings::default()
     };
     std::fs::write(&path, serde_json::to_vec(&initial).unwrap()).unwrap();
-    std::fs::write(temp.path().join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME), br#"{"agents":[{"id":"registered","label":"Registered","color":"red","baseCommand":"tool"}]}"#).unwrap();
+    std::fs::write(
+        temp.path()
+            .join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
+        concat!(
+            r#"{"agents":[{"id":"registered","label":"Registered","color":"red","#,
+            r#""baseCommand":"tool"}]}"#,
+        ),
+    )
+    .unwrap();
     let catalog = crate::config::coding_agents_catalog::independent_catalog_path(
         &project.join(".ac"),
         SourceKind::CatalogPersonal,
     )
     .unwrap();
     std::fs::create_dir_all(catalog.parent().unwrap()).unwrap();
-    std::fs::write(&catalog, br#"{"schemaVersion":1,"agents":[{"key":"own","label":"Original","color":"blue","baseCommand":"catalog-tool"}]}"#).unwrap();
+    std::fs::write(
+        &catalog,
+        concat!(
+            r#"{"schemaVersion":1,"agents":[{"key":"own","label":"Original","color":"blue","#,
+            r#""baseCommand":"catalog-tool"}]}"#,
+        ),
+    )
+    .unwrap();
     let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
     let broadcaster = WsBroadcaster::new();
     let mut ws = broadcaster.subscribe();
@@ -406,7 +451,11 @@ async fn e2432_p02_native_catalog_events_silent_registered_events_live() {
         .unwrap();
     let epoch = owner.identity().epoch;
     let ram = serde_json::to_value(owner.current_snapshot().await.unwrap()).unwrap();
-    let edits = serde_json::from_value(json!({"rows":[{"entryHint":"own","action":"upsert","patch":{"label":"Edited"}}],"profileSets":[]})).unwrap();
+    let edits = serde_json::from_value(json!({
+        "rows":[{"entryHint":"own","action":"upsert","patch":{"label":"Edited"}}],
+        "profileSets":[]
+    }))
+    .unwrap();
     let reply = save_agent_file_source(
         app.handle().clone(),
         app.state(),
@@ -468,7 +517,11 @@ async fn e2432_p02_native_catalog_events_silent_registered_events_live() {
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
             .open(&catalog)
             .unwrap();
-        let edits = serde_json::from_value(json!({"rows":[{"entryHint":"own","action":"upsert","patch":{"label":"Uncertain"}}],"profileSets":[]})).unwrap();
+        let edits = serde_json::from_value(json!({
+            "rows":[{"entryHint":"own","action":"upsert","patch":{"label":"Uncertain"}}],
+            "profileSets":[]
+        }))
+        .unwrap();
         let uncertain = save_agent_file_source(
             app.handle().clone(),
             app.state(),
@@ -504,7 +557,11 @@ async fn e2432_p02_native_catalog_events_silent_registered_events_live() {
     let snapshot = read_agent_file_source_inner(&owner, registered.clone())
         .await
         .unwrap();
-    let edits = serde_json::from_value(json!({"rows":[{"entryHint":"registered","action":"upsert","patch":{"label":"Adopted"}}],"profileSets":[]})).unwrap();
+    let edits = serde_json::from_value(json!({
+        "rows":[{"entryHint":"registered","action":"upsert","patch":{"label":"Adopted"}}],
+        "profileSets":[]
+    }))
+    .unwrap();
     let reply = save_agent_file_source(
         app.handle().clone(),
         app.state(),

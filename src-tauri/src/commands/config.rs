@@ -46,7 +46,9 @@ const API_SERVER_STOP_TIMEOUT_MS: u64 = 5_000;
 const MINT_API_CLIENT_DEFAULT_TTL_HOURS: i64 = 24;
 const MINT_API_CLIENT_MAX_TTL_DAYS: i64 = 30;
 const MINT_API_CLIENT_NOTE: &str =
-    "Store this token now; it is shown only once. The registry keeps only a hash. A manually requested pty-input scope does not grant actuation without an automatically bound live container session.";
+    "Store this token now; it is shown only once. The registry keeps only a hash. A manually \
+        requested pty-input scope does not grant actuation without an automatically bound live \
+        container session.";
 
 /// #2133 - the agent-help overlays the frontend layers over its embedded copy. The embedded
 /// layer never travels over IPC (epic D6). `remote` stays `None` until P6 fills it.
@@ -639,7 +641,9 @@ fn pair_to_issue(pair: &ResolvedPair) -> ProjectPathIssue {
                 absolute_candidate: pair.raw_absolute.value.clone().unwrap_or_default(),
                 instance_relative_candidate: pair.raw_relative.value.clone().unwrap_or_default(),
                 message: format!(
-                    "This project's two stored locations resolve to different directories, so neither was loaded. Absolute path: {abs_path}. Instance-relative path: {rel_path}."
+                    "This project's two stored locations resolve to different directories, so \
+                        neither was loaded. Absolute path: {abs_path}. Instance-relative path: \
+                        {rel_path}."
                 ),
                 absolute_resolved_path: abs_path,
                 instance_relative_resolved_path: rel_path,
@@ -653,7 +657,10 @@ fn pair_to_issue(pair: &ResolvedPair) -> ProjectPathIssue {
                 index: pair.index,
                 absolute_candidate: raw_string_state(&pair.raw_absolute),
                 instance_relative_candidate: raw_string_state(&pair.raw_relative),
-                message: "This project directory could not be found. Reconnect the drive or remove it from the list.".to_string(),
+                message:
+                    "This project directory could not be found. Reconnect the drive or remove \
+                    it from the list."
+                        .to_string(),
                 absolute_resolved_path: pair.absolute_side.syntactic_path.clone(),
                 instance_relative_resolved_path: pair.relative_side.syntactic_path.clone(),
             }
@@ -667,7 +674,8 @@ fn pair_to_issue(pair: &ResolvedPair) -> ProjectPathIssue {
                 absolute_candidate: raw_json_state(&abs_json),
                 instance_relative_candidate: raw_json_state(&rel_json),
                 reason: format!(
-                    "This project could not be loaded (absolute candidate: {}; instance-relative candidate: {}).",
+                    "This project could not be loaded (absolute candidate: {}; instance-relative \
+                        candidate: {}).",
                     side_status_label(pair.absolute_side.status),
                     side_status_label(pair.relative_side.status)
                 ),
@@ -1410,7 +1418,8 @@ pub(crate) async fn purge_sessions_after_settings_update(saved: &AppSettings) {
 
     if let Err(e) = purge_sessions_after_settings_update_in_dir(saved, &dir).await {
         log::warn!(
-            "[settings] Failed to purge sessions outside current projectPaths after settings update: {}",
+            "[settings] Failed to purge sessions outside current projectPaths after settings \
+                update: {}",
             e
         );
     }
@@ -1515,14 +1524,16 @@ fn emit_settings_draft_update_events(app: &AppHandle, events: &SettingsDraftUpda
         // THIS is the emit point the user's normal edit flow actually reaches. Kept at
         // debug to confirm the refresh fired without spamming app.log.
         log::debug!(
-            "[profile-hash] profile-save (save_settings_draft): coding-agent config changed; emitting coding_agent_profiles_updated"
+            "[profile-hash] profile-save (save_settings_draft): coding-agent config changed; \
+                emitting coding_agent_profiles_updated"
         );
         let _ = app.emit("coding_agent_profiles_updated", serde_json::json!({}));
     }
 
     for agent_id in &events.env_agent_ids {
         log::debug!(
-            "[profile-hash] profile-save (save_settings_draft): agent env changed for {}; emitting coding_agent_env_settings_updated",
+            "[profile-hash] profile-save (save_settings_draft): agent env changed for {}; emitting \
+                coding_agent_env_settings_updated",
             agent_id
         );
         let _ = app.emit(
@@ -2240,9 +2251,8 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
             &expected,
         ) {
             Ok(outcome) if outcome.changed => {
-                if outcome.lock_transition
-                    == Some(crate::config::coding_agent_profiles::SelectionLockTransition::UnlockedToLocked)
-                {
+                use crate::config::coding_agent_profiles::SelectionLockTransition;
+                if outcome.lock_transition == Some(SelectionLockTransition::UnlockedToLocked) {
                     newly_protected_paths.push(target.replica_path.clone());
                 }
                 if intent
@@ -2529,11 +2539,13 @@ fn validate_profile_assignment_confirmation(
         // #2051 - no fingerprint at all is a client contract failure, not a
         // target change: never report it as a stale preview.
         None => Err(
-            "confirmationMissing: This operation requires the preview confirmation, and none was sent. Nothing was written."
+            "confirmationMissing: This operation requires the preview confirmation, and none was \
+                sent. Nothing was written."
                 .to_string(),
         ),
         Some(_) => Err(
-            "stalePreview: Target selection changed. Rerun preview before applying profile selection."
+            "stalePreview: Target selection changed. Rerun preview before applying profile \
+                selection."
                 .to_string(),
         ),
     }
@@ -3495,7 +3507,8 @@ fn resolve_assignment_conflict_decision(
         return Ok(None);
     }
     Ok(Some(requested.ok_or_else(|| {
-        "conflictDecisionRequired: protected replicas are in scope; choose unlockedOnly or forceReviewed"
+        "conflictDecisionRequired: protected replicas are in scope; choose unlockedOnly or \
+            forceReviewed"
             .to_string()
     })?))
 }
@@ -4935,7 +4948,8 @@ fn apply_and_broadcast_log_level(app: &AppHandle, level: &str) {
     // app.log isn't confused why the backend verbosity didn't change.
     if !crate::logging::set_runtime_log_level(level) {
         log::debug!(
-            "[log-level] RUST_LOG override active; backend frozen, applying '{level}' to frontend only"
+            "[log-level] RUST_LOG override active; backend frozen, applying '{level}' to frontend \
+                only"
         );
     }
     let _ = app.emit("log_level_changed", serde_json::json!({ "level": level }));
@@ -5265,13 +5279,20 @@ pub(crate) async fn remember_agent_file_source_inner(
     source: crate::config::settings::SourceRef,
 ) -> Result<crate::config::settings::AgentFileSourcePreferences, String> {
     use crate::config::settings::SettingsOwnerError;
-    let report = settings.with_operation("remember_agent_file_source", move |current, guard| crate::config::settings::remember_agent_file_locked(current, guard, menu, &source)).await.map_err(|error| {
-        match error {
-            SettingsOwnerError::Capture(_) => "sourceParticipantReadFailed: no files changed; correct the participating file externally".to_owned(),
-            SettingsOwnerError::Compose(_) => "sourceParticipantInvalid: no files changed; correct the participating file externally".to_owned(),
+    let report = settings
+        .with_operation("remember_agent_file_source", move |current, guard| {
+            crate::config::settings::remember_agent_file_locked(current, guard, menu, &source)
+        })
+        .await
+        .map_err(|error| match error {
+            SettingsOwnerError::Capture(_) => "sourceParticipantReadFailed: no files changed; \
+                correct the participating file externally"
+                .to_owned(),
+            SettingsOwnerError::Compose(_) => "sourceParticipantInvalid: no files changed; \
+                correct the participating file externally"
+                .to_owned(),
             _ => "settingsOwnerUnavailable: no files changed".to_owned(),
-        }
-    })?;
+        })?;
     finish_remember_agent_file_report(settings, report).await
 }
 
@@ -5305,7 +5326,10 @@ async fn finish_remember_agent_file_report(
         .into_iter()
         .find(|code| reason.contains(code))
         .unwrap_or("sourcePreferenceRejected");
-        return Err(format!("{code}: no files changed; correct the participating file externally or refresh the selection"));
+        return Err(format!(
+            "{code}: no files changed; correct the participating file externally or refresh the \
+                selection"
+        ));
     }
     let adopted = settings.current_snapshot().await.map_err(|_| {
         "partialOrUnknown: preferences were published but adopted settings are unavailable"

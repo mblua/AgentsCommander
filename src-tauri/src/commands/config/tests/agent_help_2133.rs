@@ -107,9 +107,10 @@ fn agent_help_serves_the_remote_layer() {
 fn local_still_wins_over_remote_on_the_wire() {
     let payload = payload_with_layers(
         Some(r#"{"schemaVersion":1,"byCommand":{"claude":{"label":"Mine"}}}"#),
-        Some(
-            r#"{"schemaVersion":1,"byCommand":{"claude":{"label":"Theirs"},"codex":{"label":"C"}}}"#,
-        ),
+        Some(concat!(
+            r#"{"schemaVersion":1,"byCommand":{"claude":{"label":"Theirs"},"#,
+            r#""codex":{"label":"C"}}}"#,
+        )),
     );
     let local = payload.local.expect("local is served");
     let remote = payload.remote.expect("remote is served");

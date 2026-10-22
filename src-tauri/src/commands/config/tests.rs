@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::coding_agent_profiles::SelectionWriteIntent;
 
 #[tokio::test]
 async fn room_idle_confirmation_writer_receipts_follow_written_effective() {
@@ -3596,7 +3597,10 @@ async fn reorder_coding_agent_stale_expected_ids_rejects_before_saver_without_ev
 
 #[test]
 fn reorder_coding_agent_is_registered_in_invoke_handler() {
-    let lines: Vec<&str> = include_str!("../../lib.rs").lines().map(str::trim).collect();
+    let lines: Vec<&str> = include_str!("../../lib.rs")
+        .lines()
+        .map(str::trim)
+        .collect();
     let hits: Vec<usize> = lines
         .iter()
         .enumerate()
@@ -3758,11 +3762,17 @@ async fn update_settings_adopts_canonical_archive_without_resurrecting_absent_ar
                 managed.as_object_mut().unwrap().remove(key);
             }
             std::fs::write(&settings_path, serde_json::to_vec(&managed).unwrap()).unwrap();
-            std::fs::write(&sidecar, serde_json::to_vec(&serde_json::json!({
-                "projectPath":live_project, "projectPathRelativeToInstance":null,
-                "projectPaths":[live_project], "projectPathsRelativeToInstance":[null],
-                "archivedProjectPaths":[archived_project], "archivedProjectPathsRelativeToInstance":[null]
-            })).unwrap()).unwrap();
+            std::fs::write(
+                &sidecar,
+                serde_json::to_vec(&serde_json::json!({
+                    "projectPath":live_project, "projectPathRelativeToInstance":null,
+                    "projectPaths":[live_project], "projectPathsRelativeToInstance":[null],
+                    "archivedProjectPaths":[archived_project],
+                    "archivedProjectPathsRelativeToInstance":[null]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
         }
         let canonical_bytes = canonical.then(|| std::fs::read(&sidecar).unwrap());
         let mut current = settings_with_single_agent();
@@ -3861,11 +3871,17 @@ async fn save_settings_draft_adopts_canonical_archive_without_resurrecting_absen
                 managed.as_object_mut().unwrap().remove(key);
             }
             std::fs::write(&settings_path, serde_json::to_vec(&managed).unwrap()).unwrap();
-            std::fs::write(&sidecar, serde_json::to_vec(&serde_json::json!({
-                "projectPath":live_project, "projectPathRelativeToInstance":null,
-                "projectPaths":[live_project], "projectPathsRelativeToInstance":[null],
-                "archivedProjectPaths":[archived_project], "archivedProjectPathsRelativeToInstance":[null]
-            })).unwrap()).unwrap();
+            std::fs::write(
+                &sidecar,
+                serde_json::to_vec(&serde_json::json!({
+                    "projectPath":live_project, "projectPathRelativeToInstance":null,
+                    "projectPaths":[live_project], "projectPathsRelativeToInstance":[null],
+                    "archivedProjectPaths":[archived_project],
+                    "archivedProjectPathsRelativeToInstance":[null]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
         }
         let canonical_bytes = canonical.then(|| std::fs::read(&sidecar).unwrap());
         let mut current = settings_with_single_agent();
@@ -6730,7 +6746,7 @@ async fn issue_1937_selection_api_barrier_unlock_waits_for_paused_apply_publicat
                         coding_agent_id: "agent-0".to_string(),
                         requested_profile: "B".to_string(),
                     },
-                    crate::config::coding_agent_profiles::SelectionWriteIntent::IndividualAssignLock,
+                    SelectionWriteIntent::IndividualAssignLock,
                     &expected,
                 )
                 .expect("publish the lock");
@@ -6834,7 +6850,7 @@ async fn issue_1937_selection_api_barrier_read_cannot_observe_half_settled_apply
                         coding_agent_id: "agent-0".to_string(),
                         requested_profile: "B".to_string(),
                     },
-                    crate::config::coding_agent_profiles::SelectionWriteIntent::IndividualAssignLock,
+                    SelectionWriteIntent::IndividualAssignLock,
                     &expected,
                 )
                 .expect("publish the lock");
@@ -7517,69 +7533,68 @@ async fn bench_batch_locked(
         between.await;
         futures::future::join_all(pending).await
     });
-    let joined = match tokio::time::timeout_at(
-        tokio::time::Instant::from_std(deadline_at),
-        wait.as_mut(),
-    )
-    .await
-    {
-        Ok(joined) => joined,
-        Err(_) => {
-            options.record(|m| m.expired_observed = Some(std::time::Instant::now()));
-            if let Some(notify) = &options.on_deadline {
-                notify.notify_one();
-            }
-            // The owned reads are detached, not cancelled, when their
-            // waiters drop: keep the sinks and the serialization lock
-            // until every one of them has finished.
-            if tokio::time::timeout_at(tokio::time::Instant::from_std(grace_at), wait.as_mut())
-                .await
-                .is_ok()
-            {
-                drop(serial);
-                return Err(BenchError::Failed(format!(
-                    "bench batch timed out; {submitted_reads} submitted reads drained before release"
-                )));
-            }
-            // The harness lost control of reads it launched. In order:
-            // 1. keep the fixture on disk, so no orphan reads a deleted path;
-            let retained = bench
-                .temp
-                .lock()
-                .expect("fixture temp")
-                .take()
-                .map(tempfile::TempDir::keep)
-                .unwrap_or_else(|| bench.root.clone());
-            // 2. keep the sinks registered and 3. keep `serial` held;
-            // 4. name what is still pending and where the fixture is.
-            let finished_ids = done.lock().expect("done").clone();
-            let pending_reads: Vec<(u64, &'static str)> = by_invocation
-                .iter()
-                .filter(|(id, _)| !finished_ids.contains(id))
-                .map(|(id, (command, _))| (*id, *command))
-                .collect();
-            let diagnostic = format!(
+    let joined =
+        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline_at), wait.as_mut())
+            .await
+        {
+            Ok(joined) => joined,
+            Err(_) => {
+                options.record(|m| m.expired_observed = Some(std::time::Instant::now()));
+                if let Some(notify) = &options.on_deadline {
+                    notify.notify_one();
+                }
+                // The owned reads are detached, not cancelled, when their
+                // waiters drop: keep the sinks and the serialization lock
+                // until every one of them has finished.
+                if tokio::time::timeout_at(tokio::time::Instant::from_std(grace_at), wait.as_mut())
+                    .await
+                    .is_ok()
+                {
+                    drop(serial);
+                    return Err(BenchError::Failed(format!(
+                        "bench batch timed out; {submitted_reads} submitted reads drained before \
+                    release"
+                    )));
+                }
+                // The harness lost control of reads it launched. In order:
+                // 1. keep the fixture on disk, so no orphan reads a deleted path;
+                let retained = bench
+                    .temp
+                    .lock()
+                    .expect("fixture temp")
+                    .take()
+                    .map(tempfile::TempDir::keep)
+                    .unwrap_or_else(|| bench.root.clone());
+                // 2. keep the sinks registered and 3. keep `serial` held;
+                // 4. name what is still pending and where the fixture is.
+                let finished_ids = done.lock().expect("done").clone();
+                let pending_reads: Vec<(u64, &'static str)> = by_invocation
+                    .iter()
+                    .filter(|(id, _)| !finished_ids.contains(id))
+                    .map(|(id, (command, _))| (*id, *command))
+                    .collect();
+                let diagnostic = format!(
                 "bench drain expired: pending invocations {pending_reads:?}; retained fixture {}",
                 retained.display()
             );
-            eprintln!("{diagnostic}");
-            // 5. the terminal action.
-            match options.drain_expiry {
-                DrainExpiryAction::Abort => std::process::abort(),
-                DrainExpiryAction::Record => {
-                    return Err(BenchError::DrainExpired(Box::new(DrainExpired {
-                        diagnostic,
-                        pending: pending_reads,
-                        retained,
-                        wait,
-                        sinks: _sinks,
-                        serial,
-                        _app: app,
-                    })));
+                eprintln!("{diagnostic}");
+                // 5. the terminal action.
+                match options.drain_expiry {
+                    DrainExpiryAction::Abort => std::process::abort(),
+                    DrainExpiryAction::Record => {
+                        return Err(BenchError::DrainExpired(Box::new(DrainExpired {
+                            diagnostic,
+                            pending: pending_reads,
+                            retained,
+                            wait,
+                            sinks: _sinks,
+                            serial,
+                            _app: app,
+                        })));
+                    }
                 }
             }
-        }
-    };
+        };
     finished.extend(joined);
 
     let mut completed = std::collections::BTreeMap::new();
@@ -7709,7 +7724,8 @@ fn bench_report(label: &str, runs: &[&BenchRun]) {
     for (command, values) in wait_by_command.iter_mut() {
         let work = work_by_command.get_mut(command).expect("work");
         println!(
-            "[bench] {label} {command} queue_wait_ms p50={:.1} p90={:.1} work_ms p50={:.1} p90={:.1}",
+            "[bench] {label} {command} queue_wait_ms p50={:.1} p90={:.1} work_ms p50={:.1} \
+            p90={:.1}",
             pct(&mut values.clone(), 0.5),
             pct(values, 0.9),
             pct(&mut work.clone(), 0.5),
@@ -8793,7 +8809,8 @@ async fn issue_2475_batch_of_thirteen_reads_drops_queue_wait() {
         assert_bench_correlation(&run);
         if bench_measurement_mode() {
             println!(
-                "[bench-p3] R={r} M={m} batch_wall_ms={:.1} sum_queue_wait_ms={:.1} occupancy_max={}",
+                "[bench-p3] R={r} M={m} batch_wall_ms={:.1} sum_queue_wait_ms={:.1} \
+                occupancy_max={}",
                 run.batch_wall_ms,
                 bench_sum_queue_wait_ms(&run),
                 run.occupancy_max

@@ -168,19 +168,43 @@ fn issue_3083_closed_enums_and_full_record() {
     for (field, values) in [
         ("surface", "embedded sidebar store"),
         ("kind", "custom system nonstop ungrouped project favorites"),
-        ("selectionKind", "custom system nonstop ungrouped project favorites"),
+        (
+            "selectionKind",
+            "custom system nonstop ungrouped project favorites",
+        ),
         ("phase", "arming dragging saving idle"),
-        ("outcome", "applied unchanged stale error disconnected unloaded queued discarded suppressed overflow no-press"),
-        ("targetTag", "button span svg path aside body input textarea other none"),
-        ("activeTag", "button span svg path aside body input textarea other none"),
-        ("event", "pointerdown pointerup pointercancel mousedown mouseup click gotpointercapture lostpointercapture focusin focusout window-focus window-blur handler-enter handler-end selection-change rail-mount rail-dispose section-mount section-dispose node-mount node-dispose project-list project-buttons favorites-entries reload-start reload-end discover-start discover-end snapshot-start snapshot-end snapshots-start snapshots-end task-start task-end loop-start loop-end"),
+        (
+            "outcome",
+            "applied unchanged stale error disconnected unloaded queued discarded \
+            suppressed overflow no-press",
+        ),
+        (
+            "targetTag",
+            "button span svg path aside body input textarea other none",
+        ),
+        (
+            "activeTag",
+            "button span svg path aside body input textarea other none",
+        ),
+        (
+            "event",
+            "pointerdown pointerup pointercancel mousedown mouseup click gotpointercapture \
+            lostpointercapture focusin focusout window-focus window-blur handler-enter handler-end \
+            selection-change rail-mount rail-dispose section-mount section-dispose node-mount \
+            node-dispose project-list project-buttons favorites-entries reload-start reload-end \
+            discover-start discover-end snapshot-start snapshot-end snapshots-start snapshots-end \
+            task-start task-end loop-start loop-end",
+        ),
     ] {
         for good in values.split_whitespace() {
-            let mut value = record(); value[field] = json!(good);
+            let mut value = record();
+            value[field] = json!(good);
             assert!(rail_diagnostic_line(Some(value)).is_ok(), "{field}: {good}");
         }
         for bad in [json!("private text"), json!(1), json!({"unknown":"nested"})] {
-            let mut value = record(); value[field] = bad; reject(Some(value));
+            let mut value = record();
+            value[field] = bad;
+            reject(Some(value));
         }
     }
     let mut full = record();

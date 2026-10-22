@@ -4,7 +4,10 @@ use serde_json::json;
 #[test]
 fn p02_typed_ipc_snapshot_emits_only_canonical_configuration_names() {
     let mut settings = AppSettings {
-        agents: vec![serde_json::from_value(json!({"id":"one","label":"One","color":"#123456","baseCommand":"tool","command":"old"})).unwrap()],
+        agents: vec![serde_json::from_value(json!({
+            "id":"one","label":"One","color":"#123456","baseCommand":"tool","command":"old"
+        }))
+        .unwrap()],
         ..AppSettings::default()
     };
     settings.coding_agent_profiles.profiles_by_agent.insert(
