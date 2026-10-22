@@ -7,8 +7,7 @@
 // The committed baseline was produced on Windows under Node v24.13.0. If a later Node or OS
 // change moves the cycle id, that is where to start looking.
 //
-// Known gap until P4: a cycle that disappears still passes here (the detector exits 0), so this
-// gate must not be made a required check on its own.
+// Removal requires an updated baseline: the detector's stale-baseline exit 3 remains ERROR.
 
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';

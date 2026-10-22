@@ -9,6 +9,132 @@ import { lineLengths, fileMetrics } from './sanitizing_line_metrics.mjs';
 import { runGate as lengthGate } from './sanitizing_line_length.mjs';
 import { runGate as sizeGate } from './sanitizing_file_size.mjs';
 import { scanRust, lexRust, decodeRustString, compatibilitySites } from './sanitizing_rust_scan.mjs';
+import { readCycles, readArcs, ratchet, preflight, wrapperRunner, runGate as cyclesGate } from './sanitizing_cycles.mjs';
+
+const cycleBaseline = members => JSON.stringify({schemaVersion:1,kind:'rust-cycles-baseline',
+  generatedFrom:{toolVersion:'1.1.1',functionScope:'cross-module',includeTests:false},
+  moduleCycles:members.map((members,i)=>({id:String(i),members}))});
+function cycleSnapshot(before,after,baseArcs,headArcs) {
+  const tree = (cycles,arcs) => new Map([
+    ['src-tauri/.rust-cycles-baseline.json',{text:cycleBaseline(cycles)}],
+    ['src-tauri/module-arcs.txt',{text:arcs}],
+  ]);
+  return {baseTree:tree(before,baseArcs),headTree:tree(after,headArcs),baseOid:'base',headOid:'head',
+    readBlob:entry=>entry.text,assertStableHead(){}};
+}
+test('03 immutable SCC ratchet: equal/down/up/restoration, expansion and union', () => {
+  const snapshot = cycleSnapshot([['a','b','c']],[['a','b','c']],'a -> b\nb -> a\n','a -> b\nb -> a\n');
+  assert.equal(ratchet(snapshot).diagnostics.length,0);
+  snapshot.headTree.get('src-tauri/module-arcs.txt').text='a -> b\na -> c\nb -> a\n';
+  assert.equal(ratchet(snapshot).diagnostics[0].rule,'internal_arcs');
+  snapshot.headTree.get('src-tauri/module-arcs.txt').text='a -> b\n';
+  assert.equal(ratchet(snapshot).diagnostics.length,0);
+  snapshot.headTree.get('src-tauri/.rust-cycles-baseline.json').text=cycleBaseline([['a','b','c','d']]);
+  assert.equal(ratchet(snapshot).diagnostics[0].rule,'scc_members');
+  snapshot.headTree.get('src-tauri/.rust-cycles-baseline.json').text=cycleBaseline([['a','b','c']]);
+  assert.equal(ratchet(snapshot).diagnostics.length,0);
+  assert.equal(ratchet(cycleSnapshot([['a','b'],['c','d']],[['a','b','c','d']],'','')).diagnostics.length,1);
+  assert.equal(ratchet(cycleSnapshot([['a','b','c','d']],[['a','b'],['c','d']],'','')).diagnostics.length,0);
+  assert.equal(ratchet(cycleSnapshot([['a','b']],[],'','')).diagnostics.length,0);
+  assert.equal(ratchet(cycleSnapshot([],[],'','')).diagnostics.length,0);
+  assert.equal(ratchet(cycleSnapshot([],[['a','b']],'','')).diagnostics.length,1);
+});
+test('03 record and SCC schema reject malformed inputs instead of empty debt', () => {
+  assert.deepEqual(readArcs(''),[]);
+  assert.deepEqual(readArcs('a -> b\n'),[['a','b']]);
+  for (const value of ['a -> b','a -> b\r\n','a -> a\n','b -> c\na -> b\n','a -> b\na -> b\n','bad\n'])
+    assert.throws(()=>readArcs(value),e=>e.exit===2);
+  for (const value of ['{',cycleBaseline([[]]),cycleBaseline([['a','a']]),cycleBaseline([['a'],['a']]),
+    cycleBaseline([['a']]).replace('1.1.1','2.0.0')]) assert.throws(()=>readCycles(value),e=>e.exit===2);
+  const snapshot=cycleSnapshot([],[],'','');snapshot.baseTree.delete('src-tauri/module-arcs.txt');
+  assert.throws(()=>ratchet(snapshot),e=>e.exit===3);
+});
+test('03 wrappers each run once, ERROR dominates, failures do not omit ratchet/cycles', async () => {
+  const snapshot=cycleSnapshot([['a','b']],[['a','b']],'a -> b\n','a -> b\n');
+  for (const [status,expected] of [[0,0],[1,1],[2,3],[3,3],[4,3],[null,3]]) {
+    const calls=[];let flights=0;
+    const result=await cyclesGate(snapshot,{preflightRun(){flights++;},runner(script){calls.push(script);
+      return {status:calls.length===1?status:0,stdout:Buffer.from('output'),stderr:Buffer.from('diagnostic')};}});
+    assert.equal(result.exit,expected,JSON.stringify(result));assert.equal(calls.length,2);assert.equal(flights,2);
+    assert.equal(result.wrappers[0].stdout,'output');assert.equal(result.wrappers[0].stderr,'diagnostic');
+  }
+  for (const kind of ['signal','timeout','throw','buffer']) {
+    let calls=0;
+    const result=await cyclesGate(snapshot,{preflightRun(){},runner(){calls++;
+      if(calls===2)return {status:0};
+      if(kind==='throw')throw new Error('spawn rejected');
+      return {status:null,signal:kind==='signal'?'SIGTERM':null,
+        error:kind==='timeout'?new Error('ETIMEDOUT'):undefined,
+        stdout:kind==='buffer'?Buffer.from([255]):Buffer.alloc(0)};
+    }});
+    assert.equal(result.exit,3);assert.equal(calls,2);
+  }
+  snapshot.headTree.get('src-tauri/module-arcs.txt').text='a -> b\nb -> a\n';
+  const fail=await cyclesGate(snapshot,{preflightRun(){},runner(){return {status:1};}});
+  assert.equal(fail.exit,1);assert.equal(fail.diagnostics[0].rule,'internal_arcs');
+  const error=await cyclesGate(snapshot,{preflightRun(){},runner(){return {status:3};}});
+  assert.equal(error.exit,3);
+});
+test('03 working inputs: dirty/ignored/missing inputs and HEAD drift never pass', t => {
+  const f=fixture(t);
+  const files={
+    'src-tauri/src/lib.rs':'pub fn fixture() {}\n',
+    'src-tauri/Cargo.toml':'[package]\nname="fixture"\nversion="0.1.0"\n',
+    'src-tauri/.rust-cycles-baseline.json':cycleBaseline([]),
+    'src-tauri/module-arcs.txt':'a -> b\n',
+    'scripts/check-module-arcs.mjs':'// fixture\n',
+    'scripts/check-module-cycles.mjs':'// fixture\n',
+    'scripts/sanitizing_cycles.mjs':'// fixture\n',
+    'scripts/containers.json':'{}\n',
+    'package.json':'{}\n',
+    '.gitignore':'extra.rs\n',
+  };
+  for(const [p,text]of Object.entries(files))f.write(p,text);
+  f.commit();const snapshot=f.snapshot();
+  const check=()=>preflight(snapshot,{cwd:f.cwd,runner:f.runner});
+  assert.doesNotThrow(check);
+  for(const p of Object.keys(files).filter(p=>p!=='.gitignore')) {
+    f.write(p,files[p]+'// dirty\n');assert.throws(check,e=>e.exit===3,p);
+    f.write(p,files[p]);assert.doesNotThrow(check);
+  }
+  const extra=path.join(f.cwd,'src-tauri/src/extra.rs');f.write('src-tauri/src/extra.rs','fn extra() {}\n');
+  assert.throws(check,/extra\/missing\/ignored/);fs.unlinkSync(extra);assert.doesNotThrow(check);
+  f.write('scripts/sanitizing_extra.mjs','// ignored input\n');
+  assert.throws(check,/extra untracked\/ignored/);fs.unlinkSync(path.join(f.cwd,'scripts/sanitizing_extra.mjs'));
+  assert.doesNotThrow(check);
+  f.git('config','core.autocrlf','true');
+  f.write('src-tauri/src/lib.rs',files['src-tauri/src/lib.rs'].replaceAll('\n','\r\n'));
+  assert.doesNotThrow(check);
+  f.write('src-tauri/src/lib.rs',files['src-tauri/src/lib.rs']);
+  f.git('config','core.autocrlf','false');
+  fs.unlinkSync(path.join(f.cwd,'src-tauri/src/lib.rs'));assert.throws(check,/traversal/);
+  f.write('src-tauri/src/lib.rs',files['src-tauri/src/lib.rs']);assert.doesNotThrow(check);
+  f.write('src-tauri/target/ignored.rs','not valid Rust');assert.doesNotThrow(check);
+  f.write('src-tauri/Cargo.toml',files['src-tauri/Cargo.toml']+'[lib]\npath="../../outside.rs"\n');
+  f.commit();assert.throws(()=>preflight(f.snapshot(),{cwd:f.cwd,runner:f.runner}),/outside proved traversal/);
+  assert.throws(check,/HEAD drift/);
+});
+test('03 real runner bounds output/time and terminates its own descendant tree', async t => {
+  const f=fixture(t);
+  f.write('scripts/wrapper.mjs','console.log("stdout"); console.error("stderr");');
+  const pass=await wrapperRunner('scripts/wrapper.mjs',{cwd:f.cwd});
+  assert.equal(pass.status,0);assert.equal(pass.error,undefined);assert.match(pass.stdout.toString(),/stdout/);
+  assert.match(pass.stderr.toString(),/stderr/);
+  f.write('scripts/wrapper.mjs','process.stdout.write("a".repeat(4096)); setInterval(()=>{},1000);');
+  const output=await wrapperRunner('scripts/wrapper.mjs',{cwd:f.cwd,outputLimit:1024});
+  assert.match(output.error.message,/output exceeded/);assert.equal(output.stdout.length,1024);
+  f.write('scripts/wrapper.mjs',`import {spawn} from 'node:child_process';
+const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true});
+console.log(child.pid);setInterval(()=>{},1000);`);
+  const timeout=await wrapperRunner('scripts/wrapper.mjs',{cwd:f.cwd,timeout:1000});
+  assert.match(timeout.error.message,/timeout/);
+  const descendant=Number(timeout.stdout.toString().trim());assert.ok(Number.isInteger(descendant)&&descendant>0);
+  await new Promise(resolve=>setTimeout(resolve,100));
+  assert.throws(()=>process.kill(descendant,0),e=>e.code==='ESRCH');
+  f.write('scripts/wrapper.mjs','console.log("restored");');
+  const restored=await wrapperRunner('scripts/wrapper.mjs',{cwd:f.cwd});
+  assert.equal(restored.status,0);assert.equal(restored.error,undefined);
+});
 
 // Fixtures are isolated repositories, never a user's worktree. No network/symlinks/profiles.
 function fixture(t) {
