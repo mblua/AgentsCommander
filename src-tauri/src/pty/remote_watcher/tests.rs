@@ -2173,7 +2173,9 @@ async fn rate_limit_jumps_straight_to_the_cap() {
 fn secondary_limit_output() -> GhCallOutput {
     GhCallOutput {
         stdout: String::new(),
-        stderr: "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.".to_string(),
+        stderr: "You have exceeded a secondary rate limit. Please wait a few minutes before you \
+            try again."
+            .to_string(),
         success: false,
     }
 }
@@ -4675,9 +4677,16 @@ fn i2768_row(id: u64, status: &str) -> serde_json::Value {
 fn i2768_assert_edges(h: &Harness, started: usize, finished: usize) {
     let edges = h.drain_transitions();
     println!(
-        "edge_counts started={} finished={} expected_started={started} expected_finished={finished}",
-        edges.iter().filter(|edge| edge.kind == TransitionKind::CiStarted).count(),
-        edges.iter().filter(|edge| edge.kind == TransitionKind::CiFinished).count(),
+        "edge_counts started={} finished={} expected_started={started} \
+            expected_finished={finished}",
+        edges
+            .iter()
+            .filter(|edge| edge.kind == TransitionKind::CiStarted)
+            .count(),
+        edges
+            .iter()
+            .filter(|edge| edge.kind == TransitionKind::CiFinished)
+            .count(),
     );
     assert_eq!(
         edges

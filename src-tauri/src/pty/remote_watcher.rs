@@ -1247,7 +1247,8 @@ impl RemoteSweeper {
             Some(_) => SnapshotPersistence::Enabled,
             None => {
                 log::warn!(
-                    "[RemoteSweeper] no snapshot directory was wired at construction; remote activity snapshots will not be published for this process"
+                    "[RemoteSweeper] no snapshot directory was wired at construction; remote \
+                        activity snapshots will not be published for this process"
                 );
                 SnapshotPersistence::DisabledMissingAtConstruction
             }
@@ -1386,7 +1387,8 @@ impl RemoteSweeper {
                 Ok(paths) => paths,
                 Err(e) => {
                     log::warn!(
-                        "[RemoteSweeper] work-list build failed ({e}); sweeping unfiltered this round"
+                        "[RemoteSweeper] work-list build failed ({e}); sweeping unfiltered this \
+                            round"
                     );
                     crate::pty::git_watcher::build_work_list(
                         discovery_fallback,
@@ -2265,7 +2267,8 @@ impl RemoteSweeper {
                     state.closed_warned = true;
                     drop(state);
                     log::warn!(
-                        "[RemoteSweeper] transition channel closed; transitions are dropped for the rest of this process"
+                        "[RemoteSweeper] transition channel closed; transitions are dropped for \
+                            the rest of this process"
                     );
                 }
             }
