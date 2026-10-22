@@ -601,7 +601,8 @@ async fn joined_worker_retains_no_coordinator_or_extra_pty_owner() {
                 session_id: Uuid::new_v4(), agent_id: None, requested_profile: None,
                 skip_auto_resume: None, activate_after: false,
                 intent: TrustedRestartIntent::Background, communication_override: None,
-                enforcement: crate::config::sessions_persistence::default_creation_gate_enforcement(),
+                enforcement:
+                    crate::config::sessions_persistence::default_creation_gate_enforcement(),
             }).await
         })
     };

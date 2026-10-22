@@ -74,7 +74,10 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
             }
             let cleanup =
                 tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join()).await;
-            panic!("pending-container setup failed: {error}; coordinator cleanup={cleanup:?}; a cleanup timeout leaves worker ownership unresolved");
+            panic!(
+                "pending-container setup failed: {error}; coordinator cleanup={cleanup:?}; \
+                 a cleanup timeout leaves worker ownership unresolved"
+            );
         }
     };
     let _transport_receiver =
@@ -126,7 +129,10 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
         if cleanup.is_err() {
             close.abort();
             let aborted = tokio::time::timeout(Duration::from_secs(5), &mut close).await;
-            eprintln!("coordinator cleanup exceeded five seconds; abort join={aborted:?}; worker ownership unresolved");
+            eprintln!(
+                "coordinator cleanup exceeded five seconds; abort join={aborted:?}; \
+                 worker ownership unresolved"
+            );
         }
         Some(cleanup)
     } else {
@@ -205,7 +211,12 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
     let worker_count = container_backend.shutdown_worker_count_for_test();
     let deadline_seen = runtime.deadline_seen.load(Ordering::SeqCst);
     let retained = container_backend.retained_cleanup_sessions_for_test();
-    eprintln!("pending-container capped={capped} close={close_result:?} close_cleanup={close_cleanup:?} terminal={} stops={stop_calls} active={active_stops} worker_accounting={worker_count} retained={retained:?}", global_report.terminal);
+    eprintln!(
+        "pending-container capped={capped} close={close_result:?} \
+         close_cleanup={close_cleanup:?} terminal={} stops={stop_calls} \
+         active={active_stops} worker_accounting={worker_count} retained={retained:?}",
+        global_report.terminal
+    );
     shutdown_signal.expect("pending-container shutdown signal becomes visible");
     close_result
         .expect("coordinator close obeys the shared shutdown deadline")
@@ -501,11 +512,13 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
             // it does not restate `persistence_safe == retained.is_empty()`.
             assert!(
                 !close_report.persistence_safe,
-                "a capped close that gave up on {work_state_at_close:?} must report abandoned ownership: {close_report:?}"
+                "a capped close that gave up on {work_state_at_close:?} \
+                 must report abandoned ownership: {close_report:?}"
             );
             assert!(
                 !close_report.retained.is_empty(),
-                "a capped close that gave up on {work_state_at_close:?} must name what it abandoned: {close_report:?}"
+                "a capped close that gave up on {work_state_at_close:?} \
+                 must name what it abandoned: {close_report:?}"
             );
         }
         // The remaining cases, a close that returned under budget and a close
@@ -581,7 +594,8 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
                     && context.contains(&pending_id.to_string())
                     && context.contains("runtimeHandle=true"))
         }),
-        "retained cleanup must identify runtime-backed ownership separately from non-runtime residue: {retained_contexts:?}"
+        "retained cleanup must identify runtime-backed ownership separately \
+         from non-runtime residue: {retained_contexts:?}"
     );
     await_state_eq(
         "shutdown work drains",

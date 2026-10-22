@@ -9,7 +9,8 @@ fn selection_timing_line_separates_queue_wait_and_work() {
             Duration::from_micros(5_600),
             true,
         ),
-        "[selection-timing] command=preview_selection_lock_removal queue_wait_ms=1234.5 work_ms=5.6 ok=true"
+        "[selection-timing] command=preview_selection_lock_removal \
+         queue_wait_ms=1234.5 work_ms=5.6 ok=true"
     );
 }
 

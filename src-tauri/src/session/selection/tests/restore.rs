@@ -262,7 +262,11 @@ async fn derived_agent_id_binding_deferred_and_root_restore_install_before_publi
             original_agent_id: "original".into(),
             configuration_ref: None,
         };
-        let origin = serde_json::json!({"sessionsPath":"C:/sessions.json","rawFileSHA256":"original-bytes","originalOrdinal":if root { 1 } else { 0 }});
+        let origin = serde_json::json!({
+            "sessionsPath": "C:/sessions.json",
+            "rawFileSHA256": "original-bytes",
+            "originalOrdinal": if root { 1 } else { 0 }
+        });
         let cwd = if root { "C:/root" } else { "C:/deferred" };
         let info = transaction
             .restore_dormant_inline(DormantRestoreRequest {
