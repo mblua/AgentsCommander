@@ -585,8 +585,6 @@ impl ResponseCloseState {
     pub(crate) fn mark_work_bootstrapped(&self) {
         let _ = self.with_inner(|inner| inner.work_bootstrapped = true);
     }
-    // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn try_enable_readiness(&self) -> Result<(), ResponseCloseError> {
         self.with_inner(|inner| {
             if inner.publishers != 63 || !inner.work_bootstrapped {
