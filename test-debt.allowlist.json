@@ -226,20 +226,20 @@
       "resolution": "Run as Stage F acceptance or manually with cargo test --release --lib -- --ignored --test-threads=1 --exact config::config_seed::tests::bench_end_to_end_config_staging_1k_10k_100k."
     },
     {
-      "id": "rust:src-tauri/src/commands/entity_creation.rs::stage_e_cross_process::cli_member_deletion_takes_project_gate_before_team_cross_process",
+      "id": "rust:src-tauri/src/commands/entity_creation/tests/stage_e_cross_process.rs::cli_member_deletion_takes_project_gate_before_team_cross_process",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 1064,
       "reason": "#1064 Stage E cross-process lock-order PARENT: spawns Stage D's landed cli_member child helper via current_exe --exact --ignored and proves the deletion holds the project gate before the team guard across processes (plan section 10.4 item 22, acceptance items 43/44). It launches a child test process and must run under --test-threads=1, so it stays out of the standard debug cargo test lane.",
-      "resolution": "Run as Stage F acceptance or manually with cargo test --lib -- --ignored --test-threads=1 --exact commands::entity_creation::stage_e_cross_process::cli_member_deletion_takes_project_gate_before_team_cross_process."
+      "resolution": "Run as Stage F acceptance or manually with cargo test --lib -- --ignored --test-threads=1 --exact commands::entity_creation::tests::stage_e_cross_process::cli_member_deletion_takes_project_gate_before_team_cross_process."
     },
     {
-      "id": "rust:src-tauri/src/commands/entity_creation.rs::stage_e_cross_process::cli_workgroup_deletion_takes_project_gate_only_cross_process",
+      "id": "rust:src-tauri/src/commands/entity_creation/tests/stage_e_cross_process.rs::cli_workgroup_deletion_takes_project_gate_only_cross_process",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 1064,
       "reason": "#1064 Stage E cross-process lock-order PARENT: spawns Stage D's landed cli_workgroup child helper via current_exe --exact --ignored and proves the project-only deletion holds the project gate across processes (plan section 10.4 item 22, acceptance items 43/44). It launches a child test process and must run under --test-threads=1, so it stays out of the standard debug cargo test lane.",
-      "resolution": "Run as Stage F acceptance or manually with cargo test --lib -- --ignored --test-threads=1 --exact commands::entity_creation::stage_e_cross_process::cli_workgroup_deletion_takes_project_gate_only_cross_process."
+      "resolution": "Run as Stage F acceptance or manually with cargo test --lib -- --ignored --test-threads=1 --exact commands::entity_creation::tests::stage_e_cross_process::cli_workgroup_deletion_takes_project_gate_only_cross_process."
     },
     {
       "id": "rust:src-tauri/src/pty/watchers/mod.rs::read_seam_tests::read_seam_timing",
