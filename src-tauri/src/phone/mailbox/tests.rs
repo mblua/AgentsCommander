@@ -1,6 +1,43 @@
 use super::*;
 use crate::config::settings::AppSettings;
+use crate::phone::mailbox::handoff::anti_spoof_accept;
+use crate::phone::mailbox::handoff::build_self_clear_handoff_prompt;
+use crate::phone::mailbox::handoff::build_self_restart_handoff_prompt;
+use crate::phone::mailbox::handoff::build_self_switch_handoff_prompt;
+use crate::phone::mailbox::handoff::canonicalize_msg_from_in_place;
+use crate::phone::mailbox::handoff::internal_wake_resumes;
+use crate::phone::mailbox::handoff::is_viable_root_recipient;
+use crate::phone::mailbox::handoff::is_viable_wake_candidate;
+use crate::phone::mailbox::handoff::next_sustained_idle_state;
+use crate::phone::mailbox::handoff::self_clear_handoff_base_prompt;
+use crate::phone::mailbox::handoff::self_restart_handoff_base_prompt;
+use crate::phone::mailbox::handoff::self_switch_handoff_base_prompt;
+use crate::phone::mailbox::handoff::wake_action_for;
+use crate::phone::mailbox::handoff::wake_spawn_skip_auto_resume;
+use crate::phone::mailbox::handoff::ForgottenSummary;
+use crate::phone::mailbox::handoff::SettleAction;
+use crate::phone::mailbox::handoff::WakeAction;
+use crate::phone::mailbox::handoff::SELF_FORGET_SUMMARY_MAX_CHARS;
+use crate::phone::mailbox::notice::OutboxOrigin;
+use crate::phone::mailbox::poller::evaluate_gate;
+use crate::phone::mailbox::poller::PurgeGatePeer;
+use crate::phone::mailbox::poller::PurgeGateSession;
+use crate::phone::mailbox::settle::err_is_pty_session_missing;
+use crate::phone::mailbox::settle::filter_sessions_by_fqn;
+use crate::phone::mailbox::settle::live_settle_action;
+use crate::phone::mailbox::settle::live_wake_route;
+use crate::phone::mailbox::settle::self_clear_gate_advance;
+use crate::phone::mailbox::settle::settle_tick;
+use crate::phone::mailbox::settle::wait_for_restore_or_session;
+use crate::phone::mailbox::settle::wake_settle_ready;
+use crate::phone::mailbox::settle::LiveWakeRoute;
+use crate::phone::mailbox::settle::RestoreWaitOutcome;
+use crate::phone::mailbox::settle::SelfClearGateAction;
+use crate::phone::mailbox::settle::SelfClearGateState;
+use crate::phone::mailbox::settle::SelfClearPhase;
 use crate::telegram::manager::TelegramBridgeManager;
+use crate::HashMap;
+use crate::MasterToken;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
@@ -368,7 +405,31 @@ fn thresholds_is_none_for_a_remote_activity_notice() {
 /// (commands::session::CoordinatorCreateTicket); mailbox has none of its own.
 #[test]
 fn mailbox_has_no_unchecked_close_marker_restore() {
-    let src = include_str!("../mailbox.rs");
+    let src = concat!(
+        include_str!("diagnostics.rs"),
+        include_str!("handoff.rs"),
+        include_str!("internal_delivery.rs"),
+        include_str!("notice.rs"),
+        include_str!("outbox_auth.rs"),
+        include_str!("peer_fallback.rs"),
+        include_str!("poller.rs"),
+        include_str!("pty_artifact.rs"),
+        include_str!("pty_authority.rs"),
+        include_str!("pty_claim.rs"),
+        include_str!("pty_dispatch.rs"),
+        include_str!("pty_validation.rs"),
+        include_str!("request_polling.rs"),
+        include_str!("response_source.rs"),
+        include_str!("self_handoff.rs"),
+        include_str!("self_switch.rs"),
+        include_str!("session_lookup.rs"),
+        include_str!("session_request.rs"),
+        include_str!("settle.rs"),
+        include_str!("wake_delivery.rs"),
+        include_str!("wake_injection.rs"),
+        include_str!("wake_workers.rs"),
+        include_str!("../mailbox.rs"),
+    );
     let lines: Vec<&str> = src.lines().collect();
     let boundary = lines
         .iter()
@@ -395,7 +456,31 @@ fn inject_internal_system_notice_log_line_is_unchanged_for_context_alert() {
     // There is no log-capture seam, so this is a source scan in the pattern of
     // `agent_update_emits_only_through_emit_all`: the enum rewrite is exactly
     // the change that could quietly rewrite a line operators grep.
-    let src = include_str!("../mailbox.rs");
+    let src = concat!(
+        include_str!("diagnostics.rs"),
+        include_str!("handoff.rs"),
+        include_str!("internal_delivery.rs"),
+        include_str!("notice.rs"),
+        include_str!("outbox_auth.rs"),
+        include_str!("peer_fallback.rs"),
+        include_str!("poller.rs"),
+        include_str!("pty_artifact.rs"),
+        include_str!("pty_authority.rs"),
+        include_str!("pty_claim.rs"),
+        include_str!("pty_dispatch.rs"),
+        include_str!("pty_validation.rs"),
+        include_str!("request_polling.rs"),
+        include_str!("response_source.rs"),
+        include_str!("self_handoff.rs"),
+        include_str!("self_switch.rs"),
+        include_str!("session_lookup.rs"),
+        include_str!("session_request.rs"),
+        include_str!("settle.rs"),
+        include_str!("wake_delivery.rs"),
+        include_str!("wake_injection.rs"),
+        include_str!("wake_workers.rs"),
+        include_str!("../mailbox.rs"),
+    );
     let lines: Vec<&str> = src.lines().collect();
     let boundary = lines
         .iter()
@@ -909,9 +994,11 @@ fn retain_unarchived_session_dirs_returns_input_unchanged_when_archived_list_is_
 
 #[test]
 fn mailbox_poll_bypasses_session_dir_filter_when_archived_list_is_empty() {
-    let source =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/phone/mailbox.rs"))
-            .expect("read mailbox.rs");
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/phone/mailbox/wake_workers.rs"
+    ))
+    .expect("read mailbox/wake_workers.rs");
     let production = source
         .split("#[cfg(test)]\nmod tests")
         .next()

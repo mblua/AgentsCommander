@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "ea1e0f9e43f1b6fe",
+      "id": "1a47b820001c6e30",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -19,8 +19,6 @@
         "agentscommander_lib::api::schema",
         "agentscommander_lib::cli",
         "agentscommander_lib::cli::agency_templates",
-        "agentscommander_lib::cli::create_agent",
-        "agentscommander_lib::cli::create_agent_matrix",
         "agentscommander_lib::cli::list_peers",
         "agentscommander_lib::commands::ac_discovery",
         "agentscommander_lib::commands::config",
@@ -57,9 +55,7 @@
         "agentscommander_lib::config::teams",
         "agentscommander_lib::logging",
         "agentscommander_lib::loops::non_stop_watchdog",
-        "agentscommander_lib::phone::mailbox",
         "agentscommander_lib::phone::messaging",
-        "agentscommander_lib::phone::terminal_snapshot",
         "agentscommander_lib::phone::types",
         "agentscommander_lib::pty::backend",
         "agentscommander_lib::pty::container_backend",
@@ -98,6 +94,13 @@
         "agentscommander_lib::update_check",
         "agentscommander_lib::web",
         "agentscommander_lib::web::commands"
+      ]
+    },
+    {
+      "id": "fa5266e34a30725c",
+      "members": [
+        "agentscommander_lib::cli::create_agent",
+        "agentscommander_lib::cli::create_agent_matrix"
       ]
     }
   ],
