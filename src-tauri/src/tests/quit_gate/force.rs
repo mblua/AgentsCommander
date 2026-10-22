@@ -378,8 +378,11 @@ fn outcome_serialization_omits_absent_fields() {
 }
 
 /// Production sources of the crate root and its private root modules.
-const PRODUCTION_ROOT_SOURCES: [&str; 11] = [
+const PRODUCTION_ROOT_SOURCES: [&str; 14] = [
     include_str!("../../lib.rs"),
+    include_str!("../../app_run.rs"),
+    include_str!("../../app_run/exit.rs"),
+    include_str!("../../app_run/setup.rs"),
     include_str!("../../co_managed.rs"),
     include_str!("../../co_managed/route.rs"),
     include_str!("../../pty_wiring.rs"),

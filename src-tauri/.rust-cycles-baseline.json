@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "f356108d940e9666",
+      "id": "a8e662fa8559e7e2",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::api::audit",
@@ -40,7 +40,6 @@
         "agentscommander_lib::config::config_seed",
         "agentscommander_lib::config::coordinator_clocks",
         "agentscommander_lib::config::daemon_pid",
-        "agentscommander_lib::config::injected_messages",
         "agentscommander_lib::config::loops",
         "agentscommander_lib::config::placeholders",
         "agentscommander_lib::config::projects",
@@ -85,7 +84,6 @@
         "agentscommander_lib::session::auto_close",
         "agentscommander_lib::session::context_alerts",
         "agentscommander_lib::session::manager",
-        "agentscommander_lib::session::remote_alerts",
         "agentscommander_lib::session::selection",
         "agentscommander_lib::session::session",
         "agentscommander_lib::startup",
@@ -94,7 +92,6 @@
         "agentscommander_lib::testability::reset",
         "agentscommander_lib::testability::ui_automation",
         "agentscommander_lib::testability::window_info",
-        "agentscommander_lib::update_check",
         "agentscommander_lib::web",
         "agentscommander_lib::web::commands",
         "agentscommander_lib::web_server",
