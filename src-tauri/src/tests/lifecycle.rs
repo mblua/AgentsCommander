@@ -676,12 +676,11 @@ fn web_and_api_server_handles_can_be_managed_together() {
 
 #[test]
 fn restore_loop_normalizes_archived_roots_before_persisted_session_loop() {
-    let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
-        .expect("read lib.rs");
-    let production = source
-        .split("#[cfg(test)]\nmod tests")
-        .next()
-        .expect("production lib source");
+    let production = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/restore/native.rs"
+    ))
+    .expect("read restore/native.rs");
     let hoist = production
         .find("let archived_roots = sessions_persistence::normalize_project_roots")
         .expect("archived root normalization");

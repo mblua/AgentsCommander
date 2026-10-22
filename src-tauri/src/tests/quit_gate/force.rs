@@ -237,11 +237,7 @@ async fn notified_snapshot_must_be_taken_before_the_state_read() {
 /// If someone moves the enrolment back below the state read, this fails.
 #[test]
 fn waiter_enrols_before_reading_round_state() {
-    let source = include_str!("../../lib.rs");
-    let production = source
-        .split("mod quit_gate_tests {")
-        .next()
-        .expect("test module marker present");
+    let production = include_str!("../../quit_gate.rs");
 
     let loops: Vec<&str> = production.split("let outcome = loop {").skip(1).collect();
     assert_eq!(loops.len(), 1, "expected exactly one quit waiter loop");
@@ -381,15 +377,27 @@ fn outcome_serialization_omits_absent_fields() {
     );
 }
 
+/// Production sources of the crate root and its private root modules.
+const PRODUCTION_ROOT_SOURCES: [&str; 11] = [
+    include_str!("../../lib.rs"),
+    include_str!("../../co_managed.rs"),
+    include_str!("../../co_managed/route.rs"),
+    include_str!("../../pty_wiring.rs"),
+    include_str!("../../quit_gate.rs"),
+    include_str!("../../reader_demand.rs"),
+    include_str!("../../restore.rs"),
+    include_str!("../../restore/native.rs"),
+    include_str!("../../startup.rs"),
+    include_str!("../../web_server.rs"),
+    include_str!("../../window.rs"),
+];
+
 /// The gate owns the only production `AppHandle::exit` call. Guarding it
 /// here keeps a second exit path from being added silently.
 #[test]
 fn exactly_one_production_exit_site() {
-    let source = include_str!("../../lib.rs");
-    let production = source
-        .split("mod quit_gate_tests {")
-        .next()
-        .expect("test module marker present");
+    let production = PRODUCTION_ROOT_SOURCES.concat();
+    let production = production.as_str();
 
     // Collect the RECEIVER of every `.exit(` call in production code, so a
     // second exit smuggled in as `app_handle.exit(0)` or `handle.exit(0)`

@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "622a3f8263be1c62",
+      "id": "1d6cd0afb6a7d190",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -20,6 +20,8 @@
         "agentscommander_lib::cli",
         "agentscommander_lib::cli::agency_templates",
         "agentscommander_lib::cli::list_peers",
+        "agentscommander_lib::co_managed",
+        "agentscommander_lib::co_managed::route",
         "agentscommander_lib::commands::ac_discovery",
         "agentscommander_lib::commands::config",
         "agentscommander_lib::commands::entity_creation",
@@ -75,16 +77,21 @@
         "agentscommander_lib::pty::watchers",
         "agentscommander_lib::pty::watchers::frame",
         "agentscommander_lib::pty::watchers::history",
+        "agentscommander_lib::pty_wiring",
+        "agentscommander_lib::reader_demand",
         "agentscommander_lib::resource_monitor::registry",
         "agentscommander_lib::resource_monitor::types",
         "agentscommander_lib::resource_monitor::watchdog",
         "agentscommander_lib::resource_monitor::windows",
+        "agentscommander_lib::restore",
+        "agentscommander_lib::restore::native",
         "agentscommander_lib::session::auto_close",
         "agentscommander_lib::session::context_alerts",
         "agentscommander_lib::session::manager",
         "agentscommander_lib::session::remote_alerts",
         "agentscommander_lib::session::selection",
         "agentscommander_lib::session::session",
+        "agentscommander_lib::startup",
         "agentscommander_lib::telegram::bridge",
         "agentscommander_lib::telegram::manager",
         "agentscommander_lib::testability::reset",
@@ -92,7 +99,9 @@
         "agentscommander_lib::testability::window_info",
         "agentscommander_lib::update_check",
         "agentscommander_lib::web",
-        "agentscommander_lib::web::commands"
+        "agentscommander_lib::web::commands",
+        "agentscommander_lib::web_server",
+        "agentscommander_lib::window"
       ]
     },
     {
