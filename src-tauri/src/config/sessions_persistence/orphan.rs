@@ -132,7 +132,8 @@ thread_local! {
             suppressed_repeat: 0,
         })
     };
-    pub(super) static ORPHAN_WARNED_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static ORPHAN_WARNED_COUNT: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
