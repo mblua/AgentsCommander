@@ -12,7 +12,6 @@ pub(crate) use blocking_menu::{
     accept_remote_blocking_menus_response, export_blocking_menus_with_startup, pretty_json_bytes,
     read_remote_blocking_menus_check_stamp, write_remote_blocking_menus_cache,
     write_remote_blocking_menus_check_stamp, REMOTE_BLOCKING_MENUS_MAX_BYTES,
-    REMOTE_BLOCKING_MENUS_URL,
 };
 pub use blocking_menu::{
     apply_issue_1757_migration, default_blocking_menus_for_command, shipped_blocking_menus,
@@ -55,7 +54,7 @@ pub use file::{
 pub(crate) use help::{
     accept_remote_agent_help_response, load_local_agent_help_file, load_remote_agent_help_file,
     read_remote_agent_help_check_stamp, write_remote_agent_help_cache,
-    write_remote_agent_help_check_stamp, REMOTE_AGENT_HELP_MAX_BYTES, REMOTE_AGENT_HELP_URL,
+    write_remote_agent_help_check_stamp, REMOTE_AGENT_HELP_MAX_BYTES,
 };
 #[cfg(test)]
 pub(crate) use help::{

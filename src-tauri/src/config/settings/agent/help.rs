@@ -216,13 +216,6 @@ pub fn refresh_shipped_agent_help_from_config_dir() {
 /// cache note. The URL literal that embeds it is P7's, with the SERVED-PATHS row.
 pub(crate) const REMOTE_AGENT_HELP_SOURCE_REF: &str = "main";
 
-/// #2133 - the published file: one pinned literal whose ref segment must equal
-/// `REMOTE_AGENT_HELP_SOURCE_REF` (P6's) and whose `v1` segment must equal
-/// `AGENT_HELP_SCHEMA_VERSION`; T1 pins both.
-pub(crate) const REMOTE_AGENT_HELP_URL: &str =
-    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/agent-help/v1/ag\
-        ent-help.json";
-
 /// #2133 (D4) - hard caps on the downloaded layer. Every cap counts UTF-8 bytes
 /// (`str::len()`), not characters; TypeScript's `.length` counts UTF-16 code units instead.
 pub(crate) const REMOTE_AGENT_HELP_MAX_BYTES: usize = 64 * 1024;

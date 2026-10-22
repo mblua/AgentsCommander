@@ -64,11 +64,6 @@ pub(crate) const EMBEDDED_BLOCKING_MENUS_JSON: &str =
 
 pub const BLOCKING_MENUS_SCHEMA_VERSION: u32 = 1;
 
-/// #1925 (D2) - the published file: one pinned literal with the source ref `main` and a
-/// `v1` segment that must equal `BLOCKING_MENUS_SCHEMA_VERSION`; a test pins both.
-pub(crate) const REMOTE_BLOCKING_MENUS_URL: &str =
-    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/blocking-menus/v\
-        1/settings-blocking-menus.json";
 /// #1925 (D2) - the ref the URL pins; the cached note names it.
 pub(crate) const REMOTE_BLOCKING_MENUS_SOURCE_REF: &str = "main";
 /// #1925 (D5) - hard cap on the downloaded body, checked while reading and on acceptance.

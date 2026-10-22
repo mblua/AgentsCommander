@@ -38,8 +38,7 @@ pub(crate) use agent::{
     write_remote_agent_help_cache, write_remote_agent_help_check_stamp,
     write_remote_blocking_menus_cache, write_remote_blocking_menus_check_stamp, AgentFileReadReply,
     AgentFileReadRequest, AgentsLayerState, CatalogSourceOperationGuard,
-    REMOTE_AGENT_HELP_MAX_BYTES, REMOTE_AGENT_HELP_URL, REMOTE_BLOCKING_MENUS_MAX_BYTES,
-    REMOTE_BLOCKING_MENUS_URL,
+    REMOTE_AGENT_HELP_MAX_BYTES, REMOTE_BLOCKING_MENUS_MAX_BYTES,
 };
 #[cfg(test)]
 pub(crate) use agent::{
@@ -988,6 +987,17 @@ impl Default for AppSettings {
         }
     }
 }
+
+/// #1925 (D2) - the published file: one pinned literal with the source ref `main` and a
+/// `v1` segment that must equal `BLOCKING_MENUS_SCHEMA_VERSION`; a test pins both.
+pub(crate) const REMOTE_BLOCKING_MENUS_URL: &str =
+    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/blocking-menus/v1/settings-blocking-menus.json";
+
+/// #2133 - the published file: one pinned literal whose ref segment must equal
+/// `REMOTE_AGENT_HELP_SOURCE_REF` (P6's) and whose `v1` segment must equal
+/// `AGENT_HELP_SCHEMA_VERSION`; T1 pins both.
+pub(crate) const REMOTE_AGENT_HELP_URL: &str =
+    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/agent-help/v1/agent-help.json";
 
 #[cfg(test)]
 mod tests;
