@@ -355,7 +355,8 @@ fn admission_expiry_advances_past_sixty_four_locked_rows() {
         .lock()
         .unwrap()
         .execute(
-            "UPDATE pty_input_operations SET issued_at=?1,queued_at=?2,expires_at=?3,next_attempt_at=?2,updated_at=?2",
+            "UPDATE pty_input_operations SET \
+                issued_at=?1,queued_at=?2,expires_at=?3,next_attempt_at=?2,updated_at=?2",
             params![issued, queued, expired],
         )
         .unwrap();
@@ -368,12 +369,15 @@ fn admission_expiry_advances_past_sixty_four_locked_rows() {
     {
         let conn = store.conn.lock().unwrap();
         conn.execute(
-            "UPDATE pty_input_operations SET issued_at=?1,queued_at=?2,expires_at=?3,next_attempt_at=?2,updated_at=?2 WHERE injection_id=?4",
+            "UPDATE pty_input_operations SET \
+                issued_at=?1,queued_at=?2,expires_at=?3,next_attempt_at=?2,updated_at=?2 WHERE \
+                injection_id=?4",
             params![tail_issued, tail_queued, tail_expired, tail],
         )
         .unwrap();
         conn.execute(
-            "UPDATE pty_input_tombstones SET issued_at=?1,queued_at=?2,expires_at=?3 WHERE injection_id=?4",
+            "UPDATE pty_input_tombstones SET issued_at=?1,queued_at=?2,expires_at=?3 WHERE \
+                injection_id=?4",
             params![tail_issued, tail_queued, tail_expired, tail],
         )
         .unwrap();
@@ -512,7 +516,8 @@ fn due_container_cursor_advances_past_sixty_four_lock_contended_rows() {
         )
         .unwrap();
         conn.execute(
-            "UPDATE pty_input_operations SET next_attempt_at=?1,updated_at=?1 WHERE injection_id=?2",
+            "UPDATE pty_input_operations SET next_attempt_at=?1,updated_at=?1 WHERE \
+                injection_id=?2",
             params![tail_next, tail],
         )
         .unwrap();

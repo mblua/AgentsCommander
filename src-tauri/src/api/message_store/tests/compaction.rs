@@ -372,9 +372,18 @@ fn test_release_delivery_lease_resets_status_queued_and_preserves_attempts() {
         .lock()
         .unwrap()
         .query_row(
-            "SELECT status, attempt, lease_owner, lease_until, last_error FROM messages WHERE message_id = ?1",
+            "SELECT status, attempt, lease_owner, lease_until, last_error FROM messages WHERE \
+                message_id = ?1",
             [&id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .unwrap();
 
@@ -432,7 +441,8 @@ fn test_retry_pty_input_menu_guard_blocked_persisted() {
         .lock()
         .unwrap()
         .query_row(
-            "SELECT status, reason_code, reason_detail FROM pty_input_operations WHERE injection_id = ?1",
+            "SELECT status, reason_code, reason_detail FROM pty_input_operations WHERE \
+                injection_id = ?1",
             [&id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )

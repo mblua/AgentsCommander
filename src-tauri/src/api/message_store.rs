@@ -1023,7 +1023,9 @@ impl MessageStore {
                     authority_session_id TEXT NULL,
                     authority_client_id TEXT NULL,
                     authority_client_generation TEXT NULL,
-                    status TEXT NOT NULL CHECK(status IN ('queued','preparing','retry','actuating','injected','rejected','indeterminate')),
+                    status TEXT NOT NULL CHECK(status IN
+                        ('queued', 'preparing', 'retry', 'actuating', 'injected', 'rejected',
+                            'indeterminate')),
                     attempt INTEGER NOT NULL DEFAULT 0 CHECK(attempt BETWEEN 0 AND 5),
                     next_attempt_at TEXT NOT NULL,
                     lease_owner TEXT NULL,
@@ -1091,42 +1093,76 @@ impl MessageStore {
                            AND length(replace(selected_session_id,'-',''))=32
                            AND replace(selected_session_id,'-','') NOT GLOB '*[^0-9a-f]*')),
                     CHECK(length(nonce_sha256)=64 AND nonce_sha256 NOT GLOB '*[^0-9a-f]*'),
-                    CHECK(length(request_fingerprint)=64 AND request_fingerprint NOT GLOB '*[^0-9a-f]*'),
+                    CHECK(length(request_fingerprint)=64 AND request_fingerprint NOT GLOB
+                        '*[^0-9a-f]*'),
                     CHECK(length(payload_sha256)=64 AND payload_sha256 NOT GLOB '*[^0-9a-f]*'),
-                    CHECK(length(sender_incarnation_fingerprint)=64 AND sender_incarnation_fingerprint NOT GLOB '*[^0-9a-f]*'),
-                    CHECK(confirmation_tag IS NULL OR (length(confirmation_tag)=64 AND confirmation_tag NOT GLOB '*[^0-9a-f]*')),
-                    CHECK(sender_identity_fingerprint IS NULL OR (length(sender_identity_fingerprint)=64 AND sender_identity_fingerprint NOT GLOB '*[^0-9a-f]*')),
-                    CHECK(target_identity_fingerprint IS NULL OR (length(target_identity_fingerprint)=64 AND target_identity_fingerprint NOT GLOB '*[^0-9a-f]*')),
+                    CHECK(length(sender_incarnation_fingerprint)=64 AND
+                        sender_incarnation_fingerprint NOT GLOB '*[^0-9a-f]*'),
+                    CHECK(confirmation_tag IS NULL OR (length(confirmation_tag)=64 AND
+                        confirmation_tag NOT GLOB '*[^0-9a-f]*')),
+                    CHECK(sender_identity_fingerprint IS NULL OR
+                        (length(sender_identity_fingerprint)=64 AND sender_identity_fingerprint NOT
+                        GLOB '*[^0-9a-f]*')),
+                    CHECK(target_identity_fingerprint IS NULL OR
+                        (length(target_identity_fingerprint)=64 AND target_identity_fingerprint NOT
+                        GLOB '*[^0-9a-f]*')),
                     CHECK(payload IS NULL OR length(payload)=payload_bytes),
                     CHECK(length(issued_at)=24 AND length(expires_at)=24 AND length(queued_at)=24
                           AND length(next_attempt_at)=24 AND length(updated_at)=24),
-                    CHECK(issued_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(expires_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(queued_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(next_attempt_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(preparing_at IS NULL OR (length(preparing_at)=24 AND preparing_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
-                    CHECK(actuating_at IS NULL OR (length(actuating_at)=24 AND actuating_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
-                    CHECK(terminal_at IS NULL OR (length(terminal_at)=24 AND terminal_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
-                    CHECK(host_artifact_at IS NULL OR (length(host_artifact_at)=24 AND host_artifact_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
+                    CHECK(issued_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(expires_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(queued_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(next_attempt_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(updated_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(preparing_at IS NULL OR (length(preparing_at)=24 AND preparing_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
+                    CHECK(actuating_at IS NULL OR (length(actuating_at)=24 AND actuating_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
+                    CHECK(terminal_at IS NULL OR (length(terminal_at)=24 AND terminal_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
+                    CHECK(host_artifact_at IS NULL OR (length(host_artifact_at)=24 AND
+                        host_artifact_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
                     CHECK((selected_session_id IS NULL) = (selected_backend IS NULL)),
-                    CHECK(selected_backend IS NULL OR selected_backend IN ('localProcess','containerTransport')),
+                    CHECK(selected_backend IS NULL OR selected_backend IN
+                        ('localProcess','containerTransport')),
                     CHECK(reason_code IS NULL OR reason_code IN (
-                        'invalid_envelope','mixed_payload','unsupported_version','invalid_enter_mode',
+                        'invalid_envelope', 'mixed_payload', 'unsupported_version',
+                            'invalid_enter_mode',
                         'invalid_id','invalid_nonce','invalid_timestamp','expired','invalid_target',
-                        'invalid_text','payload_too_large','idempotency_conflict','capacity_exceeded',
+                        'invalid_text', 'payload_too_large', 'idempotency_conflict',
+                            'capacity_exceeded',
                         'session_token_required','invalid_session_token','ambiguous_session_token',
-                        'sender_session_not_live','sender_backend_not_local','sender_identity_invalid',
+                        'sender_session_not_live', 'sender_backend_not_local',
+                            'sender_identity_invalid',
                         'sender_not_coordinator','root_identity_invalid','target_not_member',
-                        'target_is_coordinator','target_out_of_scope','unsafe_path','api_scope_required',
-                        'api_client_unbound','api_client_stale','api_binding_mismatch','authority_changed',
+                        'target_is_coordinator', 'target_out_of_scope', 'unsafe_path',
+                            'api_scope_required',
+                        'api_client_unbound', 'api_client_stale', 'api_binding_mismatch',
+                            'authority_changed',
                         'busy','resize_unsettled','untracked_readiness','unsupported_session',
                         'nonpersistent_live_session','inconsistent_session','unsupported_profile',
-                        'readiness_timeout','store_corrupt','restore_in_progress','purge_in_progress',
+                        'readiness_timeout', 'store_corrupt', 'restore_in_progress',
+                            'purge_in_progress',
                         'session_race','lease_lost','spawn_failed_safe','store_transient',
                         'menu_guard_blocked',
                         'final_revalidation_failed','text_write_failed','required_enter_failed',
-                        'daemon_restart_after_actuation','runtime_actuation_orphan','terminal_store_failed',
+                        'daemon_restart_after_actuation', 'runtime_actuation_orphan',
+                            'terminal_store_failed',
                         'redundant_enter_failed','boundary_metadata_failed','artifact_unclaimed'
                     )),
                     CHECK((reason_code IS NULL) = (reason_detail IS NULL)),
@@ -1165,11 +1201,14 @@ impl MessageStore {
                              OR (status IN ('actuating','injected','rejected','indeterminate')
                                  AND authority_client_id IS NULL
                                  AND authority_client_generation IS NULL)))),
-                    CHECK((status IN ('injected','rejected','indeterminate')) = (terminal_at IS NOT NULL)),
-                    CHECK((status = 'preparing') = (lease_owner IS NOT NULL AND lease_until IS NOT NULL)),
+                    CHECK((status IN ('injected','rejected','indeterminate')) = (terminal_at IS NOT
+                        NULL)),
+                    CHECK((status = 'preparing') = (lease_owner IS NOT NULL AND lease_until IS NOT
+                        NULL)),
                     CHECK(status!='preparing' OR preparing_at IS NOT NULL),
                     CHECK(queued_at>=issued_at AND queued_at<expires_at),
-                    CHECK(actuating_at IS NULL OR (actuating_at>=queued_at AND actuating_at<expires_at)),
+                    CHECK(actuating_at IS NULL OR (actuating_at>=queued_at AND
+                        actuating_at<expires_at)),
                     CHECK(terminal_at IS NULL OR terminal_at>=queued_at),
                     CHECK(host_artifact_at IS NULL OR terminal_at IS NOT NULL),
                     CHECK((status IN ('queued','preparing','retry') AND
@@ -1182,12 +1221,14 @@ impl MessageStore {
                            (reason_code IS NULL OR reason_code IN (
                              'redundant_enter_failed','boundary_metadata_failed')))
                        OR (status='rejected' AND reason_code IS NOT NULL AND reason_code NOT IN (
-                             'final_revalidation_failed','text_write_failed','required_enter_failed',
+                             'final_revalidation_failed', 'text_write_failed',
+                                 'required_enter_failed',
                              'daemon_restart_after_actuation','runtime_actuation_orphan',
                              'terminal_store_failed','redundant_enter_failed',
                              'boundary_metadata_failed','artifact_unclaimed'))
                        OR (status='indeterminate' AND reason_code IN (
-                             'final_revalidation_failed','text_write_failed','required_enter_failed',
+                             'final_revalidation_failed', 'text_write_failed',
+                                 'required_enter_failed',
                              'daemon_restart_after_actuation','runtime_actuation_orphan',
                              'terminal_store_failed'))),
                     CHECK(source_plane != 'host_cli' OR injection_id=op_id)
@@ -1209,15 +1250,21 @@ impl MessageStore {
                     status TEXT NOT NULL,
                     reason_code TEXT NULL,
                     at TEXT NOT NULL,
-                    FOREIGN KEY(injection_id) REFERENCES pty_input_operations(injection_id) ON DELETE CASCADE,
+                    FOREIGN KEY(injection_id) REFERENCES pty_input_operations(injection_id) ON
+                        DELETE CASCADE,
                     CHECK(version=1),
                     CHECK(payload_bytes BETWEEN 1 AND 65536),
                     CHECK(length(payload_sha256)=64 AND payload_sha256 NOT GLOB '*[^0-9a-f]*'),
                     CHECK(source_plane IN ('host_cli','container_api')),
-                    CHECK(status IN ('queued','preparing','retry','actuating','injected','rejected','indeterminate')),
+                    CHECK(status IN
+                        ('queued', 'preparing', 'retry', 'actuating', 'injected', 'rejected',
+                            'indeterminate')),
                     CHECK((selected_session_id IS NULL) = (selected_backend IS NULL)),
-                    CHECK(selected_backend IS NULL OR selected_backend IN ('localProcess','containerTransport')),
-                    CHECK(length(at)=24 AND at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')
+                    CHECK(selected_backend IS NULL OR selected_backend IN
+                        ('localProcess','containerTransport')),
+                    CHECK(length(at)=24 AND at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')
                 );
                 CREATE TABLE pty_input_tombstones(
                     injection_id TEXT PRIMARY KEY,
@@ -1275,39 +1322,62 @@ impl MessageStore {
                            AND length(replace(selected_session_id,'-',''))=32
                            AND replace(selected_session_id,'-','') NOT GLOB '*[^0-9a-f]*')),
                     CHECK(length(nonce_sha256)=64 AND nonce_sha256 NOT GLOB '*[^0-9a-f]*'),
-                    CHECK(length(request_fingerprint)=64 AND request_fingerprint NOT GLOB '*[^0-9a-f]*'),
-                    CHECK(length(sender_incarnation_fingerprint)=64 AND sender_incarnation_fingerprint NOT GLOB '*[^0-9a-f]*'),
+                    CHECK(length(request_fingerprint)=64 AND request_fingerprint NOT GLOB
+                        '*[^0-9a-f]*'),
+                    CHECK(length(sender_incarnation_fingerprint)=64 AND
+                        sender_incarnation_fingerprint NOT GLOB '*[^0-9a-f]*'),
                     CHECK(length(payload_sha256)=64 AND payload_sha256 NOT GLOB '*[^0-9a-f]*'),
-                    CHECK(confirmation_tag IS NULL OR (length(confirmation_tag)=64 AND confirmation_tag NOT GLOB '*[^0-9a-f]*')),
-                    CHECK((source_plane='host_cli' AND confirmation_tag IS NOT NULL AND injection_id=op_id)
+                    CHECK(confirmation_tag IS NULL OR (length(confirmation_tag)=64 AND
+                        confirmation_tag NOT GLOB '*[^0-9a-f]*')),
+                    CHECK((source_plane='host_cli' AND confirmation_tag IS NOT NULL AND
+                        injection_id=op_id)
                        OR (source_plane='container_api' AND confirmation_tag IS NULL)),
                     CHECK((selected_session_id IS NULL) = (selected_backend IS NULL)),
-                    CHECK(selected_backend IS NULL OR selected_backend IN ('localProcess','containerTransport')),
-                    CHECK(length(issued_at)=24 AND issued_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(length(expires_at)=24 AND expires_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(length(queued_at)=24 AND queued_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(length(terminal_at)=24 AND terminal_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(actuating_at IS NULL OR (length(actuating_at)=24 AND actuating_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
+                    CHECK(selected_backend IS NULL OR selected_backend IN
+                        ('localProcess','containerTransport')),
+                    CHECK(length(issued_at)=24 AND issued_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(length(expires_at)=24 AND expires_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(length(queued_at)=24 AND queued_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(length(terminal_at)=24 AND terminal_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(actuating_at IS NULL OR (length(actuating_at)=24 AND actuating_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
                     CHECK(queued_at>=issued_at AND queued_at<expires_at),
-                    CHECK(actuating_at IS NULL OR (actuating_at>=queued_at AND actuating_at<expires_at)),
+                    CHECK(actuating_at IS NULL OR (actuating_at>=queued_at AND
+                        actuating_at<expires_at)),
                     CHECK(terminal_at>=queued_at),
                     CHECK((reason_code IS NULL) = (reason_detail IS NULL)),
                     CHECK(reason_code IS NULL OR reason_code IN (
-                        'invalid_envelope','mixed_payload','unsupported_version','invalid_enter_mode',
+                        'invalid_envelope', 'mixed_payload', 'unsupported_version',
+                            'invalid_enter_mode',
                         'invalid_id','invalid_nonce','invalid_timestamp','expired','invalid_target',
-                        'invalid_text','payload_too_large','idempotency_conflict','capacity_exceeded',
+                        'invalid_text', 'payload_too_large', 'idempotency_conflict',
+                            'capacity_exceeded',
                         'session_token_required','invalid_session_token','ambiguous_session_token',
-                        'sender_session_not_live','sender_backend_not_local','sender_identity_invalid',
+                        'sender_session_not_live', 'sender_backend_not_local',
+                            'sender_identity_invalid',
                         'sender_not_coordinator','root_identity_invalid','target_not_member',
-                        'target_is_coordinator','target_out_of_scope','unsafe_path','api_scope_required',
-                        'api_client_unbound','api_client_stale','api_binding_mismatch','authority_changed',
+                        'target_is_coordinator', 'target_out_of_scope', 'unsafe_path',
+                            'api_scope_required',
+                        'api_client_unbound', 'api_client_stale', 'api_binding_mismatch',
+                            'authority_changed',
                         'busy','resize_unsettled','untracked_readiness','unsupported_session',
                         'nonpersistent_live_session','inconsistent_session','unsupported_profile',
-                        'readiness_timeout','store_corrupt','restore_in_progress','purge_in_progress',
+                        'readiness_timeout', 'store_corrupt', 'restore_in_progress',
+                            'purge_in_progress',
                         'session_race','lease_lost','spawn_failed_safe','store_transient',
                         'menu_guard_blocked',
                         'final_revalidation_failed','text_write_failed','required_enter_failed',
-                        'daemon_restart_after_actuation','runtime_actuation_orphan','terminal_store_failed',
+                        'daemon_restart_after_actuation', 'runtime_actuation_orphan',
+                            'terminal_store_failed',
                         'redundant_enter_failed','boundary_metadata_failed','artifact_unclaimed'
                     )),
                     CHECK((status='injected' AND actuating_at IS NOT NULL
@@ -1317,14 +1387,16 @@ impl MessageStore {
                        OR (status='rejected' AND actuating_at IS NULL
                            AND selected_session_id IS NULL
                            AND reason_code IS NOT NULL AND reason_code NOT IN (
-                             'final_revalidation_failed','text_write_failed','required_enter_failed',
+                             'final_revalidation_failed', 'text_write_failed',
+                                 'required_enter_failed',
                              'daemon_restart_after_actuation','runtime_actuation_orphan',
                              'terminal_store_failed','redundant_enter_failed',
                              'boundary_metadata_failed','artifact_unclaimed'))
                        OR (status='indeterminate' AND actuating_at IS NOT NULL
                            AND selected_session_id IS NOT NULL
                            AND reason_code IN (
-                             'final_revalidation_failed','text_write_failed','required_enter_failed',
+                             'final_revalidation_failed', 'text_write_failed',
+                                 'required_enter_failed',
                              'daemon_restart_after_actuation','runtime_actuation_orphan',
                              'terminal_store_failed')))
                 );
@@ -1360,7 +1432,9 @@ impl MessageStore {
                     authority_session_id TEXT NULL,
                     authority_client_id TEXT NULL,
                     authority_client_generation TEXT NULL,
-                    status TEXT NOT NULL CHECK(status IN ('queued','preparing','retry','actuating','injected','rejected','indeterminate')),
+                    status TEXT NOT NULL CHECK(status IN
+                        ('queued', 'preparing', 'retry', 'actuating', 'injected', 'rejected',
+                            'indeterminate')),
                     attempt INTEGER NOT NULL DEFAULT 0 CHECK(attempt BETWEEN 0 AND 5),
                     next_attempt_at TEXT NOT NULL,
                     lease_owner TEXT NULL,
@@ -1428,42 +1502,76 @@ impl MessageStore {
                            AND length(replace(selected_session_id,'-',''))=32
                            AND replace(selected_session_id,'-','') NOT GLOB '*[^0-9a-f]*')),
                     CHECK(length(nonce_sha256)=64 AND nonce_sha256 NOT GLOB '*[^0-9a-f]*'),
-                    CHECK(length(request_fingerprint)=64 AND request_fingerprint NOT GLOB '*[^0-9a-f]*'),
+                    CHECK(length(request_fingerprint)=64 AND request_fingerprint NOT GLOB
+                        '*[^0-9a-f]*'),
                     CHECK(length(payload_sha256)=64 AND payload_sha256 NOT GLOB '*[^0-9a-f]*'),
-                    CHECK(length(sender_incarnation_fingerprint)=64 AND sender_incarnation_fingerprint NOT GLOB '*[^0-9a-f]*'),
-                    CHECK(confirmation_tag IS NULL OR (length(confirmation_tag)=64 AND confirmation_tag NOT GLOB '*[^0-9a-f]*')),
-                    CHECK(sender_identity_fingerprint IS NULL OR (length(sender_identity_fingerprint)=64 AND sender_identity_fingerprint NOT GLOB '*[^0-9a-f]*')),
-                    CHECK(target_identity_fingerprint IS NULL OR (length(target_identity_fingerprint)=64 AND target_identity_fingerprint NOT GLOB '*[^0-9a-f]*')),
+                    CHECK(length(sender_incarnation_fingerprint)=64 AND
+                        sender_incarnation_fingerprint NOT GLOB '*[^0-9a-f]*'),
+                    CHECK(confirmation_tag IS NULL OR (length(confirmation_tag)=64 AND
+                        confirmation_tag NOT GLOB '*[^0-9a-f]*')),
+                    CHECK(sender_identity_fingerprint IS NULL OR
+                        (length(sender_identity_fingerprint)=64 AND sender_identity_fingerprint NOT
+                        GLOB '*[^0-9a-f]*')),
+                    CHECK(target_identity_fingerprint IS NULL OR
+                        (length(target_identity_fingerprint)=64 AND target_identity_fingerprint NOT
+                        GLOB '*[^0-9a-f]*')),
                     CHECK(payload IS NULL OR length(payload)=payload_bytes),
                     CHECK(length(issued_at)=24 AND length(expires_at)=24 AND length(queued_at)=24
                           AND length(next_attempt_at)=24 AND length(updated_at)=24),
-                    CHECK(issued_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(expires_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(queued_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(next_attempt_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(preparing_at IS NULL OR (length(preparing_at)=24 AND preparing_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
-                    CHECK(actuating_at IS NULL OR (length(actuating_at)=24 AND actuating_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
-                    CHECK(terminal_at IS NULL OR (length(terminal_at)=24 AND terminal_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
-                    CHECK(host_artifact_at IS NULL OR (length(host_artifact_at)=24 AND host_artifact_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
+                    CHECK(issued_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(expires_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(queued_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(next_attempt_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(updated_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(preparing_at IS NULL OR (length(preparing_at)=24 AND preparing_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
+                    CHECK(actuating_at IS NULL OR (length(actuating_at)=24 AND actuating_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
+                    CHECK(terminal_at IS NULL OR (length(terminal_at)=24 AND terminal_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
+                    CHECK(host_artifact_at IS NULL OR (length(host_artifact_at)=24 AND
+                        host_artifact_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
                     CHECK((selected_session_id IS NULL) = (selected_backend IS NULL)),
-                    CHECK(selected_backend IS NULL OR selected_backend IN ('localProcess','containerTransport')),
+                    CHECK(selected_backend IS NULL OR selected_backend IN
+                        ('localProcess','containerTransport')),
                     CHECK(reason_code IS NULL OR reason_code IN (
-                        'invalid_envelope','mixed_payload','unsupported_version','invalid_enter_mode',
+                        'invalid_envelope', 'mixed_payload', 'unsupported_version',
+                            'invalid_enter_mode',
                         'invalid_id','invalid_nonce','invalid_timestamp','expired','invalid_target',
-                        'invalid_text','payload_too_large','idempotency_conflict','capacity_exceeded',
+                        'invalid_text', 'payload_too_large', 'idempotency_conflict',
+                            'capacity_exceeded',
                         'session_token_required','invalid_session_token','ambiguous_session_token',
-                        'sender_session_not_live','sender_backend_not_local','sender_identity_invalid',
+                        'sender_session_not_live', 'sender_backend_not_local',
+                            'sender_identity_invalid',
                         'sender_not_coordinator','root_identity_invalid','target_not_member',
-                        'target_is_coordinator','target_out_of_scope','unsafe_path','api_scope_required',
-                        'api_client_unbound','api_client_stale','api_binding_mismatch','authority_changed',
+                        'target_is_coordinator', 'target_out_of_scope', 'unsafe_path',
+                            'api_scope_required',
+                        'api_client_unbound', 'api_client_stale', 'api_binding_mismatch',
+                            'authority_changed',
                         'busy','resize_unsettled','untracked_readiness','unsupported_session',
                         'nonpersistent_live_session','inconsistent_session','unsupported_profile',
-                        'readiness_timeout','store_corrupt','restore_in_progress','purge_in_progress',
+                        'readiness_timeout', 'store_corrupt', 'restore_in_progress',
+                            'purge_in_progress',
                         'session_race','lease_lost','spawn_failed_safe','store_transient',
                         'menu_guard_blocked',
                         'final_revalidation_failed','text_write_failed','required_enter_failed',
-                        'daemon_restart_after_actuation','runtime_actuation_orphan','terminal_store_failed',
+                        'daemon_restart_after_actuation', 'runtime_actuation_orphan',
+                            'terminal_store_failed',
                         'redundant_enter_failed','boundary_metadata_failed','artifact_unclaimed'
                     )),
                     CHECK((reason_code IS NULL) = (reason_detail IS NULL)),
@@ -1502,11 +1610,14 @@ impl MessageStore {
                              OR (status IN ('actuating','injected','rejected','indeterminate')
                                  AND authority_client_id IS NULL
                                  AND authority_client_generation IS NULL)))),
-                    CHECK((status IN ('injected','rejected','indeterminate')) = (terminal_at IS NOT NULL)),
-                    CHECK((status = 'preparing') = (lease_owner IS NOT NULL AND lease_until IS NOT NULL)),
+                    CHECK((status IN ('injected','rejected','indeterminate')) = (terminal_at IS NOT
+                        NULL)),
+                    CHECK((status = 'preparing') = (lease_owner IS NOT NULL AND lease_until IS NOT
+                        NULL)),
                     CHECK(status!='preparing' OR preparing_at IS NOT NULL),
                     CHECK(queued_at>=issued_at AND queued_at<expires_at),
-                    CHECK(actuating_at IS NULL OR (actuating_at>=queued_at AND actuating_at<expires_at)),
+                    CHECK(actuating_at IS NULL OR (actuating_at>=queued_at AND
+                        actuating_at<expires_at)),
                     CHECK(terminal_at IS NULL OR terminal_at>=queued_at),
                     CHECK(host_artifact_at IS NULL OR terminal_at IS NOT NULL),
                     CHECK((status IN ('queued','preparing','retry') AND
@@ -1519,12 +1630,14 @@ impl MessageStore {
                            (reason_code IS NULL OR reason_code IN (
                              'redundant_enter_failed','boundary_metadata_failed')))
                        OR (status='rejected' AND reason_code IS NOT NULL AND reason_code NOT IN (
-                             'final_revalidation_failed','text_write_failed','required_enter_failed',
+                             'final_revalidation_failed', 'text_write_failed',
+                                 'required_enter_failed',
                              'daemon_restart_after_actuation','runtime_actuation_orphan',
                              'terminal_store_failed','redundant_enter_failed',
                              'boundary_metadata_failed','artifact_unclaimed'))
                        OR (status='indeterminate' AND reason_code IN (
-                             'final_revalidation_failed','text_write_failed','required_enter_failed',
+                             'final_revalidation_failed', 'text_write_failed',
+                                 'required_enter_failed',
                              'daemon_restart_after_actuation','runtime_actuation_orphan',
                              'terminal_store_failed'))),
                     CHECK(source_plane != 'host_cli' OR injection_id=op_id)
@@ -1591,39 +1704,62 @@ impl MessageStore {
                            AND length(replace(selected_session_id,'-',''))=32
                            AND replace(selected_session_id,'-','') NOT GLOB '*[^0-9a-f]*')),
                     CHECK(length(nonce_sha256)=64 AND nonce_sha256 NOT GLOB '*[^0-9a-f]*'),
-                    CHECK(length(request_fingerprint)=64 AND request_fingerprint NOT GLOB '*[^0-9a-f]*'),
-                    CHECK(length(sender_incarnation_fingerprint)=64 AND sender_incarnation_fingerprint NOT GLOB '*[^0-9a-f]*'),
+                    CHECK(length(request_fingerprint)=64 AND request_fingerprint NOT GLOB
+                        '*[^0-9a-f]*'),
+                    CHECK(length(sender_incarnation_fingerprint)=64 AND
+                        sender_incarnation_fingerprint NOT GLOB '*[^0-9a-f]*'),
                     CHECK(length(payload_sha256)=64 AND payload_sha256 NOT GLOB '*[^0-9a-f]*'),
-                    CHECK(confirmation_tag IS NULL OR (length(confirmation_tag)=64 AND confirmation_tag NOT GLOB '*[^0-9a-f]*')),
-                    CHECK((source_plane='host_cli' AND confirmation_tag IS NOT NULL AND injection_id=op_id)
+                    CHECK(confirmation_tag IS NULL OR (length(confirmation_tag)=64 AND
+                        confirmation_tag NOT GLOB '*[^0-9a-f]*')),
+                    CHECK((source_plane='host_cli' AND confirmation_tag IS NOT NULL AND
+                        injection_id=op_id)
                        OR (source_plane='container_api' AND confirmation_tag IS NULL)),
                     CHECK((selected_session_id IS NULL) = (selected_backend IS NULL)),
-                    CHECK(selected_backend IS NULL OR selected_backend IN ('localProcess','containerTransport')),
-                    CHECK(length(issued_at)=24 AND issued_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(length(expires_at)=24 AND expires_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(length(queued_at)=24 AND queued_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(length(terminal_at)=24 AND terminal_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
-                    CHECK(actuating_at IS NULL OR (length(actuating_at)=24 AND actuating_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
+                    CHECK(selected_backend IS NULL OR selected_backend IN
+                        ('localProcess','containerTransport')),
+                    CHECK(length(issued_at)=24 AND issued_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(length(expires_at)=24 AND expires_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(length(queued_at)=24 AND queued_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(length(terminal_at)=24 AND terminal_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+                    CHECK(actuating_at IS NULL OR (length(actuating_at)=24 AND actuating_at GLOB
+                        '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
+                            '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')),
                     CHECK(queued_at>=issued_at AND queued_at<expires_at),
-                    CHECK(actuating_at IS NULL OR (actuating_at>=queued_at AND actuating_at<expires_at)),
+                    CHECK(actuating_at IS NULL OR (actuating_at>=queued_at AND
+                        actuating_at<expires_at)),
                     CHECK(terminal_at>=queued_at),
                     CHECK((reason_code IS NULL) = (reason_detail IS NULL)),
                     CHECK(reason_code IS NULL OR reason_code IN (
-                        'invalid_envelope','mixed_payload','unsupported_version','invalid_enter_mode',
+                        'invalid_envelope', 'mixed_payload', 'unsupported_version',
+                            'invalid_enter_mode',
                         'invalid_id','invalid_nonce','invalid_timestamp','expired','invalid_target',
-                        'invalid_text','payload_too_large','idempotency_conflict','capacity_exceeded',
+                        'invalid_text', 'payload_too_large', 'idempotency_conflict',
+                            'capacity_exceeded',
                         'session_token_required','invalid_session_token','ambiguous_session_token',
-                        'sender_session_not_live','sender_backend_not_local','sender_identity_invalid',
+                        'sender_session_not_live', 'sender_backend_not_local',
+                            'sender_identity_invalid',
                         'sender_not_coordinator','root_identity_invalid','target_not_member',
-                        'target_is_coordinator','target_out_of_scope','unsafe_path','api_scope_required',
-                        'api_client_unbound','api_client_stale','api_binding_mismatch','authority_changed',
+                        'target_is_coordinator', 'target_out_of_scope', 'unsafe_path',
+                            'api_scope_required',
+                        'api_client_unbound', 'api_client_stale', 'api_binding_mismatch',
+                            'authority_changed',
                         'busy','resize_unsettled','untracked_readiness','unsupported_session',
                         'nonpersistent_live_session','inconsistent_session','unsupported_profile',
-                        'readiness_timeout','store_corrupt','restore_in_progress','purge_in_progress',
+                        'readiness_timeout', 'store_corrupt', 'restore_in_progress',
+                            'purge_in_progress',
                         'session_race','lease_lost','spawn_failed_safe','store_transient',
                         'menu_guard_blocked',
                         'final_revalidation_failed','text_write_failed','required_enter_failed',
-                        'daemon_restart_after_actuation','runtime_actuation_orphan','terminal_store_failed',
+                        'daemon_restart_after_actuation', 'runtime_actuation_orphan',
+                            'terminal_store_failed',
                         'redundant_enter_failed','boundary_metadata_failed','artifact_unclaimed'
                     )),
                     CHECK((status='injected' AND actuating_at IS NOT NULL
@@ -1633,14 +1769,16 @@ impl MessageStore {
                        OR (status='rejected' AND actuating_at IS NULL
                            AND selected_session_id IS NULL
                            AND reason_code IS NOT NULL AND reason_code NOT IN (
-                             'final_revalidation_failed','text_write_failed','required_enter_failed',
+                             'final_revalidation_failed', 'text_write_failed',
+                                 'required_enter_failed',
                              'daemon_restart_after_actuation','runtime_actuation_orphan',
                              'terminal_store_failed','redundant_enter_failed',
                              'boundary_metadata_failed','artifact_unclaimed'))
                        OR (status='indeterminate' AND actuating_at IS NOT NULL
                            AND selected_session_id IS NOT NULL
                            AND reason_code IN (
-                             'final_revalidation_failed','text_write_failed','required_enter_failed',
+                             'final_revalidation_failed', 'text_write_failed',
+                                 'required_enter_failed',
                              'daemon_restart_after_actuation','runtime_actuation_orphan',
                              'terminal_store_failed')))
                 );
@@ -2982,7 +3120,8 @@ impl MessageStore {
             .map_err(|_| MessageStoreError::StoreCorrupt)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let attempt: i64 = tx.query_row(
-            "SELECT attempt FROM pty_input_operations WHERE injection_id=?1 AND status='preparing' AND lease_owner=?2",
+            "SELECT attempt FROM pty_input_operations WHERE injection_id=?1 AND status='preparing' \
+                AND lease_owner=?2",
             params![injection_id, lease_owner],
             |row| row.get(0),
         )?;
@@ -3095,14 +3234,19 @@ impl MessageStore {
             .lock()
             .map_err(|_| MessageStoreError::StoreCorrupt)?;
         let changed = conn.execute(
-            "UPDATE pty_input_operations SET host_artifact_at=?1 WHERE injection_id=?2 AND source_plane='host_cli' AND status IN ('injected','rejected','indeterminate')",
-            params![crate::phone::types::canonical_pty_timestamp(now), injection_id],
+            "UPDATE pty_input_operations SET host_artifact_at=?1 WHERE injection_id=?2 AND \
+                source_plane='host_cli' AND status IN ('injected','rejected','indeterminate')",
+            params![
+                crate::phone::types::canonical_pty_timestamp(now),
+                injection_id
+            ],
         )?;
         if changed == 1 {
             return Ok(());
         }
         let compacted: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pty_input_tombstones WHERE injection_id=?1 AND source_plane='host_cli')",
+            "SELECT EXISTS(SELECT 1 FROM pty_input_tombstones WHERE injection_id=?1 AND \
+                source_plane='host_cli')",
             [injection_id],
             |row| row.get(0),
         )?;
@@ -3259,8 +3403,10 @@ impl MessageStore {
                 r#"SELECT injection_id,terminal_at FROM pty_input_operations
                    WHERE status IN ('injected','rejected','indeterminate')
                      AND ((source_plane!='host_cli' AND terminal_at < ?1)
-                       OR (source_plane='host_cli' AND host_artifact_at IS NOT NULL AND terminal_at < ?1)
-                       OR (source_plane='host_cli' AND host_artifact_at IS NULL AND terminal_at < ?2))
+                       OR (source_plane='host_cli' AND host_artifact_at IS NOT NULL AND terminal_at
+                           < ?1)
+                       OR (source_plane='host_cli' AND host_artifact_at IS NULL AND terminal_at <
+                           ?2))
                      AND (?3 IS NULL OR terminal_at > ?3
                        OR (terminal_at = ?3 AND injection_id > ?4))
                    ORDER BY terminal_at,injection_id LIMIT ?5"#,
@@ -3305,8 +3451,10 @@ impl MessageStore {
                 r#"DELETE FROM pty_input_operations
                    WHERE injection_id=?1 AND status IN ('injected','rejected','indeterminate')
                      AND ((source_plane!='host_cli' AND terminal_at < ?2)
-                       OR (source_plane='host_cli' AND host_artifact_at IS NOT NULL AND terminal_at < ?2)
-                       OR (source_plane='host_cli' AND host_artifact_at IS NULL AND terminal_at < ?3))"#,
+                       OR (source_plane='host_cli' AND host_artifact_at IS NOT NULL AND terminal_at
+                           < ?2)
+                       OR (source_plane='host_cli' AND host_artifact_at IS NULL AND terminal_at <
+                           ?3))"#,
                 params![injection_id, normal_cutoff, unclaimed_cutoff],
             )?;
             if deleted != 1 {
@@ -3936,7 +4084,8 @@ fn terminalize_in_transaction(
     }
     let current: (String, Option<String>, Option<String>) = tx
         .query_row(
-            "SELECT status,reason_code,reason_detail FROM pty_input_operations WHERE injection_id=?1",
+            "SELECT status,reason_code,reason_detail FROM pty_input_operations WHERE \
+                injection_id=?1",
             [injection_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )

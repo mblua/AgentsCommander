@@ -532,7 +532,15 @@ fn delivered_retry_poison_and_reaper_transitions() {
     let failed = store.enqueue(request("failure", "retained")).unwrap();
     let failed_key = response_work_key("db", "proj:wg-1/a", "failure");
     assert!(probe(&failed.target_fqn, &failed_key, &sha256_hex(b"retained")).is_ok());
-    store.conn.lock().unwrap().execute_batch("CREATE TRIGGER fail_terminal BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT, 'controlled failure'); END;").unwrap();
+    store
+        .conn
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_terminal BEFORE UPDATE ON \
+        messages BEGIN SELECT RAISE(ABORT, 'controlled failure'); END;",
+        )
+        .unwrap();
     assert!(store.mark_delivered(&failed.message_id, now).is_err());
     assert_eq!(
         tracker.try_enable_readiness(),
