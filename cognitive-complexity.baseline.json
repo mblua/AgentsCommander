@@ -192,6 +192,48 @@
       }
     },
     {
+      "id": "rust:src-tauri/src/phone/mailbox/pty_artifact.rs::impl:MailboxPoller::process_pty_input_file",
+      "sites": {
+        "windows": [
+          "34a3d771ff0c"
+        ],
+        "linux": [
+          "34a3d771ff0c"
+        ],
+        "macos": [
+          "34a3d771ff0c"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox/pty_authority.rs::impl:MailboxPoller::spawn_pty_input_target",
+      "sites": {
+        "windows": [
+          "0e2097deada7"
+        ],
+        "linux": [
+          "0e2097deada7"
+        ],
+        "macos": [
+          "0e2097deada7"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox/self_switch.rs::impl:MailboxPoller::resolve_repo_path",
+      "sites": {
+        "windows": [
+          "81f48c31ba89"
+        ],
+        "linux": [
+          "81f48c31ba89"
+        ],
+        "macos": [
+          "81f48c31ba89"
+        ]
+      }
+    },
+    {
       "id": "rust:src-tauri/src/phone/mailbox/session_lookup.rs::impl:MailboxPoller::handle_close_session",
       "sites": {
         "windows": [
@@ -230,48 +272,6 @@
         ],
         "macos": [
           "dff40736a7a2"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/pty_artifact.rs::impl:MailboxPoller::process_pty_input_file",
-      "sites": {
-        "windows": [
-          "34a3d771ff0c"
-        ],
-        "linux": [
-          "34a3d771ff0c"
-        ],
-        "macos": [
-          "34a3d771ff0c"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/self_switch.rs::impl:MailboxPoller::resolve_repo_path",
-      "sites": {
-        "windows": [
-          "81f48c31ba89"
-        ],
-        "linux": [
-          "81f48c31ba89"
-        ],
-        "macos": [
-          "81f48c31ba89"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/pty_authority.rs::impl:MailboxPoller::spawn_pty_input_target",
-      "sites": {
-        "windows": [
-          "0e2097deada7"
-        ],
-        "linux": [
-          "0e2097deada7"
-        ],
-        "macos": [
-          "0e2097deada7"
         ]
       }
     },
