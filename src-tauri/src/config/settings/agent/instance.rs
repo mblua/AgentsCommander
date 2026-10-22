@@ -3,7 +3,6 @@ mod overlay;
 
 #[cfg(test)]
 use super::super::project_atomic_checkpoint;
-#[cfg(windows)]
 use super::super::replace_settings_file_atomic;
 use super::super::{
     read_disk_object_for_write_typed, refresh_physical_pair_id_hashes,

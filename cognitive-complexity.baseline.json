@@ -178,7 +178,7 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::deliver_internal_system_wake",
+      "id": "rust:src-tauri/src/phone/mailbox/internal_delivery.rs::impl:MailboxPoller::deliver_internal_system_wake",
       "sites": {
         "windows": [
           "bb794053ede9"
@@ -192,7 +192,7 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::handle_close_session",
+      "id": "rust:src-tauri/src/phone/mailbox/session_lookup.rs::impl:MailboxPoller::handle_close_session",
       "sites": {
         "windows": [
           "1d959a229655"
@@ -206,7 +206,7 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::handle_purge_wg",
+      "id": "rust:src-tauri/src/phone/mailbox/session_request.rs::impl:MailboxPoller::handle_purge_wg",
       "sites": {
         "windows": [
           "40cfe953061c"
@@ -220,7 +220,7 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::poll",
+      "id": "rust:src-tauri/src/phone/mailbox/wake_workers.rs::impl:MailboxPoller::poll",
       "sites": {
         "windows": [
           "dff40736a7a2"
@@ -234,7 +234,7 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::process_pty_input_file",
+      "id": "rust:src-tauri/src/phone/mailbox/pty_artifact.rs::impl:MailboxPoller::process_pty_input_file",
       "sites": {
         "windows": [
           "34a3d771ff0c"
@@ -248,7 +248,7 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::resolve_repo_path",
+      "id": "rust:src-tauri/src/phone/mailbox/self_switch.rs::impl:MailboxPoller::resolve_repo_path",
       "sites": {
         "windows": [
           "81f48c31ba89"
@@ -262,7 +262,7 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::spawn_pty_input_target",
+      "id": "rust:src-tauri/src/phone/mailbox/pty_authority.rs::impl:MailboxPoller::spawn_pty_input_target",
       "sites": {
         "windows": [
           "0e2097deada7"

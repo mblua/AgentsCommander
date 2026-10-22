@@ -266,7 +266,7 @@
       "resolution": "Stays ignored by design; its parent row runs it with cargo test --lib <name> --exact --ignored --test-threads=1 in a child process armed with AC2786_LOAD_PROBE=1."
     },
     {
-      "id": "rust:src-tauri/src/commands/session.rs::tests::inner_matched_selection_loads_once",
+      "id": "rust:src-tauri/src/commands/session/tests.rs::inner_matched_selection_loads_once",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 2786,
