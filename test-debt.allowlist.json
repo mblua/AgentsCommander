@@ -258,7 +258,7 @@
       "resolution": "Stays ignored by design as a print-only capture helper; it runs manually to re-capture the S6 control with cargo test --lib print_s6_normalized_non_project_settings -- --ignored --nocapture."
     },
     {
-      "id": "rust:src-tauri/src/commands/ac_discovery.rs::tests::inner_read_preferred_agent_id_logged_loads_once",
+      "id": "rust:src-tauri/src/commands/ac_discovery/tests/discovery.rs::inner_read_preferred_agent_id_logged_loads_once",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 2786,
