@@ -108,15 +108,21 @@ pub use poller::MailboxPoller;
 #[cfg(test)]
 use poller::{
     collect_project_refresh_requests, owned_replacement_launch_recipe, read_guarded_agent_state,
-    read_text_bom_tolerant, reserve_response_request_at_write, PreparedResponseRequest,
+    read_text_bom_tolerant,
 };
+#[cfg(all(test, windows))]
+use poller::{reserve_response_request_at_write, PreparedResponseRequest};
 #[cfg(test)]
 use pty_claim::{
     classify_outbox_document, finish_pty_input_before_boundary, pty_resume_metadata_matches,
     pty_spawn_scope_may_resume, reacquire_pty_dispatch_target, refresh_pty_claim_for_resume,
-    with_verified_response_pair, InternalSystemBookkeeping, MailboxSpawnCall, MailboxTestEvent,
-    MailboxTestHooks, PtyClaimRefresh, PtyReacquireGoal, ResponseWakeWork,
+    InternalSystemBookkeeping, MailboxSpawnCall, MailboxTestEvent, MailboxTestHooks,
+    PtyClaimRefresh, PtyReacquireGoal, ResponseWakeWork,
 };
+#[cfg(all(test, windows))]
+use pty_claim::with_verified_response_pair;
+#[cfg(all(test, target_os = "linux"))]
+use notice::canonical_cwd_owned_by_replica;
 pub(crate) use settle::is_deferred_internal_delivery_error;
 #[cfg(test)]
 use settle::{
