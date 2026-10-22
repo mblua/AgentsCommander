@@ -207,6 +207,14 @@ const STR_EXCEPTIONS = {
 // and section 9.1 adds room- twins beside the existing literals.
 const P2_FILES = [
   "src-tauri/src/pty/terminal_snapshot/tests/acceptance.rs",
+  "src-tauri/src/pty/terminal_snapshot/tests/acceptance/api_cancellation.rs",
+  "src-tauri/src/pty/terminal_snapshot/tests/acceptance/api_support.rs",
+  "src-tauri/src/pty/terminal_snapshot/tests/acceptance/daemon_paths.rs",
+  "src-tauri/src/pty/terminal_snapshot/tests/acceptance/fixture.rs",
+  "src-tauri/src/pty/terminal_snapshot/tests/acceptance/host_api.rs",
+  "src-tauri/src/pty/terminal_snapshot/tests/acceptance/host_cancellation.rs",
+  "src-tauri/src/pty/terminal_snapshot/tests/acceptance/leakage.rs",
+  "src-tauri/src/pty/terminal_snapshot/tests/acceptance/room_targets.rs",
   "src-tauri/src/pty/terminal_snapshot/resource_tests.rs",
 ];
 
