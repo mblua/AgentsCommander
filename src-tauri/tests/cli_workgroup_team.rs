@@ -2089,6 +2089,11 @@ fn normalized_production_source(relative: &str) -> String {
     let body = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let normalized = body.split_whitespace().collect::<String>();
+    // An out-of-line `#[cfg(test)] mod tests;` keeps its tests in a separate
+    // file, so the whole source read here is already production-only.
+    if normalized.contains("#[cfg(test)]modtests;") {
+        return normalized;
+    }
     let end = normalized.find("#[cfg(test)]modtests{").unwrap_or_else(|| {
         panic!("{relative}: no `#[cfg(test)] mod tests` block found to split off")
     });
