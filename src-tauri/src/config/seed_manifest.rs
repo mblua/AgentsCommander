@@ -189,7 +189,9 @@ pub(crate) enum SeedManifestError {
     },
     #[cfg(windows)]
     #[error(
-        "Windows seed-manifest namespace call {operation:?} failed before publication raw_error={raw_error} (0x{raw_error:08x}) canonical={canonical} temp={temp} canonical_state={canonical_state:?} temp_state={temp_state:?}"
+        "Windows seed-manifest namespace call {operation:?} failed before publication \
+            raw_error={raw_error} (0x{raw_error:08x}) canonical={canonical} temp={temp} \
+            canonical_state={canonical_state:?} temp_state={temp_state:?}"
     )]
     WindowsNamespaceFailure {
         operation: WindowsNamespaceOperation,
@@ -201,7 +203,9 @@ pub(crate) enum SeedManifestError {
     },
     #[cfg(windows)]
     #[error(
-        "Windows seed-manifest replacement partially changed the namespace raw_error={raw_error} (0x{raw_error:08x}) partial={partial:?} canonical={canonical} temp={temp} canonical_state={canonical_state:?} temp_state={temp_state:?}"
+        "Windows seed-manifest replacement partially changed the namespace raw_error={raw_error} \
+            (0x{raw_error:08x}) partial={partial:?} canonical={canonical} temp={temp} \
+            canonical_state={canonical_state:?} temp_state={temp_state:?}"
     )]
     WindowsReplacePartial {
         raw_error: u32,
@@ -213,7 +217,9 @@ pub(crate) enum SeedManifestError {
     },
     #[cfg(windows)]
     #[error(
-        "Windows seed-manifest replacement requires explicit recovery raw_error={raw_error} (0x{raw_error:08x}) canonical={canonical} temp={temp} canonical_state={canonical_state:?} temp_state={temp_state:?}"
+        "Windows seed-manifest replacement requires explicit recovery raw_error={raw_error} \
+            (0x{raw_error:08x}) canonical={canonical} temp={temp} \
+            canonical_state={canonical_state:?} temp_state={temp_state:?}"
     )]
     WindowsReplaceRecoveryRequired {
         raw_error: u32,
@@ -224,7 +230,9 @@ pub(crate) enum SeedManifestError {
     },
     #[cfg(windows)]
     #[error(
-        "Windows seed-manifest create-only move requires explicit recovery raw_error={raw_error} (0x{raw_error:08x}) canonical={canonical} temp={temp} canonical_state={canonical_state:?} temp_state={temp_state:?}"
+        "Windows seed-manifest create-only move requires explicit recovery raw_error={raw_error} \
+            (0x{raw_error:08x}) canonical={canonical} temp={temp} \
+            canonical_state={canonical_state:?} temp_state={temp_state:?}"
     )]
     WindowsMoveRecoveryRequired {
         raw_error: u32,
@@ -235,7 +243,9 @@ pub(crate) enum SeedManifestError {
     },
     #[cfg(windows)]
     #[error(
-        "Windows seed-manifest namespace call succeeded but final identity validation failed canonical={canonical} temp={temp} expected_source={expected_source:?} final_state={final_state:?} old_destination_identity={old_destination_identity:?}"
+        "Windows seed-manifest namespace call succeeded but final identity validation failed \
+            canonical={canonical} temp={temp} expected_source={expected_source:?} \
+            final_state={final_state:?} old_destination_identity={old_destination_identity:?}"
     )]
     WindowsPostPublishIdentityConflict {
         canonical: PathBuf,
@@ -1444,7 +1454,9 @@ pub(crate) fn config_batch_base_serialized_len() -> usize {
     MANAGED_HEADER.len()
         + "schema_version = 1\n".len()
         + "coverage_version = 2\n".len()
-        + "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n".len()
+        + "coverage = [\"project_context_templates\", \"replica_config_folders\", \
+            \"coding_agent_catalog\"]\n"
+            .len()
 }
 
 fn exact_serialized_len(state: &ManifestState) -> Result<usize, SeedManifestError> {
@@ -1469,7 +1481,9 @@ fn exact_serialized_len_with_limit(
     checked_add(&mut length, "coverage_version = 2\n".len())?;
     checked_add(
         &mut length,
-        "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n".len(),
+        "coverage = [\"project_context_templates\", \"replica_config_folders\", \
+            \"coding_agent_catalog\"]\n"
+            .len(),
     )?;
     if canonical_row_count == 0 {
         checked_add(&mut length, "files = []\n".len())?;
@@ -2479,7 +2493,8 @@ impl ProjectSeedManifestGuard {
             Err(error) => {
                 let reason = error.degraded_reason();
                 log::warn!(
-                    "[seed_manifest] canonical manifest is preserved read-only path={} reason={:?} diagnostic_kind={}",
+                    "[seed_manifest] canonical manifest is preserved read-only path={} reason={:?} \
+                        diagnostic_kind={}",
                     canonical_path.display(),
                     reason,
                     error.diagnostic_kind()
@@ -2548,7 +2563,8 @@ impl ProjectSeedManifestGuard {
             Ok(raw) => raw,
             Err(error) => {
                 log::warn!(
-                    "[seed_manifest] v1->v2 upgrade re-read failed path={} error={}; manifest stays preserved read-only",
+                    "[seed_manifest] v1->v2 upgrade re-read failed path={} error={}; manifest \
+                        stays preserved read-only",
                     canonical_path.display(),
                     error
                 );
@@ -2564,7 +2580,8 @@ impl ProjectSeedManifestGuard {
             Ok(text) => text,
             Err(error) => {
                 log::warn!(
-                    "[seed_manifest] v1->v2 upgrade skipped: manifest is not UTF-8 at byte offset {} path={}; manifest stays preserved read-only",
+                    "[seed_manifest] v1->v2 upgrade skipped: manifest is not UTF-8 at byte offset \
+                        {} path={}; manifest stays preserved read-only",
                     error.valid_up_to(),
                     canonical_path.display()
                 );
@@ -2576,7 +2593,8 @@ impl ProjectSeedManifestGuard {
             Ok(wire) => wire,
             Err(error) => {
                 log::warn!(
-                    "[seed_manifest] v1->v2 upgrade skipped path={} error={}; manifest stays preserved read-only",
+                    "[seed_manifest] v1->v2 upgrade skipped path={} error={}; manifest stays \
+                        preserved read-only",
                     canonical_path.display(),
                     classify_toml_parse_error(error)
                 );
@@ -2608,7 +2626,8 @@ impl ProjectSeedManifestGuard {
             Ok(state) => state,
             Err(error) => {
                 log::warn!(
-                    "[seed_manifest] v1 manifest rows failed v2 validation path={} error={}; manifest stays preserved read-only",
+                    "[seed_manifest] v1 manifest rows failed v2 validation path={} error={}; \
+                        manifest stays preserved read-only",
                     canonical_path.display(),
                     sanitize_canonical_validation_error(error)
                 );
@@ -2626,7 +2645,8 @@ impl ProjectSeedManifestGuard {
             Ok(bytes) => bytes,
             Err(error) => {
                 log::warn!(
-                    "[seed_manifest] v1->v2 upgrade serialize failed path={} error={}; manifest stays preserved read-only",
+                    "[seed_manifest] v1->v2 upgrade serialize failed path={} error={}; manifest \
+                        stays preserved read-only",
                     canonical_path.display(),
                     error
                 );
@@ -2641,7 +2661,8 @@ impl ProjectSeedManifestGuard {
         };
         if let Err(error) = self.write_canonical(bytes) {
             log::warn!(
-                "[seed_manifest] v1->v2 upgrade write failed path={} error={}; manifest stays preserved read-only",
+                "[seed_manifest] v1->v2 upgrade write failed path={} error={}; manifest stays \
+                    preserved read-only",
                 canonical_path.display(),
                 error
             );
@@ -2779,7 +2800,9 @@ impl ProjectSeedManifestGuard {
         }
 
         log::warn!(
-            "[seed_manifest] bounded prior-temp inventory root={} policy={} exact={} malformed={} malformed_native={} removed={} preserved={} entry_errors={} scan_truncated={} scan_error={:?} exact_samples={:?} malformed_samples={:?}",
+            "[seed_manifest] bounded prior-temp inventory root={} policy={} exact={} malformed={} \
+                malformed_native={} removed={} preserved={} entry_errors={} scan_truncated={} \
+                scan_error={:?} exact_samples={:?} malformed_samples={:?}",
             self.ac_root.path.display(),
             policy,
             inventory.exact_count,
@@ -2885,7 +2908,8 @@ impl ProjectSeedManifestGuard {
             #[cfg(unix)]
             if let Err(error) = self.ac_root.file.sync_all() {
                 log::warn!(
-                    "[seed_manifest] parent-directory sync failed after canonical replace root={} error={}",
+                    "[seed_manifest] parent-directory sync failed after canonical replace root={} \
+                        error={}",
                     self.ac_root.path.display(),
                     error
                 );
@@ -3802,7 +3826,8 @@ impl ProjectSeedManifestGuard {
 
 fn log_record_failure(scope: &str, error: &SeedManifestError) {
     log::warn!(
-        "[seed_manifest] target or lifecycle action succeeded but manifest persistence did not scope={} error={}",
+        "[seed_manifest] target or lifecycle action succeeded but manifest persistence did not \
+            scope={} error={}",
         scope,
         error
     );
@@ -3998,7 +4023,10 @@ impl ProjectSeedManifestGuard {
                 };
                 let temp_state = inspect_windows_path(&temp_path, source_identity, bytes);
                 log::warn!(
-                    "[seed_manifest] Windows namespace failure operation={:?} raw_error={} raw_error_hex=0x{:08x} canonical={} temp={} backup=NULL ac_identity={:?} lock_identity={:?} source_identity={:?} destination_identity={:?} destination_handle_live={} canonical_state={:?} temp_state={:?}",
+                    "[seed_manifest] Windows namespace failure operation={:?} raw_error={} \
+                        raw_error_hex=0x{:08x} canonical={} temp={} backup=NULL ac_identity={:?} \
+                        lock_identity={:?} source_identity={:?} destination_identity={:?} \
+                        destination_handle_live={} canonical_state={:?} temp_state={:?}",
                     operation,
                     raw_error,
                     raw_error,
@@ -4025,7 +4053,8 @@ impl ProjectSeedManifestGuard {
                                 Some(bytes),
                             ) {
                                 log::warn!(
-                                    "[seed_manifest] Windows current-owned temp cleanup failed after MoveFileExW raw_error={} path={} cleanup_error={}",
+                                    "[seed_manifest] Windows current-owned temp cleanup failed \
+                                        after MoveFileExW raw_error={} path={} cleanup_error={}",
                                     raw_error,
                                     temp_path.display(),
                                     cleanup_error
@@ -4083,7 +4112,8 @@ impl ProjectSeedManifestGuard {
                                 Some(bytes),
                             ) {
                                 log::warn!(
-                                    "[seed_manifest] Windows current-owned temp cleanup failed after ReplaceFileW raw_error={} path={} cleanup_error={}",
+                                    "[seed_manifest] Windows current-owned temp cleanup failed \
+                                        after ReplaceFileW raw_error={} path={} cleanup_error={}",
                                     raw_error,
                                     temp_path.display(),
                                     cleanup_error
@@ -4100,7 +4130,8 @@ impl ProjectSeedManifestGuard {
                         } else {
                             if raw_error == ERROR_UNABLE_TO_REMOVE_REPLACED {
                                 log::warn!(
-                                    "[seed_manifest] ReplaceFileW error 1175 contradicted the documented stable-name state; preserving all observed names"
+                                    "[seed_manifest] ReplaceFileW error 1175 contradicted the \
+                                        documented stable-name state; preserving all observed names"
                                 );
                             }
                             Err(SeedManifestError::WindowsReplaceRecoveryRequired {
@@ -4716,7 +4747,8 @@ mod stage_e_conformance {
         s.push_str("schema_version = 1\n");
         s.push_str("coverage_version = 2\n");
         s.push_str(
-            "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n",
+            "coverage = [\"project_context_templates\", \"replica_config_folders\", \
+                \"coding_agent_catalog\"]\n",
         );
         s
     }
