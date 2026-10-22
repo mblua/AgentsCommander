@@ -1,4 +1,5 @@
 use std::sync::atomic::Ordering;
+
 use std::sync::{Arc, Mutex};
 
 use crate::pty::manager::PtyManager;
