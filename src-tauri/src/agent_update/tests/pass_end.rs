@@ -273,8 +273,7 @@ async fn dropped_completion_receiver_does_not_abort_panicking_supervisor() {
 // ---------------------------------------------------------------------
 
 #[tokio::test]
-async fn run_startup_updates_emits_started_with_nodes_then_command_events_then_finished_then_post_probe(
-) {
+async fn run_startup_updates_emits_started_nodes_command_events_finished_post_probe() {
     let dir = tempfile::tempdir().expect("tempdir");
     bob_catalog_dir(dir.path());
     let settings = AppSettings {

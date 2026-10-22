@@ -228,10 +228,49 @@ fn build_plan_from_a_migrated_on_disk_catalog_keeps_first_entry_precedence() {
     let legacy = serde_json::json!({
         "schemaVersion": 1,
         "agents": [
-            {"key": "mytool-first", "label": "My Tool First", "description": "d", "color": "#111", "command": "mytool", "envs": [], "isolatedHome": false, "removable": true},
-            {"key": "mytool-second", "label": "My Tool Second", "description": "d", "color": "#111", "command": "mytool", "envs": [], "isolatedHome": false, "removable": true, "updateCommands": ["mytool up"]},
-            {"key": "ordered", "label": "Ordered", "description": "d", "color": "#222", "command": "ordered", "envs": [], "isolatedHome": false, "removable": true, "updateCommands": ["ordered fetch", "ordered build"]},
-            {"key": "claude", "label": "My Claude", "description": "d", "color": "#d97706", "command": "claude", "envs": [], "isolatedHome": false, "removable": true, "updateCommands": ["claude --legacy"]}
+            {
+                "key": "mytool-first",
+                "label": "My Tool First",
+                "description": "d",
+                "color": "#111",
+                "command": "mytool",
+                "envs": [],
+                "isolatedHome": false,
+                "removable": true
+            },
+            {
+                "key": "mytool-second",
+                "label": "My Tool Second",
+                "description": "d",
+                "color": "#111",
+                "command": "mytool",
+                "envs": [],
+                "isolatedHome": false,
+                "removable": true,
+                "updateCommands": ["mytool up"]
+            },
+            {
+                "key": "ordered",
+                "label": "Ordered",
+                "description": "d",
+                "color": "#222",
+                "command": "ordered",
+                "envs": [],
+                "isolatedHome": false,
+                "removable": true,
+                "updateCommands": ["ordered fetch", "ordered build"]
+            },
+            {
+                "key": "claude",
+                "label": "My Claude",
+                "description": "d",
+                "color": "#d97706",
+                "command": "claude",
+                "envs": [],
+                "isolatedHome": false,
+                "removable": true,
+                "updateCommands": ["claude --legacy"]
+            }
         ]
     });
     let mut bytes = serde_json::to_vec_pretty(&legacy).unwrap();
@@ -307,8 +346,30 @@ fn build_plan_from_a_local_composed_on_disk_catalog_honors_exact_command_consent
         "schemaVersion": 1,
         "agents": [
             {"key": "claude", "updateCommands": ["claude --custom", "claude --second"]},
-            {"key": "mytool-first", "label": "My Tool First", "description": "d", "color": "#111", "command": "mytool", "envs": [], "isolatedHome": false, "removable": true, "updateCommands": [], "autoUpdate": false},
-            {"key": "mytool-second", "label": "My Tool Second", "description": "d", "color": "#111", "command": "mytool", "envs": [], "isolatedHome": false, "removable": true, "updateCommands": ["mytool up"], "autoUpdate": false}
+            {
+                "key": "mytool-first",
+                "label": "My Tool First",
+                "description": "d",
+                "color": "#111",
+                "command": "mytool",
+                "envs": [],
+                "isolatedHome": false,
+                "removable": true,
+                "updateCommands": [],
+                "autoUpdate": false
+            },
+            {
+                "key": "mytool-second",
+                "label": "My Tool Second",
+                "description": "d",
+                "color": "#111",
+                "command": "mytool",
+                "envs": [],
+                "isolatedHome": false,
+                "removable": true,
+                "updateCommands": ["mytool up"],
+                "autoUpdate": false
+            }
         ]
     });
     let mut bytes = serde_json::to_vec_pretty(&local).unwrap();

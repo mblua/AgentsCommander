@@ -176,7 +176,8 @@ pub struct AgentUpdateStatus {
     pub results: Vec<AgentUpdateResult>,
     /// #1551 - commands whose update sequence is running, in start order.
     pub running: Vec<AgentUpdateCommandRef>,
-    /// #1551 - policy recorded by the winning answer per prompted command this boot (resolving or late).
+    /// #1551 - policy recorded by the winning answer per prompted command this boot (resolving or
+    /// late).
     pub answered: BTreeMap<String, bool>,
     /// #1551 - the agents of this boot's pass in pass order (catalog order); pruned of prompts
     /// answered No or expired; kept after the pass for the summary.
@@ -1818,7 +1819,8 @@ where
         }
         PromptState::Answered(_) => {
             log::info!(
-                "[agent-update] answer for '{command}' (enabled={enabled}): ignored, already answered this boot"
+                "[agent-update] answer for '{command}' (enabled={enabled}): ignored, already \
+                answered this boot"
             );
             return Ok(false);
         }
@@ -1847,7 +1849,8 @@ where
         }
         AnswerClaim::Recorded => {
             log::info!(
-                "[agent-update] answer for '{command}' (enabled={enabled}): recorded for future boots (prompt already closed)"
+                "[agent-update] answer for '{command}' (enabled={enabled}): recorded for future \
+                boots (prompt already closed)"
             );
             Ok(false)
         }
@@ -1958,7 +1961,8 @@ impl TargetProcessOwner {
             }
             Err(crate::pty::job::ContainedSpawnError::Containment(reason)) => {
                 log::warn!(
-                    "[agent-update] contained updater launch rejected: process containment failed at {reason}"
+                    "[agent-update] contained updater launch rejected: process containment \
+                    failed at {reason}"
                 );
                 return Err(UpdaterStepOutcome::ContainmentFailed);
             }
@@ -2903,7 +2907,8 @@ fn event_output(bytes: &[u8]) -> String {
     let tail = output_tail(bytes);
     if bytes.len() > OUTPUT_TAIL_BYTES {
         format!(
-            "[... truncated; showing the last {OUTPUT_TAIL_BYTES} bytes. The full output is in the app log.]\n{tail}"
+            "[... truncated; showing the last {OUTPUT_TAIL_BYTES} bytes. The full output is in \
+            the app log.]\n{tail}"
         )
     } else {
         tail
@@ -3395,7 +3400,8 @@ async fn run_update_target(
             let cleanup_failure = owner_slot.settle_after_panic(&gate, &target.command).await;
             if let Some(detail) = cleanup_failure.as_deref() {
                 log::warn!(
-                    "[agent-update] process cleanup after target panic defective for {} ({}): {detail}",
+                    "[agent-update] process cleanup after target panic defective for {} ({}): \
+                    {detail}",
                     target.label,
                     target.command
                 );
@@ -3602,7 +3608,8 @@ impl PassSupervisor {
 
         if !plan.prompts.is_empty() {
             log::info!(
-                "[agent-update] prompt phase started: {} command(s) await SI/NO ({}s each, default No): [{}]",
+                "[agent-update] prompt phase started: {} command(s) await SI/NO ({}s each, \
+                default No): [{}]",
                 plan.prompts.len(),
                 PROMPT_TIMEOUT.as_secs(),
                 plan.prompts

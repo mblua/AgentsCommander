@@ -81,8 +81,10 @@ async fn agent_install_2736_success_logs_full_output_and_emits_ok_true() {
     let (app, mut rx) = app_with_broadcaster();
     let dir = tempfile::tempdir().expect("tempdir");
     let command = shell(
-        "echo FIRSTBYTE-2736& for /L %i in (1,1,300) do @echo 0123456789012345678901234567890123456789",
-        "echo FIRSTBYTE-2736; i=0; while [ $i -lt 300 ]; do echo 0123456789012345678901234567890123456789; i=$((i+1)); done",
+        "echo FIRSTBYTE-2736& for /L %i in (1,1,300) do @echo \
+        0123456789012345678901234567890123456789",
+        "echo FIRSTBYTE-2736; i=0; while [ $i -lt 300 ]; do echo \
+        0123456789012345678901234567890123456789; i=$((i+1)); done",
     );
     let run = run_agent_install(
         app.handle(),

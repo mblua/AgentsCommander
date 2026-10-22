@@ -216,7 +216,8 @@ async fn runner_success_with_detached_survivor() {
         // write.
         use base64::Engine as _;
         let script = format!(
-            "Start-Process cmd -ArgumentList '/c','ping -n 3 127.0.0.1 >NUL & echo x > {marker_str}' -WindowStyle Hidden"
+            "Start-Process cmd -ArgumentList '/c','ping -n 3 127.0.0.1 >NUL & echo x > \
+            {marker_str}' -WindowStyle Hidden"
         );
         let mut utf16 = Vec::new();
         for u in script.encode_utf16() {
