@@ -11,6 +11,9 @@ use crate::config::ac_root::{
     ac_root_for_project, canonical_ac_root_label, existing_ac_root, find_ac_root_segment,
     has_ac_root,
 };
+use crate::config::coding_agent_profiles::{
+    read_replica_current_coding_agent, read_replica_profile_result,
+};
 use crate::config::instance_artifacts::{
     CODING_AGENTS_BASE_TMP_ARTIFACT, CODING_AGENTS_LOCAL_ARTIFACT,
     CODING_AGENTS_LOCAL_TMP_ARTIFACT, CODING_AGENTS_LOCK_ARTIFACT,
@@ -18,7 +21,7 @@ use crate::config::instance_artifacts::{
     CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT, CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
     CODING_AGENTS_RETIRED_LOCK_ARTIFACT, CODING_AGENTS_SET_ASIDE_ARTIFACT, SETTINGS_FILE_NAME,
 };
-use crate::config::settings::SettingsState;
+use crate::config::settings::{AppSettings, SettingsState};
 use crate::pty::manager::{PendingSpawn, PtyManager};
 use crate::session::manager::SessionManager;
 use crate::session::session::{SessionInfo, SessionRepo, SessionStatus};
@@ -955,7 +958,8 @@ impl DiscoveryBranchWatcher {
     }
 
     /// Update this project's replicas in the watcher. `project_dir` is the directory
-    /// that directly contains the Project AC Root, not a grand-parent from `settings.project_paths`.
+    /// that directly contains the Project AC Root, not a grand-parent from
+    /// `settings.project_paths`.
     /// See the invariant comment on the `replicas` field.
     pub fn update_replicas_for_project(&self, project_dir: &str, workgroups: &[AcWorkgroup]) {
         // Invariant guard: catch mistaken call-site passes (e.g. a `base_path` parent)
@@ -968,7 +972,8 @@ impl DiscoveryBranchWatcher {
         );
         if !has_workspace {
             log::warn!(
-                "[DiscoveryBranchWatcher] update_replicas_for_project called with {} which has no Project AC Root, ignoring",
+                "[DiscoveryBranchWatcher] update_replicas_for_project called with {} which has no \
+                    Project AC Root, ignoring",
                 project_dir
             );
             return;
@@ -984,7 +989,8 @@ impl DiscoveryBranchWatcher {
             .map(|p| projected_path_string(&p))
             .unwrap_or_else(|| projected_path_string(Path::new(project_dir)));
 
-        // Invariant: git_repos order = replica.repo_paths order (which follows config.json `repos`).
+        // Invariant: git_repos order = replica.repo_paths order (which follows config.json
+        // `repos`).
         // Never sort or dedupe here.
         let mut entries = Vec::new();
         for wg in workgroups {
@@ -1058,7 +1064,8 @@ impl DiscoveryBranchWatcher {
             }
         }
         log::debug!(
-            "[DiscoveryBranchWatcher] invalidated {} replica(s); awaiting next discover_project re-registration",
+            "[DiscoveryBranchWatcher] invalidated {} replica(s); awaiting next discover_project \
+                re-registration",
             replica_paths.len()
         );
     }
@@ -1080,7 +1087,8 @@ impl DiscoveryBranchWatcher {
                     tokio::select! {
                         biased;
                         _ = shutdown.token().cancelled() => {
-                            log::info!("[DiscoveryBranchWatcher] Shutdown signal received, stopping");
+                            log::info!("[DiscoveryBranchWatcher] Shutdown signal received, \
+                                stopping");
                             break;
                         }
                         _ = tokio::time::sleep(BRANCH_POLL_INTERVAL) => {
@@ -1107,7 +1115,8 @@ impl DiscoveryBranchWatcher {
         // workgroups whose project is not in `settings.projectPaths`.
         if !entries.is_empty() {
             for entry in &entries {
-                // Capture the session's git_repos_gen (if a session exists) BEFORE running detections.
+                // Capture the session's git_repos_gen (if a session exists) BEFORE running
+                // detections.
                 // Used for CAS on set_git_repos_if_gen (Grinch #14).
                 let (session_id_opt, gen_snapshot) = {
                     let mgr = self.session_manager.read().await;
@@ -1218,14 +1227,17 @@ impl DiscoveryBranchWatcher {
                             );
                         } else {
                             log::debug!(
-                            "[DiscoveryBranchWatcher] gen mismatch for {} — refresh landed during poll; skipping stale emit",
+                            "[DiscoveryBranchWatcher] gen mismatch for {} — refresh landed during \
+                                poll; skipping stale emit",
                             entry.replica_path
                         );
-                            // Clear our own cache entry so next tick re-evaluates against the fresh list.
+                            // Clear our own cache entry so next tick re-evaluates against the fresh
+                            // list.
                             self.repos_cache.lock().unwrap().remove(&entry.replica_path);
                         }
                     }
-                    // If no session exists yet (un-instantiated replica), Gate A has already covered
+                    // If no session exists yet (un-instantiated replica), Gate A has already
+                    // covered
                     // the display surface — no session to push git_repos into.
                 }
             }
@@ -1312,24 +1324,28 @@ impl DiscoveryBranchWatcher {
         let previous = self.task_cache.lock().unwrap().get(&wg_root).cloned();
         let sentinel = previous.as_ref().map(|entry| entry.sentinel.clone());
         let root = wg_root.clone();
-        let next = match tokio::task::spawn_blocking(move || poll_task_snapshot(&root, sentinel))
-            .await
-        {
-            Ok(Ok(Some(next))) => next,
-            Ok(Ok(None)) => return,
-            Ok(Err(error)) => {
-                log::warn!(
+        let next =
+            match tokio::task::spawn_blocking(move || poll_task_snapshot(&root, sentinel)).await {
+                Ok(Ok(Some(next))) => next,
+                Ok(Ok(None)) => return,
+                Ok(Err(error)) => {
+                    log::warn!(
                     "[DiscoveryBranchWatcher] task snapshot failed for {}: {}; retrying next pass",
                     wg_root.display(),
                     error
                 );
-                return;
-            }
-            Err(error) => {
-                log::warn!("[DiscoveryBranchWatcher] task snapshot worker failed for {}: {}; retrying next pass", wg_root.display(), error);
-                return;
-            }
-        };
+                    return;
+                }
+                Err(error) => {
+                    log::warn!(
+                        "[DiscoveryBranchWatcher] task snapshot worker failed for {}: {}; \
+                    retrying next pass",
+                        wg_root.display(),
+                        error
+                    );
+                    return;
+                }
+            };
         let shipped = deliver_poll_task(previous.as_ref(), next, |next| {
             self.app_handle
                 .emit(
@@ -1620,10 +1636,11 @@ pub async fn discover_ac_agents(
                                     identity_read.identity.as_ref().and_then(|identity| {
                                         read_preferred_agent_id(&identity.matrix_dir, &cfg)
                                     });
-                                let current_coding_agent_id = crate::config::coding_agent_profiles::read_replica_current_coding_agent(&wg_path)
-                                    .filter(|id| cfg.agents.iter().any(|agent| agent.id == *id));
-                                let profile_read =
-                                    crate::config::coding_agent_profiles::read_replica_profile_result(&wg_path);
+                                let current_coding_agent_id =
+                                    read_replica_current_coding_agent(&wg_path).filter(|id| {
+                                        cfg.agents.iter().any(|agent| agent.id == *id)
+                                    });
+                                let profile_read = read_replica_profile_result(&wg_path);
                                 if let Some(warning) = &profile_read.warning {
                                     log::warn!("[ac-discovery] {}", warning);
                                 }
@@ -1665,12 +1682,15 @@ pub async fn discover_ac_agents(
                                     .unwrap_or(false);
 
                                 log::debug!(
-                                    "[ac-discovery] call={} replica — project='{}' wg='{}' replica='{}' fqn='{}:{}/{}' is_coordinator={}",
+                                    "[ac-discovery] call={} replica — project='{}' wg='{}' \
+                                        replica='{}' fqn='{}:{}/{}' is_coordinator={}",
                                     call_id,
                                     project_folder,
                                     dir_name,
                                     replica_name,
-                                    project_folder, dir_name, replica_name,
+                                    project_folder,
+                                    dir_name,
+                                    replica_name,
                                     is_coordinator
                                 );
 
@@ -1815,7 +1835,8 @@ pub async fn discover_ac_agents(
             wg.team_name = suffix.map(|t| t.name.clone());
             if let Some(ref name) = wg.team_name {
                 log::warn!(
-                    "[discovery] Workgroup '{}' → team '{}' (matched via name suffix, identity may be missing)",
+                    "[discovery] Workgroup '{}' → team '{}' (matched via name suffix, identity may \
+                        be missing)",
                     wg.name, name
                 );
             } else {
@@ -1858,7 +1879,8 @@ pub async fn discover_ac_agents(
         .filter(|a| a.is_coordinator)
         .count();
     log::debug!(
-        "[ac-discovery] call={} discover_ac_agents: summary — workgroups={} teams={} replicas={} coordinator={}",
+        "[ac-discovery] call={} discover_ac_agents: summary — workgroups={} teams={} replicas={} \
+            coordinator={}",
         call_id,
         workgroups.len(),
         teams.len(),
@@ -1947,27 +1969,32 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
     let [config_state_row, config_state_lock_row, config_state_tmp_row] = config_state_rows
         .each_ref()
         .map(|(pattern, comment)| (pattern.as_str(), *comment));
-    const SEED_MANIFEST_COORDINATION_BLOCK: &str = "# AgentsCommander: exclude seed-manifest coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n";
-    const SEED_MANIFEST_MANIFEST_BLOCK: &str = "# AgentsCommander: exclude the seed publication manifest from Git tracking.\n/seed-manifest.toml\n";
+    const SEED_MANIFEST_COORDINATION_BLOCK: &str = "# AgentsCommander: exclude seed-manifest \
+        coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n";
+    const SEED_MANIFEST_MANIFEST_BLOCK: &str = "# AgentsCommander: exclude the seed publication \
+        manifest from Git tracking.\n/seed-manifest.toml\n";
     const SEED_MANIFEST_COORDINATION_PATTERNS: [&str; 2] =
         ["/.seed-manifest.lock", "/.seed-manifest.*.tmp"];
     const SEED_MANIFEST_MANIFEST_PATTERN: &str = "/seed-manifest.toml";
 
     // #1968 - the machine-local coding-agent catalog children, rooted at `.ac/`.
-    let [catalog_local, catalog_migration_backup, catalog_migration_journal, catalog_lock, catalog_base_tmp, catalog_local_tmp, catalog_migration_backup_tmp, catalog_migration_journal_tmp, catalog_retired_lock, catalog_set_aside] =
-        [
-            CODING_AGENTS_LOCAL_ARTIFACT,
-            CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
-            CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
-            CODING_AGENTS_LOCK_ARTIFACT,
-            CODING_AGENTS_BASE_TMP_ARTIFACT,
-            CODING_AGENTS_LOCAL_TMP_ARTIFACT,
-            CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
-            CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
-            CODING_AGENTS_RETIRED_LOCK_ARTIFACT,
-            CODING_AGENTS_SET_ASIDE_ARTIFACT,
-        ]
-        .map(|artifact| format!("/{artifact}"));
+    let catalog = [
+        CODING_AGENTS_LOCAL_ARTIFACT,
+        CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
+        CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
+        CODING_AGENTS_LOCK_ARTIFACT,
+        CODING_AGENTS_BASE_TMP_ARTIFACT,
+        CODING_AGENTS_LOCAL_TMP_ARTIFACT,
+        CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
+        CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
+        CODING_AGENTS_RETIRED_LOCK_ARTIFACT,
+        CODING_AGENTS_SET_ASIDE_ARTIFACT,
+    ]
+    .map(|artifact| format!("/{artifact}"));
+    let [catalog_local, catalog_migration_backup, catalog_migration_journal, ..] = &catalog;
+    let [_, _, _, catalog_lock, catalog_base_tmp, catalog_local_tmp, ..] = &catalog;
+    let [.., catalog_migration_backup_tmp, catalog_migration_journal_tmp, _, _] = &catalog;
+    let [.., catalog_retired_lock, catalog_set_aside] = &catalog;
 
     // #2434 - configured instructions filenames beyond the floor, escaped.
     let mut custom_patterns: Vec<String> = Vec::new();
@@ -1992,11 +2019,13 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
     let mut required_entries: Vec<(&str, &str)> = vec![
         (
             "room-*/",
-            "# AgentsCommander: exclude room cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.",
+            "# AgentsCommander: exclude room cloned repos from parent git tracking.\n# Without \
+                this, parent repo operations (checkout, reset) corrupt child clones.",
         ),
         (
             "wg-*/",
-            "# AgentsCommander: exclude legacy room cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.",
+            "# AgentsCommander: exclude legacy room cloned repos from parent git tracking.\n# \
+                Without this, parent repo operations (checkout, reset) corrupt child clones.",
         ),
         (
             ".deleting-*/",
@@ -2011,15 +2040,18 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         ),
         (
             "**/__agent_*/last_ac_context.md",
-            "# AgentsCommander: exclude managed session context files inside replica agent folders.",
+            "# AgentsCommander: exclude managed session context files inside replica agent \
+                folders.",
         ),
         (
             "**/__agent_*/CLAUDE.md",
-            "# AgentsCommander: exclude managed session context files inside replica agent folders.",
+            "# AgentsCommander: exclude managed session context files inside replica agent \
+                folders.",
         ),
         (
             "**/__agent_*/AGENTS.md",
-            "# AgentsCommander: exclude managed session context files inside replica agent folders.",
+            "# AgentsCommander: exclude managed session context files inside replica agent \
+                folders.",
         ),
         project_settings_row,
         (
@@ -2079,7 +2111,8 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         ),
         (
             catalog_migration_backup.as_str(),
-            "# AgentsCommander: exclude the coding-agent migration backup (byte-exact pre-migration source copy).",
+            "# AgentsCommander: exclude the coding-agent migration backup (byte-exact \
+                pre-migration source copy).",
         ),
         (
             catalog_migration_journal.as_str(),
@@ -2103,7 +2136,8 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         ),
         (
             catalog_migration_journal_tmp.as_str(),
-            "# AgentsCommander: exclude coding-agent migration journal publication temporaries (the journal name starts with a dot).",
+            "# AgentsCommander: exclude coding-agent migration journal publication temporaries \
+                (the journal name starts with a dot).",
         ),
         // #2715 - the pre-migration lock sidecar the naming migration leaves on
         // disk for good, and every catalog file it sets aside.
@@ -2124,7 +2158,8 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
     for pattern in &custom_patterns {
         required_entries.push((
             pattern.as_str(),
-            "# AgentsCommander: exclude managed session context files inside replica agent folders.",
+            "# AgentsCommander: exclude managed session context files inside replica agent \
+                folders.",
         ));
     }
 
@@ -2658,12 +2693,9 @@ pub(crate) async fn discover_project_inner(
                             identity_read.identity.as_ref().and_then(|identity| {
                                 read_preferred_agent_id(&identity.matrix_dir, &cfg)
                             });
-                        let current_coding_agent_id = crate::config::coding_agent_profiles::read_replica_current_coding_agent(&wg_path)
+                        let current_coding_agent_id = read_replica_current_coding_agent(&wg_path)
                             .filter(|id| cfg.agents.iter().any(|agent| agent.id == *id));
-                        let profile_read =
-                            crate::config::coding_agent_profiles::read_replica_profile_result(
-                                &wg_path,
-                            );
+                        let profile_read = read_replica_profile_result(&wg_path);
                         if let Some(warning) = &profile_read.warning {
                             log::warn!("[ac-discovery] {}", warning);
                         }
@@ -2703,12 +2735,15 @@ pub(crate) async fn discover_project_inner(
                         .unwrap_or(false);
 
                         log::debug!(
-                            "[ac-discovery] call={} replica — project='{}' wg='{}' replica='{}' fqn='{}:{}/{}' is_coordinator={}",
+                            "[ac-discovery] call={} replica — project='{}' wg='{}' replica='{}' \
+                                fqn='{}:{}/{}' is_coordinator={}",
                             call_id,
                             project_folder,
                             dir_name,
                             replica_name,
-                            project_folder, dir_name, replica_name,
+                            project_folder,
+                            dir_name,
+                            replica_name,
                             is_coordinator
                         );
 
@@ -2846,7 +2881,8 @@ pub(crate) async fn discover_project_inner(
             wg.team_name = suffix.map(|t| t.name.clone());
             if let Some(ref name) = wg.team_name {
                 log::warn!(
-                    "[discovery] Workgroup '{}' → team '{}' (matched via name suffix, identity may be missing)",
+                    "[discovery] Workgroup '{}' → team '{}' (matched via name suffix, identity may \
+                        be missing)",
                     wg.name, name
                 );
             } else {
@@ -2894,7 +2930,8 @@ pub(crate) async fn discover_project_inner(
         .filter(|a| a.is_coordinator)
         .count();
     log::debug!(
-        "[ac-discovery] call={} discover_project: summary — path='{}' workgroups={} teams={} replicas={} coordinator={}",
+        "[ac-discovery] call={} discover_project: summary — path='{}' workgroups={} teams={} \
+            replicas={} coordinator={}",
         call_id,
         path,
         workgroups.len(),
@@ -3076,7 +3113,7 @@ pub async fn set_replica_context_files(path: String, files: Vec<String>) -> Resu
 async fn mutate_project_paths_with_settings_path<T: Send + 'static>(
     settings: &SettingsState,
     settings_path: Option<&Path>,
-    mutate: impl FnOnce(&mut crate::config::settings::AppSettings) -> Result<T, String> + Send + 'static,
+    mutate: impl FnOnce(&mut AppSettings) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     let path = match settings_path {
         Some(path) => path.to_path_buf(),
@@ -3333,9 +3370,17 @@ async fn new_project_inner_with_settings_path_and_hooks(
         let mut current = settings.blocking_write();
         let settings_path = match settings_path {
             Some(path) => path,
-            None => crate::config::config_dir().ok_or("Could not determine settings directory")?.join(SETTINGS_FILE_NAME),
+            None => crate::config::config_dir()
+                .ok_or(
+                    "Could not determine settings \
+                directory",
+                )?
+                .join(SETTINGS_FILE_NAME),
         };
-        let mut transaction = crate::config::settings::begin_project_paths_transaction_at_path(&current, &settings_path)?;
+        let mut transaction = crate::config::settings::begin_project_paths_transaction_at_path(
+            &current,
+            &settings_path,
+        )?;
         let before_raw = transaction.raw_project_projection()?;
         let mut candidate = transaction.fresh_settings().clone();
         transaction.refresh_raw_projects(&mut candidate)?;
@@ -3343,23 +3388,35 @@ async fn new_project_inner_with_settings_path_and_hooks(
             return Err("project-paths.json has malformed project metadata".to_string());
         }
         let before_archived = candidate.archived_project_paths.clone();
-        let result = crate::config::projects::commit_prepared_new_project(&mut candidate, &prepared);
+        let result =
+            crate::config::projects::commit_prepared_new_project(&mut candidate, &prepared);
         crate::config::settings::resync_project_state_from_runtime(&mut candidate);
         prepared.revalidate().map_err(|error| error.to_string())?;
         let written = match hooks.save_settings(&candidate, &mut transaction) {
             Ok(written) => written,
-            Err(error) => { *current = transaction.fresh_settings().clone(); return Err(error); }
+            Err(error) => {
+                *current = transaction.fresh_settings().clone();
+                return Err(error);
+            }
         };
         hooks.before_final_revalidation(prepared.ac_root());
         if let Err(error) = prepared.revalidate() {
-            return Err(match transaction.restore_raw_project_projection(&before_raw) {
-                Ok(written) => { *current = written; error.to_string() }
-                Err(rollback_error) => {
-                    *current = transaction.fresh_settings().clone();
-                    current.project_paths_persistence_error = Some(rollback_error.clone());
-                    format!("{error}; failed to roll back project registration settings: {rollback_error}")
-                }
-            });
+            return Err(
+                match transaction.restore_raw_project_projection(&before_raw) {
+                    Ok(written) => {
+                        *current = written;
+                        error.to_string()
+                    }
+                    Err(rollback_error) => {
+                        *current = transaction.fresh_settings().clone();
+                        current.project_paths_persistence_error = Some(rollback_error.clone());
+                        format!(
+                            "{error}; failed to roll back project registration settings: \
+                        {rollback_error}"
+                        )
+                    }
+                },
+            );
         }
         *current = written;
         drop(transaction);
@@ -3522,7 +3579,8 @@ fn archive_blocked_message(blockers: &[String]) -> String {
     let overflow = blockers.len().saturating_sub(MAX_NAMED);
     if overflow > 0 {
         format!(
-            "Cannot archive: {} open session(s) in this project ({}, and {} more). Close them first.",
+            "Cannot archive: {} open session(s) in this project ({}, and {} more). Close them \
+                first.",
             blockers.len(),
             named,
             overflow
@@ -3630,7 +3688,8 @@ async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
                 e
             );
             Err(format!(
-                "{} The project could not be restored automatically ({}). Open Archived Projects to restore it.",
+                "{} The project could not be restored automatically ({}). Open Archived Projects \
+                    to restore it.",
                 archive_blocked_message(&late),
                 e
             ))

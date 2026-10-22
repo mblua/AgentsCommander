@@ -200,7 +200,9 @@ fn ensure_ac_root_gitignore_appends_team_config_lock_block_preserving_bytes_and_
     let ac_root = tmp.path().join(".ac");
     std::fs::create_dir(&ac_root).expect("create .ac");
     let gitignore_path = ac_root.join(".gitignore");
-    let original = b"# User-authored rules\r\n!important.txt\r\n\r\n# AgentsCommander: exclude room cloned repos from parent git tracking.\r\n# Without this, parent repo operations (checkout, reset) corrupt child clones.\r\nwg-*/\r\n"
+    let original = b"# User-authored rules\r\n!important.txt\r\n\r\n# AgentsCommander: exclude \
+        room cloned repos from parent git tracking.\r\n# Without this, parent repo operations \
+        (checkout, reset) corrupt child clones.\r\nwg-*/\r\n"
         .to_vec();
     std::fs::write(&gitignore_path, &original).expect("write .gitignore");
 
@@ -259,8 +261,8 @@ fn ensure_ac_root_gitignore_writes_config_write_lock_blocks_on_create() {
         1,
         "workspace .gitignore must contain the exact config lock block once"
     );
-    let project_settings_block =
-        "# AgentsCommander: exclude project-settings write-lock sidecars.\n/.project-settings.json.lock";
+    let project_settings_block = "# AgentsCommander: exclude project-settings write-lock \
+            sidecars.\n/.project-settings.json.lock";
     assert_eq!(
         content.matches(project_settings_block).count(),
         1,
@@ -345,7 +347,8 @@ fn ensure_ac_root_gitignore_appends_config_write_lock_blocks_preserving_bytes_an
     assert_eq!(
         updated_text
             .matches(
-                "# AgentsCommander: exclude project-settings write-lock sidecars.\n/.project-settings.json.lock"
+                "# AgentsCommander: exclude project-settings write-lock \
+                    sidecars.\n/.project-settings.json.lock"
             )
             .count(),
         1,
@@ -362,7 +365,8 @@ fn ensure_ac_root_gitignore_appends_config_write_lock_blocks_preserving_bytes_an
     assert_eq!(
         updated_text
             .matches(
-                "# AgentsCommander: exclude the project settings write-lock sidecar.\n/.settings.50.personal.no-git.json.lock"
+                "# AgentsCommander: exclude the project settings write-lock \
+                    sidecar.\n/.settings.50.personal.no-git.json.lock"
             )
             .count(),
         1,

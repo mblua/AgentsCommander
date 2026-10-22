@@ -24,9 +24,18 @@ fn fixture() -> (
 }
 
 fn status_line(sequence: u64, status: &str) -> String {
-    serde_json::json!({"schemaVersion":1,"kind":"status","topicId":"12345678-1234-4234-8234-123456789abc",
-        "sequence":sequence,"requestId":"87654321-4321-4321-8321-123456789abc","baseRevision":if sequence == 1 { "legacy:0".to_owned() } else { format!("12345678-1234-4234-8234-123456789abc:{}", sequence-1) },
-        "recordedAt":"2026-10-05T18:00:00Z","author":"project/fixture","status":status}).to_string()+"\n"
+    serde_json::json!({
+        "schemaVersion":1,"kind":"status","topicId":"12345678-1234-4234-8234-123456789abc",
+        "sequence":sequence,"requestId":"87654321-4321-4321-8321-123456789abc",
+        "baseRevision":if sequence == 1 {
+            "legacy:0".to_owned()
+        } else {
+            format!("12345678-1234-4234-8234-123456789abc:{}", sequence-1)
+        },
+        "recordedAt":"2026-10-05T18:00:00Z","author":"project/fixture","status":status
+    })
+    .to_string()
+        + "\n"
 }
 
 #[test]

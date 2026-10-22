@@ -19,7 +19,10 @@ fn ensure_ac_root_gitignore_ignores_rtk_runtime_artifacts_narrowly() {
         ".ac/_agent_probe/rtk-matrix-history-pi.db-wal",
         ".ac/_agent_probe/rtk_ignored_tools.md",
         ".ac/_agent_probe/rtk-ignored-tools-pi.md",
-        ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/__pycache__/rtk_patterns.cpython-314.pyc",
+        concat!(
+            ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/",
+            "__pycache__/rtk_patterns.cpython-314.pyc"
+        ),
         ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/__pycache__/non_pyc.bin",
         ".ac/_agent_probe/rtk-matrix-history.sqbpro",
         ".ac/_agent_probe/rtk-ignored-tools.md",
@@ -60,7 +63,10 @@ fn ensure_ac_root_gitignore_ignores_rtk_runtime_artifacts_narrowly() {
         ".ac/_agent_probe/rtk-matrix-history-pi.db-wal",
         ".ac/_agent_probe/rtk_ignored_tools.md",
         ".ac/_agent_probe/rtk-ignored-tools-pi.md",
-        ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/__pycache__/rtk_patterns.cpython-314.pyc",
+        concat!(
+            ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/",
+            "__pycache__/rtk_patterns.cpython-314.pyc"
+        ),
         ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/__pycache__/non_pyc.bin",
         // This path is ignored only because the pre-existing `wg-*/` first
         // entry excludes the whole `wg-1/` subtree, not because any new
@@ -571,7 +577,8 @@ fn ac_root_gitignore_covers_the_renamed_project_settings() {
     std::fs::create_dir_all(&ac_root).expect("create .ac");
     std::fs::write(
         ac_root.join(".gitignore"),
-        "# User rules\nproject-settings.json\n\n# AgentsCommander: exclude generated project-local settings.\n/project-settings.json\n",
+        "# User rules\nproject-settings.json\n\n# AgentsCommander: exclude generated project-local \
+            settings.\n/project-settings.json\n",
     )
     .expect("seed .gitignore");
     ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
@@ -654,7 +661,8 @@ fn ac_root_gitignore_covers_the_renamed_loop_state() {
     std::fs::create_dir_all(ac_root.join("_loop_a")).expect("create loop dir");
     std::fs::write(
         ac_root.join(".gitignore"),
-        "# User rules\n_loop_*/state.json\n\n# AgentsCommander: exclude Loop scheduler runtime state.\n_loop_*/state.json\n",
+        "# User rules\n_loop_*/state.json\n\n# AgentsCommander: exclude Loop scheduler runtime \
+            state.\n_loop_*/state.json\n",
     )
     .expect("seed .gitignore");
     ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
@@ -788,7 +796,12 @@ fn inner_read_preferred_agent_id_logged_loads_once() {
 /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
 #[rustfmt::skip]
 const C4_SEEDED_STATE: &str =
-    r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
+    concat!(
+        r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"#,
+        r#""lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"#,
+        r#""split":{"v":1,"keys":["lastCodingAgent","codingAgents","#,
+        r#""lastAgentMessageAt","profileContentHash"]}}"#
+    );
 
 /// C4 (#2470): the state file beside a tracked `config.json`.
 fn c4_state_path(tracked: &std::path::Path) -> std::path::PathBuf {

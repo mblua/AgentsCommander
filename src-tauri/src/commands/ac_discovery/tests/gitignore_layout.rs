@@ -97,7 +97,9 @@ fn ensure_ac_root_gitignore_appends_room_to_a_legacy_only_file() {
     std::fs::create_dir(&ac_root).expect("create .ac");
 
     // Exactly what a pre-#1614 installation has on disk.
-    const LEGACY: &str = "# AgentsCommander: exclude room cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.\nwg-*/\n";
+    const LEGACY: &str = "# AgentsCommander: exclude room cloned repos from parent git \
+        tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child \
+        clones.\nwg-*/\n";
     std::fs::write(ac_root.join(".gitignore"), LEGACY).expect("seed legacy .gitignore");
 
     ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
@@ -348,8 +350,8 @@ fn ensure_ac_root_gitignore_writes_project_settings_block_on_create() {
         .expect("ensure workspace .gitignore");
 
     let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
-    let block =
-        "# AgentsCommander: exclude generated project-local settings.\n/settings.50.personal.no-git.json";
+    let block = "# AgentsCommander: exclude generated project-local \
+            settings.\n/settings.50.personal.no-git.json";
     assert_eq!(
         content.matches(block).count(),
         1,
@@ -390,8 +392,8 @@ fn ensure_ac_root_gitignore_appends_project_settings_block_preserving_bytes_and_
         "workspace .gitignore must preserve the original bytes as an exact prefix"
     );
     let updated_text = std::str::from_utf8(&updated).expect("updated .gitignore is UTF-8");
-    let block =
-        "# AgentsCommander: exclude generated project-local settings.\n/settings.50.personal.no-git.json";
+    let block = "# AgentsCommander: exclude generated project-local \
+            settings.\n/settings.50.personal.no-git.json";
     assert_eq!(
         updated_text.matches(block).count(),
         1,

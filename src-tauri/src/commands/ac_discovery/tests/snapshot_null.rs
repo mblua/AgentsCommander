@@ -12,10 +12,18 @@ fn poll_partial_only_and_clean_seed_deliver_explicit_null_with_new_revision() {
     assert!(partial.tail_incomplete);
     assert_eq!(partial.revision, "legacy:0");
     std::fs::write(root.join("TASK.md"), "---\ntitle: 'Clean'\n---\n").unwrap();
-    std::fs::write(root.join("TASK-status.jsonl"), serde_json::json!({
-        "schemaVersion":1,"kind":"topic_started","topicId":"12345678-1234-4234-8234-123456789abc","sequence":0,
-        "requestId":null,"baseRevision":null,"recordedAt":"2026-10-05T18:00:00Z","author":null,"status":null
-    }).to_string()+"\n").unwrap();
+    std::fs::write(
+        root.join("TASK-status.jsonl"),
+        serde_json::json!({
+            "schemaVersion":1,"kind":"topic_started",
+            "topicId":"12345678-1234-4234-8234-123456789abc","sequence":0,
+            "requestId":null,"baseRevision":null,"recordedAt":"2026-10-05T18:00:00Z",
+            "author":null,"status":null
+        })
+        .to_string()
+            + "\n",
+    )
+    .unwrap();
     let clean = poll_task_snapshot(root, Some(partial.sentinel.clone()))
         .unwrap()
         .unwrap();
