@@ -8,10 +8,9 @@
   },
   "moduleCycles": [
     {
-      "id": "1d6cd0afb6a7d190",
+      "id": "ef994bfd10baf8bb",
       "members": [
         "agentscommander_lib",
-        "agentscommander_lib::agent_update",
         "agentscommander_lib::api::audit",
         "agentscommander_lib::api::auth",
         "agentscommander_lib::api::error",
