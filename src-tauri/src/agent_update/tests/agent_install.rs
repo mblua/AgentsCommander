@@ -375,9 +375,9 @@ async fn agent_install_2736_never_emits_an_agent_update_event() {
 
 #[test]
 fn agent_install_2736_runner_uses_the_contained_silent_spawn() {
-    let src = include_str!("../../agent_update.rs").replace("\r\n", "\n");
+    let src = include_str!("../install.rs").replace("\r\n", "\n");
     let start = src
-        .find("\nasync fn run_agent_install(")
+        .find("\npub(crate) async fn run_agent_install(")
         .expect("fn run_agent_install");
     let end = start
         + src[start..]

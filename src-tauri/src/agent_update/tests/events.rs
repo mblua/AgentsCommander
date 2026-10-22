@@ -165,6 +165,23 @@ fn agent_update_emits_only_through_emit_all() {
         1,
         "every agent-update emit must go through emit_all"
     );
+    let children = [
+        include_str!("../cancellation.rs"),
+        include_str!("../gate.rs"),
+        include_str!("../install.rs"),
+        include_str!("../pass.rs"),
+        include_str!("../plan.rs"),
+        include_str!("../target.rs"),
+        include_str!("../updater.rs"),
+    ];
+    for child in children {
+        let emits = child
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains(".emit("))
+            .count();
+        assert_eq!(emits, 0, "every agent-update emit must go through emit_all");
+    }
     let emit_all_line = production
         .iter()
         .position(|line| line.starts_with("fn emit_all("))
