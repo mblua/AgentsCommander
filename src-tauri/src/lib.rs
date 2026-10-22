@@ -824,7 +824,8 @@ pub type SpecBoardState = Arc<tokio::sync::RwLock<commands::spec_board::SpecBoar
 const SHUTDOWN_CLEANUP_BUDGET_SECS: u64 = 5;
 
 /// Master token generated at app startup. Allows bypassing team validation (can_reach).
-/// Persisted to `master-token.txt` in config_dir for CLI use. Regenerated on each app startup. See #34.
+/// Persisted to `master-token.txt` in config_dir for CLI use. Regenerated on each app startup. See
+/// #34.
 /// Field is private — use `matches()` for constant-time comparison.
 pub struct MasterToken(String);
 
@@ -917,7 +918,9 @@ impl fmt::Display for StartupError {
                 source,
             } => write!(
                 formatter,
-                "AgentsCommander cannot start because it could not create app outbox directory \"{}\" for configuration directory \"{}\": {}. Set AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart.",
+                "AgentsCommander cannot start because it could not create app outbox directory \
+                    \"{}\" for configuration directory \"{}\": {}. Set \
+                    AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart.",
                 app_outbox_path.display(),
                 config_dir.display(),
                 source
@@ -928,7 +931,10 @@ impl fmt::Display for StartupError {
                 path,
             } => write!(
                 formatter,
-                "AgentsCommander cannot start because the file-naming migration \"{}\" could not finish at \"{}\": {}. If another AgentsCommander process is running, retry once it has finished; otherwise make the directory writable, or move an unreadable naming-migration journal aside, and restart.",
+                "AgentsCommander cannot start because the file-naming migration \"{}\" could \
+                    not finish at \"{}\": {}. If another AgentsCommander process is running, \
+                    retry once it has finished; otherwise make the directory writable, or move \
+                    an unreadable naming-migration journal aside, and restart.",
                 scope,
                 path.display(),
                 reason
@@ -1572,7 +1578,8 @@ impl QuotaRowsSource for QuotaRows {
 /// `RwLock` read per tick for all sessions. Maps the settings type onto the engine's
 /// settings-free `AgentQuotaSource`.
 ///
-/// **The `match` in `sources_map` is the multi-agent extension point's second and last site.** A new
+/// **The `match` in `sources_map` is the multi-agent extension point's second and last site.** A
+/// new
 /// source kind adds one arm in `pty::agent_quota::source` and one arm here. There is no
 /// registry to go looking for.
 struct QuotaSources {
@@ -1718,7 +1725,8 @@ impl ContextSampleSink for ScraperSamples {
                 let dropped = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
                 if !self.saturated.swap(true, Ordering::Relaxed) {
                     log::warn!(
-                        "[context-alert] sample queue saturated; advisory samples are being dropped (dropped={})",
+                        "[context-alert] sample queue saturated; advisory samples are being \
+                            dropped (dropped={})",
                         dropped
                     );
                 }
@@ -2156,7 +2164,8 @@ fn start_native_restore_startup(
                                 }
                             } else {
                                 log::info!(
-                                    "[root-agent] Skipping startup auto-create: no resolvable coding agent is configured"
+                                    "[root-agent] Skipping startup auto-create: no resolvable \
+                                        coding agent is configured"
                                 );
                             }
                         }
@@ -2198,7 +2207,8 @@ fn start_native_restore_startup(
                                         });
                                         if let Err(e) = stale_destroy {
                                             log::warn!(
-                                                "[root-agent] Failed to force-destroy stale dormant root during restore: {}",
+                                                "[root-agent] Failed to force-destroy stale \
+                                                    dormant root during restore: {}",
                                                 e
                                             );
                                         }
@@ -2235,7 +2245,8 @@ fn start_native_restore_startup(
                                     // failed_recoverable, so the row keeps its wake inputs;
                                     // save_sessions_to_dir suppresses the rewrite.
                                     log::warn!(
-                                        "[root-agent] Skipping restore of '{}': the agents layer is unreadable",
+                                        "[root-agent] Skipping restore of '{}': the agents \
+                                            layer is unreadable",
                                         ps.name
                                     );
                                     rebuild_failed = true;
@@ -2250,7 +2261,8 @@ fn start_native_restore_startup(
                                         Ok(spawn) => spawn,
                                         Err(e) => {
                                             log::error!(
-                                                "[root-agent] Failed to rebuild configured agent command for restore '{}': {}",
+                                                "[root-agent] Failed to rebuild configured \
+                                                    agent command for restore '{}': {}",
                                                 ps.name,
                                                 e
                                             );
@@ -2305,7 +2317,8 @@ fn start_native_restore_startup(
                                         false,
                                         resolved_spawn,
                                         resolved_agent_host_shell,
-                                        // #973 - headless caller: no terminal to measure, keep 120x30.
+                                        // #973 - headless caller: no terminal to measure, keep
+                                        // 120x30.
                                         None,
                                         Some(ps.start_fresh_on_restore),
                                         None,
@@ -2353,7 +2366,9 @@ fn start_native_restore_startup(
                                                     .await;
                                                     if let Err(e) = detached_result {
                                                         log::warn!(
-                                                        "[restore] detach_terminal_inner failed for root agent '{}': {} — session stays live (attached)",
+                                                        "[restore] detach_terminal_inner failed \
+                                                            for root agent '{}': {} — session \
+                                                            stays live (attached)",
                                                         ps.name,
                                                         e
                                                     );
@@ -2427,7 +2442,8 @@ fn start_native_restore_startup(
                                     }
                                     Err(e) => {
                                         log::error!(
-                                            "[root-agent] Failed to create dormant root session '{}': {}",
+                                            "[root-agent] Failed to create dormant root session \
+                                                '{}': {}",
                                             ps.name,
                                             e
                                         );
@@ -2543,7 +2559,8 @@ fn start_native_restore_startup(
                             // looks like an alarm. The end-of-loop info summary below
                             // carries the load-bearing signal.
                             log::debug!(
-                                "Deferred session '{}' on startup (agent: {}, is_coord: {}, setting: {}, persisted_status: {:?}, was_detached: {})",
+                                "Deferred session '{}' on startup (agent: {}, is_coord: {}, \
+                                    setting: {}, persisted_status: {:?}, was_detached: {})",
                                 ps.name, agent_name, is_coord, setting_on, ps.status, ps.was_detached
                             );
                             n_deferred += 1;
@@ -2663,7 +2680,8 @@ fn start_native_restore_startup(
                         n_woken += 1;
                         // (#630/#631) Restore-decision trace (INFO during stabilization).
                         log::info!(
-                            "[restore] woke '{}' (is_coord={}, live_is_coord={}, start_fresh_on_restore={})",
+                            "[restore] woke '{}' (is_coord={}, live_is_coord={}, \
+                                start_fresh_on_restore={})",
                             ps.name, is_coord, live_is_coord, ps.start_fresh_on_restore
                         );
                         if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
@@ -2730,7 +2748,8 @@ fn start_native_restore_startup(
                                 .await;
                                 if let Err(e) = detached_result {
                                     log::warn!(
-                                        "[restore] detach_terminal_inner failed for '{}': {} — session stays live (attached)",
+                                        "[restore] detach_terminal_inner failed for '{}': {} — \
+                                            session stays live (attached)",
                                         ps.name,
                                         e
                                     );
@@ -2918,7 +2937,8 @@ pub(crate) fn spawn_restore_startup(
         let tail = std::panic::AssertUnwindSafe(async move { (continuation)().await });
         if let Err(panic) = tail.catch_unwind().await {
             log::error!(
-                "[restore] post-restore startup panicked (services after the panic point not started): {:?}",
+                "[restore] post-restore startup panicked (services after the panic point not \
+                    started): {:?}",
                 panic
             );
         }
@@ -3578,7 +3598,8 @@ pub async fn quit_gate_run(
 ) -> Result<QuitOutcome, String> {
     if caller_label != QUIT_GATE_MAIN_LABEL {
         return Err(format!(
-            "quit_application is restricted to the '{QUIT_GATE_MAIN_LABEL}' window (caller: {caller_label})"
+            "quit_application is restricted to the '{QUIT_GATE_MAIN_LABEL}' window (caller: \
+                {caller_label})"
         ));
     }
 
@@ -4612,7 +4633,8 @@ pub fn run(
                         Ok(true) => {
                             if let Some((bind, port)) = ws_handle.snapshot().endpoint {
                                 println!(
-                                    "[web-token] Remote URL: http://{}:{}/?window=main&remoteToken={}",
+                                    "[web-token] Remote URL: \
+                                        http://{}:{}/?window=main&remoteToken={}",
                                     bind,
                                     port,
                                     web_access_token.value()
@@ -4678,7 +4700,8 @@ pub fn run(
                 });
             }
 
-            // #1925 - detached remote blocking-menu patterns download. Fail-silent; applies at the next start.
+            // #1925 - detached remote blocking-menu patterns download. Fail-silent; applies at the
+            // next start.
             {
                 let app_handle_for_remote_menus = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -4688,7 +4711,8 @@ pub fn run(
                     .await;
                 });
             }
-            // #2133 - detached remote per-agent help download. Fail-silent; applies at the next start.
+            // #2133 - detached remote per-agent help download. Fail-silent; applies at the next
+            // start.
             {
                 let app_handle_for_remote_agent_help = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -4768,13 +4792,15 @@ pub fn run(
                     }
                     PersistedActiveFlagNormalization::One { index } => {
                         log::debug!(
-                            "[restore] persisted selection flags normalized: exactly one rowIndex={}",
+                            "[restore] persisted selection flags normalized: exactly one \
+                                rowIndex={}",
                             index
                         );
                     }
                     PersistedActiveFlagNormalization::Multiple { identities } => {
                         log::warn!(
-                            "[restore] inconsistent was_active flags count={} rows=[{}]; exact target cleared for eligible-live fallback",
+                            "[restore] inconsistent was_active flags count={} rows=[{}]; exact \
+                                target cleared for eligible-live fallback",
                             identities.len(),
                             identities.join(", ")
                         );
@@ -4903,7 +4929,8 @@ pub fn run(
                             let monitor = MonitorFromRect(&requested, MONITOR_DEFAULTTONEAREST);
                             if monitor.is_null() {
                                 log::warn!(
-                                    "[test-window] MonitorFromRect returned null for requested rect ({}, {}) {}x{}",
+                                    "[test-window] MonitorFromRect returned null for requested \
+                                        rect ({}, {}) {}x{}",
                                     x,
                                     y,
                                     width,
@@ -4928,7 +4955,8 @@ pub fn run(
                                 };
                                 if GetMonitorInfoW(monitor, &mut monitor_info) == 0 {
                                     log::warn!(
-                                        "[test-window] GetMonitorInfoW failed for requested rect ({}, {}) {}x{}",
+                                        "[test-window] GetMonitorInfoW failed for requested \
+                                            rect ({}, {}) {}x{}",
                                         x,
                                         y,
                                         width,
@@ -4936,7 +4964,9 @@ pub fn run(
                                     );
                                 } else {
                                     log::info!(
-                                        "[test-window] selected monitor rect=({}, {}) {}x{} work=({}, {}) {}x{} for requested rect ({}, {}) {}x{} maximized={}",
+                                        "[test-window] selected monitor rect=({}, {}) {}x{} \
+                                            work=({}, {}) {}x{} for requested rect ({}, {}) \
+                                            {}x{} maximized={}",
                                         monitor_info.rcMonitor.left,
                                         monitor_info.rcMonitor.top,
                                         monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
@@ -5014,7 +5044,8 @@ pub fn run(
                 false
             }
 
-            // Resolve main geometry: saved (physical) -> validate -> convert to logical -> fallback.
+            // Resolve main geometry: saved (physical) -> validate -> convert to logical ->
+            // fallback.
             // First-boot-after-upgrade users will have `main_geometry` seeded from legacy
             // `terminal_geometry` via the migration in `config::settings::load_settings`.
             let main_geo = if let Some(test_geo) = &test_window_placement {
@@ -5026,7 +5057,8 @@ pub fn run(
                 };
                 let logical = physical_to_logical(&requested, &monitors);
                 log::info!(
-                    "[test-window] requested physical ({}, {}) {}x{} maximized={} -> logical ({}, {}) {}x{}",
+                    "[test-window] requested physical ({}, {}) {}x{} maximized={} -> logical \
+                        ({}, {}) {}x{}",
                     requested.x,
                     requested.y,
                     requested.width,
@@ -5043,7 +5075,8 @@ pub fn run(
                     Some(geo) if is_visible_on_monitors(geo, &monitors) => {
                         let logical = physical_to_logical(geo, &monitors);
                         log::info!(
-                            "[window-setup] main: saved physical ({}, {}) {}x{} -> logical ({}, {}) {}x{}",
+                            "[window-setup] main: saved physical ({}, {}) {}x{} -> logical ({}, \
+                                {}) {}x{}",
                             geo.x, geo.y, geo.width, geo.height,
                             logical.x, logical.y, logical.width, logical.height
                         );
@@ -5051,7 +5084,8 @@ pub fn run(
                     }
                     Some(geo) => {
                         log::warn!(
-                            "[window-setup] main: saved geometry ({}, {}) {}x{} is off-screen, falling back to centered default",
+                            "[window-setup] main: saved geometry ({}, {}) {}x{} is off-screen, \
+                                falling back to centered default",
                             geo.x, geo.y, geo.width, geo.height
                         );
                         default_main.clone()
@@ -5136,7 +5170,8 @@ pub fn run(
                 // is a real failure mode; without this line the user sees coords stay
                 // dormant with no log clue. Emits exactly once per launch.
                 log::info!(
-                    "[restore] {} teams discovered across {} project paths; setting_on={}; evaluating {} persisted sessions",
+                    "[restore] {} teams discovered across {} project paths; setting_on={}; \
+                        evaluating {} persisted sessions",
                     teams.len(),
                     settings_snapshot.project_paths.len(),
                     setting_on,
@@ -5474,7 +5509,8 @@ pub fn run(
                         }
                         if destroyed > 0 {
                             log::info!(
-                                "[shutdown] main destroyed: destroyed {} detached terminal window(s)",
+                                "[shutdown] main destroyed: destroyed {} detached terminal \
+                                    window(s)",
                                 destroyed
                             );
                         }
@@ -5627,7 +5663,8 @@ pub fn run(
                         },
                     };
                     log::info!(
-                        "[shutdown] terminal snapshot scanner drained joined={} aborted={} terminal={}",
+                        "[shutdown] terminal snapshot scanner drained joined={} aborted={} \
+                            terminal={}",
                         scanner_shutdown.joined,
                         scanner_shutdown.aborted,
                         scanner_shutdown.terminal
@@ -5681,7 +5718,8 @@ pub fn run(
                             .stop_all_started_containers_blocking(pty_lock_budget),
                         None => {
                             log::error!(
-                                "[shutdown] PTY owner lock reached the global cleanup deadline before container ownership transfer"
+                                "[shutdown] PTY owner lock reached the global cleanup deadline \
+                                    before container ownership transfer"
                             );
                             crate::pty::container_backend::ContainerShutdownReport {
                                 terminal: false,
@@ -5712,7 +5750,8 @@ pub fn run(
                         Some(counts) => counts,
                         None => {
                             log::error!(
-                                "[shutdown] PTY owner lock reached the job cleanup deadline state=retained"
+                                "[shutdown] PTY owner lock reached the job cleanup deadline \
+                                    state=retained"
                             );
                             container_shutdown.terminal = false;
                             container_shutdown
@@ -5722,7 +5761,8 @@ pub fn run(
                         }
                     };
                     log::info!(
-                        "[shutdown] terminated {jobs_killed} agent job object(s); {jobless_sessions} session(s) had no job"
+                        "[shutdown] terminated {jobs_killed} agent job object(s); \
+                            {jobless_sessions} session(s) had no job"
                     );
 
                     // #632 B2+B4 - run the identity reaper for accounting and as the
@@ -5744,7 +5784,8 @@ pub fn run(
                             for result in results {
                                 if result.quarantined {
                                     log::warn!(
-                                        "[shutdown] resource group {} quarantined during cleanup: {}",
+                                        "[shutdown] resource group {} quarantined during \
+                                            cleanup: {}",
                                         result.session_id,
                                         result.message
                                     );
@@ -5752,17 +5793,22 @@ pub fn run(
                             }
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => log::warn!(
-                            "[shutdown] resource cleanup exceeded {SHUTDOWN_CLEANUP_BUDGET_SECS}s budget; proceeding to exit (job objects already terminated jobbed trees)"
+                            "[shutdown] resource cleanup exceeded \
+                                {SHUTDOWN_CLEANUP_BUDGET_SECS}s budget; proceeding to exit (job \
+                                objects already terminated jobbed trees)"
                         ),
                         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => log::error!(
-                            "[shutdown] resource cleanup thread panicked before completing; jobbed trees were still terminated by the job kill"
+                            "[shutdown] resource cleanup thread panicked before completing; \
+                                jobbed trees were still terminated by the job kill"
                         ),
                     }
                     // #632 MED-2 - job-less sessions are reaper-only; if the reaper did
                     // not finish, their trees may be orphaned. Make it visible.
                     if cleanup.is_err() && jobless_sessions > 0 {
                         log::warn!(
-                            "[shutdown] {jobless_sessions} session(s) had no Job Object and the reaper did not finish in budget; their process trees may be orphaned"
+                            "[shutdown] {jobless_sessions} session(s) had no Job Object and the \
+                                reaper did not finish in budget; their process trees may be \
+                                orphaned"
                         );
                     }
 
@@ -5784,7 +5830,8 @@ pub fn run(
                             container_shutdown.retained,
                         );
                         log::error!(
-                            "[shutdown] final session persistence skipped because cleanup ownership is retained work=[{}]",
+                            "[shutdown] final session persistence skipped because cleanup \
+                                ownership is retained work=[{}]",
                             retained.join(", ")
                         );
                     }
@@ -5883,7 +5930,8 @@ struct CoManagedTestHooks {
     steps: std::sync::Mutex<Vec<&'static str>>,
     commit_calls: std::sync::atomic::AtomicUsize,
     /// Runs once inside `commit_co_managed_with_retries`, after a successful commit and before the
-    /// caller consumes the slot. One-shot: the only way a test can offer a newer record in that window.
+    /// caller consumes the slot. One-shot: the only way a test can offer a newer record in that
+    /// window.
     after_commit: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
@@ -6333,7 +6381,8 @@ fn route_co_managed_wake(
         // removed rather than left as a never-referenced orphan.
         let _ = std::fs::remove_file(&path);
         return Err(format!(
-            "notification exceeds PTY-safe length (body {} + overhead {} > {}); shorten slug or move the room to a shallower path",
+            "notification exceeds PTY-safe length (body {} + overhead {} > {}); shorten slug or \
+                move the room to a shallower path",
             pointer.len(),
             overhead,
             crate::phone::messaging::PTY_SAFE_MAX
@@ -6455,7 +6504,8 @@ fn resolve_co_managed_route(
                         } else {
                             CoManagedRoute::User {
                                 reason: format!(
-                                    "{decision} names peer '{peer}', which is not reachable; nothing was routed"
+                                    "{decision} names peer '{peer}', which is not reachable; \
+                                        nothing was routed"
                                 ),
                                 write_candidate_file: true,
                             }
@@ -6463,7 +6513,8 @@ fn resolve_co_managed_route(
                     }
                     _ => CoManagedRoute::User {
                         reason: format!(
-                            "{decision} names an orchestrator destination without a peer; nothing was routed"
+                            "{decision} names an orchestrator destination without a peer; \
+                                nothing was routed"
                         ),
                         write_candidate_file: true,
                     },
@@ -6480,7 +6531,8 @@ fn resolve_co_managed_route(
                     } else {
                         CoManagedRoute::User {
                             reason: format!(
-                                "{decision} chose Root, but this session is not a verified room orchestrator; nothing was routed"
+                                "{decision} chose Root, but this session is not a verified room \
+                                    orchestrator; nothing was routed"
                             ),
                             write_candidate_file: true,
                         }
@@ -6831,7 +6883,8 @@ async fn co_managed_cycle<R: tauri::Runtime>(
                         slot.try_consume(expected_seq, &expected_key, expected_key.epoch);
                         let message = co_managed_user_message(
                             &format!(
-                                "abstained: the automatic budget is exhausted ({} actions since the last recharge); the candidate was not routed",
+                                "abstained: the automatic budget is exhausted ({} actions since \
+                                    the last recharge); the candidate was not routed",
                                 capture::state::BUDGET_CAP
                             ),
                             Some((&text, candidate.provider_final, None)),
@@ -6966,7 +7019,8 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
         crate::config::co_managed::room_root_for_path(Path::new(&session.working_directory))
     else {
         log::info!(
-            "[co-managed] trigger dropped [{id}]: working directory {} resolves to no room root; flag removed",
+            "[co-managed] trigger dropped [{id}]: working directory {} resolves to no room \
+                root; flag removed",
             session.working_directory
         );
         handle.armed.remove(&id);
@@ -6986,7 +7040,8 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
             .catalog_path
             .map(|path| room_root.join(path));
         log::warn!(
-            "[co-managed] trigger dropped [{id}]: not ready ({}); room {}, catalog {:?}; flag removed",
+            "[co-managed] trigger dropped [{id}]: not ready ({}); room {}, catalog {:?}; flag \
+                removed",
             co_managed_state_reason(&effective),
             room_root.display(),
             catalog_path
