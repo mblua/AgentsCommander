@@ -244,12 +244,10 @@ async fn e2992_p51_invalid_no_co_managed_budget() {
             &record,
         )
         .await;
-        assert!(
-            matches!(
-                outcome,
-                super::CoManagedOutcome::Done(reason) if reason == "settings_unavailable"
-            )
-        );
+        assert!(matches!(
+            outcome,
+            super::CoManagedOutcome::Done(reason) if reason == "settings_unavailable"
+        ));
         assert!(!super::release_room_reader_demands_when_globally_off(app.handle()).await);
     }
     assert_eq!(slot.snapshot().seq, seq);

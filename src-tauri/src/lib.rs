@@ -2561,7 +2561,12 @@ fn start_native_restore_startup(
                             log::debug!(
                                 "Deferred session '{}' on startup (agent: {}, is_coord: {}, \
                                     setting: {}, persisted_status: {:?}, was_detached: {})",
-                                ps.name, agent_name, is_coord, setting_on, ps.status, ps.was_detached
+                                ps.name,
+                                agent_name,
+                                is_coord,
+                                setting_on,
+                                ps.status,
+                                ps.was_detached
                             );
                             n_deferred += 1;
                             // Preserve `was_active` for the post-loop active-switch:
@@ -2682,7 +2687,10 @@ fn start_native_restore_startup(
                         log::info!(
                             "[restore] woke '{}' (is_coord={}, live_is_coord={}, \
                                 start_fresh_on_restore={})",
-                            ps.name, is_coord, live_is_coord, ps.start_fresh_on_restore
+                            ps.name,
+                            is_coord,
+                            live_is_coord,
+                            ps.start_fresh_on_restore
                         );
                         if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
                             commands::session::attach_persisted_telegram_if_configured(
