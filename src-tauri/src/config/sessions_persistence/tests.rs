@@ -24,6 +24,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod creation_cwd;
+mod derived_agent_binding;
+mod issue_3145_io;
 mod legacy_and_save;
 mod live_persist;
 mod orphan_purge;

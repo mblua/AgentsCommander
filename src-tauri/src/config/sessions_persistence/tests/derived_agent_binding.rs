@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 use std::sync::Arc;
 
 // No process is spawned by this carrier fixture; every host-effect method
@@ -331,7 +331,7 @@ async fn derived_agent_id_binding_legacy_seed_precedes_purge_publication() {
         .unwrap(),
     )
     .unwrap();
-    let settings = super::super::settings::load_settings_from_path(&settings_path);
+    let settings = super::super::super::super::settings::load_settings_from_path(&settings_path);
     let agent_id = settings.agents[0].id.clone();
     let retained_cwd = dir.path().join("retained");
     std::fs::create_dir(&retained_cwd).unwrap();
@@ -478,14 +478,16 @@ fn derived_agent_id_binding_unavailable_capture_keeps_raw_origin_and_recipe() {
             )
             .unwrap();
         }
-        let settings = super::super::settings::load_settings_from_path(&settings_path);
+        let settings =
+            super::super::super::super::settings::load_settings_from_path(&settings_path);
         let expected_error = match case {
             "removed" => "coding_agent_binding_entry_missing_or_ambiguous",
             "ambiguous" => "coding_agent_identity_duplicate",
             _ => "coding_agent_identity_physical_unreadable",
         };
         assert_eq!(
-            super::super::settings::bootstrap_binding_revision(&settings, "original").unwrap_err(),
+            super::super::super::super::settings::bootstrap_binding_revision(&settings, "original")
+                .unwrap_err(),
             expected_error
         );
         let path = dir.path().join("sessions.json");
@@ -641,10 +643,10 @@ async fn response_close_persist_core_retains_real_leaf_after_waiter_cancellation
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
         let waiter = tokio::spawn(async move {
-            super::run_owned_persist_core(async move {
+            super::super::run_owned_persist_core(async move {
                 started_tx.send(()).unwrap();
                 release_rx.await.unwrap();
-                let result = super::save_sessions_to_dir(&task_output, &[]);
+                let result = super::super::save_sessions_to_dir(&task_output, &[]);
                 finished_tx.send(result.clone()).unwrap();
                 result
             })

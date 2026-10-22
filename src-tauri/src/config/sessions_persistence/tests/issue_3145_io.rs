@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 
 #[tokio::test]
 async fn issue_3145_legacy_recipe_untouched_and_missing_directory_gc() {
