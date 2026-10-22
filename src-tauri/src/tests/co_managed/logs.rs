@@ -40,7 +40,8 @@ async fn spawn_jev_listener_with_status(
             read_http_request(&mut stream).await;
             let body = jev_response_body(&scores);
             let response = format!(
-                "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: \
+                    {}\r\nconnection: close\r\n\r\n{}",
                 body.len(),
                 body
             );
@@ -135,7 +136,10 @@ async fn p4_co_managed_logs_never_carry_candidate_text_or_the_api_key() {
         crate::capture::jev::classify(&network, &settings, &catalog, "text", &catalog_tag).await;
     let catalog_lines = p4_lines_since(before, &catalog_tag);
     assert!(
-        matches!(&returned, crate::capture::jev::ClassifyOutcome::Abstained { reason } if reason.contains(MARK1)),
+        matches!(
+            &returned,
+            crate::capture::jev::ClassifyOutcome::Abstained { reason } if reason.contains(MARK1)
+        ),
         "the RETURNED reason is unchanged: {returned:?}"
     );
     assert!(
@@ -230,7 +234,8 @@ async fn p4_send_once_logs_request_build_and_malformed_body_failures() {
             read_http_request(&mut stream).await;
             let body = r#"{"results":[{"id":"to-user"}]}"#;
             let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: \
+                    {}\r\nconnection: close\r\n\r\n{}",
                 body.len(),
                 body
             );
@@ -618,5 +623,3 @@ async fn p4_route_line_names_the_variant_and_kind() {
         ]
     );
 }
-
-// ── #2348 - the extracted window-placement helpers ───────────────────────

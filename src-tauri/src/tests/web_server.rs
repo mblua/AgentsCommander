@@ -351,7 +351,9 @@ async fn real_loopback_websocket_is_closed_and_reaped_by_generation_stop() {
         .await
         .expect("connect loopback websocket client");
     let request = format!(
-        "GET /ws?token=loopback-test-token HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        "GET /ws?token=loopback-test-token HTTP/1.1\r\nHost: {addr}\r\nUpgrade: \
+            websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: \
+            dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
     );
     client
         .write_all(request.as_bytes())

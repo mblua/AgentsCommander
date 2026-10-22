@@ -115,7 +115,8 @@ fn make_co_managed_fixture_in(temp: tempfile::TempDir, root: PathBuf) -> CoManag
     }
     std::fs::write(
         team_dir.join("config.json"),
-        r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead"}"#,
+        r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],
+            "coordinator":"../_agent_tech-lead"}"#,
     )
     .unwrap();
     std::fs::write(
@@ -157,10 +158,12 @@ fn write_co_managed_room_config(room_root: &Path, enabled: bool, catalog: Option
 
 fn write_co_managed_catalog(room_root: &Path) {
     let catalog = r#"{"categories":{
-        "to-peer":{"destination":"orchestrator","peer":"proj-a:room-1-dev-team/dev-rust","question":"route to the peer?"},
+        "to-peer":{"destination":"orchestrator","peer":"proj-a:room-1-dev-team/dev-rust",
+            "question":"route to the peer?"},
         "to-user":{"destination":"user","question":"route to the user?"},
         "to-root":{"destination":"root","question":"route to the root?"},
-        "to-reply":{"destination":"default_reply","reply":"Acknowledged by the Co-managed room.","question":"send the default reply?"}
+        "to-reply":{"destination":"default_reply","reply":"Acknowledged by the Co-managed room.",
+            "question":"send the default reply?"}
     }}"#;
     std::fs::write(room_root.join("catalog.json"), catalog).unwrap();
 }
@@ -380,7 +383,8 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) {
 async fn write_http_json(stream: &mut tokio::net::TcpStream, body: &str) {
     use tokio::io::AsyncWriteExt;
     let response = format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: \
+            close\r\n\r\n{}",
         body.len(),
         body
     );

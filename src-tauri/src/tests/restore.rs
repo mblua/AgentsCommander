@@ -90,7 +90,8 @@ fn should_wake_working_agent_on_restore_truth_table() {
                 let expected = resume_agents_on && !is_coord && persisted_working;
                 assert_eq!(
                     got, expected,
-                    "resume_agents_on={resume_agents_on} is_coord={is_coord} persisted_working={persisted_working}"
+                    "resume_agents_on={resume_agents_on} is_coord={is_coord} \
+                        persisted_working={persisted_working}"
                 );
             }
         }
@@ -272,7 +273,3 @@ fn first_restore_auto_creates_root_agent_with_valid_last_coding_agent() {
         Some("codex")
     ));
 }
-
-// ══════════════════════════════════════════════════════════════════════
-// #2232 phase 7: Co-managed supervisor tests
-// ══════════════════════════════════════════════════════════════════════

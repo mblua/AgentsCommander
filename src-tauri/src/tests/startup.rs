@@ -550,7 +550,9 @@ fn issue_1577_app_outbox_error_is_typed_and_exact() {
     assert_eq!(
         error.to_string(),
         format!(
-            "AgentsCommander cannot start because it could not create app outbox directory \"{}\" for configuration directory \"{}\": denied. Set AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart.",
+            "AgentsCommander cannot start because it could not create app outbox directory \
+                \"{}\" for configuration directory \"{}\": denied. Set \
+                AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart.",
             app_outbox_path.display(),
             config_dir.display()
         )
@@ -614,7 +616,10 @@ fn issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start() {
         assert_eq!(
             refusal.to_string(),
             format!(
-                "AgentsCommander cannot start because it cannot write its configuration directory \"{}\" next to the executable: {}{} Move the executable to a writable folder, or set AGENTSCOMMANDER_CONFIG_DIR to a writable directory, and restart.",
+                "AgentsCommander cannot start because it cannot write its configuration \
+                    directory \"{}\" next to the executable: {}{} Move the executable to a \
+                    writable folder, or set AGENTSCOMMANDER_CONFIG_DIR to a writable directory, \
+                    and restart.",
                 adjacent.display(),
                 reason,
                 if reason.ends_with('.') { "" } else { "." }
@@ -741,7 +746,8 @@ fn issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start() {
             };
             if !reaped {
                 return Err(format!(
-                    "child did not reap within 5 seconds; kill_error={kill_error:?} poll_error={status_poll_error:?} case_root={} home_root={}",
+                    "child did not reap within 5 seconds; kill_error={kill_error:?} \
+                        poll_error={status_poll_error:?} case_root={} home_root={}",
                     case_root.display(),
                     home_root.display()
                 ));
@@ -750,7 +756,9 @@ fn issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start() {
                 .wait_with_output()
                 .map_err(|error| format!("timed-out child final reap failed: {error}"))?;
             return Err(format!(
-                "child did not reach a clean terminal status; kill_error={kill_error:?} poll_error={status_poll_error:?} status={:?} stdout={:?} stderr={:?} case_root={} home_root={}",
+                "child did not reach a clean terminal status; kill_error={kill_error:?} \
+                    poll_error={status_poll_error:?} status={:?} stdout={:?} stderr={:?} \
+                    case_root={} home_root={}",
                 output.status.code(),
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr),
@@ -766,7 +774,8 @@ fn issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if !output.status.success() {
             return Err(format!(
-                "child failed status={:?} stdout={stdout:?} stderr={stderr:?} case_root={} home_root={}",
+                "child failed status={:?} stdout={stdout:?} stderr={stderr:?} case_root={} \
+                    home_root={}",
                 output.status.code(),
                 case_root.display(),
                 home_root.display()

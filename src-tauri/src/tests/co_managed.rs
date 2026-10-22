@@ -1,5 +1,9 @@
 use super::*;
 
+// ══════════════════════════════════════════════════════════════════════
+// #2232 phase 7: Co-managed supervisor tests
+// ══════════════════════════════════════════════════════════════════════
+
 /// zero files, queues nothing, and `session_idle` carries `comanaged:false`.
 #[tokio::test]
 async fn idle_edge_with_a_disabled_room_makes_no_call_and_emits_comanaged_false() {
@@ -213,7 +217,12 @@ async fn a_non_orchestrator_session_never_triggers() {
 #[test]
 fn peer_destinations_apply_can_communicate_and_reject_unreachable_peers() {
     let catalog = crate::capture::catalog::Catalog::from_json_str(
-        r#"{"categories":{"ok":{"destination":"orchestrator","peer":"proj-a:room-1-dev-team/dev-rust","question":"?"},"bad":{"destination":"orchestrator","peer":"proj-b:room-9-dev-team/nobody","question":"?"}}}"#,
+        r#"{"categories":{
+            "ok":{"destination":"orchestrator","peer":"proj-a:room-1-dev-team/dev-rust",
+            "question":"?"},
+            "bad":{"destination":"orchestrator","peer":"proj-b:room-9-dev-team/nobody",
+            "question":"?"}
+        }}"#,
     );
     let from = "proj-a:room-1-dev-team/tech-lead";
     let reachable = resolve_co_managed_route(
