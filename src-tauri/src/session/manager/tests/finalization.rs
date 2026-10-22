@@ -450,7 +450,11 @@ async fn idle_status_implies_waiting_for_input() {
             saw_idle = true;
             assert!(
                 observed.waiting_for_input,
-                "after {action}: Idle with waiting_for_input false manufactures an unrecorded ON edge"
+                concat!(
+                    "after {action}: Idle with waiting_for_input false ",
+                    "manufactures an unrecorded ON edge"
+                ),
+                action = action
             );
         }
     }

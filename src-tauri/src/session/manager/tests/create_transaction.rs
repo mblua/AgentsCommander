@@ -393,8 +393,14 @@ async fn e2992_p44_retained_settings_permit() {
     let collection = temp.path().join("projects");
     let ac = collection.join("p44-project/.ac");
     std::fs::create_dir_all(ac.join("_team_p44-team")).unwrap();
-    std::fs::write(ac.join("_team_p44-team/config.json"),
-        br#"{"agents":["../_agent_worker","../_agent_coordinator"],"coordinator":"../_agent_coordinator"}"#).unwrap();
+    std::fs::write(
+        ac.join("_team_p44-team/config.json"),
+        concat!(
+            r#"{"agents":["../_agent_worker","../_agent_coordinator"],"#,
+            r#""coordinator":"../_agent_coordinator"}"#
+        ),
+    )
+    .unwrap();
     let manager = SessionManager::new();
     let mut sessions = Vec::new();
     let mut paths = Vec::new();

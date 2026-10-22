@@ -1331,9 +1331,10 @@ impl SessionManager {
         }
     }
 
-    /// #1682 - record that a message write reached an arming site for `id`, NOT that a message was delivered
-    /// and submitted: R7 and R8 both arm with nothing submitted. Idempotent, and never undone: see this phase's
-    /// D2. Deliberately NOT called from `mark_busy`, whose output-driven caller would arm a startup repaint.
+    /// #1682 - record that a message write reached an arming site for `id`, NOT that a
+    /// message was delivered and submitted: R7 and R8 both arm with nothing submitted.
+    /// Idempotent, and never undone: see this phase's D2. Deliberately NOT called from
+    /// `mark_busy`, whose output-driven caller would arm a startup repaint.
     pub async fn arm_agent_turn(&self, id: Uuid) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.arm_agent_turn_with_carrier_permit(&carrier_permit, id)
@@ -1951,7 +1952,8 @@ impl SessionManager {
     }
 
     /// #1646 / #1647 - Sets `session.communication` to `BlockedMenu` with a custom message.
-    /// Returns `Some((changed, communication))` or `None` if the session was not found or is exited.
+    /// Returns `Some((changed, communication))` or `None` if the session was not found
+    /// or is exited.
     pub async fn set_blocked_menu(
         &self,
         id: Uuid,
@@ -1999,7 +2001,8 @@ impl SessionManager {
         Some((true, communication))
     }
 
-    /// #1646 / #1647 - Clears `session.communication` if currently `Some` with `kind == SessionCommunicationKind::BlockedMenu` and `visible == true`.
+    /// #1646 / #1647 - Clears `session.communication` if currently `Some` with
+    /// `kind == SessionCommunicationKind::BlockedMenu` and `visible == true`.
     /// Returns `true` if cleared.
     pub async fn clear_blocked_menu(&self, id: Uuid) -> bool {
         let carrier_permit = acquire_carrier_mutation_permit().await;
@@ -2283,7 +2286,10 @@ impl SessionManager {
         if let Some(s) = state.sessions.get_mut(&id) {
             if !s.start_fresh_on_restore {
                 log::info!(
-                    "[session-state] {} '{}': start_fresh_on_restore false -> true (AC clear boundary, #756)",
+                    concat!(
+                        "[session-state] {} '{}': start_fresh_on_restore false -> true ",
+                        "(AC clear boundary, #756)"
+                    ),
                     &id.to_string()[..8],
                     s.name
                 );
@@ -2328,7 +2334,10 @@ impl SessionManager {
 
         let cleared_start_fresh = if clear_fresh && s.start_fresh_on_restore {
             log::debug!(
-                "[session-state] {} '{}': start_fresh_on_restore true -> false (substantive user message, re-armed)",
+                concat!(
+                    "[session-state] {} '{}': start_fresh_on_restore true -> false ",
+                    "(substantive user message, re-armed)"
+                ),
                 &id.to_string()[..8],
                 s.name
             );
@@ -3588,7 +3597,11 @@ impl SessionManager {
             .collect();
 
         log::info!(
-            "[selection] epoch={} revision={} oldId={:?} newId={:?} source={} userInitiated={} oldMode={} newMode={} oldStatus={:?} newStatus={:?} targetHasPty={} targetDetached={} result={}",
+            concat!(
+                "[selection] epoch={} revision={} oldId={:?} newId={:?} source={} ",
+                "userInitiated={} oldMode={} newMode={} oldStatus={:?} newStatus={:?} ",
+                "targetHasPty={} targetDetached={} result={}"
+            ),
             state.epoch,
             state.revision,
             old_id,
@@ -3601,7 +3614,11 @@ impl SessionManager {
             state.selection.status(),
             state.selection.has_pty(),
             state.selection.detached(),
-            if selection_changed { "committed" } else { "noop" },
+            if selection_changed {
+                "committed"
+            } else {
+                "noop"
+            },
         );
 
         // #1149 - the opening edge at session birth, deferred past every fallible

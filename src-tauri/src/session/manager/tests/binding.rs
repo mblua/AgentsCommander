@@ -3,12 +3,15 @@ use super::*;
 fn birth_binding() -> CodingAgentBinding {
     CodingAgentBinding {
         id: Uuid::new_v4().to_string(),
-        seed: Some(
-            serde_json::json!({"identityRevision": format!("r1:0:{}", "a".repeat(64)), "originalAgentId":"original"}),
-        ),
-        origin: Some(
-            serde_json::json!({"sessionsPath":"C:/sessions.json","rawFileSHA256":"witness","originalOrdinal":3}),
-        ),
+        seed: Some(serde_json::json!({
+            "identityRevision": format!("r1:0:{}", "a".repeat(64)),
+            "originalAgentId": "original"
+        })),
+        origin: Some(serde_json::json!({
+            "sessionsPath": "C:/sessions.json",
+            "rawFileSHA256": "witness",
+            "originalOrdinal": 3
+        })),
     }
 }
 
