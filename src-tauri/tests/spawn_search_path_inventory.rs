@@ -159,10 +159,22 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 32)],
     ),
     (
-        "src-tauri/src/commands/config.rs",
-        3,
+        "src-tauri/src/commands/config/tests/room_idle_confirmation.rs",
+        1,
         0,
-        &[(DesktopOpener, 1), (TestOnly, 2)],
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/commands/config/tests/selection_api/bench/drain.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/commands/config/web_server.rs",
+        1,
+        0,
+        &[(DesktopOpener, 1)],
     ),
     (
         "src-tauri/src/commands/entity_creation.rs",
@@ -171,7 +183,12 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 3)],
     ),
     ("src-tauri/src/commands/repos.rs", 2, 1, &[(TestOnly, 1)]),
-    ("src-tauri/src/commands/session.rs", 1, 0, &[(TestOnly, 1)]),
+    (
+        "src-tauri/src/commands/session/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
     (
         "src-tauri/src/commands/wg_delete_diagnostic.rs",
         1,
