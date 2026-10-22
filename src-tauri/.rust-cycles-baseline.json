@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "ef994bfd10baf8bb",
+      "id": "f356108d940e9666",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::api::audit",
@@ -23,7 +23,6 @@
         "agentscommander_lib::co_managed::route",
         "agentscommander_lib::commands::ac_discovery",
         "agentscommander_lib::commands::config",
-        "agentscommander_lib::commands::entity_creation",
         "agentscommander_lib::commands::pty",
         "agentscommander_lib::commands::repos",
         "agentscommander_lib::commands::resource_monitor",
@@ -31,7 +30,6 @@
         "agentscommander_lib::commands::session",
         "agentscommander_lib::commands::telegram",
         "agentscommander_lib::commands::voice",
-        "agentscommander_lib::commands::wg_delete_diagnostic",
         "agentscommander_lib::commands::window",
         "agentscommander_lib::config::activity_log",
         "agentscommander_lib::config::agent_command",

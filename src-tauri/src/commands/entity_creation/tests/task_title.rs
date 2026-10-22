@@ -30,7 +30,7 @@ fn prepare_new_room_task_content_preserves_title_validation() {
 
 #[test]
 fn create_workgroup_prepares_task_once_before_mutation() {
-    let source = include_str!("../../entity_creation.rs");
+    let source = include_str!("../team_create.rs");
     let command = source
         .split_once("pub async fn create_workgroup(")
         .unwrap()
@@ -65,7 +65,7 @@ fn create_workgroup_prepares_task_once_before_mutation() {
     assert!(body.contains("std::fs::write(wg_dir.join(\"TASK.md\"), &task_content)"));
 
     // CLI/on-disk creation still validates before generating task content.
-    let cli = source
+    let cli = include_str!("../workgroup.rs")
         .split_once("pub(crate) async fn create_workgroup_on_disk(")
         .unwrap()
         .1;

@@ -2,9 +2,66 @@
 //! `delete_workgroup` helper added in the #113 follow-up dispatch, plus
 //! the #107 helper `parse_task_title`.
 
+use super::agent_delete_plan::{
+    collect_agent_delete_plan, collect_agent_delete_plan_guarded,
+    ensure_no_live_sessions_under_target_keys, format_agent_delete_metadata_failure,
+    format_agent_delete_post_stage_live_failure, persist_agent_delete_metadata_with_saver,
+    persist_agent_delete_metadata_with_writers, preflight_agent_delete,
+    prepare_agent_delete_metadata, restore_agent_delete_metadata_snapshots,
+    write_team_config_json_atomic, AgentDeletePlan, AgentDeleteTarget, AgentTeamMutation,
+    PreparedAgentDeleteMetadata,
+};
+use super::agent_matrix::{
+    persist_agent_delete_metadata_blocking, rollback_staged_agent_delete_targets,
+    run_agent_delete_transaction, stage_agent_delete_targets,
+    stage_agent_delete_targets_with_rename, AgentDeleteStageError, AgentDeleteTransactionOutcome,
+};
+use super::delete_guard::{
+    ensure_no_live_sessions_under_manager, is_rename_blocked_by_handle,
+    metadata_parts_are_link_or_reparse, path_key_for_delete, FILE_ATTRIBUTE_REPARSE_POINT,
+};
+use super::matrix_copy::{
+    cleanup_owned_copy_artifacts, copy_agent_matrix_strict, copy_agent_matrix_strict_with_hooks,
+    MatrixCopyHooks, MatrixCopyIdentity, MatrixCopyStage, MatrixCopyStamp, OwnedCopyArtifacts,
+    COPY_PROVENANCE_FILE,
+};
+use super::matrix_layout::{
+    create_agent_replica_layout, default_agent_matrix_config, write_local_config_value,
+};
+use super::repo_clone::git_cli_path;
+use super::room_number::{determine_next_wg_number, pad_width_for_mask};
+use super::room_task::{build_task_content, prepare_new_room_task_content, validate_task_title};
+use super::team_config::{
+    normalize_context_alert_percentages, normalized_team_config_bytes,
+    resolve_context_alert_argument, write_existing_team_config_guarded,
+    write_team_config_guarded_with_publisher, ContextAlertWriteMode, TeamConfigLockTiming,
+    TEAM_CONFIG_MUTATION_LOCK_NAME,
+};
+use super::team_create::{
+    create_team_from_sources, list_all_agents_for_destination, portable_source_ref,
+};
+use super::team_delete::collect_team_workgroup_dirs;
+use super::team_update::apply_wg_replica_repos;
+use super::workgroup::{initialize_replica_config_on_disk, initialize_workgroup_replicas_on_disk};
+#[cfg(windows)]
+use super::workgroup_delete::delete_workgroup_dir_backend;
+use super::workgroup_delete::{
+    delete_workgroup_dir_backend_with_outcome, gated_workgroup_delete_with,
+    try_atomic_delete_wg_with_remove,
+};
 use super::*;
+use crate::cli::task_ops;
+use crate::config::replica_identity::ROLE_MD_FILENAME;
+use crate::config::seed_manifest::ManifestActivationToken;
+use crate::config::settings::{AppSettings, SettingsState};
+use crate::session::manager::SessionManager;
 use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::atomic::{AtomicUsize, Ordering as TestOrdering};
+use std::sync::Arc;
+use std::time::Duration;
 
 mod agent_delete;
 mod agent_delete_blockers;

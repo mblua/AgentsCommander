@@ -2089,7 +2089,7 @@ fn normalized_production_source(relative: &str) -> String {
     let normalized = body.split_whitespace().collect::<String>();
     let end = match normalized.find("#[cfg(test)]modtests{") {
         Some(end) => end,
-        None if normalized.contains("#[cfg(test)]modtests;") => normalized.len(),
+        None if !normalized.contains("modtests{") => normalized.len(),
         None => panic!("{relative}: no `#[cfg(test)] mod tests` block found to split off"),
     };
     normalized[..end].to_string()
@@ -2145,15 +2145,15 @@ fn session_rs_threads_production_tokens_for_config_seed_and_context() {
     );
 }
 
-// (b) `commands/entity_creation.rs`: the GUI Tauri delete commands, invoked by no
-// test - delete_team (LifecycleTeamDeletion), delete_agent_matrix
-// (LifecycleAgentMatrixDeletion plus its pending-inclusive staged-rollback prune,
-// PendingInclusiveDeleteProtection), and delete_workgroup (the GUI site for
-// LifecycleWorkgroupRemoval, whose CLI site is covered end-to-end above). Each
-// OUTER command must construct and thread the token into its inner transaction.
+// (b) `commands/entity_creation/`: GUI Tauri delete commands no test calls - delete_team
+// (LifecycleTeamDeletion), delete_agent_matrix (LifecycleAgentMatrixDeletion + staged-rollback
+// prune, PendingInclusiveDeleteProtection), delete_workgroup (GUI LifecycleWorkgroupRemoval; CLI
+// covered above). Each OUTER command must build and thread the token into its inner transaction.
 #[test]
 fn entity_creation_rs_threads_production_tokens_through_the_delete_commands() {
-    let production = normalized_production_source("src/commands/entity_creation.rs");
+    let production = ["team_delete", "agent_matrix", "workgroup_delete"]
+        .map(|c| normalized_production_source(&format!("src/commands/entity_creation/{c}.rs")))
+        .concat();
 
     assert_eq!(
         production_token_count(&production),
