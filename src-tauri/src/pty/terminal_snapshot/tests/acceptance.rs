@@ -26,29 +26,29 @@ use crate::session::session::{Session, SessionRepo};
 use crate::telegram::manager::OutputSenderMap;
 
 const ACCEPTANCE_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_ACCEPTANCE_CHILD";
-const ACCEPTANCE_TEST_NAME: &str = "pty::terminal_snapshot::acceptance_tests::real_host_and_api_daemon_paths_enforce_no_oracle_and_final_handoff";
+const ACCEPTANCE_TEST_NAME: &str = "pty::terminal_snapshot::tests::acceptance::real_host_and_api_daemon_paths_enforce_no_oracle_and_final_handoff";
 const LEAKAGE_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_LEAKAGE_CHILD";
 const LEAKAGE_CANARY_FILE_ENV: &str = "AC_TERMINAL_SNAPSHOT_LEAKAGE_CANARY_FILE";
-const LEAKAGE_TEST_NAME: &str = "pty::terminal_snapshot::acceptance_tests::real_host_and_api_daemon_paths_enforce_secondary_leakage_confinement";
+const LEAKAGE_TEST_NAME: &str = "pty::terminal_snapshot::tests::acceptance::real_host_and_api_daemon_paths_enforce_secondary_leakage_confinement";
 const PANIC_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_PANIC_CHILD";
 const PANIC_CANARY_FILE_ENV: &str = "AC_TERMINAL_SNAPSHOT_PANIC_CANARY_FILE";
-const PANIC_TEST_NAME: &str = "pty::terminal_snapshot::acceptance_tests::snapshot_production_panic_boundaries_are_payload_free";
+const PANIC_TEST_NAME: &str = "pty::terminal_snapshot::tests::acceptance::snapshot_production_panic_boundaries_are_payload_free";
 const API_CANCELLATION_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_API_CANCELLATION_CHILD";
 const API_CANCELLATION_CANARY_FILE_ENV: &str = "AC_TERMINAL_SNAPSHOT_API_CANCELLATION_CANARY_FILE";
-const API_CANCELLATION_TEST_NAME: &str = "pty::terminal_snapshot::acceptance_tests::api_async_cancellation_reclaims_authority_without_disclosure";
+const API_CANCELLATION_TEST_NAME: &str = "pty::terminal_snapshot::tests::acceptance::api_async_cancellation_reclaims_authority_without_disclosure";
 const COMMON_BLOCKING_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_COMMON_BLOCKING_CHILD";
 const COMMON_BLOCKING_CANARY_FILE_ENV: &str = "AC_TERMINAL_SNAPSHOT_COMMON_BLOCKING_CANARY_FILE";
-const COMMON_BLOCKING_TEST_NAME: &str = "pty::terminal_snapshot::acceptance_tests::common_blocking_late_completion_retains_authority_without_disclosure";
+const COMMON_BLOCKING_TEST_NAME: &str = "pty::terminal_snapshot::tests::acceptance::common_blocking_late_completion_retains_authority_without_disclosure";
 const HOST_FINALIZER_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_HOST_FINALIZER_CHILD";
 const HOST_FINALIZER_CANARY_FILE_ENV: &str = "AC_TERMINAL_SNAPSHOT_HOST_FINALIZER_CANARY_FILE";
-const HOST_FINALIZER_TEST_NAME: &str = "pty::terminal_snapshot::acceptance_tests::synchronous_host_finalizer_retains_authority_through_late_completion";
+const HOST_FINALIZER_TEST_NAME: &str = "pty::terminal_snapshot::tests::acceptance::synchronous_host_finalizer_retains_authority_through_late_completion";
 const HOST_CANCELLATION_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_HOST_CANCELLATION_CHILD";
 const HOST_CANCELLATION_CANARY_FILE_ENV: &str =
     "AC_TERMINAL_SNAPSHOT_HOST_CANCELLATION_CANARY_FILE";
-const HOST_CANCELLATION_TEST_NAME: &str = "pty::terminal_snapshot::acceptance_tests::host_timeout_cancellation_claims_only_the_unaccepted_request";
+const HOST_CANCELLATION_TEST_NAME: &str = "pty::terminal_snapshot::tests::acceptance::host_timeout_cancellation_claims_only_the_unaccepted_request";
 const SCANNER_SHUTDOWN_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_SCANNER_SHUTDOWN_CHILD";
 const SCANNER_SHUTDOWN_TEST_NAME: &str =
-    "pty::terminal_snapshot::acceptance_tests::scanner_app_shutdown_owns_composed_host_phases";
+    "pty::terminal_snapshot::tests::acceptance::scanner_app_shutdown_owns_composed_host_phases";
 const BODY_DISCONNECT_SENTINEL: &str = "ACSNAP_BODY_DISCONNECT_1173_C6Q4";
 const LATE_BLOCKING_PANIC_SENTINEL: &str = "ACSNAP_LATE_BLOCKING_PANIC_1173_R4M8";
 const SCREEN_SENTINEL: &str = "ACSNAP_CELL_CANARY_1173_Z9Q7";
@@ -6789,7 +6789,7 @@ fn room_and_legacy_entity_names_are_both_accepted_and_distinct() {
 
 const ROOM_ACCEPTANCE_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_ROOM_ACCEPTANCE_CHILD";
 const ROOM_ACCEPTANCE_TEST_NAME: &str =
-    "pty::terminal_snapshot::acceptance_tests::room_target_capture_and_cross_room_denial_use_the_discovered_fqn";
+    "pty::terminal_snapshot::tests::acceptance::room_target_capture_and_cross_room_denial_use_the_discovered_fqn";
 
 /// #2317: an authorized same-room coordinator captures the discovered room
 /// member FQN, while a different room's coordinator is denied without content.

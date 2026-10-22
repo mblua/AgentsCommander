@@ -3149,12 +3149,12 @@ impl From<crate::errors::AppError> for TerminalSnapshotReasonCode {
 }
 
 #[cfg(test)]
-mod acceptance_tests;
-#[cfg(test)]
 mod resource_tests;
 
 #[cfg(test)]
 mod tests {
+    mod acceptance;
+
     use super::*;
     use crate::config::settings::{
         AppSettings, OperationOutcome, SettingsAvailability, SettingsOwner, SettingsPublisher,

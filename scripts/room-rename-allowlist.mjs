@@ -206,7 +206,7 @@ const STR_EXCEPTIONS = {
 // Their purpose is to represent a legacy Workgroup, so no production line moves
 // and section 9.1 adds room- twins beside the existing literals.
 const P2_FILES = [
-  "src-tauri/src/pty/terminal_snapshot/acceptance_tests.rs",
+  "src-tauri/src/pty/terminal_snapshot/tests/acceptance.rs",
   "src-tauri/src/pty/terminal_snapshot/resource_tests.rs",
 ];
 
