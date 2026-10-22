@@ -1032,7 +1032,9 @@ fn report_without_source() -> CatalogReport {
         unavailable: Some(CatalogDiagnostic {
             code: REPORT_CODE_BASE_UNAVAILABLE.to_string(),
             path: String::new(),
-            reason: "the AgentsCommander config directory could not be resolved, so no persisted catalog location is available".to_string(),
+            reason: "the AgentsCommander config directory could not be resolved, so no persisted \
+                catalog location is available"
+                .to_string(),
         }),
     }
 }
@@ -1046,7 +1048,8 @@ fn read_optional_regular_file(path: &Path, what: &str) -> Result<Option<Vec<u8>>
         Ok(meta) => {
             if meta.file_type().is_symlink() || is_reparse_point(&meta) {
                 return Err(format!(
-                    "the {what} at {} is a symbolic link or reparse point; a regular file is required",
+                    "the {what} at {} is a symbolic link or reparse point; a regular file is \
+                        required",
                     path.display()
                 ));
             }
@@ -1283,7 +1286,8 @@ fn managed_content_sha256(definitions: &[CodingAgentDefinition]) -> String {
         Ok(bytes) => sha256_hex(&bytes),
         Err(error) => {
             log::error!(
-                "[coding-agents] failed to serialize catalog definitions for the managed revision hash ({error})"
+                "[coding-agents] failed to serialize catalog definitions for the managed revision \
+                    hash ({error})"
             );
             String::new()
         }
@@ -1617,7 +1621,8 @@ fn validate_update_command_string(
         .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
     {
         return Err(format!(
-            "{context}: updateCommands item {index} contains a Unicode control character, U+2028 or U+2029"
+            "{context}: updateCommands item {index} contains a Unicode control character, U+2028 \
+                or U+2029"
         ));
     }
     Ok(())
@@ -2419,7 +2424,8 @@ fn analyze_base_bytes(base_path: &Path, bytes: &[u8]) -> Result<BaseAnalysis, Ca
                 REPORT_CODE_BASE_INVALID,
                 base_path,
                 format!(
-                    "unsupported explicit schemaVersion {version}; only schemaVersion 1 is recognized"
+                    "unsupported explicit schemaVersion {version}; only schemaVersion 1 is \
+                        recognized"
                 ),
             ));
         }
@@ -2445,7 +2451,8 @@ fn analyze_base_bytes(base_path: &Path, bytes: &[u8]) -> Result<BaseAnalysis, Ca
             REPORT_CODE_MIGRATION_PENDING,
             base_path,
             format!(
-                "root field(s) ({names}) are not recognized by the current catalog schema and require managed-catalog migration"
+                "root field(s) ({names}) are not recognized by the current catalog schema and \
+                    require managed-catalog migration"
             ),
         ));
         refresh_blocked = true;
@@ -2512,7 +2519,8 @@ fn analyze_base_bytes(base_path: &Path, bytes: &[u8]) -> Result<BaseAnalysis, Ca
                     REPORT_CODE_INVALID_DEFINITION,
                     base_path,
                     format!(
-                        "entry {index} does not match the coding-agent definition schema and was omitted"
+                        "entry {index} does not match the coding-agent definition schema and was \
+                            omitted"
                     ),
                 ));
                 continue;
@@ -2539,7 +2547,8 @@ fn analyze_base_bytes(base_path: &Path, bytes: &[u8]) -> Result<BaseAnalysis, Ca
                 REPORT_CODE_DUPLICATE_KEY,
                 base_path,
                 format!(
-                    "coding-agent '{}' was omitted: its key duplicates an earlier entry (the first entry wins)",
+                    "coding-agent '{}' was omitted: its key duplicates an earlier entry (the first \
+                        entry wins)",
                     definition.key
                 ),
             ));
@@ -2550,7 +2559,9 @@ fn analyze_base_bytes(base_path: &Path, bytes: &[u8]) -> Result<BaseAnalysis, Ca
                 REPORT_CODE_MIGRATION_PENDING,
                 base_path,
                 format!(
-                    "coding-agent '{}' has no persisted updateCommands; absent update commands are suppressed during reads and require managed-catalog migration on a supported restart",
+                    "coding-agent '{}' has no persisted updateCommands; absent update commands are \
+                        suppressed during reads and require managed-catalog migration on a \
+                        supported restart",
                     definition.key
                 ),
             ));
@@ -2568,7 +2579,8 @@ fn analyze_base_bytes(base_path: &Path, bytes: &[u8]) -> Result<BaseAnalysis, Ca
             warnings.push(catalog_diagnostic(
                 REPORT_CODE_MANAGED_BASE_EDITED,
                 base_path,
-                "the managed catalog content does not match its recorded contentSha256; it stays readable but is never auto-refreshed or auto-migrated",
+                "the managed catalog content does not match its recorded contentSha256; it stays \
+                    readable but is never auto-refreshed or auto-migrated",
             ));
         }
     }
@@ -2633,10 +2645,13 @@ fn read_catalog_snapshot_with(
         previous = Some(snapshot);
     }
     Err(if scope == CatalogReadScope::Project {
-        "the catalog source, project overrides, local overrides and migration journal kept changing while reading; retry the read"
+        "the catalog source, project overrides, local overrides and migration journal kept \
+            changing while reading; retry the read"
     } else {
-        "the catalog source, local overrides and migration journal kept changing while reading; retry the read"
-    }.to_string())
+        "the catalog source, local overrides and migration journal kept changing while reading; \
+            retry the read"
+    }
+    .to_string())
 }
 
 struct ResolvedCatalog {
@@ -2675,7 +2690,11 @@ fn describe_local_presence(
     warnings.push(catalog_diagnostic(
         REPORT_CODE_MIGRATION_PENDING,
         local_path,
-        format!("a {layer} overrides file exists while the base is not AC-managed; ownership transfer is blocked until the managed migration completes and the {layer} layer is not applied on top of a non-managed base"),
+        format!(
+            "a {layer} overrides file exists while the base is not AC-managed; ownership \
+            transfer is blocked until the managed migration completes and the {layer} layer is not \
+            applied on top of a non-managed base"
+        ),
     ));
 }
 
@@ -2769,7 +2788,8 @@ fn resolve_catalog_snapshot(
             resolved.warnings.push(catalog_diagnostic(
                 REPORT_CODE_MIGRATION_PENDING,
                 &journal_path,
-                "an interrupted managed-catalog migration is pending; it resumes on the next initialization",
+                "an interrupted managed-catalog migration is pending; it resumes on the next \
+                    initialization",
             ));
             let journal_bytes = snapshot
                 .journal
@@ -2794,9 +2814,18 @@ fn resolve_catalog_snapshot(
         }
         if let Some(project) = &snapshot.project {
             match project {
-                Ok(None) => {},
-                Ok(Some(_)) => resolved.warnings.push(catalog_diagnostic(REPORT_CODE_MIGRATION_PENDING, &project_catalog_path(ac_dir), "a project overrides file exists but no managed base has been published yet; the managed base is created on the next initialization")),
-                Err(reason) => resolved.warnings.push(catalog_diagnostic(REPORT_CODE_PROJECT_INVALID, &project_catalog_path(ac_dir), reason.clone())),
+                Ok(None) => {}
+                Ok(Some(_)) => resolved.warnings.push(catalog_diagnostic(
+                    REPORT_CODE_MIGRATION_PENDING,
+                    &project_catalog_path(ac_dir),
+                    "a project overrides file exists but no managed base has been published yet; \
+                    the managed base is created on the next initialization",
+                )),
+                Err(reason) => resolved.warnings.push(catalog_diagnostic(
+                    REPORT_CODE_PROJECT_INVALID,
+                    &project_catalog_path(ac_dir),
+                    reason.clone(),
+                )),
             }
         }
         match &snapshot.local {
@@ -2804,7 +2833,8 @@ fn resolve_catalog_snapshot(
             Ok(Some(_)) => resolved.warnings.push(catalog_diagnostic(
                 REPORT_CODE_MIGRATION_PENDING,
                 &local_path,
-                "a local overrides file exists but no managed base has been published yet; the managed base is created on the next initialization",
+                "a local overrides file exists but no managed base has been published yet; the \
+                    managed base is created on the next initialization",
             )),
             Err(reason) => resolved.warnings.push(catalog_diagnostic(
                 REPORT_CODE_LOCAL_INVALID,
@@ -2886,7 +2916,8 @@ fn resolve_catalog_snapshot(
             resolved.warnings.push(catalog_diagnostic(
                 REPORT_CODE_MIGRATION_CONFLICT,
                 &base_path,
-                "the persisted catalog carries an unrecognized managed ownership marker; this build neither refreshes nor migrates it",
+                "the persisted catalog carries an unrecognized managed ownership marker; this \
+                    build neither refreshes nor migrates it",
             ));
             if let Some(project) = &snapshot.project {
                 describe_local_presence(
@@ -2951,7 +2982,8 @@ fn raw_update_commands_problem(raw: &serde_json::Value) -> Option<String> {
             .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
         {
             return Some(format!(
-                "its updateCommands item {index} contains a Unicode control character, U+2028 or U+2029"
+                "its updateCommands item {index} contains a Unicode control character, U+2028 or \
+                    U+2029"
             ));
         }
     }
@@ -3065,7 +3097,8 @@ fn push_unknown_field_warnings(
             REPORT_CODE_MIGRATION_PENDING,
             path,
             format!(
-                "coding-agent '{key}' carries unknown field(s) ({names}) that require managed-catalog migration before ownership transfer"
+                "coding-agent '{key}' carries unknown field(s) ({names}) that require \
+                    managed-catalog migration before ownership transfer"
             ),
         ));
     }
@@ -3076,7 +3109,8 @@ fn push_unknown_field_warnings(
                 REPORT_CODE_MIGRATION_PENDING,
                 path,
                 format!(
-                    "coding-agent '{key}' configSeed carries unknown field(s) ({names}) that require managed-catalog migration"
+                    "coding-agent '{key}' configSeed carries unknown field(s) ({names}) that \
+                        require managed-catalog migration"
                 ),
             ));
         }
@@ -3088,7 +3122,8 @@ fn push_unknown_field_warnings(
                 REPORT_CODE_MIGRATION_PENDING,
                 path,
                 format!(
-                    "coding-agent '{key}' idleBurst carries unknown field(s) ({names}) that require managed-catalog migration"
+                    "coding-agent '{key}' idleBurst carries unknown field(s) ({names}) that \
+                        require managed-catalog migration"
                 ),
             ));
         }
@@ -3100,7 +3135,8 @@ fn push_unknown_field_warnings(
                 REPORT_CODE_MIGRATION_PENDING,
                 path,
                 format!(
-                    "coding-agent '{key}' installCommands carries unknown field(s) ({names}) that require managed-catalog migration"
+                    "coding-agent '{key}' installCommands carries unknown field(s) ({names}) that \
+                        require managed-catalog migration"
                 ),
             ));
         }
@@ -3116,7 +3152,8 @@ fn push_unknown_field_warnings(
                     REPORT_CODE_MIGRATION_PENDING,
                     path,
                     format!(
-                        "coding-agent '{key}' envs[{index}] carries unknown field(s) ({names}) that require managed-catalog migration"
+                        "coding-agent '{key}' envs[{index}] carries unknown field(s) ({names}) \
+                            that require managed-catalog migration"
                     ),
                 ));
             }
@@ -3144,13 +3181,17 @@ impl CatalogSourceContext {
     fn stale_revision_reason(self) -> &'static str {
         match self {
             Self::Project => {
-                "The persisted managed catalog revision differs from this build. Current persisted entries remain usable. Restart retries project catalog refresh."
+                "The persisted managed catalog revision differs from this build. Current persisted \
+                    entries remain usable. Restart retries project catalog refresh."
             }
             Self::Instance => {
-                "The persisted instance catalog revision differs from this build. Current persisted entries remain usable. Restart retries instance catalog refresh when no project is registered."
+                "The persisted instance catalog revision differs from this build. Current \
+                    persisted entries remain usable. Restart retries instance catalog refresh when \
+                    no project is registered."
             }
             Self::Direct => {
-                "The persisted managed catalog revision differs from this build. Current persisted entries remain usable. Catalog refresh runs during initialization."
+                "The persisted managed catalog revision differs from this build. Current persisted \
+                    entries remain usable. Catalog refresh runs during initialization."
             }
         }
     }
@@ -3247,7 +3288,8 @@ fn load_catalog_report_for_settings_with_config_dir(
                     Ok(false) => true,
                     Err(error) => {
                         log::debug!(
-                            "[coding-agents] seed-manifest bookkeeping query failed for {} ({error})",
+                            "[coding-agents] seed-manifest bookkeeping query failed for {} \
+                                ({error})",
                             root.display()
                         );
                         true
@@ -3258,7 +3300,9 @@ fn load_catalog_report_for_settings_with_config_dir(
                     report.warnings.push(catalog_diagnostic(
                         REPORT_CODE_PUBLICATION_UNTRACKED,
                         &manifest_path,
-                        "the seed manifest does not record this managed catalog publication yet; reads remain usable from the verified base and local overrides and the next initialization records it",
+                        "the seed manifest does not record this managed catalog publication yet; \
+                            reads remain usable from the verified base and local overrides and the \
+                            next initialization records it",
                     ));
                 }
             }
@@ -3322,7 +3366,8 @@ impl CatalogPaths {
 fn ensure_catalog_dir(ac_dir: &Path) -> Result<PathBuf, String> {
     if !ac_dir.is_absolute() {
         return Err(format!(
-            "the catalog root {} is not absolute; refusing to create it relative to the process CWD",
+            "the catalog root {} is not absolute; refusing to create it relative to the \
+                process CWD",
             ac_dir.display()
         ));
     }
@@ -3350,7 +3395,8 @@ fn ensure_catalog_dir(ac_dir: &Path) -> Result<PathBuf, String> {
                 if parent.file_type().is_symlink() || is_reparse_point(&parent) || !parent.is_dir()
                 {
                     return Err(format!(
-                        "the project .ac directory {} is not a real directory; refusing to create the catalog",
+                        "the project .ac directory {} is not a real directory; refusing to create \
+                            the catalog",
                         ac_dir.display()
                     ));
                 }
@@ -3457,7 +3503,8 @@ fn publish_exclusive(path: &Path, bytes: &[u8]) -> Result<(), String> {
             Ok(())
         }
         Err(error) => Err(format!(
-            "exclusive publication of {} failed via a hard link ({error}); the destination was left untouched and no partial bytes were written",
+            "exclusive publication of {} failed via a hard link ({error}); the destination was \
+                left untouched and no partial bytes were written",
             path.display()
         )),
     }
@@ -3555,7 +3602,8 @@ fn acquire_catalog_lock(paths: &CatalogPaths) -> Result<CatalogLockGuard, String
             Ok(()) => return Ok(CatalogLockGuard { _file: file }),
             Err(std::fs::TryLockError::WouldBlock) if started.elapsed() >= timeout => {
                 return Err(format!(
-                    "catalogLockTimeout: timed out after {} ms waiting for the coding-agent catalog lock '{}'",
+                    "catalogLockTimeout: timed out after {} ms waiting for the coding-agent \
+                        catalog lock '{}'",
                     timeout.as_millis(),
                     paths.lock.display()
                 ))
@@ -3566,7 +3614,8 @@ fn acquire_catalog_lock(paths: &CatalogPaths) -> Result<CatalogLockGuard, String
             }
             Err(std::fs::TryLockError::Error(error)) => {
                 return Err(format!(
-                    "the coding-agent catalog lock {} could not be acquired ({error}); this filesystem does not support the lock and no process-only fallback is used",
+                    "the coding-agent catalog lock {} could not be acquired ({error}); this \
+                        filesystem does not support the lock and no process-only fallback is used",
                     paths.lock.display()
                 ))
             }
@@ -4083,7 +4132,8 @@ fn extract_legacy_local_mode(
         if !seen_keys.contains(&shipped_definition.key) {
             if !shipped_definition.removable {
                 return Err(format!(
-                    "reconciliation is blocked: shipped key '{}' is absent from the legacy catalog and is not removable, so no tombstone can be recorded",
+                    "reconciliation is blocked: shipped key '{}' is absent from the legacy catalog \
+                        and is not removable, so no tombstone can be recorded",
                     shipped_definition.key
                 ));
             }
@@ -4140,7 +4190,8 @@ fn migrate_legacy(
 ) -> Result<Option<DateTime<Utc>>, String> {
     if read_optional_regular_file(&paths.local, "local coding-agent catalog")?.is_some() {
         return Err(
-            "an existing local overrides file blocks the legacy ownership transfer; it was left untouched"
+            "an existing local overrides file blocks the legacy ownership transfer; it was left \
+                untouched"
                 .to_string(),
         );
     }
@@ -4227,7 +4278,8 @@ fn migrate_legacy(
     }
     inject_catalog_failure("after_base")?;
     log::info!(
-        "[coding-agents] migrated the {source_kind} catalog {} into the managed base with an extracted local layer",
+        "[coding-agents] migrated the {source_kind} catalog {} into the managed base with an \
+            extracted local layer",
         source_path.display()
     );
     Ok(Some(published_at))
@@ -4243,12 +4295,14 @@ fn recover_interrupted_migration(paths: &CatalogPaths) -> Result<Option<DateTime
     let journal = parse_migration_journal(&journal_bytes)?;
     let backup = std::fs::read(&paths.backup).map_err(|e| {
         format!(
-            "the migration backup is missing or unreadable ({e}); recovery is blocked and every byte is preserved"
+            "the migration backup is missing or unreadable ({e}); recovery is blocked and every \
+                byte is preserved"
         )
     })?;
     if sha256_hex(&backup) != journal.source_sha256 {
         return Err(
-            "the migration backup does not match the journal source hash; recovery is blocked and every byte is preserved"
+            "the migration backup does not match the journal source hash; recovery is blocked and \
+                every byte is preserved"
                 .to_string(),
         );
     }
@@ -4273,7 +4327,8 @@ fn recover_interrupted_migration(paths: &CatalogPaths) -> Result<Option<DateTime
         || saved_content != Some(journal.managed_content_sha256.as_str())
     {
         return Err(
-            "the journal saved managed base does not match its recorded revision; recovery is blocked"
+            "the journal saved managed base does not match its recorded revision; recovery is \
+                blocked"
                 .to_string(),
         );
     }
@@ -4294,7 +4349,8 @@ fn recover_interrupted_migration(paths: &CatalogPaths) -> Result<Option<DateTime
         }
         if journal.source_kind == MIGRATION_SOURCE_INSTANCE || base_bytes != backup {
             return Err(
-                "the existing catalog base does not match the interrupted migration; recovery is blocked and every byte is preserved"
+                "the existing catalog base does not match the interrupted migration; recovery is \
+                    blocked and every byte is preserved"
                     .to_string(),
             );
         }
@@ -4309,9 +4365,10 @@ fn recover_interrupted_migration(paths: &CatalogPaths) -> Result<Option<DateTime
                 || local_bytes.len() as u64 != journal.local_byte_length
             {
                 return Err(
-                        "the local overrides file does not match the interrupted migration; recovery is blocked and every byte is preserved"
-                            .to_string(),
-                    );
+                    "the local overrides file does not match the interrupted migration; \
+                            recovery is blocked and every byte is preserved"
+                        .to_string(),
+                );
             }
             if journal.source_kind == MIGRATION_SOURCE_INSTANCE {
                 let source_path = PathBuf::from(&journal.source_path);
@@ -4320,9 +4377,10 @@ fn recover_interrupted_migration(paths: &CatalogPaths) -> Result<Option<DateTime
                 {
                     if sha256_hex(&source_bytes) != journal.source_sha256 {
                         return Err(
-                                "the instance source changed during the interrupted migration; recovery is blocked"
-                                    .to_string(),
-                            );
+                            "the instance source changed during the interrupted migration; \
+                                    recovery is blocked"
+                                .to_string(),
+                        );
                     }
                 }
             }
@@ -4340,9 +4398,10 @@ fn recover_interrupted_migration(paths: &CatalogPaths) -> Result<Option<DateTime
                 || recomputed.len() as u64 != journal.local_byte_length
             {
                 return Err(
-                        "the recomputed extraction does not match the journal local hash; recovery is blocked and every byte is preserved"
-                            .to_string(),
-                    );
+                    "the recomputed extraction does not match the journal local hash; recovery \
+                            is blocked and every byte is preserved"
+                        .to_string(),
+                );
             }
             publish_exclusive(&paths.local, &recomputed)?;
             inject_catalog_failure("after_local")?;
@@ -4378,7 +4437,8 @@ fn resume_backup_only_migration(
         .map_err(|e| format!("the migration backup could not be read ({e})"))?;
     if read_optional_regular_file(&paths.local, "local coding-agent catalog")?.is_some() {
         return Err(
-            "a local overrides file exists without a journal; the interrupted migration cannot be resumed safely"
+            "a local overrides file exists without a journal; the interrupted migration cannot be \
+                resumed safely"
                 .to_string(),
         );
     }
@@ -4389,16 +4449,16 @@ fn resume_backup_only_migration(
         Some(path) => read_instance_legacy_source(path)?,
         None => None,
     };
-    let source_kind = match (&base_bytes, &instance_bytes) {
-        (Some(base), _) if *base == backup => MIGRATION_SOURCE_PROJECT,
-        (None, Some(instance)) if *instance == backup => MIGRATION_SOURCE_INSTANCE,
-        _ => {
-            return Err(
-                "the backup does not match the current project base or instance catalog; recovery is blocked and every byte is preserved"
+    let source_kind =
+        match (&base_bytes, &instance_bytes) {
+            (Some(base), _) if *base == backup => MIGRATION_SOURCE_PROJECT,
+            (None, Some(instance)) if *instance == backup => MIGRATION_SOURCE_INSTANCE,
+            _ => return Err(
+                "the backup does not match the current project base or instance catalog; recovery \
+                    is blocked and every byte is preserved"
                     .to_string(),
-            )
-        }
-    };
+            ),
+        };
     let managed_bytes = build_managed_base_bytes(&shipped);
     let local_bytes = extract_legacy_local(&backup, &shipped)?;
     let layer = parse_local_layer(&local_bytes, LayerDescription::Local)?;
@@ -4462,7 +4522,9 @@ fn fresh_initialize_catalog(
             REPORT_CODE_REFRESH_FAILED,
             &paths.local,
             format!(
-                "The managed catalog base is usable, but its local overrides stub could not be created: {detail}. An absent local file is valid; no automatic stub retry is scheduled."
+                "The managed catalog base is usable, but its local overrides stub could not be \
+                    created: {detail}. An absent local file is valid; no automatic stub retry is \
+                    scheduled."
             ),
         ))
     };
@@ -4982,7 +5044,8 @@ fn migrate_catalog_family(
 
     if base_moved && scope == InitScope::Project {
         log::warn!(
-            "[coding-agents] renamed {} to {} in {}; Git shows the tracked {} as deleted and {} as new (a delete plus an add), and AC runs no Git",
+            "[coding-agents] renamed {} to {} in {}; Git shows the tracked {} as deleted and {} as \
+                new (a delete plus an add), and AC runs no Git",
             CATALOG_FAMILY_RENAMES[0].from,
             CATALOG_FAMILY_RENAMES[0].to,
             dir.display(),
@@ -5281,7 +5344,8 @@ pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
                             copied_from_legacy = true;
                             let bytes = tree_byte_count(&dir);
                             log::info!(
-                                "[coding-agents] migrated legacy master tree {} -> {} ({} bytes verbatim, no size cap)",
+                                "[coding-agents] migrated legacy master tree {} -> {} ({} bytes \
+                                    verbatim, no size cap)",
                                 legacy_master.display(),
                                 dir.display(),
                                 bytes
@@ -5292,7 +5356,8 @@ pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
                             // default; the legacy tree itself is never touched.
                             let _ = std::fs::remove_dir_all(&dir);
                             log::warn!(
-                                "[coding-agents] failed to copy legacy master {} ({e}); falling back to the embedded default",
+                                "[coding-agents] failed to copy legacy master {} ({e}); falling \
+                                    back to the embedded default",
                                 legacy_master.display()
                             );
                         }
@@ -5423,7 +5488,8 @@ fn ensure_seeded_for_project_in(
                         Ok(false) => Some(Utc::now()),
                         Err(error) => {
                             log::debug!(
-                                "[coding-agents] seed-manifest bookkeeping query failed for {} ({error}); recording is retried on the next initialization",
+                                "[coding-agents] seed-manifest bookkeeping query failed for {} \
+                                    ({error}); recording is retried on the next initialization",
                                 project_root.display()
                             );
                             Some(Utc::now())
@@ -5443,7 +5509,8 @@ fn ensure_seeded_for_project_in(
         }
         SoftProjectGate::Unavailable(error) => {
             log::warn!(
-                "[coding-agents] project gate unavailable for {}: {}; skipping seed to avoid racing a cooperating writer",
+                "[coding-agents] project gate unavailable for {}: {}; skipping seed to avoid \
+                    racing a cooperating writer",
                 project_root.display(),
                 error
             );
