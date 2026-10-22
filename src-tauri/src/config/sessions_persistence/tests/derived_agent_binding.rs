@@ -1,5 +1,11 @@
-use super::super::*;
+use super::super::{
+    load_sessions_from_dir, load_sessions_from_path_with_settings, load_sessions_raw_from_path,
+    CodingAgentBindingSeed,
+};
+use super::*;
+use std::path::PathBuf;
 use std::sync::Arc;
+use uuid::Uuid;
 
 // No process is spawned by this carrier fixture; every host-effect method
 // panics so the dormant snapshot control cannot silently become a spawn test.
@@ -331,7 +337,7 @@ async fn derived_agent_id_binding_legacy_seed_precedes_purge_publication() {
         .unwrap(),
     )
     .unwrap();
-    let settings = super::super::super::super::settings::load_settings_from_path(&settings_path);
+    let settings = super::super::super::settings::load_settings_from_path(&settings_path);
     let agent_id = settings.agents[0].id.clone();
     let retained_cwd = dir.path().join("retained");
     std::fs::create_dir(&retained_cwd).unwrap();
@@ -478,15 +484,14 @@ fn derived_agent_id_binding_unavailable_capture_keeps_raw_origin_and_recipe() {
             )
             .unwrap();
         }
-        let settings =
-            super::super::super::super::settings::load_settings_from_path(&settings_path);
+        let settings = super::super::super::settings::load_settings_from_path(&settings_path);
         let expected_error = match case {
             "removed" => "coding_agent_binding_entry_missing_or_ambiguous",
             "ambiguous" => "coding_agent_identity_duplicate",
             _ => "coding_agent_identity_physical_unreadable",
         };
         assert_eq!(
-            super::super::super::super::settings::bootstrap_binding_revision(&settings, "original")
+            super::super::super::settings::bootstrap_binding_revision(&settings, "original")
                 .unwrap_err(),
             expected_error
         );

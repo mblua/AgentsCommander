@@ -1,4 +1,11 @@
-use super::super::*;
+use super::super::{
+    flush_retained_prompts_locked, flush_retained_prompts_locked_with_probe,
+    initialize_prompt_retention_in_dir, load_retained_prompts, prompt_key, RETAINED_PROMPTS,
+};
+use super::*;
+use crate::session::manager::{PromptKey, RetainedPrompt};
+use std::collections::HashMap;
+use std::path::Path;
 
 #[tokio::test]
 async fn issue_3145_legacy_recipe_untouched_and_missing_directory_gc() {
