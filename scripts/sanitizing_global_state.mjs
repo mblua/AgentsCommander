@@ -1,7 +1,7 @@
 import { codeOrder, gateCli, isMain } from './sanitizing_baseline.mjs';
 import { scanRust } from './sanitizing_rust_scan.mjs';
 
-const relevantPath = new RegExp("(?:^|::)(?:Mutex|RwLock|Atomicw*|OnceLock|OnceCell|Lazy|LazyLock|Cell|RefCell)$");
+const relevantPath = /(?:^|::)(?:Mutex|RwLock|Atomic\w*|OnceLock|OnceCell|Lazy|LazyLock|Cell|RefCell)$/;
 function resolveAlias(scan, input, scope) {
   const resolved = scan.resolvePath(input,scope);
   if (!resolved.ambiguous) return resolved;

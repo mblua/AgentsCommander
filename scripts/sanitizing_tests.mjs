@@ -572,6 +572,8 @@ test('P02 relevant ambiguous aliases count with diagnostics instead of erasing t
     [processGate,'env_read_files','use std::env::var as read; use other::read; fn f() { read("x"); }'],
     [edgeGate,'tauri_files','use tauri::AppHandle as Handle; use other::Handle; fn f(x: Handle) {}'],
     [globalsGate,'globals','use std::sync::Mutex as M; use other::M; static X: M<u8> = init();'],
+    [globalsGate,'globals','use std::sync::atomic::AtomicUsize as A; use other::A; static X: A = init();'],
+    [globalsGate,'globals','#[cfg(unix)] use std::sync::atomic::AtomicU64 as Ctr; #[cfg(not(unix))] use other::Ctr; static X: Ctr = Ctr::new(0);'],
     [layoutGate,'test_files','use tokio::test as check; use other::check; #[check] fn f() {}'],
   ]) {
     const r=control(gate,rule,'x.rs','',source);
