@@ -7470,7 +7470,7 @@ fn agent_path_2589_default_base(cwd: &str) -> Option<PathBuf> {
 fn agent_path_2589_claude_wrapper_in_a_user_bin_dir_is_parsed() {
     let (_tmp, bin, custom_base) = agent_path_2589_wrapper_fixture("claude-mb.sh");
     let cwd = "/home/test/repo";
-    let resolved = super::resolve_claude_projects_dir_in(
+    let resolved = super::resume_probe::resolve_claude_projects_dir_in(
         "claude-mb.sh",
         &[],
         cwd,
@@ -7487,7 +7487,7 @@ fn agent_path_2589_claude_wrapper_in_a_user_bin_dir_is_parsed() {
 fn agent_path_2589_claude_wrapper_without_the_added_dir_falls_back() {
     let (_tmp, _bin, custom_base) = agent_path_2589_wrapper_fixture("claude-mb.sh");
     let cwd = "/home/test/repo";
-    let resolved = super::resolve_claude_projects_dir_in(
+    let resolved = super::resume_probe::resolve_claude_projects_dir_in(
         "claude-mb.sh",
         &[],
         cwd,
@@ -7514,7 +7514,8 @@ fn agent_path_2589_claude_wrapper_without_extension_uses_the_default_base() {
         "the extensionless wrapper now resolves through the added dir"
     );
     let cwd = "/home/test/repo";
-    let resolved = super::resolve_claude_projects_dir_in("claude-mb", &[], cwd, &search_path);
+    let resolved =
+        super::resume_probe::resolve_claude_projects_dir_in("claude-mb", &[], cwd, &search_path);
     assert_eq!(resolved, agent_path_2589_default_base(cwd));
 }
 
