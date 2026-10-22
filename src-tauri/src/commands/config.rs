@@ -183,12 +183,14 @@ pub(crate) use preferences::{
 };
 #[cfg(test)]
 use preferences::{persist_narrow_settings_update_with_saver, set_rail_collapse_inner_with_saver};
-#[cfg(test)]
+#[cfg(all(test, windows))]
+use profile_selection::build_profile_assignment_target;
+#[cfg(all(test, windows))]
 pub(crate) use profile_selection::canonical_compare_key;
 #[cfg(test)]
 use profile_selection::{
-    assignment_fingerprint, build_profile_assignment_target, canonical_real_dir,
-    classify_restart_failure, collect_kind_replica_dirs, collect_replica_dirs_in_workgroup,
+    assignment_fingerprint, canonical_real_dir, classify_restart_failure,
+    collect_kind_replica_dirs, collect_replica_dirs_in_workgroup,
     enumerate_profile_assignment_targets, profile_assignment_requires_explicit_confirmation,
     selection_default_fingerprint, selection_error_code, source_selection_fingerprint, target_pair,
     validate_profile_assignment_confirmation, CandidateDirs, ProfileCandidate,
@@ -206,8 +208,11 @@ use settings_update::{
     persist_protected_settings_update_with_saver_and_publication,
     persist_settings_draft_update_with_saver,
     persist_settings_draft_update_with_saver_and_publication,
-    purge_sessions_after_settings_update_in_dir, save_settings_draft_with_hotkey_registration,
-    settings_draft_update_events, update_settings_with_hotkey_registration,
+    purge_sessions_after_settings_update_in_dir, settings_draft_update_events,
+};
+#[cfg(all(test, windows))]
+use settings_update::{
+    save_settings_draft_with_hotkey_registration, update_settings_with_hotkey_registration,
 };
 #[cfg(test)]
 use sha2::{Digest, Sha256};
