@@ -40,7 +40,15 @@ impl ResponseCloseRegistration {
                 .swap(code, Ordering::Relaxed)
                 != code
         {
-            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown stage=poll_terminal outcome={} member={} coordinator={} site={}", outcome, self.member.session_id, self.coordinator.session_id, line!());
+            log::debug!(
+                target: "agentscommander_lib::response_close_diag",
+                "response_close_diag id=unknown stage=poll_terminal outcome={} member={} \
+                 coordinator={} site={}",
+                outcome,
+                self.member.session_id,
+                self.coordinator.session_id,
+                line!()
+            );
         }
     }
 }
@@ -104,14 +112,24 @@ fn response_registration_route(
 
 pub(crate) async fn poll_response_close<R: Runtime>(app: &AppHandle<R>) {
     let Some(tracker) = app.try_state::<crate::pty::manager::ResponseCloseState>() else {
-        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=poll_health outcome=tracker_missing health=unknown", line!());
+        log::debug!(
+            target: "agentscommander_lib::response_close_diag",
+            "response_close_diag id=unknown site={} stage=poll_health \
+             outcome=tracker_missing health=unknown",
+            line!()
+        );
         return;
     };
     let diagnostic_status = tracker.diagnostic_poll_health();
     crate::commands::session::reconcile_response_closes(app).await;
     let Some(coordinator) = app.try_state::<SelectionCoordinator>() else {
         if diagnostic_status {
-            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=poll_status outcome=coordinator_missing registrations=unknown", line!());
+            log::debug!(
+                target: "agentscommander_lib::response_close_diag",
+                "response_close_diag id=unknown site={} stage=poll_status \
+                 outcome=coordinator_missing registrations=unknown",
+                line!()
+            );
         }
         return;
     };
@@ -121,12 +139,23 @@ pub(crate) async fn poll_response_close<R: Runtime>(app: &AppHandle<R>) {
         .map(|registrations| registrations.values().cloned().collect::<Vec<_>>());
     let Some(registrations) = registrations else {
         if diagnostic_status {
-            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=poll_status outcome=registration_lock_error registrations=unknown", line!());
+            log::debug!(
+                target: "agentscommander_lib::response_close_diag",
+                "response_close_diag id=unknown site={} stage=poll_status \
+                 outcome=registration_lock_error registrations=unknown",
+                line!()
+            );
         }
         return;
     };
     if diagnostic_status {
-        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} outcome=observed stage=poll_status registration_count={}", line!(), registrations.len());
+        log::debug!(
+            target: "agentscommander_lib::response_close_diag",
+            "response_close_diag id=unknown site={} outcome=observed stage=poll_status \
+             registration_count={}",
+            line!(),
+            registrations.len()
+        );
     }
     for registration in registrations {
         if !registration.tracker.same_state(&tracker) {
@@ -1285,130 +1314,155 @@ pub(super) enum FinalizedOwnedCarryOutcome {
 #[derive(Debug, Clone)]
 #[expect(
     clippy::large_enum_variant,
-    reason = "C20 retains complete owned recovery work; preserve both variants and separate deep copies"
+    reason = "C20 retains complete owned recovery work; preserve both variants and separate deep \
+        copies"
 )]
 pub(crate) enum OwnedReplacementWork {
     OrdinaryOwned {
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         message_id: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         body: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         payload: serde_json::Value,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         recipient: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         request: serde_json::Value,
     },
     PtyDurableReference {
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         version: u32,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         injection_id: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         op_id: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         sender: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         target: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         source_plane: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         payload_sha256: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         payload_bytes: u64,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         issued_at: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         expires_at: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         queued_at: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         lease_owner: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         attempt: i64,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         authority_session_id: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         authority_client_id: Option<String>,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         authority_client_generation: Option<String>,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         sender_identity_fingerprint: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         target_identity_fingerprint: String,
         #[expect(
             dead_code,
-            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+            reason = "C20 requires complete inert retained source data; this field grants no \
+                replay authority"
         )]
         requested_agent_id: Option<String>,
     },
@@ -1423,7 +1477,8 @@ pub(crate) struct ResolvedReplacement {
     pub(crate) requested_agent_id: Option<String>,
     #[expect(
         dead_code,
-        reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        reason = "C20 requires complete inert retained source data; this field grants no replay \
+            authority"
     )]
     pub(crate) requested_profile: Option<String>,
     pub(crate) shell: String,
@@ -1501,7 +1556,8 @@ struct ReplacementProgress {
     tracker: Option<crate::pty::manager::ResponseCloseState>,
     #[expect(
         dead_code,
-        reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        reason = "C20 requires complete inert retained source data; this field grants no replay \
+            authority"
     )]
     accepted_work: OwnedReplacementWork,
     cleanup: ReplacementCleanupAuthority,
@@ -1975,7 +2031,8 @@ impl ReplacementFixtureControl {
                 OwnedEffectState::NotStarted
             )),
             carry_recaptured: matches!(&state.effects[LifecycleEffectSlot::Carry as usize],
-                OwnedEffectState::Completed { outcome: Err(error), .. } if error == "carry recapture: newer B preserved"),
+                OwnedEffectState::Completed { outcome: Err(error), .. } if error == "carry \
+                    recapture: newer B preserved"),
             effects_started: state
                 .effects
                 .iter()
@@ -2358,7 +2415,8 @@ impl OwnedReplacementContinuation {
         assert!(probe.fixture_observe_context_failure(error, title, message));
         let first = temporary.context_notification.lock().unwrap().clone();
         assert!(matches!(&first, FixtureContextNotification::Consumed {
-            operation, executor, binding, error: actual, title: actual_title, message: actual_message,
+            operation, executor, binding, error: actual,
+            title: actual_title, message: actual_message,
         } if *operation == self.owner.operation && *executor == self.executor_nonce
             && Some(*binding) == self.binding() && actual == error
             && actual_title == title && actual_message == message));
@@ -3522,12 +3580,21 @@ impl OwnedReplacementContinuation {
                         }
                         let permit =
                             crate::session::manager::acquire_carrier_mutation_permit().await;
-                        let confirmed = manager.with_current_carrier_snapshot(&permit, |current| {
-                            if !self.publication_region_current(current, pty) { return None; }
-                            crate::config::sessions_persistence::reconcile_owned_replacement_readback(
-                                &permit, &carrier, self.owner.operation, descriptor.previous.id, current,
-                            )
-                        }).await;
+                        let confirmed = manager
+                            .with_current_carrier_snapshot(&permit, |current| {
+                                if !self.publication_region_current(current, pty) {
+                                    return None;
+                                }
+                                use crate::config::sessions_persistence as persistence;
+                                persistence::reconcile_owned_replacement_readback(
+                                    &permit,
+                                    &carrier,
+                                    self.owner.operation,
+                                    descriptor.previous.id,
+                                    current,
+                                )
+                            })
+                            .await;
                         drop(permit);
                         if let Some(confirmed) = confirmed {
                             readback.complete(Ok(Some(confirmed.nonce.to_string())));
@@ -3985,18 +4052,38 @@ impl OwnedReplacementContinuation {
             let launch = progress.launch.as_ref()?;
             if state.executor_nonce != self.executor_nonce
                 || state.stage != ReplacementStage::FinalizedPublish
-                || !progress.work_transferred || !progress.preparing_released || !progress.reservations_released
-                || !progress.retired || !progress.retirement_cleanup_completed
-                || !progress.activity_completed || progress.initial_b.is_none()
-                || !matches!(progress.context_prerequisite,
-                    None | Some(OwnedEffectState::Completed { .. }))
-                || progress.create_reservation.is_some() || progress.work_reservation.is_some()
-                || !matches!(state.completion.as_ref(), Some(Ok(info)) if info.id == launch.binding.session_id().to_string())
-                || !state.effects.iter().all(|effect| matches!(effect,
-                    OwnedEffectState::NotStarted | OwnedEffectState::Completed { .. }))
-            { return None; }
-            let OwnedReplacementDescriptor::Replacement(descriptor) = &self.owner.descriptor else { return None; };
-            Some((progress.current_checkpoint.clone()?, launch.clone(), descriptor.previous.id))
+                || !progress.work_transferred
+                || !progress.preparing_released
+                || !progress.reservations_released
+                || !progress.retired
+                || !progress.retirement_cleanup_completed
+                || !progress.activity_completed
+                || progress.initial_b.is_none()
+                || !matches!(
+                    progress.context_prerequisite,
+                    None | Some(OwnedEffectState::Completed { .. })
+                )
+                || progress.create_reservation.is_some()
+                || progress.work_reservation.is_some()
+                || !matches!(state.completion.as_ref(),
+                    Some(Ok(info)) if info.id == launch.binding.session_id().to_string())
+                || !state.effects.iter().all(|effect| {
+                    matches!(
+                        effect,
+                        OwnedEffectState::NotStarted | OwnedEffectState::Completed { .. }
+                    )
+                })
+            {
+                return None;
+            }
+            let OwnedReplacementDescriptor::Replacement(descriptor) = &self.owner.descriptor else {
+                return None;
+            };
+            Some((
+                progress.current_checkpoint.clone()?,
+                launch.clone(),
+                descriptor.previous.id,
+            ))
         });
         let Some((carrier, launch, previous)) = captured else {
             return false;
@@ -5102,8 +5189,26 @@ impl SelectionCoordinator {
         let mut diagnostic_reason = (7, "ticket_absent");
         let ticket = manager
             .with_current_carrier_snapshot(&carrier_permit, |current| {
-                let member = response_registration_row(current, &registration.member).or_else(|| { if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { diagnostic_reason = (8, "current_member_rejected"); } None })?;
-                let coordinator = response_registration_row(current, &registration.coordinator).or_else(|| { if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { diagnostic_reason = (9, "current_coordinator_rejected"); } None })?;
+                let member =
+                    response_registration_row(current, &registration.member).or_else(|| {
+                        if log::log_enabled!(
+                            target: "agentscommander_lib::response_close_diag",
+                            log::Level::Debug
+                        ) {
+                            diagnostic_reason = (8, "current_member_rejected");
+                        }
+                        None
+                    })?;
+                let coordinator = response_registration_row(current, &registration.coordinator)
+                    .or_else(|| {
+                        if log::log_enabled!(
+                            target: "agentscommander_lib::response_close_diag",
+                            log::Level::Debug
+                        ) {
+                            diagnostic_reason = (9, "current_coordinator_rejected");
+                        }
+                        None
+                    })?;
                 if member.backend_kind != crate::pty::backend::SessionBackendKind::LocalProcess
                     || member.is_root_agent
                     || member.is_coordinator
@@ -5111,13 +5216,23 @@ impl SelectionCoordinator {
                     || !coordinator.is_coordinator
                     || coordinator.is_root_agent
                 {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { diagnostic_reason = (10, "role_or_backend_rejected"); }
+                    if log::log_enabled!(
+                        target: "agentscommander_lib::response_close_diag",
+                        log::Level::Debug
+                    ) {
+                        diagnostic_reason = (10, "role_or_backend_rejected");
+                    }
                     return None;
                 }
                 if !response_registration_route(&pty, &registration.member, member)
                     || !response_registration_route(&pty, &registration.coordinator, coordinator)
                 {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { diagnostic_reason = (11, "member_or_coordinator_route_rejected"); }
+                    if log::log_enabled!(
+                        target: "agentscommander_lib::response_close_diag",
+                        log::Level::Debug
+                    ) {
+                        diagnostic_reason = (11, "member_or_coordinator_route_rejected");
+                    }
                     return None;
                 }
                 let now = Instant::now();
@@ -5141,12 +5256,20 @@ impl SelectionCoordinator {
                 match tracker.select_ticket(member.id, now) {
                     Ok(ticket) => Some(ticket),
                     Err(error) => {
-                        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+                        if log::log_enabled!(
+                            target: "agentscommander_lib::response_close_diag",
+                            log::Level::Debug
+                        ) {
+                            use crate::pty::manager::ResponseCloseError;
                             diagnostic_reason = match error {
-                                crate::pty::manager::ResponseCloseError::Unavailable => (12, "select_ticket_unavailable"),
-                                crate::pty::manager::ResponseCloseError::Unknown => (13, "select_ticket_unknown"),
-                                crate::pty::manager::ResponseCloseError::Conflict => (14, "select_ticket_conflict"),
-                                crate::pty::manager::ResponseCloseError::ClosingDeferred => (15, "select_ticket_closing_deferred"),
+                                ResponseCloseError::Unavailable => {
+                                    (12, "select_ticket_unavailable")
+                                }
+                                ResponseCloseError::Unknown => (13, "select_ticket_unknown"),
+                                ResponseCloseError::Conflict => (14, "select_ticket_conflict"),
+                                ResponseCloseError::ClosingDeferred => {
+                                    (15, "select_ticket_closing_deferred")
+                                }
                             };
                         }
                         None
@@ -6551,7 +6674,8 @@ impl SelectionCoordinator {
                         .map(|keys| keys.len())
                         .unwrap_or_default();
                     log::error!(
-                        "[selection] coordinator worker phase exhausted before shared deadline budget={:?} finalizationReserve={:?} outstandingCriticalKeys={}",
+                        "[selection] coordinator worker phase exhausted before shared deadline \
+                            budget={:?} finalizationReserve={:?} outstandingCriticalKeys={}",
                         budget,
                         finalization_reserve,
                         critical_count
@@ -6565,7 +6689,8 @@ impl SelectionCoordinator {
                         }
                         Err(_) => {
                             log::error!(
-                                "[selection] aborted coordinator worker retained after absolute deadline state=retained"
+                                "[selection] aborted coordinator worker retained after absolute \
+                                    deadline state=retained"
                             );
                             retained
                                 .push("reason=coordinator-worker-abort state=retained".to_string());
@@ -6896,7 +7021,8 @@ impl Drop for CreateFinalizationTicket {
             self.create_ticket.take(),
         ) else {
             log::error!(
-                "[selection] bound create ticket dropped without its reserved finalization capacity session={}",
+                "[selection] bound create ticket dropped without its reserved finalization \
+                    capacity session={}",
                 binding.session_id()
             );
             return;
@@ -8156,7 +8282,8 @@ async fn execute_transition<R: Runtime>(
                 if let Some(window) = transaction.app().get_webview_window(&label) {
                     if let Err(error) = window.set_focus() {
                         log::warn!(
-                            "[selection] failed to focus detached target session={} source=userSwitch: {}",
+                            "[selection] failed to focus detached target session={} \
+                                source=userSwitch: {}",
                             session_id,
                             error
                         );
@@ -8699,7 +8826,8 @@ fn begin_container_shutdown(inner: &Arc<CoordinatorInner>, deadline: Instant) ->
         Ok(backend) => backend.as_ref().and_then(Weak::upgrade),
         Err(error) => {
             log::error!(
-                "[selection] container backend ownership lock unavailable during shutdown signal: {}",
+                "[selection] container backend ownership lock unavailable during shutdown signal: \
+                    {}",
                 error
             );
             return false;
@@ -8845,7 +8973,8 @@ async fn cleanup_pending_creates_after_join(
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
                     log::error!(
-                        "[selection] pending-create PTY cleanup failed session={} reason=pending-pty-kill state=retained error={}",
+                        "[selection] pending-create PTY cleanup failed session={} \
+                            reason=pending-pty-kill state=retained error={}",
                         session_id,
                         error
                     );
@@ -8856,7 +8985,8 @@ async fn cleanup_pending_creates_after_join(
                 }
                 Err(error) => {
                     log::error!(
-                        "[selection] pending-create PTY cleanup task failed session={} reason=pending-pty-kill state=retained error={}",
+                        "[selection] pending-create PTY cleanup task failed session={} \
+                            reason=pending-pty-kill state=retained error={}",
                         session_id,
                         error
                     );
@@ -8868,7 +8998,8 @@ async fn cleanup_pending_creates_after_join(
             }
             if let Err(error) = manager.rollback_pending_create(binding).await {
                 log::warn!(
-                    "[selection] pending create manager rollback failed session={} reason=pending-manager-rollback state=retained error={}",
+                    "[selection] pending create manager rollback failed session={} \
+                        reason=pending-manager-rollback state=retained error={}",
                     session_id,
                     error
                 );
@@ -8884,14 +9015,16 @@ async fn cleanup_pending_creates_after_join(
         Ok(Ok(retained)) => retained,
         Ok(Err(error)) => {
             log::error!(
-                "[selection] pending-create cleanup owner failed reason=pending-cleanup-task state=retained error={}",
+                "[selection] pending-create cleanup owner failed reason=pending-cleanup-task \
+                    state=retained error={}",
                 error
             );
             vec!["reason=pending-cleanup-task state=retained".to_string()]
         }
         Err(_) => {
             log::error!(
-                "[selection] pending-create cleanup owner retained after absolute deadline reason=pending-cleanup-await state=retained"
+                "[selection] pending-create cleanup owner retained after absolute deadline \
+                    reason=pending-cleanup-await state=retained"
             );
             inner
                 .retained_rollback_tasks
@@ -8937,7 +9070,8 @@ async fn seal_and_drain_container_shutdown_work_after_join(
         }
         Err(_) => {
             log::error!(
-                "[selection] container shutdown-work blocking task retained after absolute deadline reason=container-drain-await state=retained"
+                "[selection] container shutdown-work blocking task retained after absolute \
+                    deadline reason=container-drain-await state=retained"
             );
             retained.push("reason=container-drain-await state=retained".to_string());
             inner
