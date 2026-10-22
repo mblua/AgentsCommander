@@ -250,7 +250,7 @@
       "resolution": "Stays ignored by design as a measurement. Re-take the numbers by hand with cargo test --config profile.dev.opt-level=2 --lib read_seam_timing -- --ignored --nocapture and update the module doc comment when the read seam changes."
     },
     {
-      "id": "rust:src-tauri/src/config/settings.rs::tests::local_overlay_1737::print_s6_normalized_non_project_settings",
+      "id": "rust:src-tauri/src/config/settings/tests/local_overlay_1737.rs::print_s6_normalized_non_project_settings",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 2281,

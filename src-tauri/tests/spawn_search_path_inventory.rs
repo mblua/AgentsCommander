@@ -255,7 +255,12 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 1)],
     ),
-    ("src-tauri/src/config/settings.rs", 2, 0, &[(TestOnly, 2)]),
+    (
+        "src-tauri/src/config/settings/tests.rs",
+        2,
+        0,
+        &[(TestOnly, 2)],
+    ),
     ("src-tauri/src/config/teams.rs", 1, 0, &[(TestOnly, 1)]),
     ("src-tauri/src/lib.rs", 1, 0, &[(TestOnly, 1)]),
     ("src-tauri/src/loops/scheduler.rs", 1, 0, &[(TestOnly, 1)]),

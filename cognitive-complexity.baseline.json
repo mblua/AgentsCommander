@@ -133,7 +133,7 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/config/settings.rs::mod:tests::settings_save_error_preserves_sources_and_separates_diagnostic_from_outward",
+      "id": "rust:src-tauri/src/config/settings/tests.rs::settings_save_error_preserves_sources_and_separates_diagnostic_from_outward",
       "sites": {
         "windows": [
           "826617b3bb4f"
