@@ -595,7 +595,6 @@ agentscommander_lib::commands::session -> agentscommander_lib::config
 agentscommander_lib::commands::session -> agentscommander_lib::config::agent_command
 agentscommander_lib::commands::session -> agentscommander_lib::config::agent_config
 agentscommander_lib::commands::session -> agentscommander_lib::config::agent_memory
-agentscommander_lib::commands::session -> agentscommander_lib::config::agent_path
 agentscommander_lib::commands::session -> agentscommander_lib::config::archive_gate
 agentscommander_lib::commands::session -> agentscommander_lib::config::co_managed
 agentscommander_lib::commands::session -> agentscommander_lib::config::coding_agent_profiles
@@ -616,7 +615,6 @@ agentscommander_lib::commands::session -> agentscommander_lib::pty::container_ba
 agentscommander_lib::commands::session -> agentscommander_lib::pty::container_credentials
 agentscommander_lib::commands::session -> agentscommander_lib::pty::container_paths
 agentscommander_lib::commands::session -> agentscommander_lib::pty::container_repos
-agentscommander_lib::commands::session -> agentscommander_lib::pty::container_runtime
 agentscommander_lib::commands::session -> agentscommander_lib::pty::context_scrape
 agentscommander_lib::commands::session -> agentscommander_lib::pty::credentials
 agentscommander_lib::commands::session -> agentscommander_lib::pty::inject
@@ -634,6 +632,20 @@ agentscommander_lib::commands::session -> agentscommander_lib::session::session
 agentscommander_lib::commands::session -> agentscommander_lib::session::warnings
 agentscommander_lib::commands::session -> agentscommander_lib::telegram::manager
 agentscommander_lib::commands::session -> agentscommander_lib::web::commands
+agentscommander_lib::commands::session::resume_args -> agentscommander_lib::commands::session
+agentscommander_lib::commands::session::resume_args -> agentscommander_lib::config::agent_command
+agentscommander_lib::commands::session::resume_args -> agentscommander_lib::pty::backend
+agentscommander_lib::commands::session::resume_args -> agentscommander_lib::session::profile
+agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::commands::session
+agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::config::agent_command
+agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::config::agent_path
+agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::path_utils
+agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::pty::backend
+agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::pty::container_credentials
+agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::pty::container_paths
+agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::pty::container_runtime
+agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::session::profile
+agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::session::session
 agentscommander_lib::commands::spec_board -> agentscommander_lib
 agentscommander_lib::commands::spec_board -> agentscommander_lib::config::settings
 agentscommander_lib::commands::task -> agentscommander_lib::cli::task_ops
