@@ -63,9 +63,10 @@ pub use selection_default::{
 pub(crate) use selection_default::{
     get_replica_selection_default_inner, set_replica_selection_default_inner,
 };
+#[cfg(all(test, windows))]
+pub(crate) use target::build_profile_assignment_target;
 #[cfg(test)]
 pub(crate) use target::{
-    build_profile_assignment_target, canonical_real_dir, collect_kind_replica_dirs,
-    collect_replica_dirs_in_workgroup, target_pair, CandidateDirs, ProfileCandidate,
-    ProfileTargetEnumeration,
+    canonical_real_dir, collect_kind_replica_dirs, collect_replica_dirs_in_workgroup, target_pair,
+    CandidateDirs, ProfileCandidate, ProfileTargetEnumeration,
 };
