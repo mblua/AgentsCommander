@@ -51,9 +51,15 @@ fn p02_retention_preserves_typed_publication_order_and_fresh_bytes() {
 
 #[test]
 fn p02_catalog_wire_selection_local_precedence_and_historical_ordered_hash() {
-    let legacy = json!({"key":"own","label":"Own","description":"d","color":"#123456","command":"tool --fixed"});
+    let legacy = json!({"key":"own","label":"Own","description":"d","color":"#123456",
+        "command":"tool --fixed"});
     let definition: CodingAgentDefinition = serde_json::from_value(legacy.clone()).unwrap();
-    let historical = br##"[{"key":"own","label":"Own","description":"d","color":"#123456","command":"tool --fixed","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false}]"##;
+    let historical = concat!(
+        r##"[{"key":"own","label":"Own","description":"d","color":"#123456","##,
+        r##""command":"tool --fixed","envs":[],"isolatedHome":false,"removable":true,"##,
+        r##""updateCommands":[],"autoUpdate":false}]"##,
+    )
+    .as_bytes();
     assert_eq!(
         managed_content_sha256(std::slice::from_ref(&definition)),
         sha256_hex(historical)
@@ -97,7 +103,8 @@ fn p02_catalog_wire_selection_local_precedence_and_historical_ordered_hash() {
             mixed["baseCommand"] = json!("valid");
             mixed[key] = bad.clone();
             assert!(serde_json::from_value::<CodingAgentDefinition>(mixed).is_err());
-            let patch = json!({"schemaVersion":1,"agents":[{"key":"own","baseCommand":"valid","command":bad.clone()}]});
+            let patch = json!({"schemaVersion":1,"agents":[{"key":"own","baseCommand":"valid",
+                "command":bad.clone()}]});
             assert!(parse_local_layer(
                 &serde_json::to_vec(&patch).unwrap(),
                 LayerDescription::Local
@@ -109,7 +116,11 @@ fn p02_catalog_wire_selection_local_precedence_and_historical_ordered_hash() {
 
 #[test]
 fn p02_extraction_retains_legacy_and_historical_journal_bytes() {
-    let source = br##"{"schemaVersion":1,"agents":[{"key":"own","label":"Own","description":"d","color":"#123456","command":"tool"}]}"##;
+    let source = concat!(
+        r##"{"schemaVersion":1,"agents":[{"key":"own","label":"Own","description":"d","##,
+        r##""color":"#123456","command":"tool"}]}"##,
+    )
+    .as_bytes();
     let new_bytes = extract_legacy_local(source, &[]).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&new_bytes).unwrap();
     assert_eq!(value["agents"][0]["baseCommand"], "tool");

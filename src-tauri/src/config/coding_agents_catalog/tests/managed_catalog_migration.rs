@@ -3,11 +3,17 @@ use super::*;
 #[test]
 fn managed_catalog_migrates_project_legacy_with_pins_changes_and_tombstones() {
     let dir = seed_dir();
-    let legacy = manifest_json(
-        r##"[{"key":"claude","label":"My Claude","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]},
-         {"key":"pi","label":"Pi Custom","description":"d","color":"#ec4899","command":"pi-custom","envs":[],"isolatedHome":false,"removable":true},
-         {"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
+    let legacy = manifest_json(concat!(
+        r##"[{"key":"claude","label":"My Claude","description":"d","color":"#d97706","##,
+        r##""command":"claude","envs":[],"isolatedHome":false,"removable":true,"##,
+        r##""updateCommands":[]},
+"##,
+        r##"         {"key":"pi","label":"Pi Custom","description":"d","color":"#ec4899","##,
+        r##""command":"pi-custom","envs":[],"isolatedHome":false,"removable":true},
+"##,
+        r##"         {"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+    ));
     write_legacy_base(dir.path(), &legacy);
     assert!(ensure_seeded(dir.path(), None).is_some());
 
@@ -74,9 +80,10 @@ fn managed_catalog_migrates_project_legacy_with_pins_changes_and_tombstones() {
 #[test]
 fn managed_catalog_migration_refuses_an_existing_local() {
     let dir = seed_dir();
-    let legacy = manifest_json(
-        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
+    let legacy = manifest_json(concat!(
+        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+    ));
     write_legacy_base(dir.path(), &legacy);
     let user_local = r##"{"schemaVersion":1,"agents":[]}"##;
     write_local(dir.path(), user_local);
@@ -107,15 +114,25 @@ fn managed_catalog_migration_refuses_ambiguous_legacy_sources() {
         ),
         (
             "unknown row field",
-            r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"x","description":"d","color":"#111","command":"claude","mystery":1}]}"##,
+            concat!(
+                r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"x","description":"d","##,
+                r##""color":"#111","command":"claude","mystery":1}]}"##,
+            ),
         ),
         (
             "invalid definition",
-            r##"{"schemaVersion":1,"agents":[{"key":"BAD KEY","label":"x","description":"d","color":"#111","command":"x"}]}"##,
+            concat!(
+                r##"{"schemaVersion":1,"agents":[{"key":"BAD KEY","label":"x","description":"d","##,
+                r##""color":"#111","command":"x"}]}"##,
+            ),
         ),
         (
             "duplicate keys",
-            r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"a","description":"d","color":"#111","command":"claude"},{"key":"claude","label":"b","description":"d","color":"#111","command":"claude"}]}"##,
+            concat!(
+                r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"a","description":"d","##,
+                r##""color":"#111","command":"claude"},{"key":"claude","label":"b","##,
+                r##""description":"d","color":"#111","command":"claude"}]}"##,
+            ),
         ),
         ("unsupported schema", r##"{"schemaVersion":2,"agents":[]}"##),
     ];
@@ -195,7 +212,11 @@ fn managed_catalog_migration_never_imports_the_instance_local_layer() {
     let project = seed_dir();
     let legacy = legacy_dir();
     std::fs::write(legacy.path().join("agents.json"), legacy_catalog_json()).unwrap();
-    let instance_local = r##"{"schemaVersion":1,"agents":[{"key":"secret","label":"Secret","description":"d","color":"#111","command":"secret","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]}"##;
+    let instance_local = concat!(
+        r##"{"schemaVersion":1,"agents":[{"key":"secret","label":"Secret","description":"d","##,
+        r##""color":"#111","command":"secret","envs":[],"isolatedHome":false,"removable":true,"##,
+        r##""updateCommands":[]}]}"##,
+    );
     std::fs::write(legacy.path().join("agents.local.json"), instance_local).unwrap();
 
     assert!(ensure_seeded(project.path(), Some(legacy.path())).is_some());
@@ -218,9 +239,10 @@ fn managed_catalog_migration_never_imports_the_instance_local_layer() {
 #[test]
 fn managed_catalog_interrupt_after_backup_resumes_backup_only() {
     let dir = seed_dir();
-    let legacy = manifest_json(
-        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
+    let legacy = manifest_json(concat!(
+        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+    ));
     write_legacy_base(dir.path(), &legacy);
     let _ = with_failure_at("after_backup", || ensure_seeded(dir.path(), None));
 
@@ -259,9 +281,10 @@ fn managed_catalog_interrupt_after_backup_resumes_backup_only() {
 #[test]
 fn managed_catalog_interrupt_after_local_resumes_from_the_journal() {
     let dir = seed_dir();
-    let legacy = manifest_json(
-        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
+    let legacy = manifest_json(concat!(
+        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+    ));
     write_legacy_base(dir.path(), &legacy);
     let _ = with_failure_at("after_local", || ensure_seeded(dir.path(), None));
 
@@ -301,9 +324,10 @@ fn managed_catalog_interrupt_after_local_resumes_from_the_journal() {
 #[test]
 fn managed_catalog_interrupt_after_journal_recomputes_the_extraction() {
     let dir = seed_dir();
-    let legacy = manifest_json(
-        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
+    let legacy = manifest_json(concat!(
+        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+    ));
     write_legacy_base(dir.path(), &legacy);
     let _ = with_failure_at("after_journal", || ensure_seeded(dir.path(), None));
 
@@ -342,9 +366,10 @@ fn managed_catalog_interrupt_after_journal_recomputes_the_extraction() {
 #[test]
 fn managed_catalog_interrupt_before_base_resumes_from_the_journal() {
     let dir = seed_dir();
-    let legacy = manifest_json(
-        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
+    let legacy = manifest_json(concat!(
+        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+    ));
     write_legacy_base(dir.path(), &legacy);
     let _ = with_failure_at("before_base", || ensure_seeded(dir.path(), None));
     assert!(migration_journal_path(dir.path()).exists());
@@ -361,9 +386,10 @@ fn managed_catalog_interrupt_before_base_resumes_from_the_journal() {
 #[test]
 fn managed_catalog_interrupt_after_base_completes_without_re_extraction() {
     let dir = seed_dir();
-    let legacy = manifest_json(
-        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
+    let legacy = manifest_json(concat!(
+        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+    ));
     write_legacy_base(dir.path(), &legacy);
     let _ = with_failure_at("after_base", || ensure_seeded(dir.path(), None));
     assert!(migration_journal_path(dir.path()).exists());
@@ -388,9 +414,10 @@ fn managed_catalog_interrupt_after_base_completes_without_re_extraction() {
 #[test]
 fn managed_catalog_interrupt_across_a_revision_change_completes_then_refreshes() {
     let dir = seed_dir();
-    let legacy = manifest_json(
-        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
+    let legacy = manifest_json(concat!(
+        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+    ));
     write_legacy_base(dir.path(), &legacy);
     let _ = with_failure_at("before_base", || ensure_seeded(dir.path(), None));
     assert_eq!(
@@ -431,9 +458,10 @@ fn managed_catalog_interrupt_across_a_revision_change_completes_then_refreshes()
 #[test]
 fn managed_catalog_interrupt_with_a_local_edit_blocks_recovery() {
     let dir = seed_dir();
-    let legacy = manifest_json(
-        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
+    let legacy = manifest_json(concat!(
+        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+    ));
     write_legacy_base(dir.path(), &legacy);
     let _ = with_failure_at("after_local", || ensure_seeded(dir.path(), None));
     let edited = r##"{"schemaVersion":1,"agents":[{"key":"mine","label":"EDITED BETWEEN RUNS"}]}"##;
@@ -461,9 +489,10 @@ fn managed_catalog_interrupt_with_a_local_edit_blocks_recovery() {
 #[test]
 fn managed_catalog_sidecar_collisions_block_without_cleanup() {
     let dir = seed_dir();
-    let legacy = manifest_json(
-        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
+    let legacy = manifest_json(concat!(
+        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+    ));
     write_legacy_base(dir.path(), &legacy);
     let catalog = catalog_dir(dir.path());
     std::fs::create_dir_all(&catalog).unwrap();
@@ -499,9 +528,10 @@ fn managed_catalog_reads_never_write_in_any_state() {
     let dir = seed_dir();
     write_legacy_base(
         dir.path(),
-        &manifest_json(
-            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+            r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+        )),
     );
     assert_reads_leave_state_unchanged(dir.path());
 
@@ -513,9 +543,10 @@ fn managed_catalog_reads_never_write_in_any_state() {
     let dir = seed_dir();
     write_legacy_base(
         dir.path(),
-        &manifest_json(
-            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+            r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+        )),
     );
     let _ = with_failure_at("after_local", || ensure_seeded(dir.path(), None));
     assert_reads_leave_state_unchanged(dir.path());
@@ -566,7 +597,11 @@ fn managed_catalog_duplicate_command_identities_and_base_order_stay_intact() {
     ensure_seeded(dir.path(), None);
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"pi-max","label":"Pi Max","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["pi --custom"],"autoUpdate":false}]}"##,
+        concat!(
+            r##"{"schemaVersion":1,"agents":[{"key":"pi-max","label":"Pi Max","description":"d","##,
+            r##""color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"##,
+            r##""removable":true,"updateCommands":["pi --custom"],"autoUpdate":false}]}"##,
+        ),
     );
     let loaded = load_catalog(dir.path()).unwrap();
     let keys = keys_of(&loaded);
@@ -623,9 +658,10 @@ fn managed_catalog_report_flags_an_untracked_verified_base() {
     let legacy = seed_dir();
     write_legacy_base(
         &ac_dir_for(legacy.path()),
-        &manifest_json(
-            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+            r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+        )),
     );
     let settings = AppSettings {
         project_paths: vec![legacy.path().to_string_lossy().to_string()],

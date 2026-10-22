@@ -29,9 +29,10 @@ fn project_file_present_never_touched_even_when_legacy_differs() {
     // First seed from legacy, then hand-edit the PROJECT file.
     ensure_seeded(project.path(), Some(legacy.path()));
     let project_file = manifest_path(project.path());
-    let custom = manifest_json(
-        r##"[{"key":"hand","label":"Hand","description":"d","color":"#222","command":"hand","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
+    let custom = manifest_json(concat!(
+        r##"[{"key":"hand","label":"Hand","description":"d","color":"#222","command":"hand","##,
+        r##""envs":[],"isolatedHome":false,"removable":true}]"##,
+    ));
     std::fs::write(&project_file, &custom).unwrap();
 
     // A present project file is user-owned: a differing legacy must not win.
@@ -161,9 +162,10 @@ fn load_catalog_for_settings_primary_wins_and_never_falls_back() {
     assert!(!catalog_dir(&ac_dir).exists());
 
     // Hand-edited primary file is observable (primary wins over everything).
-    let custom = manifest_json(
-        r##"[{"key":"custom","label":"Custom","description":"d","color":"#333","command":"custom","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
+    let custom = manifest_json(concat!(
+        r##"[{"key":"custom","label":"Custom","description":"d","color":"#333","##,
+        r##""command":"custom","envs":[],"isolatedHome":false,"removable":true}]"##,
+    ));
     std::fs::create_dir_all(manifest_path(&ac_dir).parent().unwrap()).unwrap();
     std::fs::write(manifest_path(&ac_dir), &custom).unwrap();
     let loaded = load_catalog_for_settings(&settings).expect("persisted primary catalog");
@@ -203,15 +205,19 @@ fn load_catalog_for_settings_two_projects_switch_order_and_isolation() {
     let beta = seed_dir();
     write_report_manifest(
         &alpha.path().join(".ac"),
-        &manifest_json(
-            r##"[{"key":"alpha-sentinel","label":"Alpha","description":"d","color":"#111","command":"alpha-sentinel","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["alpha update"]}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"alpha-sentinel","label":"Alpha","description":"d","color":"#111","##,
+            r##""command":"alpha-sentinel","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":["alpha update"]}]"##,
+        )),
     );
     write_report_manifest(
         &beta.path().join(".ac"),
-        &manifest_json(
-            r##"[{"key":"beta-sentinel","label":"Beta","description":"d","color":"#222","command":"beta-sentinel","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["beta update"]}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"beta-sentinel","label":"Beta","description":"d","color":"#222","##,
+            r##""command":"beta-sentinel","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":["beta update"]}]"##,
+        )),
     );
     let alpha_path = alpha.path().to_string_lossy().to_string();
     let beta_path = beta.path().to_string_lossy().to_string();
@@ -256,9 +262,11 @@ fn load_catalog_for_settings_project_path_fallback_and_no_project_instance() {
     let project = seed_dir();
     write_report_manifest(
         &project.path().join(".ac"),
-        &manifest_json(
-            r##"[{"key":"legacy-root","label":"Legacy root","description":"d","color":"#111","command":"legacy-root","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["legacy-root update"]}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"legacy-root","label":"Legacy root","description":"d","##,
+            r##""color":"#111","command":"legacy-root","envs":[],"isolatedHome":false,"##,
+            r##""removable":true,"updateCommands":["legacy-root update"]}]"##,
+        )),
     );
     let settings = AppSettings {
         project_paths: vec!["   ".to_string()],
@@ -273,9 +281,11 @@ fn load_catalog_for_settings_project_path_fallback_and_no_project_instance() {
     let instance = seed_dir();
     write_report_manifest(
         instance.path(),
-        &manifest_json(
-            r##"[{"key":"instance","label":"Instance","description":"d","color":"#111","command":"instance","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["instance update"]}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"instance","label":"Instance","description":"d","color":"#111","##,
+            r##""command":"instance","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":["instance update"]}]"##,
+        )),
     );
     let before = std::fs::read(manifest_path(instance.path())).unwrap();
     let loaded = load_catalog_for_settings_with_config_dir(
@@ -315,10 +325,14 @@ fn load_catalog_keeps_valid_entry_while_warning_about_a_legacy_one() {
     let dir = seed_dir();
     write_report_manifest(
         dir.path(),
-        &manifest_json(
-            r##"[{"key":"legacy","label":"Legacy","description":"d","color":"#111","command":"legacy","envs":[],"isolatedHome":false,"removable":true},
-             {"key":"fresh","label":"Fresh","description":"d","color":"#222","command":"fresh","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["fresh update"]}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"legacy","label":"Legacy","description":"d","color":"#111","##,
+            r##""command":"legacy","envs":[],"isolatedHome":false,"removable":true},
+"##,
+            r##"             {"key":"fresh","label":"Fresh","description":"d","##,
+            r##""color":"#222","command":"fresh","envs":[],"isolatedHome":false,"##,
+            r##""removable":true,"updateCommands":["fresh update"]}]"##,
+        )),
     );
 
     let loaded = load_catalog(dir.path()).expect("persisted catalog");

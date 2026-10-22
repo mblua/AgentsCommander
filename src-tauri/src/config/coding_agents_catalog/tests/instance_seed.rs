@@ -69,7 +69,8 @@ fn ensure_seeded_instance_leaves_a_legacy_instance_file_untouched() {
             RETIRED_CATALOG_LOCK_FILENAME.to_string(),
             CATALOG_MANIFEST_FILENAME.to_string(),
         ],
-        "a legacy instance file creates no local, backup or journal sidecar; the retired lock sidecar is the scope lock"
+        "a legacy instance file creates no local, backup or journal sidecar; the retired lock \
+            sidecar is the scope lock"
     );
     let report = instance_report(instance.path());
     assert!(report.unavailable.is_none());
@@ -180,7 +181,10 @@ fn ensure_seeded_instance_local_overrides_win_with_no_project() {
     let instance = seed_dir();
     write_local(
         instance.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"MY CLAUDE","updateCommands":["my-claude-update"]}]}"##,
+        concat!(
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"MY CLAUDE","##,
+            r##""updateCommands":["my-claude-update"]}]}"##,
+        ),
     );
     let local_before = std::fs::read(local_catalog_path(instance.path())).unwrap();
 

@@ -25,12 +25,14 @@ pub(crate) fn project_then_personal_merges_fields_nulls_and_exact_order() {
         true,
     );
     let mut project = patch_rows(serde_json::json!([
-        {"key":"claude","label":"Project","instructionsFilename":null,"idleBurst":{"maxBytes":10,"maxSecs":2},"installCommands":{"default":"install","windows":"win"}}, extra_row("team")
+        {"key":"claude","label":"Project","instructionsFilename":null,"idleBurst":{"maxBytes":10,
+            "maxSecs":2},"installCommands":{"default":"install","windows":"win"}}, extra_row("team")
     ]));
     project["order"] = serde_json::json!(["team", "pi", "unknown"]);
     write_project_patch(dir.path(), project);
     let mut personal = patch_rows(serde_json::json!([
-        {"key":"claude","label":"Personal","idleBurst":{"maxSecs":3},"installCommands":{"windows":null}}, extra_row("mine")
+        {"key":"claude","label":"Personal","idleBurst":{"maxSecs":3},
+            "installCommands":{"windows":null}}, extra_row("mine")
     ]));
     personal["order"] = serde_json::json!(["mine", "claude"]);
     write_local(dir.path(), &personal.to_string());
@@ -62,7 +64,10 @@ pub(crate) fn project_invalid_schema_preserves_base_and_independent_personal() {
         r#"{"schemaVersion":1,"schemaVersion":1,"agents":[]}"#,
         r#"{"schemaVersion":1,"agents":[{"key":"claude"},{"key":"claude"}]}"#,
         r#"{"schemaVersion":1,"agents":[],"order":["claude","claude"]}"#,
-        r#"{"schemaVersion":1,"agents":[{"key":"claude","label":"partial"},{"key":"new","label":"incomplete"}]}"#,
+        concat!(
+            r#"{"schemaVersion":1,"agents":[{"key":"claude","label":"partial"},{"key":"new","#,
+            r#""label":"incomplete"}]}"#,
+        ),
     ];
     for bytes in cases {
         let dir = seed_dir();

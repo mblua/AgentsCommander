@@ -224,9 +224,17 @@ fn managed_catalog_local_composes_every_field_and_explicit_false_empty() {
     ensure_seeded(dir.path(), None);
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[
-            {"key":"claude","label":"My Claude","description":"D","color":"#010203","command":"claude","instructionsFilename":null,"envs":[{"key":"ZZ","value":"1"},{"key":"AA","value":"2","source":"system","enabled":false}],"isolatedHome":true,"configSeed":{"enabled":false},"removable":false,"updateCommands":[],"autoUpdate":true}
-        ]}"##,
+        concat!(
+            r##"{"schemaVersion":1,"agents":[
+"##,
+            r##"            {"key":"claude","label":"My Claude","description":"D","##,
+            r##""color":"#010203","command":"claude","instructionsFilename":null,"##,
+            r##""envs":[{"key":"ZZ","value":"1"},{"key":"AA","value":"2","source":"system","##,
+            r##""enabled":false}],"isolatedHome":true,"configSeed":{"enabled":false},"##,
+            r##""removable":false,"updateCommands":[],"autoUpdate":true}
+"##,
+            r##"        ]}"##,
+        ),
     );
     let loaded = load_catalog(dir.path()).unwrap();
     let claude = loaded.iter().find(|d| d.key == "claude").unwrap();
@@ -255,10 +263,17 @@ fn managed_catalog_local_new_row_order_and_tombstone() {
     ensure_seeded(dir.path(), None);
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[
-            {"key":"zeta","label":"Zeta","description":"d","color":"#111","command":"zeta","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false},
-            {"key":"grok","remove":true}
-        ],"order":["zeta","claude"]}"##,
+        concat!(
+            r##"{"schemaVersion":1,"agents":[
+"##,
+            r##"            {"key":"zeta","label":"Zeta","description":"d","color":"#111","##,
+            r##""command":"zeta","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":[],"autoUpdate":false},
+"##,
+            r##"            {"key":"grok","remove":true}
+"##,
+            r##"        ],"order":["zeta","claude"]}"##,
+        ),
     );
     let loaded = load_catalog(dir.path()).unwrap();
     let keys = keys_of(&loaded);
@@ -328,7 +343,8 @@ fn managed_catalog_local_schema_rejections_are_whole_layer() {
         ),
         (
             "control character in update command",
-            "{\"schemaVersion\":1,\"agents\":[{\"key\":\"claude\",\"updateCommands\":[\"a\\u0007b\"]}]}",
+            "{\"schemaVersion\":1,\"agents\":[{\"key\":\"claude\",\
+                \"updateCommands\":[\"a\\u0007b\"]}]}",
         ),
     ];
     for (label, contents) in cases {
@@ -380,7 +396,11 @@ fn managed_catalog_local_support_gate_attempts_stay_suppressed() {
         ensure_seeded(dir.path(), None);
         write_local(
             dir.path(),
-            r##"{"schemaVersion":1,"agents":[{"key":"muse","label":"Muse","description":"d","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false}]}"##,
+            concat!(
+                r##"{"schemaVersion":1,"agents":[{"key":"muse","label":"Muse","description":"d","##,
+                r##""color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"##,
+                r##""removable":true,"updateCommands":[],"autoUpdate":false}]}"##,
+            ),
         );
         let report = load_catalog_report(dir.path());
         assert!(!report.catalog.iter().any(|d| d.key == "muse"));
@@ -396,7 +416,10 @@ fn managed_catalog_local_unknown_tombstone_and_order_keys_are_ignored() {
     ensure_seeded(dir.path(), None);
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"future-key","remove":true}],"order":["ghost","claude"]}"##,
+        concat!(
+            r##"{"schemaVersion":1,"agents":[{"key":"future-key","remove":true}],"##,
+            r##""order":["ghost","claude"]}"##,
+        ),
     );
     let report = load_catalog_report(dir.path());
     assert!(report.unavailable.is_none());

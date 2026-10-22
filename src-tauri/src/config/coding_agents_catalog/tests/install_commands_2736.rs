@@ -145,7 +145,10 @@ pub(crate) fn install_commands_2736_local_layer_patches_windows_and_inherits_def
     managed_claude_base_2736(dir.path());
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"claude","installCommands":{"windows":"winget install claude"}}]}"##,
+        concat!(
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","##,
+            r##""installCommands":{"windows":"winget install claude"}}]}"##,
+        ),
     );
     let report = load_catalog_report(dir.path());
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
@@ -210,10 +213,22 @@ pub(crate) fn install_commands_2736_one_bad_local_value_discards_the_entire_loca
         true,
     );
     for local in [
-        r##"{"schemaVersion":1,"agents":[{"key":"codex","label":"MINE"},{"key":"claude","installCommands":{"windows":"  "}}]}"##,
-        r##"{"schemaVersion":1,"agents":[{"key":"codex","label":"MINE"},{"key":"claude","installCommands":{"default":7}}]}"##,
-        r##"{"schemaVersion":1,"agents":[{"key":"codex","label":"MINE"},{"key":"claude","installCommands":"npm i"}]}"##,
-        r##"{"schemaVersion":1,"agents":[{"key":"codex","label":"MINE"},{"key":"claude","installCommands":{"default":""}}]}"##,
+        concat!(
+            r##"{"schemaVersion":1,"agents":[{"key":"codex","label":"MINE"},{"key":"claude","##,
+            r##""installCommands":{"windows":"  "}}]}"##,
+        ),
+        concat!(
+            r##"{"schemaVersion":1,"agents":[{"key":"codex","label":"MINE"},{"key":"claude","##,
+            r##""installCommands":{"default":7}}]}"##,
+        ),
+        concat!(
+            r##"{"schemaVersion":1,"agents":[{"key":"codex","label":"MINE"},{"key":"claude","##,
+            r##""installCommands":"npm i"}]}"##,
+        ),
+        concat!(
+            r##"{"schemaVersion":1,"agents":[{"key":"codex","label":"MINE"},{"key":"claude","##,
+            r##""installCommands":{"default":""}}]}"##,
+        ),
     ] {
         write_local(dir.path(), local);
         let report = load_catalog_report(dir.path());
@@ -264,7 +279,11 @@ fn install_commands_2736_new_local_key_without_install_commands_is_accepted() {
     managed_claude_base_2736(dir.path());
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false}]}"##,
+        concat!(
+            r##"{"schemaVersion":1,"agents":[{"key":"mine","label":"Mine","description":"d","##,
+            r##""color":"#111","command":"mytool","envs":[],"isolatedHome":false,"##,
+            r##""removable":true,"updateCommands":[],"autoUpdate":false}]}"##,
+        ),
     );
     let report = load_catalog_report(dir.path());
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
@@ -278,7 +297,10 @@ fn install_commands_2736_unknown_nested_field_is_a_whole_layer_error() {
     managed_claude_base_2736(dir.path());
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"MINE","installCommands":{"default":"x","freebsd":"y"}}]}"##,
+        concat!(
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"MINE","##,
+            r##""installCommands":{"default":"x","freebsd":"y"}}]}"##,
+        ),
     );
     let report = load_catalog_report(dir.path());
     assert!(

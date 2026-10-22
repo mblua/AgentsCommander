@@ -600,9 +600,10 @@ fn a_failed_legacy_scope_seeds_nothing() {
     let legacy = both.legacy();
     std::fs::create_dir_all(&legacy).unwrap();
     std::fs::write(legacy.join(OLD_BASE), legacy_catalog_json()).unwrap();
-    let winner = manifest_json(
-        r##"[{"key":"winner","label":"Winner","description":"d","color":"#111","command":"win","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
+    let winner = manifest_json(concat!(
+        r##"[{"key":"winner","label":"Winner","description":"d","color":"#111","##,
+        r##""command":"win","envs":[],"isolatedHome":false,"removable":true}]"##,
+    ));
     std::fs::write(legacy.join(CATALOG_MANIFEST_FILENAME), &winner).unwrap();
     both.seed();
     assert_eq!(

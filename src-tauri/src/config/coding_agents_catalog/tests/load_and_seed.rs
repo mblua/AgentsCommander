@@ -59,11 +59,20 @@ fn load_skips_invalid_entry_and_keeps_valid_rest() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     // First entry is valid; second has an illegal key (uppercase); third is
     // valid. Only the two valid entries survive.
-    let agents = r##"[
-        {"key":"claude","label":"Claude","description":"d","color":"#000","command":"claude","envs":[],"isolatedHome":false,"removable":true},
-        {"key":"BAD KEY","label":"x","description":"d","color":"#000","command":"x","envs":[],"isolatedHome":false,"removable":true},
-        {"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}
-    ]"##;
+    let agents = concat!(
+        r##"[
+"##,
+        r##"        {"key":"claude","label":"Claude","description":"d","color":"#000","##,
+        r##""command":"claude","envs":[],"isolatedHome":false,"removable":true},
+"##,
+        r##"        {"key":"BAD KEY","label":"x","description":"d","color":"#000","command":"x","##,
+        r##""envs":[],"isolatedHome":false,"removable":true},
+"##,
+        r##"        {"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}
+"##,
+        r##"    ]"##,
+    );
     std::fs::write(&path, manifest_json(agents)).unwrap();
 
     let loaded = load_catalog(dir.path()).expect("persisted catalog");
@@ -76,10 +85,17 @@ fn load_dedups_duplicate_keys_first_wins() {
     let dir = seed_dir();
     let path = manifest_path(dir.path());
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let agents = r##"[
-        {"key":"claude","label":"First","description":"d","color":"#000","command":"claude","envs":[],"isolatedHome":false,"removable":true},
-        {"key":"claude","label":"Second","description":"d","color":"#000","command":"claude","envs":[],"isolatedHome":false,"removable":true}
-    ]"##;
+    let agents = concat!(
+        r##"[
+"##,
+        r##"        {"key":"claude","label":"First","description":"d","color":"#000","##,
+        r##""command":"claude","envs":[],"isolatedHome":false,"removable":true},
+"##,
+        r##"        {"key":"claude","label":"Second","description":"d","color":"#000","##,
+        r##""command":"claude","envs":[],"isolatedHome":false,"removable":true}
+"##,
+        r##"    ]"##,
+    );
     std::fs::write(&path, manifest_json(agents)).unwrap();
 
     let loaded = load_catalog(dir.path()).expect("persisted catalog");
@@ -113,9 +129,10 @@ fn ensure_seeded_writes_when_absent_then_is_idempotent() {
 
     // Idempotent + never clobbers a user edit: hand-edit to a single custom
     // agent, re-seed, and confirm the edit is preserved.
-    let custom = manifest_json(
-        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
+    let custom = manifest_json(concat!(
+        r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+    ));
     std::fs::write(&path, &custom).unwrap();
     ensure_seeded(dir.path(), None);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), custom);

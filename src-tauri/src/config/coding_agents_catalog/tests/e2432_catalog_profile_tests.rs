@@ -29,7 +29,9 @@ fn save_catalog(
 fn source(schema: u32) -> serde_json::Value {
     let mut value = json!({
         "schemaVersion":schema,
-        "agents":[{"key":"own","label":"Own","description":"Own","color":"#123456","baseCommand":"tool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false,"catalogOnly":{"keep":true}}],
+        "agents":[{"key":"own","label":"Own","description":"Own","color":"#123456",
+            "baseCommand":"tool","envs":[],"isolatedHome":false,"removable":true,
+                "updateCommands":[],"autoUpdate":false,"catalogOnly":{"keep":true}}],
         "codingAgentProfiles":{"own":{"B":{"notes":"notes","extension":[null]}},"lost":null},
         "profileLabels":{"own":{"B":"label"},"labels-only":{"raw":null}},
         "identityByAgent":{"unrelated":"preserve"},
@@ -235,7 +237,8 @@ fn e2432_duplicate_catalog() {
             assert!(save_catalog(&settings, &settings_path, &source(schema)).is_err());
             assert_eq!(std::fs::read(&path).unwrap(), raw.as_bytes());
         }
-        let raw = json!({"schemaVersion":schema,"agents":[],"legacyProfileOrphans":{"X":[{"cells":null},{"cells":null}]}});
+        let raw = json!({"schemaVersion":schema,"agents":[],
+            "legacyProfileOrphans":{"X":[{"cells":null},{"cells":null}]}});
         std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
         let view = storage::project_physical_profiles(&raw, false).unwrap();
         let saved = save_catalog(&settings, &settings_path, &view).unwrap();

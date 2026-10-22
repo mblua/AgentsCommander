@@ -15,7 +15,8 @@ fn managed_catalog_stale_revision_warning_uses_the_exact_context_reason() {
         .expect("direct refreshFailed");
     assert_eq!(
         warning.reason,
-        "The persisted managed catalog revision differs from this build. Current persisted entries remain usable. Catalog refresh runs during initialization."
+        "The persisted managed catalog revision differs from this build. Current persisted entries \
+            remain usable. Catalog refresh runs during initialization."
     );
     assert_eq!(
         warning.path,
@@ -37,7 +38,8 @@ fn managed_catalog_stale_revision_warning_uses_the_exact_context_reason() {
         .expect("project refreshFailed");
     assert_eq!(
         warning.reason,
-        "The persisted managed catalog revision differs from this build. Current persisted entries remain usable. Restart retries project catalog refresh."
+        "The persisted managed catalog revision differs from this build. Current persisted entries \
+            remain usable. Restart retries project catalog refresh."
     );
     assert_eq!(
         warning.path,
@@ -61,7 +63,9 @@ fn managed_catalog_stale_revision_warning_uses_the_exact_context_reason() {
         .expect("instance refreshFailed");
     assert_eq!(
         warning.reason,
-        "The persisted instance catalog revision differs from this build. Current persisted entries remain usable. Restart retries instance catalog refresh when no project is registered."
+        "The persisted instance catalog revision differs from this build. Current persisted \
+            entries remain usable. Restart retries instance catalog refresh when no project is \
+            registered."
     );
     assert_eq!(
         warning.path,
@@ -631,7 +635,8 @@ fn managed_catalog_stub_failure_is_nonfatal_and_never_retried() {
     assert_eq!(warning.path, canonical_local.display().to_string());
     assert!(
         warning.reason.starts_with(
-            "The managed catalog base is usable, but its local overrides stub could not be created: "
+            "The managed catalog base is usable, but its local overrides stub could not be \
+                created: "
         ),
         "{}",
         warning.reason

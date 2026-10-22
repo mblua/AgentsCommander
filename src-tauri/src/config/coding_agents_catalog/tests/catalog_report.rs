@@ -5,9 +5,11 @@ fn catalog_report_serializes_exact_camel_case_wire_shape() {
     let dir = seed_dir();
     write_report_manifest(
         dir.path(),
-        &manifest_json(
-            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+            r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":[]}]"##,
+        )),
     );
     let report = report_for(dir.path());
     assert!(report.unavailable.is_none());
@@ -118,9 +120,11 @@ fn catalog_report_symlink_manifest_is_unavailable() {
     let target = dir.path().join("real-catalog.json");
     std::fs::write(
         &target,
-        manifest_json(
-            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
-        ),
+        manifest_json(concat!(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+            r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":[]}]"##,
+        )),
     )
     .unwrap();
     let link = manifest_path(dir.path());
@@ -130,7 +134,8 @@ fn catalog_report_symlink_manifest_is_unavailable() {
         // this host (Windows symlink privilege), so the link assertion was
         // NOT exercised and must not be counted as a pass.
         eprintln!(
-            "[catalog-report test] symlink creation unavailable on this host ({e}); link fixture NOT exercised"
+            "[catalog-report test] symlink creation unavailable on this host ({e}); link fixture \
+                NOT exercised"
         );
         return;
     }
@@ -211,11 +216,17 @@ fn catalog_report_missing_update_commands_warns_without_donor() {
     let dir = seed_dir();
     write_report_manifest(
         dir.path(),
-        &manifest_json(
-            r##"[{"key":"claude","label":"Claude Code","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true},
-             {"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true},
-             {"key":"claude-beta","label":"Claude Beta","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"claude","label":"Claude Code","description":"d","color":"#d97706","##,
+            r##""command":"claude","envs":[],"isolatedHome":false,"removable":true},
+"##,
+            r##"             {"key":"mine","label":"Mine","description":"d","color":"#111","##,
+            r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true},
+"##,
+            r##"             {"key":"claude-beta","label":"Claude Beta","description":"d","##,
+            r##""color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"##,
+            r##""removable":true}]"##,
+        )),
     );
     let report = report_for(dir.path());
     assert!(report.unavailable.is_none());
@@ -264,16 +275,30 @@ fn catalog_report_missing_update_commands_warns_without_donor() {
 
 #[test]
 fn catalog_report_explicit_empty_has_no_missing_commands_warning() {
-    let missing = manifest_json(
-        r##"[{"key":"claude","label":"Claude Code","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true},
-         {"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true},
-         {"key":"claude-beta","label":"Claude Beta","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
-    let explicit = manifest_json(
-        r##"[{"key":"claude","label":"Claude Code","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]},
-         {"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]},
-         {"key":"claude-beta","label":"Claude Beta","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
-    );
+    let missing = manifest_json(concat!(
+        r##"[{"key":"claude","label":"Claude Code","description":"d","color":"#d97706","##,
+        r##""command":"claude","envs":[],"isolatedHome":false,"removable":true},
+"##,
+        r##"         {"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true},
+"##,
+        r##"         {"key":"claude-beta","label":"Claude Beta","description":"d","##,
+        r##""color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"##,
+        r##""removable":true}]"##,
+    ));
+    let explicit = manifest_json(concat!(
+        r##"[{"key":"claude","label":"Claude Code","description":"d","color":"#d97706","##,
+        r##""command":"claude","envs":[],"isolatedHome":false,"removable":true,"##,
+        r##""updateCommands":[]},
+"##,
+        r##"         {"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true,"##,
+        r##""updateCommands":[]},
+"##,
+        r##"         {"key":"claude-beta","label":"Claude Beta","description":"d","##,
+        r##""color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"##,
+        r##""removable":true,"updateCommands":[]}]"##,
+    ));
     let missing_dir = seed_dir();
     write_report_manifest(missing_dir.path(), &missing);
     let reported_missing = report_for(missing_dir.path());
@@ -296,10 +321,15 @@ fn catalog_report_explicit_empty_has_no_missing_commands_warning() {
     let custom_dir = seed_dir();
     write_report_manifest(
         custom_dir.path(),
-        &manifest_json(
-            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["mytool up --channel beta"]},
-             {"key":"claude-beta","label":"Claude Beta","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["claude update"]}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+            r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":["mytool up --channel beta"]},
+"##,
+            r##"             {"key":"claude-beta","label":"Claude Beta","description":"d","##,
+            r##""color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"##,
+            r##""removable":true,"updateCommands":["claude update"]}]"##,
+        )),
     );
     let reported_custom = report_for(custom_dir.path());
     assert!(reported_custom.warnings.is_empty());
@@ -322,10 +352,15 @@ fn catalog_report_duplicate_keys_warn_first_wins() {
     let dir = seed_dir();
     write_report_manifest(
         dir.path(),
-        &manifest_json(
-            r##"[{"key":"mine","label":"First","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]},
-             {"key":"mine","label":"Second","description":"d","color":"#222","command":"mytool2","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"mine","label":"First","description":"d","color":"#111","##,
+            r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":[]},
+"##,
+            r##"             {"key":"mine","label":"Second","description":"d","##,
+            r##""color":"#222","command":"mytool2","envs":[],"isolatedHome":false,"##,
+            r##""removable":true,"updateCommands":[]}]"##,
+        )),
     );
     let report = report_for(dir.path());
     assert_eq!(report.catalog.len(), 1);
@@ -344,16 +379,39 @@ fn catalog_report_invalid_definitions_drop_rows_without_echoing_commands() {
     let dir = seed_dir();
     write_report_manifest(
         dir.path(),
-        &manifest_json(
-            r##"[{"key":"BAD KEY","label":"x","description":"d","color":"#000","command":"x","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]},
-             {"key":"cmd-continue","label":"x","description":"d","color":"#000","command":"claude --continue","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]},
-             {"key":"nonstring","label":"x","description":"d","color":"#000","command":"x","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["ok",123]},
-             {"key":"blank","label":"x","description":"d","color":"#000","command":"x","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["   "]},
-             {"key":"ctrl","label":"x","description":"d","color":"#000","command":"x","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["a\u0007b"]},
-             {"key":"line-sep","label":"x","description":"d","color":"#000","command":"x","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["a\u2028b"]},
-             {"key":"para-sep","label":"x","description":"d","color":"#000","command":"x","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["a\u2029b"]},
-             {"key":"full","label":"Full","description":"d","color":"#333","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["mytool --flag 'a b' && echo done"]}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"BAD KEY","label":"x","description":"d","color":"#000","##,
+            r##""command":"x","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":[]},
+"##,
+            r##"             {"key":"cmd-continue","label":"x","description":"d","##,
+            r##""color":"#000","command":"claude --continue","envs":[],"isolatedHome":false,"##,
+            r##""removable":true,"updateCommands":[]},
+"##,
+            r##"             {"key":"nonstring","label":"x","description":"d","##,
+            r##""color":"#000","command":"x","envs":[],"isolatedHome":false,"##,
+            r##""removable":true,"updateCommands":["ok",123]},
+"##,
+            r##"             {"key":"blank","label":"x","description":"d","color":"#000","##,
+            r##""command":"x","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":["   "]},
+"##,
+            r##"             {"key":"ctrl","label":"x","description":"d","color":"#000","##,
+            r##""command":"x","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":["a\u0007b"]},
+"##,
+            r##"             {"key":"line-sep","label":"x","description":"d","color":"#000","##,
+            r##""command":"x","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":["a\u2028b"]},
+"##,
+            r##"             {"key":"para-sep","label":"x","description":"d","color":"#000","##,
+            r##""command":"x","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":["a\u2029b"]},
+"##,
+            r##"             {"key":"full","label":"Full","description":"d","color":"#333","##,
+            r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":["mytool --flag 'a b' && echo done"]}]"##,
+        )),
     );
     let report = report_for(dir.path());
     assert!(report.unavailable.is_none());
@@ -390,8 +448,15 @@ fn catalog_report_unknown_fields_warn_separately_without_values() {
     let dir = seed_dir();
     write_report_manifest(
         dir.path(),
-        r##"{"schemaVersion":1,"owner":"secret-root-value","agents":[
-            {"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[{"key":"GOOD_KEY","value":"secret-env-value","enabled":true,"mystery":"secret-env-extra"}],"isolatedHome":false,"removable":true,"updateCommands":[],"customField":"secret-row-value","configSeed":{"enabled":true,"dest":".mine","extra":"secret-seed-value"}}]}"##,
+        concat!(
+            r##"{"schemaVersion":1,"owner":"secret-root-value","agents":[
+"##,
+            r##"            {"key":"mine","label":"Mine","description":"d","color":"#111","##,
+            r##""command":"mytool","envs":[{"key":"GOOD_KEY","value":"secret-env-value","##,
+            r##""enabled":true,"mystery":"secret-env-extra"}],"isolatedHome":false,"##,
+            r##""removable":true,"updateCommands":[],"customField":"secret-row-value","##,
+            r##""configSeed":{"enabled":true,"dest":".mine","extra":"secret-seed-value"}}]}"##,
+        ),
     );
     let report = report_for(dir.path());
     assert!(report.unavailable.is_none());
@@ -454,15 +519,19 @@ fn catalog_report_two_project_isolation_and_no_fallback_after_failure() {
     let secondary = seed_dir();
     write_report_manifest(
         &primary.path().join(".ac"),
-        &manifest_json(
-            r##"[{"key":"primary","label":"Primary","description":"d","color":"#111","command":"primary","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"primary","label":"Primary","description":"d","color":"#111","##,
+            r##""command":"primary","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":[]}]"##,
+        )),
     );
     write_report_manifest(
         &secondary.path().join(".ac"),
-        &manifest_json(
-            r##"[{"key":"secondary","label":"Secondary","description":"d","color":"#222","command":"secondary","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"secondary","label":"Secondary","description":"d","color":"#222","##,
+            r##""command":"secondary","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":[]}]"##,
+        )),
     );
     let primary_str = primary.path().to_string_lossy().to_string();
     let settings = AppSettings {
@@ -512,9 +581,11 @@ fn catalog_report_project_path_fallback_selects_trimmed_legacy_root() {
     let dir = seed_dir();
     write_report_manifest(
         &dir.path().join(".ac"),
-        &manifest_json(
-            r##"[{"key":"legacy","label":"Legacy","description":"d","color":"#111","command":"legacy","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"legacy","label":"Legacy","description":"d","color":"#111","##,
+            r##""command":"legacy","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":[]}]"##,
+        )),
     );
     let trimmed = dir.path().to_string_lossy().to_string();
     let settings = AppSettings {
@@ -537,9 +608,11 @@ fn catalog_report_no_project_instance_read_and_absent_creates_nothing() {
     let instance = seed_dir();
     write_report_manifest(
         instance.path(),
-        &manifest_json(
-            r##"[{"key":"instance","label":"Instance","description":"d","color":"#111","command":"instance","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"instance","label":"Instance","description":"d","color":"#111","##,
+            r##""command":"instance","envs":[],"isolatedHome":false,"removable":true,"##,
+            r##""updateCommands":[]}]"##,
+        )),
     );
     let expected_source = manifest_path(instance.path()).display().to_string();
     let bytes_before = std::fs::read(manifest_path(instance.path())).unwrap();
@@ -608,10 +681,14 @@ fn catalog_report_repeated_reads_leave_bytes_and_entries_unchanged() {
     let dir = seed_dir();
     write_report_manifest(
         dir.path(),
-        &manifest_json(
-            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true},
-             {"key":"mine2","label":"Mine2","description":"d","color":"#222","command":"mytool2","envs":[],"isolatedHome":false,"removable":true}]"##,
-        ),
+        &manifest_json(concat!(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","##,
+            r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true},
+"##,
+            r##"             {"key":"mine2","label":"Mine2","description":"d","##,
+            r##""color":"#222","command":"mytool2","envs":[],"isolatedHome":false,"##,
+            r##""removable":true}]"##,
+        )),
     );
     let path = manifest_path(dir.path());
     let bytes_before = std::fs::read(&path).unwrap();
@@ -639,10 +716,15 @@ fn catalog_report_repeated_reads_leave_bytes_and_entries_unchanged() {
 
 #[test]
 fn catalog_report_desupported_builtin_omitted_with_diagnostic() {
-    let manifest = manifest_json(
-        r##"[{"key":"muse","label":"Muse","description":"d","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]},
-         {"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
-    );
+    let manifest = manifest_json(concat!(
+        r##"[{"key":"muse","label":"Muse","description":"d","color":"#0668E1","##,
+        r##""command":"muse","envs":[],"isolatedHome":false,"removable":true,"##,
+        r##""updateCommands":[]},
+"##,
+        r##"         {"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true,"##,
+        r##""updateCommands":[]}]"##,
+    ));
     with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
         let dir = seed_dir();
         write_report_manifest(dir.path(), &manifest);

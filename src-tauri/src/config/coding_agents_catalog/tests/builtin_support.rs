@@ -74,11 +74,20 @@ fn desupported_row_dropped_from_seeded_manifest_and_corrupt_is_unavailable() {
 fn desupported_row_dropped_from_parsed_manifest_and_dedup_cannot_resurrect_it() {
     // R5: a duplicate-bearing user manifest cannot resurrect a de-supported
     // key; a user entry with ANOTHER key and the same command is kept.
-    let agents = r##"[
-        {"key":"muse","label":"First","description":"d","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true},
-        {"key":"muse","label":"Second","description":"d","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true},
-        {"key":"mine","label":"Mine","description":"d","color":"#111","command":"muse","envs":[],"isolatedHome":false,"removable":true}
-    ]"##;
+    let agents = concat!(
+        r##"[
+"##,
+        r##"        {"key":"muse","label":"First","description":"d","color":"#0668E1","##,
+        r##""command":"muse","envs":[],"isolatedHome":false,"removable":true},
+"##,
+        r##"        {"key":"muse","label":"Second","description":"d","color":"#0668E1","##,
+        r##""command":"muse","envs":[],"isolatedHome":false,"removable":true},
+"##,
+        r##"        {"key":"mine","label":"Mine","description":"d","color":"#111","##,
+        r##""command":"muse","envs":[],"isolatedHome":false,"removable":true}
+"##,
+        r##"    ]"##,
+    );
 
     // Control: the all-enabled table keeps muse -> duplicate key dedups
     // first-wins, custom key kept.
@@ -117,10 +126,14 @@ fn desupported_row_dropped_from_load_catalog_for_settings_primary() {
             load_catalog_for_settings(&settings).expect_err("absent primary is unavailable");
         assert_eq!(unavailable.code, "baseUnavailable");
 
-        let user_file = manifest_json(
-            r##"[{"key":"muse","label":"Muse","description":"d","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true},
-            {"key":"custom","label":"Custom","description":"d","color":"#333","command":"custom","envs":[],"isolatedHome":false,"removable":true}]"##,
-        );
+        let user_file = manifest_json(concat!(
+            r##"[{"key":"muse","label":"Muse","description":"d","color":"#0668E1","##,
+            r##""command":"muse","envs":[],"isolatedHome":false,"removable":true},
+"##,
+            r##"            {"key":"custom","label":"Custom","description":"d","##,
+            r##""color":"#333","command":"custom","envs":[],"isolatedHome":false,"##,
+            r##""removable":true}]"##,
+        ));
         std::fs::create_dir_all(manifest_path(&ac_dir).parent().unwrap()).unwrap();
         std::fs::write(manifest_path(&ac_dir), &user_file).unwrap();
         let loaded = load_catalog_for_settings(&settings).expect("persisted primary");
@@ -134,9 +147,10 @@ fn no_embedded_donor_backfills_a_custom_key_bound_to_a_builtin_command() {
     // A custom key bound to the builtin `claude` command, in a manifest with
     // no updateCommands, reads as empty and the persisted bytes are kept;
     // the de-supported table changes nothing about that.
-    let manifest = manifest_json(
-        r##"[{"key":"my-claude","label":"My Claude","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true}]"##,
-    );
+    let manifest = manifest_json(concat!(
+        r##"[{"key":"my-claude","label":"My Claude","description":"d","color":"#d97706","##,
+        r##""command":"claude","envs":[],"isolatedHome":false,"removable":true}]"##,
+    ));
 
     let dir = seed_dir();
     std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
@@ -205,10 +219,13 @@ fn managed_catalog_migration_backup_keeps_a_desupported_key_verbatim() {
     // Under a false support row a migrated legacy source is preserved
     // byte-for-byte in the backup; the read gate hides the de-supported key
     // from the effective catalog while the custom key survives.
-    let legacy_bytes = manifest_json(
-        r##"[{"key":"muse","label":"Muse","description":"d","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true},
-        {"key":"custom","label":"Custom","description":"d","color":"#333","command":"custom","envs":[],"isolatedHome":false,"removable":true}]"##,
-    )
+    let legacy_bytes = manifest_json(concat!(
+        r##"[{"key":"muse","label":"Muse","description":"d","color":"#0668E1","##,
+        r##""command":"muse","envs":[],"isolatedHome":false,"removable":true},
+"##,
+        r##"        {"key":"custom","label":"Custom","description":"d","color":"#333","##,
+        r##""command":"custom","envs":[],"isolatedHome":false,"removable":true}]"##,
+    ))
     .into_bytes();
 
     with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
