@@ -86,11 +86,10 @@
       ]
     },
     {
-      "id": "fb5d961e19de6b15",
+      "id": "16036a39ef6c7656",
       "members": [
         "agentscommander_lib::config::projects",
         "agentscommander_lib::config::root_agent",
-        "agentscommander_lib::config::seed_manifest",
         "agentscommander_lib::config::seeded_context_templates",
         "agentscommander_lib::config::session_context",
         "agentscommander_lib::config::settings",
