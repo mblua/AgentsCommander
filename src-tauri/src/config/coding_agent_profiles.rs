@@ -2546,8 +2546,13 @@ mod tests {
                     ),
                     (
                         "resolve_profile_selection",
-                        resolve_profile_selection(&fx.settings, Some(&fx.replica), "codex", Some("A"))
-                            .unwrap_err(),
+                        resolve_profile_selection(
+                            &fx.settings,
+                            Some(&fx.replica),
+                            "codex",
+                            Some("A"),
+                        )
+                        .unwrap_err(),
                     ),
                 ] {
                     assert!(error.contains("duplicateJsonMember:"));

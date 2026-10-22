@@ -2258,7 +2258,10 @@ mod tests {
         assert_eq!(std::fs::read(&reservation).unwrap(), control);
         assert_eq!(std::fs::read(&d).unwrap(), original[0]);
         assert_eq!(std::fs::read(&st).unwrap(), original[1]);
-        let closing = original[side].iter().rposition(|byte| *byte == 0x7d).unwrap();
+        let closing = original[side]
+            .iter()
+            .rposition(|byte| *byte == 0x7d)
+            .unwrap();
         let mut bytes = original[side][..closing].to_vec();
         if closing > 1 {
             bytes.push(b',');
