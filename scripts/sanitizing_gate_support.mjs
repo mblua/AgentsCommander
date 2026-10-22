@@ -37,7 +37,7 @@ export function runMeasuredGate(snapshot, { gate, rules, newFileRules, inUnivers
   try {
     const trees = [snapshot.baseTree, snapshot.headTree], totals = [{}, {}], byPath = [new Map(), new Map()];
     for (const [side, tree] of trees.entries()) {
-      for (const path of [...tree.keys()].filter(inUniverse).sort(codeOrder)) {
+      for (const path of [...tree.keys()].filter(path => inUniverse(path)).sort(codeOrder)) {
         const m = measure(path, scanRust(path, snapshot.readBlob(tree.get(path))));
         byPath[side].set(path, m);
         for (const rule of rules) totals[side][rule] = (totals[side][rule] ?? 0) + (m.counts[rule] ?? 0);
