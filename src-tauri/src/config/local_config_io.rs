@@ -15,6 +15,10 @@ fn local_config_write_lock() -> &'static Mutex<()> {
 /// the data lives on disk under the file sidecar and every reader re-reads it.
 /// So a panic inside one mutate closure must not block every later config
 /// write in the process until restart, which `map_err` on poison did.
+pub(super) fn check_configuration_json(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    crate::path_identity::validate_ac_configuration_json(path, bytes)
+}
+
 fn lock_local_config_writes() -> MutexGuard<'static, ()> {
     local_config_write_lock()
         .lock()
@@ -262,6 +266,7 @@ where
     let mut root = if path.exists() {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+        check_configuration_json(path, content.as_bytes())?;
         let parsed: Value = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;
         if !parsed.is_object() {
@@ -415,6 +420,7 @@ where
 /// The production PAIR boundary. Pending deltas are computed on private maps
 /// before cleanup or the caller's split-marker policy can change either file.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // P52: retain legacy wrapper during checked migration.
 pub(crate) fn update_config_pair_guarded<F>(
     decisions: &Path,
     state: &Path,
@@ -430,7 +436,38 @@ pub(crate) fn update_config_pair_guarded<F>(
 where
     F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
 {
-    update_config_pair_inner(
+    update_config_pair_guarded_classified(
+        decisions,
+        state,
+        reservation,
+        state_keys,
+        nonpending_preflight,
+        cleanup,
+        on_stage,
+        mutate,
+        finish,
+        activity,
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn update_config_pair_guarded_classified<F>(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    state_keys: &[&str],
+    nonpending_preflight: Option<&dyn Fn() -> Result<(), String>>,
+    cleanup: Option<ConfigPairCleanup<'_>>,
+    on_stage: &dyn Fn(&str),
+    mutate: F,
+    finish: ConfigPairFinish<'_>,
+    activity: Option<(&str, &Cell<bool>)>,
+) -> Result<(), ConfigWriteError>
+where
+    F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
+{
+    update_config_pair_inner_classified(
         decisions,
         state,
         Some(reservation),
@@ -446,6 +483,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // P52: retain legacy wrapper during checked migration.
 pub(super) fn update_config_pair_inner<F>(
     decisions: &Path,
     state: &Path,
@@ -462,6 +500,39 @@ pub(super) fn update_config_pair_inner<F>(
 where
     F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
 {
+    update_config_pair_inner_classified(
+        decisions,
+        state,
+        reservation,
+        state_keys,
+        cleanup,
+        on_stage,
+        mutate,
+        finish,
+        activity,
+        nonpending_preflight,
+        publish,
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn update_config_pair_inner_classified<F>(
+    decisions: &Path,
+    state: &Path,
+    reservation: Option<&Path>,
+    state_keys: &[&str],
+    cleanup: Option<ConfigPairCleanup<'_>>,
+    on_stage: &dyn Fn(&str),
+    mutate: F,
+    finish: ConfigPairFinish<'_>,
+    activity: Option<(&str, &Cell<bool>)>,
+    nonpending_preflight: Option<&dyn Fn() -> Result<(), String>>,
+    publish: ConfigPublisher<'_>,
+) -> Result<(), ConfigWriteError>
+where
+    F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
+{
     let _writer = ConfigWriterActive::enter("update_config_pair")?;
     let _guard = lock_local_config_writes();
     // C1 moves no key, so the list is carried for the cleanup policy of C2.
@@ -475,7 +546,7 @@ where
             .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
     }
     if let Some(path) = reservation {
-        validate_pair_paths(decisions, state, path).map_err(|e| e.to_string())?;
+        validate_pair_paths(decisions, state, path).map_err(ConfigWriteError::from)?;
     }
     let _decisions_lock = acquire_config_file_write_lock(decisions, CONFIG_LOCK_TIMEOUT)?;
     // Every reservation publisher takes decisions first. Keep this lease while
@@ -483,8 +554,8 @@ where
     // Protect state/reservation artifacts before creating their sidecars, even
     // when a later read fails. Pending or unreadable packets never preflight.
     if let Some(path) = reservation {
-        if read_pair_reservation(path)
-            .map_err(|e| e.to_string())?
+        if read_pair_reservation([decisions, state], path)
+            .map_err(ConfigWriteError::from)?
             .is_none()
         {
             if let Some(preflight) = nonpending_preflight {
@@ -499,9 +570,9 @@ where
         .transpose()?;
     if let Some(path) = reservation {
         if let Some((mut packet, mut physical)) =
-            read_pair_reservation(path).map_err(|e| e.to_string())?
+            read_pair_reservation([decisions, state], path).map_err(ConfigWriteError::from)?
         {
-            validate_pair_binding(decisions, state, &packet).map_err(|e| e.to_string())?;
+            validate_pair_binding(decisions, state, &packet).map_err(ConfigWriteError::from)?;
             if let Some((input, landed)) = activity {
                 landed.set(
                     land_pair_activity(
@@ -513,28 +584,28 @@ where
                         input,
                         &|_| Ok(()),
                     )
-                    .map_err(|e| e.to_string())?,
+                    .map_err(ConfigWriteError::from)?,
                 );
                 return Ok(());
             }
-            let current = read_pair_tuple(decisions, state).map_err(|e| e.to_string())?;
-            packet.recognize(&current).map_err(|e| e.to_string())?;
-            let mut d = current[0].map().map_err(|e| e.to_string())?;
-            let mut s = current[1].map().map_err(|e| e.to_string())?;
+            let current = read_pair_tuple(decisions, state).map_err(ConfigWriteError::from)?;
+            packet.recognize(&current).map_err(ConfigWriteError::from)?;
+            let mut d = current[0].map().map_err(ConfigWriteError::from)?;
+            let mut s = current[1].map().map_err(ConfigWriteError::from)?;
             mutate(&mut d, &mut s)?;
             let proposed = [
                 prepared_pair_image(
                     &current[0],
-                    &current[0].map().map_err(|e| e.to_string())?,
+                    &current[0].map().map_err(ConfigWriteError::from)?,
                     &d,
                 )
-                .map_err(|e| e.to_string())?,
+                .map_err(ConfigWriteError::from)?,
                 prepared_pair_image(
                     &current[1],
-                    &current[1].map().map_err(|e| e.to_string())?,
+                    &current[1].map().map_err(ConfigWriteError::from)?,
                     &s,
                 )
-                .map_err(|e| e.to_string())?,
+                .map_err(ConfigWriteError::from)?,
             ];
             if proposed == current {
                 return Ok(());
@@ -542,28 +613,32 @@ where
             // Structural changes, history, selection and unknown fields all
             // remain frozen. Only the exact timestamp leaf may move forward.
             if proposed[0] != current[0]
-                || protected_revision(&proposed[1], true).map_err(|e| e.to_string())?
-                    != protected_revision(&current[1], true).map_err(|e| e.to_string())?
+                || protected_revision(&proposed[1], true).map_err(ConfigWriteError::from)?
+                    != protected_revision(&current[1], true).map_err(ConfigWriteError::from)?
             {
                 // Absent state permits only its timestamp-only overlay.
                 if proposed[0] != current[0]
                     || current[1] != PhysicalState::Absent
-                    || !timestamp_only_overlay(&proposed[1]).map_err(|e| e.to_string())?
+                    || !timestamp_only_overlay(&proposed[1]).map_err(ConfigWriteError::from)?
                 {
-                    return Err("targetTransitionPending: PAIR is reserved".into());
+                    return Err(ConfigWriteError::Ordinary(
+                        "targetTransitionPending: PAIR is reserved".to_string(),
+                    ));
                 }
             }
             let input = timestamp_value(&proposed[1])
-                .map_err(|e| e.to_string())?
+                .map_err(ConfigWriteError::from)?
                 .ok_or_else(|| {
                     "targetTransitionPending: timestamp cannot be deleted".to_string()
                 })?;
             if timestamp_value(&current[1])
-                .map_err(|e| e.to_string())?
+                .map_err(ConfigWriteError::from)?
                 .as_deref()
                 .is_some_and(|old| timestamp_cmp(&input, old).is_ok_and(|order| order.is_lt()))
             {
-                return Err("targetTransitionPending: timestamp cannot decrease".into());
+                return Err(ConfigWriteError::Ordinary(
+                    "targetTransitionPending: timestamp cannot decrease".to_string(),
+                ));
             }
             land_pair_activity(
                 decisions,
@@ -574,14 +649,16 @@ where
                 &input,
                 &|_| Ok(()),
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(ConfigWriteError::from)?;
             return Ok(());
         }
     }
 
     let both = || format!("{} and {}", decisions.display(), state.display());
     let read = |path: &Path| {
-        read_pair_side(path).map_err(|e| format!("Config pair {} blocked: {}", both(), e))
+        read_pair_side(path).map_err(|e| {
+            e.contextualize(|message| format!("Config pair {} blocked: {}", both(), message))
+        })
     };
     let mut decisions_map = read(decisions)?;
     let mut state_map = read(state)?;
@@ -611,6 +688,7 @@ where
         ["after_caller_state_publish", "after_caller_decisions_write"],
         publish,
     )
+    .map_err(ConfigWriteError::Ordinary)
 }
 
 /// Exact private disk image. Absence is distinct from an existing empty object.
@@ -621,6 +699,11 @@ where
 pub(crate) enum PhysicalState {
     Absent,
     Bytes { sha256: String, bytes: Vec<u8> },
+}
+
+#[cfg(test)]
+thread_local! {
+    static E2992_CANARY_MAP_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
 impl PhysicalState {
@@ -635,6 +718,13 @@ impl PhysicalState {
 
     #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
     fn map(&self) -> Result<Map<String, Value>, PreparedPairError> {
+        #[cfg(test)]
+        if let Self::Bytes { bytes, .. } = self {
+            const CANARY: &[u8] = br#", "opaque":"e2992-parse-canary""#;
+            if bytes.windows(CANARY.len()).any(|part| part == CANARY) {
+                E2992_CANARY_MAP_CALLS.with(|count| count.set(count.get() + 1));
+            }
+        }
         match self {
             Self::Absent => Ok(Map::new()),
             Self::Bytes { bytes, .. } => {
@@ -711,6 +801,7 @@ impl PreparedConfigPairPlan {
 pub(crate) enum PreparedPairError {
     InvalidPlan(&'static str),
     Preparation(String),
+    DuplicateJsonMember(String),
     Conflict,
     Pending,
     Io(String),
@@ -720,7 +811,9 @@ impl std::fmt::Display for PreparedPairError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidPlan(reason) => write!(f, "invalidPreparedPair: {reason}"),
-            Self::Preparation(reason) => write!(f, "preparedPairRejected: {reason}"),
+            Self::Preparation(reason) | Self::DuplicateJsonMember(reason) => {
+                write!(f, "preparedPairRejected: {reason}")
+            }
             Self::Conflict => {
                 f.write_str("preparedPairConflict: current tuple is not an authorized stage")
             }
@@ -733,6 +826,50 @@ impl std::fmt::Display for PreparedPairError {
 }
 
 impl std::error::Error for PreparedPairError {}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ConfigWriteError {
+    DuplicateJsonMember(String),
+    Ordinary(String),
+}
+
+impl std::fmt::Display for ConfigWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuplicateJsonMember(message) | Self::Ordinary(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<String> for ConfigWriteError {
+    fn from(message: String) -> Self {
+        Self::Ordinary(message)
+    }
+}
+
+impl ConfigWriteError {
+    fn contextualize(self, f: impl FnOnce(String) -> String) -> Self {
+        match self {
+            Self::DuplicateJsonMember(message) => Self::DuplicateJsonMember(f(message)),
+            Self::Ordinary(message) => Self::Ordinary(f(message)),
+        }
+    }
+}
+
+impl From<PreparedPairError> for ConfigWriteError {
+    fn from(error: PreparedPairError) -> Self {
+        match error {
+            PreparedPairError::DuplicateJsonMember(reason) => Self::DuplicateJsonMember(
+                PreparedPairError::DuplicateJsonMember(reason).to_string(),
+            ),
+            ordinary @ (PreparedPairError::InvalidPlan(_)
+            | PreparedPairError::Preparation(_)
+            | PreparedPairError::Conflict
+            | PreparedPairError::Pending
+            | PreparedPairError::Io(_)) => Self::Ordinary(ordinary.to_string()),
+        }
+    }
+}
 
 #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 fn prepared_pair_image(
@@ -841,6 +978,7 @@ fn execute_unreserved_config_pair_inner(
 ) -> Result<(), PreparedPairError> {
     let _writer = ConfigWriterActive::enter("execute_prepared_config_pair")
         .map_err(PreparedPairError::Preparation)?;
+    check_configuration_pair_images([decisions, state], plan)?;
     plan.validate()?;
     let resolve = |path: &Path| -> Result<PathBuf, PreparedPairError> {
         let parent = path
@@ -877,16 +1015,11 @@ fn execute_unreserved_config_pair_inner(
         .transpose()
         .map_err(PreparedPairError::Io)?;
     if let Some(path) = reservation {
-        if read_pair_reservation(path)?.is_some() {
+        if read_pair_reservation([decisions.as_path(), state.as_path()], path)?.is_some() {
             return Err(PreparedPairError::Pending);
         }
     }
-    let read = || -> Result<[PhysicalState; 2], PreparedPairError> {
-        Ok([
-            read_config_pair_physical(&decisions)?,
-            read_config_pair_physical(&state)?,
-        ])
-    };
+    let read = || read_pair_tuple(&decisions, &state);
     let current: [PhysicalState; 2] = read()?;
     let start = plan
         .stages
@@ -1376,7 +1509,11 @@ impl PairReservation {
         ])
     }
 
-    fn validate(&self) -> Result<(), PreparedPairError> {
+    fn validate(&self, paths: [&Path; 2]) -> Result<(), PreparedPairError> {
+        for (path, image) in paths.into_iter().zip(&self.before_tuple) {
+            check_configuration_physical(path, image)?;
+        }
+        check_configuration_pair_images(paths, &self.plan_images)?;
         self.plan_images.validate()?;
         if self.version != 2
             || self.protected_policy_version != 1
@@ -1470,14 +1607,42 @@ impl PairReservation {
     }
 }
 
+fn check_configuration_physical(
+    path: &Path,
+    image: &PhysicalState,
+) -> Result<(), PreparedPairError> {
+    if let PhysicalState::Bytes { bytes, .. } = image {
+        if PhysicalState::from_bytes(bytes.clone()) != *image {
+            return Err(PreparedPairError::InvalidPlan("physical digest mismatch"));
+        }
+        check_configuration_json(path, bytes).map_err(PreparedPairError::DuplicateJsonMember)?;
+    }
+    Ok(())
+}
+
+fn check_configuration_pair_images(
+    paths: [&Path; 2],
+    plan: &PreparedConfigPairPlan,
+) -> Result<(), PreparedPairError> {
+    for tuple in plan.stages() {
+        for side in 0..2 {
+            check_configuration_physical(paths[side], &tuple[side])?;
+        }
+    }
+    Ok(())
+}
+
 fn read_pair_tuple(
     decisions: &Path,
     state: &Path,
 ) -> Result<[PhysicalState; 2], PreparedPairError> {
-    Ok([
+    let tuple = [
         read_config_pair_physical(decisions)?,
         read_config_pair_physical(state)?,
-    ])
+    ];
+    check_configuration_physical(decisions, &tuple[0])?;
+    check_configuration_physical(state, &tuple[1])?;
+    Ok(tuple)
 }
 
 fn pair_target_identity(decisions: &Path, state: &Path) -> Result<String, PreparedPairError> {
@@ -1519,7 +1684,7 @@ fn validate_pair_binding(
     state: &Path,
     packet: &PairReservation,
 ) -> Result<(), PreparedPairError> {
-    packet.validate()?;
+    packet.validate([decisions, state])?;
     if packet.physical_target_identity != pair_target_identity(decisions, state)? {
         return Err(PreparedPairError::Conflict);
     }
@@ -1560,6 +1725,7 @@ fn validate_pair_paths(
 }
 
 fn read_pair_reservation(
+    paths: [&Path; 2],
     path: &Path,
 ) -> Result<Option<(PairReservation, PhysicalState)>, PreparedPairError> {
     let physical = read_config_pair_physical(path)?;
@@ -1568,27 +1734,35 @@ fn read_pair_reservation(
     };
     let packet: PairReservation = serde_json::from_slice(bytes)
         .map_err(|_| PreparedPairError::InvalidPlan("invalid reservation packet"))?;
-    packet.validate()?;
+    packet.validate(paths)?;
     Ok(Some((packet, physical)))
 }
 
 fn publish_pair_reservation(
+    paths: [&Path; 2],
     path: &Path,
     physical: &mut PhysicalState,
     packet: &PairReservation,
 ) -> Result<(), PreparedPairError> {
-    publish_pair_reservation_guarded(path, physical, packet, &PairTargetGuard::new(&|| Ok(())))
+    publish_pair_reservation_guarded(
+        paths,
+        path,
+        physical,
+        packet,
+        &PairTargetGuard::new(&|| Ok(())),
+    )
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
 fn publish_pair_reservation_guarded(
+    paths: [&Path; 2],
     path: &Path,
     physical: &mut PhysicalState,
     packet: &PairReservation,
     guard: &PairTargetGuard<'_>,
 ) -> Result<(), PreparedPairError> {
     guard.check()?;
-    packet.validate()?;
+    packet.validate(paths)?;
     let mut bytes =
         serde_json::to_vec_pretty(packet).map_err(|e| PreparedPairError::Io(e.to_string()))?;
     bytes.push(b'\n');
@@ -1652,7 +1826,7 @@ where
     let _reservation = acquire_config_file_write_lock(reservation, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
     guard.check()?;
-    let existing = read_pair_reservation(reservation)?;
+    let existing = read_pair_reservation([decisions, state], reservation)?;
     guard.check()?;
     let current = read_pair_tuple(decisions, state)?;
     let before = existing
@@ -1669,6 +1843,7 @@ where
     }
     let plan = prepare_config_pair_plan_inner(before, cleanup, mutate)?;
     guard.check()?;
+    check_configuration_pair_images([decisions, state], &plan)?;
     let images = protected_plan(&plan)?;
     let candidate = PairReservation {
         version: 2,
@@ -1685,7 +1860,7 @@ where
         activity_intent: None,
         plan_images: plan,
     };
-    candidate.validate()?;
+    candidate.validate([decisions, state])?;
     candidate.activity_max(&current, None)?;
     if let Some((mut packet, mut physical)) = existing {
         validate_pair_binding(decisions, state, &packet)?;
@@ -1711,7 +1886,13 @@ where
     }
     candidate.recognize(&current)?;
     let mut physical = PhysicalState::Absent;
-    publish_pair_reservation_guarded(reservation, &mut physical, &candidate, &guard)?;
+    publish_pair_reservation_guarded(
+        [decisions, state],
+        reservation,
+        &mut physical,
+        &candidate,
+        &guard,
+    )?;
     guard.check()?;
     Ok(candidate)
 }
@@ -1761,6 +1942,7 @@ fn reconcile_pair_activity_guarded(
     guard: &PairTargetGuard<'_>,
 ) -> Result<(), PreparedPairError> {
     guard.check()?;
+    packet.validate([decisions, state])?;
     let Some(intent) = packet.activity_intent.clone() else {
         return Ok(());
     };
@@ -1777,7 +1959,7 @@ fn reconcile_pair_activity_guarded(
     packet.activity_intent = None;
     guard.check()?;
     packet.recognize(&read_pair_tuple(decisions, state)?)?;
-    publish_pair_reservation_guarded(reservation, physical, packet, guard)
+    publish_pair_reservation_guarded([decisions, state], reservation, physical, packet, guard)
 }
 
 fn land_pair_activity(
@@ -1807,7 +1989,7 @@ fn land_pair_activity(
         after_timestamp: maximum.clone(),
         floor_before: packet.timestamp_floor.clone(),
     });
-    publish_pair_reservation(reservation, physical, packet)?;
+    publish_pair_reservation([decisions, state], reservation, physical, packet)?;
     on_stage("activity_intent_durable")?;
     publish_prepared_pair_image(state, &current[1], &after)?;
     on_stage("activity_state_durable")?;
@@ -1877,7 +2059,8 @@ pub(crate) fn verify_reserved_config_pair_guarded(
     let _reservation = acquire_config_file_write_lock(reservation, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
     guard.check()?;
-    let (packet, _) = read_pair_reservation(reservation)?.ok_or(PreparedPairError::Conflict)?;
+    let (packet, _) = read_pair_reservation([decisions, state], reservation)?
+        .ok_or(PreparedPairError::Conflict)?;
     validate_pair_binding(decisions, state, &packet)?;
     if packet.operation_id != operation_id || packet.plan_digest != plan_digest {
         return Err(PreparedPairError::Conflict);
@@ -1933,8 +2116,8 @@ fn execute_reserved_config_pair_with_validation(
     let _reservation = acquire_config_file_write_lock(reservation, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
     guard.check()?;
-    let (mut packet, mut physical) =
-        read_pair_reservation(reservation)?.ok_or(PreparedPairError::Conflict)?;
+    let (mut packet, mut physical) = read_pair_reservation([decisions, state], reservation)?
+        .ok_or(PreparedPairError::Conflict)?;
     validate_pair_binding(decisions, state, &packet)?;
     if packet.operation_id != operation_id {
         return Err(PreparedPairError::Conflict);
@@ -1949,7 +2132,14 @@ fn execute_reserved_config_pair_with_validation(
     )?;
     guard.check()?;
     let start = packet.recognize(&read_pair_tuple(decisions, state)?)?;
-    confirm_pair_activity_floor_guarded(state, reservation, &mut packet, &mut physical, &guard)?;
+    confirm_pair_activity_floor_guarded(
+        decisions,
+        state,
+        reservation,
+        &mut packet,
+        &mut physical,
+        &guard,
+    )?;
     for stage in start + 1..5 {
         guard.check()?;
         let current = read_pair_tuple(decisions, state)?;
@@ -1985,6 +2175,7 @@ fn execute_reserved_config_pair_with_validation(
                 return Err(PreparedPairError::Conflict);
             }
             confirm_pair_activity_floor_guarded(
+                decisions,
                 state,
                 reservation,
                 &mut packet,
@@ -1994,7 +2185,14 @@ fn execute_reserved_config_pair_with_validation(
             on_stage(stage)?;
         }
     }
-    confirm_pair_activity_floor_guarded(state, reservation, &mut packet, &mut physical, &guard)?;
+    confirm_pair_activity_floor_guarded(
+        decisions,
+        state,
+        reservation,
+        &mut packet,
+        &mut physical,
+        &guard,
+    )?;
     guard.check()?;
     if packet.recognize(&read_pair_tuple(decisions, state)?)? != 4 {
         return Err(PreparedPairError::Conflict);
@@ -2005,6 +2203,7 @@ fn execute_reserved_config_pair_with_validation(
 
 #[cfg_attr(not(test), allow(dead_code))]
 fn confirm_pair_activity_floor_guarded(
+    decisions: &Path,
     state: &Path,
     reservation: &Path,
     packet: &mut PairReservation,
@@ -2012,13 +2211,13 @@ fn confirm_pair_activity_floor_guarded(
     guard: &PairTargetGuard<'_>,
 ) -> Result<(), PreparedPairError> {
     guard.check()?;
-    let floor = merge_monotonic_activity(&[
-        packet.timestamp_floor.clone(),
-        timestamp_value(&read_config_pair_physical(state)?)?,
-    ])?;
+    let captured = read_config_pair_physical(state)?;
+    check_configuration_physical(state, &captured)?;
+    let floor =
+        merge_monotonic_activity(&[packet.timestamp_floor.clone(), timestamp_value(&captured)?])?;
     if floor != packet.timestamp_floor {
         packet.timestamp_floor = floor;
-        publish_pair_reservation_guarded(reservation, physical, packet, guard)?;
+        publish_pair_reservation_guarded([decisions, state], reservation, physical, packet, guard)?;
     }
     Ok(())
 }
@@ -2141,7 +2340,8 @@ pub(crate) fn release_reserved_config_pair_guarded(
     if proof.target_id != pair_target_identity(decisions, state)? {
         return Err(PreparedPairError::Conflict);
     }
-    let Some((mut packet, mut physical)) = read_pair_reservation(reservation)? else {
+    let Some((mut packet, mut physical)) = read_pair_reservation([decisions, state], reservation)?
+    else {
         let current = read_pair_tuple(decisions, state)?;
         guard.check()?;
         return Ok(current);
@@ -2602,19 +2802,18 @@ fn publish_coordination_bytes_guarded(
 
 /// #2786 (C1) - one side of the pair as a map: absent is empty, anything that
 /// is not a readable JSON object is an error.
-fn read_pair_side(path: &Path) -> Result<Map<String, Value>, String> {
+fn read_pair_side(path: &Path) -> Result<Map<String, Value>, ConfigWriteError> {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
-        Err(e) => return Err(format!("Failed to read {}: {}", path.display(), e)),
+        Err(e) => return Err(format!("Failed to read {}: {}", path.display(), e).into()),
     };
+    check_configuration_json(path, content.as_bytes())
+        .map_err(ConfigWriteError::DuplicateJsonMember)?;
     match serde_json::from_str::<Value>(&content) {
         Ok(Value::Object(map)) => Ok(map),
-        Ok(_) => Err(format!(
-            "Local config {} must be a JSON object",
-            path.display()
-        )),
-        Err(e) => Err(format!("Failed to parse {}: {}", path.display(), e)),
+        Ok(_) => Err(format!("Local config {} must be a JSON object", path.display()).into()),
+        Err(e) => Err(format!("Failed to parse {}: {}", path.display(), e).into()),
     }
 }
 
@@ -5630,6 +5829,226 @@ mod pair_activity_tests {
         assert_eq!(p22_stages(&directory), stages);
     }
 
+    #[test]
+    fn e2992_duplicate_json_pair_original_and_embedded_images_before_parse() {
+        for side in 0..2 {
+            for slot in 0usize..7 {
+                assert_pair_image_duplicate_rejected(side, slot);
+            }
+        }
+    }
+
+    fn assert_pair_image_duplicate_rejected(side: usize, slot: usize) {
+        let fixture = Fixture::new(false);
+        for path in [fixture.d(), fixture.s()] {
+            let mut value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            value["opaque"] = json!("e2992-parse-canary");
+            fixture.write(&path, value);
+        }
+        let request = fixture.request();
+        let mut packet = fixture.reserve(&request).unwrap();
+        let d = fixture.d();
+        let st = fixture.s();
+        let paths = [d.as_path(), st.as_path()];
+        let stage = slot.saturating_sub(2);
+        let valid = match &packet.plan_images.stages[stage][side] {
+            PhysicalState::Bytes { bytes, .. } => bytes,
+            PhysicalState::Absent => panic!("present fixture"),
+        };
+        let closing = valid.iter().rposition(|byte| *byte == b'}').unwrap();
+        let mut duplicate = valid[..closing].to_vec();
+        duplicate.extend_from_slice(br#", "opaque":"e2992-parse-canary"}"#);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&duplicate).unwrap(),
+            serde_json::from_slice::<Value>(valid).unwrap()
+        );
+        let image = PhysicalState::from_bytes(duplicate.clone());
+        match slot {
+            0 => std::fs::write(paths[side], &duplicate).unwrap(),
+            1 => packet.before_tuple[side] = image,
+            _ => packet.plan_images.stages[slot - 2][side] = image,
+        }
+        let envelope = serde_json::to_vec(&packet).unwrap();
+        std::fs::write(fixture.r(), &envelope).unwrap();
+        let originals = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
+        E2992_CANARY_MAP_CALLS.with(|count| count.set(0));
+        let error =
+            execute_reserved_config_pair(&d, &st, &fixture.r(), &request.operation_id).unwrap_err();
+        assert!(
+            matches!(&error, PreparedPairError::DuplicateJsonMember(message) if message.contains("duplicateJsonMember:") && message.contains(paths[side].to_str().unwrap()) && message.contains("repeated JSON object members"))
+        );
+        assert!(!error.to_string().contains("canary"));
+        let called = Cell::new(false);
+        let classified = update_config_pair_guarded_classified(
+            &d,
+            &st,
+            &fixture.r(),
+            &[],
+            None,
+            Some(&|_, _| {
+                called.set(true);
+                Ok(())
+            }),
+            &|_| {
+                called.set(true);
+            },
+            |_, _| {
+                called.set(true);
+                Ok(())
+            },
+            &|_| {
+                called.set(true);
+                Ok(())
+            },
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&classified, ConfigWriteError::DuplicateJsonMember(message)
+            if message.contains(paths[side].to_str().unwrap()))
+        );
+        assert!(!called.get());
+        assert_eq!(E2992_CANARY_MAP_CALLS.with(Cell::get), 0);
+        assert_eq!(std::fs::read(&d).unwrap(), originals[0]);
+        assert_eq!(std::fs::read(&st).unwrap(), originals[1]);
+        assert_eq!(std::fs::read(fixture.r()).unwrap(), envelope);
+        if slot != 0 {
+            let mut physical = PhysicalState::from_bytes(envelope.clone());
+            let before = packet.clone();
+            let error = reconcile_pair_activity_guarded(
+                &d,
+                &st,
+                &fixture.r(),
+                &mut packet,
+                &mut physical,
+                &PairTargetGuard::new(&|| Ok(())),
+            )
+            .unwrap_err();
+            assert!(matches!(error, PreparedPairError::DuplicateJsonMember(_)));
+            assert_eq!(packet, before);
+            assert_eq!(std::fs::read(&d).unwrap(), originals[0]);
+            assert_eq!(std::fs::read(&st).unwrap(), originals[1]);
+            assert_eq!(E2992_CANARY_MAP_CALLS.with(Cell::get), 0);
+            assert_eq!(std::fs::read(fixture.r()).unwrap(), envelope);
+        }
+    }
+
+    #[test]
+    fn e2992_duplicate_json_pair_ordinary_callbacks_and_envelope_controls() {
+        let fixture = Fixture::new(false);
+        let request = fixture.request();
+        let mut packet = fixture.reserve(&request).unwrap();
+        let mut physical = PhysicalState::from_bytes(std::fs::read(fixture.r()).unwrap());
+        reconcile_pair_activity_guarded(
+            &fixture.d(),
+            &fixture.s(),
+            &fixture.r(),
+            &mut packet,
+            &mut physical,
+            &PairTargetGuard::new(&|| Ok(())),
+        )
+        .unwrap();
+        execute_reserved_config_pair(
+            &fixture.d(),
+            &fixture.s(),
+            &fixture.r(),
+            &request.operation_id,
+        )
+        .unwrap();
+        for invalid in 0..6 {
+            let fixture = Fixture::new(false);
+            let request = fixture.request();
+            let packet = fixture.reserve(&request).unwrap();
+            let mut envelope = serde_json::to_value(&packet).unwrap();
+            match invalid {
+                0 => envelope["unknown"] = json!(true),
+                1 => envelope["version"] = json!(1),
+                2 => envelope["planDigest"] = json!("wrong"),
+                3 => envelope["protectedImages"] = json!([]),
+                4 => envelope["timestampFloor"] = json!("invalid timestamp"),
+                _ => envelope["activityIntent"] = json!({"invalid": true}),
+            }
+            let bytes = serde_json::to_vec(&envelope).unwrap();
+            std::fs::write(fixture.r(), &bytes).unwrap();
+            let before = fixture.tuple();
+            let error =
+                read_pair_reservation([&fixture.d(), &fixture.s()], &fixture.r()).unwrap_err();
+            assert!(!matches!(error, PreparedPairError::DuplicateJsonMember(_)));
+            assert_eq!(fixture.tuple(), before);
+            assert_eq!(std::fs::read(fixture.r()).unwrap(), bytes);
+        }
+        for side in 0..2 {
+            let fixture = Fixture::new(false);
+            let d = fixture.d();
+            let st = fixture.s();
+            let paths = [&d, &st];
+            std::fs::write(
+                paths[side],
+                br#"{"unknown-canary":"secret-canary","unknown-canary":0}"#,
+            )
+            .unwrap();
+            let original = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
+            let called = Cell::new(false);
+            let error = update_config_pair_inner_classified(
+                &d,
+                &st,
+                None,
+                &[],
+                Some(&|_, _| {
+                    called.set(true);
+                    Ok(())
+                }),
+                &|_| {
+                    called.set(true);
+                },
+                |_, _| {
+                    called.set(true);
+                    Ok(())
+                },
+                &|_| {
+                    called.set(true);
+                    Ok(())
+                },
+                None,
+                None,
+                &|_, _| {
+                    called.set(true);
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&error, ConfigWriteError::DuplicateJsonMember(message)
+                if message.contains(paths[side].to_str().unwrap()) && message.contains("repeated JSON object members"))
+            );
+            assert!(!error.to_string().contains("canary"));
+            assert!(!called.get());
+            assert_eq!(std::fs::read(&d).unwrap(), original[0]);
+            assert_eq!(std::fs::read(&st).unwrap(), original[1]);
+        }
+        let fixture = Fixture::new(false);
+        let error = prepare_config_pair_plan_inner(fixture.tuple(), None, |_, _| {
+            Err("duplicateJsonMember: callback remains ordinary".into())
+        })
+        .unwrap_err();
+        assert!(matches!(error, PreparedPairError::Preparation(_)));
+        let error = update_config_pair_inner_classified(
+            &fixture.d(),
+            &fixture.s(),
+            None,
+            &[],
+            None,
+            &|_| {},
+            |_, _| Err("duplicateJsonMember: ordinary callback".into()),
+            &|_| Ok(()),
+            None,
+            None,
+            &publish_temp_config,
+        )
+        .unwrap_err();
+        assert!(matches!(error, ConfigWriteError::Ordinary(_)));
+    }
+
     use serde_json::json;
 
     const T1: &str = "2026-10-08T01:00:00Z";
@@ -5674,7 +6093,10 @@ mod pair_activity_tests {
             read_pair_tuple(&self.d(), &self.s()).unwrap()
         }
         fn packet(&self) -> PairReservation {
-            read_pair_reservation(&self.r()).unwrap().unwrap().0
+            read_pair_reservation([&self.d(), &self.s()], &self.r())
+                .unwrap()
+                .unwrap()
+                .0
         }
         fn request(&self) -> PairReservationRequest {
             PairReservationRequest {
@@ -5741,7 +6163,8 @@ mod pair_activity_tests {
             let _d = acquire_config_file_write_lock(&self.d(), CONFIG_LOCK_TIMEOUT).unwrap();
             let _s = acquire_config_file_write_lock(&self.s(), CONFIG_LOCK_TIMEOUT).unwrap();
             let _r = acquire_config_file_write_lock(&self.r(), CONFIG_LOCK_TIMEOUT).unwrap();
-            let (mut packet, mut physical) = read_pair_reservation(&self.r())?.unwrap();
+            let (mut packet, mut physical) =
+                read_pair_reservation([&self.d(), &self.s()], &self.r())?.unwrap();
             land_pair_activity(
                 &self.d(),
                 &self.s(),

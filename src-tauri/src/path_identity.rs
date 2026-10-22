@@ -1612,6 +1612,17 @@ pub fn scan_json_document(bytes: &[u8]) -> Result<ScannedJsonDocument, String> {
     })
 }
 
+/// Check duplicate members only; callers must still apply their native parser.
+pub(crate) fn validate_ac_configuration_json(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if scan_json_document(bytes).is_ok_and(|document| document.duplicate_keys) {
+        return Err(format!(
+            "duplicateJsonMember: configuration file {} contains repeated JSON object members. Remove duplicate members from the same object and restart/retry. The file was left unchanged.",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Parse JSON while rejecting duplicate object keys at every depth.
 pub fn parse_json_no_duplicates(bytes: &[u8]) -> Result<serde_json::Value, String> {
     let document = scan_json_document(bytes)?;
@@ -3055,4 +3066,40 @@ fn terminal_snapshot_atomic_publish_is_stably_unsupported_on_other_unix() {
         std::path::Path::new("destination"),
     );
     assert_eq!(result, Err("atomic_publish_unsupported".to_string()));
+}
+
+#[cfg(test)]
+mod e2992_configuration_admission_tests {
+    use super::*;
+
+    #[test]
+    fn e2992_duplicate_json_decoded_members_and_object_boundaries() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+        for bytes in [
+            br#"{"canary-key":"canary-value","canary-key":0}"#.as_slice(),
+            br#"{"x":0,"\u0078":1}"#,
+            br#"{"array":[{"unknown":0,"unknown":1}]}"#,
+            br#"{"parent":{},"parent":{}}"#,
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            let message = validate_ac_configuration_json(&path, bytes).unwrap_err();
+            assert!(message.starts_with("duplicateJsonMember:"));
+            assert!(message.contains(path.to_str().unwrap()));
+            assert!(message.contains("repeated JSON object members"));
+            assert!(!message.contains("canary"));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        for bytes in [
+            br#"{"a":{"x":0},"b":{"x":1}}"#.as_slice(),
+            br#"{"a":[{"x":0},{"x":1}]}"#,
+            br#"{"a.b":0,"a":{"b":1}}"#,
+        ] {
+            validate_ac_configuration_json(&path, bytes).unwrap();
+            assert!(serde_json::from_slice::<serde_json::Value>(bytes).is_ok());
+        }
+        let malformed = b"{";
+        validate_ac_configuration_json(&path, malformed).unwrap();
+        assert!(serde_json::from_slice::<serde_json::Value>(malformed).is_err());
+    }
 }
