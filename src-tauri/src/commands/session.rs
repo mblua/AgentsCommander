@@ -89,7 +89,6 @@ use create::create_session_inner_impl;
 pub(crate) use create::create_session_inner_with_pty_target_ownership;
 use create::enforce_owned_unarchived_for_spawn;
 use create::finish_create_core_result;
-use create::materialize_replica_context;
 pub(crate) use create::note_coordinator_create_on_app;
 use create::notify_replica_context_failure;
 pub(crate) use create::purge_session_side_state;
@@ -117,7 +116,6 @@ use create::DeferredCreateOutput;
 use create::InitialLastPrompt;
 use create::OwnedCreateAdmission;
 pub(crate) use create::PtyTargetCreateStep;
-use create::ReplicaContextPreparation;
 use create::CLOSE_MARKER_EVENT_ORDER;
 pub(crate) use destroy::background_destroy_session_inner;
 use destroy::count_working_members;
@@ -1457,20 +1455,36 @@ async fn create_session_inner_core<R: tauri::Runtime>(
                 // at :1470, ~500 lines above, so the value read here is final. `true` means AC
                 // is deliberately NOT resuming: a fresh conversation begins.
                 let start_fresh = skip_auto_resume;
-                let prep = ReplicaContextPreparation {
-                    cwd: cwd.clone(),
-                    target_filename: target_filename.clone(),
-                    managed_filenames: managed_filenames.clone(),
-                    is_coordinator,
-                    auto_self_clear,
-                    container_repos: container_repos.clone(),
-                };
+                let target_filename = target_filename.clone();
+                let managed_filenames = managed_filenames.clone();
+                let container_repos = container_repos.clone();
                 move || {
                     #[cfg(test)]
                     if let Some(control) = context_fixture.as_ref() {
                         control.enter();
                     }
-                    let context_result = materialize_replica_context(&prep);
+                    // #1065 Stage F: production records the session-spawn context
+                    // read/sync and self-heal under the per-project gate (acquired
+                    // inside the blocking worker so the 10-second poll never blocks a
+                    // Tokio worker); a `#[cfg(test)]` lib build stays non-emitting.
+                    #[cfg(not(test))]
+                    let activation =
+                        Some(crate::config::seed_manifest::ManifestActivationToken::production());
+                    #[cfg(test)]
+                    let activation: Option<
+                        crate::config::seed_manifest::ManifestActivationToken,
+                    > = None;
+                    use crate::config::session_context as ctx_file;
+                    let context_result =
+                        ctx_file::materialize_agent_context_file_with_filename_activated(
+                            &cwd,
+                            &target_filename,
+                            &managed_filenames,
+                            is_coordinator,
+                            auto_self_clear,
+                            container_repos.as_ref(),
+                            activation.as_ref(),
+                        );
                     // #1172 - rotate the origin Agent Matrix's `memory/` for the fresh session
                     // about to start, so it begins with a clean write target and the previous
                     // session's memory is preserved under `memory-archive/memory_<ts>/`.
