@@ -2097,6 +2097,12 @@ impl Fixture {
         }
     }
 
+    fn with_telegram(label: &str) -> Self {
+        let fixture = Self::new(label);
+        fixture.write("src/lib.rs", "mod telegram;\n");
+        fixture
+    }
+
     fn write(&self, relative: &str, text: &str) {
         let path = self.manifest.join(relative);
         if let Some(parent) = path.parent() {
@@ -2236,8 +2242,7 @@ impl Drop for Fixture {
 }
 
 fn inline_spelling_report(label: &str, body: &str) -> Result<GuardReport, GuardError> {
-    let fixture = Fixture::new(label);
-    fixture.write("src/lib.rs", "mod telegram;\n");
+    let fixture = Fixture::with_telegram(label);
     fixture.write(
         "src/telegram.rs",
         &format!(
@@ -2260,8 +2265,7 @@ fn inline_spelling_report(label: &str, body: &str) -> Result<GuardReport, GuardE
 }
 
 fn out_of_line_spelling_report(label: &str, probe: &str) -> Result<GuardReport, GuardError> {
-    let fixture = Fixture::new(label);
-    fixture.write("src/lib.rs", "mod telegram;\n");
+    let fixture = Fixture::with_telegram(label);
     fixture.write(
         "src/telegram.rs",
         "pub mod bridge { pub struct BridgeLogger; }\npub mod claude_watcher;\n",
@@ -2399,8 +2403,7 @@ fn cfg_disabled_out_of_line_spelling_rows_are_scanned() {
 
 #[test]
 fn recursively_nested_cfg_attr_path_variants_scan_every_alternative() {
-    let fixture = Fixture::new("21-nested-cfg-attr-raw-child");
-    fixture.write("src/lib.rs", "mod telegram;\n");
+    let fixture = Fixture::with_telegram("21-nested-cfg-attr-raw-child");
     fixture.write(
         "src/telegram.rs",
         "pub mod bridge { pub struct BridgeLogger; }\npub mod claude_watcher;\n",
@@ -2568,29 +2571,29 @@ fn alias_conflicts_cycles_and_globs_fail_closed() {
     }
 }
 
+fn production_index() -> ModuleIndex {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
+        .expect("production module index should build")
+}
+
 #[test]
 fn production_moved_symbols_and_all_seven_methods_exist_once_at_the_destination() {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
-        .expect("production module index should build");
+    let index = production_index();
     verify_exact_moved_symbols(&index, CRATE_ID)
         .unwrap_or_else(|error| panic!("moved-symbol proof failed: {error}"));
 }
 
 #[test]
 fn production_interface_is_exactly_telegram_internal_and_canonical() {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
-        .expect("production module index should build");
+    let index = production_index();
     verify_exact_interface(&index, CRATE_ID)
         .unwrap_or_else(|error| panic!("exact interface proof failed: {error}"));
 }
 
 #[test]
 fn production_output_module_owns_the_seam_alone() {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
-        .expect("production module index should build");
+    let index = production_index();
     let report = analyze_module_index(&index, CRATE_ID, OUTPUT_MODULE)
         .unwrap_or_else(|error| panic!("output guard analysis failed:\n{error}"));
     require_exact_output_report(&report)
@@ -2599,9 +2602,7 @@ fn production_output_module_owns_the_seam_alone() {
 
 #[test]
 fn production_claude_and_codex_reach_output_without_bridge() {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
-        .expect("production module index should build");
+    let index = production_index();
     // Both watchers keep their `use super::*;` inside a `#[cfg(test)] mod`, which
     // `index_body` skips, so no glob reaches `build_scope`. Lifting one to the top
     // level would abort this analysis with "glob import forbidden".
@@ -2664,8 +2665,7 @@ fn production_claude_and_codex_reach_output_without_bridge() {
 #[test]
 fn production_every_telegram_source_is_reachable_from_the_module_tree() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
-        .expect("production module index should build");
+    let index = production_index();
     let indexed = index
         .bodies
         .iter()
@@ -2792,8 +2792,7 @@ fn visibility_matrix_distinguishes_canonical_shorthand_from_path_spelling() {
 
 #[test]
 fn moved_symbol_map_preserves_duplicates_locations_and_rejects_local_substitutes() {
-    let duplicate = Fixture::new("duplicate-symbol-bodies");
-    duplicate.write("src/lib.rs", "mod telegram;\n");
+    let duplicate = Fixture::with_telegram("duplicate-symbol-bodies");
     duplicate.write(
         "src/telegram.rs",
         "pub mod claude_watcher {}\n#[cfg(unix)] pub mod output { pub struct BridgeLogger; } #[cfg(windows)] pub mod output { pub struct BridgeLogger; }\n",
@@ -2807,8 +2806,7 @@ fn moved_symbol_map_preserves_duplicates_locations_and_rejects_local_substitutes
     assert_eq!(duplicate_rows.len(), 2);
     assert_ne!(duplicate_rows[0].body_id, duplicate_rows[1].body_id);
 
-    let misplaced = Fixture::new("misplaced-inherent-method");
-    misplaced.write("src/lib.rs", "mod telegram;\n");
+    let misplaced = Fixture::with_telegram("misplaced-inherent-method");
     misplaced.write(
         "src/telegram.rs",
         "pub mod claude_watcher {}\npub mod output { pub struct BridgeLogger; impl BridgeLogger { pub fn new() -> Self { Self } pub fn log(&mut self) {} } }\npub mod bridge { impl crate::telegram::output::BridgeLogger { pub fn log(&mut self) {} } }\n",
@@ -2828,8 +2826,7 @@ fn moved_symbol_map_preserves_duplicates_locations_and_rejects_local_substitutes
         .iter()
         .any(|row| row.body_id.contains("::bridge#")));
 
-    let local = Fixture::new("local-item-not-definition");
-    local.write("src/lib.rs", "mod telegram;\n");
+    let local = Fixture::with_telegram("local-item-not-definition");
     local.write(
         "src/telegram.rs",
         "pub mod claude_watcher {}\npub mod output { fn wrapper() { struct BridgeLogger; } }\n",
@@ -2850,8 +2847,7 @@ fn module_tree_resolves_both_conventional_source_forms() {
         ("name-rs", "src/telegram.rs"),
         ("name-mod-rs", "src/telegram/mod.rs"),
     ] {
-        let fixture = Fixture::new(label);
-        fixture.write("src/lib.rs", "mod telegram;\n");
+        let fixture = Fixture::with_telegram(label);
         fixture.write(telegram_source, "pub mod claude_watcher {}\n");
         let index = fixture.index().expect("conventional source should resolve");
         assert!(index.declared_modules.contains("fixture::telegram"));
@@ -2863,8 +2859,7 @@ fn module_tree_resolves_both_conventional_source_forms() {
 
 #[test]
 fn module_tree_rejects_ambiguous_and_missing_conventional_sources() {
-    let ambiguous = Fixture::new("ambiguous");
-    ambiguous.write("src/lib.rs", "mod telegram;\n");
+    let ambiguous = Fixture::with_telegram("ambiguous");
     ambiguous.write("src/telegram.rs", "");
     ambiguous.write("src/telegram/mod.rs", "");
     let ambiguous_error = ambiguous
@@ -2877,8 +2872,7 @@ fn module_tree_rejects_ambiguous_and_missing_conventional_sources() {
         ambiguous_error.contains("telegram\\mod.rs") || ambiguous_error.contains("telegram/mod.rs")
     );
 
-    let missing = Fixture::new("missing");
-    missing.write("src/lib.rs", "mod telegram;\n");
+    let missing = Fixture::with_telegram("missing");
     let missing_error = missing
         .index()
         .expect_err("zero candidates must fail")
@@ -2890,8 +2884,7 @@ fn module_tree_rejects_ambiguous_and_missing_conventional_sources() {
 
 #[test]
 fn nested_inline_modules_share_a_source_without_losing_body_identity() {
-    let fixture = Fixture::new("nested-inline");
-    fixture.write("src/lib.rs", "mod telegram;\n");
+    let fixture = Fixture::with_telegram("nested-inline");
     fixture.write(
         "src/telegram.rs",
         "pub mod bridge {}\npub mod claude_watcher { mod nested { use super::super::bridge::Forbidden; } }\n",
@@ -2918,8 +2911,7 @@ fn nested_inline_modules_share_a_source_without_losing_body_identity() {
 
 #[test]
 fn cfg_disjoint_inline_variants_keep_distinct_scopes_and_scan_the_second_body() {
-    let fixture = Fixture::new("cfg-inline-variants");
-    fixture.write("src/lib.rs", "mod telegram;\n");
+    let fixture = Fixture::with_telegram("cfg-inline-variants");
     fixture.write(
         "src/telegram.rs",
         "pub mod bridge {}\n#[cfg(unix)] pub mod claude_watcher { fn first() {} }\n#[cfg(windows)] pub mod claude_watcher { use crate::telegram::bridge::Forbidden; }\n",
@@ -2944,8 +2936,7 @@ fn cfg_disjoint_inline_variants_keep_distinct_scopes_and_scan_the_second_body() 
 
 #[test]
 fn cfg_disjoint_out_of_line_variants_scan_every_selected_file() {
-    let fixture = Fixture::new("cfg-out-of-line-variants");
-    fixture.write("src/lib.rs", "mod telegram;\n");
+    let fixture = Fixture::with_telegram("cfg-out-of-line-variants");
     fixture.write(
         "src/telegram.rs",
         "pub mod bridge {}\n#[cfg(unix)] #[path = \"claude_a.rs\"] pub mod claude_watcher;\n#[cfg(windows)] #[path = \"claude_b.rs\"] pub mod claude_watcher;\n",
@@ -2974,8 +2965,7 @@ fn cfg_disjoint_out_of_line_variants_scan_every_selected_file() {
 
 #[test]
 fn module_tree_fails_on_source_set_shrink_and_zero_target() {
-    let fixture = Fixture::new("source-set-shrink");
-    fixture.write("src/lib.rs", "mod telegram;\n");
+    let fixture = Fixture::with_telegram("source-set-shrink");
     fixture.write("src/telegram.rs", "pub mod claude_watcher {}\n");
     let index = fixture.index().expect("fixture tree should index");
     let report = analyze_module_index(&index, "fixture", "fixture::telegram::claude_watcher")
