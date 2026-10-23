@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
 use super::CREATE_NO_WINDOW;
 
 /// A `gh` invocation, fully described before any process exists.
