@@ -304,6 +304,29 @@ fn descendant_base_for_source(source: &Path) -> Result<PathBuf, GuardError> {
     }
 }
 
+fn canonicalize(path: &Path, operation: &'static str) -> Result<PathBuf, GuardError> {
+    fs::canonicalize(path).map_err(|error| {
+        GuardError::new(
+            operation,
+            format!("could not canonicalize {}: {error}", path.display()),
+        )
+    })
+}
+
+/// Base that `#[path]` attributes resolve against for modules declared in `parent`.
+fn declaration_base(parent: &ModuleBody) -> Result<PathBuf, GuardError> {
+    if parent.inline {
+        return Ok(parent.descendant_base.clone());
+    }
+    let base = parent.source.parent().ok_or_else(|| {
+        GuardError::new(
+            "module declaration base",
+            format!("source has no parent: {}", parent.source.display()),
+        )
+    })?;
+    Ok(base.to_path_buf())
+}
+
 struct ModuleTreeBuilder {
     manifest_root: PathBuf,
     index: ModuleIndex,
@@ -330,12 +353,7 @@ impl ModuleTreeBuilder {
         path: &Path,
         operation: &'static str,
     ) -> Result<PathBuf, GuardError> {
-        let canonical = fs::canonicalize(path).map_err(|error| {
-            GuardError::new(
-                operation,
-                format!("could not canonicalize {}: {error}", path.display()),
-            )
-        })?;
+        let canonical = canonicalize(path, operation)?;
         render_relative(&self.manifest_root, &canonical)?;
         Ok(canonical)
     }
@@ -397,21 +415,7 @@ impl ModuleTreeBuilder {
         let name = unraw(&item.ident);
         let direct_path = direct_path_attribute(item)?;
         let candidates = if let Some(path) = direct_path {
-            let declaration_base = if parent.inline {
-                parent.descendant_base.clone()
-            } else {
-                parent
-                    .source
-                    .parent()
-                    .ok_or_else(|| {
-                        GuardError::new(
-                            "module declaration base",
-                            format!("source has no parent: {}", parent.source.display()),
-                        )
-                    })?
-                    .to_path_buf()
-            };
-            vec![declaration_base.join(path)]
+            vec![declaration_base(parent)?.join(path)]
         } else {
             vec![
                 parent.descendant_base.join(format!("{name}.rs")),
@@ -463,20 +467,7 @@ impl ModuleTreeBuilder {
 
         let mut sources = vec![self.conventional_source(parent, item)?];
         if !conditional.is_empty() {
-            let declaration_base = if parent.inline {
-                parent.descendant_base.clone()
-            } else {
-                parent
-                    .source
-                    .parent()
-                    .ok_or_else(|| {
-                        GuardError::new(
-                            "module declaration base",
-                            format!("source has no parent: {}", parent.source.display()),
-                        )
-                    })?
-                    .to_path_buf()
-            };
+            let declaration_base = declaration_base(parent)?;
             for variant in conditional {
                 let candidate = declaration_base.join(&variant);
                 if !candidate.is_file() {
@@ -499,6 +490,37 @@ impl ModuleTreeBuilder {
         Ok(sources)
     }
 
+    /// Records the files of an out-of-line test-only module and, recursively, of
+    /// the out-of-line modules they declare. None of them is indexed as production.
+    fn record_test_only_sources(
+        &mut self,
+        parent: &ModuleBody,
+        module: &ItemMod,
+    ) -> Result<(), GuardError> {
+        if module.content.is_some() {
+            return Ok(());
+        }
+        for source in self.out_of_line_sources(parent, module)? {
+            let relative = render_relative(&self.manifest_root, &source)?;
+            let body = ModuleBody {
+                module_id: format!("{}::{}", parent.module_id, unraw(&module.ident)),
+                body_id: format!("{relative}@test-only"),
+                descendant_base: descendant_base_for_source(&source)?,
+                items: self.parse_source(&source)?,
+                inline: false,
+                relative_source: relative.clone(),
+                source,
+            };
+            self.index.test_only_sources.insert(relative);
+            for item in &body.items {
+                if let Item::Mod(child) = item {
+                    self.record_test_only_sources(&body, child)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn index_body(&mut self, body: ModuleBody) -> Result<(), GuardError> {
         self.index.declared_modules.insert(body.module_id.clone());
         self.index.bodies.push(body.clone());
@@ -510,12 +532,7 @@ impl ModuleTreeBuilder {
             };
             if is_exact_cfg_test(module) {
                 // Not indexed, but a `#[cfg(test)] mod x;` file is still declared.
-                if module.content.is_none() {
-                    for source in self.out_of_line_sources(&body, module)? {
-                        let relative = render_relative(&self.manifest_root, &source)?;
-                        self.index.test_only_sources.insert(relative);
-                    }
-                }
+                self.record_test_only_sources(&body, module)?;
                 continue;
             }
             let name = unraw(&module.ident);
@@ -612,15 +629,7 @@ fn build_module_index(
             "crate ID must be explicit and nonempty",
         ));
     }
-    let canonical_manifest = fs::canonicalize(manifest_root).map_err(|error| {
-        GuardError::new(
-            "manifest canonicalization",
-            format!(
-                "could not canonicalize {}: {error}",
-                manifest_root.display()
-            ),
-        )
-    })?;
+    let canonical_manifest = canonicalize(manifest_root, "manifest canonicalization")?;
     let mut builder = ModuleTreeBuilder::new(canonical_manifest);
     let crate_root = builder.canonical_source(crate_root_file, "crate-root selection")?;
     builder.claim_out_of_line_source(crate_id, &crate_root)?;
@@ -1180,24 +1189,8 @@ fn analyze_guard(
         ));
     }
 
-    let canonical_manifest = fs::canonicalize(manifest_root).map_err(|error| {
-        GuardError::new(
-            "manifest canonicalization",
-            format!(
-                "could not canonicalize {}: {error}",
-                manifest_root.display()
-            ),
-        )
-    })?;
-    let canonical_crate_root = fs::canonicalize(crate_root_file).map_err(|error| {
-        GuardError::new(
-            "crate-root selection",
-            format!(
-                "could not canonicalize {}: {error}",
-                crate_root_file.display()
-            ),
-        )
-    })?;
+    let canonical_manifest = canonicalize(manifest_root, "manifest canonicalization")?;
+    let canonical_crate_root = canonicalize(crate_root_file, "crate-root selection")?;
     render_relative(&canonical_manifest, &canonical_crate_root)?;
 
     let mut report = GuardReport {
@@ -1205,12 +1198,7 @@ fn analyze_guard(
         dependencies: BTreeSet::new(),
     };
     for spec in source_specs {
-        let canonical_source = fs::canonicalize(&spec.path).map_err(|error| {
-            GuardError::new(
-                "target source read",
-                format!("could not canonicalize {}: {error}", spec.path.display()),
-            )
-        })?;
+        let canonical_source = canonicalize(&spec.path, "target source read")?;
         let relative_source = render_relative(&canonical_manifest, &canonical_source)?;
         let source = fs::read_to_string(&canonical_source).map_err(|error| {
             GuardError::new(
