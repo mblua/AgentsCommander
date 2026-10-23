@@ -1,5 +1,7 @@
 use super::*;
 use crate::config::settings::WatcherConfig;
+use crate::config::settings::WatcherEntry;
+use std::collections::BTreeMap;
 
 fn agent(id: &str, command: &str) -> WatcherAgent {
     WatcherAgent {
