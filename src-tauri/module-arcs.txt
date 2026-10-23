@@ -2181,9 +2181,15 @@ agentscommander_lib::reader_demand -> agentscommander_lib::commands::session
 agentscommander_lib::reader_demand -> agentscommander_lib::config::co_managed
 agentscommander_lib::reader_demand -> agentscommander_lib::config::settings
 agentscommander_lib::reader_demand -> agentscommander_lib::session::manager
-agentscommander_lib::resource_monitor::registry -> agentscommander_lib::pty::spawn_diagnostics
 agentscommander_lib::resource_monitor::registry -> agentscommander_lib::resource_monitor::types
 agentscommander_lib::resource_monitor::registry -> agentscommander_lib::resource_monitor::windows
+agentscommander_lib::resource_monitor::registry::sampling -> agentscommander_lib::resource_monitor::registry
+agentscommander_lib::resource_monitor::registry::sampling -> agentscommander_lib::resource_monitor::types
+agentscommander_lib::resource_monitor::registry::snapshot -> agentscommander_lib::resource_monitor::registry
+agentscommander_lib::resource_monitor::registry::snapshot -> agentscommander_lib::resource_monitor::types
+agentscommander_lib::resource_monitor::registry::termination -> agentscommander_lib::pty::spawn_diagnostics
+agentscommander_lib::resource_monitor::registry::termination -> agentscommander_lib::resource_monitor::registry
+agentscommander_lib::resource_monitor::registry::termination -> agentscommander_lib::resource_monitor::types
 agentscommander_lib::resource_monitor::types -> agentscommander_lib::config::settings
 agentscommander_lib::resource_monitor::watchdog -> agentscommander_lib::config::settings
 agentscommander_lib::resource_monitor::watchdog -> agentscommander_lib::resource_monitor
