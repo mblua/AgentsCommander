@@ -41,7 +41,8 @@ impl ConfigWriterActive {
     pub(super) fn enter(entry_point: &str) -> Result<Self, String> {
         if CONFIG_WRITER_ACTIVE.with(|active| active.replace(true)) {
             return Err(format!(
-                "Nested config write: {} was called while a config writer is already active on this thread",
+                "Nested config write: {} was called while a config writer \
+                 is already active on this thread",
                 entry_point
             ));
         }

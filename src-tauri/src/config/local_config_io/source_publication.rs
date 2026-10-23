@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 #[cfg(test)]
 thread_local! {
-    static SOURCE_GUARDED_PUBLICATION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SOURCE_GUARDED_PUBLICATION_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]

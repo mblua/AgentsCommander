@@ -109,7 +109,8 @@ pub(super) fn publish_temp_config_retry_with_attempt(
             Ok(()) => {
                 if attempt > 0 {
                     log::info!(
-                        "[config] publish succeeded after retry: path={} attempt={}/{} duration={:?}",
+                        "[config] publish succeeded after retry: path={} \
+                         attempt={}/{} duration={:?}",
                         path.display(),
                         attempt + 1,
                         PUBLISH_ATTEMPTS,
@@ -180,8 +181,8 @@ pub(super) fn publish_path_wide(path: &Path) -> Vec<u16> {
         match component {
             Component::ParentDir => return raw(),
             Component::Normal(s) => {
-                if matches!(s.encode_wide().last(), Some(u) if u == u16::from(b'.') || u == u16::from(b' '))
-                {
+                let last = s.encode_wide().last();
+                if matches!(last, Some(u) if u == u16::from(b'.') || u == u16::from(b' ')) {
                     return raw();
                 }
             }
@@ -293,7 +294,8 @@ pub(super) fn publish_temp_config_retry_with_attempt(
         if outcome.is_ok() {
             if attempt > 0 {
                 log::info!(
-                    "[config] ReplaceFileW succeeded after retry: path={} attempt={}/{} duration={:?}",
+                    "[config] ReplaceFileW succeeded after retry: path={} \
+                     attempt={}/{} duration={:?}",
                     path.display(),
                     attempt + 1,
                     PUBLISH_ATTEMPTS,
