@@ -70,6 +70,24 @@
       "reason": "Came out of the split of dispatch_pty_input_operation_core in #3180 (138d9f0). Complexity is not a blocker for this function.",
       "issue": 3182,
       "since": "2026-10-23"
+    },
+    {
+      "gate": "08",
+      "rule": "globals",
+      "path": "src-tauri/src/config/settings/owner/capture.rs",
+      "symbol": "OWNER_CAPTURE_PANIC",
+      "reason": "Test-only thread_local seam moved unchanged from config/settings/owner.rs (cfg(test)) in the 02-R1 split; the new file trips the new-file subrule. Moved by the sanitizing campaign (#3188).",
+      "issue": 3188,
+      "since": "2026-10-23"
+    },
+    {
+      "gate": "08",
+      "rule": "globals",
+      "path": "src-tauri/src/config/settings/owner/lease.rs",
+      "symbol": "SETTINGS_OWNER_LEASE_VERIFY_FAULT",
+      "reason": "Test-only thread_local seam moved unchanged from config/settings/owner.rs (cfg(all(test, windows))) in the 02-R1 split; the new file trips the new-file subrule. Moved by the sanitizing campaign (#3188).",
+      "issue": 3188,
+      "since": "2026-10-23"
     }
   ]
 }
