@@ -537,7 +537,6 @@ fn cloned_project_open_preserves_the_manifest_byte_for_byte() {
 // `tests/cli_workgroup_team.rs`.
 // ---------------------------------------------------------------------------
 
-#[path = "cli_project_registration/source_pins.rs"]
 mod source_pins;
 use source_pins::{normalized_production_source, production_token_count};
 

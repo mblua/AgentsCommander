@@ -559,7 +559,7 @@ fn issue_1867_isolation_source_contract() {
         ),
         (
             "cli_project_registration.rs",
-            include_str!("cli_project_registration.rs"),
+            include_str!("cli_project_registration/main.rs"),
             3,
             &[("run_success", 1), ("run_json", 1), ("run_failure", 1)],
             &[],
