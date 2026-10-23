@@ -1,4 +1,5 @@
 use super::*;
+use crate::pty::manager::response_close::StaleOrInvalidSettlement;
 use std::time::{Duration, Instant};
 
 #[test]
