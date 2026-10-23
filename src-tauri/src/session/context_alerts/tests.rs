@@ -469,7 +469,10 @@ async fn identity_fixture_named(project: &str, workgroup_name: &str) -> Identity
     let team_config = team_dir.join("config.json");
     std::fs::write(
         &team_config,
-        r#"{"agents":["_agent_member","_agent_coordinator"],"coordinator":"_agent_coordinator","repos":[],"contextAlertPercentages":[50,75]}"#,
+        concat!(
+            r#"{"agents":["_agent_member","_agent_coordinator"],"#,
+            r#""coordinator":"_agent_coordinator","repos":[],"contextAlertPercentages":[50,75]}"#
+        ),
     )
     .unwrap();
     let manager = SessionManager::new();
@@ -1302,7 +1305,10 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
 
     std::fs::write(
         &fixture.team_config,
-        r#"{"agents":["_agent_member","_agent_coordinator"],"coordinator":"_agent_coordinator","repos":[],"contextAlertPercentages":[75]}"#,
+        concat!(
+            r#"{"agents":["_agent_member","_agent_coordinator"],"#,
+            r#""coordinator":"_agent_coordinator","repos":[],"contextAlertPercentages":[75]}"#
+        ),
     )
     .unwrap();
     assert!(validate_attempt_guard(
@@ -1317,7 +1323,10 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
 
     std::fs::write(
         &fixture.team_config,
-        r#"{"agents":["_agent_member","_agent_coordinator"],"coordinator":"_agent_member","repos":[],"contextAlertPercentages":[50,75]}"#,
+        concat!(
+            r#"{"agents":["_agent_member","_agent_coordinator"],"#,
+            r#""coordinator":"_agent_member","repos":[],"contextAlertPercentages":[50,75]}"#
+        ),
     )
     .unwrap();
     assert!(validate_attempt_guard(
@@ -1332,7 +1341,10 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
 
     std::fs::write(
         &fixture.team_config,
-        r#"{"agents":["_agent_coordinator"],"coordinator":"_agent_coordinator","repos":[],"contextAlertPercentages":[50,75]}"#,
+        concat!(
+            r#"{"agents":["_agent_coordinator"],"#,
+            r#""coordinator":"_agent_coordinator","repos":[],"contextAlertPercentages":[50,75]}"#
+        ),
     )
     .unwrap();
     assert!(validate_attempt_guard(
@@ -1362,7 +1374,10 @@ async fn identity_resolution_rejects_invalid_roster_matrix_and_cwd_shapes() {
     let roster = identity_fixture().await;
     std::fs::write(
         &roster.team_config,
-        r#"{"agents":["_agent_coordinator"],"coordinator":"_agent_coordinator","repos":[],"contextAlertPercentages":[50]}"#,
+        concat!(
+            r#"{"agents":["_agent_coordinator"],"#,
+            r#""coordinator":"_agent_coordinator","repos":[],"contextAlertPercentages":[50]}"#
+        ),
     )
     .unwrap();
     assert!(matches!(
@@ -1428,7 +1443,10 @@ async fn identity_resolution_distinguishes_unreadable_malformed_invalid_and_miss
     let invalid = identity_fixture().await;
     std::fs::write(
         &invalid.team_config,
-        r#"{"agents":["_agent_member","_agent_coordinator"],"coordinator":"_agent_coordinator","repos":[],"contextAlertPercentages":[0]}"#,
+        concat!(
+            r#"{"agents":["_agent_member","_agent_coordinator"],"#,
+            r#""coordinator":"_agent_coordinator","repos":[],"contextAlertPercentages":[0]}"#
+        ),
     )
     .unwrap();
     match resolve_member_policy_blocking(&invalid.session) {

@@ -376,11 +376,15 @@ async fn run_context_alert_actor(
                 if let Some(slot) = in_flight.take() {
                     slot.cancellation.cancel();
                     if let Err(error) = slot.join.await {
-                        log::warn!("[context-alert] delivery wrapper join failed during shutdown: {}", error);
+                        log::warn!(
+                            "[context-alert] delivery wrapper join failed during shutdown: {}",
+                            error
+                        );
                     } else if let Ok(completion) = completion_rx.try_recv() {
                         if let Err(error) = completion.result {
                             log::warn!(
-                                "[context-alert] delivery generation={} ended with error during shutdown: {}",
+                                "[context-alert] delivery generation={} ended with error \
+                                 during shutdown: {}",
                                 completion.generation,
                                 error
                             );
@@ -472,7 +476,10 @@ async fn run_context_alert_actor(
                     }
                     None => {
                         samples_open = false;
-                        log::warn!("[context-alert] sample channel closed; maintenance and pending retries remain active");
+                        log::warn!(
+                            "[context-alert] sample channel closed; \
+                             maintenance and pending retries remain active"
+                        );
                     }
                 }
             }
@@ -544,7 +551,8 @@ fn apply_numeric_resolution(
         MemberPolicyResolution::Eligible(resolved) => {
             if resolved.fingerprint.session_id != session_id {
                 log::error!(
-                    "[context-alert] runtime returned mismatched session identity expected={} actual={}",
+                    "[context-alert] runtime returned mismatched session identity \
+                     expected={} actual={}",
                     session_id,
                     resolved.fingerprint.session_id
                 );
@@ -923,7 +931,8 @@ async fn dispatch_due_batch(
     let preparation = tokio::select! {
         biased;
         _ = shutdown.cancelled() => return ResolutionRecovery::default(),
-        preparation = runtime.prepare_attempt(snapshot, attempt_cancellation.clone()) => preparation,
+        preparation = runtime.prepare_attempt(snapshot, attempt_cancellation.clone()) =>
+            preparation,
     };
 
     match preparation {
