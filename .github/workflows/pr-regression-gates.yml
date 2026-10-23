@@ -932,22 +932,22 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: apt cache key
+        id: apt_key
+        run: echo "prefix=apt-debs-${ImageOS}-" >> "$GITHUB_OUTPUT"
+
+      # Restores the .deb files cache-warm.yml saves on main (#3190), so a slow
+      # Ubuntu mirror costs seconds instead of half an hour. A miss only means
+      # apt downloads everything, as before.
+      - name: Restore apt package cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/apt-debs
+          key: ${{ steps.apt_key.outputs.prefix }}none
+          restore-keys: ${{ steps.apt_key.outputs.prefix }}
+
       - name: Install Tauri system dependencies
-        run: |
-          sudo apt-get update
-          # The four original packages are Tauri's own. The rest are the #1842
-          # xcap native chain: bindgen needs libclang; system-deps needs the
-          # pkg-config metadata for libpipewire-0.3 AND libspa-0.2 (E1 proved
-          # libspa-0.2-dev is a SEPARATE package that only arrives
-          # transitively, so listing it is what stops a future dependency
-          # change breaking the build silently); libwayshot-xcap needs
-          # gbm/drm/EGL; xcb needs libxcb + randr.
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            build-essential pkg-config clang libclang-dev \
-            libpipewire-0.3-dev libspa-0.2-dev \
-            libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev \
-            libgbm-dev libdrm-dev libegl1-mesa-dev libdbus-1-dev
+        run: bash scripts/ci-install-linux-deps.sh
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -1025,22 +1025,22 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: apt cache key
+        id: apt_key
+        run: echo "prefix=apt-debs-${ImageOS}-" >> "$GITHUB_OUTPUT"
+
+      # Restores the .deb files cache-warm.yml saves on main (#3190), so a slow
+      # Ubuntu mirror costs seconds instead of half an hour. A miss only means
+      # apt downloads everything, as before.
+      - name: Restore apt package cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/apt-debs
+          key: ${{ steps.apt_key.outputs.prefix }}none
+          restore-keys: ${{ steps.apt_key.outputs.prefix }}
+
       - name: Install Tauri system dependencies
-        run: |
-          sudo apt-get update
-          # The four original packages are Tauri's own. The rest are the #1842
-          # xcap native chain: bindgen needs libclang; system-deps needs the
-          # pkg-config metadata for libpipewire-0.3 AND libspa-0.2 (E1 proved
-          # libspa-0.2-dev is a SEPARATE package that only arrives
-          # transitively, so listing it is what stops a future dependency
-          # change breaking the build silently); libwayshot-xcap needs
-          # gbm/drm/EGL; xcb needs libxcb + randr.
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            build-essential pkg-config clang libclang-dev \
-            libpipewire-0.3-dev libspa-0.2-dev \
-            libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev \
-            libgbm-dev libdrm-dev libegl1-mesa-dev libdbus-1-dev
+        run: bash scripts/ci-install-linux-deps.sh
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -2010,15 +2010,22 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: apt cache key
+        id: apt_key
+        run: echo "prefix=apt-debs-${ImageOS}-" >> "$GITHUB_OUTPUT"
+
+      # Restores the .deb files cache-warm.yml saves on main (#3190), so a slow
+      # Ubuntu mirror costs seconds instead of half an hour. A miss only means
+      # apt downloads everything, as before.
+      - name: Restore apt package cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/apt-debs
+          key: ${{ steps.apt_key.outputs.prefix }}none
+          restore-keys: ${{ steps.apt_key.outputs.prefix }}
+
       - name: Install Tauri system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            build-essential pkg-config clang libclang-dev \
-            libpipewire-0.3-dev libspa-0.2-dev \
-            libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev \
-            libgbm-dev libdrm-dev libegl1-mesa-dev libdbus-1-dev
+        run: bash scripts/ci-install-linux-deps.sh
 
       # The four frontend steps below are copied verbatim from
       # rust-regression-linux. They are MANDATORY here, and for a stronger

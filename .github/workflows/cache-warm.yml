@@ -165,6 +165,53 @@ jobs:
         working-directory: src-tauri
         run: cargo test --locked --release --lib --no-run
 
+  # The .deb files the Linux jobs of pr-regression-gates.yml restore (#3190).
+  # One entry per runner image; a new one is saved only when the set of
+  # packages changes.
+  warm-apt-linux:
+    name: warm-apt-linux (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: apt cache key
+        id: apt_key
+        run: echo "prefix=apt-debs-${ImageOS}-" >> "$GITHUB_OUTPUT"
+
+      - name: Restore apt package cache
+        id: restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/apt-debs
+          key: ${{ steps.apt_key.outputs.prefix }}none
+          restore-keys: ${{ steps.apt_key.outputs.prefix }}
+
+      - name: Install Tauri system dependencies
+        run: bash scripts/ci-install-linux-deps.sh
+
+      - name: Key the cache by its package set
+        id: content
+        env:
+          PREFIX: ${{ steps.apt_key.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          digest=$(find ~/apt-debs -maxdepth 1 -name '*.deb' -printf '%f\n' | LC_ALL=C sort | sha256sum | cut -c1-16)
+          echo "key=${PREFIX}${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Save apt package cache
+        if: steps.content.outputs.key != steps.restore.outputs.cache-matched-key
+        uses: actions/cache/save@v6
+        with:
+          path: ~/apt-debs
+          key: ${{ steps.content.outputs.key }}
+
   verify-warm-debug:
     name: verify-warm-debug
     needs: warm-debug
