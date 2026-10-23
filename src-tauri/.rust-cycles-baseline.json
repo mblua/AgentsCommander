@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "4f6b8f4c5d05708c",
+      "id": "0f715978582df548",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::api::audit",
@@ -29,7 +29,6 @@
         "agentscommander_lib::commands::telegram",
         "agentscommander_lib::commands::window",
         "agentscommander_lib::config::activity_log",
-        "agentscommander_lib::config::coding_agent_mutations",
         "agentscommander_lib::config::daemon_pid",
         "agentscommander_lib::phone::types",
         "agentscommander_lib::pty::backend",
