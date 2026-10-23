@@ -1,7 +1,6 @@
 use super::response_close_hold_publisher;
 use std::time::Duration;
-use std::time::Instant;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 pub(super) fn record_typing_hold_keystroke<R: tauri::Runtime>(

@@ -1,5 +1,6 @@
 use super::*;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::config::coordinator_clocks::{CoordinatorClocks, CoordinatorClocksState};
 use crate::session::manager::SessionManager;

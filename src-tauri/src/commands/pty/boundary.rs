@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 /// (#756) Record an AC-driven fresh-conversation boundary for `session_id`:
@@ -156,7 +156,7 @@ pub(crate) async fn write_start_fresh_mirror_for_session<R: tauri::Runtime>(
     write_start_fresh_mirror_outcome(app, session_id, on).await == BoundaryMetadataOutcome::Applied
 }
 
-pub(super) async fn write_start_fresh_mirror_outcome<R: tauri::Runtime>(
+async fn write_start_fresh_mirror_outcome<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Uuid,
     on: bool,

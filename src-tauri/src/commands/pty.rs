@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
@@ -11,7 +11,8 @@ mod boundary;
 mod typing_hold;
 mod watcher_reach;
 
-use boundary::{combine_boundary_metadata, write_start_fresh_mirror_outcome};
+#[cfg(test)]
+use boundary::combine_boundary_metadata;
 pub(crate) use boundary::{
     note_post_boundary_content_to_session, stamp_fresh_boundary_to_session,
     write_start_fresh_mirror_for_session, BoundaryMetadataOutcome,
