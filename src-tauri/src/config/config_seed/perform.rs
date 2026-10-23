@@ -74,7 +74,8 @@ pub(super) fn perform_config_seed_recorded_with(
         SoftProjectGate::DegradedUntracked => perform_seed(),
         SoftProjectGate::Unavailable(error) => {
             log::warn!(
-                "[config-seed] project gate unavailable for {}: {}; skipping seed to avoid racing a cooperating writer",
+                "[config-seed] project gate unavailable for {}: {}; skipping seed to avoid racing \
+                a cooperating writer",
                 seed.dest.display(),
                 error
             );
@@ -199,7 +200,8 @@ pub(super) fn perform_config_seed_with_clock_and_hooks(
                 Ok(false) => {}
                 Err(error) => {
                     log::warn!(
-                        "[config-seed] cannot inspect catalog-default destination {} without following links: {}; skipping",
+                        "[config-seed] cannot inspect catalog-default destination {} without \
+                        following links: {}; skipping",
                         seed.dest.display(),
                         error
                     );
@@ -238,7 +240,8 @@ pub(super) fn perform_config_seed_with_clock_and_hooks(
             .collect::<Vec<_>>()
             .join(", ");
         log::info!(
-            "[config-seed] active for replica '{}' dest '{}' but no source template found at any tier; skipped (looked for: {})",
+            "[config-seed] active for replica '{}' dest '{}' but no source template found at any \
+            tier; skipped (looked for: {})",
             replica_label,
             seed.dest.display(),
             looked_in
@@ -299,7 +302,8 @@ pub(super) fn perform_config_seed_with_clock_and_hooks(
         Ok(Some(pinned)) => {
             if let Err(e) = std::fs::rename(&seed.dest, &trash) {
                 log::warn!(
-                    "[config-seed] dest {} is in use ({}); keeping existing config, skipping this seed",
+                    "[config-seed] dest {} is in use ({}); keeping existing config, skipping this \
+                    seed",
                     seed.dest.display(),
                     e
                 );
@@ -313,7 +317,8 @@ pub(super) fn perform_config_seed_with_clock_and_hooks(
         }
         Err(error) => {
             log::warn!(
-                "[config-seed] cannot inspect destination {} without following links: {}; keeping existing config, skipping this seed",
+                "[config-seed] cannot inspect destination {} without following links: {}; keeping \
+                existing config, skipping this seed",
                 seed.dest.display(),
                 error
             );
@@ -353,7 +358,8 @@ pub(super) fn perform_config_seed_with_clock_and_hooks(
                     ConfigSeedRollbackFailure::PreviousScopeStillStaged {
                         scope: config_scope_for_seed(seed).unwrap_or_else(|reason| {
                             log::warn!(
-                                "[config-seed] failed to derive config scope for rollback at {}: {}",
+                                "[config-seed] failed to derive config scope for rollback at {}: \
+                                {}",
                                 seed.dest.display(),
                                 reason
                             );

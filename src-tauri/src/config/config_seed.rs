@@ -4,9 +4,10 @@
 //! Two phases:
 //! - [`resolve_config_seed`] is PURE path math (no filesystem) and fail-soft:
 //!   it never returns an error that aborts a launch (M7).
-//! - [`perform_config_seed`](perform::perform_config_seed) is the side-effecting, best-effort, Windows-safe
-//!   rename-to-trash-first atomic swap (H1): the destination is always either
-//!   fully-old or fully-new, never half-written. It never aborts the spawn.
+//! - [`perform_config_seed`](perform::perform_config_seed) is the side-effecting,
+//!   best-effort, Windows-safe rename-to-trash-first atomic swap (H1): the
+//!   destination is always either fully-old or fully-new, never half-written.
+//!   It never aborts the spawn.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -322,20 +323,27 @@ pub fn compute_config_dir_warning(
             if matches {
                 // L1 case 2: seed overwrites the tool's ACTIVE config dir.
                 Some(format!(
-                    "config seed destination '{}' has the same final folder name as the tool's active {}='{}'; this heuristic does not inspect filesystem identity. The seeded folder is overwritten on every spawn, so any credentials or session state living there are reset each launch (ensure the template is self-sufficient)",
+                    "config seed destination '{}' has the same final folder name as the tool's \
+                    active {}='{}'; this heuristic does not inspect filesystem identity. The \
+                    seeded folder is overwritten on every spawn, so any credentials or session \
+                    state living there are reset each launch (ensure the template is \
+                    self-sufficient)",
                     dest_seg, key, value
                 ))
             } else {
                 // Case 1: dest does not match the configured config-dir env.
                 Some(format!(
-                    "config seed destination '{}' does not match the final folder name of {}='{}'; this heuristic does not inspect filesystem identity, and the tool may read config from that path rather than the seeded folder",
+                    "config seed destination '{}' does not match the final folder name of \
+                    {}='{}'; this heuristic does not inspect filesystem identity, and the tool \
+                    may read config from that path rather than the seeded folder",
                     dest_seg, key, value
                 ))
             }
         }
         // Case 1 (unset but expected for this tool).
         None => Some(format!(
-            "config seed destination '{}' is set but {} is not configured; the tool may ignore the seeded folder",
+            "config seed destination '{}' is set but {} is not configured; the tool may ignore \
+            the seeded folder",
             dest_seg, key
         )),
     }
