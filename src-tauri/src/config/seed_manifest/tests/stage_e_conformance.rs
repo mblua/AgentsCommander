@@ -1,3 +1,10 @@
+//! Stage E (#1064) adversarial-memory harness.
+//!
+//! The retained adversarial parser-memory case is `#[ignore]` (registered in
+//! `test-debt.allowlist.json`) and runs in an isolated release-mode child. Its
+//! 512 MiB working-set gate is asserted only in a release build on the reference
+//! machine; a debug run records the measurement without gating.
+
 use super::*;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};

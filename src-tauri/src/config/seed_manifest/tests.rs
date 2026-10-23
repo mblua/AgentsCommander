@@ -6,6 +6,7 @@ mod blocking_owned;
 mod canonical_guard;
 mod catalog_publication;
 mod scope_mutation;
+mod stage_e_conformance;
 mod temp_inventory;
 mod v1_upgrade;
 mod windows_replace;

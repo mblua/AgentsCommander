@@ -210,12 +210,12 @@
       "resolution": "Run manually with AC_STAGE_D_LOCK_ORDER_DRIVE=1 cargo test --lib -- --ignored --test-threads=1 --exact cli::workgroup::tests::cli_workgroup_lock_order_inversion_driver."
     },
     {
-      "id": "rust:src-tauri/src/config/seed_manifest/stage_e_conformance.rs::bench_adversarial_parser_memory_stays_bounded",
+      "id": "rust:src-tauri/src/config/seed_manifest/tests/stage_e_conformance.rs::bench_adversarial_parser_memory_stays_bounded",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 1064,
       "reason": "#1064 Stage E adversarial parser-memory measurement: near-cap valid and invalid TOML shapes must return a typed error rather than abort and stay within the plan section 7.4 512 MiB additional-working-set bound. It generates large inputs and is a release-mode measurement, so it must stay out of the standard debug cargo test lane (plan section 10.1 item 4).",
-      "resolution": "Run as Stage F acceptance or manually with cargo test --release --lib -- --ignored --test-threads=1 --exact config::seed_manifest::stage_e_conformance::bench_adversarial_parser_memory_stays_bounded."
+      "resolution": "Run as Stage F acceptance or manually with cargo test --release --lib -- --ignored --test-threads=1 --exact config::seed_manifest::tests::stage_e_conformance::bench_adversarial_parser_memory_stays_bounded."
     },
     {
       "id": "rust:src-tauri/src/config/config_seed.rs::tests::bench_end_to_end_config_staging_1k_10k_100k",
