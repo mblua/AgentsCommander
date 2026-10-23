@@ -1067,7 +1067,7 @@ jobs:
       # minimum glibc, which is the user's decision, and the second is
       # unnecessary (measured) and would put 1.0.5 headers in front of a
       # 0.3.48 .so at link time.
-      - name: Use noble libspa-0.2 headers on ubuntu-22.04 (IS #1915)
+      - name: "Use noble libspa-0.2 headers on ubuntu-22.04 (IS #1915)"
         if: matrix.runner == 'ubuntu-22.04'
         shell: bash
         env:

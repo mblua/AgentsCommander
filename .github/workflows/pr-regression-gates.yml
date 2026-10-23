@@ -14,10 +14,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Light tier runs on every event: rust-regression (Windows, the only job
-  # above a 2.5% failure rate), plus rust-fmt and test-debt (cheap).
-  # Full tier adds every other job on every 10th run, on the `ci:full`
-  # label, or on a manual dispatch. See #2417 for the failure-rate sample.
+  # Light tier runs on every event: rust-regression-windows, rust-slow-test-windows and
+  # issue-1850-release-windows (Windows, the only leg above a 2.5% failure
+  # rate), clippy-linux, plus rust-fmt and test-debt (cheap).
+  # Full tier adds every other job on every 10th run, on the run started by
+  # adding the `ci:full` label, or on a manual dispatch. See #2417 for the
+  # failure-rate sample.
   ci-tier:
     name: ci-tier
     runs-on: ubuntu-latest
@@ -28,10 +30,13 @@ jobs:
         shell: bash
         env:
           RUN_NUMBER: ${{ github.run_number }}
-          HAS_FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+          # One-shot: only the run started by adding `ci:full` goes full. Later
+          # pushes to a labelled pull request stay light; remove and re-add the
+          # label to run the full tier again on the new head.
+          ADDED_FULL_LABEL: ${{ github.event.action == 'labeled' && github.event.label.name == 'ci:full' }}
         run: |
           full=false
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] || [ "$HAS_FULL_LABEL" = true ] || [ $((RUN_NUMBER % 10)) -eq 0 ]; then
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] || [ "$ADDED_FULL_LABEL" = true ] || [ $((RUN_NUMBER % 10)) -eq 0 ]; then
             full=true
           fi
           echo "run_number=$RUN_NUMBER full=$full"
@@ -124,8 +129,8 @@ jobs:
           npm run sanitizing:global_state -- --base-ref "${GATE_BASE_REF:-origin/main}"
           npm run sanitizing:process_env -- --base-ref "${GATE_BASE_REF:-origin/main}"
 
-  rust-regression:
-    name: rust-regression
+  rust-regression-windows:
+    name: rust-regression-windows
     # Skip branch-deletion push events while still requiring pull request validation.
     if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
     runs-on: windows-latest
@@ -147,7 +152,7 @@ jobs:
       - name: Build frontend assets for Tauri config validation
         run: npm run build
 
-      - name: Install Rust stable
+      - name: Install Rust 1.98.1
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # pinned for #2234
         with:
           components: clippy
@@ -222,10 +227,6 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-      - name: cargo check
-        working-directory: src-tauri
-        run: cargo check --locked --all-targets
-
       # IS #2234: one run serves both purposes. --force-warn emits the cognitive
       # diagnostics without failing the build and without being silenceable by a lint
       # attribute, while -D warnings still denies every other lint. Asking cargo for the
@@ -273,9 +274,12 @@ jobs:
           path: ${{ runner.temp }}/cog-observed-windows.json
           if-no-files-found: warn
 
+      # The one test skipped here runs alone in rust-slow-test-windows: on Windows it
+      # takes about 16 minutes while every other test finishes within 9. Both jobs
+      # use the same name, so a test is either skipped here and run there, or run here.
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test --locked --lib --bins --tests --no-fail-fast
+        run: cargo test --locked --lib --bins --tests --no-fail-fast -- --skip single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets
         # The path-identity reparse test uses simulated flags; real Windows
         # reparse metadata and no-follow integration are outside its coverage.
 
@@ -283,7 +287,7 @@ jobs:
       # refusal safety only. Refusal safety and the mechanism control moved off
       # the lib target (whose `ISSUE1850_REFUSAL_ONLY` printer this round
       # deletes) onto the integration target that actually runs here.
-      - name: "cargo test (IS #1850 default-route acceptance, integration)"
+      - name: "cargo test (IS #1850 default-root acceptance, integration)"
         working-directory: src-tauri
         shell: bash
         timeout-minutes: 20
@@ -342,12 +346,111 @@ jobs:
             exit 1
           fi
 
+  # The slowest Windows test, split out of rust-regression-windows so its run
+  # overlaps that job instead of extending it. Same toolchain pin and gate-debug
+  # cache as that job. A rename of the test fails the guards below instead of
+  # silently running nothing.
+  rust-slow-test-windows:
+    name: rust-slow-test-windows
+    # Skip branch-deletion push events while still requiring pull request validation.
+    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend assets for Tauri config validation
+        run: npm run build
+
+      - name: Install Rust 1.98.1
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # pinned for #2234
+        with:
+          components: clippy
+          toolchain: '1.98.1'
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: '. -> target'
+          shared-key: 'gate-debug'
+          env-vars: 'ImageOS'
+          save-if: 'false'
+
+      - name: cargo test (slow source-transition driver test)
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          TEST='single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets'
+          cargo test --locked --lib "$TEST" 2>&1 | tee slow-test.log
+          grep -qE "^test [^ ]*::${TEST} \.\.\. ok$" slow-test.log || {
+            echo "::error::${TEST} never ran; it was renamed, moved, or gated out. Update the name here and in rust-regression-windows."
+            exit 1
+          }
+          grep -qE '^test result: ok\. 1 passed; 0 failed' slow-test.log || {
+            echo "::error::expected exactly one passing test for ${TEST}."
+            exit 1
+          }
+
+  # IS #1850 focused release tests (Windows), split out of rust-regression-windows so
+  # their release compile runs in parallel with the debug suite instead of
+  # after it; the steps and assertions are unchanged. It restores gate-release,
+  # the release dependency cache cache-warm.yml saves on main, so it installs
+  # the same floating stable toolchain as that cache and as release.yml.
+  issue-1850-release-windows:
+    name: issue-1850-release-windows
+    # Skip branch-deletion push events while still requiring pull request validation.
+    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend assets for Tauri config validation
+        run: npm run build
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: '. -> target'
+          shared-key: 'gate-release'
+          env-vars: 'ImageOS'
+          save-if: 'false'
+
       # IS #1929: the release step below used to compile and run under a single
       # 20-minute bound, so on a cold cache the build alone could consume the
       # whole budget and the step could die after the tests had already passed
       # (#1917: the same tree was killed at 20m00s on a push run and went green
       # in 17m25s on a pull request run). Split it the way the dedicated
-      # `issue-1850-windows-profile` job already splits its build and proof:
+      # `issue-1850-profile-windows` job already splits its build and proof:
       # the build gets room, the run keeps the tight assertion bound. Launch the
       # exact Cargo-reported release harness directly, bypassing Cargo freshness
       # assessment and application compilation during assertions.
@@ -861,7 +964,7 @@ jobs:
       - name: Build frontend assets for Tauri config validation
         run: npm run build
 
-      - name: Install Rust stable
+      - name: Install Rust 1.98.1
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # pinned for #2234
         with:
           components: clippy
@@ -913,10 +1016,6 @@ jobs:
           path: ${{ runner.temp }}/cog-observed-linux.json
           if-no-files-found: warn
 
-      # IS #1938: cross-process local-config write-lock proof. pipefail catches a
-      # failing test, the identifier greps catch a filter that selected nothing
-      # or a renamed test, and the anchored result line requires a positive
-      # passing count with zero failures.
   rust-regression-linux:
     name: rust-regression-linux
     # Skip branch-deletion push events while still requiring pull request validation.
@@ -958,7 +1057,7 @@ jobs:
       - name: Build frontend assets for Tauri config validation
         run: npm run build
 
-      - name: Install Rust stable
+      - name: Install Rust 1.98.1
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # pinned for #2234
         with:
           components: clippy
@@ -970,17 +1069,10 @@ jobs:
           workspaces: . -> target
           key: rust-regression-linux
 
-      - name: cargo check
-        working-directory: src-tauri
-        run: cargo check --locked --all-targets
-
-      # IS #2234: one run serves both purposes. --force-warn emits the cognitive
-      # diagnostics without failing the build and without being silenceable by a lint
-      # attribute, while -D warnings still denies every other lint. Asking cargo for the
-      # JSON message format moves the human text into each record, so the script reprints it.
-      # `set +e` is mandatory: Actions runs `bash --noprofile --norc -eo pipefail`, so
-      # without it the step dies on the redirect line when clippy fails and the
-      # developer sees no diagnostics at all.
+      # IS #1938: cross-process local-config write-lock proof. pipefail catches a
+      # failing test, the identifier greps catch a filter that selected nothing
+      # or a renamed test, and the anchored result line requires a positive
+      # passing count with zero failures.
       - name: "cargo test (IS #1938 config write locks, focused)"
         working-directory: src-tauri
         shell: bash
@@ -1013,7 +1105,7 @@ jobs:
       # Only this one test runs here, by name. The suite runs on the Windows
       # leg; enabling it wholesale on Linux would light up #[cfg(unix)] tests
       # that have compiled for months and never once executed.
-      - name: cargo test (IS #1577 primary case)
+      - name: "cargo test (IS #1577 primary case)"
         working-directory: src-tauri
         shell: bash
         run: |
@@ -1073,7 +1165,7 @@ jobs:
       # also match api/mod.rs's window-screenshot limiter tests — gated
       # `any(target_os = "windows", test)`, compiled for months, never run on
       # Linux, and lighting those up is what the comment above forbids.
-      - name: cargo test (IS #1842 screenshot module on Linux)
+      - name: "cargo test (IS #1842 screenshot module on Linux)"
         working-directory: src-tauri
         shell: bash
         run: |
@@ -1194,7 +1286,7 @@ jobs:
           set -euo pipefail
           FILTER='issue_2683'
           # T1-T6 all compile on this unix leg. The Windows leg of
-          # rust-regression has no such step because T1 and T2 are cfg(unix).
+          # rust-regression-windows has no such step because T1 and T2 are cfg(unix).
           # Update EXPECTED and the name list below in the same commit that
           # adds, removes or renames an issue_2683 test.
           EXPECTED=6
@@ -1309,477 +1401,6 @@ jobs:
             exit 1
           }
 
-      # IS #1929: the release step below used to compile and run under a single
-      # 20-minute bound, so on a cold cache the build alone could consume the
-      # whole budget and the step could die after the tests had already passed
-      # (#1917: the same tree was killed at 20m00s on a push run and went green
-      # in 17m25s on a pull request run). Split it the way the dedicated
-      # `issue-1850-windows-profile` job already splits its build and proof:
-      # the build gets room, the run keeps the tight assertion bound. Launch the
-      # exact Cargo-reported release harness directly, bypassing Cargo freshness
-      # assessment and application compilation during assertions.
-      - name: "IS #1850 focused release build"
-        id: issue1850_release_build
-        working-directory: src-tauri
-        shell: bash
-        timeout-minutes: 40
-        env:
-          ISSUE1850_PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -euo pipefail
-          ISSUE1850_DIAGNOSTICS="$(node <<'NODE_INIT'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const env = process.env;
-          if (!env.RUNNER_TEMP || !path.isAbsolute(env.RUNNER_TEMP) || /[\r\n]/.test(env.RUNNER_TEMP)) throw new Error('Invalid RUNNER_TEMP');
-          for (const key of ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB']) {
-            if (!/^[A-Za-z0-9_-]+$/.test(env[key] || '')) throw new Error('Invalid ' + key);
-          }
-          const dir = fs.mkdtempSync(path.join(env.RUNNER_TEMP, 'issue1850-release-' + env.GITHUB_RUN_ID + '-' + env.GITHUB_RUN_ATTEMPT + '-' + env.GITHUB_JOB + '-'));
-          fs.appendFileSync(env.GITHUB_OUTPUT, 'diagnostics-dir=' + dir + '\n');
-          fs.writeFileSync(path.join(dir, 'context.json'), JSON.stringify({createdAt: new Date().toISOString(), node: process.version}, null, 2), {flag: 'wx'});
-          fs.writeFileSync(path.join(dir, 'cargo-messages.jsonl'), '', {flag: 'wx'});
-          process.stdout.write(dir);
-          NODE_INIT
-          )"
-          export ISSUE1850_DIAGNOSTICS
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            issue1850_python=python
-          else
-            issue1850_python=python3
-          fi
-          "$issue1850_python" - <<'PY_PREFLIGHT'
-          import json
-          import os
-          import pathlib
-          import sys
-
-          if sys.version_info < (3, 11):
-              raise RuntimeError("Python >=3.11 with tomllib required")
-          import tomllib
-
-
-          def inspect_configs(cwd, cargo_home, env):
-              records = []
-              seen = set()
-              for base in [cwd, *cwd.parents]:
-                  config_dir = base / ".cargo"
-                  records.append(config_dir)
-              records.append(cargo_home)
-              found = []
-              def reject_include(value, key, filename):
-                  if isinstance(value, dict):
-                      for name, item in value.items():
-                          full = key + "." + name if key else name
-                          if name == "include":
-                              raise RuntimeError(f"Unsupported {full} in {filename}")
-                          reject_include(item, full, filename)
-              for folder in records:
-                  legacy, modern = folder / "config", folder / "config.toml"
-                  filename = legacy if legacy.exists() else modern
-                  if not filename.exists():
-                      continue
-                  filename = filename.resolve(strict=True)
-                  if filename in seen:
-                      continue
-                  seen.add(filename)
-                  with filename.open("rb") as handle:
-                      config = tomllib.load(handle)
-                  reject_include(config, "", filename)
-                  if config.get("env"):
-                      raise RuntimeError(f"Unsupported env in {filename}")
-                  build = config.get("build", {})
-                  for name in ("target", "rustc"):
-                      if name in build:
-                          raise RuntimeError(f"Unsupported build.{name} in {filename}")
-                  for target, settings in config.get("target", {}).items():
-                      if isinstance(settings, dict) and "runner" in settings:
-                          raise RuntimeError(f"Unsupported target.{target}.runner in {filename}")
-                  relevant = {key: build[key] for key in ("jobs", "target-dir", "build-dir") if key in build}
-                  presence = {key: key in build for key in ("rustc-wrapper", "rustc-workspace-wrapper", "rustflags", "rustdocflags")}
-                  target_presence = {target: {key: key in settings for key in ("rustflags", "rustdocflags", "linker")}
-                                     for target, settings in config.get("target", {}).items() if isinstance(settings, dict)}
-                  found.append({"path": str(filename), "build": relevant, "buildPresence": presence, "targetPresence": target_presence})
-              for name, value in env.items():
-                  if value and (name in ("CARGO_BUILD_TARGET", "CARGO_BUILD_RUSTC", "RUSTC")
-                                or name.startswith("CARGO_TARGET_") and name.endswith("_RUNNER")):
-                      raise RuntimeError(f"Unsupported environment key {name}")
-              controls = {name: env.get(name) for name in ("RUSTUP_TOOLCHAIN", "CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "CARGO_BUILD_BUILD_DIR")}
-              presence = {name: bool(value) for name, value in env.items()
-                          if name in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTDOCFLAGS", "CARGO_ENCODED_RUSTDOCFLAGS")
-                          or name.startswith("CARGO_") and name.endswith(("_WRAPPER", "_RUSTFLAGS", "_RUSTDOCFLAGS"))}
-              return {"files": found, "controls": controls, "presence": presence}
-
-
-          def main():
-              if os.environ.get("CI") != "true":
-                  raise RuntimeError("Native configuration preflight runs in CI only")
-              cwd = pathlib.Path.cwd().resolve()
-              cargo_home = pathlib.Path(os.environ.get("CARGO_HOME") or pathlib.Path.home() / ".cargo").resolve()
-              result = inspect_configs(cwd, cargo_home, os.environ)
-              context_file = pathlib.Path(os.environ["ISSUE1850_DIAGNOSTICS"]) / "context.json"
-              context = json.loads(context_file.read_text(encoding="utf-8"))
-              context.update({"config": result, "python": {"executable": sys.executable, "version": sys.version}})
-              context_file.write_text(json.dumps(context, indent=2), encoding="utf-8")
-              print(json.dumps({"python": context["python"], "config": result}))
-
-
-          if __name__ == "__main__":
-              main()
-          PY_PREFLIGHT
-          node <<'NODE_CONTEXT'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const crypto = require('node:crypto');
-          const cp = require('node:child_process');
-          function requireValue(ok, message) { if (!ok) throw new Error(message); }
-          function cleanPath(value) {
-            requireValue(typeof value === 'string' && value.length > 0 && !/[\r\n]/.test(value), 'Invalid or newline path');
-            requireValue(path.isAbsolute(value), 'Expected native absolute path: ' + value);
-            return path.resolve(value);
-          }
-          function canonical(value) { return fs.realpathSync.native(cleanPath(value)); }
-          function key(value) { return process.platform === 'win32' ? value.toLowerCase() : value; }
-          function same(a, b) { return key(a) === key(b); }
-          function inside(root, value) {
-            const relative = path.relative(key(root), key(value));
-            return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));
-          }
-          function directory(value) {
-            const resolved = canonical(value);
-            requireValue(fs.statSync(resolved).isDirectory(), 'Missing library directory: ' + value);
-            return resolved;
-          }
-          function nativeHost(platform = process.platform, arch = process.arch) {
-            const host = {
-              'win32/x64': 'x86_64-pc-windows-msvc',
-              'linux/x64': 'x86_64-unknown-linux-gnu',
-              'darwin/arm64': 'aarch64-apple-darwin',
-              'darwin/x64': 'x86_64-apple-darwin'
-            }[platform + '/' + arch];
-            requireValue(host, 'Unsupported native host: ' + platform + '/' + arch);
-            return host;
-          }
-          function digest(file) { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); }
-          function checkout() {
-            const result = cp.spawnSync('git', ['rev-parse', 'HEAD'], {encoding: 'utf8'});
-            requireValue(!result.error && result.status === 0, 'git checkout identity failed');
-            const sha = result.stdout.trim();
-            requireValue(sha === process.env.GITHUB_SHA, 'Checkout differs from GITHUB_SHA');
-            return sha;
-          }
-          function command(program, args) {
-            const result = cp.spawnSync(program, args, {encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit']});
-            requireValue(!result.error && result.status === 0, program + ' preflight failed: ' + (result.error || result.status));
-            return result.stdout.trim();
-          }
-          function main() {
-            const dir = canonical(process.env.ISSUE1850_DIAGNOSTICS);
-            const contextFile = path.join(dir, 'context.json');
-            const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
-            const cwd = canonical(process.cwd());
-            const manifestPath = canonical(path.join(cwd, 'Cargo.toml'));
-            const sourcePath = canonical(path.join(cwd, 'src', 'lib.rs'));
-            requireValue(Number(process.versions.node.split('.')[0]) >= 22, 'Node >=22 required');
-            const versions = {node: {executable: process.execPath, version: process.version}, python: context.python,
-              cargo: command('cargo', ['--version']), rustc: command('rustc', ['-vV'])};
-            const host = versions.rustc.match(/^host: (.+)$/m)?.[1];
-            requireValue(host === nativeHost(), 'rustc host mismatch: ' + host + ' versus ' + process.platform + '/' + process.arch);
-            const targetLibdir = directory(command('rustc', ['--print', 'target-libdir']));
-            const metadataText = command('cargo', ['metadata', '--locked', '--no-deps', '--format-version=1']);
-            fs.writeFileSync(path.join(dir, 'metadata.json'), metadataText, {flag: 'wx'});
-            const metadata = JSON.parse(metadataText);
-            const packages = metadata.packages.filter(pkg => same(canonical(pkg.manifest_path), manifestPath));
-            requireValue(packages.length === 1, 'Expected exactly one manifest package');
-            const pkg = packages[0];
-            const targets = pkg.targets.filter(target => target.name === 'agentscommander_lib' && target.kind.includes('lib') && same(canonical(target.src_path), sourcePath));
-            requireValue(targets.length === 1, 'Expected exact library target');
-            // Compilation may create this directory; canonicalize it after success.
-            const targetDirectory = cleanPath(metadata.target_directory);
-            const checkoutSha = checkout();
-            requireValue(/^[a-f0-9]{40}$/i.test(process.env.ISSUE1850_PR_HEAD || ''), 'Missing PR head');
-            Object.assign(context, {runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
-              job: process.env.GITHUB_JOB, checkoutSha, prHeadSha: process.env.ISSUE1850_PR_HEAD, cwd,
-              packageId: pkg.id, manifestPath, sourcePath, targetName: targets[0].name, host,
-              targetDirectory, targetLibdir, versions, buildStartedAt: new Date().toISOString()});
-            fs.writeFileSync(contextFile, JSON.stringify(context, null, 2));
-            console.log(JSON.stringify({preflight: context}));
-          }
-          main();
-          NODE_CONTEXT
-          cargo test --locked --release --lib issue_1850 --no-run --message-format=json-render-diagnostics | tee "$ISSUE1850_DIAGNOSTICS/cargo-messages.jsonl"
-          node <<'NODE_SELECT'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const crypto = require('node:crypto');
-          const cp = require('node:child_process');
-          function requireValue(ok, message) { if (!ok) throw new Error(message); }
-          function cleanPath(value) {
-            requireValue(typeof value === 'string' && value.length > 0 && !/[\r\n]/.test(value), 'Invalid or newline path');
-            requireValue(path.isAbsolute(value), 'Expected native absolute path: ' + value);
-            return path.resolve(value);
-          }
-          function canonical(value) { return fs.realpathSync.native(cleanPath(value)); }
-          function key(value) { return process.platform === 'win32' ? value.toLowerCase() : value; }
-          function same(a, b) { return key(a) === key(b); }
-          function inside(root, value) {
-            const relative = path.relative(key(root), key(value));
-            return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));
-          }
-          function directory(value) {
-            const resolved = canonical(value);
-            requireValue(fs.statSync(resolved).isDirectory(), 'Missing library directory: ' + value);
-            return resolved;
-          }
-          function nativeHost(platform = process.platform, arch = process.arch) {
-            const host = {
-              'win32/x64': 'x86_64-pc-windows-msvc',
-              'linux/x64': 'x86_64-unknown-linux-gnu',
-              'darwin/arm64': 'aarch64-apple-darwin',
-              'darwin/x64': 'x86_64-apple-darwin'
-            }[platform + '/' + arch];
-            requireValue(host, 'Unsupported native host: ' + platform + '/' + arch);
-            return host;
-          }
-          function digest(file) { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); }
-          function checkout() {
-            const result = cp.spawnSync('git', ['rev-parse', 'HEAD'], {encoding: 'utf8'});
-            requireValue(!result.error && result.status === 0, 'git checkout identity failed');
-            const sha = result.stdout.trim();
-            requireValue(sha === process.env.GITHUB_SHA, 'Checkout differs from GITHUB_SHA');
-            return sha;
-          }
-          function recordsFrom(text) {
-            const records = [];
-            for (const line of text.split(/\r?\n/)) {
-              const trimmed = line.trim();
-              if (!trimmed) continue;
-              try { records.push(JSON.parse(trimmed)); }
-              catch (error) { if (/^[{[]/.test(trimmed)) throw new Error('Malformed Cargo JSON: ' + error.message); }
-            }
-            return records;
-          }
-          function selectArtifact(records, context) {
-            const finished = records.filter(record => record?.reason === 'build-finished');
-            requireValue(finished.length === 1 && finished[0].success === true, 'Expected one successful build-finished');
-            const matches = records.filter(record => record?.reason === 'compiler-artifact' &&
-              record.package_id === context.packageId && record.target?.name === context.targetName &&
-              Array.isArray(record.target.kind) && record.target.kind.includes('lib') && record.profile?.test === true &&
-              typeof record.executable === 'string' && record.executable.length > 0 &&
-              same(canonical(record.manifest_path), context.manifestPath) &&
-              same(canonical(record.target.src_path), context.sourcePath));
-            requireValue(matches.length === 1, 'Expected exactly one release harness record; got ' + matches.length);
-            const targetDirectory = directory(context.targetDirectory);
-            const deps = directory(path.join(targetDirectory, 'release', 'deps'));
-            const executable = canonical(matches[0].executable);
-            requireValue(fs.statSync(executable).isFile() && same(path.dirname(executable), deps) &&
-              (process.platform !== 'win32' || path.extname(executable).toLowerCase() === '.exe'), 'Invalid release executable location/type');
-            const loaderDirs = [];
-            function add(value) {
-              const dir = directory(value);
-              if (!loaderDirs.some(existing => same(existing, dir))) loaderDirs.push(dir);
-            }
-            for (const record of records) {
-              if (record?.reason !== 'build-script-executed') continue;
-              requireValue(Array.isArray(record.linked_paths), 'Missing linked_paths');
-              for (let linked of record.linked_paths) {
-                requireValue(typeof linked === 'string', 'Invalid linked path');
-                const prefix = linked.match(/^([^=]+)=/);
-                if (prefix) {
-                  requireValue(['native', 'dependency', 'crate', 'framework', 'all'].includes(prefix[1]), 'Unknown linked KIND: ' + prefix[1]);
-                  linked = linked.slice(prefix[0].length);
-                }
-                linked = cleanPath(linked);
-                // Resolve existing aliases before containment; absent outside paths are excluded.
-                const resolved = fs.existsSync(linked) ? canonical(linked) : linked;
-                if (inside(targetDirectory, resolved)) add(resolved);
-              }
-            }
-            add(deps);
-            add(path.join(targetDirectory, 'release'));
-            add(context.targetLibdir);
-            return {targetDirectory, executable, executableSha256: digest(executable),
-              executableBytes: fs.statSync(executable).size, loaderDirs};
-          }
-          function main() {
-            const dir = canonical(process.env.ISSUE1850_DIAGNOSTICS);
-            const context = JSON.parse(fs.readFileSync(path.join(dir, 'context.json'), 'utf8'));
-            requireValue(checkout() === context.checkoutSha, 'Checkout changed during build');
-            const selected = selectArtifact(recordsFrom(fs.readFileSync(path.join(dir, 'cargo-messages.jsonl'), 'utf8')), context);
-            const manifest = {schema: 1};
-            for (const name of ['runId', 'runAttempt', 'job', 'checkoutSha', 'prHeadSha', 'cwd', 'packageId',
-              'manifestPath', 'sourcePath', 'targetName', 'host', 'versions']) manifest[name] = context[name];
-            Object.assign(manifest, selected, {createdAt: new Date().toISOString()});
-            const filename = path.join(dir, 'manifest.json');
-            fs.writeFileSync(filename, JSON.stringify(manifest, null, 2), {flag: 'wx'});
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'manifest=' + filename + '\n');
-            console.log(JSON.stringify({selected: manifest, buildStartedAt: context.buildStartedAt, completedAt: new Date().toISOString()}));
-          }
-          main();
-          NODE_SELECT
-
-      # IS #1850: focused release execution of every issue_1850 test. Guards
-      # mirror the #1577 step: pipefail catches a failing test, the identifier
-      # greps catch a filter that selected nothing or something else, and the
-      # anchored result line requires a positive passing count with no failure.
-      - name: "IS #1850 focused release assertions (prebuilt harness)"
-        working-directory: src-tauri
-        shell: bash
-        timeout-minutes: 20
-        env:
-          ISSUE1850_PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-          ISSUE1850_MANIFEST: ${{ steps.issue1850_release_build.outputs.manifest }}
-        run: |
-          set -euo pipefail
-          node <<'NODE_CONSUMER' 2>&1 | tee test-1850-release.log
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const crypto = require('node:crypto');
-          const cp = require('node:child_process');
-          function requireValue(ok, message) { if (!ok) throw new Error(message); }
-          function cleanPath(value) {
-            requireValue(typeof value === 'string' && value.length > 0 && !/[\r\n]/.test(value), 'Invalid or newline path');
-            requireValue(path.isAbsolute(value), 'Expected native absolute path: ' + value);
-            return path.resolve(value);
-          }
-          function canonical(value) { return fs.realpathSync.native(cleanPath(value)); }
-          function key(value) { return process.platform === 'win32' ? value.toLowerCase() : value; }
-          function same(a, b) { return key(a) === key(b); }
-          function inside(root, value) {
-            const relative = path.relative(key(root), key(value));
-            return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));
-          }
-          function directory(value) {
-            const resolved = canonical(value);
-            requireValue(fs.statSync(resolved).isDirectory(), 'Missing library directory: ' + value);
-            return resolved;
-          }
-          function nativeHost(platform = process.platform, arch = process.arch) {
-            const host = {
-              'win32/x64': 'x86_64-pc-windows-msvc',
-              'linux/x64': 'x86_64-unknown-linux-gnu',
-              'darwin/arm64': 'aarch64-apple-darwin',
-              'darwin/x64': 'x86_64-apple-darwin'
-            }[platform + '/' + arch];
-            requireValue(host, 'Unsupported native host: ' + platform + '/' + arch);
-            return host;
-          }
-          function digest(file) { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); }
-          function checkout() {
-            const result = cp.spawnSync('git', ['rev-parse', 'HEAD'], {encoding: 'utf8'});
-            requireValue(!result.error && result.status === 0, 'git checkout identity failed');
-            const sha = result.stdout.trim();
-            requireValue(sha === process.env.GITHUB_SHA, 'Checkout differs from GITHUB_SHA');
-            return sha;
-          }
-          function validateManifest(manifest) {
-            requireValue(manifest?.schema === 1, 'Invalid manifest schema');
-            for (const [name, envName] of [['runId', 'GITHUB_RUN_ID'], ['runAttempt', 'GITHUB_RUN_ATTEMPT'],
-              ['job', 'GITHUB_JOB'], ['prHeadSha', 'ISSUE1850_PR_HEAD']]) {
-              requireValue(typeof manifest[name] === 'string' && manifest[name].length > 0 && manifest[name] === process.env[envName], 'Manifest identity mismatch: ' + name);
-            }
-            requireValue(manifest.checkoutSha === checkout(), 'Stale manifest checkout');
-            requireValue(manifest.host === nativeHost(), 'Manifest native host mismatch');
-            const cwd = canonical(process.cwd());
-            requireValue(same(manifest.cwd, cwd) && same(canonical(manifest.cwd), cwd), 'Manifest cwd mismatch');
-            for (const [name, expected] of [['manifestPath', path.join(cwd, 'Cargo.toml')], ['sourcePath', path.join(cwd, 'src', 'lib.rs')]]) {
-              requireValue(same(manifest[name], canonical(expected)) && same(canonical(manifest[name]), canonical(expected)), 'Manifest path mismatch: ' + name);
-            }
-            requireValue(manifest.targetName === 'agentscommander_lib' && typeof manifest.packageId === 'string' && manifest.packageId.length > 0, 'Invalid package/target');
-            const targetDirectory = directory(manifest.targetDirectory);
-            requireValue(same(targetDirectory, manifest.targetDirectory), 'Noncanonical target directory');
-            const executable = canonical(manifest.executable);
-            requireValue(same(executable, manifest.executable) && same(path.dirname(executable), directory(path.join(targetDirectory, 'release', 'deps'))) &&
-              fs.statSync(executable).isFile() && (process.platform !== 'win32' || path.extname(executable).toLowerCase() === '.exe'), 'Invalid manifest executable');
-            requireValue(fs.statSync(executable).size === manifest.executableBytes && digest(executable) === manifest.executableSha256, 'Executable size/hash mismatch');
-            requireValue(Array.isArray(manifest.loaderDirs) && manifest.loaderDirs.length > 0, 'Missing loader directories');
-            const seen = new Set();
-            for (const value of manifest.loaderDirs) {
-              requireValue(same(directory(value), value) && !seen.has(key(value)), 'Invalid/duplicate loader directory');
-              seen.add(key(value));
-            }
-            requireValue(typeof manifest.createdAt === 'string' && Number.isFinite(Date.parse(manifest.createdAt)) && manifest.versions && typeof manifest.versions === 'object', 'Invalid manifest context');
-            return manifest;
-          }
-          function loaderEnvironment(manifest, inherited = process.env, platform = process.platform, paths = path) {
-            const env = {...inherited};
-            const variable = {win32: 'PATH', linux: 'LD_LIBRARY_PATH', darwin: 'DYLD_FALLBACK_LIBRARY_PATH'}[platform];
-            requireValue(variable, 'Unsupported loader platform: ' + platform);
-            let tail;
-            if (platform === 'win32') {
-              const keys = Object.keys(env).filter(name => name.toUpperCase() === 'PATH').sort();
-              tail = keys.length ? env[keys[0]] : undefined;
-              for (const name of keys) delete env[name];
-            } else {
-              tail = env[variable];
-              if (platform === 'darwin' && !Object.prototype.hasOwnProperty.call(env, variable)) {
-                requireValue(typeof env.HOME === 'string' && env.HOME.length > 0, 'HOME required for macOS loader fallback');
-                tail = [paths.join(env.HOME, 'lib'), '/usr/local/lib', '/usr/lib'].join(paths.delimiter);
-              }
-            }
-            env[variable] = manifest.loaderDirs.join(paths.delimiter) + (tail === undefined ? '' : paths.delimiter + tail);
-            return {env, variable};
-          }
-          function launch(manifest, env, variable, spawn = cp.spawn, args = ['issue_1850', '--test-threads=1', '--nocapture']) {
-            console.log(JSON.stringify({launchAt: new Date().toISOString(), executable: manifest.executable, argv: args,
-              checkoutSha: manifest.checkoutSha, prHeadSha: manifest.prHeadSha, runId: manifest.runId,
-              runAttempt: manifest.runAttempt, job: manifest.job, executableSha256: manifest.executableSha256, loaderVariable: variable}));
-            const child = spawn(manifest.executable, args, {shell: false, cwd: manifest.cwd, env, stdio: ['ignore', 'inherit', 'inherit']});
-            let failed = false;
-            child.on('error', error => {
-              failed = true;
-              console.error('Harness spawn error:', error);
-              process.exitCode = 1;
-            });
-            child.on('close', (code, signal) => {
-              console.log(JSON.stringify({completedAt: new Date().toISOString(), code, signal, spawnError: failed}));
-              if (failed || signal || !Number.isInteger(code)) {
-                console.error('Harness failed: error=' + failed + ' signal=' + signal + ' status=' + code);
-                process.exitCode = 1;
-              } else {
-                process.exitCode = code;
-              }
-            });
-          }
-          function main() {
-            const filename = canonical(process.env.ISSUE1850_MANIFEST);
-            const manifest = validateManifest(JSON.parse(fs.readFileSync(filename, 'utf8')));
-            const {env, variable} = loaderEnvironment(manifest);
-            launch(manifest, env, variable);
-          }
-          main();
-          NODE_CONSUMER
-
-          for name in \
-            'config::profile::tests::issue_1850_config_dir_name_table_is_profile_independent' \
-            'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
-            'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
-            'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
-            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_write_once'; do
-            grep -qF "test ${name} ..." test-1850-release.log || {
-              echo "::error::${name} never ran in the focused #1850 release run; it was renamed, moved, or gated out."
-              exit 1
-            }
-          done
-          grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed' test-1850-release.log || {
-            echo "::error::the focused #1850 release run did not report a positive passing count with zero failures."
-            exit 1
-          }
-
-      - name: "Upload IS #1850 release diagnostics"
-        uses: actions/upload-artifact@v7
-        if: always()
-        timeout-minutes: 5
-        with:
-          name: issue1850-release-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ steps.issue1850_release_build.outputs.diagnostics-dir || format('{0}/issue1850-release-not-started', runner.temp) }}
-            src-tauri/test-1850-release.log
-          if-no-files-found: warn
-          retention-days: 14
-          compression-level: 6
-          include-hidden-files: false
-
       # IS #1850: the debug acceptance target on a native Linux filesystem. The
       # copied product binary must select the injected HOME, run all seven
       # cases, and materialise app.log/.gitignore only under
@@ -1868,59 +1489,28 @@ jobs:
             exit 1
           }
 
-  rust-linux-release-parity:
-    name: rust-linux-release-parity
-    # #1842: the Linux PR gate runs ubuntu-latest (24.04) while the Linux
-    # RELEASE build runs ubuntu-22.04 (release.yml). A green PR gate therefore
-    # did not prove the release build. This job compiles AND LINKS src-tauri on
-    # the exact release runner so a chain that will not build there fails a PR
-    # instead of a release.
-    #
-    # `cargo build`, NOT `cargo check`: check stops at metadata and never
-    # invokes the final linker
-    # (https://doc.rust-lang.org/cargo/commands/cargo-check.html). It would
-    # prove apt resolution and build-script/pkg-config discovery and nothing
-    # about the link. The xcap chain is FFI; a missing -l flag or an unresolved
-    # symbol on 22.04 appears only at link time, which is the exact failure
-    # this job exists to catch before release.yml does.
-    #
-    # `--release`, NOT debug. "release is only optimisation" is FALSE in this
-    # repo and the difference is not cosmetic:
-    #   * build.rs:8-19 turns PROFILE=release into BUILD_PROFILE=prod, emits it
-    #     as cargo:rustc-env, and feeds it to configure_embedded_dist, so the
-    #     BUILD SCRIPT takes a different path.
-    #   * config/mod.rs:850-853 has a real cfg(debug_assertions) /
-    #     cfg(not(debug_assertions)) split in instance_location.
-    # Cargo flips debug_assertions with the profile, so a debug build exercises
-    # neither branch the release runner will take. Since this job's whole
-    # purpose is parity with release.yml's Linux producer — which builds
-    # release — it must build release too. This removes the entire release-only
-    # residual class (compile, build script AND link), not just the link.
-    #
-    # `--bins` and NOT `--all-targets`: the bin is the artifact release.yml
-    # ships, and linking it costs one link instead of 27 (1 bin + 25 integration
-    # tests in src-tauri/tests + the lib). Nothing is lost: rust-regression-linux
-    # on 24.04 already runs `cargo check --all-targets` AND
-    # `cargo clippy --all-targets -- -D warnings`, so test-target type checking
-    # keeps its owner, and no clippy or #1577 test runs here either. This job
-    # exists solely to prove the runner. `--bins` also skips the cdylib and
-    # staticlib crate-types (Cargo.toml:82-84); a missing -l breaks all three
-    # links identically, so that adds no risk.
-    #
-    # If release.yml's Linux runner ever moves, move this job's runs-on with it
-    # or delete this job; a parity job pinned to a runner nobody ships from
-    # proves nothing.
-    #
+  # IS #1850 focused release tests (Linux), split out of rust-regression-linux
+  # so their release compile runs in parallel; steps and assertions unchanged.
+  # Floating stable, like every other release build in CI and release.yml.
+  issue-1850-release-linux:
+    name: issue-1850-release-linux
     # Skip branch-deletion push events while still requiring pull request validation.
     needs: ci-tier
     if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
       - name: Install Tauri system dependencies
         run: |
           sudo apt-get update
+          # The four original packages are Tauri's own. The rest are the #1842
+          # xcap native chain: bindgen needs libclang; system-deps needs the
+          # pkg-config metadata for libpipewire-0.3 AND libspa-0.2 (E1 proved
+          # libspa-0.2-dev is a SEPARATE package that only arrives
+          # transitively, so listing it is what stops a future dependency
+          # change breaking the build silently); libwayshot-xcap needs
+          # gbm/drm/EGL; xcb needs libxcb + randr.
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
             build-essential pkg-config clang libclang-dev \
@@ -1928,74 +1518,6 @@ jobs:
             libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev \
             libgbm-dev libdrm-dev libegl1-mesa-dev libdbus-1-dev
 
-      # The four frontend steps below are copied verbatim from
-      # rust-regression-linux. They are MANDATORY here, and for a stronger
-      # reason than in the job they were copied from: there they exist because
-      # tauri-build validates tauri.conf.json's frontendDist; in THIS job the
-      # profile is release, and build.rs:44-49 panics outright when
-      # ../dist/index.html is missing for any profile other than dev -- in
-      # debug it only emits a cargo:warning. So without `npm run build` this
-      # job does not warn, it dies. They look redundant with
-      # rust-regression-linux and someone will eventually try to delete them;
-      # do not.
-      # IS #1915: ubuntu-22.04's libspa-0.2-dev (0.3.48) has no `flags` field in
-      # spa/param/video/raw.h and an int64_t `modifier`; libspa 0.9.2 --
-      # reached through xcap 0.9.6 -> pipewire 0.9.2 -> libspa-sys 0.9.2's
-      # build-time bindgen -- writes both and fails to compile with 5 errors
-      # before the linker. 24.04's headers match, which is why every other leg
-      # is green.
-      #
-      # libspa-0.2-dev ships NO library: `pkg-config --libs libspa-0.2` is
-      # empty and the .deb contains zero .so files. This therefore changes the
-      # COMPILE only -- never the link, never a DT_NEEDED, never the shipped
-      # binary's minimum glibc. Do not "simplify" this into moving the runner
-      # or into bumping libpipewire-0.3-dev: the first raises the shipped
-      # minimum glibc, which is the user's decision, and the second is
-      # unnecessary (measured) and would put 1.0.5 headers in front of a
-      # 0.3.48 .so at link time.
-      - name: Use noble libspa-0.2 headers on ubuntu-22.04 (IS #1915)
-        shell: bash
-        env:
-          SPA_DEB: libspa-0.2-dev_1.0.5-1ubuntu3.3_amd64.deb
-          SPA_SHA256: 93a60e7656fb35c97a78159fd0556842c62c2d8b9aff096009f9a20c64c1f272
-          SPA_SNAPSHOT: https://snapshot.ubuntu.com/ubuntu/20260901T000000Z/pool/main/p/pipewire
-          SPA_FALLBACK: https://security.ubuntu.com/ubuntu/pool/main/p/pipewire
-        run: |
-          set -euo pipefail
-          prefix="$RUNNER_TEMP/spa-noble"
-          deb="$RUNNER_TEMP/$SPA_DEB"
-          mkdir -p "$prefix"
-          curl -sSfL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$deb" "$SPA_SNAPSHOT/$SPA_DEB" \
-            || curl -sSfL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$deb" "$SPA_FALLBACK/$SPA_DEB"
-          # The digest is the trust boundary, not the hostname. Both sources are
-          # HTTPS-enforced (--proto/--proto-redir), so a redirect can never
-          # downgrade the transfer and the SonarCloud clear-text/redirect checks
-          # stay green without weakening the pinned-digest gate.
-          echo "$SPA_SHA256  $deb" | sha256sum -c -
-          dpkg-deb -x "$deb" "$prefix"
-          pc="$prefix/usr/lib/x86_64-linux-gnu/pkgconfig/libspa-0.2.pc"
-          sed -i "s|^prefix=/usr$|prefix=$prefix/usr|" "$pc"
-          pcdir="$prefix/usr/lib/x86_64-linux-gnu/pkgconfig"
-          echo "PKG_CONFIG_PATH=$pcdir:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
-
-          # Two postconditions, and neither is decoration. PKG_CONFIG_PATH
-          # entries are searched BEFORE pkg-config's built-in path, so the
-          # apt-installed jammy libspa-0.2.pc is shadowed rather than removed
-          # -- and a shadow that silently fails to take reads exactly like a
-          # pass. Guard 1 proves the shadow took; guard 2 proves the shadowing
-          # headers are the ones this fix was measured against, so a future
-          # digest bump to a header set WITHOUT `flags` cannot land green.
-          resolved="$(PKG_CONFIG_PATH="$pcdir" pkg-config --cflags-only-I libspa-0.2)"
-          echo "resolved libspa-0.2 include flags: $resolved"
-          case "$resolved" in
-            *"$prefix"*) ;;
-            *) echo "::error::PKG_CONFIG_PATH did not take; libspa-0.2 still resolves to the runner's 0.3.48 headers and the build will fail in libspa."; exit 1 ;;
-          esac
-          grep -q 'uint32_t flags;' "$prefix/usr/include/spa-0.2/spa/param/video/raw.h" || {
-            echo "::error::the unpacked spa header has no uint32_t flags field; the pinned .deb is not the header set this fix was measured against."
-            exit 1
-          }
-
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
@@ -2006,7 +1528,7 @@ jobs:
         run: npm install -g npm@11.6.2 --ignore-scripts
 
       - name: Install frontend dependencies
-        run: npm ci --ignore-scripts
+        run: npm ci
 
       - name: Build frontend assets for Tauri config validation
         run: npm run build
@@ -2014,308 +1536,18 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
-      # `. -> target`, NOT `src-tauri -> target`. The repo root Cargo.toml is a
-      # WORKSPACE with src-tauri as a member, and src-tauri/Cargo.toml has no
-      # [workspace] key of its own, so cargo writes to <repo>/target. There is
-      # no src-tauri/target and no src-tauri/Cargo.lock, so `src-tauri -> target`
-      # caches the registry and nothing else — survivable for a debug `check`,
-      # ruinous for a RELEASE build of ~790 packages, which would then recompile
-      # in full on every run. `bundle-validation.yml:52` and
-      # `cache-warm.yml:53,102` already use the correct form; copy those.
-      #
-      # `pr-regression-gates.yml:130` and `:239` still carry the wrong form.
-      # That is a pre-existing defect, it is NOT part of #1842, and this phase
-      # must not touch those two lines — just do not propagate the mistake here.
-      - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: '. -> target'
-          key: rust-linux-release-parity
-
-      - name: cargo build --release (links the binary release.yml ships)
-        working-directory: src-tauri
-        run: cargo build --locked --release --bins
-
-      # The linker proved the -l flags resolve at BUILD time. This proves the
-      # same libraries resolve at LOAD time on this runner, which is what
-      # release.yml's bundlers need when they walk the binary's DT_NEEDED
-      # entries. `-r` also resolves data and function symbols, not just the
-      # sonames. Free, offline, deterministic. It does NOT run any bundler --
-      # see §6, "What criteria 6 and 7 do and do not close".
-      #
-      # NO `working-directory: src-tauri` here, deliberately. The repo root
-      # Cargo.toml is a WORKSPACE listing src-tauri as a member; src-tauri has
-      # no [workspace] key; no workflow sets CARGO_TARGET_DIR and
-      # .cargo/config.toml only sets `[build] jobs`. So cargo writes to
-      # <repo>/target, and `src-tauri/target` NEVER EXISTS. A step that looked
-      # there would fail its own `test -x` on every run, before ldd, with an
-      # error blaming the binary name.
-      #
-      # THE `grep` IS THE ASSERTION, NOT THE EXIT CODE. `ldd -r` was measured
-      # exiting 0 on a binary with both `=> not found` and `undefined symbol:`
-      # present. Do NOT "simplify" this to a bare `ldd -r "$BIN"`: that turns
-      # the whole step into decoration. `set -o pipefail` is what keeps a
-      # failing ldd from being swallowed by the `tee`.
-      - name: ldd the release binary (load-time resolution on the release runner)
-        shell: bash
-        run: |
-          set -euo pipefail
-          # src-tauri/Cargo.toml has NO [[bin]] section, so cargo names the
-          # executable after the PACKAGE: agentscommander. That is also
-          # tauri.conf.json's mainBinaryName, so release.yml's raw_source
-          # target/release/agentscommander names the same file: `tauri build`
-          # renames the binary onto its own name and a bare `cargo build`
-          # renames nothing. If either fact changes, this step fails loud
-          # instead of silently checking a stale file.
-          BIN=target/release/agentscommander
-          test -x "$BIN" || {
-            echo "::error::expected $BIN. The workspace target dir or cargo's binary name changed; fix this step."
-            ls -l target/release || true
-            exit 1
-          }
-          ldd -r "$BIN" 2>&1 | tee ldd-1842.log
-          if grep -E 'not found|undefined symbol' ldd-1842.log; then
-            echo "::error::the release binary has unresolved libraries or symbols on ubuntu-22.04. release.yml's Linux producer will fail here."
-            exit 1
-          fi
-      # IS #1915, criterion 4. `readelf -d` prints only the DIRECT DT_NEEDED
-      # entries THIS link produced. `ldd` (the step above) prints the whole
-      # transitive closure, where WebKit's dependencies drown the signal --
-      # that is why both steps exist and neither replaces the other.
-      #
-      # libxcb.so.1 and libgbm.so.1 are the two entries only xcap can produce:
-      # `cargo tree -i xcb` and `cargo tree -i gbm` each show exactly one path
-      # to this crate (gbm via libwayshot-xcap 0.3.2), and no build script in
-      # the workspace emits a rustc-link-lib naming either, so gtk/webkit/soup
-      # pkg-config request neither. Both arrive via #[link(name = ...)] in the
-      # xcb and gbm crates.
-      #
-      # Because the toolchain links --as-needed this is a LIVENESS check, not
-      # just a link check: the entries survive only because native.rs calls
-      # Monitor::all -> xcap::platform::impl_monitor::ImplMonitor::all, which
-      # references 8 core xcb_* symbols, and libwayshot references 7 gbm_*
-      # symbols. cfg the Linux xcap block out, or stop calling it, and both
-      # entries disappear.
-      #
-      # Do NOT add libpipewire-0.3.so.0 here. -lpipewire-0.3 does reach the
-      # link, but every pw_* reference in xcap sits in its Wayland VIDEO
-      # RECORDER, which src-tauri never calls, so --as-needed drops it; the
-      # artifact has zero undefined pw_/spa_ symbols. Do NOT add
-      # libxcb-randr.so.0 either: xcb 1.7.0 builds randr requests over the core
-      # connection and emits no -lxcb-randr. Round 13 asserted both and both
-      # are measurably absent.
-      - name: Prove the xcap chain reached the release binary (IS #1915)
-        shell: bash
-        run: |
-          set -euo pipefail
-          BIN=target/release/agentscommander
-          test -x "$BIN" || {
-            echo "::error::expected $BIN; the ldd step above should already have failed. Fix both steps together."
-            exit 1
-          }
-          # Two statements, not one pipeline: under `set -o pipefail` a grep
-          # that matched nothing would kill the step here, before the loop
-          # below could say WHICH library is missing.
-          readelf -d "$BIN" > dynamic-1842.log
-          grep NEEDED dynamic-1842.log | sort > needed-1842.log || true
-          cat needed-1842.log
-          # Informational, deliberately NOT an assertion: symbol-table survival
-          # depends on the binary not being stripped, and a future
-          # [profile.release] strip key would fail it for a reason that has
-          # nothing to do with xcap. There is no such key today.
-          echo "xcap symbols present: $(nm -C "$BIN" | grep -c 'xcap::' || true)"
-          for lib in libxcb.so.1 libgbm.so.1; do
-            grep -q "\[$lib\]" needed-1842.log || {
-              echo "::error::$BIN has no direct DT_NEEDED entry for $lib. Either the Linux xcap chain did not reach the binary, or nothing calls it and --as-needed dropped it. The full list is above; report it, do not weaken this assertion."
-              exit 1
-            }
-          done
-
-  rust-regression-macos:
-    name: rust-regression-macos
-    # Skip branch-deletion push events while still requiring pull request validation.
-    needs: ci-tier
-    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: 'npm'
-
-      - name: Pin npm version
-        run: npm install -g npm@11.6.2 --ignore-scripts
-
-      - name: Install frontend dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Build frontend assets for Tauri config validation
-        run: npm run build
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # pinned for #2234
-        with:
-          components: clippy
-          toolchain: '1.98.1'
-
       - name: Rust cache
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: . -> target
-          key: rust-regression-macos
-
-      - name: cargo check
-        working-directory: src-tauri
-        run: cargo check --locked --all-targets
-
-      # IS #2234: one run serves both purposes. --force-warn emits the cognitive
-      # diagnostics without failing the build and without being silenceable by a lint
-      # attribute, while -D warnings still denies every other lint. Asking cargo for the
-      # JSON message format moves the human text into each record, so the script reprints it.
-      # `set +e` is mandatory: Actions runs `bash --noprofile --norc -eo pipefail`, so
-      # without it the step dies on the redirect line when clippy fails and the
-      # developer sees no diagnostics at all.
-      - name: cargo clippy
-        working-directory: src-tauri
-        shell: bash
-        run: |
-          set +e
-          set -uo pipefail
-          cargo clippy --locked --workspace --all-targets --message-format=json \
-            -- -D warnings --force-warn clippy::cognitive_complexity \
-            > "${RUNNER_TEMP}/cog-macos.jsonl"
-          code=$?
-          rustc_version="$(rustc -vV | sed -n 's/^release: //p')"
-          echo "COG_CLIPPY_EXIT=$code" >> "$GITHUB_ENV"
-          echo "COG_RUSTC_VERSION=$rustc_version" >> "$GITHUB_ENV"
-          if [ "$rustc_version" != "1.98.1" ]; then
-            echo "::error::toolchain pin did not take effect: wanted 1.98.1, got ${rustc_version}"
-            exit 1
-          fi
-          exit "$code"
-
-      - name: Complexity check
-        continue-on-error: true
-        shell: bash
-        run: |
-          cd "${GITHUB_WORKSPACE}"
-          node scripts/check-cognitive-complexity.mjs \
-            --capture "${RUNNER_TEMP}/cog-macos.jsonl" \
-            --clippy-exit "$COG_CLIPPY_EXIT" \
-            --platform macos \
-            --rustc-version "$COG_RUSTC_VERSION" \
-            --commit "${GITHUB_SHA}" \
-            --emit "${RUNNER_TEMP}/cog-observed-macos.json"
-
-      - name: Upload observed cognitive set
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: cog-observed-macos
-          path: ${{ runner.temp }}/cog-observed-macos.json
-          if-no-files-found: warn
-
-      # IS #2079: compiling is not running. Without this step the macOS leg
-      # never executes the screenshot module, so the CoreGraphics link proof
-      # and the permission-gate assertions would be missing evidence.
-      - name: cargo test (IS #2079 screenshot module on macOS)
-        working-directory: src-tauri
-        shell: bash
-        timeout-minutes: 20
-        run: |
-          set -euo pipefail
-          FILTER='screenshot::native::tests::'
-          # 19 pre-existing + overlay_window_traits_match_target + the
-          # macOS-gated test + the nine IS #2173 monitor-wiring tests
-          # (xcap_logical_frame_divides_bitmap_by_xcap_scale, the five
-          # match_monitor_*, the two build_placement_* and
-          # placement_frame_matches_target). #2173 also deleted
-          # xcap_origin_conversion_is_identity_unless_logical and
-          # placement_size_uses_bitmap_only_when_flagged. #3074 adds two
-          # save_selection_* tests. MACOS count (Windows runs 31, Linux 33);
-          # update it in the same commit that adds or
-          # removes a test in that module.
-          EXPECTED=32
-          cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-2079.log
-
-          # Three guards, matching the #1842 step, none redundant:
-          #   1. The exit code, via `set -o pipefail` (LOAD-BEARING through the
-          #      `tee`), catches a test that ran and FAILED.
-          #   2. The sentinel grep is the POSITIVE CONTROL: a filter matching
-          #      nothing exits 0 and prints "0 passed", so green alone proves
-          #      nothing. macos_screen_recording_gate is macOS-gated and cannot
-          #      exist unless mod.rs really compiled `native` on macOS.
-          #   3. The anchored count is the MUTATION PROBE: gating a test out
-          #      moves the number.
-          grep -qF 'screenshot::native::tests::macos_screen_recording_gate' test-2079.log || {
-            echo "::error::the macOS-only sentinel test never ran. screenshot::native is not compiling on macOS, or the test was renamed, and this step was testing nothing."
-            exit 1
-          }
-          grep -qE "^test result: ok\. ${EXPECTED} passed; 0 failed" test-2079.log || {
-            echo "::error::expected exactly ${EXPECTED} passing tests in ${FILTER} on macOS; the count changed or the filter matched something else."
-            exit 1
-          }
-
-      # IS #1938: cross-process local-config write-lock proof. pipefail catches a
-      # failing test, the identifier greps catch a filter that selected nothing
-      # or a renamed test, and the anchored result line requires a positive
-      # passing count with zero failures.
-      - name: "cargo test (IS #1938 config write locks, focused)"
-        working-directory: src-tauri
-        shell: bash
-        timeout-minutes: 10
-        run: |
-          set -euo pipefail
-          cargo test --locked --lib issue_1937_config_lock -- --test-threads=1 --nocapture 2>&1 | tee issue-1937-config-lock.log
-          grep -qE "^test result: ok\. [1-9][0-9]* passed; 0 failed" issue-1937-config-lock.log
-
-          for name in \
-            issue_1937_config_lock_process_exclusion \
-            issue_1937_config_lock_process_release \
-            issue_1937_config_lock_timeout; do
-            grep -qF "$name" issue-1937-config-lock.log || {
-              echo "::error::${name} never ran in the focused #1938 lock run; it was renamed, moved, or gated out."
-              exit 1
-            }
-          done
-
-      # IS #1850: focused debug execution of every issue_1850 test. Guards
-      # mirror the #1577 step: pipefail catches a failing test, the identifier
-      # greps catch a filter that selected nothing or something else, and the
-      # anchored result line requires a positive passing count with no failure.
-      - name: "cargo test (IS #1850 focused, debug)"
-        working-directory: src-tauri
-        shell: bash
-        timeout-minutes: 20
-        run: |
-          set -euo pipefail
-          cargo test --locked --lib issue_1850 -- --test-threads=1 --nocapture 2>&1 | tee test-1850-debug.log
-
-          for name in \
-            'config::profile::tests::issue_1850_config_dir_name_table_is_profile_independent' \
-            'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
-            'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
-            'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
-            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_write_once'; do
-            grep -qF "test ${name} ..." test-1850-debug.log || {
-              echo "::error::${name} never ran in the focused #1850 debug run; it was renamed, moved, or gated out."
-              exit 1
-            }
-          done
-          grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed' test-1850-debug.log || {
-            echo "::error::the focused #1850 debug run did not report a positive passing count with zero failures."
-            exit 1
-          }
+          key: issue-1850-release-linux
 
       # IS #1929: the release step below used to compile and run under a single
       # 20-minute bound, so on a cold cache the build alone could consume the
       # whole budget and the step could die after the tests had already passed
       # (#1917: the same tree was killed at 20m00s on a push run and went green
       # in 17m25s on a pull request run). Split it the way the dedicated
-      # `issue-1850-windows-profile` job already splits its build and proof:
+      # `issue-1850-profile-windows` job already splits its build and proof:
       # the build gets room, the run keeps the tight assertion bound. Launch the
       # exact Cargo-reported release harness directly, bypassing Cargo freshness
       # assessment and application compilation during assertions.
@@ -2781,6 +2013,444 @@ jobs:
           compression-level: 6
           include-hidden-files: false
 
+  rust-release-parity-linux:
+    name: rust-release-parity-linux
+    # #1842: the Linux PR gate runs ubuntu-latest (24.04) while the Linux
+    # RELEASE build runs ubuntu-22.04 (release.yml). A green PR gate therefore
+    # did not prove the release build. This job compiles AND LINKS src-tauri on
+    # the exact release runner so a chain that will not build there fails a PR
+    # instead of a release.
+    #
+    # `cargo build`, NOT `cargo check`: check stops at metadata and never
+    # invokes the final linker
+    # (https://doc.rust-lang.org/cargo/commands/cargo-check.html). It would
+    # prove apt resolution and build-script/pkg-config discovery and nothing
+    # about the link. The xcap chain is FFI; a missing -l flag or an unresolved
+    # symbol on 22.04 appears only at link time, which is the exact failure
+    # this job exists to catch before release.yml does.
+    #
+    # `--release`, NOT debug. "release is only optimisation" is FALSE in this
+    # repo and the difference is not cosmetic:
+    #   * build.rs:8-19 turns PROFILE=release into BUILD_PROFILE=prod, emits it
+    #     as cargo:rustc-env, and feeds it to configure_embedded_dist, so the
+    #     BUILD SCRIPT takes a different path.
+    #   * config/mod.rs:850-853 has a real cfg(debug_assertions) /
+    #     cfg(not(debug_assertions)) split in instance_location.
+    # Cargo flips debug_assertions with the profile, so a debug build exercises
+    # neither branch the release runner will take. Since this job's whole
+    # purpose is parity with release.yml's Linux producer — which builds
+    # release — it must build release too. This removes the entire release-only
+    # residual class (compile, build script AND link), not just the link.
+    #
+    # `--bins` and NOT `--all-targets`: the bin is the artifact release.yml
+    # ships, and linking it costs one link instead of 27 (1 bin + 25 integration
+    # tests in src-tauri/tests + the lib). Nothing is lost: rust-regression-linux
+    # on 24.04 already runs `cargo check --all-targets` AND
+    # `cargo clippy --all-targets -- -D warnings`, so test-target type checking
+    # keeps its owner, and no clippy or #1577 test runs here either. This job
+    # exists solely to prove the runner. `--bins` also skips the cdylib and
+    # staticlib crate-types (Cargo.toml:82-84); a missing -l breaks all three
+    # links identically, so that adds no risk.
+    #
+    # If release.yml's Linux runner ever moves, move this job's runs-on with it
+    # or delete this job; a parity job pinned to a runner nobody ships from
+    # proves nothing.
+    #
+    # Skip branch-deletion push events while still requiring pull request validation.
+    needs: ci-tier
+    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            build-essential pkg-config clang libclang-dev \
+            libpipewire-0.3-dev libspa-0.2-dev \
+            libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev \
+            libgbm-dev libdrm-dev libegl1-mesa-dev libdbus-1-dev
+
+      # The four frontend steps below are copied verbatim from
+      # rust-regression-linux. They are MANDATORY here, and for a stronger
+      # reason than in the job they were copied from: there they exist because
+      # tauri-build validates tauri.conf.json's frontendDist; in THIS job the
+      # profile is release, and build.rs:44-49 panics outright when
+      # ../dist/index.html is missing for any profile other than dev -- in
+      # debug it only emits a cargo:warning. So without `npm run build` this
+      # job does not warn, it dies. They look redundant with
+      # rust-regression-linux and someone will eventually try to delete them;
+      # do not.
+      # IS #1915: ubuntu-22.04's libspa-0.2-dev (0.3.48) has no `flags` field in
+      # spa/param/video/raw.h and an int64_t `modifier`; libspa 0.9.2 --
+      # reached through xcap 0.9.6 -> pipewire 0.9.2 -> libspa-sys 0.9.2's
+      # build-time bindgen -- writes both and fails to compile with 5 errors
+      # before the linker. 24.04's headers match, which is why every other leg
+      # is green.
+      #
+      # libspa-0.2-dev ships NO library: `pkg-config --libs libspa-0.2` is
+      # empty and the .deb contains zero .so files. This therefore changes the
+      # COMPILE only -- never the link, never a DT_NEEDED, never the shipped
+      # binary's minimum glibc. Do not "simplify" this into moving the runner
+      # or into bumping libpipewire-0.3-dev: the first raises the shipped
+      # minimum glibc, which is the user's decision, and the second is
+      # unnecessary (measured) and would put 1.0.5 headers in front of a
+      # 0.3.48 .so at link time.
+      - name: "Use noble libspa-0.2 headers on ubuntu-22.04 (IS #1915)"
+        shell: bash
+        env:
+          SPA_DEB: libspa-0.2-dev_1.0.5-1ubuntu3.3_amd64.deb
+          SPA_SHA256: 93a60e7656fb35c97a78159fd0556842c62c2d8b9aff096009f9a20c64c1f272
+          SPA_SNAPSHOT: https://snapshot.ubuntu.com/ubuntu/20260901T000000Z/pool/main/p/pipewire
+          SPA_FALLBACK: https://security.ubuntu.com/ubuntu/pool/main/p/pipewire
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/spa-noble"
+          deb="$RUNNER_TEMP/$SPA_DEB"
+          mkdir -p "$prefix"
+          curl -sSfL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$deb" "$SPA_SNAPSHOT/$SPA_DEB" \
+            || curl -sSfL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$deb" "$SPA_FALLBACK/$SPA_DEB"
+          # The digest is the trust boundary, not the hostname. Both sources are
+          # HTTPS-enforced (--proto/--proto-redir), so a redirect can never
+          # downgrade the transfer and the SonarCloud clear-text/redirect checks
+          # stay green without weakening the pinned-digest gate.
+          echo "$SPA_SHA256  $deb" | sha256sum -c -
+          dpkg-deb -x "$deb" "$prefix"
+          pc="$prefix/usr/lib/x86_64-linux-gnu/pkgconfig/libspa-0.2.pc"
+          sed -i "s|^prefix=/usr$|prefix=$prefix/usr|" "$pc"
+          pcdir="$prefix/usr/lib/x86_64-linux-gnu/pkgconfig"
+          echo "PKG_CONFIG_PATH=$pcdir:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+
+          # Two postconditions, and neither is decoration. PKG_CONFIG_PATH
+          # entries are searched BEFORE pkg-config's built-in path, so the
+          # apt-installed jammy libspa-0.2.pc is shadowed rather than removed
+          # -- and a shadow that silently fails to take reads exactly like a
+          # pass. Guard 1 proves the shadow took; guard 2 proves the shadowing
+          # headers are the ones this fix was measured against, so a future
+          # digest bump to a header set WITHOUT `flags` cannot land green.
+          resolved="$(PKG_CONFIG_PATH="$pcdir" pkg-config --cflags-only-I libspa-0.2)"
+          echo "resolved libspa-0.2 include flags: $resolved"
+          case "$resolved" in
+            *"$prefix"*) ;;
+            *) echo "::error::PKG_CONFIG_PATH did not take; libspa-0.2 still resolves to the runner's 0.3.48 headers and the build will fail in libspa."; exit 1 ;;
+          esac
+          grep -q 'uint32_t flags;' "$prefix/usr/include/spa-0.2/spa/param/video/raw.h" || {
+            echo "::error::the unpacked spa header has no uint32_t flags field; the pinned .deb is not the header set this fix was measured against."
+            exit 1
+          }
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2 --ignore-scripts
+
+      - name: Install frontend dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build frontend assets for Tauri config validation
+        run: npm run build
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      # `. -> target`, NOT `src-tauri -> target`. The repo root Cargo.toml is a
+      # WORKSPACE with src-tauri as a member, and src-tauri/Cargo.toml has no
+      # [workspace] key of its own, so cargo writes to <repo>/target. There is
+      # no src-tauri/target and no src-tauri/Cargo.lock, so `src-tauri -> target`
+      # caches the registry and nothing else — survivable for a debug `check`,
+      # ruinous for a RELEASE build of ~790 packages, which would then recompile
+      # in full on every run. `bundle-validation.yml:52` and
+      # `cache-warm.yml:53,102` already use the correct form; copy those.
+      #
+      # `pr-regression-gates.yml:130` and `:239` still carry the wrong form.
+      # That is a pre-existing defect, it is NOT part of #1842, and this phase
+      # must not touch those two lines — just do not propagate the mistake here.
+      - name: Rust cache
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: '. -> target'
+          key: rust-release-parity-linux
+
+      - name: cargo build --release (links the binary release.yml ships)
+        working-directory: src-tauri
+        run: cargo build --locked --release --bins
+
+      # The linker proved the -l flags resolve at BUILD time. This proves the
+      # same libraries resolve at LOAD time on this runner, which is what
+      # release.yml's bundlers need when they walk the binary's DT_NEEDED
+      # entries. `-r` also resolves data and function symbols, not just the
+      # sonames. Free, offline, deterministic. It does NOT run any bundler --
+      # see §6, "What criteria 6 and 7 do and do not close".
+      #
+      # NO `working-directory: src-tauri` here, deliberately. The repo root
+      # Cargo.toml is a WORKSPACE listing src-tauri as a member; src-tauri has
+      # no [workspace] key; no workflow sets CARGO_TARGET_DIR and
+      # .cargo/config.toml only sets `[build] jobs`. So cargo writes to
+      # <repo>/target, and `src-tauri/target` NEVER EXISTS. A step that looked
+      # there would fail its own `test -x` on every run, before ldd, with an
+      # error blaming the binary name.
+      #
+      # THE `grep` IS THE ASSERTION, NOT THE EXIT CODE. `ldd -r` was measured
+      # exiting 0 on a binary with both `=> not found` and `undefined symbol:`
+      # present. Do NOT "simplify" this to a bare `ldd -r "$BIN"`: that turns
+      # the whole step into decoration. `set -o pipefail` is what keeps a
+      # failing ldd from being swallowed by the `tee`.
+      - name: ldd the release binary (load-time resolution on the release runner)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # src-tauri/Cargo.toml has NO [[bin]] section, so cargo names the
+          # executable after the PACKAGE: agentscommander. That is also
+          # tauri.conf.json's mainBinaryName, so release.yml's raw_source
+          # target/release/agentscommander names the same file: `tauri build`
+          # renames the binary onto its own name and a bare `cargo build`
+          # renames nothing. If either fact changes, this step fails loud
+          # instead of silently checking a stale file.
+          BIN=target/release/agentscommander
+          test -x "$BIN" || {
+            echo "::error::expected $BIN. The workspace target dir or cargo's binary name changed; fix this step."
+            ls -l target/release || true
+            exit 1
+          }
+          ldd -r "$BIN" 2>&1 | tee ldd-1842.log
+          if grep -E 'not found|undefined symbol' ldd-1842.log; then
+            echo "::error::the release binary has unresolved libraries or symbols on ubuntu-22.04. release.yml's Linux producer will fail here."
+            exit 1
+          fi
+      # IS #1915, criterion 4. `readelf -d` prints only the DIRECT DT_NEEDED
+      # entries THIS link produced. `ldd` (the step above) prints the whole
+      # transitive closure, where WebKit's dependencies drown the signal --
+      # that is why both steps exist and neither replaces the other.
+      #
+      # libxcb.so.1 and libgbm.so.1 are the two entries only xcap can produce:
+      # `cargo tree -i xcb` and `cargo tree -i gbm` each show exactly one path
+      # to this crate (gbm via libwayshot-xcap 0.3.2), and no build script in
+      # the workspace emits a rustc-link-lib naming either, so gtk/webkit/soup
+      # pkg-config request neither. Both arrive via #[link(name = ...)] in the
+      # xcb and gbm crates.
+      #
+      # Because the toolchain links --as-needed this is a LIVENESS check, not
+      # just a link check: the entries survive only because native.rs calls
+      # Monitor::all -> xcap::platform::impl_monitor::ImplMonitor::all, which
+      # references 8 core xcb_* symbols, and libwayshot references 7 gbm_*
+      # symbols. cfg the Linux xcap block out, or stop calling it, and both
+      # entries disappear.
+      #
+      # Do NOT add libpipewire-0.3.so.0 here. -lpipewire-0.3 does reach the
+      # link, but every pw_* reference in xcap sits in its Wayland VIDEO
+      # RECORDER, which src-tauri never calls, so --as-needed drops it; the
+      # artifact has zero undefined pw_/spa_ symbols. Do NOT add
+      # libxcb-randr.so.0 either: xcb 1.7.0 builds randr requests over the core
+      # connection and emits no -lxcb-randr. Round 13 asserted both and both
+      # are measurably absent.
+      - name: "Prove the xcap chain reached the release binary (IS #1915)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=target/release/agentscommander
+          test -x "$BIN" || {
+            echo "::error::expected $BIN; the ldd step above should already have failed. Fix both steps together."
+            exit 1
+          }
+          # Two statements, not one pipeline: under `set -o pipefail` a grep
+          # that matched nothing would kill the step here, before the loop
+          # below could say WHICH library is missing.
+          readelf -d "$BIN" > dynamic-1842.log
+          grep NEEDED dynamic-1842.log | sort > needed-1842.log || true
+          cat needed-1842.log
+          # Informational, deliberately NOT an assertion: symbol-table survival
+          # depends on the binary not being stripped, and a future
+          # [profile.release] strip key would fail it for a reason that has
+          # nothing to do with xcap. There is no such key today.
+          echo "xcap symbols present: $(nm -C "$BIN" | grep -c 'xcap::' || true)"
+          for lib in libxcb.so.1 libgbm.so.1; do
+            grep -q "\[$lib\]" needed-1842.log || {
+              echo "::error::$BIN has no direct DT_NEEDED entry for $lib. Either the Linux xcap chain did not reach the binary, or nothing calls it and --as-needed dropped it. The full list is above; report it, do not weaken this assertion."
+              exit 1
+            }
+          done
+
+  rust-regression-macos:
+    name: rust-regression-macos
+    # Skip branch-deletion push events while still requiring pull request validation.
+    needs: ci-tier
+    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2 --ignore-scripts
+
+      - name: Install frontend dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build frontend assets for Tauri config validation
+        run: npm run build
+
+      - name: Install Rust 1.98.1
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # pinned for #2234
+        with:
+          components: clippy
+          toolchain: '1.98.1'
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: . -> target
+          key: rust-regression-macos
+
+      # IS #2234: one run serves both purposes. --force-warn emits the cognitive
+      # diagnostics without failing the build and without being silenceable by a lint
+      # attribute, while -D warnings still denies every other lint. Asking cargo for the
+      # JSON message format moves the human text into each record, so the script reprints it.
+      # `set +e` is mandatory: Actions runs `bash --noprofile --norc -eo pipefail`, so
+      # without it the step dies on the redirect line when clippy fails and the
+      # developer sees no diagnostics at all.
+      - name: cargo clippy
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          cargo clippy --locked --workspace --all-targets --message-format=json \
+            -- -D warnings --force-warn clippy::cognitive_complexity \
+            > "${RUNNER_TEMP}/cog-macos.jsonl"
+          code=$?
+          rustc_version="$(rustc -vV | sed -n 's/^release: //p')"
+          echo "COG_CLIPPY_EXIT=$code" >> "$GITHUB_ENV"
+          echo "COG_RUSTC_VERSION=$rustc_version" >> "$GITHUB_ENV"
+          if [ "$rustc_version" != "1.98.1" ]; then
+            echo "::error::toolchain pin did not take effect: wanted 1.98.1, got ${rustc_version}"
+            exit 1
+          fi
+          exit "$code"
+
+      - name: Complexity check
+        continue-on-error: true
+        shell: bash
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          node scripts/check-cognitive-complexity.mjs \
+            --capture "${RUNNER_TEMP}/cog-macos.jsonl" \
+            --clippy-exit "$COG_CLIPPY_EXIT" \
+            --platform macos \
+            --rustc-version "$COG_RUSTC_VERSION" \
+            --commit "${GITHUB_SHA}" \
+            --emit "${RUNNER_TEMP}/cog-observed-macos.json"
+
+      - name: Upload observed cognitive set
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cog-observed-macos
+          path: ${{ runner.temp }}/cog-observed-macos.json
+          if-no-files-found: warn
+
+      # IS #2079: compiling is not running. Without this step the macOS leg
+      # never executes the screenshot module, so the CoreGraphics link proof
+      # and the permission-gate assertions would be missing evidence.
+      - name: "cargo test (IS #2079 screenshot module on macOS)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          FILTER='screenshot::native::tests::'
+          # 19 pre-existing + overlay_window_traits_match_target + the
+          # macOS-gated test + the nine IS #2173 monitor-wiring tests
+          # (xcap_logical_frame_divides_bitmap_by_xcap_scale, the five
+          # match_monitor_*, the two build_placement_* and
+          # placement_frame_matches_target). #2173 also deleted
+          # xcap_origin_conversion_is_identity_unless_logical and
+          # placement_size_uses_bitmap_only_when_flagged. #3074 adds two
+          # save_selection_* tests. MACOS count (Windows runs 31, Linux 33);
+          # update it in the same commit that adds or
+          # removes a test in that module.
+          EXPECTED=32
+          cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-2079.log
+
+          # Three guards, matching the #1842 step, none redundant:
+          #   1. The exit code, via `set -o pipefail` (LOAD-BEARING through the
+          #      `tee`), catches a test that ran and FAILED.
+          #   2. The sentinel grep is the POSITIVE CONTROL: a filter matching
+          #      nothing exits 0 and prints "0 passed", so green alone proves
+          #      nothing. macos_screen_recording_gate is macOS-gated and cannot
+          #      exist unless mod.rs really compiled `native` on macOS.
+          #   3. The anchored count is the MUTATION PROBE: gating a test out
+          #      moves the number.
+          grep -qF 'screenshot::native::tests::macos_screen_recording_gate' test-2079.log || {
+            echo "::error::the macOS-only sentinel test never ran. screenshot::native is not compiling on macOS, or the test was renamed, and this step was testing nothing."
+            exit 1
+          }
+          grep -qE "^test result: ok\. ${EXPECTED} passed; 0 failed" test-2079.log || {
+            echo "::error::expected exactly ${EXPECTED} passing tests in ${FILTER} on macOS; the count changed or the filter matched something else."
+            exit 1
+          }
+
+      # IS #1938: cross-process local-config write-lock proof. pipefail catches a
+      # failing test, the identifier greps catch a filter that selected nothing
+      # or a renamed test, and the anchored result line requires a positive
+      # passing count with zero failures.
+      - name: "cargo test (IS #1938 config write locks, focused)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib issue_1937_config_lock -- --test-threads=1 --nocapture 2>&1 | tee issue-1937-config-lock.log
+          grep -qE "^test result: ok\. [1-9][0-9]* passed; 0 failed" issue-1937-config-lock.log
+
+          for name in \
+            issue_1937_config_lock_process_exclusion \
+            issue_1937_config_lock_process_release \
+            issue_1937_config_lock_timeout; do
+            grep -qF "$name" issue-1937-config-lock.log || {
+              echo "::error::${name} never ran in the focused #1938 lock run; it was renamed, moved, or gated out."
+              exit 1
+            }
+          done
+
+      # IS #1850: focused debug execution of every issue_1850 test. Guards
+      # mirror the #1577 step: pipefail catches a failing test, the identifier
+      # greps catch a filter that selected nothing or something else, and the
+      # anchored result line requires a positive passing count with no failure.
+      - name: "cargo test (IS #1850 focused, debug)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib issue_1850 -- --test-threads=1 --nocapture 2>&1 | tee test-1850-debug.log
+
+          for name in \
+            'config::profile::tests::issue_1850_config_dir_name_table_is_profile_independent' \
+            'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
+            'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
+            'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_write_once'; do
+            grep -qF "test ${name} ..." test-1850-debug.log || {
+              echo "::error::${name} never ran in the focused #1850 debug run; it was renamed, moved, or gated out."
+              exit 1
+            }
+          done
+          grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed' test-1850-debug.log || {
+            echo "::error::the focused #1850 debug run did not report a positive passing count with zero failures."
+            exit 1
+          }
+
       # IS #1850: the debug acceptance target on macOS. Same contract as the
       # Linux step; no real-profile case and no refusal-only route here.
       - name: "cargo test (IS #1850 default-root acceptance, debug)"
@@ -2865,6 +2535,513 @@ jobs:
             exit 1
           }
 
+  # IS #1850 focused release tests (macOS), split out of rust-regression-macos
+  # so their release compile runs in parallel; steps and assertions unchanged.
+  # Floating stable, like every other release build in CI and release.yml.
+  issue-1850-release-macos:
+    name: issue-1850-release-macos
+    # Skip branch-deletion push events while still requiring pull request validation.
+    needs: ci-tier
+    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2 --ignore-scripts
+
+      - name: Install frontend dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build frontend assets for Tauri config validation
+        run: npm run build
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: . -> target
+          key: issue-1850-release-macos
+
+      # IS #1929: the release step below used to compile and run under a single
+      # 20-minute bound, so on a cold cache the build alone could consume the
+      # whole budget and the step could die after the tests had already passed
+      # (#1917: the same tree was killed at 20m00s on a push run and went green
+      # in 17m25s on a pull request run). Split it the way the dedicated
+      # `issue-1850-profile-windows` job already splits its build and proof:
+      # the build gets room, the run keeps the tight assertion bound. Launch the
+      # exact Cargo-reported release harness directly, bypassing Cargo freshness
+      # assessment and application compilation during assertions.
+      - name: "IS #1850 focused release build"
+        id: issue1850_release_build
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 40
+        env:
+          ISSUE1850_PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ISSUE1850_DIAGNOSTICS="$(node <<'NODE_INIT'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const env = process.env;
+          if (!env.RUNNER_TEMP || !path.isAbsolute(env.RUNNER_TEMP) || /[\r\n]/.test(env.RUNNER_TEMP)) throw new Error('Invalid RUNNER_TEMP');
+          for (const key of ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB']) {
+            if (!/^[A-Za-z0-9_-]+$/.test(env[key] || '')) throw new Error('Invalid ' + key);
+          }
+          const dir = fs.mkdtempSync(path.join(env.RUNNER_TEMP, 'issue1850-release-' + env.GITHUB_RUN_ID + '-' + env.GITHUB_RUN_ATTEMPT + '-' + env.GITHUB_JOB + '-'));
+          fs.appendFileSync(env.GITHUB_OUTPUT, 'diagnostics-dir=' + dir + '\n');
+          fs.writeFileSync(path.join(dir, 'context.json'), JSON.stringify({createdAt: new Date().toISOString(), node: process.version}, null, 2), {flag: 'wx'});
+          fs.writeFileSync(path.join(dir, 'cargo-messages.jsonl'), '', {flag: 'wx'});
+          process.stdout.write(dir);
+          NODE_INIT
+          )"
+          export ISSUE1850_DIAGNOSTICS
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            issue1850_python=python
+          else
+            issue1850_python=python3
+          fi
+          "$issue1850_python" - <<'PY_PREFLIGHT'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          if sys.version_info < (3, 11):
+              raise RuntimeError("Python >=3.11 with tomllib required")
+          import tomllib
+
+
+          def inspect_configs(cwd, cargo_home, env):
+              records = []
+              seen = set()
+              for base in [cwd, *cwd.parents]:
+                  config_dir = base / ".cargo"
+                  records.append(config_dir)
+              records.append(cargo_home)
+              found = []
+              def reject_include(value, key, filename):
+                  if isinstance(value, dict):
+                      for name, item in value.items():
+                          full = key + "." + name if key else name
+                          if name == "include":
+                              raise RuntimeError(f"Unsupported {full} in {filename}")
+                          reject_include(item, full, filename)
+              for folder in records:
+                  legacy, modern = folder / "config", folder / "config.toml"
+                  filename = legacy if legacy.exists() else modern
+                  if not filename.exists():
+                      continue
+                  filename = filename.resolve(strict=True)
+                  if filename in seen:
+                      continue
+                  seen.add(filename)
+                  with filename.open("rb") as handle:
+                      config = tomllib.load(handle)
+                  reject_include(config, "", filename)
+                  if config.get("env"):
+                      raise RuntimeError(f"Unsupported env in {filename}")
+                  build = config.get("build", {})
+                  for name in ("target", "rustc"):
+                      if name in build:
+                          raise RuntimeError(f"Unsupported build.{name} in {filename}")
+                  for target, settings in config.get("target", {}).items():
+                      if isinstance(settings, dict) and "runner" in settings:
+                          raise RuntimeError(f"Unsupported target.{target}.runner in {filename}")
+                  relevant = {key: build[key] for key in ("jobs", "target-dir", "build-dir") if key in build}
+                  presence = {key: key in build for key in ("rustc-wrapper", "rustc-workspace-wrapper", "rustflags", "rustdocflags")}
+                  target_presence = {target: {key: key in settings for key in ("rustflags", "rustdocflags", "linker")}
+                                     for target, settings in config.get("target", {}).items() if isinstance(settings, dict)}
+                  found.append({"path": str(filename), "build": relevant, "buildPresence": presence, "targetPresence": target_presence})
+              for name, value in env.items():
+                  if value and (name in ("CARGO_BUILD_TARGET", "CARGO_BUILD_RUSTC", "RUSTC")
+                                or name.startswith("CARGO_TARGET_") and name.endswith("_RUNNER")):
+                      raise RuntimeError(f"Unsupported environment key {name}")
+              controls = {name: env.get(name) for name in ("RUSTUP_TOOLCHAIN", "CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "CARGO_BUILD_BUILD_DIR")}
+              presence = {name: bool(value) for name, value in env.items()
+                          if name in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTDOCFLAGS", "CARGO_ENCODED_RUSTDOCFLAGS")
+                          or name.startswith("CARGO_") and name.endswith(("_WRAPPER", "_RUSTFLAGS", "_RUSTDOCFLAGS"))}
+              return {"files": found, "controls": controls, "presence": presence}
+
+
+          def main():
+              if os.environ.get("CI") != "true":
+                  raise RuntimeError("Native configuration preflight runs in CI only")
+              cwd = pathlib.Path.cwd().resolve()
+              cargo_home = pathlib.Path(os.environ.get("CARGO_HOME") or pathlib.Path.home() / ".cargo").resolve()
+              result = inspect_configs(cwd, cargo_home, os.environ)
+              context_file = pathlib.Path(os.environ["ISSUE1850_DIAGNOSTICS"]) / "context.json"
+              context = json.loads(context_file.read_text(encoding="utf-8"))
+              context.update({"config": result, "python": {"executable": sys.executable, "version": sys.version}})
+              context_file.write_text(json.dumps(context, indent=2), encoding="utf-8")
+              print(json.dumps({"python": context["python"], "config": result}))
+
+
+          if __name__ == "__main__":
+              main()
+          PY_PREFLIGHT
+          node <<'NODE_CONTEXT'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const crypto = require('node:crypto');
+          const cp = require('node:child_process');
+          function requireValue(ok, message) { if (!ok) throw new Error(message); }
+          function cleanPath(value) {
+            requireValue(typeof value === 'string' && value.length > 0 && !/[\r\n]/.test(value), 'Invalid or newline path');
+            requireValue(path.isAbsolute(value), 'Expected native absolute path: ' + value);
+            return path.resolve(value);
+          }
+          function canonical(value) { return fs.realpathSync.native(cleanPath(value)); }
+          function key(value) { return process.platform === 'win32' ? value.toLowerCase() : value; }
+          function same(a, b) { return key(a) === key(b); }
+          function inside(root, value) {
+            const relative = path.relative(key(root), key(value));
+            return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));
+          }
+          function directory(value) {
+            const resolved = canonical(value);
+            requireValue(fs.statSync(resolved).isDirectory(), 'Missing library directory: ' + value);
+            return resolved;
+          }
+          function nativeHost(platform = process.platform, arch = process.arch) {
+            const host = {
+              'win32/x64': 'x86_64-pc-windows-msvc',
+              'linux/x64': 'x86_64-unknown-linux-gnu',
+              'darwin/arm64': 'aarch64-apple-darwin',
+              'darwin/x64': 'x86_64-apple-darwin'
+            }[platform + '/' + arch];
+            requireValue(host, 'Unsupported native host: ' + platform + '/' + arch);
+            return host;
+          }
+          function digest(file) { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); }
+          function checkout() {
+            const result = cp.spawnSync('git', ['rev-parse', 'HEAD'], {encoding: 'utf8'});
+            requireValue(!result.error && result.status === 0, 'git checkout identity failed');
+            const sha = result.stdout.trim();
+            requireValue(sha === process.env.GITHUB_SHA, 'Checkout differs from GITHUB_SHA');
+            return sha;
+          }
+          function command(program, args) {
+            const result = cp.spawnSync(program, args, {encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit']});
+            requireValue(!result.error && result.status === 0, program + ' preflight failed: ' + (result.error || result.status));
+            return result.stdout.trim();
+          }
+          function main() {
+            const dir = canonical(process.env.ISSUE1850_DIAGNOSTICS);
+            const contextFile = path.join(dir, 'context.json');
+            const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
+            const cwd = canonical(process.cwd());
+            const manifestPath = canonical(path.join(cwd, 'Cargo.toml'));
+            const sourcePath = canonical(path.join(cwd, 'src', 'lib.rs'));
+            requireValue(Number(process.versions.node.split('.')[0]) >= 22, 'Node >=22 required');
+            const versions = {node: {executable: process.execPath, version: process.version}, python: context.python,
+              cargo: command('cargo', ['--version']), rustc: command('rustc', ['-vV'])};
+            const host = versions.rustc.match(/^host: (.+)$/m)?.[1];
+            requireValue(host === nativeHost(), 'rustc host mismatch: ' + host + ' versus ' + process.platform + '/' + process.arch);
+            const targetLibdir = directory(command('rustc', ['--print', 'target-libdir']));
+            const metadataText = command('cargo', ['metadata', '--locked', '--no-deps', '--format-version=1']);
+            fs.writeFileSync(path.join(dir, 'metadata.json'), metadataText, {flag: 'wx'});
+            const metadata = JSON.parse(metadataText);
+            const packages = metadata.packages.filter(pkg => same(canonical(pkg.manifest_path), manifestPath));
+            requireValue(packages.length === 1, 'Expected exactly one manifest package');
+            const pkg = packages[0];
+            const targets = pkg.targets.filter(target => target.name === 'agentscommander_lib' && target.kind.includes('lib') && same(canonical(target.src_path), sourcePath));
+            requireValue(targets.length === 1, 'Expected exact library target');
+            // Compilation may create this directory; canonicalize it after success.
+            const targetDirectory = cleanPath(metadata.target_directory);
+            const checkoutSha = checkout();
+            requireValue(/^[a-f0-9]{40}$/i.test(process.env.ISSUE1850_PR_HEAD || ''), 'Missing PR head');
+            Object.assign(context, {runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+              job: process.env.GITHUB_JOB, checkoutSha, prHeadSha: process.env.ISSUE1850_PR_HEAD, cwd,
+              packageId: pkg.id, manifestPath, sourcePath, targetName: targets[0].name, host,
+              targetDirectory, targetLibdir, versions, buildStartedAt: new Date().toISOString()});
+            fs.writeFileSync(contextFile, JSON.stringify(context, null, 2));
+            console.log(JSON.stringify({preflight: context}));
+          }
+          main();
+          NODE_CONTEXT
+          cargo test --locked --release --lib issue_1850 --no-run --message-format=json-render-diagnostics | tee "$ISSUE1850_DIAGNOSTICS/cargo-messages.jsonl"
+          node <<'NODE_SELECT'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const crypto = require('node:crypto');
+          const cp = require('node:child_process');
+          function requireValue(ok, message) { if (!ok) throw new Error(message); }
+          function cleanPath(value) {
+            requireValue(typeof value === 'string' && value.length > 0 && !/[\r\n]/.test(value), 'Invalid or newline path');
+            requireValue(path.isAbsolute(value), 'Expected native absolute path: ' + value);
+            return path.resolve(value);
+          }
+          function canonical(value) { return fs.realpathSync.native(cleanPath(value)); }
+          function key(value) { return process.platform === 'win32' ? value.toLowerCase() : value; }
+          function same(a, b) { return key(a) === key(b); }
+          function inside(root, value) {
+            const relative = path.relative(key(root), key(value));
+            return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));
+          }
+          function directory(value) {
+            const resolved = canonical(value);
+            requireValue(fs.statSync(resolved).isDirectory(), 'Missing library directory: ' + value);
+            return resolved;
+          }
+          function nativeHost(platform = process.platform, arch = process.arch) {
+            const host = {
+              'win32/x64': 'x86_64-pc-windows-msvc',
+              'linux/x64': 'x86_64-unknown-linux-gnu',
+              'darwin/arm64': 'aarch64-apple-darwin',
+              'darwin/x64': 'x86_64-apple-darwin'
+            }[platform + '/' + arch];
+            requireValue(host, 'Unsupported native host: ' + platform + '/' + arch);
+            return host;
+          }
+          function digest(file) { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); }
+          function checkout() {
+            const result = cp.spawnSync('git', ['rev-parse', 'HEAD'], {encoding: 'utf8'});
+            requireValue(!result.error && result.status === 0, 'git checkout identity failed');
+            const sha = result.stdout.trim();
+            requireValue(sha === process.env.GITHUB_SHA, 'Checkout differs from GITHUB_SHA');
+            return sha;
+          }
+          function recordsFrom(text) {
+            const records = [];
+            for (const line of text.split(/\r?\n/)) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+              try { records.push(JSON.parse(trimmed)); }
+              catch (error) { if (/^[{[]/.test(trimmed)) throw new Error('Malformed Cargo JSON: ' + error.message); }
+            }
+            return records;
+          }
+          function selectArtifact(records, context) {
+            const finished = records.filter(record => record?.reason === 'build-finished');
+            requireValue(finished.length === 1 && finished[0].success === true, 'Expected one successful build-finished');
+            const matches = records.filter(record => record?.reason === 'compiler-artifact' &&
+              record.package_id === context.packageId && record.target?.name === context.targetName &&
+              Array.isArray(record.target.kind) && record.target.kind.includes('lib') && record.profile?.test === true &&
+              typeof record.executable === 'string' && record.executable.length > 0 &&
+              same(canonical(record.manifest_path), context.manifestPath) &&
+              same(canonical(record.target.src_path), context.sourcePath));
+            requireValue(matches.length === 1, 'Expected exactly one release harness record; got ' + matches.length);
+            const targetDirectory = directory(context.targetDirectory);
+            const deps = directory(path.join(targetDirectory, 'release', 'deps'));
+            const executable = canonical(matches[0].executable);
+            requireValue(fs.statSync(executable).isFile() && same(path.dirname(executable), deps) &&
+              (process.platform !== 'win32' || path.extname(executable).toLowerCase() === '.exe'), 'Invalid release executable location/type');
+            const loaderDirs = [];
+            function add(value) {
+              const dir = directory(value);
+              if (!loaderDirs.some(existing => same(existing, dir))) loaderDirs.push(dir);
+            }
+            for (const record of records) {
+              if (record?.reason !== 'build-script-executed') continue;
+              requireValue(Array.isArray(record.linked_paths), 'Missing linked_paths');
+              for (let linked of record.linked_paths) {
+                requireValue(typeof linked === 'string', 'Invalid linked path');
+                const prefix = linked.match(/^([^=]+)=/);
+                if (prefix) {
+                  requireValue(['native', 'dependency', 'crate', 'framework', 'all'].includes(prefix[1]), 'Unknown linked KIND: ' + prefix[1]);
+                  linked = linked.slice(prefix[0].length);
+                }
+                linked = cleanPath(linked);
+                // Resolve existing aliases before containment; absent outside paths are excluded.
+                const resolved = fs.existsSync(linked) ? canonical(linked) : linked;
+                if (inside(targetDirectory, resolved)) add(resolved);
+              }
+            }
+            add(deps);
+            add(path.join(targetDirectory, 'release'));
+            add(context.targetLibdir);
+            return {targetDirectory, executable, executableSha256: digest(executable),
+              executableBytes: fs.statSync(executable).size, loaderDirs};
+          }
+          function main() {
+            const dir = canonical(process.env.ISSUE1850_DIAGNOSTICS);
+            const context = JSON.parse(fs.readFileSync(path.join(dir, 'context.json'), 'utf8'));
+            requireValue(checkout() === context.checkoutSha, 'Checkout changed during build');
+            const selected = selectArtifact(recordsFrom(fs.readFileSync(path.join(dir, 'cargo-messages.jsonl'), 'utf8')), context);
+            const manifest = {schema: 1};
+            for (const name of ['runId', 'runAttempt', 'job', 'checkoutSha', 'prHeadSha', 'cwd', 'packageId',
+              'manifestPath', 'sourcePath', 'targetName', 'host', 'versions']) manifest[name] = context[name];
+            Object.assign(manifest, selected, {createdAt: new Date().toISOString()});
+            const filename = path.join(dir, 'manifest.json');
+            fs.writeFileSync(filename, JSON.stringify(manifest, null, 2), {flag: 'wx'});
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'manifest=' + filename + '\n');
+            console.log(JSON.stringify({selected: manifest, buildStartedAt: context.buildStartedAt, completedAt: new Date().toISOString()}));
+          }
+          main();
+          NODE_SELECT
+
+      # IS #1850: focused release execution of every issue_1850 test. Guards
+      # mirror the #1577 step: pipefail catches a failing test, the identifier
+      # greps catch a filter that selected nothing or something else, and the
+      # anchored result line requires a positive passing count with no failure.
+      - name: "IS #1850 focused release assertions (prebuilt harness)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 20
+        env:
+          ISSUE1850_PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          ISSUE1850_MANIFEST: ${{ steps.issue1850_release_build.outputs.manifest }}
+        run: |
+          set -euo pipefail
+          node <<'NODE_CONSUMER' 2>&1 | tee test-1850-release.log
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const crypto = require('node:crypto');
+          const cp = require('node:child_process');
+          function requireValue(ok, message) { if (!ok) throw new Error(message); }
+          function cleanPath(value) {
+            requireValue(typeof value === 'string' && value.length > 0 && !/[\r\n]/.test(value), 'Invalid or newline path');
+            requireValue(path.isAbsolute(value), 'Expected native absolute path: ' + value);
+            return path.resolve(value);
+          }
+          function canonical(value) { return fs.realpathSync.native(cleanPath(value)); }
+          function key(value) { return process.platform === 'win32' ? value.toLowerCase() : value; }
+          function same(a, b) { return key(a) === key(b); }
+          function inside(root, value) {
+            const relative = path.relative(key(root), key(value));
+            return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));
+          }
+          function directory(value) {
+            const resolved = canonical(value);
+            requireValue(fs.statSync(resolved).isDirectory(), 'Missing library directory: ' + value);
+            return resolved;
+          }
+          function nativeHost(platform = process.platform, arch = process.arch) {
+            const host = {
+              'win32/x64': 'x86_64-pc-windows-msvc',
+              'linux/x64': 'x86_64-unknown-linux-gnu',
+              'darwin/arm64': 'aarch64-apple-darwin',
+              'darwin/x64': 'x86_64-apple-darwin'
+            }[platform + '/' + arch];
+            requireValue(host, 'Unsupported native host: ' + platform + '/' + arch);
+            return host;
+          }
+          function digest(file) { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); }
+          function checkout() {
+            const result = cp.spawnSync('git', ['rev-parse', 'HEAD'], {encoding: 'utf8'});
+            requireValue(!result.error && result.status === 0, 'git checkout identity failed');
+            const sha = result.stdout.trim();
+            requireValue(sha === process.env.GITHUB_SHA, 'Checkout differs from GITHUB_SHA');
+            return sha;
+          }
+          function validateManifest(manifest) {
+            requireValue(manifest?.schema === 1, 'Invalid manifest schema');
+            for (const [name, envName] of [['runId', 'GITHUB_RUN_ID'], ['runAttempt', 'GITHUB_RUN_ATTEMPT'],
+              ['job', 'GITHUB_JOB'], ['prHeadSha', 'ISSUE1850_PR_HEAD']]) {
+              requireValue(typeof manifest[name] === 'string' && manifest[name].length > 0 && manifest[name] === process.env[envName], 'Manifest identity mismatch: ' + name);
+            }
+            requireValue(manifest.checkoutSha === checkout(), 'Stale manifest checkout');
+            requireValue(manifest.host === nativeHost(), 'Manifest native host mismatch');
+            const cwd = canonical(process.cwd());
+            requireValue(same(manifest.cwd, cwd) && same(canonical(manifest.cwd), cwd), 'Manifest cwd mismatch');
+            for (const [name, expected] of [['manifestPath', path.join(cwd, 'Cargo.toml')], ['sourcePath', path.join(cwd, 'src', 'lib.rs')]]) {
+              requireValue(same(manifest[name], canonical(expected)) && same(canonical(manifest[name]), canonical(expected)), 'Manifest path mismatch: ' + name);
+            }
+            requireValue(manifest.targetName === 'agentscommander_lib' && typeof manifest.packageId === 'string' && manifest.packageId.length > 0, 'Invalid package/target');
+            const targetDirectory = directory(manifest.targetDirectory);
+            requireValue(same(targetDirectory, manifest.targetDirectory), 'Noncanonical target directory');
+            const executable = canonical(manifest.executable);
+            requireValue(same(executable, manifest.executable) && same(path.dirname(executable), directory(path.join(targetDirectory, 'release', 'deps'))) &&
+              fs.statSync(executable).isFile() && (process.platform !== 'win32' || path.extname(executable).toLowerCase() === '.exe'), 'Invalid manifest executable');
+            requireValue(fs.statSync(executable).size === manifest.executableBytes && digest(executable) === manifest.executableSha256, 'Executable size/hash mismatch');
+            requireValue(Array.isArray(manifest.loaderDirs) && manifest.loaderDirs.length > 0, 'Missing loader directories');
+            const seen = new Set();
+            for (const value of manifest.loaderDirs) {
+              requireValue(same(directory(value), value) && !seen.has(key(value)), 'Invalid/duplicate loader directory');
+              seen.add(key(value));
+            }
+            requireValue(typeof manifest.createdAt === 'string' && Number.isFinite(Date.parse(manifest.createdAt)) && manifest.versions && typeof manifest.versions === 'object', 'Invalid manifest context');
+            return manifest;
+          }
+          function loaderEnvironment(manifest, inherited = process.env, platform = process.platform, paths = path) {
+            const env = {...inherited};
+            const variable = {win32: 'PATH', linux: 'LD_LIBRARY_PATH', darwin: 'DYLD_FALLBACK_LIBRARY_PATH'}[platform];
+            requireValue(variable, 'Unsupported loader platform: ' + platform);
+            let tail;
+            if (platform === 'win32') {
+              const keys = Object.keys(env).filter(name => name.toUpperCase() === 'PATH').sort();
+              tail = keys.length ? env[keys[0]] : undefined;
+              for (const name of keys) delete env[name];
+            } else {
+              tail = env[variable];
+              if (platform === 'darwin' && !Object.prototype.hasOwnProperty.call(env, variable)) {
+                requireValue(typeof env.HOME === 'string' && env.HOME.length > 0, 'HOME required for macOS loader fallback');
+                tail = [paths.join(env.HOME, 'lib'), '/usr/local/lib', '/usr/lib'].join(paths.delimiter);
+              }
+            }
+            env[variable] = manifest.loaderDirs.join(paths.delimiter) + (tail === undefined ? '' : paths.delimiter + tail);
+            return {env, variable};
+          }
+          function launch(manifest, env, variable, spawn = cp.spawn, args = ['issue_1850', '--test-threads=1', '--nocapture']) {
+            console.log(JSON.stringify({launchAt: new Date().toISOString(), executable: manifest.executable, argv: args,
+              checkoutSha: manifest.checkoutSha, prHeadSha: manifest.prHeadSha, runId: manifest.runId,
+              runAttempt: manifest.runAttempt, job: manifest.job, executableSha256: manifest.executableSha256, loaderVariable: variable}));
+            const child = spawn(manifest.executable, args, {shell: false, cwd: manifest.cwd, env, stdio: ['ignore', 'inherit', 'inherit']});
+            let failed = false;
+            child.on('error', error => {
+              failed = true;
+              console.error('Harness spawn error:', error);
+              process.exitCode = 1;
+            });
+            child.on('close', (code, signal) => {
+              console.log(JSON.stringify({completedAt: new Date().toISOString(), code, signal, spawnError: failed}));
+              if (failed || signal || !Number.isInteger(code)) {
+                console.error('Harness failed: error=' + failed + ' signal=' + signal + ' status=' + code);
+                process.exitCode = 1;
+              } else {
+                process.exitCode = code;
+              }
+            });
+          }
+          function main() {
+            const filename = canonical(process.env.ISSUE1850_MANIFEST);
+            const manifest = validateManifest(JSON.parse(fs.readFileSync(filename, 'utf8')));
+            const {env, variable} = loaderEnvironment(manifest);
+            launch(manifest, env, variable);
+          }
+          main();
+          NODE_CONSUMER
+
+          for name in \
+            'config::profile::tests::issue_1850_config_dir_name_table_is_profile_independent' \
+            'config::tests::issue_1850_unsuffixed_executables_select_canonical_home_for_every_probe_outcome' \
+            'config::tests::issue_1850_overrides_keep_precedence_and_identity_over_canonical_home' \
+            'config::tests::issue_1850_lazy_helper_never_probes_unsuffixed_or_overridden_routes' \
+            'config::tests::issue_1850_lazy_helper_probes_suffixed_routes_write_once'; do
+            grep -qF "test ${name} ..." test-1850-release.log || {
+              echo "::error::${name} never ran in the focused #1850 release run; it was renamed, moved, or gated out."
+              exit 1
+            }
+          done
+          grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed' test-1850-release.log || {
+            echo "::error::the focused #1850 release run did not report a positive passing count with zero failures."
+            exit 1
+          }
+
+      - name: "Upload IS #1850 release diagnostics"
+        uses: actions/upload-artifact@v7
+        if: always()
+        timeout-minutes: 5
+        with:
+          name: issue1850-release-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.issue1850_release_build.outputs.diagnostics-dir || format('{0}/issue1850-release-not-started', runner.temp) }}
+            src-tauri/test-1850-release.log
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6
+          include-hidden-files: false
+
   rust-fmt:
     name: rust-fmt
     # Skip branch-deletion push events while still requiring pull request validation.
@@ -2913,8 +3090,8 @@ jobs:
       - name: Test locked api-helper
         run: cargo test --locked -p session-bridge --bin agentscommander-api-helper
 
-  windows-release-cli-smoke:
-    name: windows-release-cli-smoke
+  release-cli-smoke-windows:
+    name: release-cli-smoke-windows
     # Skip branch-deletion push events while still requiring pull request validation.
     needs: ci-tier
     if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
@@ -2957,11 +3134,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: windows-release-cli-smoke-logs
+          name: release-cli-smoke-windows-logs
           path: artifacts/cli-release-smoke
           if-no-files-found: ignore
 
-  # IS #1850: Windows default-route acceptance on the ACTUAL account profile of
+  # IS #1850: Windows default-root acceptance on the ACTUAL account profile of
   # a disposable GitHub-hosted VM. `dirs::home_dir()` resolves through the
   # Windows known-folder API, not environment relocation, so a spoofed
   # HOME/USERPROFILE would prove nothing; a fresh hosted VM is the only honest
@@ -2971,9 +3148,9 @@ jobs:
   # known-folder HOME equal to the inherited USERPROFILE, refuses if any
   # `.agentscommander*` profile entry pre-exists, and runs all seven cases
   # serially with per-case inventories and cleanup. Ordinary Windows runs
-  # (rust-regression) take the refusal-only safety route instead.
-  issue-1850-windows-profile:
-    name: issue-1850-windows-profile (${{ matrix.mode }})
+  # (rust-regression-windows) take the refusal-only safety route instead.
+  issue-1850-profile-windows:
+    name: issue-1850-profile-windows (${{ matrix.mode }})
     # Skip branch-deletion push events while still requiring pull request validation.
     needs: ci-tier
     if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
@@ -3099,7 +3276,7 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $PSNativeCommandUseErrorActionPreference = $false
           $mode = '${{ matrix.mode }}'
-          $log = "issue-1850-windows-profile-$mode.log"
+          $log = "issue-1850-profile-windows-$mode.log"
           Write-Host "job=$env:GITHUB_JOB head=$env:GITHUB_SHA profile=$env:USERPROFILE runner=$env:RUNNER_ENVIRONMENT marker=$env:AC_ISSUE1850_DISPOSABLE_PROFILE"
 
           $cargoArgs = @('test', '--locked', '--manifest-path', 'src-tauri/Cargo.toml')
@@ -3148,8 +3325,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: issue-1850-windows-profile-${{ matrix.mode }}-logs
-          path: issue-1850-windows-profile-${{ matrix.mode }}.log
+          name: issue-1850-profile-windows-${{ matrix.mode }}-logs
+          path: issue-1850-profile-windows-${{ matrix.mode }}.log
           if-no-files-found: ignore
 
   frontend-regression:

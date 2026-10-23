@@ -103,6 +103,18 @@ The workflow publishes a status check named `validate-branch-name` on the branch
    git push -u origin <new-name>
    ```
 
+## Check locally before pushing
+
+`npm run ci:local` runs the cheap pull-request checks on your machine: every check of the
+`test-debt` job, `cargo fmt --check`, and clippy on the pinned Rust version. The
+cognitive-complexity check only warns, as it does in CI. A red check here is a red pull request
+avoided.
+
+- Run `npm ci` and `git fetch origin main` first, and commit your work: the ratchet checks compare
+  your last commit with `origin/main`, as CI does.
+- `npm run ci:local -- --no-rust` skips cargo fmt and clippy.
+- Clippy builds into `target/ci-local-<version>`, so your normal `target/` is not rebuilt.
+
 <!-- Status: as of issue #93, Phase 1 only. Phase 2 (UI dropdown) and Phase 3 (live reload via tracing-subscriber) are aspirational and may or may not ship. -->
 
 ## Log filter precedence

@@ -629,7 +629,7 @@ mod stub_impl {
 
 // #632 LOW-2 - the ONE automated proof that the job kills the whole tree (child AND
 // grandchild). Deliberately NOT #[ignore] and gated #[cfg(windows)] so it runs by
-// default in the `rust-regression` CI lane (runs-on: windows-latest, executes
+// default in the `rust-regression-windows` CI lane (runs-on: windows-latest, executes
 // `cargo test --lib --bins --tests`). Real processes; written defensively (generous
 // polls) to avoid flake. Do NOT add #[ignore] - that removes all executed coverage
 // of Part A.
