@@ -59,6 +59,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ALLOWLIST_FILE, parseAllowlist } from './sanitizing_baseline.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SKIP_DIRS = new Set(['target', 'node_modules', 'dist', '.git']);
@@ -822,6 +823,7 @@ export function main(argv, io = {}) {
   if (options.mode === 'capture') {
     try {
       return runCapture(options, {
+        stdout,
         stderr,
         getEnv,
         readCaptureText: io.readCaptureText,
@@ -1856,6 +1858,16 @@ export function runCapture(options, io = {}) {
     }
   }
 
+  // 12b. #3182: accepted findings. A function moved with an identical anchor
+  // pairs its NEW with its STALE; the rest must match sanitizing.allowlist.json,
+  // and an allowlist entry that matches nothing fails like a STALE.
+  const accepted = acceptFindings(newFindings, staleFindings, readAllowlistEntries(readWorkspace));
+  newFindings.splice(0, newFindings.length, ...accepted.newFindings);
+  staleFindings.splice(0, staleFindings.length, ...accepted.staleFindings);
+  const stdout = io.stdout ?? ((text) => console.log(text));
+  stdout(`cognitive gate: ACCEPTED ${accepted.count} finding(s) on ${options.platform} `
+    + `(${accepted.reanchored} re-anchored by hash, ${accepted.count - accepted.reanchored} from ${ALLOWLIST_FILE})`);
+
   // 13. Report mode never emits an Actions error annotation and never fails.
   const underActions = getEnv('GITHUB_ACTIONS') === 'true';
   if (options.report) {
@@ -1871,9 +1883,14 @@ export function runCapture(options, io = {}) {
         `${prefix}STALE baseline entry: ${finding.id}#${finding.anchor} (baseline ${finding.baseline}, observed ${finding.observed}) on ${options.platform}`,
       );
     }
+    for (const entry of accepted.unusedEntries) stderr(`${prefix}${staleAllowlistLine(entry, options.platform)}`);
     return 0;
   }
   const prefix = underActions ? '::error::' : '';
+  for (const entry of accepted.unusedEntries) {
+    stderr(`${prefix}${staleAllowlistLine(entry, options.platform)}`);
+    stderr(STALE_ALLOWLIST_REMEDIAL);
+  }
   for (const finding of newFindings) {
     if (finding.rendered !== null) stderr(finding.rendered);
     stderr(
@@ -1887,7 +1904,67 @@ export function runCapture(options, io = {}) {
     );
     stderr(STALE_REMEDIAL);
   }
-  return newFindings.length > 0 || staleFindings.length > 0 ? 1 : 0;
+  return newFindings.length > 0 || staleFindings.length > 0 || accepted.unusedEntries.length > 0 ? 1 : 0;
+}
+
+const STALE_ALLOWLIST_REMEDIAL =
+  `Remove this entry from ${ALLOWLIST_FILE}; the finding it accepted is gone.`;
+
+function staleAllowlistLine(entry, platform) {
+  return `STALE allowlist entry: rust:${entry.path}::${entry.symbol}#${entry.hash} (${entry.rule}) matches no finding on ${platform}`;
+}
+
+/** The `cog` entries of the versioned allowlist; an absent file accepts nothing. */
+function readAllowlistEntries(readWorkspace) {
+  let text;
+  try {
+    text = readWorkspace(ALLOWLIST_FILE);
+  } catch {
+    return [];
+  }
+  try {
+    return parseAllowlist(text).filter((entry) => entry.gate === 'cog');
+  } catch (error) {
+    throw new ConfigError(error.message);
+  }
+}
+
+/**
+ * Splits NEW and STALE findings into accepted and remaining. A NEW whose
+ * anchor equals a STALE's anchor under another id is the same function moved
+ * to another file (re-anchor by hash). The rest match `rule`, `path`,
+ * `symbol` and `hash` of an allowlist entry; entries left unused are returned.
+ */
+function acceptFindings(newFindings, staleFindings, entries) {
+  const staleLeft = [...staleFindings];
+  const newLeft = [];
+  let reanchored = 0;
+  for (const finding of newFindings) {
+    const index = staleLeft.findIndex((stale) => stale.anchor === finding.anchor && stale.id !== finding.id);
+    if (index === -1) {
+      newLeft.push(finding);
+    } else {
+      staleLeft.splice(index, 1);
+      reanchored += 2;
+    }
+  }
+  const used = new Set();
+  const listed = (rule) => (finding) => {
+    const entry = entries.find((candidate) => !used.has(candidate) && candidate.rule === rule
+      && `rust:${candidate.path}::${candidate.symbol}` === finding.id && candidate.hash === finding.anchor);
+    if (entry === undefined) return true;
+    used.add(entry);
+    return false;
+  };
+  const remainingNew = newLeft.filter(listed('new'));
+  const remainingStale = staleLeft.filter(listed('stale'));
+  return {
+    newFindings: remainingNew,
+    staleFindings: remainingStale,
+    unusedEntries: entries.filter((entry) => !used.has(entry)),
+    reanchored,
+    count: reanchored + used.size,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -3214,6 +3291,69 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       ]);
       expectEqual(fixture.run(), 0, 'a matching anchor passes');
       expectEqual(fixture.state.stderr.length, 0, 'a pass prints nothing');
+    }],
+    ['case 79: #3182 a moved function with the same anchor is accepted as a re-anchor', () => {
+      const workspace = { 'src/b.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
+      const fixture = captureFixture({
+        capture: jsonl(cognitiveRecord({ file: 'src/b.rs', line: 1, column: 1, slice: 'heavy' }), buildFinished()),
+        workspace,
+      });
+      workspace['cognitive-complexity.baseline.json'] = baselineJson([
+        { id: 'rust:src/a.rs::heavy', sites: { windows: [anchorFor('src/b.rs', 1, 1, fixture.reader)] } },
+      ]);
+      expectEqual(fixture.run(), 0, 'a same-anchor move passes');
+      expectEqual(fixture.state.stderr.length, 0, 'an accepted move prints no finding');
+      expectEqual(fixture.state.stdout.at(-1),
+        `cognitive gate: ACCEPTED 2 finding(s) on windows (2 re-anchored by hash, 0 from ${ALLOWLIST_FILE})`,
+        'the accepted count is printed');
+    }],
+    ['case 80: #3182 allowlisted NEW and STALE are accepted, unlisted ones still fail', () => {
+      const workspace = { 'src/b.rs': HEAVY_SOURCE, 'src/c.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
+      const fixture = captureFixture({
+        capture: jsonl(
+          cognitiveRecord({ file: 'src/b.rs', line: 1, column: 1, slice: 'heavy' }),
+          cognitiveRecord({ file: 'src/c.rs', line: 1, column: 1, slice: 'heavy' }),
+          buildFinished(),
+        ),
+        workspace,
+      });
+      const observed = anchorFor('src/b.rs', 1, 1, fixture.reader);
+      const old = otherAnchor(observed);
+      workspace['cognitive-complexity.baseline.json'] = baselineJson([
+        { id: 'rust:src/a.rs::heavy', sites: { windows: [old] } },
+      ]);
+      const entry = (rule, file, hash) => ({ gate: 'cog', rule, path: file, symbol: 'heavy', hash,
+        reason: 'moved and reshaped', issue: 3182, since: '2026-10-23' });
+      workspace[ALLOWLIST_FILE] = JSON.stringify({ version: 1,
+        entries: [entry('new', 'src/b.rs', observed), entry('stale', 'src/a.rs', old)] });
+      expectEqual(fixture.run(), 1, 'the unlisted src/c.rs NEW still fails');
+      const lines = findingLines(fixture, 'NEW');
+      if (lines.length !== 1 || !lines[0].includes('rust:src/c.rs::heavy')) {
+        throw new Error(`expected only the unlisted NEW, got ${JSON.stringify(lines)}`);
+      }
+      expectEqual(findingLines(fixture, 'STALE').length, 0, 'the listed STALE is accepted');
+      if (!fixture.state.stdout.some((line) => line.includes('ACCEPTED 2 finding(s)'))) {
+        throw new Error(`expected two accepted findings, got ${JSON.stringify(fixture.state.stdout)}`);
+      }
+    }],
+    ['case 81: #3182 an allowlist entry that matches no finding fails the gate', () => {
+      const workspace = { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
+      const fixture = captureFixture({
+        capture: jsonl(cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' }), buildFinished()),
+        workspace,
+      });
+      const anchor = anchorFor('src/a.rs', 1, 1, fixture.reader);
+      workspace['cognitive-complexity.baseline.json'] = baselineJson([
+        { id: 'rust:src/a.rs::heavy', sites: { windows: [anchor] } },
+      ]);
+      workspace[ALLOWLIST_FILE] = JSON.stringify({ version: 1, entries: [{ gate: 'cog', rule: 'new',
+        path: 'src/gone.rs', symbol: 'heavy', hash: otherAnchor(anchor), reason: 'moved', issue: 3182,
+        since: '2026-10-23' }] });
+      expectEqual(fixture.run(), 1, 'a stale allowlist entry exits 1');
+      if (!fixture.state.stderr.some((line) => line.startsWith('STALE allowlist entry: rust:src/gone.rs::heavy#'))) {
+        throw new Error(`expected the stale allowlist line, got ${JSON.stringify(fixture.state.stderr)}`);
+      }
+      if (!fixture.state.stderr.includes(STALE_ALLOWLIST_REMEDIAL)) throw new Error('the remedial line was not printed');
     }],
     ['case 2: an observed id absent from the baseline is a NEW in enforcing mode', () => {
       const fixture = captureFixture({
