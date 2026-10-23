@@ -400,12 +400,12 @@ pub(crate) const ALLOWED_HOST_CRATE_REFERENCES: [(&str, &str); 0] = [];
 /// Every `(file, child)` reference the constant's home is allowed to make under
 /// `super::`, sorted.
 ///
-/// One row, the `use super::*;` in that file's own `#[cfg(test)] mod tests`,
-/// where `super` is `crate::config` itself. From `src/config/mod.rs`, `super::`
-/// at module level would mean the crate root, so a row appearing here for any
-/// other child is a reference from `config` up into the crate root's children,
+/// Empty. The test module's `use super::*;` moved to `src/config/tests.rs`,
+/// which this observation does not read. From `src/config/mod.rs`, `super::`
+/// at module level would mean the crate root, so any row appearing here
+/// is a reference from `config` up into the crate root's children,
 /// which is the inversion this guard exists to refuse.
-pub(crate) const ALLOWED_HOST_SUPER_REFERENCES: [(&str, &str); 1] = [("src/config/mod.rs", "*")];
+pub(crate) const ALLOWED_HOST_SUPER_REFERENCES: [(&str, &str); 0] = [];
 
 /// Every `(file, child)` reference the guarded module is allowed to make under
 /// `self::`, sorted.

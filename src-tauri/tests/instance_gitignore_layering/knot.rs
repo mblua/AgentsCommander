@@ -244,11 +244,11 @@ fn the_constant_home_names_nothing_at_all() {
     );
 
     assert_eq!(
-        seen.globs, 1,
-        "{CONSTANT_HOME} must contain exactly one glob import.\n\
+        seen.globs, 0,
+        "{CONSTANT_HOME} must contain no glob import.\n\
          \n\
-         WHY: the one that exists is the `use super::*;` inside this file's own \
-         `#[cfg(test)] mod tests`, where `super` is `crate::config` itself. \
+         WHY: the test module's `use super::*;` now lives in `src/config/tests.rs`, \
+         a separate module this observation does not read. \
          Written at the TOP LEVEL of this file the same three words mean \
          `use crate::*;`, which puts every child of the crate root in scope and \
          gives `config` an outgoing arc to `agentscommander_lib`. That ends the \
@@ -263,9 +263,8 @@ fn the_constant_home_names_nothing_at_all() {
          asserted this count since day one; this test did not, and that \
          asymmetry was the hole.\n\
          \n\
-         INSTEAD: import what you need by name. If the test module genuinely \
-         needs more of its parent, add the names to its existing glob, not a \
-         second one.\n\
+         INSTEAD: import what you need by name, and keep the test module's glob \
+         in `src/config/tests.rs`.\n\
          \n\
          OBSERVED: {} `super::`-anchored glob imports",
         seen.globs
@@ -303,9 +302,9 @@ fn the_constant_home_names_nothing_at_all() {
         expected(&ALLOWED_HOST_SUPER_REFERENCES),
         "the set of names reached by `super::` from {CONSTANT_HOME} moved.\n\
          \n\
-         The one allowed row is the `use super::*;` in that file's own \
-         `#[cfg(test)] mod tests`, where `super` is `crate::config` itself. At \
-         the top level of this file `super::` means the CRATE ROOT, so any other \
+         The table is empty: the test module's `use super::*;` moved to \
+         `src/config/tests.rs`. At \
+         the top level of this file `super::` means the CRATE ROOT, so any \
          row here is `config` reaching up into `crate`'s children, which is the \
          inversion this guard refuses. It would not even show up under the \
          `crate::` anchor above.\n\
