@@ -301,10 +301,19 @@ fn scan_once_calls_archived_candidate_filter() {
         .next()
         .expect("active_project_candidates body");
     assert!(wrapper.contains("active_project_candidates_for_owner(&owner).await"));
-    let candidates = production
-        .find("async fn active_project_candidates_for_owner(owner: &SettingsState) -> Vec<ProjectResolution> {")
+    let state = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/loops/scheduler/state.rs"
+    ))
+    .expect("read scheduler/state.rs");
+    let candidates = state
+        .find(concat!(
+            "async fn active_project_candidates_for_owner(\n",
+            "    owner: &SettingsState,\n",
+            ") -> Vec<ProjectResolution> {"
+        ))
         .expect("active_project_candidates_for_owner definition");
-    let body = production[candidates..]
+    let body = state[candidates..]
         .split("fn unresolved_targets_in_project(")
         .next()
         .expect("active_project_candidates_for_owner body");
@@ -317,7 +326,8 @@ fn scan_once_calls_archived_candidate_filter() {
 
     assert!(
         normalize < retain,
-        "active_project_candidates_for_owner must subtract archived candidates after normalizing archived roots"
+        "active_project_candidates_for_owner must subtract archived candidates after normalizing \
+            archived roots"
     );
 }
 
