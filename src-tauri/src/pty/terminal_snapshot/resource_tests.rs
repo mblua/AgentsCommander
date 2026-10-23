@@ -533,8 +533,17 @@ fn run_resource_child() {
     assert!(concurrency_stats.peak_bytes <= concurrent_bound);
     assert!(concurrency_stats.large_peak_bytes >= 2 * MAX_RGB_BYTES);
 
+    let live_tail = capture_stats.live_bytes
+        + json_stats.live_bytes
+        + png_stats.live_bytes
+        + concurrency_stats.live_bytes;
     eprintln!(
-        "snapshot_resource_evidence cells={} capture_peak={} json_bytes={} json_wire={} json_peak={} rgb_bytes={} png_bytes={} base64_bytes={} png_wire={} render_peak={} encode_peak={} decode_peak={} render_ms={} concurrent_live={} concurrent_peak={} large_peak={} largest_allocation={} live_tail={}",
+        concat!(
+            "snapshot_resource_evidence cells={} capture_peak={} json_bytes={} json_wire={} ",
+            "json_peak={} rgb_bytes={} png_bytes={} base64_bytes={} png_wire={} ",
+            "render_peak={} encode_peak={} decode_peak={} render_ms={} concurrent_live={} ",
+            "concurrent_peak={} large_peak={} largest_allocation={} live_tail={}"
+        ),
         capture_measure,
         capture_stats.peak_bytes,
         json_bytes,
@@ -552,7 +561,7 @@ fn run_resource_child() {
         concurrency_stats.peak_bytes,
         concurrency_stats.large_peak_bytes,
         concurrency_stats.largest_allocation,
-        capture_stats.live_bytes + json_stats.live_bytes + png_stats.live_bytes + concurrency_stats.live_bytes,
+        live_tail,
     );
 }
 
