@@ -204,7 +204,8 @@ fn agy_filter_keep_line_drops_logo_rows() {
         "▄▀▀▄        Antigravity CLI 1.1.19",
         "     ▀▀▀▀▀▀       mariano.blua@gmail.com",
         "    ▀▀▀▀▀▀▀▀      Gemini 3.7 Flash (High)",
-        "   ▄▀▀    ▀▀▄     D:/0_repos/AgentsCommander_iac/.ac/wg-21-ac-dev-team-v3/__agent_ac-cli-tester-v3",
+        "   ▄▀▀    ▀▀▄     \
+        D:/0_repos/AgentsCommander_iac/.ac/wg-21-ac-dev-team-v3/__agent_ac-cli-tester-v3",
     ];
     for line in horizontal {
         assert!(
@@ -234,8 +235,10 @@ fn agy_filter_keep_line_pins_frame_031527_rows() {
 
     // The 4 exact rows of the vertical-logo response frame (L19-33),
     // with explicit outcomes.
-    assert!(!filter.keep_line("  mariano.blua@gmail.com (Google AI Pro)")); // DROPPED: account row by `Google AI Pro` pattern
-    assert!(!filter.keep_line("  Gemini 3.7 Flash (High)")); // DROPPED: model row by ` (High)` pattern
+    // DROPPED: account row by `Google AI Pro` pattern
+    assert!(!filter.keep_line("  mariano.blua@gmail.com (Google AI Pro)"));
+    // DROPPED: model row by ` (High)` pattern
+    assert!(!filter.keep_line("  Gemini 3.7 Flash (High)"));
     assert!(filter.keep_line(
         "  D:/0_repos/AgentsCommander_iac/.ac/wg-21-ac-dev-team-v3/__agent_ac-cli-tester-v3"
     )); // KEPT: path row — documented residual (plan §10.4)
@@ -248,12 +251,14 @@ fn agy_filter_keep_line_pins_frame_031527_rows() {
 fn agy_filter_keep_line_drops_hint_rows() {
     let filter = AgyFilter;
 
-    assert!(!filter.keep_line(
-        "? for shortcuts                                                                                                                          Gemini 3.7 Flash · high"
-    )); // frame 03:14:29.703
-    assert!(!filter.keep_line(
-        "esc to cancel                                                                                                                            Gemini 3.7 Flash · high"
-    )); // frame 03:14:47.504
+    assert!(!filter.keep_line(concat!(
+        "? for shortcuts                                                             ",
+        "                                                             Gemini 3.7 Flash · high",
+    ))); // frame 03:14:29.703
+    assert!(!filter.keep_line(concat!(
+        "esc to cancel                                                              ",
+        "                                                              Gemini 3.7 Flash · high",
+    ))); // frame 03:14:47.504
 }
 
 #[test]
@@ -316,7 +321,10 @@ fn agy_filter_keep_line_keeps_content() {
     // Real response content, frame 03:15:27 and 03:23:46.
     assert!(filter
         .keep_line("  ¡Hola! Soy ac-cli-tester-v3. Estoy listo para ayudarte con la validación"));
-    assert!(filter.keep_line("He ejecutado la validación en vivo de las 5 filas PENDING asignadas"));
+    assert!(filter.keep_line(
+        "He ejecutado la validación en vivo de las 5 filas PENDING \
+    asignadas"
+    ));
     // A normal code/tool line.
     assert!(filter.keep_line("  let info = BridgeInfo { bot_id: bot.id.clone() };"));
     // Tool-call activity rows pass intentionally (informative, not chrome).

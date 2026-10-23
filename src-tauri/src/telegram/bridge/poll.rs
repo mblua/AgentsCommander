@@ -3,11 +3,14 @@ use super::PollNetworkLogAction;
 use super::{BridgeLogger, TelegramErrKind};
 use crate::network::NetworkBackoff;
 use crate::network::OutboundNetwork;
+use crate::pty::inject::inject_text_into_session;
 use crate::pty::manager::PtyManager;
+use crate::session::manager::SessionManager;
 use crate::telegram::api;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
+use tokio::sync::RwLock;
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -67,7 +70,8 @@ pub(super) async fn poll_task<R: tauri::Runtime>(
                         };
                         log::log!(
                             level,
-                            "[bridge] Initial getUpdates network error kind={} session_id={} sustained={} err={}{}",
+                            "[bridge] Initial getUpdates network error kind={} session_id={} \
+                            sustained={} err={}{}",
                             kind.as_str(),
                             session_id_str,
                             sustained,
@@ -83,7 +87,8 @@ pub(super) async fn poll_task<R: tauri::Runtime>(
                         );
                         log::log!(
                             level,
-                            "[bridge] Initial getUpdates network error suppressed kind={} session_id={}",
+                            "[bridge] Initial getUpdates network error suppressed kind={} \
+                            session_id={}",
                             kind.as_str(),
                             session_id_str
                         );
@@ -133,7 +138,8 @@ pub(super) async fn poll_task<R: tauri::Runtime>(
                                 );
                                 log::log!(
                                     level,
-                                    "[bridge] Telegram poll recovered session_id={} outage_seconds={} suppressed_total={} sustained={}",
+                                    "[bridge] Telegram poll recovered session_id={} \
+                                    outage_seconds={} suppressed_total={} sustained={}",
                                     session_id_str,
                                     outage_seconds,
                                     suppressed_total,
@@ -150,66 +156,46 @@ pub(super) async fn poll_task<R: tauri::Runtime>(
                             offset = update.update_id + 1;
 
                             if update.chat_id != chat_id {
-                                logger.log("POLL_SKIP", &session_id_str, &format!("wrong chat_id={}", update.chat_id));
+                                logger.log(
+                                    "POLL_SKIP",
+                                    &session_id_str,
+                                    &format!("wrong chat_id={}", update.chat_id),
+                                );
                                 continue;
                             }
 
                             let inject_text = match update.content {
                                 api::TelegramContent::Text(text) => {
-                                    logger.log("RECV_TG", &session_id_str, &format!("from={} text={}", update.from_name, text));
+                                    logger.log(
+                                        "RECV_TG",
+                                        &session_id_str,
+                                        &format!("from={} text={}", update.from_name, text),
+                                    );
                                     text
                                 }
                                 api::TelegramContent::Voice { file_id } => {
-                                    logger.log("RECV_TG_VOICE", &session_id_str, &format!("from={} file_id={}", update.from_name, file_id));
-
-                                    let settings = app.state::<crate::config::settings::SettingsState>();
-                                    let cfg = settings.read().await;
-                                    let api_key = cfg.gemini_api_key.clone();
-                                    let model_raw = cfg.gemini_model.clone();
-                                    drop(cfg);
-
-                                    let model = if model_raw.is_empty() { "gemini-2.5-flash".to_string() } else { model_raw };
-
-                                    if api_key.is_empty() {
-                                        log::warn!("[bridge] Voice message received but no Gemini API key configured");
-                                        let _ = api::send_message(&network, &token, chat_id, "Cannot transcribe voice: Gemini API key not configured").await;
-                                        continue;
-                                    }
-
-                                    let file_path = match api::get_file(&network, &token, &file_id).await {
-                                        Ok(fp) => fp,
-                                        Err(e) => {
-                                            logger.log("VOICE_ERR", &session_id_str, &format!("get_file failed: {}", e));
-                                            let _ = api::send_message(&network, &token, chat_id, &format!("Failed to get voice file: {}", e)).await;
-                                            continue;
-                                        }
-                                    };
-
-                                    let audio_bytes = match api::download_file(&network, &token, &file_path).await {
-                                        Ok(bytes) => bytes,
-                                        Err(e) => {
-                                            logger.log("VOICE_ERR", &session_id_str, &format!("download failed: {}", e));
-                                            let _ = api::send_message(&network, &token, chat_id, &format!("Failed to download voice: {}", e)).await;
-                                            continue;
-                                        }
-                                    };
-
-                                    match crate::commands::voice::transcribe_audio_with_network(&network, &audio_bytes, "audio/ogg", &api_key, &model).await {
-                                        Ok(text) => {
-                                            logger.log("VOICE_OK", &session_id_str, &format!("transcribed {} chars", text.len()));
-                                            let _ = api::send_message(&network, &token, chat_id, &format!("Transcribed: {}", text)).await;
-                                            text
-                                        }
-                                        Err(e) => {
-                                            logger.log("VOICE_ERR", &session_id_str, &format!("transcription failed: {}", e));
-                                            let _ = api::send_message(&network, &token, chat_id, &format!("Transcription failed: {}", e)).await;
-                                            continue;
-                                        }
+                                    match transcribe_voice_update(
+                                        &app,
+                                        &network,
+                                        &token,
+                                        chat_id,
+                                        &session_id_str,
+                                        &mut logger,
+                                        &update.from_name,
+                                        &file_id,
+                                    )
+                                    .await
+                                    {
+                                        Some(text) => text,
+                                        None => continue,
                                     }
                                 }
                             };
 
-                            if let Err(e) = crate::pty::inject::inject_text_into_session(&app, session_id, &inject_text).await {
+                            if let Err(e) =
+                                inject_text_into_session(&app, session_id, &inject_text)
+                                    .await
+                            {
                                 logger.log("PTY_ERR", &session_id_str, &e.to_string());
                                 log::error!("Failed to write Telegram input to PTY: {}", e);
                             }
@@ -235,7 +221,7 @@ pub(super) async fn poll_task<R: tauri::Runtime>(
 
                             let tg_prompt = format!("[TG] {}", inject_text);
                             {
-                                let mgr_state = app.state::<std::sync::Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
+                                let mgr_state = app.state::<Arc<RwLock<SessionManager>>>();
                                 let mgr = mgr_state.read().await;
                                 if let Ok(uuid) = uuid::Uuid::parse_str(&session_id_str) {
                                     mgr.set_last_prompt(uuid, tg_prompt.clone()).await;
@@ -260,7 +246,8 @@ pub(super) async fn poll_task<R: tauri::Runtime>(
                             network_error_state.reset_without_recovery();
                             logger.log("POLL_ERR", &session_id_str, &msg);
                             log::error!(
-                                "[bridge] Telegram poll error kind={} session_id={} pid={} bot_id={} err={}",
+                                "[bridge] Telegram poll error kind={} session_id={} pid={} \
+                                bot_id={} err={}",
                                 kind.as_str(),
                                 session_id_str,
                                 pid,
@@ -294,7 +281,8 @@ pub(super) async fn poll_task<R: tauri::Runtime>(
                                 };
                                 log::log!(
                                     level,
-                                    "[bridge] Telegram poll network error kind={} session_id={} pid={} bot_id={} sustained={} err={}{}",
+                                    "[bridge] Telegram poll network error kind={} session_id={} \
+                                    pid={} bot_id={} sustained={} err={}{}",
                                     kind.as_str(),
                                     session_id_str,
                                     pid,
@@ -312,13 +300,15 @@ pub(super) async fn poll_task<R: tauri::Runtime>(
                                 );
                                 log::log!(
                                     level,
-                                    "[bridge] Telegram poll network error suppressed kind={} session_id={}",
+                                    "[bridge] Telegram poll network error suppressed kind={} \
+                                    session_id={}",
                                     kind.as_str(),
                                     session_id_str
                                 );
                             }
                             PollNetworkLogAction::Recovery { .. } | PollNetworkLogAction::None => {
-                                unreachable!("record_network_failure only returns Failure or Suppressed")
+                                unreachable!("record_network_failure only returns Failure or \
+                                Suppressed")
                             }
                         }
                         if !sleep_backoff_or_cancel(
@@ -364,4 +354,122 @@ pub(super) fn new_poll_backoff(session_id: &str) -> NetworkBackoff {
         Duration::from_secs(60),
         NetworkBackoff::salt_from_str(session_id),
     )
+}
+
+/// Transcribes one inbound Telegram voice message. Returns `None` when the
+/// update must be skipped (no API key, download or transcription failure).
+#[allow(clippy::too_many_arguments)]
+async fn transcribe_voice_update<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    network: &OutboundNetwork,
+    token: &str,
+    chat_id: i64,
+    session_id_str: &str,
+    logger: &mut BridgeLogger,
+    from_name: &str,
+    file_id: &str,
+) -> Option<String> {
+    logger.log(
+        "RECV_TG_VOICE",
+        session_id_str,
+        &format!("from={} file_id={}", from_name, file_id),
+    );
+
+    let settings = app.state::<crate::config::settings::SettingsState>();
+    let cfg = settings.read().await;
+    let api_key = cfg.gemini_api_key.clone();
+    let model_raw = cfg.gemini_model.clone();
+    drop(cfg);
+
+    let model = if model_raw.is_empty() {
+        "gemini-2.5-flash".to_string()
+    } else {
+        model_raw
+    };
+
+    if api_key.is_empty() {
+        log::warn!("[bridge] Voice message received but no Gemini API key configured");
+        let _ = api::send_message(
+            network,
+            token,
+            chat_id,
+            "Cannot transcribe voice: Gemini API key not configured",
+        )
+        .await;
+        return None;
+    }
+
+    let file_path = match api::get_file(network, token, file_id).await {
+        Ok(fp) => fp,
+        Err(e) => {
+            logger.log(
+                "VOICE_ERR",
+                session_id_str,
+                &format!("get_file failed: {}", e),
+            );
+            let _ = api::send_message(
+                network,
+                token,
+                chat_id,
+                &format!("Failed to get voice file: {}", e),
+            )
+            .await;
+            return None;
+        }
+    };
+
+    let audio_bytes = match api::download_file(network, token, &file_path).await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            logger.log(
+                "VOICE_ERR",
+                session_id_str,
+                &format!("download failed: {}", e),
+            );
+            let _ = api::send_message(
+                network,
+                token,
+                chat_id,
+                &format!("Failed to download voice: {}", e),
+            )
+            .await;
+            return None;
+        }
+    };
+
+    match crate::commands::voice::transcribe_audio_with_network(
+        network,
+        &audio_bytes,
+        "audio/ogg",
+        &api_key,
+        &model,
+    )
+    .await
+    {
+        Ok(text) => {
+            logger.log(
+                "VOICE_OK",
+                session_id_str,
+                &format!("transcribed {} chars", text.len()),
+            );
+            let _ =
+                api::send_message(network, token, chat_id, &format!("Transcribed: {}", text)).await;
+            Some(text)
+        }
+        Err(e) => {
+            logger.log(
+                "VOICE_ERR",
+                session_id_str,
+                &format!("transcription failed: {}", e),
+            );
+            let _ = api::send_message(
+                network,
+                token,
+                chat_id,
+                &format!("Transcription failed: {}", e),
+            )
+            .await;
+            None
+        }
+    }
 }
