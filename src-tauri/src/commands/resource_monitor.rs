@@ -137,7 +137,8 @@ pub(crate) async fn execute_resource_kill_transaction<R: tauri::Runtime>(
                 // route is torn down and the tile released within bounded wall time.
                 if transaction.runtime_snapshot(session_id).has_pty {
                     log::warn!(
-                        "[resource-monitor] PTY teardown failed after verified kill and PTY still live session={}: {}; retrying bounded deferred teardown",
+                        "[resource-monitor] PTY teardown failed after verified kill and PTY still \
+                        live session={}: {}; retrying bounded deferred teardown",
                         session_id,
                         error
                     );
@@ -340,7 +341,8 @@ async fn finalize_dead_pty_route_bounded<R: tauri::Runtime>(
         DEFER_RETRY_FAILURES.with(|c| c.set(c.get() + 1));
     }
     log::error!(
-        "[resource-monitor] bounded deferred PTY teardown exhausted {} attempts session={}; escalating to best-effort force-close",
+        "[resource-monitor] bounded deferred PTY teardown exhausted {} attempts session={}; \
+        escalating to best-effort force-close",
         PTY_ROUTE_RETRY_ATTEMPTS,
         session_id
     );
