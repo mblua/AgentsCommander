@@ -1,4 +1,4 @@
-use crate::config::coding_agent_mutations::*;
+use super::*;
 use serde_json::json;
 
 #[test]

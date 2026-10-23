@@ -27,7 +27,9 @@ pub(crate) fn get_identity_transition(
     source: &crate::config::settings::SourceRef,
     operation_id: &str,
 ) -> Result<IdentityTransitionRead, crate::config::settings::SourceCoordinationError> {
-    use crate::config::settings::*;
+    use crate::config::settings::{
+        read_source_transition, source_protocol_active, SourceTransitionPhase,
+    };
     let status = read_source_transition(context, source, operation_id)?;
     let state = match &status.summary {
         None => IdentityTransitionReadState::NotFound,
@@ -171,7 +173,13 @@ pub(super) fn commit_source_candidate_internal(
     candidate: &serde_json::Value,
     reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
-    use crate::config::settings::*;
+    use crate::config::settings::{
+        prepare_source_candidate_with_original_links, read_own_source_journal,
+        read_source_snapshot, source_original_mappings, source_transition_digest,
+        update_own_source_journal_with_validation, IdentityReferenceError, IdentityWriteLease,
+        LegacyCompatibilityOrigin, OriginInputs, SourceCoordinationError, SourceInventoryProof,
+        SourceLocalProgress, SourceWriteContext,
+    };
     let identity = IdentityWriteLease::acquire(context, std::time::Duration::ZERO)?;
     let lease = SourceWriteContext::acquire(context, source, &identity)?;
     let payload_digest = source_transition_digest(&(source, expected, candidate))?;
@@ -362,7 +370,10 @@ pub(super) fn resume_identity_transition_internal(
     expected: &SourceResumeExpectation,
     reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
-    use crate::config::settings::*;
+    use crate::config::settings::{
+        read_own_source_journal, IdentityReferenceError, IdentityWriteLease,
+        SourceCoordinationError, SourceInventoryInputs, SourceInventoryProof, SourceWriteContext,
+    };
     let identity = IdentityWriteLease::acquire(context, std::time::Duration::ZERO)?;
     let lease = SourceWriteContext::acquire(context, source, &identity)?;
     let (local_revision, journal) = read_own_source_journal(context)?;
@@ -475,7 +486,14 @@ pub(super) fn drive_identity_transition(
     use crate::config::coding_agent_profiles::{
         apply_identity_reference_patch, prepare_identity_reference_patch,
     };
-    use crate::config::settings::*;
+    use crate::config::settings::{
+        publish_source_intent_with_validation, read_own_source_journal,
+        recover_source_target_packet, release_identity_reference_pair_guarded,
+        source_complete_proof, source_transition_digest, source_transition_digest_bytes,
+        update_own_source_journal_with_validation, verify_completed_source_target,
+        IdentityReferenceError, IdentityReferenceRequest, SourceCoordinationError,
+        SourceLocalProgress, SourcePacketRecord, SourceReceipt, SourceRevision,
+    };
     let validate = || authority.validate(identity, lease, context);
     rediscover()?;
     validate()?;

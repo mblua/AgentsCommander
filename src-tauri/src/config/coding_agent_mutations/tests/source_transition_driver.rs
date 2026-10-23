@@ -1,5 +1,19 @@
-use crate::config::coding_agent_mutations::*;
-use crate::config::settings::*;
+use super::*;
+use crate::config::settings::{
+    configuration_identity, configure_source_factory_guard_cut, list_active_sources,
+    prepare_source_candidate, prepare_source_candidate_with_original_links, profile_identity,
+    publish_source_intent_with_validation, read_identity_reference_physical,
+    read_own_source_intent, read_own_source_journal, read_source_snapshot,
+    source_factory_guard_calls, source_factory_guard_cut_armed, source_transition_digest,
+    source_transition_digest_bytes, source_transition_effect_counts,
+    source_transition_publication_counts, source_transition_test_locator,
+    update_own_source_journal_with_validation, ConfigurationRef, IdentityReferenceError,
+    IdentityReferencePhysicalState, IdentityWriteLease, LegacyCompatibilityOrigin, OriginInputs,
+    PreparedSourceCandidate, SourceAvailability, SourceCoordinationError, SourceInventoryInputs,
+    SourceInventoryProof, SourceKind, SourceLocalInventory, SourceLocalProgress,
+    SourcePreparationError, SourceReadContext, SourceReceipt, SourceRef, SourceRevision,
+    SourceWriteContext,
+};
 
 mod driver;
 mod durable_resume;
