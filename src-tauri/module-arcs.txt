@@ -2246,6 +2246,10 @@ agentscommander_lib::pty::remote_watcher::sweeper_state -> agentscommander_lib::
 agentscommander_lib::pty::remote_watcher::sweeper_state -> agentscommander_lib::session::manager
 agentscommander_lib::pty::spawn_diagnostics -> agentscommander_lib::session::profile
 agentscommander_lib::pty::spawn_diagnostics -> agentscommander_lib::telegram::redact
+agentscommander_lib::pty::spawn_diagnostics::registry -> agentscommander_lib::pty::spawn_diagnostics
+agentscommander_lib::pty::spawn_diagnostics::registry -> agentscommander_lib::pty::spawn_diagnostics::thresholds
+agentscommander_lib::pty::spawn_diagnostics::registry -> agentscommander_lib::session::profile
+agentscommander_lib::pty::spawn_diagnostics::thresholds -> agentscommander_lib::pty::spawn_diagnostics
 agentscommander_lib::pty::terminal_snapshot -> agentscommander_lib
 agentscommander_lib::pty::terminal_snapshot -> agentscommander_lib::config::settings
 agentscommander_lib::pty::terminal_snapshot -> agentscommander_lib::config::teams
