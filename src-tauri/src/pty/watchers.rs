@@ -463,7 +463,11 @@ pub(crate) type ActivityFactory = Arc<dyn Fn(Uuid) -> Option<ActivityConsumer> +
 /// #2879 - Codex's COMPLETE status-indicator row: an optional `•`/`◦` activity glyph, the
 /// upstream `fmt_elapsed_compact` duration (`Ns`, `Nm SSs`, `Nh MMm SSs`), the full
 /// `esc to interrupt` hint and an optional ` · ` inline context. Internal, never configured.
-const CODEX_WORKING_PATTERN: &str = r"^[ \t]*(?:[•◦] )?Working[ \t]+\((?:[0-9]+s|[1-9][0-9]*m [0-5][0-9]s|[1-9][0-9]*h [0-5][0-9]m [0-5][0-9]s)[ \t]*•[ \t]*esc[ \t]+to[ \t]+interrupt\)(?: · [^\r\n]+)?[ \t]*$";
+const CODEX_WORKING_PATTERN: &str = concat!(
+    r"^[ \t]*(?:[•◦] )?Working[ \t]+\(",
+    r"(?:[0-9]+s|[1-9][0-9]*m [0-5][0-9]s|[1-9][0-9]*h [0-5][0-9]m [0-5][0-9]s)",
+    r"[ \t]*•[ \t]*esc[ \t]+to[ \t]+interrupt\)(?: · [^\r\n]+)?[ \t]*$",
+);
 
 /// The observation a tick hands to a consumer once every engine guard is released.
 type ActivityDelivery = Option<(ActivityConsumer, ActivityObservation)>;
