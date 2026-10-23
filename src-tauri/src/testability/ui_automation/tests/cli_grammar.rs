@@ -294,7 +294,8 @@ fn ui_automation_action_wire_names_match_typescript_union() {
 
     assert!(
         !members.is_empty(),
-        "parsed zero members from the UiAutomationAction union; the parser or the union format changed"
+        "parsed zero members from the UiAutomationAction union; the parser or the union format \
+            changed"
     );
 
     let rust: HashSet<String> = UiAutomationAction::all()

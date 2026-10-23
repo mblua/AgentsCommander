@@ -925,7 +925,8 @@ fn terminal_cli_request(args: UiTerminalArgs) -> Result<CliRequest, Value> {
     if parse_terminal_operation(&args.operation).is_none() {
         return Err(preflight_error(
             "invalid_terminal_operation",
-            "Terminal operation must be query, top, bottom, line:N, lines:N, or pages:N in the signed 32-bit range.",
+            "Terminal operation must be query, top, bottom, line:N, lines:N, or pages:N in the \
+                signed 32-bit range.",
             None,
         ));
     }
@@ -1027,7 +1028,8 @@ fn key_cli_request(args: UiKeyArgs) -> Result<CliRequest, Value> {
     if !valid_key_chord(&args.chord) {
         return Err(preflight_error(
             "invalid_key_chord",
-            "Key chord must be optional Ctrl+, Alt+, Shift+, Meta+ in that order, then Escape, Enter, Space, Tab, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, or End.",
+            "Key chord must be optional Ctrl+, Alt+, Shift+, Meta+ in that order, then Escape, \
+                Enter, Space, Tab, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, or End.",
             None,
         ));
     }
@@ -1223,7 +1225,8 @@ impl BackendWatchdogMode {
             "tick" => Ok(Self::Tick),
             "quarantineRetry" | "quarantine-retry" => Ok(Self::QuarantineRetry),
             other => Err(format!(
-                "Unsupported resource monitor watchdog mode '{other}'. Expected sample, warn, killGroup, tick, or quarantineRetry."
+                "Unsupported resource monitor watchdog mode '{other}'. Expected sample, warn, \
+                    killGroup, tick, or quarantineRetry."
             )),
         }
     }
@@ -1639,7 +1642,8 @@ pub fn automation_not_enabled_json() -> String {
 fn automation_not_enabled_error() -> Value {
     preflight_error(
         "automation_not_enabled",
-        "A testable GUI is already running without UI automation enabled. Restart it with --ui-automation or AC_UI_AUTOMATION=1.",
+        "A testable GUI is already running without UI automation enabled. Restart it with \
+            --ui-automation or AC_UI_AUTOMATION=1.",
         None,
     )
 }
