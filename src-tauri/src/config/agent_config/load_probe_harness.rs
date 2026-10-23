@@ -12,7 +12,8 @@ static N: AtomicU64 = AtomicU64::new(0);
 
 /// The `#[ignore]`d inner row the harness ownership rows drive: it blocks
 /// until the harness kills it, so those rows always act on a LIVE child.
-pub(crate) const SLEEPER: &str = "config::agent_config::tests::inner_sleeps_until_killed";
+pub(crate) const SLEEPER: &str =
+    "config::agent_config::tests::harness_rows::inner_sleeps_until_killed";
 
 /// How far cleanup actually got for one child. Deliberately not a boolean
 /// and not an `Option`: the three outcomes are distinguishable, and

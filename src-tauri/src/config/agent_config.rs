@@ -983,6 +983,3 @@ fn upsert_config(
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod pair_activity_tests;
