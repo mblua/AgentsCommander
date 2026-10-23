@@ -161,11 +161,17 @@ fn every_production_pty_writer_is_in_the_explicit_permit_inventory() {
     //    Whitespace-normalized so a multiline reflow cannot drop a site.
     assert_eq!(
         raw_backend_paths,
-        vec!["src/pty/container_backend.rs", "src/pty/manager.rs"],
+        vec![
+            "src/pty/container_backend/tests/transport.rs",
+            "src/pty/manager.rs",
+        ],
         "direct backend writes are limited to the route guard and the pinned container-backend tests"
     );
     assert_eq!(
-        occurrences(&normalized(&source("src/pty/container_backend.rs")), "backend.write("),
+        occurrences(
+            &normalized(&source("src/pty/container_backend/tests/transport.rs")),
+            "backend.write("
+        ),
         3,
         "container backend tests have exactly three direct transport-write probes, each issuing the cfg(test) BackendWriteAuthority"
     );
