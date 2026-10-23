@@ -68,7 +68,8 @@ const EXTRA_TEMPLATE: &str = "extra `%MEMBER%` body";
 /// by the code under test. Comparing the written file against
 /// `canonical_seed_bytes` cannot fail, so an edit to a header constant
 /// would drift from the specification with nothing going red.
-const EXPECTED_SEED: &str = r##"# AgentsCommander injected PTY message templates.
+const EXPECTED_SEED: &str = concat!(
+    r##"# AgentsCommander injected PTY message templates.
 # Managed by AgentsCommander. Edit the `template` values freely.
 #
 # Markdown is preserved byte for byte and passed through to the receiving
@@ -98,7 +99,8 @@ coverage_version = 2
 #   %THRESHOLDS%  thresholds just crossed, already formatted, e.g. 50%, 75%
 #   %OBSERVED%    observed context use, e.g. 91% (best-effort human signal)
 template = '''
-[AC context alert] `%MEMBER%` in `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No action taken; you decide any follow-up.
+[AC context alert] `%MEMBER%` in `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No action "##,
+    r##"taken; you decide any follow-up.
 '''
 
 [messages.ci-started]
@@ -110,7 +112,8 @@ template = '''
 #   %SHA%     abbreviated commit SHA, 7 characters
 #   %AT%      observation time, local with a numeric UTC offset
 template = '''
-[AgentsCommander] CI started on %REPO% %BRANCH% (commit %SHA%) at %AT%. Status notice only; no action is required.
+[AgentsCommander] CI started on %REPO% %BRANCH% (commit %SHA%) at %AT%. Status notice only; no "##,
+    r##"action is required.
 '''
 
 [messages.ci-finished]
@@ -122,7 +125,8 @@ template = '''
 #   %SHA%     abbreviated commit SHA, 7 characters
 #   %AT%      observation time, local with a numeric UTC offset
 template = '''
-[AgentsCommander] CI finished on %REPO% %BRANCH% (commit %SHA%) at %AT%. AgentsCommander does not track pass or fail: run 'gh run list --branch %BRANCH%' before acting on this.
+[AgentsCommander] CI finished on %REPO% %BRANCH% (commit %SHA%) at %AT%. AgentsCommander does "##,
+    r##"not track pass or fail: run 'gh run list --branch %BRANCH%' before acting on this.
 '''
 
 [messages.branch-stale]
@@ -135,7 +139,8 @@ template = '''
 #   %BEHIND%  commit count behind, e.g. 4
 #   %AT%      observation time, local with a numeric UTC offset
 template = '''
-[AgentsCommander] %REPO% %BRANCH% is now %BEHIND% commits behind %BASE% as of %AT%. If CI runs on this branch, it is validating an out-of-date base.
+[AgentsCommander] %REPO% %BRANCH% is now %BEHIND% commits behind %BASE% as of %AT%. If CI runs "##,
+    r##"on this branch, it is validating an out-of-date base.
 '''
 
 [messages.notice-blind-gap]
@@ -147,11 +152,13 @@ template = '''
 template = '''
  AgentsCommander could not reach GitHub for %GAP%; the previous confirmed state is from %SINCE%.
 '''
-"##;
+"##
+);
 
 /// The exact reference companion, transcribed the same way and for the same
 /// reason as [`EXPECTED_SEED`].
-const EXPECTED_REFERENCE: &str = r##"# AgentsCommander injected PTY message templates - CANONICAL REFERENCE.
+const EXPECTED_REFERENCE: &str = concat!(
+    r##"# AgentsCommander injected PTY message templates - CANONICAL REFERENCE.
 #
 # GENERATED FILE, DO NOT EDIT. AgentsCommander rewrites it whenever the shipped
 # defaults change, and never reads it back. It exists so you can see the current
@@ -171,7 +178,8 @@ coverage_version = 2
 #   %THRESHOLDS%  thresholds just crossed, already formatted, e.g. 50%, 75%
 #   %OBSERVED%    observed context use, e.g. 91% (best-effort human signal)
 template = '''
-[AC context alert] `%MEMBER%` in `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No action taken; you decide any follow-up.
+[AC context alert] `%MEMBER%` in `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No action "##,
+    r##"taken; you decide any follow-up.
 '''
 
 [messages.ci-started]
@@ -184,7 +192,8 @@ template = '''
 #   %SHA%     abbreviated commit SHA, 7 characters
 #   %AT%      observation time, local with a numeric UTC offset
 template = '''
-[AgentsCommander] CI started on %REPO% %BRANCH% (commit %SHA%) at %AT%. Status notice only; no action is required.
+[AgentsCommander] CI started on %REPO% %BRANCH% (commit %SHA%) at %AT%. Status notice only; no "##,
+    r##"action is required.
 '''
 
 [messages.ci-finished]
@@ -197,7 +206,8 @@ template = '''
 #   %SHA%     abbreviated commit SHA, 7 characters
 #   %AT%      observation time, local with a numeric UTC offset
 template = '''
-[AgentsCommander] CI finished on %REPO% %BRANCH% (commit %SHA%) at %AT%. AgentsCommander does not track pass or fail: run 'gh run list --branch %BRANCH%' before acting on this.
+[AgentsCommander] CI finished on %REPO% %BRANCH% (commit %SHA%) at %AT%. AgentsCommander does "##,
+    r##"not track pass or fail: run 'gh run list --branch %BRANCH%' before acting on this.
 '''
 
 [messages.branch-stale]
@@ -211,7 +221,8 @@ template = '''
 #   %BEHIND%  commit count behind, e.g. 4
 #   %AT%      observation time, local with a numeric UTC offset
 template = '''
-[AgentsCommander] %REPO% %BRANCH% is now %BEHIND% commits behind %BASE% as of %AT%. If CI runs on this branch, it is validating an out-of-date base.
+[AgentsCommander] %REPO% %BRANCH% is now %BEHIND% commits behind %BASE% as of %AT%. If CI runs "##,
+    r##"on this branch, it is validating an out-of-date base.
 '''
 
 [messages.notice-blind-gap]
@@ -224,7 +235,8 @@ template = '''
 template = '''
  AgentsCommander could not reach GitHub for %GAP%; the previous confirmed state is from %SINCE%.
 '''
-"##;
+"##
+);
 
 fn next_specs() -> [MessageSpec; 1] {
     [MessageSpec {
@@ -369,7 +381,8 @@ fn stop_counting(dir: &Path) -> Vec<PathBuf> {
 fn default_context_alert_template_is_pinned() {
     assert_eq!(
         DEFAULT_CONTEXT_ALERT_TEMPLATE,
-        "[AC context alert] `%MEMBER%` in `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No action taken; you decide any follow-up."
+        "[AC context alert] `%MEMBER%` in `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No \
+         action taken; you decide any follow-up."
     );
     assert_eq!(DEFAULT_CONTEXT_ALERT_TEMPLATE.chars().count(), 125);
     assert_eq!(DEFAULT_CONTEXT_ALERT_TEMPLATE.len(), 125);
@@ -398,7 +411,8 @@ fn template_override_renders_user_text() {
 
 #[test]
 fn markdown_and_multiline_survive_round_trip() {
-    let template = "# Heading\n\n**bold** and `code` and *stars*\n\n- item one\n- item two\n\n```rust\nfn main() {}\n```\n\n> quote %MEMBER%\n\n| a | b |\n|---|---|\n| 1 | 2 |";
+    let template = "# Heading\n\n**bold** and `code` and *stars*\n\n- item one\n- item \
+        two\n\n```rust\nfn main() {}\n```\n\n> quote %MEMBER%\n\n| a | b |\n|---|---|\n| 1 | 2 |";
     let expected = template.replace(TOKEN_MEMBER, "dev-rust");
     assert_eq!(render_with_template(template, &alert_values()), expected);
 }
@@ -652,7 +666,9 @@ fn edited_entry_is_never_clobbered() {
 fn surgical_write_preserves_comments_and_unknown_keys() {
     let dir = tempdir();
     let source = format!(
-        "# lead comment\nunknown_top = 7\nschema_version = 1\n\n[messages.zzz-other]\ntemplate = '''\nzzz\n'''\n\n[messages.context-alert]\n# doc comment\nunknown_inside = true\ntemplate = '''\n{}\n'''\n# trailing comment\n",
+        "# lead comment\nunknown_top = 7\nschema_version = 1\n\n[messages.zzz-other]\ntemplate = \
+         '''\nzzz\n'''\n\n[messages.context-alert]\n# doc comment\nunknown_inside = \
+         true\ntemplate = '''\n{}\n'''\n# trailing comment\n",
         DEFAULT_CONTEXT_ALERT_TEMPLATE
     );
     std::fs::write(main_path(dir.path()), &source).expect("write");
@@ -693,7 +709,8 @@ fn surgical_write_preserves_comments_and_unknown_keys() {
 fn append_is_idempotent_and_preserves_existing_bytes() {
     let dir = tempdir();
     let source = format!(
-        "# operator comment\nschema_version = 1\n\n[messages.context-alert]\ntemplate = '''\n{}\n'''\n# a trailing comment with no newline after it",
+        "# operator comment\nschema_version = 1\n\n[messages.context-alert]\ntemplate = \
+         '''\n{}\n'''\n# a trailing comment with no newline after it",
         DEFAULT_CONTEXT_ALERT_TEMPLATE
     );
     std::fs::write(main_path(dir.path()), &source).expect("write");
@@ -744,7 +761,9 @@ fn malformed_toml_preserves_bytes_and_disables_writer() {
 #[test]
 fn newer_schema_version_disables_writer_and_renders_defaults() {
     let dir = tempdir();
-    let source = "schema_version = 2\ncoverage_version = 1\n\n[messages.context-alert]\ntemplate = '''\nOPERATOR TEXT %MEMBER%\n'''\n";
+    let source =
+        "schema_version = 2\ncoverage_version = 1\n\n[messages.context-alert]\ntemplate = \
+        '''\nOPERATOR TEXT %MEMBER%\n'''\n";
     std::fs::write(main_path(dir.path()), source).expect("write");
 
     let report = ensure_injected_messages(dir.path()).expect("provision");
@@ -766,7 +785,8 @@ const NEWER_COVERAGE_VERSION: u32 = 3;
 fn newer_coverage_version_keeps_rendering_from_file() {
     let dir = tempdir();
     let source = format!(
-        "schema_version = 1\ncoverage_version = {}\n\n[messages.context-alert]\ntemplate = '''\nOPERATOR TEXT %MEMBER%\n'''\n",
+        "schema_version = 1\ncoverage_version = {}\n\n[messages.context-alert]\ntemplate = \
+         '''\nOPERATOR TEXT %MEMBER%\n'''\n",
         NEWER_COVERAGE_VERSION
     );
     std::fs::write(main_path(dir.path()), &source).expect("write");
@@ -795,7 +815,8 @@ fn git_conflict_markers_disable_writer() {
     // Half two: markers inside a ''' literal, which parses cleanly and is
     // the case the scan exists to catch.
     let dir = tempdir();
-    let inside = "schema_version = 1\n\n[messages.context-alert]\ntemplate = '''\n<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> other\n'''\n";
+    let inside = "schema_version = 1\n\n[messages.context-alert]\ntemplate = '''\n<<<<<<< \
+        HEAD\nmine\n=======\ntheirs\n>>>>>>> other\n'''\n";
     std::fs::write(main_path(dir.path()), inside).expect("write");
     assert!(toml::from_str::<toml::Value>(inside).is_ok());
     let report = ensure_injected_messages(dir.path()).expect("provision");
@@ -807,7 +828,10 @@ fn git_conflict_markers_disable_writer() {
 #[test]
 fn unknown_message_id_and_unknown_key_are_preserved_not_fatal() {
     let dir = tempdir();
-    let source = "schema_version = 1\nunknown_top = \"x\"\n\n[messages.not-a-known-id]\ntemplate = '''\nsomething\n'''\n\n[messages.context-alert]\nunknown_inside = 1\ntemplate = '''\nOPERATOR %MEMBER%\n'''\n";
+    let source =
+        "schema_version = 1\nunknown_top = \"x\"\n\n[messages.not-a-known-id]\ntemplate = \
+        '''\nsomething\n'''\n\n[messages.context-alert]\nunknown_inside = 1\ntemplate = \
+        '''\nOPERATOR %MEMBER%\n'''\n";
     std::fs::write(main_path(dir.path()), source).expect("write");
 
     let report = ensure_injected_messages(dir.path()).expect("provision");
@@ -874,7 +898,8 @@ fn empty_registry_renders_embedded_default() {
     assert!(registry().is_empty());
     assert_eq!(
         render(CONTEXT_ALERT_MESSAGE_ID, &alert_values()),
-        "[AC context alert] `dev-rust` in `wg-2-dev-team` reached threshold(s): 50%, 75%, 90%. No action taken; you decide any follow-up."
+        "[AC context alert] `dev-rust` in `wg-2-dev-team` reached threshold(s): 50%, 75%, 90%. No \
+         action taken; you decide any follow-up."
     );
     // An id this binary does not know renders nothing at all.
     assert_eq!(render("no-such-message", &alert_values()), "");
@@ -996,7 +1021,8 @@ fn seeded_file_round_trips_to_pinned_default_without_extra_newline() {
     let rendered = render_with_template(&normalize_parsed_template(raw), &alert_values());
     assert_eq!(
         format!("\n{}\n\r", rendered),
-        "\n[AC context alert] `dev-rust` in `wg-2-dev-team` reached threshold(s): 50%, 75%, 90%. No action taken; you decide any follow-up.\n\r"
+        "\n[AC context alert] `dev-rust` in `wg-2-dev-team` reached threshold(s): 50%, 75%, 90%. \
+         No action taken; you decide any follow-up.\n\r"
     );
 }
 
@@ -1041,7 +1067,9 @@ fn crlf_edit_is_not_a_content_edit() {
 fn entry_without_template_or_with_wrong_type_degrades_only_that_entry() {
     let dir = tempdir();
     let source = format!(
-        "schema_version = 1\n\n[messages.context-alert]\n# the operator deleted the template line\n\n[messages.{}]\ntemplate = 42\n\n[messages.healthy]\ntemplate = '''\nHEALTHY\n'''\n",
+        "schema_version = 1\n\n[messages.context-alert]\n# the operator deleted the template \
+         line\n\n[messages.{}]\ntemplate = 42\n\n[messages.healthy]\ntemplate = \
+         '''\nHEALTHY\n'''\n",
         EXTRA_MESSAGE_ID
     );
     std::fs::write(main_path(dir.path()), &source).expect("write");
@@ -1144,7 +1172,8 @@ fn writer_emit_parse_normalize_is_identity() {
 
 #[test]
 fn duplicate_message_header_is_strict_invalid() {
-    let source = "schema_version = 1\n\n[messages.context-alert]\ntemplate = 'a'\n\n[messages.context-alert]\ntemplate = 'b'\n";
+    let source = "schema_version = 1\n\n[messages.context-alert]\ntemplate = \
+        'a'\n\n[messages.context-alert]\ntemplate = 'b'\n";
     let model = analyze_source(source);
     assert!(
         model.strict_invalid.is_some(),
@@ -1256,7 +1285,8 @@ fn scalar_entry_does_not_disable_the_file() {
     let dir = tempdir();
     // The single most natural operator mistake: assigning the text to the
     // id instead of to `template`.
-    let source = "schema_version = 1\n\n[messages.healthy]\ntemplate = '''\nHEALTHY\n'''\n\n[messages]\ncontext-alert = \"my own text\"\n";
+    let source = "schema_version = 1\n\n[messages.healthy]\ntemplate = \
+        '''\nHEALTHY\n'''\n\n[messages]\ncontext-alert = \"my own text\"\n";
     std::fs::write(main_path(dir.path()), source).expect("write");
 
     let model = analyze_source(source);
@@ -1345,7 +1375,8 @@ fn rendered_output_passes_validate_pty_input_text() {
 #[test]
 fn setext_heading_is_not_a_conflict_marker() {
     let dir = tempdir();
-    let source = "schema_version = 1\n\n[messages.context-alert]\ntemplate = '''\nAlerta\n=======\ncuerpo del mensaje\n'''\n";
+    let source = "schema_version = 1\n\n[messages.context-alert]\ntemplate = \
+        '''\nAlerta\n=======\ncuerpo del mensaje\n'''\n";
     std::fs::write(main_path(dir.path()), source).expect("write");
 
     assert!(!has_conflict_markers(source));
@@ -1719,7 +1750,9 @@ fn newer_coverage_version_literal_raised_to_three() {
     const {
         assert!(
             NEWER_COVERAGE_VERSION > COVERAGE_VERSION,
-            "the fixture must stay strictly above COVERAGE_VERSION: `writer_blocked` is gated on a strict `>`, so equality leaves the writer enabled and the test stops exercising the newer-than-this-binary branch"
+            "the fixture must stay strictly above COVERAGE_VERSION: `writer_blocked` is gated on \
+             a strict `>`, so equality leaves the writer enabled and the test stops exercising \
+             the newer-than-this-binary branch"
         );
     }
 }
@@ -1727,7 +1760,9 @@ fn newer_coverage_version_literal_raised_to_three() {
 #[test]
 fn existing_operator_file_at_coverage_one_is_appended_not_rewritten() {
     let dir = tempdir();
-    let source = "schema_version = 1\ncoverage_version = 1\n\n[messages.context-alert]\ntemplate = '''\nOPERATOR %MEMBER% EDITED\n'''\n";
+    let source =
+        "schema_version = 1\ncoverage_version = 1\n\n[messages.context-alert]\ntemplate = \
+        '''\nOPERATOR %MEMBER% EDITED\n'''\n";
     std::fs::write(main_path(dir.path()), source).expect("write");
 
     let report = ensure_injected_messages(dir.path()).expect("provision");

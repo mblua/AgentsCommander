@@ -61,27 +61,35 @@ pub(crate) const TOKEN_SINCE: &str = "%SINCE%";
 
 /// The only embedded copy of the context-alert wording. 125 characters, 125
 /// UTF-8 bytes, sha256 `e672581d47e7e4a4749b510f23eff72982ff3fa5261109122b3bdf8fdfda153f`.
-pub(crate) const DEFAULT_CONTEXT_ALERT_TEMPLATE: &str = "[AC context alert] `%MEMBER%` in `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No action taken; you decide any follow-up.";
+pub(crate) const DEFAULT_CONTEXT_ALERT_TEMPLATE: &str = "[AC context alert] `%MEMBER%` in \
+    `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No action taken; you decide any follow-up.";
 
 /// sha256 `e8d7993332268690db1220277b0c3926c99ce4d1e3e4af8c0978c22e3b01c50a`.
-pub(crate) const DEFAULT_CI_STARTED_TEMPLATE: &str = "[AgentsCommander] CI started on %REPO% %BRANCH% (commit %SHA%) at %AT%. Status notice only; no action is required.";
+pub(crate) const DEFAULT_CI_STARTED_TEMPLATE: &str = "[AgentsCommander] CI started on %REPO% \
+    %BRANCH% (commit %SHA%) at %AT%. Status notice only; no action is required.";
 
 /// sha256 `8e9df5e4986e93999f10401d31b12f3f629f43cde6519691802ddf68e77f0b85`. The
 /// second sentence is mandatory and is not filler: `conclusion` is never read,
 /// so "CI finished" must never be read as "CI passed".
-pub(crate) const DEFAULT_CI_FINISHED_TEMPLATE: &str = "[AgentsCommander] CI finished on %REPO% %BRANCH% (commit %SHA%) at %AT%. AgentsCommander does not track pass or fail: run 'gh run list --branch %BRANCH%' before acting on this.";
+pub(crate) const DEFAULT_CI_FINISHED_TEMPLATE: &str = "[AgentsCommander] CI finished on %REPO% \
+    %BRANCH% (commit %SHA%) at %AT%. AgentsCommander does not track pass or fail: run 'gh run list \
+    --branch %BRANCH%' before acting on this.";
 
-/// sha256 `3c03dc790a9d3b36edbf1174dc3e661572ad0f93e70e1b200daff8945ff6e468`. The second sentence is conditional on purpose: #2141
+/// sha256 `3c03dc790a9d3b36edbf1174dc3e661572ad0f93e70e1b200daff8945ff6e468`. The second sentence
+/// is conditional on purpose: #2141
 /// suppresses the notice for a branch with no commits of its own, but a branch
 /// WITH its own commits and no runs still receives it, so the old wording
 /// asserted a premise that need not hold.
-pub(crate) const DEFAULT_BRANCH_STALE_TEMPLATE: &str = "[AgentsCommander] %REPO% %BRANCH% is now %BEHIND% commits behind %BASE% as of %AT%. If CI runs on this branch, it is validating an out-of-date base.";
+pub(crate) const DEFAULT_BRANCH_STALE_TEMPLATE: &str = "[AgentsCommander] %REPO% %BRANCH% is now \
+    %BEHIND% commits behind %BASE% as of %AT%. If CI runs on this branch, it is validating an \
+    out-of-date base.";
 
 /// sha256 `e895fefbd3e482568d4e21ac22f3826d10d8a7911b3303239726a2b8ade49aff`. It
 /// begins with ONE space because it is concatenated onto a sentence that
 /// already ends in a period. A suffix id, not twin ids: with twins an operator
 /// who edits one and forgets the other gets two silently diverging texts.
-pub(crate) const DEFAULT_NOTICE_BLIND_GAP_TEMPLATE: &str = " AgentsCommander could not reach GitHub for %GAP%; the previous confirmed state is from %SINCE%.";
+pub(crate) const DEFAULT_NOTICE_BLIND_GAP_TEMPLATE: &str = " AgentsCommander could not reach \
+    GitHub for %GAP%; the previous confirmed state is from %SINCE%.";
 
 /// The only bound between an operator's template and the coordinator's PTY.
 /// `PTY_INPUT_MAX_BYTES` is enforced inside `validate_pty_input_text`, which the
@@ -458,7 +466,8 @@ fn render_resolved(
             warn_once(
                 format!("empty:{}", id),
                 &format!(
-                    "[injected-messages] the `{}` template renders to nothing after sanitization; the built-in default is used instead",
+                    "[injected-messages] the `{}` template renders to nothing after sanitization; \
+                     the built-in default is used instead",
                     id
                 ),
             );
@@ -540,7 +549,8 @@ fn load_registry_from_dir(dir: &Path) -> BTreeMap<String, String> {
         warn_once(
             format!("invalid:{}:{}", display_path(&path), reason),
             &format!(
-                "[injected-messages] {} is invalid ({}); the file is preserved untouched and built-in defaults are rendered",
+                "[injected-messages] {} is invalid ({}); the file is preserved untouched and \
+                 built-in defaults are rendered",
                 display_path(&path),
                 reason
             ),
@@ -915,7 +925,8 @@ fn provision(
         Err(reason) => {
             report.writer_disabled = Some(reason.clone());
             log::warn!(
-                "[injected-messages] {} is unusable ({}); it is left untouched and built-in defaults are rendered",
+                "[injected-messages] {} is unusable ({}); it is left untouched and built-in \
+                 defaults are rendered",
                 display_path(&path),
                 reason
             );
@@ -1034,7 +1045,8 @@ fn reconcile(
     {
         report.writer_disabled = Some(reason.clone());
         log::warn!(
-            "[injected-messages] {} is preserved untouched and the writer is disabled for this run: {}",
+            "[injected-messages] {} is preserved untouched and the writer is disabled for this \
+             run: {}",
             display_path(path),
             reason
         );
@@ -1069,7 +1081,8 @@ fn reconcile(
                 warn_once(
                     format!("entry:{}:malformed", spec.id),
                     &format!(
-                        "[injected-messages] `{}` in {} has no usable `template`; it is left untouched and the built-in default is rendered",
+                        "[injected-messages] `{}` in {} has no usable `template`; it is left \
+                         untouched and the built-in default is rendered",
                         spec.id,
                         display_path(path)
                     ),
@@ -1095,7 +1108,8 @@ fn reconcile(
                     warn_once(
                         format!("entry:{}:blank", spec.id),
                         &format!(
-                            "[injected-messages] `{}` in {} is blank; it is left untouched and the built-in default is rendered",
+                            "[injected-messages] `{}` in {} is blank; it is left untouched and \
+                             the built-in default is rendered",
                             spec.id,
                             display_path(path)
                         ),
@@ -1128,7 +1142,8 @@ fn reconcile(
                     warn_once(
                         format!("entry:{}:user-edit", spec.id),
                         &format!(
-                            "[injected-messages] `{}` in {} was edited; it is kept as it is, and a newer built-in default is available",
+                            "[injected-messages] `{}` in {} was edited; it is kept as it is, and \
+                             a newer built-in default is available",
                             spec.id,
                             display_path(path)
                         ),
