@@ -210,7 +210,8 @@ fn parse_activity_filter(args: &WorkgroupActivityArgs) -> Result<ActivityFilter,
                     }
                     _ => {
                         return Err(format!(
-                            "Invalid --rooms '{raw}': expected comma-separated positive room numbers, e.g. 5,12,17"
+                            "Invalid --rooms '{raw}': expected \
+                             comma-separated positive room numbers, e.g. 5,12,17"
                         ))
                     }
                 }
@@ -376,8 +377,9 @@ fn activity(args: WorkgroupActivityArgs) -> Result<(), String> {
             }
             CiGate::DaemonNotLive => {
                 warn_activity(&format!(
-                "room activity: AgentsCommander daemon is not live ({daemon_state:?}); ciState is reported as \"unknown\""
-            ));
+                    "room activity: AgentsCommander daemon is not live ({daemon_state:?}); \
+                     ciState is reported as \"unknown\""
+                ));
                 (HashMap::new(), Some("daemon-not-live"))
             }
             CiGate::Usable => {
@@ -480,7 +482,8 @@ fn read_fresh_ci_snapshot(
     let snapshot = read_snapshot(&path)?;
     if !snapshot_is_fresh(&snapshot, now) {
         return Err(format!(
-            "the remote activity snapshot is not current (window {REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS}s)"
+            "the remote activity snapshot is not current \
+             (window {REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS}s)"
         ));
     }
     Ok(snapshot)
@@ -793,7 +796,9 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
         read_team_config(&ac_root, &safe_team)?;
         if has_legacy_team_flags {
             return Err(format!(
-                "Team '{}' already exists. `room add` no longer updates team configuration. Use `team create` before `room add`, or `team add-member` for membership changes.",
+                "Team '{}' already exists. \
+                 `room add` no longer updates team configuration. \
+                 Use `team create` before `room add`, or `team add-member` for membership changes.",
                 safe_team
             ));
         }
@@ -803,7 +808,8 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
             "--coordinator is required when supplying team details on room add".to_string()
         })?;
         eprintln!(
-            "Warning: created missing team configuration from supplied room details. Prefer creating the team before activating a room."
+            "Warning: created missing team configuration from supplied room details. \
+             Prefer creating the team before activating a room."
         );
         Some(build_new_team_config(
             &ac_root,
@@ -890,7 +896,8 @@ fn remove_hooked(
                 .collect::<Vec<_>>()
                 .join("\n");
             return Err(format!(
-                "Cannot delete room: the following repos have pending work:\n{}\n\nCommit or push changes before deleting, or pass --force-dirty.",
+                "Cannot delete room: the following repos have pending work:\n{}\n\n\
+                 Commit or push changes before deleting, or pass --force-dirty.",
                 list
             ));
         }
@@ -956,7 +963,8 @@ pub(crate) fn cli_remove_refresh_decision(
         }
         WgDeleteOutcome::Partial { orphan_path, error } => {
             return Err(format!(
-                "Failed to fully delete room directory; renamed room to orphan '{}', but failed to remove orphan: {}",
+                "Failed to fully delete room directory; renamed room to orphan '{}', \
+                 but failed to remove orphan: {}",
                 orphan_path.display(),
                 error
             ));
