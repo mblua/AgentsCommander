@@ -474,6 +474,11 @@ agentscommander_lib::cli::task_append_body -> agentscommander_lib::cli::task_ops
 agentscommander_lib::cli::task_append_body -> agentscommander_lib::config
 agentscommander_lib::cli::task_append_body -> agentscommander_lib::config::teams
 agentscommander_lib::cli::task_append_body -> agentscommander_lib::phone::messaging
+agentscommander_lib::cli::task_ops::clean -> agentscommander_lib::cli::task_ops
+agentscommander_lib::cli::task_ops::clean -> agentscommander_lib::cli::task_ops::status
+agentscommander_lib::cli::task_ops::flow -> agentscommander_lib::cli::task_ops
+agentscommander_lib::cli::task_ops::flow -> agentscommander_lib::cli::task_ops::clean
+agentscommander_lib::cli::task_ops::status -> agentscommander_lib::cli::task_ops
 agentscommander_lib::cli::task_set_title -> agentscommander_lib
 agentscommander_lib::cli::task_set_title -> agentscommander_lib::cli
 agentscommander_lib::cli::task_set_title -> agentscommander_lib::cli::send
