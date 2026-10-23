@@ -46,7 +46,8 @@ pub enum TaskOp {
     SetBody(String),
     /// Replace BOTH frontmatter title AND body with the canonical Clean form
     /// (title: 'Clean', empty body). Preserves the
-    /// file's existing BOM and frontmatter line ending; body has no bytes. NoOp when the file is already in canonical Clean form.
+    /// file's existing BOM and frontmatter line ending; body has no bytes. NoOp when the
+    /// file is already in canonical Clean form.
     Clean,
 }
 
@@ -162,17 +163,33 @@ pub enum TaskOpError {
     CleanRecoveryConflict(String),
     #[error("TASK.md is locked by another writer (5s timeout). Try again.")]
     LockTimeout,
-    #[error("failed to acquire TASK.md lock at {}: {}. Aborting; TASK.md left unchanged.", .0.display(), .1)]
+    #[error(
+        "failed to acquire TASK.md lock at {}: {}. Aborting; TASK.md left unchanged.",
+        .0.display(),
+        .1
+    )]
     LockIo(PathBuf, std::io::Error),
     #[error("failed to read TASK.md at {}: {}", .0.display(), .1)]
     ReadFailed(PathBuf, std::io::Error),
-    #[error("failed to write backup at {}: {}. Aborting; TASK.md left unchanged.", .0.display(), .1)]
+    #[error(
+        "failed to write backup at {}: {}. Aborting; TASK.md left unchanged.",
+        .0.display(),
+        .1
+    )]
     BackupFailed(PathBuf, std::io::Error),
-    #[error("failed to write backup at {}: 100 collision retries exhausted in the same second. Aborting; TASK.md left unchanged.", .0.display())]
+    #[error(
+        "failed to write backup at {}: 100 collision retries exhausted in the same second. \
+         Aborting; TASK.md left unchanged.",
+        .0.display()
+    )]
     BackupExhausted(PathBuf),
     #[error("failed to write {}: {}. Aborting; TASK.md left unchanged.", .0.display(), .1)]
     TmpWriteFailed(PathBuf, std::io::Error),
-    #[error("TASK.md was modified externally between read and write; aborting. Backup at {} retains the externally-modified state.", .0.display())]
+    #[error(
+        "TASK.md was modified externally between read and write; aborting. \
+         Backup at {} retains the externally-modified state.",
+        .0.display()
+    )]
     ExternalWrite(PathBuf),
     /// Custom Display below: `Some(p)` → "Backup at <p> retains the prior state.";
     /// `None` → "No backup (TASK.md did not exist before)." (§H.4 / NIT-2 in plan).
@@ -212,7 +229,8 @@ pub(crate) struct ParsedTask {
     pub has_frontmatter: bool,
     /// Raw frontmatter lines (eol-stripped, trim_end_matches(['\r','\n'])).
     pub frontmatter: Vec<String>,
-    /// Everything after the closing `---<eol>` (or whole post-BOM input when `has_frontmatter == false`).
+    /// Everything after the closing `---<eol>` (or whole post-BOM input when
+    /// `has_frontmatter == false`).
     pub body: String,
 }
 
@@ -754,8 +772,10 @@ fn write_failed(e: std::io::Error) -> TaskOpError {
 // Failures are injected only in fixtures, in this thread and this module.
 #[cfg(test)]
 thread_local! {
-    static IO_MUTATION: std::cell::RefCell<Option<(String, PathBuf, Vec<u8>)>> = const { std::cell::RefCell::new(None) };
-    static IO_FAULT: std::cell::RefCell<(Option<String>, Vec<String>)> = const { std::cell::RefCell::new((None, Vec::new())) };
+    static IO_MUTATION: std::cell::RefCell<Option<(String, PathBuf, Vec<u8>)>> =
+        const { std::cell::RefCell::new(None) };
+    static IO_FAULT: std::cell::RefCell<(Option<String>, Vec<String>)> =
+        const { std::cell::RefCell::new((None, Vec::new())) };
 }
 fn io_boundary(name: &str) -> std::io::Result<()> {
     #[cfg(test)]
