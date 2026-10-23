@@ -9,7 +9,7 @@ use crate::pty::container_runtime::{
 };
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::oneshot;
 
 impl ContainerTransportBackend {
@@ -195,28 +195,5 @@ impl ContainerTransportBackend {
             }
         }
         reaped
-    }
-
-    pub fn start_pending_reaper(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
-        let backend = Arc::clone(self);
-        tauri::async_runtime::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(5));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tokio::select! {
-                    _ = shutdown.token().cancelled() => break,
-                    _ = interval.tick() => {
-                        let count = backend.reap_expired_pending_sessions().await;
-                        if count > 0 {
-                            log::warn!(
-                                "[container-transport] reaped {} expired pending container \
-                                    session(s)",
-                                count
-                            );
-                        }
-                    }
-                }
-            }
-        });
     }
 }

@@ -252,63 +252,6 @@ impl ContainerTransportBackend {
         }
     }
 
-    pub(super) fn close_transport_from_sync(&self, session_id: Uuid, exit_code: i32) {
-        let resources = self.remove_session_state(session_id);
-        let Some(resources) = resources else {
-            return;
-        };
-
-        self.cleanup_removed_resources_async(resources, "transport-sync-close");
-        let remover = match self.route_remover.try_lock() {
-            Ok(route_remover) => route_remover.clone(),
-            Err(TryLockError::Poisoned(_)) => {
-                log::error!(
-                    "[container-transport] deferred route-remover registry lock poisoned \
-                        session={} state=retained",
-                    session_id
-                );
-                None
-            }
-            Err(TryLockError::WouldBlock) => {
-                log::warn!(
-                    "[container-transport] deferred route-remover registry lock unavailable \
-                        session={} state=retained",
-                    session_id
-                );
-                None
-            }
-        };
-        let lifecycle_sender = self.lifecycle_sender.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Some(remove) = remover {
-                let deadline = Instant::now() + CLEANUP_TASK_TIMEOUT;
-                match catch_unwind(AssertUnwindSafe(|| remove(session_id, deadline))) {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => log::warn!(
-                        "[container-transport] deferred sync route removal failed session={} \
-                            error={}",
-                        session_id,
-                        error
-                    ),
-                    Err(_) => log::error!(
-                        "[container-transport] deferred sync route removal panicked session={}",
-                        session_id
-                    ),
-                }
-            }
-            if let Some(sender) = lifecycle_sender {
-                if let Err(error) = sender.route_lost(session_id, exit_code).await {
-                    log::warn!(
-                        "[container-transport] deferred sync route-loss reconciliation failed \
-                            session={}: {}",
-                        session_id,
-                        error
-                    );
-                }
-            }
-        });
-    }
-
     pub(super) fn remove_session_state(&self, session_id: Uuid) -> Option<RemovedSessionResources> {
         let removed = self
             .sessions

@@ -1796,13 +1796,13 @@ agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::watcher
 agentscommander_lib::pty::container_backend -> agentscommander_lib::resource_monitor
 agentscommander_lib::pty::container_backend -> agentscommander_lib::session::profile
 agentscommander_lib::pty::container_backend -> agentscommander_lib::session::selection
+agentscommander_lib::pty::container_backend -> agentscommander_lib::shutdown
 agentscommander_lib::pty::container_backend -> agentscommander_lib::telegram::manager
 agentscommander_lib::pty::container_backend -> agentscommander_lib::web::broadcast
 agentscommander_lib::pty::container_backend::cleanup -> agentscommander_lib::pty::container_backend
 agentscommander_lib::pty::container_backend::cleanup -> agentscommander_lib::pty::container_backend::retained_cleanup
 agentscommander_lib::pty::container_backend::cleanup -> agentscommander_lib::pty::container_backend::shutdown_work
 agentscommander_lib::pty::container_backend::cleanup -> agentscommander_lib::pty::container_runtime
-agentscommander_lib::pty::container_backend::cleanup -> agentscommander_lib::shutdown
 agentscommander_lib::pty::container_backend::retained_cleanup -> agentscommander_lib::errors
 agentscommander_lib::pty::container_backend::retained_cleanup -> agentscommander_lib::pty::container_backend
 agentscommander_lib::pty::container_backend::retained_cleanup -> agentscommander_lib::pty::container_credentials
