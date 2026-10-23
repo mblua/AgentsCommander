@@ -170,7 +170,9 @@ fn partial_file_preserves_prefix_and_appends_only_missing_rules() {
     let path = temp.path().join(".gitignore");
     let rules = required_rules(TEST_AGENT_LOCAL_DIR).expect("rules");
     let seed = format!(
-        "# user comment\r\n/custom/**\r\n{}\r\n{}\r\n{}\r\n# /daemon.pid\r\n!/sessions.json\r\n{}\r\n!/update-check.json\r\n/web-token.txt # note\r\nlast-user-rule",
+        "# user comment\r\n/custom/**\r\n{}\r\n{}\r\n{}\r\n# \
+        /daemon.pid\r\n!/sessions.json\r\n{}\r\n!/update-check.json\r\n/web-token.txt # \
+        note\r\nlast-user-rule",
         rules[0].pattern, rules[3].pattern, rules[3].pattern, rules[8].pattern
     )
     .into_bytes();
@@ -360,12 +362,11 @@ fn managed_catalog_journal_temp_name_exact() {
     );
     assert_eq!(temp_name, "..agents.migration-v1.json.123.7.tmp");
 
+    use super::super::super::instance_artifacts::CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT;
+
     let row = ignore_rows()
         .into_iter()
-        .find(|artifact| {
-            artifact.name
-                == super::super::super::instance_artifacts::CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT
-        })
+        .find(|artifact| artifact.name == CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT)
         .expect("journal temporary registry row");
     let pattern = render(row).pattern;
     std::fs::write(repo.join(".gitignore"), format!("{pattern}\n"))

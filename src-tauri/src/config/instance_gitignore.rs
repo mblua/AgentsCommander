@@ -255,7 +255,8 @@ const RETIRED_PAIRS: [(&str, &str); 9] = [
         "/blocking-menus-remote-check.json",
     ),
     (
-        "# AgentsCommander: shipped blocking-menu patterns; rewritten from the binary at every start",
+        "# AgentsCommander: shipped blocking-menu patterns; rewritten from the binary at every \
+        start",
         "/settings-blocking-menus.json",
     ),
     (
@@ -263,23 +264,23 @@ const RETIRED_PAIRS: [(&str, &str); 9] = [
         "/settings-blocking-menus.local.json",
     ),
     (
-        "# AgentsCommander: downloaded blocking-menu patterns; replaced by the next accepted download",
+        "# AgentsCommander: downloaded blocking-menu patterns; replaced by the next accepted \
+        download",
         "/settings-blocking-menus.remote.json",
     ),
     (
-        "# AgentsCommander: rotated previous generations of the application settings; the same runtime artifact under a numeric slot",
+        "# AgentsCommander: rotated previous generations of the application settings; the same \
+        runtime artifact under a numeric slot",
         "/settings.backup.*.json",
     ),
-    (
-        "# AgentsCommander: application settings",
-        "/settings.json",
-    ),
+    ("# AgentsCommander: application settings", "/settings.json"),
     (
         "# AgentsCommander: transient settings write lock",
         "/settings.json.lock",
     ),
     (
-        "# AgentsCommander: operator-owned settings overlay; machine-local by design and never written by AC",
+        "# AgentsCommander: operator-owned settings overlay; machine-local by design and never \
+        written by AC",
         "/settings.local.json",
     ),
     (
