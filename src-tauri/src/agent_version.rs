@@ -479,7 +479,8 @@ impl ProbeProcessOwner {
             }
             Err(crate::pty::job::ContainedSpawnError::Containment(reason)) => {
                 log::warn!(
-                    "[agent-version] contained probe launch rejected: process containment failed at {reason}"
+                    "[agent-version] contained probe launch rejected: \
+                     process containment failed at {reason}"
                 );
                 return Err(CancellableProbeOutcome::Completed(ProbeOutcome::Failed(
                     "Version probe process-tree containment unavailable.".to_string(),
@@ -1163,11 +1164,12 @@ impl AgentInstallCache {
         CacheLookup::Absent
     }
 
-    /// #1551 - the ONLY production scheduling primitive: ONE critical section decides between serving a fresh
-    /// entry, reporting an open ticket, opening the ticket (iff `may_begin`; `in_flight` insert + generation
-    /// capture in the same lock take), or deferring. Two concurrent callers can never both receive `Began` for
-    /// the same command, and a commit that lands before this call is always served as `Fresh`: there is no
-    /// observable state between "looked up" and "began".
+    /// #1551 - the ONLY production scheduling primitive: ONE critical section decides between
+    /// serving a fresh entry, reporting an open ticket, opening the ticket (iff `may_begin`;
+    /// `in_flight` insert + generation capture in the same lock take), or deferring. Two concurrent
+    /// callers can never both receive `Began` for the same command, and a commit that lands before
+    /// this call is always served as `Fresh`: there is no observable state between "looked up" and
+    /// "began".
     pub fn lookup_or_begin(
         self: &Arc<Self>,
         command: &str,
@@ -1203,16 +1205,17 @@ impl AgentInstallCache {
         })
     }
 
-    /// #1551 - after a startup pass every entry is stale: `generation += 1`, `entries.clear()`. Tickets stay open
-    /// (their next `complete` returns `Stale`) and `seq` is NOT reset, so every post-invalidation commit outranks
-    /// every pre-invalidation state on the clients.
+    /// #1551 - after a startup pass every entry is stale: `generation += 1`, `entries.clear()`.
+    /// Tickets stay open (their next `complete` returns `Stale`) and `seq` is NOT reset, so every
+    /// post-invalidation commit outranks every pre-invalidation state on the clients.
     pub fn invalidate_all(&self) {
         let mut inner = self.lock();
         inner.generation += 1;
         inner.entries.clear();
     }
 
-    /// Test seeding only (opens a ticket without consulting entries); production never schedules through it.
+    /// Test seeding only (opens a ticket without consulting entries); production never schedules
+    /// through it.
     #[cfg(test)]
     pub fn try_begin(self: &Arc<Self>, command: &str) -> Option<ProbeTicket> {
         let mut inner = self.lock();
@@ -1246,10 +1249,11 @@ impl AgentInstallCache {
 }
 
 impl ProbeTicket {
-    /// Under the cache lock: if `generation` still matches, `seq += 1`, stamp `state.seq`, insert the entry
-    /// (`probed_at = now`), remove `command` from `in_flight`, set `live = false`, return `Committed(stamped)`.
-    /// Otherwise adopt the current generation and return `Stale(self)`: the ticket is NEVER released between
-    /// the rejection and the retry, so no competing `lookup_or_begin` can take the slot in between.
+    /// Under the cache lock: if `generation` still matches, `seq += 1`, stamp `state.seq`, insert
+    /// the entry (`probed_at = now`), remove `command` from `in_flight`, set `live = false`, return
+    /// `Committed(stamped)`. Otherwise adopt the current generation and return `Stale(self)`: the
+    /// ticket is NEVER released between the rejection and the retry, so no competing
+    /// `lookup_or_begin` can take the slot in between.
     pub fn complete(mut self, state: InstallState) -> Completion {
         // The guard is confined to this block so `self` is only ever dropped
         // after the cache lock was released.
@@ -1282,9 +1286,9 @@ impl ProbeTicket {
 }
 
 impl Drop for ProbeTicket {
-    /// Removes `command` from `in_flight` ONLY while `live` (an un-completed ticket: task panicked, aborted,
-    /// or a second `Stale` was dropped). A committed ticket already cleared `live`, so its drop can never free
-    /// the slot of a later ticket for the same command.
+    /// Removes `command` from `in_flight` ONLY while `live` (an un-completed ticket: task panicked,
+    /// aborted, or a second `Stale` was dropped). A committed ticket already cleared `live`, so its
+    /// drop can never free the slot of a later ticket for the same command.
     fn drop(&mut self) {
         if self.live {
             let mut inner = self.cache.lock();
