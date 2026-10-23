@@ -433,8 +433,11 @@ fn inject_internal_system_notice_log_line_is_unchanged_for_context_alert() {
         .expect("the tests module boundary");
     let production = lines[..boundary].join("\n");
 
-    let context_literal = "\"[context-alert] delivered coordinatorSession={} project={} \
-        workgroup={} member={} observed={} thresholds={:?}\"";
+    let context_literal = concat!(
+        "\"[context-alert] delivered coordinatorSession={} project={} ",
+        "\\\n",
+        "                    workgroup={} member={} observed={} thresholds={:?}\"",
+    );
     assert_eq!(
         production.matches(context_literal).count(),
         1,
