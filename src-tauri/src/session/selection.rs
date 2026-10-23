@@ -364,7 +364,7 @@ pub use payload::{
 use replacement::ReplacementStage;
 use replacement::{OwnedLifecycleEntry, RetainedReplacements};
 pub(crate) use response_close::ResponseCloseRegistration;
-#[cfg(test)]
+#[cfg(all(test, windows))]
 use response_close::{response_registration_route, response_registration_row};
 
 mod continuation_cleanup;
