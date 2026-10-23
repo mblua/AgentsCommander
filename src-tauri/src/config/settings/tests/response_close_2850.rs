@@ -1,5 +1,5 @@
-use super::super::*;
 use super::local_overlay_1737::{base_fixture, seed};
+use super::*;
 
 #[test]
 fn publication_state_reports_bool_and_holds_lock_through_callback() {

@@ -1,4 +1,4 @@
-use super::super::*;
+use super::*;
 
 fn physical_settings(dir: &Path, value: &Value) -> AppSettings {
     let path = dir.join(SETTINGS_FILE_NAME);

@@ -1,5 +1,5 @@
-use super::super::*;
 use super::local_overlay_1737::{base_fixture, disk_object, folder_trust_entry, seed};
+use super::*;
 use serde_json::json;
 use std::time::Duration;
 

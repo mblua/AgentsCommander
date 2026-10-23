@@ -1,5 +1,6 @@
 mod issue_3047_schema;
 
+use super::*;
 use super::{
     config_seed_dest_os_token_stem, merge_protected_coding_agent_settings,
     repair_coding_agent_profiles_config, validate_agent_commands, validate_api_server_settings,
