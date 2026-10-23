@@ -1,4 +1,4 @@
-use super::super::*;
+use super::*;
 use std::io::Write;
 
 #[derive(Clone)]
