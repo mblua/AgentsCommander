@@ -21,8 +21,8 @@ pub(super) async fn create_session(
         .expect("fixture session")
 }
 
-pub(super) const FIXTURE_MINT_ATTEMPTS: u32 = 6;
-pub(super) const FIXTURE_MINT_RETRY_DELAY: Duration = Duration::from_millis(25);
+const FIXTURE_MINT_ATTEMPTS: u32 = 6;
+const FIXTURE_MINT_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 /// Mint a fixture API token, absorbing a transient registry write failure.
 ///
@@ -592,7 +592,7 @@ pub(super) struct RunningHostFinalizer {
     pub(super) response_bytes: usize,
 }
 
-pub(super) fn host_response_digest(bytes: &[u8]) -> [u8; 32] {
+fn host_response_digest(bytes: &[u8]) -> [u8; 32] {
     use sha2::Digest;
     sha2::Sha256::digest(bytes).into()
 }

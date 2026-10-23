@@ -123,6 +123,24 @@ mod window_screenshot_queue;
 #[cfg(target_os = "windows")]
 mod window_screenshot_router;
 
-use api_support::*;
-use fixture::*;
-use host_api::*;
+use api_support::{
+    abort_direct_api_request_at, assert_api_audit_row, assert_audit_inventory,
+    assert_canaries_absent_except, assert_cleanup_and_secondary_surfaces,
+    assert_common_blocking_audit_inventory, assert_panic_audit_inventory, await_api_barrier,
+    common_blocking_test_audit, contains_raw, direct_api_body, direct_api_state,
+    payload_has_sentinel, reserved_loopback_listener, run_direct_api_request, snapshot_audit_rows,
+    timeout_api_at_common_blocking_stage, ApiAbortPoint, BodyStreamDropProbe,
+    RetainedMaximumAllocation,
+};
+use fixture::{AcceptanceFixture, BackendLookupCounts, ConfigEnvGuard};
+use host_api::{
+    api_lifecycle_counts, assert_api_lifecycle_active, assert_api_lifecycle_idle,
+    assert_host_finalizer_audit, assert_no_api_test_hooks, audit_contains_request, binding_for,
+    consume_host_response, create_mailbox_directories, create_session, host_cancellation_marker,
+    host_request, install_host_cancellation_barrier, mint_fixture_token, post_api_bytes,
+    post_api_snapshot, prepare_host_finalizer, record_route, retag_host_request,
+    start_host_finalizer, submit_host_request, submit_host_request_expect_no_response,
+    submit_uncorrelated_host_bytes, terminal_canary_output, wait_for_host_cancellation_barrier,
+    write_host_request_bytes, write_security_settings, ApiLifecycleCounts, HostFinalizerHandoff,
+    HostFinalizerWorkerOutcome,
+};

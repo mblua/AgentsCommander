@@ -24,7 +24,7 @@ pub(super) fn direct_api_state(fixture: &AcceptanceFixture) -> crate::api::ApiSt
     }
 }
 
-pub(super) fn direct_api_body_for_format(
+fn direct_api_body_for_format(
     request_id: &str,
     target: &str,
     format: TerminalSnapshotFormat,
@@ -128,7 +128,7 @@ pub(super) async fn abort_direct_api_request_at(
     counts
 }
 
-pub(super) fn assert_common_blocking_overlap_denial(state: &TerminalSnapshotState) {
+fn assert_common_blocking_overlap_denial(state: &TerminalSnapshotState) {
     let (requester_key, target_key) = {
         let limiter = state.limiter.lock().expect("active common limiter");
         assert_eq!(limiter.requester_in_flight.len(), 1);
@@ -391,7 +391,7 @@ pub(super) fn assert_canaries_absent_except(
     }
 }
 
-pub(super) fn collect_regular_files(root: &Path, files: &mut Vec<(PathBuf, Vec<u8>)>) {
+fn collect_regular_files(root: &Path, files: &mut Vec<(PathBuf, Vec<u8>)>) {
     let entries = std::fs::read_dir(root).expect("read leakage surface directory");
     for entry in entries {
         let entry = entry.expect("read leakage surface entry");
