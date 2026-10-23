@@ -683,3 +683,5 @@ fn a_legacy_array_on_the_agent_wins_over_both_files() {
     let eval = guard.evaluate_logical_rows(Uuid::new_v4(), &pi_row(), &entries);
     assert!(eval.is_blocked);
 }
+
+mod response_close_menu;

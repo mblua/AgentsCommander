@@ -467,6 +467,3 @@ impl MenuGuard {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod response_close_menu_tests;
