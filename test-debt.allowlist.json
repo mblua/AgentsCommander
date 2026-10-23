@@ -170,7 +170,7 @@
       "resolution": "Run manually with `cargo test --manifest-path src-tauri/Cargo.toml token_accounting_report -- --ignored --nocapture` per stage; paste the tables into the stage PR and checklist."
     },
     {
-      "id": "rust:src-tauri/src/pty/local_backend.rs::blocked_writer_teardown_tests::real_blocked_conpty_writer_is_unblocked_by_session_teardown",
+      "id": "rust:src-tauri/src/pty/local_backend/tests/blocked_writer_teardown.rs::real_blocked_conpty_writer_is_unblocked_by_session_teardown",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 1057,
