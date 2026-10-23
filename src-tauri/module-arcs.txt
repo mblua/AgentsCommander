@@ -1024,6 +1024,8 @@ agentscommander_lib::commands::voice -> agentscommander_lib::voice::tracker
 agentscommander_lib::commands::wg_delete_diagnostic -> agentscommander_lib::config::teams
 agentscommander_lib::commands::wg_delete_diagnostic -> agentscommander_lib::session::manager
 agentscommander_lib::commands::wg_delete_diagnostic -> agentscommander_lib::session::session
+agentscommander_lib::commands::wg_delete_diagnostic::cwd -> agentscommander_lib::commands::wg_delete_diagnostic
+agentscommander_lib::commands::wg_delete_diagnostic::restart_manager -> agentscommander_lib::commands::wg_delete_diagnostic
 agentscommander_lib::commands::window -> agentscommander_lib
 agentscommander_lib::commands::window -> agentscommander_lib::commands::config
 agentscommander_lib::commands::window -> agentscommander_lib::config::profile
