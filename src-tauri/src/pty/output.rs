@@ -1089,7 +1089,8 @@ impl SessionIoFanout {
         let text = String::from_utf8_lossy(&data);
         if text.contains('\u{FFFD}') {
             log::debug!(
-                "[PTY] session {} chunk had invalid UTF-8 at buffer boundary ({} bytes, {} replacement chars)",
+                "[PTY] session {} chunk had invalid UTF-8 at buffer boundary ({} bytes, {} \
+                    replacement chars)",
                 id,
                 n,
                 text.matches('\u{FFFD}').count()
@@ -1282,7 +1283,9 @@ impl SessionIoFanout {
                 // next attach after the child's next repaint seeds cleanly.
                 let (conpty_rows, conpty_cols) = state.conpty_size;
                 log::warn!(
-                    "[terminal-snapshot] stage=attach_grid_mismatch session={id} parser={parser_cols}x{parser_rows} conpty={conpty_cols}x{conpty_rows} (#1439)"
+                    "[terminal-snapshot] stage=attach_grid_mismatch session={id} \
+                        parser={parser_cols}x{parser_rows} conpty={conpty_cols}x{conpty_rows} \
+                        (#1439)"
                 );
                 let resized = crate::logging::catch_payload_unwind(|| {
                     state.parser.set_size(conpty_rows, conpty_cols)
@@ -1352,7 +1355,10 @@ impl SessionIoFanout {
                     Ok(Ok(snapshot)) => Some(snapshot),
                     Ok(Err(())) => None,
                     Err(_) => {
-                        log::warn!("[terminal-snapshot] stage=render_panic reason=payload_panic session={id} (#1452)");
+                        log::warn!(
+                            "[terminal-snapshot] stage=render_panic reason=payload_panic \
+                            session={id} (#1452)"
+                        );
                         state.parser_availability = ParserAvailability::Unavailable;
                         None
                     }
@@ -1365,7 +1371,8 @@ impl SessionIoFanout {
         drop(parsers);
         if let Some((ring, kept)) = history_unaligned {
             log::warn!(
-                "[terminal-snapshot] stage=attach_history_unaligned session={id} ring={ring} kept={kept} (#1458)"
+                "[terminal-snapshot] stage=attach_history_unaligned session={id} ring={ring} \
+                    kept={kept} (#1458)"
             );
         }
         if reconcile_fault {
@@ -1467,18 +1474,27 @@ impl SessionIoFanout {
 
         let parser_fault = {
             let Ok(mut parsers) = self.screen_parsers.lock() else {
-                log::warn!("[terminal-snapshot] stage=resize_skipped reason=parsers_lock_poisoned session={id} cols={cols} rows={rows} (#1439)");
+                log::warn!(
+                    "[terminal-snapshot] stage=resize_skipped reason=parsers_lock_poisoned \
+                    session={id} cols={cols} rows={rows} (#1439)"
+                );
                 return;
             };
             let Some(state) = parsers.get_mut(&id) else {
-                log::warn!("[terminal-snapshot] stage=resize_skipped reason=no_parser_entry session={id} cols={cols} rows={rows} (#1439)");
+                log::warn!(
+                    "[terminal-snapshot] stage=resize_skipped reason=no_parser_entry \
+                    session={id} cols={cols} rows={rows} (#1439)"
+                );
                 return;
             };
             // #1439 record-first: the ConPTY took this size whether or not the
             // parser can follow it; the attach reconcile compares against this.
             state.conpty_size = (rows, cols);
             if state.parser_availability != ParserAvailability::Available {
-                log::warn!("[terminal-snapshot] stage=resize_skipped reason=parser_unavailable session={id} cols={cols} rows={rows} (#1439)");
+                log::warn!(
+                    "[terminal-snapshot] stage=resize_skipped reason=parser_unavailable \
+                    session={id} cols={cols} rows={rows} (#1439)"
+                );
                 return;
             }
             let resized =
