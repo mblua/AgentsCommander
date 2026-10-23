@@ -26,7 +26,8 @@ export function textGate(snapshot, gate, measure, violates) {
       const violation = violates(base, head);
       fail ||= violation;
       metrics.push({ path, base, head });
-      diagnostics.push({ gate, path, base, head, status: violation ? 'FAIL' : 'PASS',
+      diagnostics.push({ gate, rule: gate === '01' ? 'long_lines' : 'file_lines', path, base, head,
+        status: violation ? 'FAIL' : 'PASS',
         ...(gate === '01' ? { lines: exceeded.map(line => ({ line, added: added.has(line) })) } : {}),
         reason: violation ? 'text debt increased' : 'text debt preserved or reduced',
         remedy: gate === '01' ? 'wrap new long lines to at most 100 Unicode characters' : 'split the file or reduce it to at most 1000 lines' });

@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "gate": "cog",
+      "rule": "new",
+      "path": "src-tauri/src/app_run/exit.rs",
+      "symbol": "on_run_event",
+      "hash": "bdf7e51c6ff1",
+      "reason": "Was the RunEvent closure of lib.rs::fn:run (baseline #b8704b1cb37a), extracted to app_run/exit.rs in #3180. Moved by the sanitizing campaign (#3176/#3180); the anchor changed with the move, so the hash re-anchor cannot pair it.",
+      "issue": 3182,
+      "since": "2026-10-23"
+    },
+    {
+      "gate": "cog",
+      "rule": "new",
+      "path": "src-tauri/src/app_run/setup.rs",
+      "symbol": "setup",
+      "hash": "de3b71b19434",
+      "reason": "Was the setup closure of lib.rs::fn:run (baseline #b15c5c1ba62b), extracted to app_run/setup.rs in #3180. Moved by the sanitizing campaign (#3176/#3180); the anchor changed with the move, so the hash re-anchor cannot pair it.",
+      "issue": 3182,
+      "since": "2026-10-23"
+    },
+    {
+      "gate": "cog",
+      "rule": "new",
+      "path": "src-tauri/src/phone/mailbox/wake_workers.rs",
+      "symbol": "impl:MailboxPoller::poll",
+      "hash": "6bd711afcbe6",
+      "reason": "Same function as baseline #dff40736a7a2; its header changed when the mailbox was split. Moved by the sanitizing campaign (#3176/#3180); the anchor changed with the move, so the hash re-anchor cannot pair it.",
+      "issue": 3182,
+      "since": "2026-10-23"
+    },
+    {
+      "gate": "cog",
+      "rule": "stale",
+      "path": "src-tauri/src/lib.rs",
+      "symbol": "fn:run::{closure}",
+      "hash": "b15c5c1ba62b",
+      "reason": "Closure moved to app_run/setup.rs::setup (#de3b71b19434). Moved by the sanitizing campaign (#3176/#3180); the anchor changed with the move, so the hash re-anchor cannot pair it.",
+      "issue": 3182,
+      "since": "2026-10-23"
+    },
+    {
+      "gate": "cog",
+      "rule": "stale",
+      "path": "src-tauri/src/lib.rs",
+      "symbol": "fn:run::{closure}",
+      "hash": "b8704b1cb37a",
+      "reason": "Closure moved to app_run/exit.rs::on_run_event (#bdf7e51c6ff1). Moved by the sanitizing campaign (#3176/#3180); the anchor changed with the move, so the hash re-anchor cannot pair it.",
+      "issue": 3182,
+      "since": "2026-10-23"
+    },
+    {
+      "gate": "cog",
+      "rule": "stale",
+      "path": "src-tauri/src/phone/mailbox/wake_workers.rs",
+      "symbol": "impl:MailboxPoller::poll",
+      "hash": "dff40736a7a2",
+      "reason": "Now observed as #6bd711afcbe6 after the mailbox split. Moved by the sanitizing campaign (#3176/#3180); the anchor changed with the move, so the hash re-anchor cannot pair it.",
+      "issue": 3182,
+      "since": "2026-10-23"
+    },
+    {
+      "gate": "cog",
+      "rule": "new",
+      "path": "src-tauri/src/phone/mailbox/pty_dispatch/select.rs",
+      "symbol": "impl:MailboxPoller::select_pty_dispatch_session",
+      "hash": "b95efdd7f61d",
+      "reason": "Came out of the split of dispatch_pty_input_operation_core in #3180 (138d9f0). Complexity is not a blocker for this function.",
+      "issue": 3182,
+      "since": "2026-10-23"
+    }
+  ]
+}

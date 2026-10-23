@@ -120,12 +120,72 @@ export function createSnapshot({ baseRef = 'origin/main', cwd, runner = gitRunne
   return { requestedRef: baseRef, refOid, baseOid, headOid, baseTree, headTree, changed, readBlob, addedLines,
     assertStableHead() { if (resolve('HEAD') !== headOid) throw new GateError(`HEAD drift from ${headOid}; retry on a stable checkout`); } };
 }
+// Versioned accepted findings (#3182). An entry turns a matching FAIL into ACCEPTED;
+// an entry that matches nothing is only a WARN: these gates compare against the PR base,
+// so an entry goes stale once its debt is merged.
+export const ALLOWLIST_FILE = 'sanitizing.allowlist.json';
+const ALLOWLIST_GATES = ['01', '02', '05', '06', '08', '09', 'cog'];
+export function parseAllowlist(text) {
+  let document;
+  try { document = JSON.parse(text); } catch { throw new GateError(`${ALLOWLIST_FILE}: invalid JSON`); }
+  if (document?.version !== 1 || !Array.isArray(document.entries))
+    throw new GateError(`${ALLOWLIST_FILE}: must be an object with version 1 and an entries array`);
+  const keys = new Set();
+  for (const [i, e] of document.entries.entries()) {
+    const bad = reason => new GateError(`${ALLOWLIST_FILE}: entry ${i} ${reason}`);
+    if (!e || typeof e !== 'object' || Array.isArray(e)) throw bad('must be an object');
+    if (!ALLOWLIST_GATES.includes(e.gate)) throw bad(`gate must be one of ${ALLOWLIST_GATES.join(', ')}`);
+    for (const field of ['rule', 'path', 'reason', 'since'])
+      if (typeof e[field] !== 'string' || !e[field].trim()) throw bad(`${field} must be a non-empty string`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(e.since)) throw bad('since must be YYYY-MM-DD');
+    if (!Number.isInteger(e.issue) || e.issue <= 0) throw bad('issue must be a positive integer');
+    for (const field of ['symbol', 'hash'])
+      if (e[field] !== undefined && (typeof e[field] !== 'string' || !e[field].trim())) throw bad(`${field} must be a non-empty string when present`);
+    if (e.gate === 'cog' && (!['new', 'stale'].includes(e.rule) || !e.symbol || !/^[0-9a-f]{12}$/.test(e.hash ?? '')))
+      throw bad('cog entries need rule new|stale, symbol and a 12-hex hash');
+    if (e.gate !== 'cog' && e.hash !== undefined) throw bad('hash only applies to cog entries');
+    const key = JSON.stringify([e.gate, e.rule, e.path, e.symbol ?? null, e.hash ?? null]);
+    if (keys.has(key)) throw bad('duplicates an earlier entry');
+    keys.add(key);
+  }
+  return document.entries;
+}
+export function readAllowlist(root) {
+  const file = path.join(root, ALLOWLIST_FILE);
+  if (!fs.existsSync(file)) return [];
+  return parseAllowlist(fs.readFileSync(file, 'utf8'));
+}
+// Sanitizing findings match by gate, rule and path; `symbol` only documents the site.
+export function applyAllowlist(result, entries) {
+  if (result.status === 'ERROR') return result;
+  const own = entries.filter(e => e.gate === result.gate), used = new Set();
+  const diagnostics = result.diagnostics.map(d => {
+    if (d.status !== 'FAIL') return d;
+    const entry = own.find(e => e.rule === d.rule && e.path === d.path);
+    if (!entry) return d;
+    used.add(entry);
+    return { ...d, status: 'ACCEPTED', allowlist: { reason: entry.reason, issue: entry.issue, since: entry.since } };
+  });
+  for (const e of own) if (!used.has(e)) diagnostics.push({ gate: result.gate, status: 'WARN', rule: 'stale_allowlist',
+    path: e.path, line: 1, reason: `${ALLOWLIST_FILE} entry ${e.rule} matches no finding`,
+    remedy: `remove the entry from ${ALLOWLIST_FILE}; the debt it accepted is gone` });
+  const fail = diagnostics.some(d => d.status === 'FAIL');
+  return { ...result, status: fail ? 'FAIL' : 'PASS', exit: fail ? 1 : 0,
+    accepted: diagnostics.filter(d => d.status === 'ACCEPTED').length,
+    warnings: diagnostics.filter(d => d.status === 'WARN').length, diagnostics };
+}
 export function isMain(url) { return !!process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(url); }
 export async function gateCli(runGate, argv = process.argv.slice(2)) {
   try {
     const options = parseArgs(argv);
-    const snapshot = createSnapshot({ ...options, cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..') });
-    const result = await runGate(snapshot);
-    console.log(JSON.stringify(result, null, 2)); return result.exit;
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const entries = readAllowlist(root);
+    const snapshot = createSnapshot({ ...options, cwd: root });
+    const result = applyAllowlist(await runGate(snapshot), entries);
+    console.log(JSON.stringify(result, null, 2));
+    for (const d of result.diagnostics ?? [])
+      if (d.status === 'WARN') console.error(`WARN stale allowlist entry: gate ${d.gate} ${d.path} (${d.reason})`);
+    if (result.status !== 'ERROR') console.error(`gate ${result.gate}: ${result.status}, ACCEPTED ${result.accepted} finding(s) from ${ALLOWLIST_FILE}`);
+    return result.exit;
   } catch (e) { console.error(`ERROR ${e.message}`); return e.exit ?? 3; }
 }
