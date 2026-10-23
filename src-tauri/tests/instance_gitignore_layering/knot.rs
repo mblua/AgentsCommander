@@ -187,16 +187,16 @@ fn instance_gitignore_names_nothing_that_reaches_the_knot() {
 /// `crate::config` has **zero outgoing arcs** over the record in
 /// `src-tauri/module-arcs.txt`.
 ///
-/// **That is a claim about outgoing arcs from `src/config/mod.rs`, and this test
+/// **That is a claim about outgoing arcs from `src/config.rs`, and this test
 /// is the only thing that holds it.** The arc
 /// `config::instance_gitignore -> config` is not removed by #1273 and is not
 /// removable: `ensure_instance_gitignore` calls `super::config_dir()` and
 /// `super::agent_local_dir_name()`. So one `use crate::<knot member>::...;` in
-/// `src/config/mod.rs` puts `config` into the knot and this module back in with
+/// `src/config.rs` puts `config` into the knot and this module back in with
 /// it, 49 other modules follow, and every assertion in the test above stays green
 /// because the guarded module's own file did not change.
 ///
-/// It reads `src/config/mod.rs` and nothing below it. Every child of `config` is
+/// It reads `src/config.rs` and nothing below it. Every child of `config` is
 /// a separate module in the graph with its own arcs, and 21 of them are knot
 /// members; descending would assert that the whole `config` subtree names
 /// nothing, which is neither true nor #1273's business.

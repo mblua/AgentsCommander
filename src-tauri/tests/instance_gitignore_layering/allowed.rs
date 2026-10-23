@@ -391,7 +391,7 @@ pub(crate) const ALLOWED_GUARDED_SUPER_REFERENCES: [(&str, &str); 93] = [
 /// Every `(file, child)` reference the constant's home is allowed to make under
 /// `crate::`, sorted.
 ///
-/// **Empty.** `src/config/mod.rs` measures zero outgoing arcs over the record, and
+/// **Empty.** `src/config.rs` measures zero outgoing arcs over the record, and
 /// that measurement is the whole non-absorption argument of #1273: a module with
 /// no way out cannot reach a knot member, so it cannot share an SCC with one, so
 /// nothing that depends only on it can either.
@@ -401,7 +401,7 @@ pub(crate) const ALLOWED_HOST_CRATE_REFERENCES: [(&str, &str); 0] = [];
 /// `super::`, sorted.
 ///
 /// Empty. The test module's `use super::*;` moved to `src/config/tests.rs`,
-/// which this observation does not read. From `src/config/mod.rs`, `super::`
+/// which this observation does not read. From `src/config.rs`, `super::`
 /// at module level would mean the crate root, so any row appearing here
 /// is a reference from `config` up into the crate root's children,
 /// which is the inversion this guard exists to refuse.
@@ -424,7 +424,7 @@ pub(crate) const ALLOWED_GUARDED_SELF_REFERENCES: [(&str, &str); 0] = [];
 /// `self::`, sorted.
 ///
 /// **Empty, and this is the one that was measured to matter.** From
-/// `src/config/mod.rs`, `self::` means `crate::config`, so
+/// `src/config.rs`, `self::` means `crate::config`, so
 /// `use self::root_agent::...;` reaches a knot member from the module whose
 /// zero-outgoing-arc property the whole of #1273 Section 4.3 rests on. Measured
 /// during the #1273 review: that one line took the knot 87 to **91** and
@@ -504,7 +504,7 @@ pub(crate) const REGISTRY_MODULE: [&str; 2] = ["config", "instance_artifacts"];
 /// re-export left behind in `src/config/root_agent.rs` names the same identifier
 /// and must not be counted as one, while a `static` copy must be.
 pub(crate) const CONSTANT_NAME: &str = "ROOT_AGENT_DIR_NAME";
-pub(crate) const CONSTANT_HOME: &str = "src/config/mod.rs";
+pub(crate) const CONSTANT_HOME: &str = "src/config.rs";
 
 /// The leading segment `children_under` reports for a glob import.
 ///

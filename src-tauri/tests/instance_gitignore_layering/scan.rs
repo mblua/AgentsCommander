@@ -326,7 +326,7 @@ pub(crate) fn children_under(body: &str, anchor: &str) -> Result<Vec<String>, &'
 /// `x_root_agent` are not hits and `r#root_agent` is.
 ///
 /// **`mod root_agent;` is not a hit, and that exemption is what makes this check
-/// applicable to the constant's home at all.** `src/config/mod.rs` is
+/// applicable to the constant's home at all.** `src/config.rs` is
 /// `config::root_agent`'s parent, so it is *required* to declare it: without the
 /// exemption this check would be red on a correct tree, which is why it could
 /// not simply be switched on for that file. The exemption is safe because a

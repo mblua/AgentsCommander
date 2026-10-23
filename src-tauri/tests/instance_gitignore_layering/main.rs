@@ -38,7 +38,7 @@
 //! into `crate::config`, and the argument that the knot cannot absorb it rests
 //! on `crate::config` having **zero outgoing arcs**, measured over the record
 //! in `src-tauri/module-arcs.txt`. **That premise fails on an outgoing arc, not an
-//! incoming one.** One `use crate::<any knot member>::...;` in `src/config/mod.rs`
+//! incoming one.** One `use crate::<any knot member>::...;` in `src/config.rs`
 //! puts `config` into the knot and drags this module straight back in with it,
 //! and the assertions about `instance_gitignore` stay green throughout, because
 //! that file never changed. The premise is load bearing either way: the arc
@@ -61,7 +61,7 @@
 //! `mod y { ... }` block, are hard failures naming the file rather than a guess.
 //!
 //! The guarded module is read together with every module below it. The constant's
-//! home is read **shallow**, its own `src/config/mod.rs` and no descendant,
+//! home is read **shallow**, its own `src/config.rs` and no descendant,
 //! because every child of `config` is a separate module in the graph with its own
 //! arcs and most of them are inside the knot; descending would assert that the
 //! whole `config` subtree names nothing, which is neither true nor this issue's
@@ -180,7 +180,7 @@
 //!      reached by. Nothing in this repository currently holds those two
 //!      references up. See entry 19, which is that measurement in full. A
 //!      documented blind spot is usable; a false mitigation is what misleads.
-//!  13. An unanchored path in the constant's home. `src/config/mod.rs` already
+//!  13. An unanchored path in the constant's home. `src/config.rs` already
 //!      writes `profile::config_dir_name()` three times, a path beginning with
 //!      neither `crate::` nor `super::`, which is why it creates no arc and why
 //!      that module measures zero outgoing arcs. A new unanchored path from
@@ -228,11 +228,11 @@
 //!  16. **`use super::*;` at the top level of the constant's home, and it is the
 //!      most damaging spelling found.** `the_constant_home_names_nothing_at_all`
 //!      asserts no glob count at all -- unlike the guarded module's test -- and
-//!      `("src/config/mod.rs", "*")` is an allowed row, put there for the glob
+//!      `("src/config.rs", "*")` is an allowed row, put there for the glob
 //!      inside that file's own `#[cfg(test)] mod tests`. A text scan cannot tell
 //!      the two positions apart, which is exactly the argument entry 9 makes for
 //!      the guarded module, and the host test never draws the conclusion.
-//!      Measured, one line added to `src/config/mod.rs`: guard **3 passed**,
+//!      Measured, one line added to `src/config.rs`: guard **3 passed**,
 //!      `cargo fmt --check` **exit 0**, and the record gains
 //!      `config -> agentscommander_lib`. `config` stops being the pure sink
 //!      Section 4.3 of the plan rests on, the knot goes 87 -> **91**, and
@@ -250,7 +250,7 @@
 //!      `the_constant_home_names_nothing_at_all` does not assert
 //!      `seen.forbidden`, so the anchorless `root_agent` check never runs
 //!      against the constant's home. Measured, one line added to
-//!      `src/config/mod.rs`:
+//!      `src/config.rs`:
 //!      `use self::root_agent::ROOT_AGENT_SESSION_NAME;` -- guard **3 passed**,
 //!      `cargo fmt --check` **exit 0**, record gains
 //!      `config -> config::root_agent`, knot 87 -> **91**,
@@ -378,9 +378,9 @@
 //!      records this class for the guarded module; it is live on the host too,
 //!      and the structural count added for entries 14 to 16 does not see it,
 //!      because moving keeps the total at exactly 1. Measured: deleting
-//!      `use super::*;` from the `#[cfg(test)] mod tests` of `src/config/mod.rs`
+//!      `use super::*;` from the `#[cfg(test)] mod tests` of `src/config.rs`
 //!      and writing the same three words at the top level of that file leaves
-//!      the guard at **3 passed** with `("src/config/mod.rs", "*")` still the
+//!      the guard at **3 passed** with `("src/config.rs", "*")` still the
 //!      one allowed row, while the record gains
 //!      `config -> agentscommander_lib` and the knot goes 87 to **91**.
 //!
@@ -395,14 +395,14 @@
 //!      needs less of its parent would remove the compiler's half.
 //!  23. **Entry 13 is now narrower than it reads, and the remainder is still
 //!      open.** Since `the_constant_home_names_nothing_at_all` began asserting
-//!      `seen.forbidden`, an unanchored path from `src/config/mod.rs` into
+//!      `seen.forbidden`, an unanchored path from `src/config.rs` into
 //!      `config::root_agent` specifically is caught: measured,
 //!      `root_agent::ROOT_AGENT_SESSION_NAME` in a function there is now red,
 //!      where it was green before the closure. Entry 13's sentence "invisible to
 //!      the detector and to this guard alike" is therefore no longer true for
 //!      that one name. It remains true for every other knot member: measured,
 //!      `injected_messages::INJECTED_MESSAGES_FILENAME` in a function in
-//!      `src/config/mod.rs` is **3 passed**, `cargo fmt --check` exit 0, and the
+//!      `src/config.rs` is **3 passed**, `cargo fmt --check` exit 0, and the
 //!      arc record does not move. The anchorless check is a name, not a class,
 //!      and only the anchored equalities generalise.
 //!  24. **The `mod` exemption still exempts a macro argument, and in the
@@ -434,11 +434,11 @@
 //!
 //!      **In the constant's home it is live.** `the_constant_home_names_nothing_at_all`
 //!      observes with `Reach::OwnFilesOnly`, so `declared_children` never runs
-//!      over `src/config/mod.rs` at all and only the exemption stands between
+//!      over `src/config.rs` at all and only the exemption stands between
 //!      that file and the check. Measured on the merged tree, with a
 //!      `macro_rules!` defined in `src/lib.rs` matching `(mod $m:ident;)` and
 //!      expanding to `crate::config::$m::ROOT_AGENT_SESSION_NAME`, invoked from
-//!      `src/config/mod.rs` as `probe!(mod root_agent;);`: guard **3 passed**,
+//!      `src/config.rs` as `probe!(mod root_agent;);`: guard **3 passed**,
 //!      and still 3 passed after `cargo fmt` reflows it across three lines, with
 //!      `cargo fmt --check` back at exit 0. The arc record does not move, because
 //!      the detector skips macro invocations, so nothing in the repository
