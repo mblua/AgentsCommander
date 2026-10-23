@@ -1,4 +1,4 @@
-use super::rows::sha256_hex;
+use super::sha256_hex;
 
 #[derive(Debug, Clone)]
 pub struct EnqueueRequest {

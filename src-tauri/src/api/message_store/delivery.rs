@@ -1,4 +1,5 @@
-use super::rows::{insert_audit, retry_backoff_seconds, sha256_hex};
+use super::rows::{insert_audit, retry_backoff_seconds};
+use super::sha256_hex;
 use super::types::{EnqueueRequest, EnqueueResult, LeasedMessage};
 use super::{
     response_work_key, MessageStore, MessageStoreError, ResponseTerminalPersistence,

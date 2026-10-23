@@ -1,7 +1,8 @@
 use super::rows::{
     claimed_from_row, insert_pty_audit, is_lower_hex_64, load_pty_result, lookup_idempotency_row,
-    reason_code_string, sha256_hex, source_plane_str,
+    reason_code_string, source_plane_str,
 };
+use super::sha256_hex;
 use super::types::{
     ClaimedPtyInputOperation, DuePtyInputCandidate, HostPtyInputRejectionRequest,
     PtyInputEnqueueRequest, PtyInputEnqueueResult,

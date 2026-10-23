@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::pty::manager::{ResponseCloseState, WorkDeliveryReservation};
@@ -131,6 +132,16 @@ struct PtyInputMaintenanceCursors {
 #[derive(Default)]
 struct PtyInputStoreTestFaults {
     actuation_commit_ambiguous: bool,
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(64);
+    for byte in digest {
+        out.push(char::from_digit((byte >> 4) as u32, 16).unwrap());
+        out.push(char::from_digit((byte & 0x0f) as u32, 16).unwrap());
+    }
+    out
 }
 
 #[cfg(test)]

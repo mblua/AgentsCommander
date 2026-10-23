@@ -5,7 +5,6 @@ use super::{
 };
 use crate::pty::manager::ResponseCloseState;
 use rusqlite::{params, OptionalExtension};
-use sha2::{Digest, Sha256};
 
 pub(super) fn source_plane_str(source: crate::phone::types::PtyInputSourcePlane) -> &'static str {
     match source {
@@ -484,14 +483,4 @@ pub(super) fn is_lower_hex_64(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-pub(super) fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(64);
-    for byte in digest {
-        out.push(char::from_digit((byte >> 4) as u32, 16).unwrap());
-        out.push(char::from_digit((byte & 0x0f) as u32, 16).unwrap());
-    }
-    out
 }
