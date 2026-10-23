@@ -8,12 +8,15 @@
 //!
 //! | Event | Level | When |
 //! |---|---|---|
-//! | `[pty] spawn-record` | INFO | once, at spawn: argv as executed, cwd, CLI, profile, `CODEX_HOME`, concurrency |
+//! | `[pty] spawn-record` | INFO | once, at spawn (fields below) |
 //! | `[pty] first-output` | DEBUG | first byte off the PTY |
 //! | `[pty] first-paint` | INFO (WARN if it recovers a stall) | output passes the paint floor |
 //! | `[pty] startup-stall` | WARN | at the deadline, when the child never painted |
 //! | `[pty] startup-checkpoint` | INFO | at the deadline otherwise |
 //! | `[pty] child-exit` | INFO (WARN when unexpected) | once, when the child ends |
+//!
+//! `spawn-record` carries argv as executed, cwd, CLI, profile, `CODEX_HOME` and
+//! concurrency.
 //!
 //! The startup report (`startup-stall` / `startup-checkpoint`) fires for **every**
 //! session at the deadline, whatever it painted and whoever launched it, and it always
@@ -766,7 +769,8 @@ impl SpawnRecord {
                     // Only a stall we actually reported can be recovered from.
                     if self.stall_reported.load(Ordering::Relaxed) {
                         log::warn!(
-                            "[pty] first-paint session={} pid={} cli={} after_ms={} bytes={} late=true (startup stall recovered)",
+                            "[pty] first-paint session={} pid={} cli={} after_ms={} bytes={} \
+                            late=true (startup stall recovered)",
                             self.session_id,
                             self.pid_log(),
                             self.cli_log(),
@@ -844,7 +848,10 @@ impl SpawnRecord {
             "startup-checkpoint"
         };
         let line = format!(
-            "[pty] {} session={} pid={} cli={} agent_profile={} backend=local child={} stalled={} elapsed_ms={} threshold_ms={} bytes_read={} paint_floor={} first_output_ms={} first_paint_ms={} argv={} cwd={} codex_home={} recent_spawns={} recent_same_cli={} window_ms={} head={}",
+            "[pty] {} session={} pid={} cli={} agent_profile={} backend=local child={} stalled={} \
+            elapsed_ms={} threshold_ms={} bytes_read={} paint_floor={} first_output_ms={} \
+            first_paint_ms={} argv={} cwd={} codex_home={} recent_spawns={} recent_same_cli={} \
+            window_ms={} head={}",
             event,
             self.session_id,
             self.pid_log(),
@@ -898,7 +905,10 @@ impl SpawnRecord {
 
         if with_evidence {
             let line = format!(
-                "[pty] child-exit session={} pid={} cli={} agent_profile={} cause={} detail={} child={} came_up={} uptime_ms={} first_output_ms={} first_paint_ms={} bytes_read={} stop_source={} stop_age_ms={} argv={} cwd={} codex_home={} recent_spawns={} recent_same_cli={} window_ms={} head={}",
+                "[pty] child-exit session={} pid={} cli={} agent_profile={} cause={} detail={} \
+                child={} came_up={} uptime_ms={} first_output_ms={} first_paint_ms={} \
+                bytes_read={} stop_source={} stop_age_ms={} argv={} cwd={} codex_home={} \
+                recent_spawns={} recent_same_cli={} window_ms={} head={}",
                 self.session_id,
                 self.pid_log(),
                 self.cli_log(),
@@ -928,7 +938,9 @@ impl SpawnRecord {
             }
         } else {
             log::info!(
-                "[pty] child-exit session={} pid={} cli={} agent_profile={} cause={} detail={} child={} uptime_ms={} first_output_ms={} first_paint_ms={} bytes_read={} stop_source={} stop_age_ms={}",
+                "[pty] child-exit session={} pid={} cli={} agent_profile={} cause={} detail={} \
+                child={} uptime_ms={} first_output_ms={} first_paint_ms={} bytes_read={} \
+                stop_source={} stop_age_ms={}",
                 self.session_id,
                 self.pid_log(),
                 self.cli_log(),
@@ -950,7 +962,9 @@ impl SpawnRecord {
     /// The full spawn record, one line, on every local spawn.
     fn log_spawn(&self) {
         log::info!(
-            "[pty] spawn-record session={} pid={} cli={} agent_profile={} backend=local argv={} cwd={} codex_home={} env_configured={} env_removed={} recent_spawns={} recent_same_cli={} window_ms={}",
+            "[pty] spawn-record session={} pid={} cli={} agent_profile={} backend=local argv={} \
+            cwd={} codex_home={} env_configured={} env_removed={} recent_spawns={} \
+            recent_same_cli={} window_ms={}",
             self.session_id,
             self.pid_log(),
             self.cli_log(),
