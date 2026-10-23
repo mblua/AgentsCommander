@@ -1000,6 +1000,9 @@ agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::ses
 agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::session::session
 agentscommander_lib::commands::spec_board -> agentscommander_lib
 agentscommander_lib::commands::spec_board -> agentscommander_lib::config::settings
+agentscommander_lib::commands::spec_board::paths -> agentscommander_lib::config::settings
+agentscommander_lib::commands::spec_board::snapshots -> agentscommander_lib
+agentscommander_lib::commands::spec_board::snapshots -> agentscommander_lib::commands::spec_board
 agentscommander_lib::commands::task -> agentscommander_lib::cli::task_ops
 agentscommander_lib::commands::task -> agentscommander_lib::config::ac_root
 agentscommander_lib::commands::task -> agentscommander_lib::config::entity_prefix
