@@ -2441,7 +2441,6 @@ agentscommander_lib::web::commands -> agentscommander_lib::commands::repos
 agentscommander_lib::web::commands -> agentscommander_lib::commands::role_templates
 agentscommander_lib::web::commands -> agentscommander_lib::commands::session
 agentscommander_lib::web::commands -> agentscommander_lib::config
-agentscommander_lib::web::commands -> agentscommander_lib::config::coding_agent_mutations
 agentscommander_lib::web::commands -> agentscommander_lib::config::coordinator_clocks
 agentscommander_lib::web::commands -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::web::commands -> agentscommander_lib::config::project_settings
@@ -2455,6 +2454,16 @@ agentscommander_lib::web::commands -> agentscommander_lib::session::selection
 agentscommander_lib::web::commands -> agentscommander_lib::session::warnings
 agentscommander_lib::web::commands -> agentscommander_lib::web::broadcast
 agentscommander_lib::web::commands -> agentscommander_lib::web::event_broadcast
+agentscommander_lib::web::commands::agent_update_dispatch -> agentscommander_lib::commands::config
+agentscommander_lib::web::commands::agent_update_dispatch -> agentscommander_lib::web::commands
+agentscommander_lib::web::commands::agent_update_dispatch -> agentscommander_lib::web::commands::args
+agentscommander_lib::web::commands::coding_agent_dispatch -> agentscommander_lib::commands::config
+agentscommander_lib::web::commands::coding_agent_dispatch -> agentscommander_lib::config::coding_agent_mutations
+agentscommander_lib::web::commands::coding_agent_dispatch -> agentscommander_lib::config::settings
+agentscommander_lib::web::commands::coding_agent_dispatch -> agentscommander_lib::session::selection
+agentscommander_lib::web::commands::coding_agent_dispatch -> agentscommander_lib::web::commands
+agentscommander_lib::web::commands::coding_agent_dispatch -> agentscommander_lib::web::commands::args
+agentscommander_lib::web::commands::coding_agent_dispatch -> agentscommander_lib::web::event_broadcast
 agentscommander_lib::web::event_broadcast -> agentscommander_lib::web::broadcast
 agentscommander_lib::web_server -> agentscommander_lib::shutdown
 agentscommander_lib::web_server -> agentscommander_lib::web
