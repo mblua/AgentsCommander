@@ -49,6 +49,8 @@ use terminal_snapshot_renderer::{
     terminal_snapshot_json_bytes_from_model, terminal_snapshot_payload_bytes, TerminalScreenModel,
     TerminalSnapshotFormat, TerminalSnapshotPayload, TerminalSnapshotReasonCode,
 };
+#[cfg(all(test, unix))]
+use test_support::TerminalSnapshotUnixCleanupControl;
 #[cfg(test)]
 pub(crate) use test_support::{
     TerminalSnapshotBlockingControl, TerminalSnapshotHostCancellationStage,
@@ -58,8 +60,6 @@ pub(crate) use test_support::{
 };
 #[cfg(test)]
 use test_support::{TerminalSnapshotTestState, TerminalSnapshotTestTaskOutput};
-#[cfg(all(test, unix))]
-use test_support::TerminalSnapshotUnixCleanupControl;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
