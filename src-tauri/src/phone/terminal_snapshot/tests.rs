@@ -1,4 +1,10 @@
 use super::*;
+use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage;
+use std::path::{Path, PathBuf};
+use terminal_snapshot_renderer::{
+    canonical_timestamp, TerminalSnapshotFormat, TerminalSnapshotReasonCode,
+};
+use uuid::Uuid;
 
 fn response_directory() -> tempfile::TempDir {
     let directory = tempfile::TempDir::new().unwrap();
@@ -727,7 +733,7 @@ fn response_consumed_after_registry_commit_releases_registry_capacity() {
     }
     let request_id = Uuid::new_v4();
     state.install_response_publication_hook(
-        crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::AfterRegistryCommit,
+        TerminalSnapshotResponsePublicationStage::AfterRegistryCommit,
         |_, destination| {
             std::fs::remove_file(destination).expect("consume committed response");
         },
@@ -760,7 +766,7 @@ fn response_replaced_after_registry_commit_fails_without_deleting_replacement() 
     let request_id = Uuid::new_v4();
     let displaced = directory.path().join("client-consumed-response");
     state.install_response_publication_hook(
-        crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::AfterRegistryCommit,
+        TerminalSnapshotResponsePublicationStage::AfterRegistryCommit,
         move |_, destination| {
             std::fs::rename(destination, &displaced).expect("consume committed object");
             std::fs::write(destination, b"attacker replacement")
