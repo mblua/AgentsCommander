@@ -88,6 +88,14 @@
       "reason": "Test-only thread_local seam moved unchanged from config/settings/owner.rs (cfg(all(test, windows))) in the 02-R1 split; the new file trips the new-file subrule. Moved by the sanitizing campaign (#3188).",
       "issue": 3188,
       "since": "2026-10-23"
+    },
+    {
+      "gate": "06",
+      "rule": "tauri_files",
+      "path": "src-tauri/src/web.rs",
+      "reason": "Existing Tauri references moved unchanged from web/mod.rs to canonical web.rs by the sanitizing campaign (#3188); the new path trips the new-file subrule. Infrastructure refactoring is outside this movement-only assignment.",
+      "issue": 3188,
+      "since": "2026-10-23"
     }
   ]
 }
