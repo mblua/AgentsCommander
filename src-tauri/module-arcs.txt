@@ -1571,6 +1571,11 @@ agentscommander_lib::loops::scheduler -> agentscommander_lib::config::settings
 agentscommander_lib::loops::scheduler -> agentscommander_lib::loops::delivery
 agentscommander_lib::loops::scheduler -> agentscommander_lib::loops::events
 agentscommander_lib::loops::scheduler -> agentscommander_lib::shutdown
+agentscommander_lib::path_identity::regular -> agentscommander_lib::path_identity
+agentscommander_lib::path_identity::retained -> agentscommander_lib::path_identity
+agentscommander_lib::path_identity::retained -> agentscommander_lib::path_identity::regular
+agentscommander_lib::path_identity::terminal_output -> agentscommander_lib::path_identity
+agentscommander_lib::path_identity::terminal_output -> agentscommander_lib::path_identity::regular
 agentscommander_lib::phone::mailbox::handoff -> agentscommander_lib::config::agent_command
 agentscommander_lib::phone::mailbox::handoff -> agentscommander_lib::config::coding_agent_profiles
 agentscommander_lib::phone::mailbox::handoff -> agentscommander_lib::config::settings
