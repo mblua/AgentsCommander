@@ -47,7 +47,8 @@ PEER FILTER (--peer):\n  \
   filtering is by name only.\n\n\
 NOTES:\n  \
   - Canonical Root Agent roots return verified Room orchestrator replicas only.\n    \
-    Origin orchestrators and non-orchestrator Room replicas are omitted for Root Agent discovery in #277.\n  \
+    Origin orchestrators and non-orchestrator Room replicas are omitted for \
+    Root Agent discovery in #277.\n  \
   - Identity-verified Room orchestrator replicas additionally see a synthetic\n    \
     peer with `name=agentscommander://root-agent`, representing the Root\n    \
     Agent reply target. Pass that name verbatim to `send --to` when replying\n    \
@@ -71,7 +72,8 @@ pub struct ListPeersArgs {
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Agent root directory (required). Your working directory — used to identify you and your teams
+    /// Agent root directory (required). Your working directory — used to identify you
+    /// and your teams
     #[arg(long)]
     pub root: Option<String>,
 
@@ -162,7 +164,8 @@ pub struct ListPeersLeanArgs {
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Agent root directory (required). Your working directory — used to identify you and your teams
+    /// Agent root directory (required). Your working directory — used to identify you
+    /// and your teams
     #[arg(long)]
     pub root: Option<String>,
 
