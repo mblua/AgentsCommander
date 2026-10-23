@@ -963,12 +963,7 @@ fn set_body_no_litter(root: &Path) {
         .to_string_lossy()
         .starts_with("TASK.md.tmp.")));
 }
-fn assert_set_body_write(
-    root: &Path,
-    previous: Option<&str>,
-    text: &str,
-    before: &TaskSnapshot,
-) {
+fn assert_set_body_write(root: &Path, previous: Option<&str>, text: &str, before: &TaskSnapshot) {
     let task_path = root.join("TASK.md");
     let parsed = parse_task(previous.unwrap_or(""));
     let noop = parsed.body == text;
@@ -1674,9 +1669,7 @@ fn issue_2837_encoded_size_boundary_and_bounded_history_read() {
 
 #[test]
 fn issue_2837_clean_pair_matrix_exact_bytes_noop_and_aba() {
-    for (task_exists, log_exists) in
-        [(true, true), (true, false), (false, true), (false, false)]
-    {
+    for (task_exists, log_exists) in [(true, true), (true, false), (false, true), (false, false)] {
         let f = issue_2837_fixture();
         let root = f.path();
         let task = b"\xef\xbb\xbf---\r\ntitle: 'USER: Original'\r\n---\r\nbody\r\n";
@@ -1967,8 +1960,9 @@ fn issue_2837_append_title_body_clean_concurrency() {
         handles.push(thread::spawn(move || {
             b.wait();
             match op {
-                0 => append_status(&p, &revision, &issue_2837_id(), "new status", "p/a")
-                    .map(|_| ()),
+                0 => {
+                    append_status(&p, &revision, &issue_2837_id(), "new status", "p/a").map(|_| ())
+                }
                 1 => perform(&p, TaskOp::AppendBody("new description".into())).map(|_| ()),
                 _ => perform(&p, TaskOp::Clean).map(|_| ()),
             }
@@ -2090,8 +2084,7 @@ fn issue_2837_process_exit_publication_boundaries_recover_pair() {
             "prior task"
         );
         assert_eq!(
-            std::fs::read_to_string(root.join("TASK-status.20261002-210000.bak.jsonl"))
-                .unwrap(),
+            std::fs::read_to_string(root.join("TASK-status.20261002-210000.bak.jsonl")).unwrap(),
             "prior log\npartial"
         );
     }
@@ -2343,12 +2336,7 @@ fn issue_2837_backup_write_failure_case(point: &str, task_backup_completed: bool
     );
     issue_2837_assert_backup_fault_calls(point);
     issue_2837_fault(None);
-    issue_2837_assert_failed_backup_pair(
-        root,
-        &original_task,
-        original_log,
-        task_backup_completed,
-    );
+    issue_2837_assert_failed_backup_pair(root, &original_task, original_log, task_backup_completed);
     let (task_backup, _) = backup_names("20261002-210000", 0);
     assert!(
         matches!(issue_2837_clean(root), Ok(EditOutcome::Wrote { .. })),
