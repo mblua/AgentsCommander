@@ -17,6 +17,8 @@ use crate::pty::local_backend::LocalProcessBackend;
 use crate::pty::output::PtyScreenSnapshot;
 use crate::telegram::manager::OutputSenderMap;
 
+const DIAG_TARGET: &str = "agentscommander_lib::response_close_diag";
+
 pub(crate) use crate::pty::output::TerminalOutputAttachError;
 
 // Runtime-only authority. No persisted lease, filesystem, settings or transport callouts.
@@ -157,10 +159,22 @@ struct ResponseCloseRoute {
 
 impl ResponseCloseRoute {
     fn diagnostic_policy_loss(&self, outcome: &'static str, site: u32) {
-        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-        {
+        if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
             if let Some(policy) = &self.policy {
-                log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown stage=policy_loss outcome={} site={} member={} coordinator={} route_generation={} tracker_mirror_version={} external_after_version=unknown work_epoch={} activity_version={}", outcome, site, policy.member.session_id, policy.coordinator.session_id, self.generation, self.manager_version, self.work_epoch, self.activity_version);
+                log::debug!(
+                    target: DIAG_TARGET,
+                    "response_close_diag id=unknown stage=policy_loss outcome={} site={} \
+                     member={} coordinator={} route_generation={} tracker_mirror_version={} \
+                     external_after_version=unknown work_epoch={} activity_version={}",
+                    outcome,
+                    site,
+                    policy.member.session_id,
+                    policy.coordinator.session_id,
+                    self.generation,
+                    self.manager_version,
+                    self.work_epoch,
+                    self.activity_version
+                );
             }
         }
     }
@@ -175,8 +189,7 @@ impl ResponseCloseRoute {
             self.activity_version = next;
             true
         } else {
-            if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-            {
+            if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
                 self.diagnostic_policy_loss(
                     "activity_overflow",
                     std::panic::Location::caller().line(),
@@ -188,8 +201,7 @@ impl ResponseCloseRoute {
     }
     #[track_caller]
     fn invalidate(&mut self, now: std::time::Instant) -> bool {
-        let diagnostic_before = if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-        {
+        let diagnostic_before = if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
             self.policy.as_ref().map(|policy| {
                 (
                     policy.member.session_id,
@@ -200,15 +212,24 @@ impl ResponseCloseRoute {
         } else {
             None
         };
-        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-        {
+        if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
             self.diagnostic_policy_loss("invalidate", std::panic::Location::caller().line());
         }
         self.policy = None;
         if let Some(next) = self.work_epoch.checked_add(1) {
             self.work_epoch = next;
             if let Some((member, coordinator, before)) = diagnostic_before {
-                log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown outcome=observed stage=invalidate member={} coordinator={} before_work_epoch={} after_work_epoch={} external_after_version=unknown site={}", member, coordinator, before, self.work_epoch, std::panic::Location::caller().line());
+                log::debug!(
+                    target: DIAG_TARGET,
+                    "response_close_diag id=unknown outcome=observed stage=invalidate member={} \
+                     coordinator={} before_work_epoch={} after_work_epoch={} \
+                     external_after_version=unknown site={}",
+                    member,
+                    coordinator,
+                    before,
+                    self.work_epoch,
+                    std::panic::Location::caller().line()
+                );
             }
             self.touch(now)
         } else {
@@ -426,18 +447,27 @@ impl ResponseCloseInner {
 impl ResponseCloseState {
     /// Observation only: never recover poison or invoke the authority wrapper.
     pub(crate) fn diagnostic_poll_health(&self) -> bool {
-        if !log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-        {
+        if !log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
             return false;
         }
         let mut inner = match self.inner.try_lock() {
             Ok(inner) => inner,
             Err(TryLockError::WouldBlock) => {
-                log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=poll_health scope=pre_reconcile_pre_selection outcome=busy health=unknown", line!());
+                log::debug!(
+                    target: DIAG_TARGET,
+                    "response_close_diag id=unknown site={} stage=poll_health \
+                     scope=pre_reconcile_pre_selection outcome=busy health=unknown",
+                    line!()
+                );
                 return false;
             }
             Err(TryLockError::Poisoned(_)) => {
-                log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=poll_health scope=pre_reconcile_pre_selection outcome=poisoned health=unknown", line!());
+                log::debug!(
+                    target: DIAG_TARGET,
+                    "response_close_diag id=unknown site={} stage=poll_health \
+                     scope=pre_reconcile_pre_selection outcome=poisoned health=unknown",
+                    line!()
+                );
                 return false;
             }
         };
@@ -445,7 +475,22 @@ impl ResponseCloseState {
         inner.diagnostic_poll_initialized = true;
         inner.diagnostic_poll_modulo = (inner.diagnostic_poll_modulo + 1) % 10;
         if emit {
-            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} outcome=observed stage=poll_health scope=pre_reconcile_pre_selection ready={} publishers={} bootstrap={} failed={} tracker_effective_enabled={} tracker_effective_seconds={} settings_epoch={} unknown_spawns={}", line!(), inner.ready, inner.publishers, inner.work_bootstrapped, inner.failed, inner.enabled, inner.seconds, inner.settings_epoch, inner.unknown_spawns);
+            log::debug!(
+                target: DIAG_TARGET,
+                "response_close_diag id=unknown site={} outcome=observed stage=poll_health \
+                 scope=pre_reconcile_pre_selection ready={} publishers={} bootstrap={} failed={} \
+                 tracker_effective_enabled={} tracker_effective_seconds={} settings_epoch={} \
+                 unknown_spawns={}",
+                line!(),
+                inner.ready,
+                inner.publishers,
+                inner.work_bootstrapped,
+                inner.failed,
+                inner.enabled,
+                inner.seconds,
+                inner.settings_epoch,
+                inner.unknown_spawns
+            );
         }
         emit
     }
@@ -545,8 +590,56 @@ impl ResponseCloseState {
         if emit {
             let first_false = (false_mask != 0).then(|| false_mask.trailing_zeros());
             let first_unknown = (unknown_mask != 0).then(|| unknown_mask.trailing_zeros());
-            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} outcome=observed stage=select scope=post_settings_apply_post_member_publish_post_coordinator_publish_pre_ticket_decision member={} actual_safe={} false_mask={} unknown_mask={} first_false={:?} first_unknown={:?} diagnostic_inconsistent={} ready={} publishers={} bootstrap={} failed={} tracker_effective_enabled={} tracker_effective_seconds={} settings_epoch={} unknown_spawns={}", line!(), id, actual_safe, false_mask, unknown_mask, first_false, first_unknown, actual_safe != (false_mask == 0 && unknown_mask == 0), inner.ready, inner.publishers, inner.work_bootstrapped, inner.failed, inner.enabled, inner.seconds, inner.settings_epoch, inner.unknown_spawns);
-            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} outcome=observed stage=select_route member={} generation={} tracker_mirror_version={} eligible={} manager_working={:?} detector_working={:?} menu_blocked={:?} hold_known={} hold_remaining_ms={:?} held_count={} writers={} work_epoch={} activity_version={} closing={} external_live_facts=unknown policy_present={}", line!(), id, route.generation, route.manager_version, route.eligible, route.manager_working, route.detector_working, route.menu_blocked, route.hold_known, route.hold_until.map(|end| end.saturating_duration_since(now).as_millis()), route.held.len(), route.writers, route.work_epoch, route.activity_version, route.closing.is_some(), policy.is_some());
+            log::debug!(
+                target: DIAG_TARGET,
+                "response_close_diag id=unknown site={} outcome=observed stage=select \
+                 scope=post_settings_apply_post_member_publish_post_coordinator_\
+                 publish_pre_ticket_decision \
+                 member={} actual_safe={} false_mask={} unknown_mask={} first_false={:?} \
+                 first_unknown={:?} diagnostic_inconsistent={} ready={} publishers={} \
+                 bootstrap={} failed={} tracker_effective_enabled={} tracker_effective_seconds={} \
+                 settings_epoch={} unknown_spawns={}",
+                line!(),
+                id,
+                actual_safe,
+                false_mask,
+                unknown_mask,
+                first_false,
+                first_unknown,
+                actual_safe != (false_mask == 0 && unknown_mask == 0),
+                inner.ready,
+                inner.publishers,
+                inner.work_bootstrapped,
+                inner.failed,
+                inner.enabled,
+                inner.seconds,
+                inner.settings_epoch,
+                inner.unknown_spawns
+            );
+            log::debug!(
+                target: DIAG_TARGET,
+                "response_close_diag id=unknown site={} outcome=observed stage=select_route \
+                 member={} generation={} tracker_mirror_version={} eligible={} \
+                 manager_working={:?} detector_working={:?} menu_blocked={:?} hold_known={} \
+                 hold_remaining_ms={:?} held_count={} writers={} work_epoch={} \
+                 activity_version={} closing={} external_live_facts=unknown policy_present={}",
+                line!(),
+                id,
+                route.generation,
+                route.manager_version,
+                route.eligible,
+                route.manager_working,
+                route.detector_working,
+                route.menu_blocked,
+                route.hold_known,
+                route.hold_until.map(|end| end.saturating_duration_since(now).as_millis()),
+                route.held.len(),
+                route.writers,
+                route.work_epoch,
+                route.activity_version,
+                route.closing.is_some(),
+                policy.is_some()
+            );
             Self::diagnostic_select_policy(inner, route, now, anchor);
         }
         if let Some(route) = inner.routes.get_mut(&id) {
@@ -561,14 +654,70 @@ impl ResponseCloseState {
         anchor: Option<std::time::Instant>,
     ) {
         let Some(policy) = &route.policy else {
-            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=select_policy outcome=absent captured_member=unknown captured_coordinator=unknown target_counts=unknown ages=unknown facts_match=unknown epoch_match=unknown", line!());
+            log::debug!(
+                target: DIAG_TARGET,
+                "response_close_diag id=unknown site={} stage=select_policy outcome=absent \
+                 captured_member=unknown captured_coordinator=unknown target_counts=unknown \
+                 ages=unknown facts_match=unknown epoch_match=unknown",
+                line!()
+            );
             return;
         };
         let work = inner.work.get(&policy.member.target);
         let required = std::time::Duration::from_secs(u64::from(inner.seconds));
         let age = anchor.map(|anchor| now.saturating_duration_since(anchor));
-        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} outcome=observed stage=select_policy captured_member={} captured_coordinator={} captured_member_generation={} captured_coordinator_generation={} captured_member_carrier_version={} captured_coordinator_carrier_version={} submitted={} registered={} success={} pending_returns={} selected={} member_facts_match={} coordinator_facts_match={} settings_epoch_match={} work_epoch_match={}", line!(), policy.member.session_id, policy.coordinator.session_id, policy.member.generation, policy.coordinator.generation, policy.member.carrier_version, policy.coordinator.carrier_version, policy.submitted, policy.registered_at.is_some(), policy.success_at.is_some(), policy.returns.len(), policy.selected.is_some(), route.facts.as_ref() == Some(&policy.member), inner.routes.get(&policy.coordinator.session_id).is_some_and(|r| r.facts.as_ref() == Some(&policy.coordinator)), policy.settings_epoch == inner.settings_epoch, policy.work_epoch == route.work_epoch);
-        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} outcome=observed stage=select_work captured_member={} provisional={:?} dispatch={:?} pending={:?} create_owners={:?} registered_age_ms={:?} success_age_ms={:?} last_change_age_ms={} anchor_age_ms={:?} required_ms={} remaining_ms={:?}", line!(), policy.member.session_id, route.facts.as_ref().map(|_| work.map_or(0, |w| w.provisional)), route.facts.as_ref().map(|_| work.map_or(0, |w| w.dispatch)), route.facts.as_ref().map(|_| work.map_or(0, |w| w.pending.len())), route.facts.as_ref().map(|_| inner.create_owners.get(&policy.member.target).map_or(0, |owners| owners.len())), policy.registered_at.map(|at| now.saturating_duration_since(at).as_millis()), policy.success_at.map(|at| now.saturating_duration_since(at).as_millis()), now.saturating_duration_since(route.last_change).as_millis(), age.map(|age| age.as_millis()), required.as_millis(), age.map(|age| required.saturating_sub(age).as_millis()));
+        log::debug!(
+            target: DIAG_TARGET,
+            "response_close_diag id=unknown site={} outcome=observed stage=select_policy \
+             captured_member={} captured_coordinator={} captured_member_generation={} \
+             captured_coordinator_generation={} captured_member_carrier_version={} \
+             captured_coordinator_carrier_version={} submitted={} registered={} success={} \
+             pending_returns={} selected={} member_facts_match={} coordinator_facts_match={} \
+             settings_epoch_match={} work_epoch_match={}",
+            line!(),
+            policy.member.session_id,
+            policy.coordinator.session_id,
+            policy.member.generation,
+            policy.coordinator.generation,
+            policy.member.carrier_version,
+            policy.coordinator.carrier_version,
+            policy.submitted,
+            policy.registered_at.is_some(),
+            policy.success_at.is_some(),
+            policy.returns.len(),
+            policy.selected.is_some(),
+            route.facts.as_ref() == Some(&policy.member),
+            inner
+                .routes
+                .get(&policy.coordinator.session_id)
+                .is_some_and(|r| r.facts.as_ref() == Some(&policy.coordinator)),
+            policy.settings_epoch == inner.settings_epoch,
+            policy.work_epoch == route.work_epoch
+        );
+        log::debug!(
+            target: DIAG_TARGET,
+            "response_close_diag id=unknown site={} outcome=observed stage=select_work \
+             captured_member={} provisional={:?} dispatch={:?} pending={:?} create_owners={:?} \
+             registered_age_ms={:?} success_age_ms={:?} last_change_age_ms={} anchor_age_ms={:?} \
+             required_ms={} remaining_ms={:?}",
+            line!(),
+            policy.member.session_id,
+            route.facts.as_ref().map(|_| work.map_or(0, |w| w.provisional)),
+            route.facts.as_ref().map(|_| work.map_or(0, |w| w.dispatch)),
+            route.facts.as_ref().map(|_| work.map_or(0, |w| w.pending.len())),
+            route.facts.as_ref().map(|_| {
+                inner
+                    .create_owners
+                    .get(&policy.member.target)
+                    .map_or(0, |owners| owners.len())
+            }),
+            policy.registered_at.map(|at| now.saturating_duration_since(at).as_millis()),
+            policy.success_at.map(|at| now.saturating_duration_since(at).as_millis()),
+            now.saturating_duration_since(route.last_change).as_millis(),
+            age.map(|age| age.as_millis()),
+            required.as_millis(),
+            age.map(|age| required.saturating_sub(age).as_millis())
+        );
     }
 }
 
@@ -596,10 +745,13 @@ impl ResponseCloseState {
     }
     pub(crate) fn fail_closed(&self) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-            && !inner.failed
-        {
-            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=fail_closed site={} old_failed=false id=unknown", line!());
+        if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+            log::debug!(
+                target: DIAG_TARGET,
+                "response_close_diag outcome=observed stage=failed_transition \
+                 operation=fail_closed site={} old_failed=false id=unknown",
+                line!()
+            );
         }
         inner.failed = true;
         for route in inner.routes.values_mut() {
@@ -632,15 +784,27 @@ impl ResponseCloseState {
                 || route.eligible != eligible
             {
                 if !route.invalidate(now) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=publish_manager_row site={} old_failed=false id={}", line!(), id);
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=publish_manager_row site={} old_failed=false id={}",
+                            line!(),
+                            id
+                        );
                     }
                     inner.failed = true;
                 }
                 route.facts = None;
             } else if route.manager_working != Some(working) && !route.touch(now) {
-                if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                    log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=publish_manager_row site={} old_failed=false id={}", line!(), id);
+                if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                    log::debug!(
+                        target: DIAG_TARGET,
+                        "response_close_diag outcome=observed stage=failed_transition \
+                         operation=publish_manager_row site={} old_failed=false id={}",
+                        line!(),
+                        id
+                    );
                 }
                 inner.failed = true;
             }
@@ -661,8 +825,13 @@ impl ResponseCloseState {
     fn begin_unresolved_spawn(&self) {
         let _ = self.with_inner(|inner| {
             let Some(next) = inner.unknown_spawns.checked_add(1) else {
-                if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                    log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=begin_unresolved_spawn site={} old_failed=false id=unknown", line!());
+                if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                    log::debug!(
+                        target: DIAG_TARGET,
+                        "response_close_diag outcome=observed stage=failed_transition \
+                         operation=begin_unresolved_spawn site={} old_failed=false id=unknown",
+                        line!()
+                    );
                 }
                 inner.failed = true;
                 return;
@@ -670,8 +839,13 @@ impl ResponseCloseState {
             inner.unknown_spawns = next;
             for route in inner.routes.values_mut() {
                 if !route.touch(std::time::Instant::now()) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=begin_unresolved_spawn site={} old_failed=false id=unknown", line!());
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=begin_unresolved_spawn site={} old_failed=false id=unknown",
+                            line!()
+                        );
                     }
                     inner.failed = true;
                 }
@@ -681,8 +855,13 @@ impl ResponseCloseState {
     fn end_unresolved_spawn(&self) {
         let _ = self.with_inner(|inner| {
             let Some(next) = inner.unknown_spawns.checked_sub(1) else {
-                if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                    log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=end_unresolved_spawn site={} old_failed=false id=unknown", line!());
+                if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                    log::debug!(
+                        target: DIAG_TARGET,
+                        "response_close_diag outcome=observed stage=failed_transition \
+                         operation=end_unresolved_spawn site={} old_failed=false id=unknown",
+                        line!()
+                    );
                 }
                 inner.failed = true;
                 return;
@@ -690,8 +869,13 @@ impl ResponseCloseState {
             inner.unknown_spawns = next;
             for route in inner.routes.values_mut() {
                 if !route.touch(std::time::Instant::now()) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=end_unresolved_spawn site={} old_failed=false id=unknown", line!());
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=end_unresolved_spawn site={} old_failed=false id=unknown",
+                            line!()
+                        );
                     }
                     inner.failed = true;
                 }
@@ -712,10 +896,13 @@ impl ResponseCloseState {
             Ok(inner) => inner,
             Err(poison) => {
                 let mut inner = poison.into_inner();
-                if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-                    && !inner.failed
-                {
-                    log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=with_inner site={} old_failed=false id=unknown", line!());
+                if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                    log::debug!(
+                        target: DIAG_TARGET,
+                        "response_close_diag outcome=observed stage=failed_transition \
+                         operation=with_inner site={} old_failed=false id=unknown",
+                        line!()
+                    );
                 }
                 inner.failed = true;
                 return Err(ResponseCloseError::Unavailable);
@@ -735,8 +922,13 @@ impl ResponseCloseState {
                 return;
             }
             let Some(epoch) = inner.settings_epoch.checked_add(1) else {
-                if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                    log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=apply_settings site={} old_failed=false id=unknown", line!());
+                if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                    log::debug!(
+                        target: DIAG_TARGET,
+                        "response_close_diag outcome=observed stage=failed_transition \
+                         operation=apply_settings site={} old_failed=false id=unknown",
+                        line!()
+                    );
                 }
                 inner.failed = true;
                 return;
@@ -757,8 +949,13 @@ impl ResponseCloseState {
                     }
                 }
                 if !route.touch(now) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=apply_settings site={} old_failed=false id=unknown", line!());
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=apply_settings site={} old_failed=false id=unknown",
+                            line!()
+                        );
                     }
                     inner.failed = true;
                 }
@@ -769,15 +966,23 @@ impl ResponseCloseState {
         let _ = self.with_inner(|inner| {
             // A route still Closing is never reopened by registration.
             if inner.routes.get(&id).is_some_and(|r| r.closing.is_some()) {
-                if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                    log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=register_route site={} old_failed=false id={}", line!(), id);
+                if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                    log::debug!(
+                        target: DIAG_TARGET,
+                        "response_close_diag outcome=observed stage=failed_transition \
+                         operation=register_route site={} old_failed=false id={}",
+                        line!(),
+                        id
+                    );
                 }
                 inner.failed = true;
                 return;
             }
-            if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { if let Some(route) = inner.routes.get(&id) {
-                route.diagnostic_policy_loss("route_replaced", line!());
-            } }
+            if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
+                if let Some(route) = inner.routes.get(&id) {
+                    route.diagnostic_policy_loss("route_replaced", line!());
+                }
+            }
             inner.routes.insert(
                 id,
                 ResponseCloseRoute {
@@ -847,14 +1052,26 @@ impl ResponseCloseState {
             let changed_id = identity.session_id;
             if identity_changed || route.eligible != eligible {
                 if !route.invalidate(now) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=publish_manager_facts site={} old_failed=false id={}", line!(), changed_id);
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=publish_manager_facts site={} old_failed=false id={}",
+                            line!(),
+                            changed_id
+                        );
                     }
                     inner.failed = true;
                 }
             } else if route.manager_working != Some(working) && !route.touch(now) {
-                if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                    log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=publish_manager_facts site={} old_failed=false id={}", line!(), changed_id);
+                if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                    log::debug!(
+                        target: DIAG_TARGET,
+                        "response_close_diag outcome=observed stage=failed_transition \
+                         operation=publish_manager_facts site={} old_failed=false id={}",
+                        line!(),
+                        changed_id
+                    );
                 }
                 inner.failed = true;
             }
@@ -868,8 +1085,16 @@ impl ResponseCloseState {
                         .is_some_and(|p| p.coordinator.session_id == changed_id)
                 }) {
                     if !dependent.invalidate(now) {
-                        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=publish_manager_facts site={} old_failed=false id={}", line!(), changed_id);
+                        if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug)
+                            && !inner.failed
+                        {
+                            log::debug!(
+                                target: DIAG_TARGET,
+                                "response_close_diag outcome=observed stage=failed_transition \
+                                 operation=publish_manager_facts site={} old_failed=false id={}",
+                                line!(),
+                                changed_id
+                            );
                         }
                         inner.failed = true;
                     }
@@ -883,8 +1108,14 @@ impl ResponseCloseState {
                 route.facts = None;
                 route.eligible = false;
                 if !route.invalidate(now) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=invalidate_manager_row site={} old_failed=false id={}", line!(), id);
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=invalidate_manager_row site={} old_failed=false id={}",
+                            line!(),
+                            id
+                        );
                     }
                     inner.failed = true;
                 }
@@ -896,8 +1127,14 @@ impl ResponseCloseState {
                     .is_some_and(|p| p.coordinator.session_id == id)
                     && !route.invalidate(now)
                 {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=invalidate_manager_row site={} old_failed=false id={}", line!(), id);
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=invalidate_manager_row site={} old_failed=false id={}",
+                            line!(),
+                            id
+                        );
                     }
                     inner.failed = true;
                 }
@@ -908,8 +1145,14 @@ impl ResponseCloseState {
         let _ = self.with_inner(|inner| {
             if let Some(route) = inner.routes.get_mut(&id) {
                 if !route.touch(now) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=observe_raw_output site={} old_failed=false id={}", line!(), id);
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=observe_raw_output site={} old_failed=false id={}",
+                            line!(),
+                            id
+                        );
                     }
                     inner.failed = true;
                 }
@@ -920,8 +1163,14 @@ impl ResponseCloseState {
         let _ = self.with_inner(|inner| {
             if let Some(route) = inner.routes.get_mut(&id) {
                 if route.detector_working != Some(working) && !route.touch(now) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=observe_detector site={} old_failed=false id={}", line!(), id);
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=observe_detector site={} old_failed=false id={}",
+                            line!(),
+                            id
+                        );
                     }
                     inner.failed = true;
                 }
@@ -933,8 +1182,14 @@ impl ResponseCloseState {
         let _ = self.with_inner(|inner| {
             if let Some(route) = inner.routes.get_mut(&id) {
                 if route.menu_blocked != blocked && !route.touch(now) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=publish_menu site={} old_failed=false id={}", line!(), id);
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=publish_menu site={} old_failed=false id={}",
+                            line!(),
+                            id
+                        );
                     }
                     inner.failed = true;
                 }
@@ -952,8 +1207,14 @@ impl ResponseCloseState {
         let _ = self.with_inner(|inner| {
             if let Some(route) = inner.routes.get_mut(&id) {
                 if (route.hold_until, route.hold_known) != (until, known) && !route.touch(now) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=publish_hold site={} old_failed=false id={}", line!(), id);
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=publish_hold site={} old_failed=false id={}",
+                            line!(),
+                            id
+                        );
                     }
                     inner.failed = true;
                 }
@@ -977,8 +1238,14 @@ impl ResponseCloseState {
                     route.held.remove(key)
                 };
                 if changed && !route.touch(now) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=publish_held_key site={} old_failed=false id={}", line!(), id);
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=publish_held_key site={} old_failed=false id={}",
+                            line!(),
+                            id
+                        );
                     }
                     inner.failed = true;
                 }
@@ -1012,8 +1279,14 @@ impl ResponseCloseState {
         let _ = self.with_inner(|inner| {
             if let Some(route) = inner.routes.get_mut(&id) {
                 if !route.touch(now) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=publish_typing_key site={} old_failed=false id={}", line!(), id);
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=publish_typing_key site={} old_failed=false id={}",
+                            line!(),
+                            id
+                        );
                     }
                     inner.failed = true;
                 }
@@ -1044,8 +1317,17 @@ impl ResponseCloseState {
                         route.hold_until = None;
                         route.hold_known = true;
                         if !route.touch(now) {
-                            if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                                log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=refresh_hold_snapshot site={} old_failed=false id={}", line!(), id);
+                            if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug)
+                                && !inner.failed
+                            {
+                                log::debug!(
+                                    target: DIAG_TARGET,
+                                    "response_close_diag outcome=observed stage=failed_transition \
+                                     operation=refresh_hold_snapshot site={} old_failed=false \
+                                     id={}",
+                                    line!(),
+                                    id
+                                );
                             }
                             inner.failed = true;
                         }
@@ -1057,8 +1339,16 @@ impl ResponseCloseState {
                     // authority here. Block until the upper snapshot observes open.
                     route.hold_known = false;
                     if !route.touch(now) {
-                        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=refresh_hold_snapshot site={} old_failed=false id={}", line!(), id);
+                        if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug)
+                            && !inner.failed
+                        {
+                            log::debug!(
+                                target: DIAG_TARGET,
+                                "response_close_diag outcome=observed stage=failed_transition \
+                                 operation=refresh_hold_snapshot site={} old_failed=false id={}",
+                                line!(),
+                                id
+                            );
                         }
                         inner.failed = true;
                     }
@@ -1088,10 +1378,14 @@ impl ResponseCloseState {
             Ok(inner) => inner,
             Err(poison) => {
                 let mut inner = poison.into_inner();
-                if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-                    && !inner.failed
-                {
-                    log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=reserve_writer_inner site={} old_failed=false id={}", line!(), id);
+                if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                    log::debug!(
+                        target: DIAG_TARGET,
+                        "response_close_diag outcome=observed stage=failed_transition \
+                         operation=reserve_writer_inner site={} old_failed=false id={}",
+                        line!(),
+                        id
+                    );
                 }
                 inner.failed = true;
                 inner
@@ -1128,10 +1422,14 @@ impl ResponseCloseState {
             });
         }
         let Some(next) = route.writers.checked_add(1) else {
-            if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-                && !inner.failed
-            {
-                log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=reserve_writer_inner site={} old_failed=false id={}", line!(), id);
+            if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                log::debug!(
+                    target: DIAG_TARGET,
+                    "response_close_diag outcome=observed stage=failed_transition \
+                     operation=reserve_writer_inner site={} old_failed=false id={}",
+                    line!(),
+                    id
+                );
             }
             inner.failed = true;
             return Ok(WriterAdmission {
@@ -1148,10 +1446,14 @@ impl ResponseCloseState {
         } else {
             route.touch(now)
         }) {
-            if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-                && !inner.failed
-            {
-                log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=reserve_writer_inner site={} old_failed=false id={}", line!(), id);
+            if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                log::debug!(
+                    target: DIAG_TARGET,
+                    "response_close_diag outcome=observed stage=failed_transition \
+                     operation=reserve_writer_inner site={} old_failed=false id={}",
+                    line!(),
+                    id
+                );
             }
             inner.failed = true;
         }
@@ -1187,8 +1489,13 @@ impl ResponseCloseState {
                 });
             }
             let Some(next) = work.provisional.checked_add(1) else {
-                if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                    log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=reserve_work site={} old_failed=false id=unknown", line!());
+                if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                    log::debug!(
+                        target: DIAG_TARGET,
+                        "response_close_diag outcome=observed stage=failed_transition \
+                         operation=reserve_work site={} old_failed=false id=unknown",
+                        line!()
+                    );
                 }
                 inner.failed = true;
                 return Err(ResponseCloseError::Unavailable);
@@ -1200,8 +1507,13 @@ impl ResponseCloseState {
                 .filter(|r| r.facts.as_ref().is_some_and(|f| f.target == target))
             {
                 if !route.touch(std::time::Instant::now()) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=reserve_work site={} old_failed=false id=unknown", line!());
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=reserve_work site={} old_failed=false id=unknown",
+                            line!()
+                        );
                     }
                     inner.failed = true;
                 }
@@ -1229,8 +1541,13 @@ impl ResponseCloseState {
                 .filter(|r| r.facts.as_ref().is_some_and(|f| f.target == target))
             {
                 if !route.touch(now) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=settle_terminal site={} old_failed=false id=unknown", line!());
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=settle_terminal site={} old_failed=false id=unknown",
+                            line!()
+                        );
                     }
                     inner.failed = true;
                 }
@@ -1242,10 +1559,13 @@ impl ResponseCloseState {
             Ok(inner) => inner,
             Err(poison) => {
                 let mut inner = poison.into_inner();
-                if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-                    && !inner.failed
-                {
-                    log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=target_is_closing site={} old_failed=false id=unknown", line!());
+                if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                    log::debug!(
+                        target: DIAG_TARGET,
+                        "response_close_diag outcome=observed stage=failed_transition \
+                         operation=target_is_closing site={} old_failed=false id=unknown",
+                        line!()
+                    );
                 }
                 inner.failed = true;
                 inner
@@ -1262,10 +1582,13 @@ impl ResponseCloseState {
             Ok(inner) => inner,
             Err(poison) => {
                 let mut inner = poison.into_inner();
-                if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-                    && !inner.failed
-                {
-                    log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=begin_delivery site={} old_failed=false id=unknown", line!());
+                if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                    log::debug!(
+                        target: DIAG_TARGET,
+                        "response_close_diag outcome=observed stage=failed_transition \
+                         operation=begin_delivery site={} old_failed=false id=unknown",
+                        line!()
+                    );
                 }
                 inner.failed = true;
                 inner
@@ -1279,10 +1602,13 @@ impl ResponseCloseState {
         }
         let work = inner.work.entry(target.to_owned()).or_default();
         let Some(next) = work.dispatch.checked_add(1) else {
-            if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-                && !inner.failed
-            {
-                log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=begin_delivery site={} old_failed=false id=unknown", line!());
+            if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                log::debug!(
+                    target: DIAG_TARGET,
+                    "response_close_diag outcome=observed stage=failed_transition \
+                     operation=begin_delivery site={} old_failed=false id=unknown",
+                    line!()
+                );
             }
             inner.failed = true;
             return Err(ResponseCloseError::Unavailable);
@@ -1341,8 +1667,13 @@ impl ResponseCloseState {
                 .filter(|r| r.facts.as_ref().is_some_and(|f| f.target == target))
             {
                 if !route.touch(std::time::Instant::now()) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=reserve_create_owner site={} old_failed=false id=unknown", line!());
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=reserve_create_owner site={} old_failed=false id=unknown",
+                            line!()
+                        );
                     }
                     inner.failed = true;
                 }
@@ -1532,8 +1863,14 @@ impl ResponseCloseState {
                 *sequence
             } else {
                 let Some(sequence) = inner.next_return_sequence.checked_add(1) else {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=admit_return site={} old_failed=false id={}", line!(), member.session_id);
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=admit_return site={} old_failed=false id={}",
+                            line!(),
+                            member.session_id
+                        );
                     }
                     inner.failed = true;
                     return Err(ResponseCloseError::Unavailable);
@@ -1695,7 +2032,7 @@ impl ResponseCloseState {
         self.with_inner(|inner| {
             let route = inner.routes.get(&id).ok_or(ResponseCloseError::Unknown)?;
             let actual_safe = Self::safe(inner, route, now);
-            if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+            if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
                 Self::diagnostic_select_observation(inner, id, now, actual_safe);
             }
             if !actual_safe {
@@ -1743,8 +2080,17 @@ impl ResponseCloseState {
                         && p.member == ticket.member
                 })
             {
-                if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
-                    log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=commit outcome=safe_or_identity_epoch_group_rejected member={} actual_safe={} identity_epoch_group={}", line!(), ticket.session_id, diagnostic_actual_safe, if diagnostic_actual_safe { "false" } else { "not_evaluated" });
+                if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
+                    log::debug!(
+                        target: DIAG_TARGET,
+                        "response_close_diag id=unknown site={} stage=commit \
+                         outcome=safe_or_identity_epoch_group_rejected member={} actual_safe={} \
+                         identity_epoch_group={}",
+                        line!(),
+                        ticket.session_id,
+                        diagnostic_actual_safe,
+                        if diagnostic_actual_safe { "false" } else { "not_evaluated" }
+                    );
                 }
                 return Err(ResponseCloseError::Unknown);
             }
@@ -1757,7 +2103,15 @@ impl ResponseCloseState {
             route.committed_binding = Some(ticket.committed_binding());
             route.diagnostic_policy_loss("try_commit_response_close", line!());
             route.policy = None;
-            if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=commit outcome=committed member={}", line!(), ticket.session_id); }
+            if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
+                log::debug!(
+                    target: DIAG_TARGET,
+                    "response_close_diag id=unknown site={} stage=commit outcome=committed \
+                     member={}",
+                    line!(),
+                    ticket.session_id
+                );
+            }
             Ok(ticket.selection_nonce)
         })?
     }
@@ -1769,13 +2123,18 @@ impl ResponseCloseState {
         evidence: ResponseCloseSettlementEvidence,
     ) -> Result<(), StaleOrInvalidSettlement> {
         self.with_inner(|inner| {
-            let route = inner
-                .routes
-                .get(&ticket.session_id)
-                .ok_or_else(|| {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=finish outcome=route_missing member={}", line!(), ticket.session_id); }
-                    StaleOrInvalidSettlement
-                })?;
+            let route = inner.routes.get(&ticket.session_id).ok_or_else(|| {
+                if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
+                    log::debug!(
+                        target: DIAG_TARGET,
+                        "response_close_diag id=unknown site={} stage=finish \
+                         outcome=route_missing member={}",
+                        line!(),
+                        ticket.session_id
+                    );
+                }
+                StaleOrInvalidSettlement
+            })?;
             let binding = ticket.committed_binding();
             let current = &evidence.current_settlement;
             if evidence.committed_binding != binding
@@ -1790,7 +2149,15 @@ impl ResponseCloseState {
                 || current.checkpoint_nonce != current.current_checkpoint_nonce
                 || current.publication_epoch != current.current_publication_epoch
             {
-                if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=finish outcome=binding_or_current_settlement_group_rejected member={}", line!(), ticket.session_id); }
+                if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
+                    log::debug!(
+                        target: DIAG_TARGET,
+                        "response_close_diag id=unknown site={} stage=finish \
+                         outcome=binding_or_current_settlement_group_rejected member={}",
+                        line!(),
+                        ticket.session_id
+                    );
+                }
                 return Err(StaleOrInvalidSettlement);
             }
             match evidence.outcome {
@@ -1801,13 +2168,31 @@ impl ResponseCloseState {
                     selection_settled: true,
                 } => {
                     if route.manager_working != Some(false) || route.eligible {
-                        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=finish outcome=dormant_row_group_rejected member={}", line!(), ticket.session_id); }
-                return Err(StaleOrInvalidSettlement);
+                        if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
+                            log::debug!(
+                                target: DIAG_TARGET,
+                                "response_close_diag id=unknown site={} stage=finish \
+                                 outcome=dormant_row_group_rejected member={}",
+                                line!(),
+                                ticket.session_id
+                            );
+                        }
+                        return Err(StaleOrInvalidSettlement);
                     }
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { if let Some(route) = inner.routes.get(&ticket.session_id) {
-                        route.diagnostic_policy_loss("close_finished_route_removed", line!());
-                    } }
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=finish outcome=dormant member={}", line!(), ticket.session_id); }
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
+                        if let Some(route) = inner.routes.get(&ticket.session_id) {
+                            route.diagnostic_policy_loss("close_finished_route_removed", line!());
+                        }
+                    }
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag id=unknown site={} stage=finish outcome=dormant \
+                             member={}",
+                            line!(),
+                            ticket.session_id
+                        );
+                    }
                     inner.routes.remove(&ticket.session_id);
                 }
                 ResponseCloseSettlementOutcome::ReopenAfterKillFailure {
@@ -1817,7 +2202,15 @@ impl ResponseCloseState {
                     original_manager_identity_intact: true,
                 } => {
                     let route = inner.routes.get_mut(&ticket.session_id).unwrap();
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=finish outcome=reopened_after_kill_failure member={}", line!(), ticket.session_id); }
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag id=unknown site={} stage=finish \
+                             outcome=reopened_after_kill_failure member={}",
+                            line!(),
+                            ticket.session_id
+                        );
+                    }
                     route.closing = None;
                     route.closing_target = None;
                     route.committed_binding = None;
@@ -1825,11 +2218,17 @@ impl ResponseCloseState {
                     route.policy = None;
                 }
                 _ => {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=finish outcome=settlement_outcome_group_rejected member={}", line!(), ticket.session_id);
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag id=unknown site={} stage=finish \
+                             outcome=settlement_outcome_group_rejected member={}",
+                            line!(),
+                            ticket.session_id
+                        );
                     }
                     return Err(StaleOrInvalidSettlement);
-                },
+                }
             }
             Ok(())
         })
@@ -1863,8 +2262,13 @@ impl WorkAdmission {
                 .filter(|r| r.facts.as_ref().is_some_and(|f| f.target == self.target))
             {
                 if !route.invalidate(std::time::Instant::now()) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=accept_durable site={} old_failed=false id=unknown", line!());
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=accept_durable site={} old_failed=false id=unknown",
+                            line!()
+                        );
                     }
                     inner.failed = true;
                 }
@@ -1887,8 +2291,15 @@ impl Drop for WorkAdmission {
                     .filter(|r| r.facts.as_ref().is_some_and(|f| f.target == self.target))
                 {
                     if !route.touch(std::time::Instant::now()) {
-                        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=drop site={} old_failed=false id=unknown", line!());
+                        if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug)
+                            && !inner.failed
+                        {
+                            log::debug!(
+                                target: DIAG_TARGET,
+                                "response_close_diag outcome=observed stage=failed_transition \
+                                 operation=drop site={} old_failed=false id=unknown",
+                                line!()
+                            );
                         }
                         inner.failed = true;
                     }
@@ -1909,8 +2320,13 @@ impl Drop for WorkDeliveryReservation {
                 .filter(|r| r.facts.as_ref().is_some_and(|f| f.target == self.target))
             {
                 if !route.touch(std::time::Instant::now()) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=drop site={} old_failed=false id=unknown", line!());
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=drop site={} old_failed=false id=unknown",
+                            line!()
+                        );
                     }
                     inner.failed = true;
                 }
@@ -1931,8 +2347,13 @@ impl Drop for WriterAdmission {
             {
                 route.writers = route.writers.saturating_sub(1);
                 if !route.touch(std::time::Instant::now()) {
-                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=drop site={} old_failed=false id=unknown", line!());
+                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                        log::debug!(
+                            target: DIAG_TARGET,
+                            "response_close_diag outcome=observed stage=failed_transition \
+                             operation=drop site={} old_failed=false id=unknown",
+                            line!()
+                        );
                     }
                     inner.failed = true;
                 }
@@ -1959,8 +2380,15 @@ impl Drop for CreateOwnerReservation {
                     .filter(|r| r.facts.as_ref().is_some_and(|f| f.target == self.target))
                 {
                     if !route.touch(std::time::Instant::now()) {
-                        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) && !inner.failed {
-                            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag outcome=observed stage=failed_transition operation=drop site={} old_failed=false id=unknown", line!());
+                        if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug)
+                            && !inner.failed
+                        {
+                            log::debug!(
+                                target: DIAG_TARGET,
+                                "response_close_diag outcome=observed stage=failed_transition \
+                                 operation=drop site={} old_failed=false id=unknown",
+                                line!()
+                            );
                         }
                         inner.failed = true;
                     }

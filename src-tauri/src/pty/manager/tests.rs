@@ -576,7 +576,26 @@ async fn response_close_waiting_writer_is_counted_and_cancellation_releases_only
             .unwrap();
         let connection = rusqlite::Connection::open(&path).unwrap();
         let snapshot = || {
-            connection.query_row("SELECT message_id,target_fqn,status,body,body_sha256,attempt,lease_owner,lease_until FROM messages WHERE message_id=?1", [&row.message_id], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, String>(2)?,r.get::<_, String>(3)?,r.get::<_, String>(4)?,r.get::<_, i64>(5)?,r.get::<_, Option<String>>(6)?,r.get::<_, Option<String>>(7)?))).unwrap()
+            connection
+                .query_row(
+                    "SELECT message_id,target_fqn,status,body,body_sha256,\
+                     attempt,lease_owner,lease_until FROM messages \
+                     WHERE message_id=?1",
+                    [&row.message_id],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, String>(4)?,
+                            r.get::<_, i64>(5)?,
+                            r.get::<_, Option<String>>(6)?,
+                            r.get::<_, Option<String>>(7)?,
+                        ))
+                    },
+                )
+                .unwrap()
         };
         let before = snapshot();
         let key = format!(
@@ -591,7 +610,13 @@ async fn response_close_waiting_writer_is_counted_and_cancellation_releases_only
         );
         let delivery = tracker.begin_delivery(&row.target_fqn).unwrap();
         if fail_execute {
-            connection.execute_batch("CREATE TRIGGER fail_terminal BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT, 'controlled execute failure'); END;").unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TRIGGER fail_terminal BEFORE UPDATE ON \
+                     messages BEGIN SELECT RAISE(ABORT, 'controlled \
+                     execute failure'); END;",
+                )
+                .unwrap();
             assert!(store
                 .mark_delivered(&row.message_id, chrono::Utc::now())
                 .is_err());
@@ -656,7 +681,30 @@ async fn response_close_waiting_writer_is_counted_and_cancellation_releases_only
             .unwrap();
         let connection = rusqlite::Connection::open(&path).unwrap();
         let snapshot = || {
-            connection.query_row("SELECT injection_id,sender_fqn,target_fqn,op_id,request_fingerprint,status,payload,attempt,lease_owner,lease_until,updated_at FROM pty_input_operations WHERE injection_id=?1", [&id], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, String>(2)?,r.get::<_, String>(3)?,r.get::<_, String>(4)?,r.get::<_, String>(5)?,r.get::<_, Option<Vec<u8>>>(6)?,r.get::<_, i64>(7)?,r.get::<_, Option<String>>(8)?,r.get::<_, Option<String>>(9)?,r.get::<_, String>(10)?))).unwrap()
+            connection
+                .query_row(
+                    "SELECT injection_id,sender_fqn,target_fqn,op_id,\
+                     request_fingerprint,status,payload,attempt,lease_owner,\
+                     lease_until,updated_at FROM pty_input_operations \
+                     WHERE injection_id=?1",
+                    [&id],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, String>(4)?,
+                            r.get::<_, String>(5)?,
+                            r.get::<_, Option<Vec<u8>>>(6)?,
+                            r.get::<_, i64>(7)?,
+                            r.get::<_, Option<String>>(8)?,
+                            r.get::<_, Option<String>>(9)?,
+                            r.get::<_, String>(10)?,
+                        ))
+                    },
+                )
+                .unwrap()
         };
         let before = snapshot();
         let key = format!("pty:{}:{}:{}", before.1.len(), before.1, before.3);
@@ -667,7 +715,12 @@ async fn response_close_waiting_writer_is_counted_and_cancellation_releases_only
             before.4
         );
         if fail_execute {
-            connection.execute_batch("CREATE TRIGGER fail_pty_terminal BEFORE UPDATE ON pty_input_operations BEGIN SELECT RAISE(ABORT, 'controlled precommit SQL failure'); END;").unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TRIGGER fail_pty_terminal BEFORE UPDATE ON pty_input_operations \
+                     BEGIN SELECT RAISE(ABORT, 'controlled precommit SQL failure'); END;",
+                )
+                .unwrap();
             assert!(matches!(
                 store.terminalize_pty_input(
                     &id,
@@ -702,7 +755,14 @@ async fn response_close_waiting_writer_is_counted_and_cancellation_releases_only
             assert_eq!(result.status, PtyInputPublicStatus::Rejected);
             assert!(result.terminal);
             assert_eq!(result.reason.unwrap().code, PtyInputReasonCode::Expired);
-            let tombstone: (String, String) = connection.query_row("SELECT status,request_fingerprint FROM pty_input_tombstones WHERE injection_id=?1", [&id], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+            let tombstone: (String, String) = connection
+                .query_row(
+                    "SELECT status,request_fingerprint FROM pty_input_tombstones \
+                     WHERE injection_id=?1",
+                    [&id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
             assert_eq!(tombstone, ("rejected".into(), before.4.clone()));
             let inner = tracker.inner.lock().unwrap();
             assert!(!inner.failed);
@@ -843,7 +903,29 @@ async fn response_close_waiting_writer_is_counted_and_cancellation_releases_only
             )
             .unwrap();
         let snapshot = |id: &str| {
-            connection.query_row("SELECT message_id,target_fqn,status,body,body_sha256,attempt,lease_owner,lease_until,next_attempt_at,sender_fqn,last_error FROM messages WHERE message_id=?1", [id], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, String>(2)?,r.get::<_, String>(3)?,r.get::<_, String>(4)?,r.get::<_, i64>(5)?,r.get::<_, Option<String>>(6)?,r.get::<_, Option<String>>(7)?,r.get::<_, String>(8)?,r.get::<_, String>(9)?,r.get::<_, Option<String>>(10)?))).unwrap()
+            connection
+                .query_row(
+                    "SELECT message_id,target_fqn,status,body,body_sha256,\
+                     attempt,lease_owner,lease_until,next_attempt_at,\
+                     sender_fqn,last_error FROM messages WHERE message_id=?1",
+                    [id],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, String>(4)?,
+                            r.get::<_, i64>(5)?,
+                            r.get::<_, Option<String>>(6)?,
+                            r.get::<_, Option<String>>(7)?,
+                            r.get::<_, String>(8)?,
+                            r.get::<_, String>(9)?,
+                            r.get::<_, Option<String>>(10)?,
+                        ))
+                    },
+                )
+                .unwrap()
         };
         let before = snapshot(&second.message_id);
         let first_key = format!(
@@ -903,7 +985,14 @@ async fn response_close_waiting_writer_is_counted_and_cancellation_releases_only
                 .unwrap()
                 .with_timezone(&chrono::Utc);
             assert!(dispatch_before <= due && due <= dispatch_after);
-            let audit: (String, Option<String>) = connection.query_row("SELECT status,detail FROM message_audit WHERE message_id=?1 AND status='lease-released-deferred'", [&second.message_id], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+            let audit: (String, Option<String>) = connection
+                .query_row(
+                    "SELECT status,detail FROM message_audit WHERE \
+                     message_id=?1 AND status='lease-released-deferred'",
+                    [&second.message_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
             assert_eq!(audit.0, "lease-released-deferred");
             assert_eq!(
                 audit.1.as_deref(),

@@ -266,7 +266,13 @@ fn assert_offloaded_enqueue_consistency(
 ) {
     let conn = rusqlite::Connection::open(db_path).unwrap();
     let rows = {
-        let mut statement = conn.prepare("SELECT sender_fqn,target_fqn,op_id,body,body_sha256,content_type,source_plane,source_ref,status FROM messages WHERE sender_fqn=?1 AND op_id=?2").unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT sender_fqn,target_fqn,op_id,body,body_sha256,\
+                 content_type,source_plane,source_ref,status FROM \
+                 messages WHERE sender_fqn=?1 AND op_id=?2",
+            )
+            .unwrap();
         let rows = statement
             .query_map(
                 rusqlite::params![request.sender_fqn, request.op_id],
