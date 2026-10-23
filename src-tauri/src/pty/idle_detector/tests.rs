@@ -4,6 +4,8 @@ mod burst_filter;
 
 mod codex_working;
 
+mod response_close_raw_output;
+
 #[test]
 fn register_session_seeds_activity_when_profile_opts_in() {
     let detector = IdleDetector::new(|_| {}, |_| {});

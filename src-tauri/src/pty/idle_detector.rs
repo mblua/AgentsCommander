@@ -963,6 +963,3 @@ impl IdleDetector {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod response_close_raw_output_tests;
