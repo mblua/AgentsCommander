@@ -4,7 +4,11 @@ use super::*;
 /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
 #[rustfmt::skip]
 const C4_SEEDED_STATE: &str =
-    r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
+    concat!(
+        r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"#,
+        r#""lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"#,
+        r#""keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#,
+    );
 
 /// C4 (#2470): the state file beside a tracked `config.json`.
 fn c4_state_path(tracked: &std::path::Path) -> std::path::PathBuf {
@@ -85,7 +89,12 @@ fn c4_absence_controls(dir: &std::path::Path) {
 
 #[rustfmt::skip]
 const C4_STATE_AFTER_SITE_3A: &str =
-    r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"c4hash"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
+    concat!(
+        r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"#,
+        r#""lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"c4hash"},"#,
+        r#""split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","#,
+        r#""profileContentHash"]}}"#,
+    );
 
 /// C4 (#2470) E12, sites 3a, 3b, 8, 9, 10 and 11, each on its own fixture
 /// except 9 and 10, which need the same replica.
@@ -137,7 +146,11 @@ fn c4_sites_3_8_9_10_11_leave_no_state_key_in_the_tracked_file() {
     c4_no_state_file(&c4_state_path(&fx.matrix.join("config.json")), "site 8");
     assert_eq!(
         tooling(&fx.matrix)["replicaSelectionDefault"],
-        serde_json::json!({ "codingAgentId": "codex", "requestedProfile": "B", "selectionLocked": false })
+        serde_json::json!({
+            "codingAgentId": "codex",
+            "requestedProfile": "B",
+            "selectionLocked": false
+        })
     );
 
     let fx = selection_fixture();

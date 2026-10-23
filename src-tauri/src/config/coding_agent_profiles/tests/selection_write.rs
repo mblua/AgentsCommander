@@ -427,9 +427,12 @@ fn issue_1937_selection_state_write_preserves_unknown_history_and_hash() {
     let fixture = selection_fixture();
     write_config(
         &fixture.replica,
-        &seed_selection_config(
-            r#"{"currentCodingAgent":"claude","profile":"A","instanceProfileOverride":"A","lastCodingAgent":"claude","profileContentHash":"deadbeef","codingAgents":{"claude":{"app":"Claude Code","lastUsed":"2026-09-02T01:00:00+00:00"}}}"#,
-        ),
+        &seed_selection_config(concat!(
+            r#"{"currentCodingAgent":"claude","profile":"A","instanceProfileOverride":"A","#,
+            r#""lastCodingAgent":"claude","profileContentHash":"deadbeef","#,
+            r#""codingAgents":{"claude":{"app":"Claude Code","#,
+            r#""lastUsed":"2026-09-02T01:00:00+00:00"}}}"#,
+        )),
     );
     let mut seeded: Value = serde_json::from_str(&config_bytes(&fixture.replica)).unwrap();
     seeded["customTopLevel"] = serde_json::json!({"keep": true});

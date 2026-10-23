@@ -476,7 +476,7 @@ pub fn set_instance_profile_override(
     Ok(())
 }
 
-// ── #1939 replica selection lock state ─────────────────────────────────────
+// ── #1939 replica selection lock state ──────────────────
 //
 // Stored contract: replica top-level `tooling.selectionLocked` (optional;
 // absent means false) protects the saved pair — `tooling.currentCodingAgent`
@@ -846,7 +846,8 @@ pub(crate) fn selection_state_from_value(config: &Value, identity: &str) -> Repl
     };
     match (locked, pair) {
         (true, None) => ReplicaSelectionState::Invalid {
-            diagnostic: "tooling.selectionLocked is true but the saved selection pair is incomplete or invalid"
+            diagnostic: "tooling.selectionLocked is true but the saved selection pair is \
+                         incomplete or invalid"
                 .to_string(),
         },
         (true, Some(pair)) => ReplicaSelectionState::Locked {
@@ -2052,7 +2053,8 @@ fn write_profile_to_launch_path(launch_path: &Path, profile: Option<&str>) -> Re
                     || tooling.contains_key("configurationRef")
                 {
                     return Err(format!(
-                        "Cannot clear the profile at {} while a protected replica selection pair exists",
+                        "Cannot clear the profile at {} while a protected replica selection \
+                         pair exists",
                         launch_path.display()
                     ));
                 }
@@ -2358,8 +2360,11 @@ pub(crate) fn source_target_is_affected(
 
 #[cfg(test)]
 thread_local! {
-    static SOURCE_DISCOVERY_CALLS: std::cell::RefCell<std::collections::BTreeMap<&'static str, usize>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
-    static SOURCE_DISCOVERY_FAILURE: std::cell::Cell<Option<(&'static str, usize)>> = const { std::cell::Cell::new(None) };
+    static SOURCE_DISCOVERY_CALLS:
+        std::cell::RefCell<std::collections::BTreeMap<&'static str, usize>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    static SOURCE_DISCOVERY_FAILURE: std::cell::Cell<Option<(&'static str, usize)>> =
+        const { std::cell::Cell::new(None) };
 }
 
 fn source_discovery_cut(_stage: &'static str) -> Result<(), std::io::Error> {

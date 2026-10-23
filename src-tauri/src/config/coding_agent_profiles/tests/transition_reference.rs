@@ -27,7 +27,13 @@ fn fixture() -> (
             "configurationRef": second
         }
     }});
-    let state = serde_json::json!({"unknown": [null, "keep"], "tooling": {"codingAgents": {"c": {"configurationRef": third, "unknown": null}}, "sourceReferences": [{"configurationRef": first, "unknown": true}]}});
+    let state = serde_json::json!({
+        "unknown": [null, "keep"],
+        "tooling": {
+            "codingAgents": {"c": {"configurationRef": third, "unknown": null}},
+            "sourceReferences": [{"configurationRef": first, "unknown": true}]
+        }
+    });
     let physical = [decisions, state].map(|value| {
         IdentityReferencePhysicalState::from_bytes(serde_json::to_vec(&value).unwrap())
     });

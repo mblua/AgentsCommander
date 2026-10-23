@@ -214,7 +214,10 @@ fn issue_1937_selection_state_default_read_shapes() {
 
     std::fs::write(
         fixture.matrix.join("config.json"),
-        r#"{"tooling":{"replicaSelectionDefault":{"codingAgentId":"codex","requestedProfile":"b","selectionLocked":true}}}"#,
+        concat!(
+            r#"{"tooling":{"replicaSelectionDefault":{"codingAgentId":"codex","#,
+            r#""requestedProfile":"b","selectionLocked":true}}}"#,
+        ),
     )
     .unwrap();
     assert_eq!(
@@ -230,10 +233,19 @@ fn issue_1937_selection_state_default_read_shapes() {
     for tooling in [
         r#"{"replicaSelectionDefault":5}"#,
         r#"{"replicaSelectionDefault":{"requestedProfile":"B","selectionLocked":false}}"#,
-        r#"{"replicaSelectionDefault":{"codingAgentId":"","requestedProfile":"B","selectionLocked":false}}"#,
-        r#"{"replicaSelectionDefault":{"codingAgentId":"codex","requestedProfile":"AB","selectionLocked":false}}"#,
+        concat!(
+            r#"{"replicaSelectionDefault":{"codingAgentId":"","requestedProfile":"B","#,
+            r#""selectionLocked":false}}"#,
+        ),
+        concat!(
+            r#"{"replicaSelectionDefault":{"codingAgentId":"codex","requestedProfile":"AB","#,
+            r#""selectionLocked":false}}"#,
+        ),
         r#"{"replicaSelectionDefault":{"codingAgentId":"codex","requestedProfile":"B"}}"#,
-        r#"{"replicaSelectionDefault":{"codingAgentId":"codex","requestedProfile":"B","selectionLocked":"yes"}}"#,
+        concat!(
+            r#"{"replicaSelectionDefault":{"codingAgentId":"codex","requestedProfile":"B","#,
+            r#""selectionLocked":"yes"}}"#,
+        ),
     ] {
         std::fs::write(
             fixture.matrix.join("config.json"),
@@ -403,7 +415,10 @@ fn issue_1937_selection_state_content_hash_write_does_not_reset_malformed_toolin
     // as stored while the hash is updated.
     write_config(
         &fixture.replica,
-        r#"{"identity":"../../_agent_dev-rust","tooling":{"selectionLocked":"yes","currentCodingAgent":"codex"}}"#,
+        concat!(
+            r#"{"identity":"../../_agent_dev-rust","tooling":{"selectionLocked":"yes","#,
+            r#""currentCodingAgent":"codex"}}"#,
+        ),
     );
     set_replica_profile_content_hash(&fixture.replica, "deadbeef").unwrap();
     let saved = config_value(&fixture.replica);
