@@ -119,6 +119,52 @@ jobs:
         working-directory: src-tauri
         run: cargo test --locked --release --lib --test issue_1850_default_root --no-run
 
+  # The macOS release dependencies for issue-1850-release-macos. PR regression
+  # gates never runs on main, so without this every pull request compiled them
+  # cold. Only dependencies are cached; the crate itself still compiles per run.
+  warm-release-macos:
+    name: warm-release-macos
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2 --ignore-scripts
+
+      - name: Install frontend dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build frontend assets for Tauri config validation
+        run: npm run build
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - name: Record toolchain identity
+        run: rustc -vV
+
+      - name: Rust cache
+        id: cache
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: '. -> target'
+          shared-key: 'gate-release-macos'
+          env-vars: 'ImageOS'
+
+      - name: cargo test --release (compile only)
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: src-tauri
+        run: cargo test --locked --release --lib --no-run
+
   verify-warm-debug:
     name: verify-warm-debug
     needs: warm-debug
@@ -180,4 +226,33 @@ jobs:
         if: steps.probe.outputs.cache-hit != 'true'
         run: |
           Write-Error "No exact gate-release cache entry exists after the warm job. The warm job's save step failed silently or the key diverged. PR gates will run cold until this is fixed."
+          exit 1
+
+  verify-warm-release-macos:
+    name: verify-warm-release-macos
+    needs: warm-release-macos
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - name: Probe macOS release cache
+        id: probe
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: '. -> target'
+          shared-key: 'gate-release-macos'
+          env-vars: 'ImageOS'
+          save-if: 'false'
+          lookup-only: 'true'
+
+      - name: Fail if the macOS release cache is not present
+        if: steps.probe.outputs.cache-hit != 'true'
+        run: |
+          echo "::error::No exact gate-release-macos cache entry exists after the warm job. The warm job's save step failed silently or the key diverged. issue-1850-release-macos will run cold until this is fixed."
           exit 1

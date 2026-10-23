@@ -1401,147 +1401,6 @@ jobs:
             exit 1
           }
 
-      # IS #1850: the debug acceptance target on a native Linux filesystem. The
-      # copied product binary must select the injected HOME, run all seven
-      # cases, and materialise app.log/.gitignore only under
-      # <home>/.agentscommander. Release behaviour of this route differs only
-      # by the debug-only override being compiled out, which the Windows
-      # real-profile release leg and the release focused lib tests cover.
-      - name: "cargo test (IS #1850 default-root acceptance, debug)"
-        working-directory: src-tauri
-        shell: bash
-        timeout-minutes: 30
-        run: |
-          set -euo pipefail
-          cargo test --locked --test issue_1850_default_root -- --test-threads=1 --nocapture 2>&1 | tee test-1850-default-root.log
-          for name in issue_1850_admission_gate_table issue_1850_default_root_acceptance; do
-            grep -qF "test ${name} ..." test-1850-default-root.log || { echo "::error::${name} never ran"; exit 1; }
-          done
-          grep -qE '^ISSUE1850_MECHANISM_OK' test-1850-default-root.log || { echo "::error::copied-binary mechanism control did not report success"; exit 1; }
-          for case in adjacent-legacy-alone home-new-alone home-new-dev-alone all-legacy-conflicting \
-                      canonical-valid-settings canonical-invalid-settings canonical-absent-without-marker; do
-            grep -qE "^ISSUE1850_CASE_OK case=${case}$" test-1850-default-root.log || { echo "::error::missing case record ${case}"; exit 1; }
-          done
-          test "$(grep -oE '^ISSUE1850_CASE_OK case=[^ ]+$' test-1850-default-root.log | sort -u | wc -l)" -eq 7 || { echo "::error::expected 7 unique case records"; exit 1; }
-          grep -qE '^ISSUE1850_DEFAULT_ROOT_PROOF_OK cases=7$' test-1850-default-root.log || { echo "::error::final proof record missing"; exit 1; }
-          grep -qE '^test result: ok\. 2 passed; 0 failed' test-1850-default-root.log || { echo "::error::expected exactly two passing tests"; exit 1; }
-          grep -qE '^ISSUE1850_REFUSAL_ONLY' test-1850-default-root.log && { echo "::error::refusal-only route taken on a non-Windows leg"; exit 1; } || true
-          grep -qE '^ISSUE1850_REFUSAL_SELFCONTROL_OK entries=3$' test-1850-default-root.log || { echo "::error::the refusal census self-control did not report success"; exit 1; }
-          if grep -qF 'ISSUE1850_REFUSAL_OCCUPIED' test-1850-default-root.log; then
-            echo "::error::the hosted runner profile is not clean; the occupied refusal route was taken"
-            exit 1
-          fi
-
-      # IS #2589: agent binaries resolve through the composed search path. The
-      # Phase 2 and integration tests are cfg(unix), so they run only here.
-      - name: "cargo test (IS #2589 agent PATH resolution, focused)"
-        working-directory: src-tauri
-        shell: bash
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          # The prefix is the filter: a bare `agent_path` also matches the
-          # pre-existing `replica_creation_rejects_filesystem_agent_paths`
-          # (commands/entity_creation.rs:4941).
-          FILTER=agent_path_2589_
-          # 8 platform-neutral + 11 cfg(unix) tests. Update in the same commit
-          # that adds or removes an agent_path_2589_ test.
-          EXPECTED=19
-          cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-2589.log
-
-          # Three guards, none redundant:
-          #   1. pipefail (LOAD-BEARING through the tee) catches a test that ran
-          #      and FAILED; without it the step exits with tee's code.
-          #   2. The sentinel grep is the POSITIVE CONTROL: a filter matching
-          #      nothing exits 0 and prints "0 passed". This sentinel is
-          #      cfg(unix), so it also proves the unix half ran.
-          #   3. The anchored count is the MUTATION PROBE: gating a test out
-          #      moves the number.
-          grep -qF 'agent_path_2589_install_probe_resolves_an_env_shebang_interpreter' test-2589.log || {
-            echo "::error::the sentinel test never ran; the filter matched nothing or it was renamed."
-            exit 1
-          }
-          grep -qE "^test result: ok\. ${EXPECTED} passed; 0 failed" test-2589.log || {
-            echo "::error::expected exactly ${EXPECTED} passing tests in ${FILTER}; the count changed or the filter matched something else."
-            exit 1
-          }
-
-      # #2994 (E2992): the settings-owner tests in the lib crate. Windows already
-      # runs them through --lib --bins --tests; this leg lists the filter, refuses
-      # an empty list, then runs exactly that list serially.
-      - name: "cargo test (E2992 settings owner, focused)"
-        working-directory: src-tauri
-        shell: bash
-        timeout-minutes: 20
-        run: |
-          set -euo pipefail
-          FILTER=e2992_
-          cargo test --locked --lib "$FILTER" -- --list 2>&1 | tee test-e2992-list.log
-          COUNT="$(grep -cE ': test$' test-e2992-list.log || true)"
-          if [ "$COUNT" -eq 0 ]; then
-            echo "::error::the ${FILTER} filter lists no tests."
-            exit 1
-          fi
-          echo "listed ${COUNT} ${FILTER} tests"
-          cargo test --locked --lib "$FILTER" -- --test-threads=1 2>&1 | tee test-e2992.log
-          grep -qE "^test result: ok\. ${COUNT} passed; 0 failed" test-e2992.log || {
-            echo "::error::expected exactly ${COUNT} passing ${FILTER} tests."
-            exit 1
-          }
-
-  # IS #1850 focused release tests (Linux), split out of rust-regression-linux
-  # so their release compile runs in parallel; steps and assertions unchanged.
-  # Floating stable, like every other release build in CI and release.yml.
-  issue-1850-release-linux:
-    name: issue-1850-release-linux
-    # Skip branch-deletion push events while still requiring pull request validation.
-    needs: ci-tier
-    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Tauri system dependencies
-        run: |
-          sudo apt-get update
-          # The four original packages are Tauri's own. The rest are the #1842
-          # xcap native chain: bindgen needs libclang; system-deps needs the
-          # pkg-config metadata for libpipewire-0.3 AND libspa-0.2 (E1 proved
-          # libspa-0.2-dev is a SEPARATE package that only arrives
-          # transitively, so listing it is what stops a future dependency
-          # change breaking the build silently); libwayshot-xcap needs
-          # gbm/drm/EGL; xcb needs libxcb + randr.
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            build-essential pkg-config clang libclang-dev \
-            libpipewire-0.3-dev libspa-0.2-dev \
-            libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev \
-            libgbm-dev libdrm-dev libegl1-mesa-dev libdbus-1-dev
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: 'npm'
-
-      - name: Pin npm version
-        run: npm install -g npm@11.6.2 --ignore-scripts
-
-      - name: Install frontend dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Build frontend assets for Tauri config validation
-        run: npm run build
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: . -> target
-          key: issue-1850-release-linux
-
       # IS #1929: the release step below used to compile and run under a single
       # 20-minute bound, so on a cold cache the build alone could consume the
       # whole budget and the step could die after the tests had already passed
@@ -2012,6 +1871,94 @@ jobs:
           retention-days: 14
           compression-level: 6
           include-hidden-files: false
+
+      # IS #1850: the debug acceptance target on a native Linux filesystem. The
+      # copied product binary must select the injected HOME, run all seven
+      # cases, and materialise app.log/.gitignore only under
+      # <home>/.agentscommander. Release behaviour of this route differs only
+      # by the debug-only override being compiled out, which the Windows
+      # real-profile release leg and the release focused lib tests cover.
+      - name: "cargo test (IS #1850 default-root acceptance, debug)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          cargo test --locked --test issue_1850_default_root -- --test-threads=1 --nocapture 2>&1 | tee test-1850-default-root.log
+          for name in issue_1850_admission_gate_table issue_1850_default_root_acceptance; do
+            grep -qF "test ${name} ..." test-1850-default-root.log || { echo "::error::${name} never ran"; exit 1; }
+          done
+          grep -qE '^ISSUE1850_MECHANISM_OK' test-1850-default-root.log || { echo "::error::copied-binary mechanism control did not report success"; exit 1; }
+          for case in adjacent-legacy-alone home-new-alone home-new-dev-alone all-legacy-conflicting \
+                      canonical-valid-settings canonical-invalid-settings canonical-absent-without-marker; do
+            grep -qE "^ISSUE1850_CASE_OK case=${case}$" test-1850-default-root.log || { echo "::error::missing case record ${case}"; exit 1; }
+          done
+          test "$(grep -oE '^ISSUE1850_CASE_OK case=[^ ]+$' test-1850-default-root.log | sort -u | wc -l)" -eq 7 || { echo "::error::expected 7 unique case records"; exit 1; }
+          grep -qE '^ISSUE1850_DEFAULT_ROOT_PROOF_OK cases=7$' test-1850-default-root.log || { echo "::error::final proof record missing"; exit 1; }
+          grep -qE '^test result: ok\. 2 passed; 0 failed' test-1850-default-root.log || { echo "::error::expected exactly two passing tests"; exit 1; }
+          grep -qE '^ISSUE1850_REFUSAL_ONLY' test-1850-default-root.log && { echo "::error::refusal-only route taken on a non-Windows leg"; exit 1; } || true
+          grep -qE '^ISSUE1850_REFUSAL_SELFCONTROL_OK entries=3$' test-1850-default-root.log || { echo "::error::the refusal census self-control did not report success"; exit 1; }
+          if grep -qF 'ISSUE1850_REFUSAL_OCCUPIED' test-1850-default-root.log; then
+            echo "::error::the hosted runner profile is not clean; the occupied refusal route was taken"
+            exit 1
+          fi
+
+      # IS #2589: agent binaries resolve through the composed search path. The
+      # Phase 2 and integration tests are cfg(unix), so they run only here.
+      - name: "cargo test (IS #2589 agent PATH resolution, focused)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          # The prefix is the filter: a bare `agent_path` also matches the
+          # pre-existing `replica_creation_rejects_filesystem_agent_paths`
+          # (commands/entity_creation.rs:4941).
+          FILTER=agent_path_2589_
+          # 8 platform-neutral + 11 cfg(unix) tests. Update in the same commit
+          # that adds or removes an agent_path_2589_ test.
+          EXPECTED=19
+          cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-2589.log
+
+          # Three guards, none redundant:
+          #   1. pipefail (LOAD-BEARING through the tee) catches a test that ran
+          #      and FAILED; without it the step exits with tee's code.
+          #   2. The sentinel grep is the POSITIVE CONTROL: a filter matching
+          #      nothing exits 0 and prints "0 passed". This sentinel is
+          #      cfg(unix), so it also proves the unix half ran.
+          #   3. The anchored count is the MUTATION PROBE: gating a test out
+          #      moves the number.
+          grep -qF 'agent_path_2589_install_probe_resolves_an_env_shebang_interpreter' test-2589.log || {
+            echo "::error::the sentinel test never ran; the filter matched nothing or it was renamed."
+            exit 1
+          }
+          grep -qE "^test result: ok\. ${EXPECTED} passed; 0 failed" test-2589.log || {
+            echo "::error::expected exactly ${EXPECTED} passing tests in ${FILTER}; the count changed or the filter matched something else."
+            exit 1
+          }
+
+      # #2994 (E2992): the settings-owner tests in the lib crate. Windows already
+      # runs them through --lib --bins --tests; this leg lists the filter, refuses
+      # an empty list, then runs exactly that list serially.
+      - name: "cargo test (E2992 settings owner, focused)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          FILTER=e2992_
+          cargo test --locked --lib "$FILTER" -- --list 2>&1 | tee test-e2992-list.log
+          COUNT="$(grep -cE ': test$' test-e2992-list.log || true)"
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::the ${FILTER} filter lists no tests."
+            exit 1
+          fi
+          echo "listed ${COUNT} ${FILTER} tests"
+          cargo test --locked --lib "$FILTER" -- --test-threads=1 2>&1 | tee test-e2992.log
+          grep -qE "^test result: ok\. ${COUNT} passed; 0 failed" test-e2992.log || {
+            echo "::error::expected exactly ${COUNT} passing ${FILTER} tests."
+            exit 1
+          }
 
   rust-release-parity-linux:
     name: rust-release-parity-linux
@@ -2537,7 +2484,8 @@ jobs:
 
   # IS #1850 focused release tests (macOS), split out of rust-regression-macos
   # so their release compile runs in parallel; steps and assertions unchanged.
-  # Floating stable, like every other release build in CI and release.yml.
+  # It restores gate-release-macos, the release dependency cache cache-warm.yml
+  # saves on main, so it installs the same floating stable toolchain as that cache.
   issue-1850-release-macos:
     name: issue-1850-release-macos
     # Skip branch-deletion push events while still requiring pull request validation.
@@ -2568,8 +2516,10 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          workspaces: . -> target
-          key: issue-1850-release-macos
+          workspaces: '. -> target'
+          shared-key: 'gate-release-macos'
+          env-vars: 'ImageOS'
+          save-if: 'false'
 
       # IS #1929: the release step below used to compile and run under a single
       # 20-minute bound, so on a cold cache the build alone could consume the
