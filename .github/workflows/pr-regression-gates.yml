@@ -1003,7 +1003,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TEST='tests::issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start'
+          TEST='tests::startup::issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start'
 
           cargo test --locked --lib "$TEST" -- --exact --test-threads=1 --nocapture 2>&1 | tee test-1577.log
 

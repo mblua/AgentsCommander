@@ -588,7 +588,8 @@ fn issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start() {
     use std::time::{Duration, Instant};
 
     const CHILD_SENTINEL: &str = "AGENTSCOMMANDER_ISSUE_1577_CHILD";
-    const TEST_NAME: &str = "tests::issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start";
+    const TEST_NAME: &str =
+        "tests::startup::issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start";
 
     if std::env::var_os(CHILD_SENTINEL).is_some() {
         let executable = std::env::current_exe().unwrap();
