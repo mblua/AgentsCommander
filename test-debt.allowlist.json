@@ -242,7 +242,7 @@
       "resolution": "Run as Stage F acceptance or manually with cargo test --lib -- --ignored --test-threads=1 --exact commands::entity_creation::tests::stage_e_cross_process::cli_workgroup_deletion_takes_project_gate_only_cross_process."
     },
     {
-      "id": "rust:src-tauri/src/pty/watchers/mod.rs::read_seam_tests::read_seam_timing",
+      "id": "rust:src-tauri/src/pty/watchers/tests/read_seam.rs::read_seam_timing",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 1171,
