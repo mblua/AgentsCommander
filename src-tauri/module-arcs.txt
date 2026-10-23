@@ -944,7 +944,6 @@ agentscommander_lib::commands::session -> agentscommander_lib
 agentscommander_lib::commands::session -> agentscommander_lib::agent_update
 agentscommander_lib::commands::session -> agentscommander_lib::api::message_store
 agentscommander_lib::commands::session -> agentscommander_lib::co_managed
-agentscommander_lib::commands::session -> agentscommander_lib::commands::telegram
 agentscommander_lib::commands::session -> agentscommander_lib::config::agent_command
 agentscommander_lib::commands::session -> agentscommander_lib::config::agent_config
 agentscommander_lib::commands::session -> agentscommander_lib::config::agent_memory
@@ -1032,7 +1031,8 @@ agentscommander_lib::commands::session::create::launch -> agentscommander_lib::p
 agentscommander_lib::commands::session::create::launch -> agentscommander_lib::session::profile
 agentscommander_lib::commands::session::create::launch -> agentscommander_lib::session::session
 agentscommander_lib::commands::session::destroy -> agentscommander_lib
-agentscommander_lib::commands::session::destroy -> agentscommander_lib::commands::session
+agentscommander_lib::commands::session::destroy -> agentscommander_lib::commands::session::create
+agentscommander_lib::commands::session::destroy -> agentscommander_lib::commands::telegram
 agentscommander_lib::commands::session::destroy -> agentscommander_lib::config::root_agent
 agentscommander_lib::commands::session::destroy -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::commands::session::destroy -> agentscommander_lib::pty::manager
