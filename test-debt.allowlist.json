@@ -218,7 +218,7 @@
       "resolution": "Run as Stage F acceptance or manually with cargo test --release --lib -- --ignored --test-threads=1 --exact config::seed_manifest::tests::stage_e_conformance::bench_adversarial_parser_memory_stays_bounded."
     },
     {
-      "id": "rust:src-tauri/src/config/config_seed.rs::tests::bench_end_to_end_config_staging_1k_10k_100k",
+      "id": "rust:src-tauri/src/config/config_seed/tests.rs::bench_end_to_end_config_staging_1k_10k_100k",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 1064,
