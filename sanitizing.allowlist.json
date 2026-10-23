@@ -96,6 +96,14 @@
       "reason": "Existing Tauri references moved unchanged from web/mod.rs to canonical web.rs by the sanitizing campaign (#3188); the new path trips the new-file subrule. Infrastructure refactoring is outside this movement-only assignment.",
       "issue": 3188,
       "since": "2026-10-23"
+    },
+    {
+      "gate": "06",
+      "rule": "tauri_files",
+      "path": "src-tauri/src/pty/menu_guard.rs",
+      "reason": "Existing Tauri references moved unchanged from menu_guard/mod.rs to canonical menu_guard.rs by the sanitizing campaign (#3188); the new path trips the new-file subrule. Infrastructure refactoring is outside this movement-only assignment.",
+      "issue": 3188,
+      "since": "2026-10-23"
     }
   ]
 }
