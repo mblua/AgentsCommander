@@ -162,7 +162,8 @@ fn id_hash_activation_malformed_real_fields_refuse_overwrite() {
         assert!(
             matches!(
                 &loaded.agents_layer,
-                super::super::AgentsLayerState::Unreadable { path: failed, .. } if failed == &sidecar
+                super::super::AgentsLayerState::Unreadable { path: failed, .. }
+                    if failed == &sidecar
             ),
             "{bad}"
         );
