@@ -215,7 +215,7 @@ const P2_FILES = [
   "src-tauri/src/pty/terminal_snapshot/tests/acceptance/host_cancellation.rs",
   "src-tauri/src/pty/terminal_snapshot/tests/acceptance/leakage.rs",
   "src-tauri/src/pty/terminal_snapshot/tests/acceptance/room_targets.rs",
-  "src-tauri/src/pty/terminal_snapshot/resource_tests.rs",
+  "src-tauri/src/pty/terminal_snapshot/tests/resource.rs",
 ];
 
 // Plan 3.8 / 9.4 AC1 point 8: the 63 frontend lines this plan moves.

@@ -718,7 +718,4 @@ impl From<crate::errors::AppError> for TerminalSnapshotReasonCode {
 }
 
 #[cfg(test)]
-mod resource_tests;
-
-#[cfg(test)]
 mod tests;

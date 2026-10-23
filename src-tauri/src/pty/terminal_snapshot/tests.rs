@@ -15,4 +15,5 @@ use std::sync::atomic::AtomicUsize;
 
 mod acceptance;
 mod p44_denial;
+mod resource;
 mod service_state;

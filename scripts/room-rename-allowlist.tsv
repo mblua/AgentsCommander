@@ -2833,8 +2833,8 @@ P2-fixture	src-tauri/src/pty/terminal_snapshot/tests/acceptance/daemon_paths.rs	
 P2-fixture	src-tauri/src/pty/terminal_snapshot/tests/acceptance/leakage.rs	let coordinator_fqn = format!("{PROJECT}:{WORKGROUP}/coordinator");
 P2-fixture	src-tauri/src/pty/terminal_snapshot/tests/acceptance/panic_boundaries.rs	let coordinator_fqn = format!("{PROJECT}:{WORKGROUP}/coordinator");
 P2-fixture	src-tauri/src/pty/terminal_snapshot/tests/acceptance/leakage.rs	let worker_fqn = format!("{PROJECT}:{WORKGROUP}/worker");
-P2-fixture	src-tauri/src/pty/terminal_snapshot/resource_tests.rs	const REQUESTER: &str = "project:wg-1-team/coordinator";
-P2-fixture	src-tauri/src/pty/terminal_snapshot/resource_tests.rs	const TARGET: &str = "project:wg-1-team/member";
+P2-fixture	src-tauri/src/pty/terminal_snapshot/tests/resource.rs	const REQUESTER: &str = "project:wg-1-team/coordinator";
+P2-fixture	src-tauri/src/pty/terminal_snapshot/tests/resource.rs	const TARGET: &str = "project:wg-1-team/member";
 P0-identifier	src-tauri/src/resource_monitor/registry.rs	workgroup: Option<String>,
 P0-identifier	src-tauri/src/resource_monitor/registry.rs	self.metadata.workgroup.clone(),
 P1-comment	src-tauri/src/resource_monitor/registry.rs	// #559 (H3) - a relaunch of the same wg/role must not leave its prior

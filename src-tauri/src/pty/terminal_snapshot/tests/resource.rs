@@ -24,7 +24,7 @@ use crate::telegram::manager::OutputSenderMap;
 
 const RESOURCE_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_RESOURCE_CHILD";
 const RESOURCE_TEST_NAME: &str =
-    "pty::terminal_snapshot::resource_tests::maximum_payload_resource_evidence_is_bounded";
+    "pty::terminal_snapshot::tests::resource::maximum_payload_resource_evidence_is_bounded";
 const LARGE_ALLOCATION_BYTES: usize = 1024 * 1024;
 // The frozen 60-second client maximum is a generous completion ceiling distinct from the
 // 10-second authorization deadline. The timeout behavior itself is tested without a speed race.
