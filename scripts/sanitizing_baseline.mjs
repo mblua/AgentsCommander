@@ -121,7 +121,8 @@ export function createSnapshot({ baseRef = 'origin/main', cwd, runner = gitRunne
     assertStableHead() { if (resolve('HEAD') !== headOid) throw new GateError(`HEAD drift from ${headOid}; retry on a stable checkout`); } };
 }
 // Versioned accepted findings (#3182). An entry turns a matching FAIL into ACCEPTED;
-// an entry that matches nothing is itself a FAIL, so the list can only shrink.
+// an entry that matches nothing is only a WARN: these gates compare against the PR base,
+// so an entry goes stale once its debt is merged.
 export const ALLOWLIST_FILE = 'sanitizing.allowlist.json';
 const ALLOWLIST_GATES = ['01', '02', '05', '06', '08', '09', 'cog'];
 export function parseAllowlist(text) {
@@ -165,12 +166,13 @@ export function applyAllowlist(result, entries) {
     used.add(entry);
     return { ...d, status: 'ACCEPTED', allowlist: { reason: entry.reason, issue: entry.issue, since: entry.since } };
   });
-  for (const e of own) if (!used.has(e)) diagnostics.push({ gate: result.gate, status: 'FAIL', rule: 'stale_allowlist',
+  for (const e of own) if (!used.has(e)) diagnostics.push({ gate: result.gate, status: 'WARN', rule: 'stale_allowlist',
     path: e.path, line: 1, reason: `${ALLOWLIST_FILE} entry ${e.rule} matches no finding`,
     remedy: `remove the entry from ${ALLOWLIST_FILE}; the debt it accepted is gone` });
   const fail = diagnostics.some(d => d.status === 'FAIL');
   return { ...result, status: fail ? 'FAIL' : 'PASS', exit: fail ? 1 : 0,
-    accepted: diagnostics.filter(d => d.status === 'ACCEPTED').length, diagnostics };
+    accepted: diagnostics.filter(d => d.status === 'ACCEPTED').length,
+    warnings: diagnostics.filter(d => d.status === 'WARN').length, diagnostics };
 }
 export function isMain(url) { return !!process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(url); }
 export async function gateCli(runGate, argv = process.argv.slice(2)) {
@@ -181,6 +183,8 @@ export async function gateCli(runGate, argv = process.argv.slice(2)) {
     const snapshot = createSnapshot({ ...options, cwd: root });
     const result = applyAllowlist(await runGate(snapshot), entries);
     console.log(JSON.stringify(result, null, 2));
+    for (const d of result.diagnostics ?? [])
+      if (d.status === 'WARN') console.error(`WARN stale allowlist entry: gate ${d.gate} ${d.path} (${d.reason})`);
     if (result.status !== 'ERROR') console.error(`gate ${result.gate}: ${result.status}, ACCEPTED ${result.accepted} finding(s) from ${ALLOWLIST_FILE}`);
     return result.exit;
   } catch (e) { console.error(`ERROR ${e.message}`); return e.exit ?? 3; }

@@ -622,7 +622,7 @@ test('P02 explicit aliases obey local shadowing and grouped imports', () => {
   assert.equal(layoutGate(trees({}, {[rustRoot+'x.rs']:'// mod a {} #[test]\nfn f(){ let x="use a::*;"; }'})).exit,0);
 });
 
-// #3182: sanitizing.allowlist.json turns listed FAILs into ACCEPTED; an unused entry fails.
+// #3182: sanitizing.allowlist.json turns listed FAILs into ACCEPTED; an unused entry only warns.
 import { applyAllowlist, parseAllowlist } from './sanitizing_baseline.mjs';
 const allow = (gate, rule, file) => ({ gate, rule, path: file, reason: 'moved code', issue: 3182, since: '2026-10-23' });
 test('allowlist: accepted, stale entry and unlisted finding', () => {
@@ -637,9 +637,15 @@ test('allowlist: accepted, stale entry and unlisted finding', () => {
   assert.equal(unlisted.exit, 1);
   assert.ok(unlisted.diagnostics.some(d => d.status === 'FAIL' && d.path === q));
   const stale = applyAllowlist(globalsGate(trees({[p]: moved})), [allow('08', 'globals', p), allow('06', 'tauri_files', q)]);
-  assert.equal(stale.exit, 1, JSON.stringify(stale));
-  assert.deepEqual(stale.diagnostics.filter(d => d.status === 'FAIL').map(d => [d.rule, d.path]), [['stale_allowlist', p]]);
+  assert.equal(stale.exit, 0, JSON.stringify(stale));
+  assert.equal(stale.status, 'PASS');
+  assert.ok(stale.diagnostics.every(d => d.status !== 'FAIL'));
+  assert.deepEqual(stale.diagnostics.filter(d => d.status === 'WARN').map(d => [d.rule, d.path]), [['stale_allowlist', p]]);
   assert.equal(stale.accepted, 0);
+  assert.equal(stale.warnings, 1);
+  const mixed = applyAllowlist(result, [allow('08', 'globals', rustRoot + 'gone.rs')]);
+  assert.equal(mixed.exit, 1, 'a stale entry never hides a real FAIL');
+  assert.equal(mixed.warnings, 1);
 });
 test('allowlist: text gates carry a rule and accept a listed size exception', () => {
   const name = 'src-tauri/src/big.rs', base = { [name]: text(1001) }, head = { [name]: text(1002) };

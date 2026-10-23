@@ -60,6 +60,16 @@
       "reason": "Now observed as #6bd711afcbe6 after the mailbox split. Moved by the sanitizing campaign (#3176/#3180); the anchor changed with the move, so the hash re-anchor cannot pair it.",
       "issue": 3182,
       "since": "2026-10-23"
+    },
+    {
+      "gate": "cog",
+      "rule": "new",
+      "path": "src-tauri/src/phone/mailbox/pty_dispatch/select.rs",
+      "symbol": "impl:MailboxPoller::select_pty_dispatch_session",
+      "hash": "b95efdd7f61d",
+      "reason": "Came out of the split of dispatch_pty_input_operation_core in #3180 (138d9f0). Complexity is not a blocker for this function.",
+      "issue": 3182,
+      "since": "2026-10-23"
     }
   ]
 }
