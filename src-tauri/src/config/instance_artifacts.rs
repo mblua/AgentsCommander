@@ -167,19 +167,23 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: SET_ASIDE_GLOB,
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: files the naming migration set aside (<old name>.deprecated-<n>.no-git); every byte kept, never committed",
+        comment: "# AgentsCommander: files the naming migration set aside (<old \
+        name>.deprecated-<n>.no-git); every byte kept, never committed",
     },
     InstanceArtifact {
         name: LOCAL_MARKDOWN_OVERRIDE_GLOB,
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: operator-owned .local.md context-template overrides; machine-local by design and never created by AC",
+        comment: "# AgentsCommander: operator-owned .local.md context-template overrides; \
+        machine-local by design and never created by AC",
     },
     InstanceArtifact {
         name: ATOMIC_WRITE_TMP_GLOB,
         kind: ArtifactKind::GlobAnyDepth,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: transient atomic-write temporaries (.{name}.{pid}.tmp) at any depth; survive only a crash mid-write",
+        comment:
+            "# AgentsCommander: transient atomic-write temporaries (.{name}.{pid}.tmp) at any \
+        depth; survive only a crash mid-write",
     },
     InstanceArtifact {
         name: SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME,
@@ -209,16 +213,33 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: IDENTITY_TRANSITION_LOCK_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: private identity intent journal lock; created once and never deleted",
+        comment: "# AgentsCommander: private identity intent journal lock; created once and never \
+        deleted",
     },
-    InstanceArtifact { name: SOURCE_REGISTERED_INSTANCE_LOCK, kind: ArtifactKind::File, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
-    InstanceArtifact { name: CONFIG_IDENTITY_RESERVATION_TMP, kind: ArtifactKind::Glob, disposition: Disposition::Ignore, comment: "# AgentsCommander: PAIR reservation packet write temporaries" },
-    InstanceArtifact { name: CONFIG_IDENTITY_RESERVATION_LOCK, kind: ArtifactKind::File, disposition: Disposition::Ignore, comment: "# AgentsCommander: stable PAIR reservation locks; never deleted" },
+    InstanceArtifact {
+        name: SOURCE_REGISTERED_INSTANCE_LOCK,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: source coordination metadata and stable locks",
+    },
+    InstanceArtifact {
+        name: CONFIG_IDENTITY_RESERVATION_TMP,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: PAIR reservation packet write temporaries",
+    },
+    InstanceArtifact {
+        name: CONFIG_IDENTITY_RESERVATION_LOCK,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: stable PAIR reservation locks; never deleted",
+    },
     InstanceArtifact {
         name: NAMING_MIGRATION_LOCK_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: naming-migration journal writer lock; created once and never deleted",
+        comment: "# AgentsCommander: naming-migration journal writer lock; created once and never \
+        deleted",
     },
     InstanceArtifact {
         name: ACTIVITY_LOG_FILE_NAME,
@@ -230,13 +251,16 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: ACTIVITY_LOG_ROTATION_GLOB,
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: rotated generations of the activity log; the same runtime artifact under a numeric suffix",
+        comment: "# AgentsCommander: rotated generations of the activity log; the same runtime \
+        artifact under a numeric suffix",
     },
     InstanceArtifact {
         name: AGENCY_TEMPLATES_SIBLING_GLOB,
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: transient agency template cache lock and staging trees (.lock, .next-, .download-, .prev-); the tracked cache directory itself carries no dot and is not matched",
+        comment: "# AgentsCommander: transient agency template cache lock and staging trees \
+        (.lock, .next-, .download-, .prev-); the tracked cache directory itself carries no dot and \
+        is not matched",
     },
     InstanceArtifact {
         name: AGENT_HELP_REMOTE_CHECK_FILE_NAME,
@@ -248,31 +272,36 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: AGENT_HELP_SHIPPED_FILE_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: shipped per-agent help content; rewritten from the binary at every start",
+        comment: "# AgentsCommander: shipped per-agent help content; rewritten from the binary at \
+        every start",
     },
     InstanceArtifact {
         name: AGENT_HELP_LOCAL_FILE_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: operator-owned per-agent help overlay; machine-local by design",
+        comment: "# AgentsCommander: operator-owned per-agent help overlay; machine-local by \
+        design",
     },
     InstanceArtifact {
         name: AGENT_HELP_REMOTE_FILE_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: downloaded per-agent help content; replaced by the next accepted download",
+        comment: "# AgentsCommander: downloaded per-agent help content; replaced by the next \
+        accepted download",
     },
     InstanceArtifact {
         name: AGENTS_INSTANCE_FILE_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: agents and coding-agent profiles moved out of the settings file",
+        comment: "# AgentsCommander: agents and coding-agent profiles moved out of the settings \
+        file",
     },
     InstanceArtifact {
         name: AGENTS_INSTANCE_TMP_GLOB,
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: transient agents-file write temporaries ({name}.{pid}.{op}.tmp); survive only a crash mid-save",
+        comment: "# AgentsCommander: transient agents-file write temporaries \
+        ({name}.{pid}.{op}.tmp); survive only a crash mid-save",
     },
     InstanceArtifact {
         name: API_AUDIT_LOG_FILE_NAME,
@@ -284,7 +313,8 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: API_AUDIT_LOG_ROTATION_GLOB,
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: rotated generations of the API audit log; the same runtime artifact under a numeric suffix",
+        comment: "# AgentsCommander: rotated generations of the API audit log; the same runtime \
+        artifact under a numeric suffix",
     },
     InstanceArtifact {
         name: API_CLIENTS_REGISTRY_FILENAME,
@@ -302,7 +332,8 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: MESSAGE_BUS_DB_GLOB,
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: inter-agent message bus database and every SQLite sidecar (-shm, -wal, -journal)",
+        comment: "# AgentsCommander: inter-agent message bus database and every SQLite sidecar \
+        (-shm, -wal, -journal)",
     },
     InstanceArtifact {
         name: "app-outbox-path.txt",
@@ -324,19 +355,22 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: "app.log.*",
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: rotated generations of the application log; the same runtime artifact under a numeric suffix",
+        comment: "# AgentsCommander: rotated generations of the application log; the same runtime \
+        artifact under a numeric suffix",
     },
     InstanceArtifact {
         name: BLOCKING_MENUS_SHIPPED_FILE_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: shipped blocking-menu patterns; rewritten from the binary at every start",
+        comment: "# AgentsCommander: shipped blocking-menu patterns; rewritten from the binary at \
+        every start",
     },
     InstanceArtifact {
         name: BLOCKING_MENUS_REMOTE_FILE_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: downloaded blocking-menu patterns; replaced by the next accepted download",
+        comment: "# AgentsCommander: downloaded blocking-menu patterns; replaced by the next \
+        accepted download",
     },
     InstanceArtifact {
         name: BLOCKING_MENUS_LOCAL_FILE_NAME,
@@ -360,26 +394,37 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: IDENTITY_TRANSITION_STATE_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: private identity intent journal and original recovery images; never user content",
+        comment:
+            "# AgentsCommander: private identity intent journal and original recovery images; \
+        never user content",
     },
     InstanceArtifact {
         name: CODING_AGENT_REQUESTS_DIR_NAME,
         kind: ArtifactKind::Dir,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: CLI-to-app coding-agent mutation request queue, including its results/ subdirectory",
+        comment:
+            "# AgentsCommander: CLI-to-app coding-agent mutation request queue, including its \
+        results/ subdirectory",
     },
-    InstanceArtifact { name: SOURCE_REGISTERED_INSTANCE_LEDGER_NAME, kind: ArtifactKind::File, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
+    InstanceArtifact {
+        name: SOURCE_REGISTERED_INSTANCE_LEDGER_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: source coordination metadata and stable locks",
+    },
     InstanceArtifact {
         name: CODING_AGENTS_SET_ASIDE_ARTIFACT,
         kind: ArtifactKind::RootRelativeGlob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: coding-agent catalog files the naming migration set aside (<old name>.deprecated-<n>.no-git); every byte kept, never committed",
+        comment: "# AgentsCommander: coding-agent catalog files the naming migration set aside \
+        (<old name>.deprecated-<n>.no-git); every byte kept, never committed",
     },
     InstanceArtifact {
         name: CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
         kind: ArtifactKind::RootRelativeGlob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: transient coding-agent migration journal temporaries (.{destination}.{pid}.{counter}.tmp; the journal name starts with a dot)",
+        comment: "# AgentsCommander: transient coding-agent migration journal temporaries \
+        (.{destination}.{pid}.{counter}.tmp; the journal name starts with a dot)",
     },
     InstanceArtifact {
         name: CODING_AGENTS_BASE_TMP_ARTIFACT,
@@ -391,7 +436,9 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: CODING_AGENTS_LOCK_ARTIFACT,
         kind: ArtifactKind::RootRelativeGlob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: persistent coding-agent catalog write-lock sidecar; transient coordination state",
+        comment:
+            "# AgentsCommander: persistent coding-agent catalog write-lock sidecar; transient \
+        coordination state",
     },
     InstanceArtifact {
         name: CODING_AGENTS_LOCAL_TMP_ARTIFACT,
@@ -403,35 +450,56 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: CODING_AGENTS_RETIRED_LOCK_ARTIFACT,
         kind: ArtifactKind::RootRelativeGlob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: retired coding-agent catalog write-lock sidecar; created once, never renamed or deleted",
+        comment: "# AgentsCommander: retired coding-agent catalog write-lock sidecar; created \
+        once, never renamed or deleted",
     },
     InstanceArtifact {
         name: CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
         kind: ArtifactKind::RootRelativeGlob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: transient coding-agent migration backup publication temporaries",
+        comment: "# AgentsCommander: transient coding-agent migration backup publication \
+        temporaries",
     },
     InstanceArtifact {
         name: CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
         kind: ArtifactKind::RootRelativeGlob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: coding-agent migration journal; immutable AC recovery state, never user content",
+        comment: "# AgentsCommander: coding-agent migration journal; immutable AC recovery state, \
+        never user content",
     },
-    InstanceArtifact { name: SOURCE_CATALOG_LOCK_ARTIFACT, kind: ArtifactKind::RootRelativeGlob, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
+    InstanceArtifact {
+        name: SOURCE_CATALOG_LOCK_ARTIFACT,
+        kind: ArtifactKind::RootRelativeGlob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: source coordination metadata and stable locks",
+    },
     InstanceArtifact {
         name: CODING_AGENTS_LOCAL_ARTIFACT,
         kind: ArtifactKind::RootRelativeGlob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: machine-local coding-agent overrides; user-owned and never overwritten after creation",
+        comment: "# AgentsCommander: machine-local coding-agent overrides; user-owned and never \
+        overwritten after creation",
     },
     InstanceArtifact {
         name: CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
         kind: ArtifactKind::RootRelativeGlob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: immutable byte-exact backup of the pre-migration coding-agent source",
+        comment:
+            "# AgentsCommander: immutable byte-exact backup of the pre-migration coding-agent \
+        source",
     },
-    InstanceArtifact { name: SOURCE_CATALOG_LEDGER_ARTIFACT, kind: ArtifactKind::RootRelativeGlob, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
-    InstanceArtifact { name: CONFIG_IDENTITY_RESERVATION_NAME, kind: ArtifactKind::File, disposition: Disposition::Ignore, comment: "# AgentsCommander: private PAIR reservation and original recovery images" },
+    InstanceArtifact {
+        name: SOURCE_CATALOG_LEDGER_ARTIFACT,
+        kind: ArtifactKind::RootRelativeGlob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: source coordination metadata and stable locks",
+    },
+    InstanceArtifact {
+        name: CONFIG_IDENTITY_RESERVATION_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: private PAIR reservation and original recovery images",
+    },
     InstanceArtifact {
         name: CONTEXT_CACHE_DIR_NAME,
         kind: ArtifactKind::Dir,
@@ -550,7 +618,9 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: ORPHAN_ARCHIVE_ROTATION_GLOB,
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: rotated generations of the archived orphaned-session records; the same runtime artifact under a numeric suffix",
+        comment:
+            "# AgentsCommander: rotated generations of the archived orphaned-session records; \
+        the same runtime artifact under a numeric suffix",
     },
     InstanceArtifact {
         name: PROJECT_PATHS_FILE_NAME,
@@ -598,7 +668,8 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: published remote CI activity snapshot (schema 1); replaced atomically by the sweeper",
+        comment: "# AgentsCommander: published remote CI activity snapshot (schema 1); replaced \
+        atomically by the sweeper",
     },
     InstanceArtifact {
         name: SESSION_REQUESTS_DIR_NAME,
@@ -622,7 +693,9 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: SETTINGS_BACKUP_ROTATION_GLOB,
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: rotated previous generations of the application settings; the same runtime artifact under a numeric slot",
+        comment:
+            "# AgentsCommander: rotated previous generations of the application settings; the \
+        same runtime artifact under a numeric slot",
     },
     InstanceArtifact {
         name: SETTINGS_FILE_NAME,
@@ -634,7 +707,9 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: SETTINGS_TMP_GLOB,
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: transient settings write temporaries ({name}.{pid}.{op}.tmp); survive only a crash mid-save",
+        comment:
+            "# AgentsCommander: transient settings write temporaries ({name}.{pid}.{op}.tmp); \
+        survive only a crash mid-save",
     },
     InstanceArtifact {
         name: SETTINGS_LOCK_FILE_NAME,
@@ -652,13 +727,15 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: SETTINGS_LOCAL_OVERRIDE_FILE_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: operator-owned settings overlay; machine-local by design and never written by AC",
+        comment: "# AgentsCommander: operator-owned settings overlay; machine-local by design and \
+        never written by AC",
     },
     InstanceArtifact {
         name: SETTINGS_RETIRED_LOCK_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: retired pre-migration settings write lock; the naming migration never deletes it, so the leftover stays ignored",
+        comment: "# AgentsCommander: retired pre-migration settings write lock; the naming \
+        migration never deletes it, so the leftover stays ignored",
     },
     InstanceArtifact {
         name: SETTINGS_OWNER_LOCK_FILE_NAME,
@@ -700,13 +777,16 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: GLOBAL_CONTEXT_TEMPLATE_FILENAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Track,
-        comment: "# AgentsCommander: legacy standalone global context template; production retires it in place and never recreates it, and the entry holds user bytes; tracked on purpose",
+        comment:
+            "# AgentsCommander: legacy standalone global context template; production retires \
+        it in place and never recreates it, and the entry holds user bytes; tracked on purpose",
     },
     InstanceArtifact {
         name: GLOBAL_CONTEXT_RETIRED_BACKUP_GLOB,
         kind: ArtifactKind::Glob,
         disposition: Disposition::Track,
-        comment: "# AgentsCommander: retirement backups of the standalone global context; user bytes, tracked on purpose",
+        comment: "# AgentsCommander: retirement backups of the standalone global context; user \
+        bytes, tracked on purpose",
     },
     InstanceArtifact {
         name: ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME,
@@ -718,7 +798,8 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         name: "ac-root-agent",
         kind: ArtifactKind::Dir,
         disposition: Disposition::Track,
-        comment: "# AgentsCommander: canonical root-agent state (CLAUDE.md, memory, inbox); only its config.json rules are ignored",
+        comment: "# AgentsCommander: canonical root-agent state (CLAUDE.md, memory, inbox); only \
+        its config.json rules are ignored",
     },
     InstanceArtifact {
         name: AGENCY_TEMPLATES_DIR,

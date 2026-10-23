@@ -235,11 +235,21 @@ pub(crate) const STATE_MARKER: &str = "state";
 /// `layer_tokens_match_the_macro` pins it to its constant through
 /// `LAYERED_NAME_PROBES`.
 macro_rules! layered_name {
-    ($stem:literal, default, $($rest:tt)+) => { layered_name!(@token $stem, "10.default", $($rest)+) };
-    ($stem:literal, remote, $($rest:tt)+) => { layered_name!(@token $stem, "20.remote", $($rest)+) };
-    ($stem:literal, instance, $($rest:tt)+) => { layered_name!(@token $stem, "30.instance", $($rest)+) };
-    ($stem:literal, project, $($rest:tt)+) => { layered_name!(@token $stem, "40.project", $($rest)+) };
-    ($stem:literal, personal, $($rest:tt)+) => { layered_name!(@token $stem, "50.personal", $($rest)+) };
+    ($stem:literal, default, $($rest:tt)+) => {
+        layered_name!(@token $stem, "10.default", $($rest)+)
+    };
+    ($stem:literal, remote, $($rest:tt)+) => {
+        layered_name!(@token $stem, "20.remote", $($rest)+)
+    };
+    ($stem:literal, instance, $($rest:tt)+) => {
+        layered_name!(@token $stem, "30.instance", $($rest)+)
+    };
+    ($stem:literal, project, $($rest:tt)+) => {
+        layered_name!(@token $stem, "40.project", $($rest)+)
+    };
+    ($stem:literal, personal, $($rest:tt)+) => {
+        layered_name!(@token $stem, "50.personal", $($rest)+)
+    };
     ($stem:literal, state, $($rest:tt)+) => { layered_name!(@token $stem, "state", $($rest)+) };
     (@token $stem:literal, $token:literal, no_git, $ext:literal) => {
         concat!($stem, ".", $token, ".no-git.", $ext)
