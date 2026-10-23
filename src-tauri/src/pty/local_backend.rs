@@ -2,6 +2,8 @@ use std::collections::HashMap;
 #[cfg(not(windows))]
 use std::io::Read;
 use std::io::Write;
+#[cfg(windows)]
+use std::sync::atomic::AtomicU64;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,10 +37,10 @@ use blocking_spawn::spawn_blocking_cancel_safe;
 use cursor_query::{pump_cursor_query, write_cursor_reply};
 #[cfg(all(test, windows))]
 use cursor_query::{CursorReplyObserver, OneShotCursorQuery};
-#[cfg(windows)]
-use git_guard::build_git_guard_env;
 #[cfg(all(test, windows))]
 use git_guard::write_git_guard_file_if_changed;
+#[cfg(windows)]
+use git_guard::{ensure_git_guard_wrapper, resolve_real_git_path, GitGuardEnv};
 #[cfg(test)]
 use instance::send_size_to_conpty;
 use instance::{hand_over_held_size, resize_instance, PtyInstance, StartupGate};
@@ -53,6 +55,32 @@ use liveness::{
     context_liveness_from_child_liveness, probe_child_contained, probe_child_in,
     screen_rows_if_child_alive,
 };
+
+#[cfg(windows)]
+pub(super) static GIT_GUARD_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(windows)]
+fn build_git_guard_env() -> Result<Option<GitGuardEnv>, AppError> {
+    let Some(real_git) = resolve_real_git_path() else {
+        log::warn!("[pty] git.exe not found; skipping PATH git guard wrapper");
+        return Ok(None);
+    };
+
+    let guard_dir = ensure_git_guard_wrapper()?;
+    let current_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries: Vec<std::path::PathBuf> = vec![guard_dir];
+    path_entries.extend(std::env::split_paths(&current_path));
+    let path = std::env::join_paths(path_entries.iter())
+        .map_err(|e| AppError::Other(format!("Failed to join PATH for git guard: {}", e)))?
+        .to_string_lossy()
+        .to_string();
+
+    Ok(Some(GitGuardEnv {
+        path,
+        pathext: ".CMD;.BAT;.COM;.EXE".to_string(),
+        real_git,
+    }))
+}
 
 pub struct LocalProcessBackend {
     ptys: Arc<Mutex<HashMap<Uuid, PtyInstance>>>,

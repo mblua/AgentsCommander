@@ -67,7 +67,7 @@ impl OneShotCursorQuery {
                 }
                 _ => output.append(&mut self.pending),
             }
-            use CursorQueryState::*;
+            use CursorQueryState::{Csi, Escape, Ground, String, StringEscape};
             self.state = match self.state {
                 String(_) | StringEscape(_) if byte == 0x18 || byte == 0x1a => Ground,
                 String(osc) | StringEscape(osc) if byte == 0x07 && osc => Ground,

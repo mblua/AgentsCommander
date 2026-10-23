@@ -4,13 +4,13 @@ use std::sync::atomic::Ordering;
 #[cfg(windows)]
 use std::path::Path;
 #[cfg(windows)]
-use std::sync::atomic::AtomicU64;
-#[cfg(windows)]
 use std::time::Duration;
 
 #[cfg(windows)]
 use crate::config::instance_artifacts::GIT_GUARD_DIR_NAME;
 use crate::errors::AppError;
+
+use super::GIT_GUARD_TEMP_COUNTER;
 
 #[cfg(windows)]
 pub(super) struct GitGuardEnv {
@@ -18,9 +18,6 @@ pub(super) struct GitGuardEnv {
     pub(super) pathext: String,
     pub(super) real_git: String,
 }
-
-#[cfg(windows)]
-pub(super) static GIT_GUARD_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(windows)]
 pub(super) const GIT_GUARD_PUBLISH_RETRY_DELAYS: &[Duration] = &[
@@ -246,27 +243,4 @@ pub(super) fn git_guard_file_matches(path: &Path, content: &[u8]) -> bool {
         Ok(existing) => existing == content,
         Err(_) => false,
     }
-}
-
-#[cfg(windows)]
-pub(super) fn build_git_guard_env() -> Result<Option<GitGuardEnv>, AppError> {
-    let Some(real_git) = resolve_real_git_path() else {
-        log::warn!("[pty] git.exe not found; skipping PATH git guard wrapper");
-        return Ok(None);
-    };
-
-    let guard_dir = ensure_git_guard_wrapper()?;
-    let current_path = std::env::var_os("PATH").unwrap_or_default();
-    let mut path_entries: Vec<std::path::PathBuf> = vec![guard_dir];
-    path_entries.extend(std::env::split_paths(&current_path));
-    let path = std::env::join_paths(path_entries.iter())
-        .map_err(|e| AppError::Other(format!("Failed to join PATH for git guard: {}", e)))?
-        .to_string_lossy()
-        .to_string();
-
-    Ok(Some(GitGuardEnv {
-        path,
-        pathext: ".CMD;.BAT;.COM;.EXE".to_string(),
-        real_git,
-    }))
 }
