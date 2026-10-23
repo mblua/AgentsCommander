@@ -337,8 +337,8 @@ pub(crate) async fn retry_quarantined_group(
                 // Deliberately warn: this carries the per-PID blocker text a native run
                 // needs before any AV or EDR attribution.
                 log::warn!(
-                    "[resource-watchdog] orphan cleanup still blocked session={session_id} root_pid={} \
-                     still_counted={still_counted}: {}",
+                    "[resource-watchdog] orphan cleanup still blocked session={session_id} \
+                     root_pid={} still_counted={still_counted}: {}",
                     root_identity.pid,
                     result.message
                 );
