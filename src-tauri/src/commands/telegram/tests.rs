@@ -1,4 +1,5 @@
 use super::*;
+mod attach_detach_persistence;
 
 #[test]
 fn derive_reader_container_claude_requires_memo() {

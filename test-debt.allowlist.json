@@ -42,7 +42,7 @@
       "resolution": "Run manually with cargo test --release --test cli_powershell_capture -- --ignored on a machine with bash.exe."
     },
     {
-      "id": "rust:src-tauri/src/commands/telegram.rs::attach_detach_persistence_tests::telegram_attach_detach_persistence_ordering_harness_note",
+      "id": "rust:src-tauri/src/commands/telegram/tests/attach_detach_persistence.rs::telegram_attach_detach_persistence_ordering_harness_note",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 295,
@@ -50,7 +50,7 @@
       "resolution": "Convert to an executable integration test when a command-level Tauri fixture is available."
     },
     {
-      "id": "rust:src-tauri/src/commands/telegram.rs::attach_detach_persistence_tests::telegram_attach_detach_persistence_ordering_harness_note",
+      "id": "rust:src-tauri/src/commands/telegram/tests/attach_detach_persistence.rs::telegram_attach_detach_persistence_ordering_harness_note",
       "category": "placeholder-rust-test",
       "owner": "dev-rust",
       "issue": 295,
