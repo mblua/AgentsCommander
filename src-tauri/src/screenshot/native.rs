@@ -965,9 +965,6 @@ pub(crate) fn parse_window_id(raw_window_id: &str) -> Option<String> {
     Some(raw_window_id.to_string())
 }
 
-#[cfg(all(test, target_os = "windows"))]
-mod window_screenshot_tests;
-
 /// Capture every monitor with `xcap` and encode a base64 PNG preview per monitor.
 /// All `xcap` getters are fallible and re-query the OS, so each is read once.
 async fn capture_all_monitors() -> Result<Vec<CapturedMonitor>, String> {

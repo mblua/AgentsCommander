@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(target_os = "windows")]
+mod window_screenshot;
+
 /// Build an absolute, multi-component path for the current target. The old
 /// `r"C:\proj\.ac\..."` literals are ONE path component on Linux (a
 /// backslash is an ordinary filename character there), so `find_replica_root`
