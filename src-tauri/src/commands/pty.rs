@@ -1345,7 +1345,4 @@ fn resolve_draft_reach(
 }
 
 #[cfg(test)]
-mod watcher_preview_tests;
-
-#[cfg(test)]
 mod tests;

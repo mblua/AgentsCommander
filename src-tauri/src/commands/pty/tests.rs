@@ -6,6 +6,7 @@ use crate::session::manager::SessionManager;
 use crate::session::session::SessionRepo;
 
 mod typing_hold;
+mod watcher_preview;
 
 #[tokio::test]
 async fn e2992_p42_invalid_defers_hold() {
