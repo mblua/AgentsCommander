@@ -31,11 +31,13 @@ mod provision;
 mod render;
 
 pub(crate) use provision::ensure_injected_messages;
+#[cfg(all(test, windows))]
+use provision::is_link_or_reparse;
 pub(crate) use provision::known_message_ids;
 use provision::read_source;
 pub(crate) use provision::reseed;
 #[cfg(test)]
-use provision::{is_link_or_reparse, provision, verify_candidate};
+use provision::{provision, verify_candidate};
 pub(crate) use render::render;
 #[cfg(test)]
 pub(crate) use render::render_with_template;
