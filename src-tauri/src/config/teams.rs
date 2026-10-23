@@ -13,7 +13,7 @@ pub(crate) use discovery::create_test_junction;
 pub use discovery::discover_teams;
 pub(crate) use discovery::discover_teams_for_cli;
 pub(crate) use discovery::discover_teams_from_project_paths;
-#[cfg(test)]
+#[cfg(all(test, windows))]
 use discovery::discover_teams_in_project;
 pub(crate) use discovery::discover_teams_in_project_filtered;
 pub use membership::can_communicate;
@@ -40,6 +40,8 @@ use replica::{identity_compare_key, logical_path_resolve, team_members};
 pub(crate) use routes::discover_verified_terminal_snapshot_targets;
 pub(crate) use routes::discover_verified_terminal_snapshot_targets_counted;
 pub(crate) use routes::pty_input_create_gate_key_from_cwd;
+#[cfg(all(test, unix))]
+use routes::resolve_pty_input_target;
 pub(crate) use routes::strict_wg_replica_anchor_from_cwd;
 pub use routes::verify_pty_input_coordinator_root;
 pub(crate) use routes::verify_pty_input_replica_cwd;
