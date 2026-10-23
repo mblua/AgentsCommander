@@ -80,8 +80,10 @@ pub(crate) use state::{
 #[cfg(test)]
 use state::{exact_serialized_len, exact_serialized_len_with_limit};
 #[cfg(test)]
-use std::fs::{File, OpenOptions};
-#[cfg(test)]
+use std::fs::File;
+#[cfg(all(test, windows))]
+use std::fs::OpenOptions;
+#[cfg(all(test, windows))]
 use std::io::Write;
 #[cfg(test)]
 use std::path::Path;

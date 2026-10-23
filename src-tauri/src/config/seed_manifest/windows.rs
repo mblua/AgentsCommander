@@ -1,11 +1,17 @@
+#[cfg(not(any(unix, windows)))]
+use super::SeedManifestError;
+#[cfg(windows)]
 use super::{
     handle_facts, is_exact_not_found, open_regular_no_follow, stream_matches, CanonicalSnapshot,
     FileIdentity, OpenedRegularFile, ProjectSeedManifestGuard, SeedManifestError,
 };
 #[cfg(windows)]
 use super::{WindowsNamespaceOperation, WindowsPathState, WindowsReplacePartial};
+#[cfg(windows)]
 use std::fs::{File, OpenOptions};
+#[cfg(windows)]
 use std::io;
+#[cfg(not(unix))]
 use std::path::Path;
 
 #[cfg(windows)]
