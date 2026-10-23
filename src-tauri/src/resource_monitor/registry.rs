@@ -362,7 +362,9 @@ impl ResourceMonitorState {
         if let Some(previous) = replaced {
             if !matches!(previous.state, ResourceGroupState::Terminated) {
                 log::error!(
-                    "[resource-monitor] register_group replaced a live row session={} previous_state={:?} previous_root_pid={} permit_released={}",
+                    "[resource-monitor] register_group replaced a \
+                        live row session={} previous_state={:?} previous_root_pid={} \
+                        permit_released={}",
                     session_id,
                     previous.state,
                     previous.root_identity.pid,
@@ -734,7 +736,8 @@ impl ResourceMonitorState {
                 }
                 if !tree.errors.is_empty() && errors.is_empty() && !ignored_root_errors.is_empty() {
                     log::debug!(
-                        "[resource-monitor] cleanup sample for session {} had ignored root-missing error: {}",
+                        "[resource-monitor] cleanup sample for session \
+                            {} had ignored root-missing error: {}",
                         session_id,
                         ignored_root_errors.join("; ")
                     );
@@ -811,14 +814,16 @@ impl ResourceMonitorState {
             match self.backend.observe_identity(identity.pid) {
                 Ok(None) => {
                     log::debug!(
-                        "[resource-monitor] ignored cleanup identity error for gone pid={} session={}",
+                        "[resource-monitor] ignored cleanup identity error \
+                            for gone pid={} session={}",
                         identity.pid,
                         session_id
                     );
                 }
                 Ok(Some(current)) if !is_placeholder_identity(identity) && current != identity => {
                     log::debug!(
-                        "[resource-monitor] ignored cleanup identity error for reused pid={} session={}",
+                        "[resource-monitor] ignored cleanup identity error \
+                            for reused pid={} session={}",
                         identity.pid,
                         session_id
                     );
@@ -858,7 +863,8 @@ impl ResourceMonitorState {
                 .collect::<Vec<_>>()
                 .join(" | ");
             log::warn!(
-                "[resource-monitor] quarantine-tree session={} reason={} root_pid={} targets={}: {}",
+                "[resource-monitor] quarantine-tree session={} \
+                    reason={} root_pid={} targets={}: {}",
                 session_id,
                 reason.as_log_reason(),
                 root_identity.pid,
@@ -897,7 +903,9 @@ impl ResourceMonitorState {
         }
 
         log::info!(
-            "[resource-monitor] kill_group session={} reason={} observe_tree_ms={} total_ms={} targets={} killed={} quarantined={}",
+            "[resource-monitor] kill_group session={} reason={} \
+                observe_tree_ms={} total_ms={} targets={} killed={} \
+                quarantined={}",
             session_id,
             reason.as_log_reason(),
             observe_ms,
