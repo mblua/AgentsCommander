@@ -1,4 +1,6 @@
-use super::paths::{canonical_existing_dir, same_canonical_path, strip_extended_prefix};
+#[cfg(windows)]
+use super::paths::strip_extended_prefix;
+use super::paths::{canonical_existing_dir, same_canonical_path};
 use super::selection_state::read_source_null_profile_result;
 use super::selection_write::{
     clear_replica_selection_lock_with_publish, set_prepared_source_profile_override,
