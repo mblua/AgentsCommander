@@ -1,4 +1,5 @@
-use super::*;
+use super::{MessageStore, MessageStoreError};
+use chrono::Utc;
 
 impl MessageStore {
     pub(super) fn migrate(&self) -> Result<(), MessageStoreError> {

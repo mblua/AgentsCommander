@@ -1,21 +1,11 @@
 //! Durable DB-backed send queue for the control-plane API.
 
-use std::collections::{HashMap, HashSet};
-use std::fs::{File, OpenOptions};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use chrono::{DateTime, Utc};
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::config::instance_artifacts::PTY_INPUT_LOCKS_DIR_NAME;
-use crate::pty::manager::{
-    ResponseCloseError, ResponseCloseState, WorkAdmission, WorkDeliveryReservation,
-};
+use crate::pty::manager::{ResponseCloseState, WorkDeliveryReservation};
 
 mod delivery;
 mod lifecycle;
