@@ -2397,6 +2397,65 @@ pub async fn create_session(
     Ok(info)
 }
 
+async fn publish_legacy_destroy_outcome<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    source: &DestructionSource,
+    outcome: &DestroyOutcome,
+    committed: &crate::session::manager::CommitResult,
+    retained_marked: &std::collections::HashSet<uuid::Uuid>,
+) {
+    for session_id in outcome
+        .destroyed_ids
+        .iter()
+        .chain(outcome.retained_exited_ids.iter())
+        .copied()
+    {
+        transaction.publish_destroyed(session_id);
+        let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
+        if let Some(window) = transaction.app().get_webview_window(&label) {
+            if let Err(error) = window.destroy() {
+                log::warn!(
+                    "[session] detached window destroy failed session={} source={:?}: {}",
+                    session_id,
+                    source,
+                    error
+                );
+            }
+        }
+        reset_substantive_input(transaction.app(), session_id);
+    }
+
+    // #1171 - a SEPARATE loop over `destroyed_ids` only, rather than a membership test inside
+    // the loop above. That loop iterates `destroyed_ids.chain(retained_exited_ids)`, so a
+    // `contains` check would be O(n squared) and, worse, would express a business rule as a
+    // condition inside a loop that does something else. A separate loop makes "destroyed only"
+    // structural.
+    //
+    // Root-agent sessions retained as `Exited` are deliberately NOT purged: they stay in the
+    // manager and their row is still in the list, so their post-mortem view still has a place
+    // to be shown.
+    for session_id in outcome.destroyed_ids.iter().copied() {
+        purge_session_side_state(transaction.app(), session_id);
+        // #2232 phase 4 section 5: destroy releases **both** demands, which
+        // cancels the reader and closes the session's `CaptureRegistry` entry.
+        crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
+    }
+
+    for row in committed.changed_rows.iter().filter(|row| {
+        Uuid::parse_str(&row.id)
+            .ok()
+            .is_some_and(|id| retained_marked.contains(&id))
+    }) {
+        transaction.publish_created(row);
+    }
+    for session_id in &committed.cleared_raise_hand_ids {
+        transaction.publish_communication_cleared(*session_id);
+    }
+    if let Some(selection) = committed.selection.as_ref() {
+        transaction.publish_selection(selection);
+    }
+}
+
 #[tauri::command]
 pub async fn destroy_session(
     app: AppHandle,
