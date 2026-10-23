@@ -196,7 +196,8 @@ fn run_command_appends_read_write_repo_mounts_before_image() {
     // Order: replica first, then repos in config order.
     assert!(replica < repo1 && repo1 < repo2);
     assert!(joined.contains(
-        "type=bind,source=C:/project/.ac/wg-1-team/repo-AgentsCommander,target=/repos/repo-AgentsCommander"
+        "type=bind,source=C:/project/.ac/wg-1-team/repo-AgentsCommander,\
+        target=/repos/repo-AgentsCommander"
     ));
     // Read-write: no readonly token on the repo mounts (Q2 = RW).
     assert!(!joined.contains("readonly"));

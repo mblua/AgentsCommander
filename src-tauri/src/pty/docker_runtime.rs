@@ -236,7 +236,8 @@ impl DockerCommandOwner {
         if let Some(child) = self.child.as_mut() {
             if let Err(error) = child.kill() {
                 log::debug!(
-                    "[container-runtime] Docker command kill returned program={} canceled={} {} error={}",
+                    "[container-runtime] Docker command kill returned program={} canceled={} {} \
+                    error={}",
                     self.program,
                     canceled,
                     self.log_context(),
@@ -371,7 +372,8 @@ impl DockerCommandOwnership {
                 ),
                 Err(_) => {
                     log::error!(
-                        "[container-runtime] retained Docker command cleanup panicked {} state=retained",
+                        "[container-runtime] retained Docker command cleanup panicked {} \
+                        state=retained",
                         owner.log_context()
                     );
                     (false, Some("Docker command cleanup panicked".to_string()))
@@ -393,7 +395,8 @@ impl DockerCommandOwnership {
                 }
             } else if !terminal {
                 log::error!(
-                    "[container-runtime] retained Docker command diagnostic entry disappeared during retry id={} state=retained",
+                    "[container-runtime] retained Docker command diagnostic entry disappeared \
+                    during retry id={} state=retained",
                     id
                 );
                 entries.push(DockerCommandOwnershipEntry::new(id, owner, attempt_error));
@@ -470,7 +473,8 @@ impl Drop for DockerCommandOwnership {
         let missing_owner_count = entries.iter().filter(|entry| entry.owner.is_none()).count();
         if missing_owner_count > 0 {
             log::error!(
-                "[container-runtime] Docker command ownership dropped with in-flight diagnostic entries count={}",
+                "[container-runtime] Docker command ownership dropped with in-flight diagnostic \
+                entries count={}",
                 missing_owner_count
             );
         }
@@ -1445,7 +1449,8 @@ impl DockerRuntime {
                 state.in_flight = false;
                 state.last_error = None;
                 log::debug!(
-                    "[container-runtime] ambiguous Docker start cleanup terminal session={} state=terminal",
+                    "[container-runtime] ambiguous Docker start cleanup terminal session={} \
+                    state=terminal",
                     entry.handle.session_id
                 );
             }
@@ -1458,7 +1463,8 @@ impl DockerRuntime {
                 state.in_flight = false;
                 state.last_error = Some(message.clone());
                 log::warn!(
-                    "[container-runtime] ambiguous Docker start cleanup retained session={} state=retained error={}",
+                    "[container-runtime] ambiguous Docker start cleanup retained session={} \
+                    state=retained error={}",
                     entry.handle.session_id,
                     crate::pty::container_runtime::redact_container_diagnostic_text(&message)
                 );
@@ -1471,7 +1477,8 @@ impl DockerRuntime {
                 state.in_flight = false;
                 state.last_error = Some("cleanup panicked".to_string());
                 log::error!(
-                    "[container-runtime] ambiguous Docker start cleanup panicked session={} state=retained",
+                    "[container-runtime] ambiguous Docker start cleanup panicked session={} \
+                    state=retained",
                     entry.handle.session_id
                 );
             }
@@ -1637,7 +1644,8 @@ impl ContainerRuntime for DockerRuntime {
             }
             Ok(Err(error)) if control.shutdown_requested() => {
                 log::debug!(
-                    "[container-runtime] Docker start canceled session={}; returning owned cleanup handle: {}",
+                    "[container-runtime] Docker start canceled session={}; returning owned cleanup \
+                    handle: {}",
                     session_id,
                     error
                 );
