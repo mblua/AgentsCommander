@@ -293,7 +293,8 @@ fn coordinator_v3_to_v4_update_records_to_the_seed_manifest_under_the_gate() {
 fn old_coordinator_default_is_known_generated_without_raise_hand() {
     assert!(!OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND.contains("## Raising Your Hand"));
     assert!(OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND.contains("## Sending Screenshots"));
-    assert!(OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND.contains("names can be misleading."));
+    let misleading_names = "names can be misleading.";
+    assert!(OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND.contains(misleading_names));
     assert!(is_known_generated_coordinator_template(
         OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
     ));
