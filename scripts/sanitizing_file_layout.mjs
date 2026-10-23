@@ -44,7 +44,9 @@ function measure(path, scan) {
     }
   }
   for (const scope of scan.scopes) for (const entry of scope.imports) if (entry.glob) {
-    if (path.endsWith('/tests.rs') && entry.target === 'super::*') continue;
+    // C6: a file under a tests/ folder is part of its tests.rs, so it may glob its parent too.
+    const testsFile = path.endsWith('/tests.rs') || path.includes('/tests/');
+    if (testsFile && entry.target === 'super::*') continue;
     const use = scan.items.find(i => i.kind === 'use' && i.scope === scope &&
       ts.slice(i.first, i.last).some(t => t.text === '*'));
     hit(m, 'glob', use?.line ?? 1);

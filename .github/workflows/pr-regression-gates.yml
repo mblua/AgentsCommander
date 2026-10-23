@@ -1003,7 +1003,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TEST='tests::issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start'
+          TEST='tests::startup::issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start'
 
           cargo test --locked --lib "$TEST" -- --exact --test-threads=1 --nocapture 2>&1 | tee test-1577.log
 
@@ -1210,9 +1210,11 @@ jobs:
           set -euo pipefail
           FILTER=config::agent_command::tests
           # LINUX count: the Windows leg also compiles four cfg(windows) tests
-          # and reports 96. Update in the same commit that adds or removes a
-          # test in that module.
-          EXPECTED=92
+          # and reports 100. Update in the same commit that adds or removes a
+          # test in that module. Since #3176 the module also holds the former
+          # sibling modules derived_agent_id_home (3 tests) and
+          # p02_schema_launch (1 test).
+          EXPECTED=96
           cargo test --locked --lib "$FILTER" -- --nocapture 2>&1 | tee test-2431.log
           grep -qF 'env_precedence_is_platform_independent' test-2431.log || {
             echo "::error::the POSIX precedence sentinel never ran; the filter matched nothing or it was renamed."

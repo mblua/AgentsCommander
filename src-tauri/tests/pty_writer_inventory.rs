@@ -71,7 +71,7 @@ fn every_production_pty_writer_is_in_the_explicit_permit_inventory() {
         "src/web/mod.rs",
         "src/web/commands.rs",
         "src/pty/inject.rs",
-        "src/phone/mailbox.rs",
+        "src/phone/mailbox/self_switch.rs",
     ];
     for relative in expected_surfaces {
         let body = source(relative);
@@ -116,7 +116,7 @@ fn every_production_pty_writer_is_in_the_explicit_permit_inventory() {
         permit_paths,
         vec![
             "src/commands/pty.rs",
-            "src/phone/mailbox.rs",
+            "src/phone/mailbox/self_switch.rs",
             "src/pty/inject.rs",
             "src/pty/manager.rs",
             "src/web/commands.rs",
@@ -161,11 +161,17 @@ fn every_production_pty_writer_is_in_the_explicit_permit_inventory() {
     //    Whitespace-normalized so a multiline reflow cannot drop a site.
     assert_eq!(
         raw_backend_paths,
-        vec!["src/pty/container_backend.rs", "src/pty/manager.rs"],
+        vec![
+            "src/pty/container_backend/tests/transport.rs",
+            "src/pty/manager.rs",
+        ],
         "direct backend writes are limited to the route guard and the pinned container-backend tests"
     );
     assert_eq!(
-        occurrences(&normalized(&source("src/pty/container_backend.rs")), "backend.write("),
+        occurrences(
+            &normalized(&source("src/pty/container_backend/tests/transport.rs")),
+            "backend.write("
+        ),
         3,
         "container backend tests have exactly three direct transport-write probes, each issuing the cfg(test) BackendWriteAuthority"
     );
@@ -184,7 +190,7 @@ fn every_production_pty_writer_is_in_the_explicit_permit_inventory() {
         "a public permitless PtyManager::write facade must not return"
     );
 
-    let mailbox = normalized(&source("src/phone/mailbox.rs"));
+    let mailbox = normalized(&source("src/phone/mailbox/pty_dispatch.rs"));
     assert_eq!(
         occurrences(&mailbox, "write_exact_agent_input_first("),
         1,

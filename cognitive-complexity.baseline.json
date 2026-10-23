@@ -119,7 +119,7 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/config/session_context.rs::mod:token_accounting::summarized_default_context_meets_size_budget",
+      "id": "rust:src-tauri/src/config/session_context/tests/token_accounting.rs::summarized_default_context_meets_size_budget",
       "sites": {
         "windows": [
           "24924aced08a"
@@ -133,7 +133,7 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/config/settings.rs::mod:tests::settings_save_error_preserves_sources_and_separates_diagnostic_from_outward",
+      "id": "rust:src-tauri/src/config/settings/tests.rs::settings_save_error_preserves_sources_and_separates_diagnostic_from_outward",
       "sites": {
         "windows": [
           "826617b3bb4f"
@@ -178,7 +178,7 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::deliver_internal_system_wake",
+      "id": "rust:src-tauri/src/phone/mailbox/internal_delivery.rs::impl:MailboxPoller::deliver_internal_system_wake",
       "sites": {
         "windows": [
           "bb794053ede9"
@@ -192,49 +192,7 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::handle_close_session",
-      "sites": {
-        "windows": [
-          "1d959a229655"
-        ],
-        "linux": [
-          "1d959a229655"
-        ],
-        "macos": [
-          "1d959a229655"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::handle_purge_wg",
-      "sites": {
-        "windows": [
-          "40cfe953061c"
-        ],
-        "linux": [
-          "40cfe953061c"
-        ],
-        "macos": [
-          "40cfe953061c"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::poll",
-      "sites": {
-        "windows": [
-          "dff40736a7a2"
-        ],
-        "linux": [
-          "dff40736a7a2"
-        ],
-        "macos": [
-          "dff40736a7a2"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::process_pty_input_file",
+      "id": "rust:src-tauri/src/phone/mailbox/pty_artifact.rs::impl:MailboxPoller::process_pty_input_file",
       "sites": {
         "windows": [
           "34a3d771ff0c"
@@ -248,7 +206,21 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::resolve_repo_path",
+      "id": "rust:src-tauri/src/phone/mailbox/pty_authority.rs::impl:MailboxPoller::spawn_pty_input_target",
+      "sites": {
+        "windows": [
+          "0e2097deada7"
+        ],
+        "linux": [
+          "0e2097deada7"
+        ],
+        "macos": [
+          "0e2097deada7"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox/self_switch.rs::impl:MailboxPoller::resolve_repo_path",
       "sites": {
         "windows": [
           "81f48c31ba89"
@@ -262,16 +234,44 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::spawn_pty_input_target",
+      "id": "rust:src-tauri/src/phone/mailbox/session_lookup.rs::impl:MailboxPoller::handle_close_session",
       "sites": {
         "windows": [
-          "0e2097deada7"
+          "1d959a229655"
         ],
         "linux": [
-          "0e2097deada7"
+          "1d959a229655"
         ],
         "macos": [
-          "0e2097deada7"
+          "1d959a229655"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox/session_request.rs::impl:MailboxPoller::handle_purge_wg",
+      "sites": {
+        "windows": [
+          "40cfe953061c"
+        ],
+        "linux": [
+          "40cfe953061c"
+        ],
+        "macos": [
+          "40cfe953061c"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox/wake_workers.rs::impl:MailboxPoller::poll",
+      "sites": {
+        "windows": [
+          "dff40736a7a2"
+        ],
+        "linux": [
+          "dff40736a7a2"
+        ],
+        "macos": [
+          "dff40736a7a2"
         ]
       }
     },

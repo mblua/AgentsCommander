@@ -46,7 +46,7 @@ pub struct ApiServerStart {
 // (`handlers::window_screenshot` and `screenshot::native`'s window-capture
 // region are both gated on it), so the limiter that bounds it is scoped the same
 // way. The `test` disjunct keeps `window_screenshot_limiter_tests` below and the
-// route-level queue tests in `pty/terminal_snapshot/acceptance_tests.rs`, neither
+// route-level queue tests in `pty/terminal_snapshot/tests/acceptance.rs`, neither
 // of which is platform-gated.
 #[cfg(any(target_os = "windows", test))]
 pub(crate) const WINDOW_SCREENSHOT_MAX_ACTIVE: usize = 1;
@@ -84,7 +84,7 @@ pub(crate) enum WindowScreenshotAdmissionError {
 /// request whose worker already started keeps the lease until the native work
 /// ends, so detached workers cannot exceed the one-active, three-admitted
 /// bound. Covered by `window_screenshot_limiter_queue_is_bounded_and_waiter_drop_releases_admission`
-/// and the route-level queue tests in `pty/terminal_snapshot/acceptance_tests.rs`.
+/// and the route-level queue tests in `pty/terminal_snapshot/tests/acceptance.rs`.
 #[cfg(any(target_os = "windows", test))]
 pub(crate) struct WindowScreenshotLimiter {
     admission: std::sync::Arc<tokio::sync::Semaphore>,

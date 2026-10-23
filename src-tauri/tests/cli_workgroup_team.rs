@@ -2079,19 +2079,19 @@ fn workgroup_remove_prunes_recorded_config_scope() {
 // ---------------------------------------------------------------------------
 
 /// Read a crate-relative source file, drop its `#[cfg(test)] mod tests` block,
-/// and collapse ALL whitespace. Dropping the test block matches the cited
-/// precedent and makes the "production only" property ENFORCED rather than
-/// assumed: a future `#[cfg(test)]` use of `production()` can no longer offset a
-/// removed production wiring. Collapsing whitespace makes assertions match token
-/// sequences irrespective of rustfmt line-wrapping.
+/// and collapse ALL whitespace (an out-of-line `mod tests;` is already split off).
+/// This ENFORCES "production only": a `#[cfg(test)]` `production()` cannot offset a
+/// removed production wiring. Collapsed whitespace ignores rustfmt line-wrapping.
 fn normalized_production_source(relative: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
     let body = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let normalized = body.split_whitespace().collect::<String>();
-    let end = normalized.find("#[cfg(test)]modtests{").unwrap_or_else(|| {
-        panic!("{relative}: no `#[cfg(test)] mod tests` block found to split off")
-    });
+    let end = match normalized.find("#[cfg(test)]modtests{") {
+        Some(end) => end,
+        None if !normalized.contains("modtests{") => normalized.len(),
+        None => panic!("{relative}: no `#[cfg(test)] mod tests` block found to split off"),
+    };
     normalized[..end].to_string()
 }
 
@@ -2145,15 +2145,15 @@ fn session_rs_threads_production_tokens_for_config_seed_and_context() {
     );
 }
 
-// (b) `commands/entity_creation.rs`: the GUI Tauri delete commands, invoked by no
-// test - delete_team (LifecycleTeamDeletion), delete_agent_matrix
-// (LifecycleAgentMatrixDeletion plus its pending-inclusive staged-rollback prune,
-// PendingInclusiveDeleteProtection), and delete_workgroup (the GUI site for
-// LifecycleWorkgroupRemoval, whose CLI site is covered end-to-end above). Each
-// OUTER command must construct and thread the token into its inner transaction.
+// (b) `commands/entity_creation/`: GUI Tauri delete commands no test calls - delete_team
+// (LifecycleTeamDeletion), delete_agent_matrix (LifecycleAgentMatrixDeletion + staged-rollback
+// prune, PendingInclusiveDeleteProtection), delete_workgroup (GUI LifecycleWorkgroupRemoval; CLI
+// covered above). Each OUTER command must build and thread the token into its inner transaction.
 #[test]
 fn entity_creation_rs_threads_production_tokens_through_the_delete_commands() {
-    let production = normalized_production_source("src/commands/entity_creation.rs");
+    let production = ["team_delete", "agent_matrix", "workgroup_delete"]
+        .map(|c| normalized_production_source(&format!("src/commands/entity_creation/{c}.rs")))
+        .concat();
 
     assert_eq!(
         production_token_count(&production),
