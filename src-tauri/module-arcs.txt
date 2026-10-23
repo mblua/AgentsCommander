@@ -2020,6 +2020,7 @@ agentscommander_lib::pty::local_backend::git_guard -> agentscommander_lib::confi
 agentscommander_lib::pty::local_backend::git_guard -> agentscommander_lib::config::root_agent
 agentscommander_lib::pty::local_backend::git_guard -> agentscommander_lib::errors
 agentscommander_lib::pty::local_backend::git_guard -> agentscommander_lib::pty::credentials
+agentscommander_lib::pty::local_backend::git_guard -> agentscommander_lib::pty::local_backend
 agentscommander_lib::pty::local_backend::instance -> agentscommander_lib::errors
 agentscommander_lib::pty::local_backend::instance -> agentscommander_lib::pty::job
 agentscommander_lib::pty::local_backend::launch -> agentscommander_lib::errors
