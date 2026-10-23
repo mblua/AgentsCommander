@@ -25,6 +25,7 @@ use tauri::Emitter;
 use tauri::Manager;
 use uuid::Uuid;
 mod admission;
+mod context_prep;
 mod launch;
 #[cfg(test)]
 pub(crate) use admission::acquire_create_publication_region;
@@ -39,6 +40,9 @@ pub(crate) use admission::CreateCapacityContext;
 pub(crate) use admission::CreateResourceAdmission;
 pub(crate) use admission::OwnedCreateAdmission;
 pub(crate) use admission::OwnedCreateTargetLease;
+pub(crate) use context_prep::materialize_replica_context;
+pub(crate) use context_prep::notify_replica_context_failure;
+pub(crate) use context_prep::ReplicaContextPreparation;
 pub(crate) use launch::build_configured_agent_spawn_for_cwd;
 pub(crate) use launch::compute_profile_outdated;
 pub(crate) use launch::resolve_configured_agent_spawn_for_cwd;

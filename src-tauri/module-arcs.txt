@@ -1020,6 +1020,10 @@ agentscommander_lib::commands::session::create::admission -> agentscommander_lib
 agentscommander_lib::commands::session::create::admission -> agentscommander_lib::resource_monitor
 agentscommander_lib::commands::session::create::admission -> agentscommander_lib::session::manager
 agentscommander_lib::commands::session::create::admission -> agentscommander_lib::session::selection
+agentscommander_lib::commands::session::create::context_prep -> agentscommander_lib::config::seed_manifest
+agentscommander_lib::commands::session::create::context_prep -> agentscommander_lib::config::session_context
+agentscommander_lib::commands::session::create::context_prep -> agentscommander_lib::pty::container_repos
+agentscommander_lib::commands::session::create::context_prep -> agentscommander_lib::session::selection
 agentscommander_lib::commands::session::create::launch -> agentscommander_lib::commands::session
 agentscommander_lib::commands::session::create::launch -> agentscommander_lib::config::agent_command
 agentscommander_lib::commands::session::create::launch -> agentscommander_lib::config::coding_agent_profiles
