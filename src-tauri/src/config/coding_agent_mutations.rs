@@ -106,7 +106,8 @@ type SourceDurableCutState = (Option<(&'static str, usize)>, Vec<&'static str>);
 
 #[cfg(test)]
 thread_local! {
-    static SOURCE_DURABLE_CUT: std::cell::RefCell<SourceDurableCutState> = const { std::cell::RefCell::new((None, Vec::new())) };
+    static SOURCE_DURABLE_CUT: std::cell::RefCell<SourceDurableCutState> =
+        const { std::cell::RefCell::new((None, Vec::new())) };
 }
 
 /// Fail-only seam after real durability, outside every publisher/PAIR guard.
@@ -140,7 +141,9 @@ fn configure_source_durable_cut(cut: Option<(&'static str, usize)>) {
 thread_local! {
     // Test-only pause outside validation: an external writer changes a real
     // protected target between production's initial check and fence effect.
-    static SOURCE_FENCE_EFFECT_BARRIER: std::cell::RefCell<Option<std::sync::Arc<std::sync::Barrier>>> = const { std::cell::RefCell::new(None) };
+    static SOURCE_FENCE_EFFECT_BARRIER:
+        std::cell::RefCell<Option<std::sync::Arc<std::sync::Barrier>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 fn source_before_fence_boundary() -> Result<(), crate::config::settings::SourceCoordinationError> {
@@ -968,7 +971,8 @@ pub fn validate_custom_agent_id(id: &str) -> Result<(), String> {
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-' || *b == b'_')
     {
         return Err(format!(
-            "agent id '{id}' must match ^[a-z0-9][a-z0-9_-]{{0,63}}$ (lowercase letters, digits, hyphen, underscore)"
+            "agent id '{id}' must match ^[a-z0-9][a-z0-9_-]{{0,63}}$ \
+             (lowercase letters, digits, hyphen, underscore)"
         ));
     }
     Ok(())

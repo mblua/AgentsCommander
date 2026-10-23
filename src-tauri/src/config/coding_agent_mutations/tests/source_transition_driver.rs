@@ -1390,8 +1390,14 @@ fn single_editor_original_factory_real_matrix_default_group_and_history_no_defau
             Some(&origin)
         )
         .is_err());
-        std::fs::write(target.join("config.json"), serde_json::to_vec(&serde_json::json!({"tooling":{
-            "replicaSelectionDefault":{"codingAgentId":"K","profile":"B","configurationRef":selection.clone()}}})).unwrap()).unwrap();
+        let config_json = serde_json::json!({"tooling":{"replicaSelectionDefault":{
+            "codingAgentId":"K","profile":"B","configurationRef":selection.clone()
+        }}});
+        std::fs::write(
+            target.join("config.json"),
+            serde_json::to_vec(&config_json).unwrap(),
+        )
+        .unwrap();
         let capture = capture_source_inventory(
             &fixture.settings,
             &snapshot,
@@ -1480,8 +1486,14 @@ fn single_editor_original_factory_real_matrix_default_group_and_history_no_defau
         let mut alpha = selection.clone();
         alpha.requested_profile = Some("A".into());
         alpha.profile_calculated_id = Some(profile_identity(&snapshot.snapshot.profiles["K"]["A"]));
-        std::fs::write(target.join("config.json"), serde_json::to_vec(&serde_json::json!({"tooling":{
-            "replicaSelectionDefault":{"codingAgentId":"K","profile":"A","configurationRef":alpha}}})).unwrap()).unwrap();
+        let config_json = serde_json::json!({"tooling":{"replicaSelectionDefault":{
+            "codingAgentId":"K","profile":"A","configurationRef":alpha
+        }}});
+        std::fs::write(
+            target.join("config.json"),
+            serde_json::to_vec(&config_json).unwrap(),
+        )
+        .unwrap();
         let alpha_capture = capture_source_inventory(
             &fixture.settings,
             &snapshot,
@@ -1502,8 +1514,13 @@ fn single_editor_original_factory_real_matrix_default_group_and_history_no_defau
         );
         std::fs::write(&overlay_path, &overlay_before).unwrap();
         std::fs::write(target.join("config.json"), b"{}").unwrap();
-        std::fs::write(target.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
-            serde_json::to_vec(&serde_json::json!({"tooling":{"sourceReferences":[{"configurationRef":selection}]}})).unwrap()).unwrap();
+        let state_json =
+            serde_json::json!({"tooling":{"sourceReferences":[{"configurationRef":selection}]}});
+        std::fs::write(
+            target.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
+            serde_json::to_vec(&state_json).unwrap(),
+        )
+        .unwrap();
         let history = capture_source_inventory(
             &fixture.settings,
             &snapshot,
@@ -1676,9 +1693,10 @@ fn assert_source_durable_cut(cut: (&'static str, usize)) {
         return;
     }
     let operation = fixture.operation();
-    assert!(
-        matches!(result, Err(SourceTransitionError::Interrupted { operation_id, .. }) if operation_id == operation)
-    );
+    assert!(matches!(
+        result,
+        Err(SourceTransitionError::Interrupted { operation_id, .. }) if operation_id == operation
+    ));
     assert_eq!(original.inventories[&operation].targets.len(), 2);
     let observation =
         get_identity_transition(&fixture.context, &fixture.source, &operation).unwrap();
@@ -2022,8 +2040,14 @@ fn single_editor_registered_source_after_restores_original_groups_two_targets() 
         let mut candidate = registered;
         candidate["codingAgentProfiles"]["profilesByAgent"]["K"]["B"]["command"] =
             serde_json::json!("new-beta");
-        std::fs::write(target.join("config.json"), serde_json::to_vec(&serde_json::json!({"tooling":{
-            "replicaSelectionDefault":{"codingAgentId":"K","profile":"B","configurationRef":selection.clone()}}})).unwrap()).unwrap();
+        let config_json = serde_json::json!({"tooling":{"replicaSelectionDefault":{
+            "codingAgentId":"K","profile":"B","configurationRef":selection.clone()
+        }}});
+        std::fs::write(
+            target.join("config.json"),
+            serde_json::to_vec(&config_json).unwrap(),
+        )
+        .unwrap();
 
         let second = fixture.project.join(".ac/_agent_second");
         std::fs::create_dir(&second).unwrap();
@@ -2838,9 +2862,10 @@ fn single_editor_original_inventory_topology_and_local_fence() {
         &DriverFixture::candidate(),
         &|| Ok(()),
     );
-    assert!(
-        matches!(result, Err(SourceTransitionError::Interrupted { operation_id, .. }) if operation_id == operation)
-    );
+    assert!(matches!(
+        result,
+        Err(SourceTransitionError::Interrupted { operation_id, .. }) if operation_id == operation
+    ));
     assert_eq!(
         read_own_source_journal(&fixture.context).unwrap().1,
         original
