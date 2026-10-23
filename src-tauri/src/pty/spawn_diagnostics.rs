@@ -105,7 +105,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use portable_pty::ExitStatus;
@@ -174,85 +173,6 @@ pub fn is_secret_env_key(key: &str) -> bool {
 /// nothing.
 fn is_redactable_value(value: &str) -> bool {
     !value.trim().is_empty() && !value.chars().all(|c| c.is_ascii_digit())
-}
-
-/// Everything the diagnostics need to be told, resolved once from the environment and
-/// then carried by each record, so no code path (and no test) reads a process-global.
-#[derive(Debug, Clone, Copy)]
-pub struct Thresholds {
-    /// Deadline for the startup report. Zero disables it.
-    pub stall_timeout: Duration,
-    pub paint_floor: u64,
-    pub head_bytes: usize,
-    pub concurrency_window: Duration,
-    pub stop_attribution: Duration,
-    /// How long after a stop request ConPTY's teardown repaint can still arrive. Only
-    /// the startup TIMING stamps are suppressed during it; bytes keep counting, and the
-    /// stall verdict is byte-based, so a stop that fails to kill the child cannot fake a
-    /// stall on a session that is painting normally.
-    pub teardown_suppression: Duration,
-    pub startup_poll: Duration,
-    pub steady_poll: Duration,
-}
-
-impl Thresholds {
-    pub const DEFAULT: Self = Self {
-        stall_timeout: Duration::from_millis(DEFAULT_STALL_TIMEOUT_MS),
-        paint_floor: DEFAULT_PAINT_FLOOR_BYTES,
-        head_bytes: DEFAULT_HEAD_BYTES as usize,
-        concurrency_window: Duration::from_millis(DEFAULT_CONCURRENCY_WINDOW_MS),
-        stop_attribution: Duration::from_millis(DEFAULT_STOP_ATTRIBUTION_MS),
-        teardown_suppression: Duration::from_secs(2),
-        startup_poll: Duration::from_millis(250),
-        steady_poll: Duration::from_secs(2),
-    };
-
-    /// Read once per process. Every value is clamped: a fat-fingered
-    /// `AC_SPAWN_HEAD_BYTES=1000000000` must not buy a 1 GB buffer per session.
-    pub fn from_env() -> Self {
-        static VALUE: OnceLock<Thresholds> = OnceLock::new();
-        *VALUE.get_or_init(|| Thresholds {
-            stall_timeout: Duration::from_millis(env_u64(
-                "AC_SPAWN_STALL_TIMEOUT_MS",
-                DEFAULT_STALL_TIMEOUT_MS,
-                MAX_STALL_TIMEOUT_MS,
-            )),
-            paint_floor: env_u64(
-                "AC_SPAWN_PAINT_FLOOR_BYTES",
-                DEFAULT_PAINT_FLOOR_BYTES,
-                MAX_PAINT_FLOOR_BYTES,
-            ),
-            head_bytes: env_u64("AC_SPAWN_HEAD_BYTES", DEFAULT_HEAD_BYTES, MAX_HEAD_BYTES) as usize,
-            concurrency_window: Duration::from_millis(env_u64(
-                "AC_SPAWN_CONCURRENCY_WINDOW_MS",
-                DEFAULT_CONCURRENCY_WINDOW_MS,
-                MAX_CONCURRENCY_WINDOW_MS,
-            )),
-            stop_attribution: Duration::from_millis(env_u64(
-                "AC_SPAWN_STOP_ATTRIBUTION_MS",
-                DEFAULT_STOP_ATTRIBUTION_MS,
-                MAX_STOP_ATTRIBUTION_MS,
-            )),
-            ..Thresholds::DEFAULT
-        })
-    }
-}
-
-fn env_u64(key: &str, default: u64, max: u64) -> u64 {
-    let Ok(raw) = std::env::var(key) else {
-        return default;
-    };
-    match raw.trim().parse::<u64>() {
-        Ok(value) if value <= max => value,
-        Ok(value) => {
-            log::warn!("[pty] {key}={value} exceeds the {max} ceiling; clamping to {max}");
-            max
-        }
-        Err(_) => {
-            log::warn!("[pty] ignoring non-numeric {key}='{raw}'; using {default}");
-            default
-        }
-    }
 }
 
 /// What AC knows about a child process at the instant we ask.
@@ -981,6 +901,55 @@ impl SpawnRecord {
     }
 }
 
+impl Thresholds {
+    /// Read once per process. Every value is clamped: a fat-fingered
+    /// `AC_SPAWN_HEAD_BYTES=1000000000` must not buy a 1 GB buffer per session.
+    pub fn from_env() -> Self {
+        static VALUE: OnceLock<Thresholds> = OnceLock::new();
+        *VALUE.get_or_init(|| Thresholds {
+            stall_timeout: Duration::from_millis(env_u64(
+                "AC_SPAWN_STALL_TIMEOUT_MS",
+                DEFAULT_STALL_TIMEOUT_MS,
+                MAX_STALL_TIMEOUT_MS,
+            )),
+            paint_floor: env_u64(
+                "AC_SPAWN_PAINT_FLOOR_BYTES",
+                DEFAULT_PAINT_FLOOR_BYTES,
+                MAX_PAINT_FLOOR_BYTES,
+            ),
+            head_bytes: env_u64("AC_SPAWN_HEAD_BYTES", DEFAULT_HEAD_BYTES, MAX_HEAD_BYTES) as usize,
+            concurrency_window: Duration::from_millis(env_u64(
+                "AC_SPAWN_CONCURRENCY_WINDOW_MS",
+                DEFAULT_CONCURRENCY_WINDOW_MS,
+                MAX_CONCURRENCY_WINDOW_MS,
+            )),
+            stop_attribution: Duration::from_millis(env_u64(
+                "AC_SPAWN_STOP_ATTRIBUTION_MS",
+                DEFAULT_STOP_ATTRIBUTION_MS,
+                MAX_STOP_ATTRIBUTION_MS,
+            )),
+            ..Thresholds::DEFAULT
+        })
+    }
+}
+
+fn env_u64(key: &str, default: u64, max: u64) -> u64 {
+    let Ok(raw) = std::env::var(key) else {
+        return default;
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(value) if value <= max => value,
+        Ok(value) => {
+            log::warn!("[pty] {key}={value} exceeds the {max} ceiling; clamping to {max}");
+            max
+        }
+        Err(_) => {
+            log::warn!("[pty] ignoring non-numeric {key}='{raw}'; using {default}");
+            default
+        }
+    }
+}
+
 #[derive(Default)]
 struct Registry {
     records: HashMap<Uuid, Arc<SpawnRecord>>,
@@ -992,150 +961,11 @@ fn registry() -> &'static Mutex<Registry> {
     REGISTRY.get_or_init(|| Mutex::new(Registry::default()))
 }
 
-/// Count the spawns that happened in the window BEFORE this one, then record this
-/// attempt. Call once per spawn, at the top of the spawn path.
-pub fn note_spawn_attempt(cli: Option<CodingAgentKind>, thresholds: Thresholds) -> SpawnWindow {
-    let window = thresholds.concurrency_window;
-    let now = Instant::now();
-    let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
+mod registry;
+mod thresholds;
 
-    while let Some((at, _)) = registry.recent.front() {
-        if now.duration_since(*at) > window {
-            registry.recent.pop_front();
-        } else {
-            break;
-        }
-    }
-
-    let total = registry.recent.len();
-    let same_cli = match cli {
-        Some(kind) => registry
-            .recent
-            .iter()
-            .filter(|(_, recent_cli)| *recent_cli == Some(kind))
-            .count(),
-        None => 0,
-    };
-
-    registry.recent.push_back((now, cli));
-    if registry.recent.len() > RECENT_SPAWNS_CAP {
-        registry.recent.pop_front();
-    }
-
-    SpawnWindow {
-        window_ms: window.as_millis().min(u64::MAX as u128) as u64,
-        total,
-        same_cli,
-    }
-}
-
-/// Register a spawned child and emit its spawn record.
-pub fn register(init: SpawnRecordInit) -> Arc<SpawnRecord> {
-    let record = Arc::new(SpawnRecord::new(init));
-    record.log_spawn();
-    registry()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .records
-        .insert(record.session_id, Arc::clone(&record));
-    record
-}
-
-/// Tag a session's child as stopped by AC (session kill, job terminate,
-/// resource-monitor `kill_group`, shutdown) BEFORE any process is touched, so its exit
-/// can never be misread as a spontaneous death. `pre_stop` is the liveness the caller
-/// observed before touching anything: pass it whenever you have it, it is the only
-/// non-racy witness of "was it already dead when we asked?". No-op for unknown sessions
-/// (container transport, or a session with no local spawn record).
-pub fn mark_ac_stop(
-    session_id: Uuid,
-    source: &str,
-    pre_stop: Option<ChildLiveness>,
-) -> Option<Arc<SpawnRecord>> {
-    let record = registry()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .records
-        .get(&session_id)
-        .cloned()?;
-    record.mark_ac_stop(source, pre_stop);
-    Some(record)
-}
-
-pub fn forget(session_id: Uuid) {
-    registry()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .records
-        .remove(&session_id);
-}
-
-/// #1271 - read the spawn record for one session, when one exists. Test
-/// postcondition seam (Finding E): lets a test assert that a rejected spawn
-/// never recorded launch provenance, and lets the Windows integration
-/// regression read the exact adapted argv and awaited child exit.
-pub fn record_for(session_id: Uuid) -> Option<Arc<SpawnRecord>> {
-    registry()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .records
-        .get(&session_id)
-        .cloned()
-}
-
-/// One monitor thread per local session. It owns two signals the PTY reader cannot
-/// carry: the startup verdict at the deadline, and the exit of a child that dies
-/// without AC asking (ConPTY keeps the pipe open past the death of the child, so reader
-/// EOF is not a reliable witness). It ends when the child exits, when the session is
-/// gone, or when the probe itself panics.
-pub fn watch_child<P>(record: Arc<SpawnRecord>, probe: P) -> JoinHandle<()>
-where
-    P: Fn() -> ChildLiveness + Send + 'static,
-{
-    std::thread::spawn(move || loop {
-        let tick = if record.in_startup_phase() {
-            record.thresholds.startup_poll
-        } else {
-            record.thresholds.steady_poll
-        };
-        std::thread::sleep(tick);
-
-        // Read the stop state BEFORE looking at the child: a stop that lands after this
-        // point cannot be what killed a child the probe is about to find already dead.
-        let stop_before = record.stop_snapshot();
-
-        // portable-pty unwraps its own internals while polling a child. A poisoned
-        // mutex in there must not take this thread down silently.
-        let liveness = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(&probe)) {
-            Ok(liveness) => liveness,
-            Err(_) => {
-                log::warn!(
-                    "[pty] child-probe panicked for session {}; stopping its monitor",
-                    record.session_id()
-                );
-                return;
-            }
-        };
-
-        match liveness {
-            ChildLiveness::Gone => {
-                record.record_final_liveness(&liveness);
-                return;
-            }
-            ChildLiveness::Exited { .. } => {
-                record.record_final_liveness(&liveness);
-                let cause = record.attribute_exit(stop_before);
-                record.log_child_exit(cause, &liveness, "observed-by-monitor");
-                return;
-            }
-            ChildLiveness::Alive | ChildLiveness::Unqueryable(_) => {
-                if record.startup_deadline_reached() {
-                    record.log_startup_report(&liveness);
-                }
-            }
-        }
-    })
-}
+pub use registry::{forget, mark_ac_stop, note_spawn_attempt, record_for, register, watch_child};
+pub use thresholds::Thresholds;
 
 #[cfg(test)]
 mod tests;
