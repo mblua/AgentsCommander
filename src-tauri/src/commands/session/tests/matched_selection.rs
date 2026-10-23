@@ -611,7 +611,8 @@ fn an_empty_current_coding_agent_is_absent_even_with_a_stored_agent() {
     assert!(
         matches!(
             selection,
-            super::super::MatchedSelection::Agent { ref agent_id, tier: None, .. } if agent_id == "codex"
+            super::super::MatchedSelection::Agent { ref agent_id, tier: None, .. }
+                if agent_id == "codex"
         ),
         "{selection:?}"
     );
