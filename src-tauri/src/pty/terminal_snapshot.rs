@@ -57,8 +57,11 @@ type TerminalSnapshotTestHook = Box<dyn FnOnce() + Send + 'static>;
 type TerminalSnapshotResponsePublicationHook = Box<dyn FnOnce(&Path, &Path) + Send + 'static>;
 
 #[cfg(all(test, unix))]
+use crate::path_identity::UnixTrackedCleanupStage;
+
+#[cfg(all(test, unix))]
 type TerminalSnapshotUnixCleanupHook =
-    Box<dyn FnMut(crate::path_identity::UnixTrackedCleanupStage, &Path, &Path) + Send + 'static>;
+    Box<dyn FnMut(UnixTrackedCleanupStage, &Path, &Path) + Send + 'static>;
 
 #[cfg(all(test, unix))]
 struct TerminalSnapshotUnixCleanupControl {
@@ -1164,7 +1167,7 @@ impl TerminalSnapshotState {
     pub(crate) fn install_unix_cleanup_hook(
         &self,
         claim_leaf: Option<std::ffi::OsString>,
-        hook: impl FnMut(crate::path_identity::UnixTrackedCleanupStage, &Path, &Path) + Send + 'static,
+        hook: impl FnMut(UnixTrackedCleanupStage, &Path, &Path) + Send + 'static,
     ) {
         self.test_state
             .unix_cleanup_controls
@@ -1340,12 +1343,16 @@ impl TerminalSnapshotState {
                     biased;
                     _ = state.shutdown.token().cancelled() => {
                         let cleanup = Arc::clone(&state);
-                        let _ = tokio::task::spawn_blocking(move || cleanup.sweep_artifacts(true)).await;
+                        let _ =
+                            tokio::task::spawn_blocking(move || cleanup.sweep_artifacts(true))
+                                .await;
                         break;
                     }
                     _ = tokio::time::sleep(Duration::from_secs(5)) => {
                         let cleanup = Arc::clone(&state);
-                        let _ = tokio::task::spawn_blocking(move || cleanup.sweep_artifacts(false)).await;
+                        let _ =
+                            tokio::task::spawn_blocking(move || cleanup.sweep_artifacts(false))
+                                .await;
                     }
                 }
             }

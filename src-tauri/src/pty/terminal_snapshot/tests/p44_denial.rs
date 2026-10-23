@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::settings::read_terminal_snapshot_security_settings_strict_offloaded;
 
 const P44_CANARY: &str = "P44_SCREEN_CANARY";
 
@@ -118,8 +119,15 @@ impl P44Fixture {
         let collection = temporary.path().join("projects");
         let ac = collection.join("p44-project/.ac");
         std::fs::create_dir_all(ac.join("_team_p44-team")).unwrap();
-        std::fs::write(ac.join("_team_p44-team/config.json"),
-            br#"{"agents":["../_agent_worker","../_agent_coordinator"],"coordinator":"../_agent_coordinator"}"#).unwrap();
+        std::fs::write(
+            ac.join("_team_p44-team/config.json"),
+            concat!(
+                r#"{"agents":["../_agent_worker","../_agent_coordinator"],"#,
+                r#""coordinator":"../_agent_coordinator"}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap();
         let mut roots = Vec::new();
         for name in ["coordinator", "worker"] {
             std::fs::create_dir_all(ac.join(format!("_agent_{name}"))).unwrap();
@@ -301,7 +309,12 @@ impl P44Fixture {
                         .unwrap()
                         .terminal_snapshots_enabled
                 );
-                assert!(crate::config::settings::read_terminal_snapshot_security_settings_strict_offloaded().await.unwrap().terminal_snapshots_enabled);
+                assert!(
+                    read_terminal_snapshot_security_settings_strict_offloaded()
+                        .await
+                        .unwrap()
+                        .terminal_snapshots_enabled
+                );
                 let report = self
                     .context
                     .settings
@@ -329,7 +342,12 @@ impl P44Fixture {
                         SettingsAvailability::Invalid
                     ))
                 ));
-                assert!(crate::config::settings::read_terminal_snapshot_security_settings_strict_offloaded().await.unwrap().terminal_snapshots_enabled);
+                assert!(
+                    read_terminal_snapshot_security_settings_strict_offloaded()
+                        .await
+                        .unwrap()
+                        .terminal_snapshots_enabled
+                );
             }
             "physical" => {
                 let mut value: serde_json::Value =
@@ -348,7 +366,12 @@ impl P44Fixture {
                         .unwrap()
                         .terminal_snapshots_enabled
                 );
-                assert!(!crate::config::settings::read_terminal_snapshot_security_settings_strict_offloaded().await.unwrap().terminal_snapshots_enabled);
+                assert!(
+                    !read_terminal_snapshot_security_settings_strict_offloaded()
+                        .await
+                        .unwrap()
+                        .terminal_snapshots_enabled
+                );
             }
             _ => panic!("unknown P44 change"),
         }
@@ -557,9 +580,10 @@ fn service_request_selector_and_prepared_payload_debug_are_structural_only() {
     let api_selector = TerminalSnapshotRequesterSelector::ApiSession(request_id);
 
     let mut model: TerminalScreenModel = terminal_snapshot_renderer::decode_bounded(
-        include_bytes!(
-            "../../../../../crates/terminal-snapshot-renderer/tests/fixtures/blank-cursor-model.json"
-        ),
+        include_bytes!(concat!(
+            "../../../../../crates/terminal-snapshot-renderer/",
+            "tests/fixtures/blank-cursor-model.json"
+        )),
         terminal_snapshot_renderer::MAX_JSON_BYTES,
     )
     .unwrap();
@@ -571,9 +595,10 @@ fn service_request_selector_and_prepared_payload_debug_are_structural_only() {
         model: Arc::new(model),
     };
     let png_model: TerminalScreenModel = terminal_snapshot_renderer::decode_bounded(
-        include_bytes!(
-            "../../../../../crates/terminal-snapshot-renderer/tests/fixtures/blank-cursor-model.json"
-        ),
+        include_bytes!(concat!(
+            "../../../../../crates/terminal-snapshot-renderer/",
+            "tests/fixtures/blank-cursor-model.json"
+        )),
         terminal_snapshot_renderer::MAX_JSON_BYTES,
     )
     .unwrap();
