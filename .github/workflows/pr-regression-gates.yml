@@ -275,7 +275,7 @@ jobs:
 
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test --locked --lib --bins --tests
+        run: cargo test --locked --lib --bins --tests --no-fail-fast
         # The path-identity reparse test uses simulated flags; real Windows
         # reparse metadata and no-follow integration are outside its coverage.
 
