@@ -244,8 +244,16 @@ fn register_new_project_with_store(
                     Err(rollback_error) => {
                         *settings = token.fresh_settings().clone();
                         settings.project_paths_persistence_error = Some(rollback_error.clone());
-                        return Err(ProjectError::ProjectSetupChanged(prepared.abs.clone(),
-                            format!("{error}; failed to roll back project registration settings: {rollback_error}")));
+                        return Err(ProjectError::ProjectSetupChanged(
+                            prepared.abs.clone(),
+                            format!(
+                                concat!(
+                                    "{}; failed to roll back project ",
+                                    "registration settings: {}"
+                                ),
+                                error, rollback_error
+                            ),
+                        ));
                     }
                 }
             }
@@ -377,8 +385,12 @@ where
         // fail registration of a valid project.
         if let Err(e) = crate::commands::ac_discovery::ensure_ac_root_gitignore(&ac_root) {
             log::warn!(
-                "[projects] gitignore sweep failed on pre-existing Project AC Root at {:?}: {} (best-effort, continuing)",
-                ac_root, e
+                concat!(
+                    "[projects] gitignore sweep failed on pre-existing ",
+                    "Project AC Root at {:?}: {} (best-effort, continuing)",
+                ),
+                ac_root,
+                e
             );
         }
     }
