@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::coding_agent_profiles::SelectionWriteIntent;
 
 fn selection_lock_web_fixture(
     locked: bool,
@@ -491,7 +492,7 @@ async fn issue_1937_transport_parity_assignment_preview_queues_behind_the_turn()
                         coding_agent_id: "codex".to_string(),
                         requested_profile: "B".to_string(),
                     },
-                    crate::config::coding_agent_profiles::SelectionWriteIntent::IndividualAssignLock,
+                    SelectionWriteIntent::IndividualAssignLock,
                     &expected,
                 )
                 .expect("publish the lock");

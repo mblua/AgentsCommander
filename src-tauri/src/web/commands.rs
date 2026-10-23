@@ -320,11 +320,23 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
     match cmd {
         "task_get_snapshot" => {
             let id = require_str(args, "sessionId")?;
-            crate::commands::ac_discovery::task_snapshot_inner(&state.session_mgr, &state.settings, Some(&id), None).await
+            crate::commands::ac_discovery::task_snapshot_inner(
+                &state.session_mgr,
+                &state.settings,
+                Some(&id),
+                None,
+            )
+            .await
         }
         "task_get_snapshot_at" => {
             let root = require_str(args, "workgroupRoot")?;
-            crate::commands::ac_discovery::task_snapshot_inner(&state.session_mgr, &state.settings, None, Some(&root)).await
+            crate::commands::ac_discovery::task_snapshot_inner(
+                &state.session_mgr,
+                &state.settings,
+                None,
+                Some(&root),
+            )
+            .await
         }
         // --- Session commands ---
         "list_sessions" => {
@@ -571,26 +583,64 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             serde_json::to_value(crate::commands::config::get_agent_help())
                 .map_err(|e| e.to_string())?,
         ),
-        "list_agent_file_sources" => {
-            serde_json::to_value(crate::commands::config::list_agent_file_sources_inner(&state.settings).await?).map_err(|e| e.to_string())
-        }
+        "list_agent_file_sources" => serde_json::to_value(
+            crate::commands::config::list_agent_file_sources_inner(&state.settings).await?,
+        )
+        .map_err(|e| e.to_string()),
         "read_agent_file_source" => {
-            let source = serde_json::from_value(args.get("source").cloned().ok_or("missing source")?).map_err(|e| e.to_string())?;
-            serde_json::to_value(crate::commands::config::read_agent_file_source_inner(&state.settings, source).await?).map_err(|e| e.to_string())
+            let source =
+                serde_json::from_value(args.get("source").cloned().ok_or("missing source")?)
+                    .map_err(|e| e.to_string())?;
+            serde_json::to_value(
+                crate::commands::config::read_agent_file_source_inner(&state.settings, source)
+                    .await?,
+            )
+            .map_err(|e| e.to_string())
         }
         "save_agent_file_source" => {
-            let source = serde_json::from_value(args.get("source").cloned().ok_or("missing source")?).map_err(|e| e.to_string())?;
-            let expected = serde_json::from_value(args.get("expectedRevision").cloned().ok_or("missing expectedRevision")?).map_err(|e| e.to_string())?;
-            let context = args.get("contextRevision").and_then(Value::as_str).ok_or("missing contextRevision")?.to_owned();
-            let edits = serde_json::from_value(args.get("edits").cloned().ok_or("missing edits")?).map_err(|e| e.to_string())?;
-            let reply = crate::commands::config::save_agent_file_source_inner(&state.settings, source, expected, context, edits).await?;
+            let source =
+                serde_json::from_value(args.get("source").cloned().ok_or("missing source")?)
+                    .map_err(|e| e.to_string())?;
+            let expected = serde_json::from_value(
+                args.get("expectedRevision")
+                    .cloned()
+                    .ok_or("missing expectedRevision")?,
+            )
+            .map_err(|e| e.to_string())?;
+            let context = args
+                .get("contextRevision")
+                .and_then(Value::as_str)
+                .ok_or("missing contextRevision")?
+                .to_owned();
+            let edits =
+                serde_json::from_value(args.get("edits").cloned().ok_or("missing edits")?)
+                    .map_err(|e| e.to_string())?;
+            let reply = crate::commands::config::save_agent_file_source_inner(
+                &state.settings,
+                source,
+                expected,
+                context,
+                edits,
+            )
+            .await?;
             crate::commands::config::emit_agent_file_save_events(&state.app_handle, &reply);
             serde_json::to_value(reply).map_err(|e| e.to_string())
         }
         "remember_agent_file_source" => {
-            let menu = serde_json::from_value(args.get("menu").cloned().ok_or("missing menu")?).map_err(|e| e.to_string())?;
-            let source = serde_json::from_value(args.get("source").cloned().ok_or("missing source")?).map_err(|e| e.to_string())?;
-            serde_json::to_value(crate::commands::config::remember_agent_file_source_inner(&state.settings, menu, source).await?).map_err(|e| e.to_string())
+            let menu = serde_json::from_value(args.get("menu").cloned().ok_or("missing menu")?)
+                .map_err(|e| e.to_string())?;
+            let source =
+                serde_json::from_value(args.get("source").cloned().ok_or("missing source")?)
+                    .map_err(|e| e.to_string())?;
+            serde_json::to_value(
+                crate::commands::config::remember_agent_file_source_inner(
+                    &state.settings,
+                    menu,
+                    source,
+                )
+                .await?,
+            )
+            .map_err(|e| e.to_string())
         }
 
         "get_settings" => {
@@ -607,17 +657,25 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 serde_json::from_value(args.get("newSettings").cloned().unwrap_or(args.clone()))
                     .map_err(|e| e.to_string())?;
 
-            let tracker = state.app_handle.try_state::<crate::pty::manager::ResponseCloseState>().map(|state| state.inner().clone());
-            let (saved, changed) = crate::commands::config::persist_protected_settings_update_with_publication(
-                &state.settings,
-                new_settings,
-                |written| {
-                    if let Some(tracker) = &tracker {
-                        tracker.apply_settings(written.response_close_enabled, written.response_close_idle_seconds, std::time::Instant::now());
-                    }
-                },
-            )
-            .await?;
+            let tracker = state
+                .app_handle
+                .try_state::<crate::pty::manager::ResponseCloseState>()
+                .map(|state| state.inner().clone());
+            let (saved, changed) =
+                crate::commands::config::persist_protected_settings_update_with_publication(
+                    &state.settings,
+                    new_settings,
+                    |written| {
+                        if let Some(tracker) = &tracker {
+                            tracker.apply_settings(
+                                written.response_close_enabled,
+                                written.response_close_idle_seconds,
+                                std::time::Instant::now(),
+                            );
+                        }
+                    },
+                )
+                .await?;
             if changed {
                 broadcast_all(
                     &state.app_handle,
@@ -636,13 +694,25 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 serde_json::from_value(args.get("draft").cloned().unwrap_or(args.clone()))
                     .map_err(|e| e.to_string())?;
 
-            let tracker = state.app_handle.try_state::<crate::pty::manager::ResponseCloseState>().map(|state| state.inner().clone());
+            let tracker = state
+                .app_handle
+                .try_state::<crate::pty::manager::ResponseCloseState>()
+                .map(|state| state.inner().clone());
             let (saved, events) =
-                crate::commands::config::persist_settings_draft_update_with_publication(&state.settings, draft, |written| {
-                    if let Some(tracker) = &tracker {
-                        tracker.apply_settings(written.response_close_enabled, written.response_close_idle_seconds, std::time::Instant::now());
-                    }
-                }).await?;
+                crate::commands::config::persist_settings_draft_update_with_publication(
+                    &state.settings,
+                    draft,
+                    |written| {
+                        if let Some(tracker) = &tracker {
+                            tracker.apply_settings(
+                                written.response_close_enabled,
+                                written.response_close_idle_seconds,
+                                std::time::Instant::now(),
+                            );
+                        }
+                    },
+                )
+                .await?;
             if events.room_idle_confirmation_changed {
                 broadcast_all(
                     &state.app_handle,
@@ -675,14 +745,21 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         "set_terminal_snapshots_enabled" => {
             let expected: bool = require_json(args, "expected")?;
             let enabled: bool = require_json(args, "enabled")?;
-            let tracker = state.app_handle.try_state::<crate::pty::manager::ResponseCloseState>().map(|state| state.inner().clone());
+            let tracker = state
+                .app_handle
+                .try_state::<crate::pty::manager::ResponseCloseState>()
+                .map(|state| state.inner().clone());
             crate::commands::config::set_terminal_snapshots_enabled_with_publication(
                 &state.settings,
                 expected,
                 enabled,
                 |written| {
                     if let Some(tracker) = &tracker {
-                        tracker.apply_settings(written.response_close_enabled, written.response_close_idle_seconds, std::time::Instant::now());
+                        tracker.apply_settings(
+                            written.response_close_enabled,
+                            written.response_close_idle_seconds,
+                            std::time::Instant::now(),
+                        );
                     }
                 },
             )
@@ -828,15 +905,19 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             // without canceling the mutation) instead of observing half-settled
             // state.
             let state = state.clone();
-            crate::session::selection::run_owned_selection_read_timed("preview_coding_agent_profile_selection", move || async move {
-                let result = crate::commands::config::preview_coding_agent_profile_selection_inner(
-                    &state.session_mgr,
-                    &state.settings,
-                    request,
-                )
-                .await?;
-                serde_json::to_value(result).map_err(|e| e.to_string())
-            })
+            crate::session::selection::run_owned_selection_read_timed(
+                "preview_coding_agent_profile_selection",
+                move || async move {
+                    let result =
+                        crate::commands::config::preview_coding_agent_profile_selection_inner(
+                            &state.session_mgr,
+                            &state.settings,
+                            request,
+                        )
+                        .await?;
+                    serde_json::to_value(result).map_err(|e| e.to_string())
+                },
+            )
             .await
         }
 
@@ -875,15 +956,18 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let request: crate::commands::config::PreviewSelectionLockRemovalRequest =
                 require_json(args, "request")?;
             let state = state.clone();
-            crate::session::selection::run_owned_selection_read_timed("preview_selection_lock_removal", move || async move {
-                let result = crate::commands::config::preview_selection_lock_removal_inner(
-                    &state.session_mgr,
-                    &state.settings,
-                    request,
-                )
-                .await?;
-                serde_json::to_value(result).map_err(|e| e.to_string())
-            })
+            crate::session::selection::run_owned_selection_read_timed(
+                "preview_selection_lock_removal",
+                move || async move {
+                    let result = crate::commands::config::preview_selection_lock_removal_inner(
+                        &state.session_mgr,
+                        &state.settings,
+                        request,
+                    )
+                    .await?;
+                    serde_json::to_value(result).map_err(|e| e.to_string())
+                },
+            )
             .await
         }
 
@@ -913,14 +997,17 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let request: crate::commands::config::GetReplicaSelectionDefaultRequest =
                 require_json(args, "request")?;
             let state = state.clone();
-            crate::session::selection::run_owned_selection_read_timed("get_replica_selection_default", move || async move {
-                let result = crate::commands::config::get_replica_selection_default_inner(
-                    &state.settings,
-                    request,
-                )
-                .await?;
-                serde_json::to_value(result).map_err(|e| e.to_string())
-            })
+            crate::session::selection::run_owned_selection_read_timed(
+                "get_replica_selection_default",
+                move || async move {
+                    let result = crate::commands::config::get_replica_selection_default_inner(
+                        &state.settings,
+                        request,
+                    )
+                    .await?;
+                    serde_json::to_value(result).map_err(|e| e.to_string())
+                },
+            )
             .await
         }
 

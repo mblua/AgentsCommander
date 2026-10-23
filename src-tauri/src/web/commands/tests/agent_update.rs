@@ -620,7 +620,10 @@ async fn agent_update_cancel_transport_parity() {
     assert_eq!(desktop_bytes, web_bytes);
     assert_eq!(
         std::str::from_utf8(&desktop_bytes).expect("desktop batch response utf8"),
-        r#"{"alreadyRequested":[],"alreadyTerminal":[],"requested":[{"command":"claude","label":"Claude"},{"command":"codex","label":"Codex"}]}"#
+        concat!(
+            r#"{"alreadyRequested":[],"alreadyTerminal":[],"requested":[{"command":"claude","#,
+            r#""label":"Claude"},{"command":"codex","label":"Codex"}]}"#,
+        )
     );
     assert_eq!(web_response["requested"][0]["command"], "claude");
     assert_eq!(web_response["requested"][1]["command"], "codex");
@@ -695,7 +698,21 @@ async fn e2432_p02_browser_routes_share_physical_source_flow() {
         .await
         .unwrap();
     assert!(snapshot["tickets"]["own"]["default"]["ref"]["requestedProfile"].is_null());
-    let reply = dispatch_inner(&state, "save_agent_file_source", &json!({"source":source,"expectedRevision":snapshot["revision"],"contextRevision":snapshot["contextRevision"],"edits":{"rows":[{"entryHint":"own","action":"upsert","patch":{"label":"Edited"}}],"profileSets":[]}})).await.unwrap();
+    let reply = dispatch_inner(
+        &state,
+        "save_agent_file_source",
+        &json!({
+            "source": source,
+            "expectedRevision": snapshot["revision"],
+            "contextRevision": snapshot["contextRevision"],
+            "edits": {
+                "rows": [{"entryHint": "own", "action": "upsert", "patch": {"label": "Edited"}}],
+                "profileSets": []
+            }
+        }),
+    )
+    .await
+    .unwrap();
     assert_eq!(reply["outcome"], json!("committed"));
     assert_eq!(
         reply["snapshot"]["rows"][0]["raw"]["label"],
@@ -727,14 +744,28 @@ async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
         ..AppSettings::default()
     };
     std::fs::write(&path, serde_json::to_vec(&initial).unwrap()).unwrap();
-    std::fs::write(temp.path().join(AGENTS_INSTANCE_FILE_NAME), br#"{"agents":[{"id":"registered","label":"Registered","color":"red","baseCommand":"tool"}]}"#).unwrap();
+    std::fs::write(
+        temp.path().join(AGENTS_INSTANCE_FILE_NAME),
+        concat!(
+            r#"{"agents":[{"id":"registered","label":"Registered","color":"red","#,
+            r#""baseCommand":"tool"}]}"#,
+        ),
+    )
+    .unwrap();
     let catalog = crate::config::coding_agents_catalog::independent_catalog_path(
         &project.join(".ac"),
         SourceKind::CatalogPersonal,
     )
     .unwrap();
     std::fs::create_dir_all(catalog.parent().unwrap()).unwrap();
-    std::fs::write(&catalog, br#"{"schemaVersion":1,"agents":[{"key":"own","label":"Original","color":"blue","baseCommand":"catalog-tool"}]}"#).unwrap();
+    std::fs::write(
+        &catalog,
+        concat!(
+            r#"{"schemaVersion":1,"agents":[{"key":"own","label":"Original","color":"blue","#,
+            r#""baseCommand":"catalog-tool"}]}"#,
+        ),
+    )
+    .unwrap();
     let (mut state, mut ws) = ws_state_for(initial);
     state.settings = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
     assert!(state.app_handle.manage(state.broadcaster.clone()));
@@ -765,7 +796,21 @@ async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
         .unwrap();
     let epoch = state.settings.identity().epoch;
     let ram = serde_json::to_value(state.settings.current_snapshot().await.unwrap()).unwrap();
-    let reply = dispatch_inner(&state, "save_agent_file_source", &json!({"source":source,"expectedRevision":before["revision"],"contextRevision":before["contextRevision"],"edits":{"rows":[{"entryHint":"own","action":"upsert","patch":{"label":"Edited"}}],"profileSets":[]}})).await.unwrap();
+    let reply = dispatch_inner(
+        &state,
+        "save_agent_file_source",
+        &json!({
+            "source": source,
+            "expectedRevision": before["revision"],
+            "contextRevision": before["contextRevision"],
+            "edits": {
+                "rows": [{"entryHint": "own", "action": "upsert", "patch": {"label": "Edited"}}],
+                "profileSets": []
+            }
+        }),
+    )
+    .await
+    .unwrap();
     assert_eq!(reply["outcome"], json!("committed"));
     assert!(reply["diagnostics"]
         .as_array()
@@ -786,7 +831,18 @@ async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
         ws.try_recv(),
         Err(tokio::sync::mpsc::error::TryRecvError::Empty)
     ));
-    let stale = dispatch_inner(&state, "save_agent_file_source", &json!({"source":source,"expectedRevision":before["revision"],"contextRevision":before["contextRevision"],"edits":{"rows":[],"profileSets":[]}})).await.unwrap();
+    let stale = dispatch_inner(
+        &state,
+        "save_agent_file_source",
+        &json!({
+            "source": source,
+            "expectedRevision": before["revision"],
+            "contextRevision": before["contextRevision"],
+            "edits": {"rows": [], "profileSets": []}
+        }),
+    )
+    .await
+    .unwrap();
     assert_eq!(stale["outcome"], json!("rejected"));
     assert!(events.recv_timeout(Duration::from_millis(50)).is_err());
     assert!(matches!(
@@ -803,7 +859,25 @@ async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
             .open(&catalog)
             .unwrap();
-        let uncertain = dispatch_inner(&state, "save_agent_file_source", &json!({"source":source,"expectedRevision":fresh["revision"],"contextRevision":fresh["contextRevision"],"edits":{"rows":[{"entryHint":"own","action":"upsert","patch":{"label":"Uncertain"}}],"profileSets":[]}})).await.unwrap();
+        let uncertain = dispatch_inner(
+            &state,
+            "save_agent_file_source",
+            &json!({
+                "source": source,
+                "expectedRevision": fresh["revision"],
+                "contextRevision": fresh["contextRevision"],
+                "edits": {
+                    "rows": [{
+                        "entryHint": "own",
+                        "action": "upsert",
+                        "patch": {"label": "Uncertain"}
+                    }],
+                    "profileSets": []
+                }
+            }),
+        )
+        .await
+        .unwrap();
         assert_eq!(uncertain["outcome"], json!("partialOrUnknown"));
         assert_eq!(uncertain["snapshot"]["revision"], fresh["revision"]);
         assert_eq!(std::fs::read(&catalog).unwrap(), bytes);
@@ -831,7 +905,25 @@ async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
     )
     .await
     .unwrap();
-    let adopted = dispatch_inner(&state, "save_agent_file_source", &json!({"source":registered,"expectedRevision":snapshot["revision"],"contextRevision":snapshot["contextRevision"],"edits":{"rows":[{"entryHint":"registered","action":"upsert","patch":{"label":"Adopted"}}],"profileSets":[]}})).await.unwrap();
+    let adopted = dispatch_inner(
+        &state,
+        "save_agent_file_source",
+        &json!({
+            "source": registered,
+            "expectedRevision": snapshot["revision"],
+            "contextRevision": snapshot["contextRevision"],
+            "edits": {
+                "rows": [{
+                    "entryHint": "registered",
+                    "action": "upsert",
+                    "patch": {"label": "Adopted"}
+                }],
+                "profileSets": []
+            }
+        }),
+    )
+    .await
+    .unwrap();
     assert_eq!(adopted["outcome"], json!("committed"));
     assert!(state.settings.identity().epoch > epoch);
     for expected in [
