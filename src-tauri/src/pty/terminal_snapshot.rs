@@ -18,8 +18,6 @@ use crate::session::manager::TerminalSnapshotSessionFact;
 use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
 use artifacts::ArtifactRegistry;
 pub(crate) use artifacts::TerminalSnapshotArtifactCleanupOutcome;
-#[cfg(unix)]
-use artifacts::UnixArtifactOperation;
 pub(crate) use audit::TerminalSnapshotAuditGuard;
 #[cfg(test)]
 use authority::status_rank;
@@ -61,7 +59,7 @@ pub(crate) use test_support::{
 #[cfg(test)]
 use test_support::{TerminalSnapshotTestState, TerminalSnapshotTestTaskOutput};
 #[cfg(all(test, unix))]
-use test_support::{TerminalSnapshotUnixCleanupControl, TerminalSnapshotUnixCleanupHook};
+use test_support::TerminalSnapshotUnixCleanupControl;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
