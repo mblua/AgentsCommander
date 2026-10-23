@@ -4,7 +4,10 @@ use super::*;
 /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
 #[rustfmt::skip]
 const C4_SEEDED_STATE: &str =
-    r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
+    concat!(r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"#,
+        r#""lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"#,
+            r#""keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","#,
+                r#""profileContentHash"]}}"#);
 
 /// C4 (#2470): the state file beside a tracked `config.json`.
 fn c4_state_path(tracked: &std::path::Path) -> std::path::PathBuf {

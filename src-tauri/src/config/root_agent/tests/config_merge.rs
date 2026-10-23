@@ -64,7 +64,10 @@ fn merge_root_agent_config_migrates_old_default_context() {
     let config_path = temp.path().join("config.json");
     std::fs::write(
         &config_path,
-        r#"{"tooling":{"lastCodingAgent":"codex"},"context":["$AGENTSCOMMANDER_CONTEXT","Role.md"]}"#,
+        concat!(
+            r#"{"tooling":{"lastCodingAgent":"codex"},"context":["$AGENTSCOMMANDER_CONTEXT","#,
+            r#""Role.md"]}"#
+        ),
     )
     .expect("write config");
 
@@ -139,7 +142,8 @@ fn merge_root_agent_config_migration_table() {
         ),
         (
             "pre-979 default",
-            serde_json::json!({"context":[token,"../Context.root-agent.md","Role.md"],"unknown":{"keep":true}}),
+            serde_json::json!({"context":[token,"../\
+                Context.root-agent.md","Role.md"],"unknown":{"keep":true}}),
             default_context.clone(),
         ),
         (
@@ -164,12 +168,18 @@ fn merge_root_agent_config_migration_table() {
         ),
         (
             "repeated token",
-            serde_json::json!({"context":[token,"a.md",token,"b.md",token],"unknown":{"keep":true}}),
+            serde_json::json!({
+                "context": [token, "a.md", token, "b.md", token],
+                "unknown": {"keep": true}
+            }),
             serde_json::json!(["a.md", "b.md"]),
         ),
         (
             "non-string values interleaved",
-            serde_json::json!({"context":["a.md",42,token,Value::Null,{"o":1},"b.md"],"unknown":{"keep":true}}),
+            serde_json::json!({
+                "context": ["a.md", 42, token, Value::Null, {"o": 1}, "b.md"],
+                "unknown": {"keep": true}
+            }),
             serde_json::json!(["a.md",42,Value::Null,{"o":1},"b.md"]),
         ),
         (
@@ -179,7 +189,14 @@ fn merge_root_agent_config_migration_table() {
         ),
         (
             "near-token strings stay custom entries",
-            serde_json::json!({"context":["$AGENTSCOMMANDER_CONTEXT ","$agentscommander_context","Role.md"],"unknown":{"keep":true}}),
+            serde_json::json!({
+                "context": [
+                    "$AGENTSCOMMANDER_CONTEXT ",
+                    "$agentscommander_context",
+                    "Role.md"
+                ],
+                "unknown": {"keep": true}
+            }),
             serde_json::json!([
                 "$AGENTSCOMMANDER_CONTEXT ",
                 "$agentscommander_context",
