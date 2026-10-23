@@ -69,6 +69,8 @@ agentscommander_lib::agent_update::updater -> agentscommander_lib::config::agent
 agentscommander_lib::agent_update::updater -> agentscommander_lib::pty::job
 agentscommander_lib::agent_version -> agentscommander_lib::config::agent_path
 agentscommander_lib::agent_version -> agentscommander_lib::pty::job
+agentscommander_lib::agent_version::process_owner -> agentscommander_lib::agent_version
+agentscommander_lib::agent_version::process_owner -> agentscommander_lib::pty::job
 agentscommander_lib::api -> agentscommander_lib::config::settings
 agentscommander_lib::api -> agentscommander_lib::phone::types
 agentscommander_lib::api -> agentscommander_lib::pty::manager
