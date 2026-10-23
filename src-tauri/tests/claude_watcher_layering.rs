@@ -94,6 +94,7 @@ impl fmt::Debug for ModuleBody {
 struct ModuleIndex {
     bodies: Vec<ModuleBody>,
     declared_modules: BTreeSet<String>,
+    test_only_sources: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -317,6 +318,7 @@ impl ModuleTreeBuilder {
             index: ModuleIndex {
                 bodies: Vec::new(),
                 declared_modules: BTreeSet::new(),
+                test_only_sources: BTreeSet::new(),
             },
             out_of_line_owners: BTreeMap::new(),
             active_sources: Vec::new(),
@@ -507,6 +509,13 @@ impl ModuleTreeBuilder {
                 continue;
             };
             if is_exact_cfg_test(module) {
+                // Not indexed, but a `#[cfg(test)] mod x;` file is still declared.
+                if module.content.is_none() {
+                    for source in self.out_of_line_sources(&body, module)? {
+                        let relative = render_relative(&self.manifest_root, &source)?;
+                        self.index.test_only_sources.insert(relative);
+                    }
+                }
                 continue;
             }
             let name = unraw(&module.ident);
@@ -2661,6 +2670,7 @@ fn production_every_telegram_source_is_reachable_from_the_module_tree() {
         .bodies
         .iter()
         .map(|body| body.relative_source.clone())
+        .chain(index.test_only_sources.iter().cloned())
         .collect::<BTreeSet<_>>();
 
     let mut on_disk = BTreeSet::new();
