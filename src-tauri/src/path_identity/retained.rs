@@ -1,5 +1,6 @@
 use super::handle_identity;
 use super::is_link_or_reparse;
+#[cfg(windows)]
 use super::regular::publish_new_file_atomic;
 #[cfg(windows)]
 use super::regular::remove_windows_regular_file_by_handle;
@@ -9,7 +10,9 @@ use super::snapshot;
 #[cfg(all(unix, test))]
 use super::unix_child_open_error_is_absent;
 use super::verify_directory;
+#[cfg(not(unix))]
 use super::verify_opened_regular_file;
+#[cfg(not(unix))]
 use super::verify_regular_file;
 use super::RetainedDirectory;
 #[cfg(unix)]
@@ -546,7 +549,10 @@ impl RetainedDirectory {
     }
 
     #[cfg(unix)]
-    fn checked_unix_child_name<'a>(&self, path: &'a Path) -> Result<&'a std::ffi::OsStr, String> {
+    pub(super) fn checked_unix_child_name<'a>(
+        &self,
+        path: &'a Path,
+    ) -> Result<&'a std::ffi::OsStr, String> {
         let parent = path.parent().ok_or_else(|| "unsafe_path".to_string())?;
         let retained_parent = if parent == self.retained_path {
             self.retained_path.as_path()
