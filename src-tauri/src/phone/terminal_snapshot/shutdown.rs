@@ -1,4 +1,4 @@
-use super::process::record_host_ingress_failure;
+use super::failure::record_host_ingress_failure;
 use std::collections::HashMap;
 use terminal_snapshot_renderer::TerminalSnapshotReasonCode;
 use uuid::Uuid;

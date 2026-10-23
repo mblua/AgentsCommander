@@ -1,7 +1,8 @@
+use super::failure::record_host_ingress_failure;
 use super::process::process_claimed;
-use super::process::record_host_ingress_failure;
 use super::publish::cleanup_tracked_artifact;
 use super::publish::protocol_cleanup_name;
+use super::publish::protocol_request_name;
 use super::publish::safe_remove;
 use super::publish::sweep_directory;
 use super::shutdown::ScannerTaskCleanup;
@@ -420,10 +421,4 @@ fn private_regular_file_mode(path: &Path) -> bool {
         let _ = path;
         true
     }
-}
-
-pub(super) fn protocol_request_name(name: &str) -> Option<&str> {
-    let id = name.strip_suffix(".json")?;
-    terminal_snapshot_renderer::validate_uuid(id, Some(4)).ok()?;
-    Some(id)
 }

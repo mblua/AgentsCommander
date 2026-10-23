@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+mod failure;
 mod process;
 mod publish;
 mod request;
@@ -7,7 +8,7 @@ mod scanner;
 mod shutdown;
 
 #[cfg(test)]
-use process::publish_trusted_failure;
+use failure::publish_trusted_failure;
 #[cfg(test)]
 use publish::{path_is_absent, protocol_cleanup_name, publish_response_bytes, safe_remove};
 pub(crate) use request::confirmation_tag;

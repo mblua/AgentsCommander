@@ -1,4 +1,3 @@
-use super::scanner::protocol_request_name;
 use super::MAX_DIRECTORY_ENTRIES;
 use super::RESPONSE_TTL;
 use crate::pty::terminal_snapshot::TerminalSnapshotArtifactCleanupOutcome;
@@ -370,4 +369,10 @@ pub(super) fn protocol_cleanup_name(name: &str, response_directory: bool) -> boo
         };
     }
     false
+}
+
+pub(super) fn protocol_request_name(name: &str) -> Option<&str> {
+    let id = name.strip_suffix(".json")?;
+    terminal_snapshot_renderer::validate_uuid(id, Some(4)).ok()?;
+    Some(id)
 }
