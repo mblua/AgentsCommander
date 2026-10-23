@@ -106,11 +106,12 @@ use project_registry::{
     open_project_inner_with_event_and_settings_path, open_project_inner_with_settings_path,
     remove_project_inner_with_settings_path, NewProjectTransactionHooks,
 };
+#[cfg(all(test, windows))]
+use replica_read::projected_path_string;
 #[cfg(test)]
 use replica_read::{
-    extract_task_first_line, origin_project_for_replica_identity, projected_path_string,
-    read_preferred_agent_id, read_preferred_agent_id_logged,
-    read_replica_config_with_valid_identity,
+    extract_task_first_line, origin_project_for_replica_identity, read_preferred_agent_id,
+    read_preferred_agent_id_logged, read_replica_config_with_valid_identity,
 };
 pub(crate) use task_snapshot::task_snapshot_inner;
 pub use task_snapshot::{
