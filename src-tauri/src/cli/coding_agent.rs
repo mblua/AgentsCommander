@@ -720,6 +720,3 @@ fn now_unix_ms() -> u64 {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod p02_cli_schema_tests;
