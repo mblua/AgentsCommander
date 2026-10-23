@@ -296,7 +296,8 @@ impl RetainedContainerCleanup {
             Ok(mut route_removal) => *route_removal = state,
             Err(error) => {
                 log::error!(
-                    "[container-transport] route-removal ownership lock poisoned session={} reason={} state=retained",
+                    "[container-transport] route-removal ownership lock poisoned session={} \
+                        reason={} state=retained",
                     self.session_id,
                     self.reason
                 );
@@ -575,7 +576,8 @@ impl RetainedContainerCleanupRegistry {
             Ok(Err(error)) => {
                 let message = error.to_string();
                 log::warn!(
-                    "[container-transport] retained cleanup failed session={} reason={} state=retained error={}",
+                    "[container-transport] retained cleanup failed session={} reason={} \
+                        state=retained error={}",
                     entry.session_id,
                     entry.reason,
                     crate::pty::container_runtime::redact_container_diagnostic_text(&message)
@@ -590,7 +592,8 @@ impl RetainedContainerCleanupRegistry {
             }
             Err(_) => {
                 log::error!(
-                    "[container-transport] retained cleanup panicked session={} reason={} state=retained",
+                    "[container-transport] retained cleanup panicked session={} reason={} \
+                        state=retained",
                     entry.session_id,
                     entry.reason
                 );
@@ -788,7 +791,8 @@ impl ContainerShutdownWorkRegistry {
                     }
                     None => {
                         log::error!(
-                            "[container-transport] shutdown work ownership missing before admission session={} reason={}",
+                            "[container-transport] shutdown work ownership missing before \
+                                admission session={} reason={}",
                             context
                                 .session_id
                                 .map(|id| id.to_string())
@@ -805,7 +809,8 @@ impl ContainerShutdownWorkRegistry {
         }
 
         log::warn!(
-            "[container-transport] drain-owned shutdown work admission unavailable; using serialized cooperative fallback session={} reason={} workers={} queueCapacity={}",
+            "[container-transport] drain-owned shutdown work admission unavailable; using \
+                serialized cooperative fallback session={} reason={} workers={} queueCapacity={}",
             context
                 .session_id
                 .map(|id| id.to_string())
@@ -849,7 +854,8 @@ impl ContainerShutdownWorkRegistry {
                     self.shared.work_available.notify_one();
                     self.shared.state_changed.notify_all();
                     log::error!(
-                        "[container-transport] drain-owned cooperative fallback retained at the absolute deadline session={} reason={} workers={} state=retained",
+                        "[container-transport] drain-owned cooperative fallback retained at the \
+                            absolute deadline session={} reason={} workers={} state=retained",
                         context
                             .session_id
                             .map(|id| id.to_string())
@@ -891,7 +897,8 @@ impl ContainerShutdownWorkRegistry {
         state.active.remove(&id);
         if state.active_fallbacks == 0 {
             log::error!(
-                "[container-transport] synchronous shutdown work count underflow session={} reason={}",
+                "[container-transport] synchronous shutdown work count underflow session={} \
+                    reason={}",
                 context
                     .session_id
                     .map(|id| id.to_string())
@@ -996,7 +1003,8 @@ impl ContainerShutdownWorkRegistry {
                         decrement_shutdown_worker_count(&mut state, &self.shared);
                     }
                     log::error!(
-                        "[container-transport] shutdown worker exited after panic session={} reason={}",
+                        "[container-transport] shutdown worker exited after panic session={} \
+                            reason={}",
                         context
                             .session_id
                             .map(|id| id.to_string())
@@ -1032,7 +1040,8 @@ impl ContainerShutdownWorkRegistry {
                 .fail_worker_spawn
             {
                 log::warn!(
-                    "[container-transport] injected shutdown worker spawn failure session={} reason={}",
+                    "[container-transport] injected shutdown worker spawn failure session={} \
+                        reason={}",
                     context
                         .session_id
                         .map(|id| id.to_string())
@@ -1067,7 +1076,8 @@ impl ContainerShutdownWorkRegistry {
                         decrement_shutdown_worker_count(&mut state, &self.shared);
                     }
                     log::warn!(
-                        "[container-transport] shutdown worker spawn failed session={} reason={} worker={} error={}",
+                        "[container-transport] shutdown worker spawn failed session={} reason={} \
+                            worker={} error={}",
                         context
                             .session_id
                             .map(|id| id.to_string())
@@ -1093,7 +1103,8 @@ impl ContainerShutdownWorkRegistry {
             self.shared.work_available.notify_all();
             self.shared.state_changed.notify_all();
             log::error!(
-                "[container-transport] shutdown state lock reached absolute deadline reason=shutdown-begin state=retained"
+                "[container-transport] shutdown state lock reached absolute deadline \
+                    reason=shutdown-begin state=retained"
             );
             return false;
         };
@@ -1174,7 +1185,8 @@ impl ContainerShutdownWorkRegistry {
                     retained.push("workers=unknown state=retained".to_string());
                 }
                 log::error!(
-                    "[container-transport] shared shutdown deadline retained ownership because the state snapshot lock is unavailable"
+                    "[container-transport] shared shutdown deadline retained ownership because the \
+                        state snapshot lock is unavailable"
                 );
                 return ContainerShutdownReport {
                     terminal: false,
@@ -1211,7 +1223,8 @@ impl ContainerShutdownWorkRegistry {
         let terminal = drained && retained.is_empty();
         if !terminal {
             log::error!(
-                "[container-transport] shared shutdown deadline retained ownership producers={} queued={} retained={} active={} workers={} work=[{}]",
+                "[container-transport] shared shutdown deadline retained ownership producers={} \
+                    queued={} retained={} active={} workers={} work=[{}]",
                 state.active_producers,
                 state.queued.len(),
                 state.retained.len(),
@@ -1354,7 +1367,8 @@ impl Drop for ContainerShutdownWorkRegistry {
                 if worker.is_finished() {
                     if worker.join().is_err() {
                         log::error!(
-                            "[container-transport] shutdown worker panicked during retained registry drop"
+                            "[container-transport] shutdown worker panicked during retained \
+                                registry drop"
                         );
                     }
                 } else {
@@ -1952,14 +1966,16 @@ impl ContainerTransportBackend {
             Ok(route_remover) => route_remover.clone(),
             Err(TryLockError::Poisoned(_)) => {
                 log::error!(
-                    "[container-transport] deferred route-remover registry lock poisoned session={} state=retained",
+                    "[container-transport] deferred route-remover registry lock poisoned \
+                        session={} state=retained",
                     session_id
                 );
                 None
             }
             Err(TryLockError::WouldBlock) => {
                 log::warn!(
-                    "[container-transport] deferred route-remover registry lock unavailable session={} state=retained",
+                    "[container-transport] deferred route-remover registry lock unavailable \
+                        session={} state=retained",
                     session_id
                 );
                 None
@@ -1972,7 +1988,8 @@ impl ContainerTransportBackend {
                 match catch_unwind(AssertUnwindSafe(|| remove(session_id, deadline))) {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => log::warn!(
-                        "[container-transport] deferred sync route removal failed session={} error={}",
+                        "[container-transport] deferred sync route removal failed session={} \
+                            error={}",
                         session_id,
                         error
                     ),
@@ -1985,7 +2002,8 @@ impl ContainerTransportBackend {
             if let Some(sender) = lifecycle_sender {
                 if let Err(error) = sender.route_lost(session_id, exit_code).await {
                     log::warn!(
-                        "[container-transport] deferred sync route-loss reconciliation failed session={}: {}",
+                        "[container-transport] deferred sync route-loss reconciliation failed \
+                            session={}: {}",
                         session_id,
                         error
                     );
@@ -2585,7 +2603,8 @@ impl ContainerTransportBackend {
             producer.spawn_owned(Some(session_id), reason, work);
         } else {
             log::warn!(
-                "[container-transport] cleanup retained for the explicit global sweep without reopening sealed shutdown work session={} reason={} state=retained",
+                "[container-transport] cleanup retained for the explicit global sweep without \
+                    reopening sealed shutdown work session={} reason={} state=retained",
                 session_id,
                 reason
             );
@@ -2647,7 +2666,8 @@ impl ContainerTransportBackend {
             producer.spawn_owned(Some(session_id), reason, work);
         } else {
             log::warn!(
-                "[container-transport] cleanup retained for the explicit global sweep without reopening sealed shutdown work session={} reason={} state=retained",
+                "[container-transport] cleanup retained for the explicit global sweep without \
+                    reopening sealed shutdown work session={} reason={} state=retained",
                 session_id,
                 reason
             );
@@ -2697,7 +2717,8 @@ impl ContainerTransportBackend {
                         .await
                     {
                         log::warn!(
-                            "[container-transport] pending-reaper reconciliation failed session={}: {}",
+                            "[container-transport] pending-reaper reconciliation failed \
+                                session={}: {}",
                             session_id,
                             error
                         );
@@ -2721,7 +2742,8 @@ impl ContainerTransportBackend {
                         let count = backend.reap_expired_pending_sessions().await;
                         if count > 0 {
                             log::warn!(
-                                "[container-transport] reaped {} expired pending container session(s)",
+                                "[container-transport] reaped {} expired pending container \
+                                    session(s)",
                                 count
                             );
                         }
@@ -2782,13 +2804,15 @@ impl ContainerTransportBackend {
                 Ok(report) => {
                     if !report.stopped.is_empty() {
                         log::warn!(
-                            "[container-transport] stopped {} labeled orphan container(s) on startup",
+                            "[container-transport] stopped {} labeled orphan container(s) on \
+                                startup",
                             report.stopped.len()
                         );
                     }
                     if !report.invalid_labels.is_empty() {
                         log::warn!(
-                            "[container-transport] ignored {} labeled container(s) with invalid session labels",
+                            "[container-transport] ignored {} labeled container(s) with invalid \
+                                session labels",
                             report.invalid_labels.len()
                         );
                     }
@@ -2817,7 +2841,8 @@ impl ContainerTransportBackend {
                 match manager.revoke_all_container_clients() {
                     Ok(count) if count > 0 => {
                         log::warn!(
-                            "[container-transport] revoked {} container API client(s) on startup cleanup",
+                            "[container-transport] revoked {} container API client(s) on startup \
+                                cleanup",
                             count
                         );
                     }
@@ -2909,7 +2934,8 @@ impl ContainerTransportBackend {
         for session_id in session_ids {
             if Instant::now() >= deadline {
                 log::warn!(
-                    "[container-transport] global shutdown cleanup budget exhausted before ownership transfer session={} state=installed",
+                    "[container-transport] global shutdown cleanup budget exhausted before \
+                        ownership transfer session={} state=installed",
                     session_id
                 );
                 break;
@@ -2937,7 +2963,8 @@ impl ContainerTransportBackend {
             let entry = self.retain_removed_resources(resources, "global-shutdown-sweep");
             entry.require_route_removal(route_remover.clone());
             log::debug!(
-                "[container-transport] global shutdown transferred installed handle and route-removal ownership session={} reason={} state=retained",
+                "[container-transport] global shutdown transferred installed handle and \
+                    route-removal ownership session={} reason={} state=retained",
                 entry.session_id,
                 entry.reason
             );
@@ -3030,7 +3057,8 @@ impl ContainerTransportBackend {
             }
             if scheduled == 0 {
                 log::warn!(
-                    "[container-transport] global sweep epoch made no scheduling progress state=retained"
+                    "[container-transport] global sweep epoch made no scheduling progress \
+                        state=retained"
                 );
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -3128,7 +3156,8 @@ impl ContainerTransportBackend {
         let terminal = work_report.terminal && retained.is_empty();
         if !terminal {
             log::error!(
-                "[container-transport] global shutdown cleanup retained unresolved ownership count={}",
+                "[container-transport] global shutdown cleanup retained unresolved ownership \
+                    count={}",
                 retained.len()
             );
         }
@@ -4365,7 +4394,9 @@ mod tests {
         error: &str,
     ) {
         let expected = format!(
-            "owner=containerCleanup session={session_id} reason=global-shutdown-sweep program=none runtimeHandle=true state=retained inFlight=false lastError=route removal failed: {error}"
+            "owner=containerCleanup session={session_id} reason=global-shutdown-sweep program=none \
+                runtimeHandle=true state=retained inFlight=false lastError=route removal failed: \
+                {error}"
         );
         assert!(report.retained.iter().any(|context| {
             context.contains("owner=containerCleanup")
@@ -4764,7 +4795,9 @@ mod tests {
             elapsed <= budget + Duration::from_millis(400),
             "in-flight Docker command exceeded the global-sweep deadline: {elapsed:?}"
         );
-        let expected = "owner=dockerCommand session=none reason=global-sweep-reader program=docker-reader-fixture runtimeHandle=none state=inFlight inFlight=true lastError=reader cleanup failed OPENAI_API_KEY=[REDACTED]\\nnested failure";
+        let expected = "owner=dockerCommand session=none reason=global-sweep-reader \
+            program=docker-reader-fixture runtimeHandle=none state=inFlight inFlight=true \
+            lastError=reader cleanup failed OPENAI_API_KEY=[REDACTED]\\nnested failure";
         assert_eq!(
             report
                 .retained
@@ -4796,7 +4829,8 @@ mod tests {
         let mut selection_retained = (0..300)
             .map(|index| {
                 format!(
-                    "owner=selectionFixture session=none reason=fixture-{index:03} program=none runtimeHandle=none state=retained inFlight=false"
+                    "owner=selectionFixture session=none reason=fixture-{index:03} program=none \
+                        runtimeHandle=none state=retained inFlight=false"
                 )
             })
             .collect::<Vec<_>>();
@@ -4835,7 +4869,9 @@ mod tests {
         assert_eq!(
             combined.last().expect("global omitted-count sentinel"),
             &format!(
-                "owner=diagnosticSummary session=none reason=retained-owner-report-truncated program=none runtimeHandle=none state=retained inFlight=false omittedCount={expected_omitted}"
+                "owner=diagnosticSummary session=none reason=retained-owner-report-truncated \
+                    program=none runtimeHandle=none state=retained inFlight=false \
+                    omittedCount={expected_omitted}"
             )
         );
 
@@ -4853,7 +4889,8 @@ mod tests {
             }
             assert!(
                 Instant::now() < transition_deadline,
-                "Docker command owner did not return to retained state after retry release: {contexts:?}"
+                "Docker command owner did not return to retained state after retry release: \
+                    {contexts:?}"
             );
             std::thread::yield_now();
         }
@@ -4994,7 +5031,9 @@ mod tests {
         assert_eq!(
             retained.last().expect("omitted-count sentinel"),
             &format!(
-                "owner=diagnosticSummary session=none reason=retained-owner-report-truncated program=none runtimeHandle=none state=retained inFlight=false omittedCount={expected_omitted}"
+                "owner=diagnosticSummary session=none reason=retained-owner-report-truncated \
+                    program=none runtimeHandle=none state=retained inFlight=false \
+                    omittedCount={expected_omitted}"
             )
         );
     }
