@@ -2232,6 +2232,12 @@ fn the_root_agent_dir_name_constant_is_defined_exactly_once() {
 /// `instance_gitignore_names_nothing_that_reaches_the_knot`.
 const MIGRATION_MODULE: [&str; 2] = ["config", "naming_migration"];
 const MIGRATION_FILE: &str = "src/config/naming_migration.rs";
+const MIGRATION_IGNORE_ROWS_FILE: &str = "src/config/naming_migration/ignore_rows.rs";
+const MIGRATION_TESTS_FILES: [&str; 3] = [
+    "src/config/naming_migration/tests.rs",
+    "src/config/naming_migration/tests/concurrency.rs",
+    "src/config/naming_migration/tests/scenarios.rs",
+];
 
 /// The SCC members section 3.1 of the B1a plan names, plus the framework.
 /// `super::<name>` and `crate::` are already refused by the equalities below;
@@ -2278,19 +2284,29 @@ fn naming_migration_names_nothing_that_reaches_the_knot() {
     assert_eq!(
         seen.relative_up,
         expected(&[
-            (MIGRATION_FILE, "*"),
             (MIGRATION_FILE, "instance_artifacts"),
+            (MIGRATION_IGNORE_ROWS_FILE, "CONFIG_STATE_TARGET_NAME"),
+            (MIGRATION_IGNORE_ROWS_FILE, "LOOP_STATE_TARGET_NAME"),
+            (MIGRATION_IGNORE_ROWS_FILE, "LOOP_STATE_TMP_TARGET_GLOB"),
+            (MIGRATION_IGNORE_ROWS_FILE, "PROJECT_SETTINGS_TARGET_NAME"),
+            (MIGRATION_IGNORE_ROWS_FILE, "SET_ASIDE_GLOB"),
+            (MIGRATION_TESTS_FILES[0], "*"),
+            (MIGRATION_TESTS_FILES[1], "*"),
+            (MIGRATION_TESTS_FILES[2], "*"),
         ]),
         "the set of names reached by `super::` from config::naming_migration \
-         moved. The only allowed pair is its one arc, to \
-         `config::instance_artifacts`, which has no outgoing arcs; the `*` is \
-         the test module's `use super::*;`, whose `super` is this module. \
-         Anything else must be argued as a change to the arc budget of B1a."
+         moved. The only arc out of the module is its one arc, to \
+         `config::instance_artifacts`, which has no outgoing arcs; the \
+         `ignore_rows` child re-reads five of those names from this module, \
+         and each `*` is a test module's `use super::*;`, whose `super` is \
+         inside this module. Anything else must be argued as a change to the \
+         arc budget of B1a."
     );
     assert_eq!(
-        seen.globs, 1,
-        "config::naming_migration must contain exactly one glob import, the test \
-         module's `use super::*;`"
+        seen.globs,
+        MIGRATION_TESTS_FILES.len(),
+        "config::naming_migration must contain exactly one glob import per test \
+         module, its `use super::*;`"
     );
 
     let files = files_of(&MIGRATION_MODULE, Reach::WithSubmodules).expect("module files");
