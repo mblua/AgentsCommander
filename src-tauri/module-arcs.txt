@@ -305,8 +305,9 @@ agentscommander_lib::cli -> agentscommander_lib::testability::window_info
 agentscommander_lib::cli::agency_templates -> agentscommander_lib
 agentscommander_lib::cli::agency_templates -> agentscommander_lib::commands::role_templates
 agentscommander_lib::cli::agency_templates -> agentscommander_lib::config
-agentscommander_lib::cli::agency_templates -> agentscommander_lib::config::agent_path
-agentscommander_lib::cli::agency_templates -> agentscommander_lib::pty::credentials
+agentscommander_lib::cli::agency_templates::git -> agentscommander_lib::commands::role_templates
+agentscommander_lib::cli::agency_templates::git -> agentscommander_lib::config::agent_path
+agentscommander_lib::cli::agency_templates::git -> agentscommander_lib::pty::credentials
 agentscommander_lib::cli::api_client -> agentscommander_lib
 agentscommander_lib::cli::api_client -> agentscommander_lib::api::audit
 agentscommander_lib::cli::api_client -> agentscommander_lib::api::auth
