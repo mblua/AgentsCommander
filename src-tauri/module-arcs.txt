@@ -2511,6 +2511,8 @@ agentscommander_lib::resource_monitor::watchdog -> agentscommander_lib::session:
 agentscommander_lib::resource_monitor::watchdog -> agentscommander_lib::shutdown
 agentscommander_lib::resource_monitor::windows -> agentscommander_lib::resource_monitor::registry
 agentscommander_lib::resource_monitor::windows -> agentscommander_lib::resource_monitor::types
+agentscommander_lib::resource_monitor::windows::platform -> agentscommander_lib::resource_monitor::windows
+agentscommander_lib::resource_monitor::windows::stub -> agentscommander_lib::resource_monitor::windows
 agentscommander_lib::restore -> agentscommander_lib
 agentscommander_lib::restore -> agentscommander_lib::commands
 agentscommander_lib::restore -> agentscommander_lib::config
