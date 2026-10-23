@@ -2045,7 +2045,8 @@ mod tests {
 
     #[test]
     fn retire_ignore_pairs_is_byte_exact() {
-        let content = "keep\r\n\r\n# AC: old rule\r\n/legacy.json\r\n/legacy.json\r\nuser\r\n\n# AC: other\n/other.tmp\ntail";
+        let content = "keep\r\n\r\n# AC: old rule\r\n/legacy.json\r\n/legacy.json\r\nuser\r\n\n\
+                       # AC: other\n/other.tmp\ntail";
         let retired = [
             ("# AC: old rule", "/legacy.json"),
             ("# AC: other", "/other.tmp"),
