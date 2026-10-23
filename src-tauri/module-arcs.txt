@@ -1585,6 +1585,7 @@ agentscommander_lib::config::settings::agent::profile::identity -> agentscommand
 agentscommander_lib::config::settings::agent::profile::registered -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::settings::agent::profile::registered -> agentscommander_lib::config::settings::agent
 agentscommander_lib::config::settings::agent::profile::registered -> agentscommander_lib::config::settings::agent::profile
+agentscommander_lib::config::settings::app_defaults -> agentscommander_lib::config::settings
 agentscommander_lib::config::settings::field -> agentscommander_lib::config::profile
 agentscommander_lib::config::settings::field -> agentscommander_lib::config::settings
 agentscommander_lib::config::settings::load -> agentscommander_lib::capture
