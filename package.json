@@ -25,6 +25,7 @@
     "test": "vitest run",
     "test:debt": "node scripts/check-test-debt.mjs",
     "test:debt:self": "node scripts/check-test-debt.mjs --self-test",
+    "ci:local": "node scripts/ci-local.mjs",
     "check:skills": "node scripts/01-skills-checker.mjs",
     "check:skills:self": "node scripts/01-skills-checker.mjs --self-test",
     "record:arcs": "node scripts/02-module-arc-record.mjs",

@@ -10,7 +10,7 @@ The gate has two parts:
 
 - `test-debt` runs the suppression scan and the baseline ratchet through
   `scripts/check-cognitive-complexity.mjs`.
-- each of the three Rust legs - `rust-regression` (Windows), `clippy-linux` (Linux) and
+- each of the three Rust legs - `rust-regression-windows` (Windows), `clippy-linux` (Linux) and
   `rust-regression-macos` - runs
 
   ```bash
@@ -292,7 +292,8 @@ Not every run has all three legs. `.github/workflows/pr-regression-gates.yml` sp
 two tiers, decided by its `ci-tier` job:
 
 - **Light tier, on every event:** `test-debt` (suppression scan and baseline ratchet),
-  `rust-regression` (Windows leg), `clippy-linux` (Linux leg) and `rust-fmt`.
+  `rust-regression-windows` (Windows leg), `clippy-linux` (Linux leg), `rust-fmt`,
+  `rust-slow-test-windows` and `issue-1850-release-windows` (no clippy, so no leg).
 - **Full tier, only when `ci-tier` sets `full=true`:** everything else, including
   `rust-regression-macos` (macOS leg). `rust-regression-linux` is also full-tier only, but it no
   longer carries the gate; the Linux leg is `clippy-linux`.
@@ -300,9 +301,9 @@ two tiers, decided by its `ci-tier` job:
 `ci-tier` sets `full=true` when any of these holds:
 
 - the run was started by `workflow_dispatch`;
-- the pull request carries the `ci:full` label. Adding the label starts a run by itself, because
-  the workflow also triggers on `labeled`, and while the label stays on, every later push runs the
-  full tier too;
+- the run was started by adding the `ci:full` label (the workflow also triggers on `labeled`).
+  The label is one-shot: later pushes run the light tier even while it stays on, so to get a full
+  run on a newer head, remove the label and add it again;
 - the workflow's `github.run_number` is a multiple of 10. The counter is shared by every run of
   this workflow in the repository, so it is roughly one run in ten, not one pull request in ten,
   and nobody chooses which.
@@ -335,9 +336,10 @@ If that happens to your pull request:
    (for `NEW`), or that removes the entry under the same rule (for `STALE`), labelled `ci:full` so
    its macOS leg runs. Once it merges, merge main into your pull request and rerun.
 
-To avoid causing this, add the `ci:full` label **before merging** any pull request that changes
-code under a macOS-only `cfg`, or that edits or removes baseline entries whose sites only macOS
-observes. Its checks then run all three legs.
+To avoid causing this, add the `ci:full` label **after the last push, before merging** any pull
+request that changes code under a macOS-only `cfg`, or that edits or removes baseline entries whose
+sites only macOS observes (if the label is already on, remove it and add it again). That run checks
+the final head on all three legs.
 
 ### 6.3 One invocation on macOS
 
@@ -351,18 +353,19 @@ excluded on all three platforms at once (section 2.3).
 
 ## 7. Bumping the pinned Rust version
 
-The pin is local to six CI invocations and frozen nowhere else:
+The pin is local to seven CI invocations and frozen nowhere else:
 
-- four `toolchain:` inputs in `.github/workflows/pr-regression-gates.yml`, for `rust-regression`,
-  `clippy-linux`, `rust-regression-linux` and `rust-regression-macos`;
-- two in `.github/workflows/cache-warm.yml`, for `warm-debug` and `verify-debug-cache`.
+- five `toolchain:` inputs in `.github/workflows/pr-regression-gates.yml`, for
+  `rust-regression-windows`, `rust-slow-test-windows`, `clippy-linux`, `rust-regression-linux` and
+  `rust-regression-macos`;
+- two in `.github/workflows/cache-warm.yml`, for `warm-debug` and `verify-warm-debug`.
 
 No `rust-toolchain.toml` exists: local development, `release.yml`, `bundle-validation.yml` and the
 other workflows stay on floating stable, and the pin must not be widened to them.
 
 To bump:
 
-1. Change the version in the six places above, and in the three run-time assertions in
+1. Change the version in the seven places above, and in the three run-time assertions in
    `pr-regression-gates.yml` that compare `rustc -vV` with the pin (one in each gate leg) - otherwise each leg fails with
    `toolchain pin did not take effect`.
 2. Regenerate the baseline from the three platforms' emissions, merged by the script's `--merge`

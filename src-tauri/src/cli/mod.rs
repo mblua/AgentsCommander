@@ -739,7 +739,7 @@ mod tests {
     /// class whose failure mode is omission, so this walks clap's own tree.
     ///
     /// It needs no built binary and no process spawn, so it runs under
-    /// `cargo test`. It runs on the `rust-regression` (windows) leg only,
+    /// `cargo test`. It runs on the `rust-regression-windows` leg only,
     /// because that is the only CI leg that runs the Rust test suite.
     #[test]
     fn no_clap_printed_help_carries_the_retired_token() {
