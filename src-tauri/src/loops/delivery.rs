@@ -770,7 +770,8 @@ fn resolve_loop_agent_command_from_settings(
         // persisted `agentId`. That pin wins over `lastCodingAgent`, so a
         // deleted agent fails closed here and rank 3 is never consulted.
         let message = format!(
-            "[loops] Replica '{}' is pinned to coding agent '{}', which is not configured; refusing to wake with a different agent",
+            "[loops] Replica '{}' is pinned to coding agent '{}', which is not configured; \
+             refusing to wake with a different agent",
             replica_dir_string, selected_id
         );
         log::warn!("{}", message);
@@ -793,7 +794,9 @@ fn resolve_loop_agent_command_from_settings(
     }
 
     let message = format!(
-        "[loops] No pinned coding agent for '{}': tooling.currentCodingAgent, the persisted session agentId and tooling.lastCodingAgent are all absent or not configured",
+        "[loops] No pinned coding agent for '{}': tooling.currentCodingAgent, \
+         the persisted session agentId and tooling.lastCodingAgent are all absent \
+         or not configured",
         replica_dir_string
     );
     log::warn!("{}", message);
