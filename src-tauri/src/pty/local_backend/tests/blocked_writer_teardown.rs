@@ -56,9 +56,11 @@ fn ptys_with_nonreading_child() -> (Arc<Mutex<HashMap<Uuid, PtyInstance>>>, Uuid
 // manual ConPTY/API matrix). It stays `#[ignore]`d out of the default automated gate and
 // is exercised on demand, in isolation, as part of that manual matrix:
 //
-//   cargo test --lib real_blocked_conpty_writer_is_unblocked_by_session_teardown -- --ignored --test-threads=1
+// cargo test --lib real_blocked_conpty_writer_is_unblocked_by_session_teardown -- --ignored
+// --test-threads=1
 #[test]
-#[ignore = "real ConPTY block precondition is parallel-load sensitive; run in isolation as manual Windows matrix evidence (plan section 14 item 10 / section 15)"]
+#[ignore = "real ConPTY block precondition is parallel-load sensitive; run in isolation as manual \
+    Windows matrix evidence (plan section 14 item 10 / section 15)"]
 fn real_blocked_conpty_writer_is_unblocked_by_session_teardown() {
     let (ptys, id) = ptys_with_nonreading_child();
     let started = Arc::new(AtomicUsize::new(0));

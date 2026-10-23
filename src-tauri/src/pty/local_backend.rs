@@ -176,13 +176,21 @@ fn pump_cursor_query(
                 query.feed(&buf[..n], |segment, consumed| {
                     if consumed {
                         #[cfg(test)]
-                        if let Some(observer) = observer { observer.consumed.fetch_add(1, Ordering::SeqCst); }
+                        if let Some(observer) = observer {
+                            observer.consumed.fetch_add(1, Ordering::SeqCst);
+                        }
                         match reply() {
-                            Ok(()) => {
+                            Ok(()) =>
+                            {
                                 #[cfg(test)]
-                                if let Some(observer) = observer { observer.written.fetch_add(1, Ordering::SeqCst); }
+                                if let Some(observer) = observer {
+                                    observer.written.fetch_add(1, Ordering::SeqCst);
+                                }
                             }
-                            Err(error) => log::warn!("[pty] startup cursor reply failed: {error}; retaining drainer and Stop"),
+                            Err(error) => log::warn!(
+                                "[pty] startup cursor reply failed: {error}; \
+                                    retaining drainer and Stop"
+                            ),
                         }
                     } else {
                         output(segment);
@@ -510,8 +518,10 @@ fn ensure_git_guard_wrapper() -> Result<std::path::PathBuf, AppError> {
     let cmd_path = guard_dir.join("git.cmd");
     let ps1_path = guard_dir.join("git-guard.ps1");
 
-    let cmd_content = "@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0git-guard.ps1\" %*\r\nexit /b %ERRORLEVEL%\r\n";
-    let ps1_content = r#"$ErrorActionPreference = 'Stop'
+    let cmd_content = "@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File \
+        \"%~dp0git-guard.ps1\" %*\r\nexit /b %ERRORLEVEL%\r\n";
+    let ps1_content = concat!(
+        r#"$ErrorActionPreference = 'Stop'
 $realGit = $env:AC_REAL_GIT
 if ([string]::IsNullOrWhiteSpace($realGit)) {
   Write-Error 'AgentsCommander git guard: AC_REAL_GIT is not set.'
@@ -539,8 +549,10 @@ for ($i = 0; $i -lt $originalArgs.Count; $i++) {
     continue
   }
 
-  if ($arg -eq '--git-dir' -or $arg -like '--git-dir=*' -or $arg -eq '--work-tree' -or $arg -like '--work-tree=*') {
-    Write-Error 'AgentsCommander git guard: --git-dir and --work-tree are not allowed in agent sessions.'
+  if ($arg -eq '--git-dir' -or $arg -like '--git-dir=*' -or $arg -eq "#,
+        r#"'--work-tree' -or $arg -like '--work-tree=*') {
+    Write-Error 'AgentsCommander git guard: --git-dir and --work-tree are not "#,
+        r#"allowed in agent sessions.'
     exit 1
   }
 }
@@ -569,13 +581,15 @@ function Test-AllowedGitTarget([string]$path) {
 }
 
 if (-not (Test-AllowedGitTarget $target)) {
-  Write-Error ('AgentsCommander git guard: git is only allowed inside repo-* directories. Target path: ' + $target)
+  Write-Error ('AgentsCommander git guard: git is only allowed inside repo-* "#,
+        r#"directories. Target path: ' + $target)
   exit 1
 }
 
 & $realGit @originalArgs
 exit $LASTEXITCODE
-"#;
+"#,
+    );
 
     write_git_guard_file_if_changed(&cmd_path, cmd_content)
         .map_err(|e| AppError::Other(format!("Failed to write git.cmd guard: {}", e)))?;
@@ -1259,7 +1273,8 @@ fn validate_cmd_payload(
         return Err(adapter_error(
             host_program,
             "(payload)",
-            "an unsupported cmd payload character (payload-final backslash is doubled by append_quoted)",
+            "an unsupported cmd payload character (payload-final backslash is doubled by \
+                append_quoted)",
         ));
     }
     Ok(())
@@ -1384,7 +1399,10 @@ fn powershell_script(command: &str, args: &[String]) -> String {
          [System.IO.Path]::Combine([System.Environment]::SystemDirectory, 'cmd.exe');\n",
     );
     script.push_str("    $ac_start.Arguments = '/D /V:OFF /S /C \"' + $ac_batch_payload + '\"';\n");
-    script.push_str("    try { $ac_process = [System.Diagnostics.Process]::Start($ac_start) } catch { exit 1 };\n");
+    script.push_str(
+        "    try { $ac_process = [System.Diagnostics.Process]::Start($ac_start) } \
+        catch { exit 1 };\n",
+    );
     script.push_str("    if ($null -eq $ac_process) { exit 1 };\n");
     script.push_str("    $ac_process.WaitForExit();\n");
     script.push_str("    exit $ac_process.ExitCode\n");
@@ -1398,7 +1416,10 @@ fn powershell_script(command: &str, args: &[String]) -> String {
     script.push_str("  $ac_start.Arguments = ");
     script.push_str(&ps_literal(&windows_raw_argv(args)));
     script.push_str(";\n");
-    script.push_str("  try { $ac_process = [System.Diagnostics.Process]::Start($ac_start) } catch { exit 1 };\n");
+    script.push_str(
+        "  try { $ac_process = [System.Diagnostics.Process]::Start($ac_start) } \
+        catch { exit 1 };\n",
+    );
     script.push_str("  if ($null -eq $ac_process) { exit 1 };\n");
     script.push_str("  $ac_process.WaitForExit();\n");
     script.push_str("  exit $ac_process.ExitCode\n");
@@ -1549,7 +1570,8 @@ fn prepare_windows_resolved_agent_launch(
                     return Err(adapter_error(
                         &host_shell.program,
                         arg,
-                        "a conflicting/terminal configured option (custom shell accepts no arguments)",
+                        "a conflicting/terminal configured option (custom shell accepts no \
+                            arguments)",
                     ));
                 }
             }
@@ -1697,7 +1719,8 @@ impl LocalProcessBackend {
         }
         if !configured_env.is_empty() || !env_remove_keys.is_empty() {
             log::info!(
-                "[pty] Applied {} configured env vars and removed {} inherited env vars for session {}",
+                "[pty] Applied {} configured env vars and removed {} inherited env vars for \
+                    session {}",
                 configured_env.len(),
                 env_remove_keys.len(),
                 id
@@ -1908,20 +1931,21 @@ impl LocalProcessBackend {
                             // full this is two relaxed loads and one relaxed add.
                             record.note_output(&buf[..n]);
                             fanout.handle_output(&output_token, &session_id_str, buf[..n].to_vec());
-                            // #973 (B) - has the child PAINTED anything yet? Asked of the real vt100
-                            // parser that `handle_output` has just fed this chunk to, which is why it
-                            // is asked after it and not before.
+                            // #973 (B) - has the child PAINTED anything yet? Asked of the real
+                            // vt100 parser that `handle_output` has just fed this chunk to, which
+                            // is why it is asked after it and not before.
                             //
-                            // Once the child has painted, this is a single relaxed load per chunk and
-                            // nothing else: no lock, no scan, no allocation. Before it has, it is one
-                            // uncontended lock and a bounded scan of the grid - and it REPLACED a
-                            // second `from_utf8_lossy` + `strip_ansi_csi` over the whole chunk, which
-                            // `handle_output` was already paying for the idle detector on the very
-                            // same bytes. One less chunk-sized allocation per chunk, not one more.
+                            // Once the child has painted, this is a single relaxed load per chunk
+                            // and nothing else: no lock, no scan, no allocation. Before it has, it
+                            // is one uncontended lock and a bounded scan of the grid - and it
+                            // REPLACED a second `from_utf8_lossy` + `strip_ansi_csi` over the whole
+                            // chunk, which `handle_output` was already paying for the idle detector
+                            // on the very same bytes. One less chunk-sized allocation per chunk,
+                            // not one more.
                             //
                             // Locks: the query takes `screen_parsers` and RELEASES it before
-                            // `open_startup_gate` takes `ptys`. The two are sequential, never nested,
-                            // so the order stays `ptys -> startup_gate -> size -> master`.
+                            // `open_startup_gate` takes `ptys`. The two are sequential, never
+                            // nested, so the order stays `ptys -> startup_gate -> size -> master`.
                             if !rendered.load(Ordering::Relaxed)
                                 && fanout.has_rendered_visible_content(id)
                             {
@@ -2282,7 +2306,9 @@ impl PtyBackend for LocalProcessBackend {
                                     ExitCause::AcRequested
                                 };
                                 log::info!(
-                                    "[pty] child-exit session={} pid={:?} cause={} detail=observed-at-stop child={}",
+                                    "[pty] child-exit session={} pid={:?} cause={} \
+                                        detail=observed-at-stop \
+                                        child={}",
                                     id,
                                     pid,
                                     cause.as_log(),
@@ -2311,7 +2337,8 @@ impl PtyBackend for LocalProcessBackend {
                         );
                         if let Err(kill_err) = child.kill() {
                             log::warn!(
-                                "[pty] Failed to kill session {} child pid {:?} after poll error: {}",
+                                "[pty] Failed to kill session {} child pid {:?} after poll error: \
+                                    {}",
                                 id,
                                 pid,
                                 kill_err
@@ -2482,7 +2509,9 @@ fn reap_child_in_background(
                     }
                 }
                 None => log::info!(
-                    "[pty] child-exit session={} pid={:?} cause=ac-requested detail=reaped-after-stop child={}",
+                    "[pty] child-exit session={} pid={:?} cause=ac-requested \
+                        detail=reaped-after-stop \
+                        child={}",
                     session_id,
                     pid,
                     liveness.as_log()

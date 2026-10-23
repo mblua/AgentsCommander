@@ -428,7 +428,8 @@ fn resolved_posix_host_exec_payload_quotes_paths_with_spaces() {
         launch.args,
         vec![
             "-c".to_string(),
-            "exec 'C:\\Program Files\\Claude\\claude.exe' '--config' 'C:\\Program Files\\Claude\\config.toml'"
+            "exec 'C:\\Program Files\\Claude\\claude.exe' '--config' 'C:\\Program \
+                Files\\Claude\\config.toml'"
                 .to_string(),
         ]
     );
