@@ -1,6 +1,16 @@
+use super::paths::{canonical_existing_dir, same_canonical_path, strip_extended_prefix};
+use super::selection_state::read_source_null_profile_result;
+use super::selection_write::{
+    clear_replica_selection_lock_with_publish, set_prepared_source_profile_override,
+    validated_replica_dir, write_prepared_source_selection,
+};
+use super::source_selection::read_source_selection_target;
 use super::*;
+use crate::config::settings::AppSettings;
 
-use crate::config::settings::{AgentConfig, ProfileCellConfig, ProfileSlotConfig};
+use crate::config::settings::{
+    AgentConfig, ConfigurationRef, ProfileCellConfig, ProfileSlotConfig,
+};
 
 use std::collections::BTreeMap;
 
