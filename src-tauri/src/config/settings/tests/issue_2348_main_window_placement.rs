@@ -1,4 +1,4 @@
-use super::super::*;
+use super::*;
 use serde_json::json;
 
 fn seed_json(path: &std::path::Path, value: &Value) {

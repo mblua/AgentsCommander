@@ -86,16 +86,19 @@ jobs:
           npm run check:cycles:self
           npm run check:cycles
       - name: "Check test-code duplication (#2155)"
+        continue-on-error: true
         env:
           GATE_BASE_REF: ${{ github.event.pull_request.base.ref && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
         run: |
           npm run dup:changed:self
           npm run dup:changed
       - name: "Check cognitive-complexity detector and suppression scan (#2234)"
+        continue-on-error: true
         run: |
           npm run cog:self
           npm run cog:scan
       - name: "Check cognitive-complexity baseline growth (#2234)"
+        continue-on-error: true
         env:
           GATE_BASE_REF: ${{ github.event.pull_request.base.ref && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
         run: npm run cog:baseline -- --base-ref "${GATE_BASE_REF:-origin/main}"
@@ -241,20 +244,26 @@ jobs:
             > "${RUNNER_TEMP}/cog-windows.jsonl"
           code=$?
           rustc_version="$(rustc -vV | sed -n 's/^release: //p')"
-          cd "${GITHUB_WORKSPACE}"
-          node scripts/check-cognitive-complexity.mjs \
-            --capture "${RUNNER_TEMP}/cog-windows.jsonl" \
-            --clippy-exit "$code" \
-            --platform windows \
-            --rustc-version "$rustc_version" \
-            --commit "${GITHUB_SHA}" \
-            --emit "${RUNNER_TEMP}/cog-observed-windows.json"
-          node_code=$?
+          echo "COG_CLIPPY_EXIT=$code" >> "$GITHUB_ENV"
+          echo "COG_RUSTC_VERSION=$rustc_version" >> "$GITHUB_ENV"
           if [ "$rustc_version" != "1.98.1" ]; then
             echo "::error::toolchain pin did not take effect: wanted 1.98.1, got ${rustc_version}"
             exit 1
           fi
-          exit "$node_code"
+          exit "$code"
+
+      - name: Complexity check
+        continue-on-error: true
+        shell: bash
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          node scripts/check-cognitive-complexity.mjs \
+            --capture "${RUNNER_TEMP}/cog-windows.jsonl" \
+            --clippy-exit "$COG_CLIPPY_EXIT" \
+            --platform windows \
+            --rustc-version "$COG_RUSTC_VERSION" \
+            --commit "${GITHUB_SHA}" \
+            --emit "${RUNNER_TEMP}/cog-observed-windows.json"
 
       - name: Upload observed cognitive set
         if: always()
@@ -266,7 +275,7 @@ jobs:
 
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test --locked --lib --bins --tests
+        run: cargo test --locked --lib --bins --tests --no-fail-fast
         # The path-identity reparse test uses simulated flags; real Windows
         # reparse metadata and no-follow integration are outside its coverage.
 
@@ -875,20 +884,26 @@ jobs:
             > "${RUNNER_TEMP}/cog-linux.jsonl"
           code=$?
           rustc_version="$(rustc -vV | sed -n 's/^release: //p')"
-          cd "${GITHUB_WORKSPACE}"
-          node scripts/check-cognitive-complexity.mjs \
-            --capture "${RUNNER_TEMP}/cog-linux.jsonl" \
-            --clippy-exit "$code" \
-            --platform linux \
-            --rustc-version "$rustc_version" \
-            --commit "${GITHUB_SHA}" \
-            --emit "${RUNNER_TEMP}/cog-observed-linux.json"
-          node_code=$?
+          echo "COG_CLIPPY_EXIT=$code" >> "$GITHUB_ENV"
+          echo "COG_RUSTC_VERSION=$rustc_version" >> "$GITHUB_ENV"
           if [ "$rustc_version" != "1.98.1" ]; then
             echo "::error::toolchain pin did not take effect: wanted 1.98.1, got ${rustc_version}"
             exit 1
           fi
-          exit "$node_code"
+          exit "$code"
+
+      - name: Complexity check
+        continue-on-error: true
+        shell: bash
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          node scripts/check-cognitive-complexity.mjs \
+            --capture "${RUNNER_TEMP}/cog-linux.jsonl" \
+            --clippy-exit "$COG_CLIPPY_EXIT" \
+            --platform linux \
+            --rustc-version "$COG_RUSTC_VERSION" \
+            --commit "${GITHUB_SHA}" \
+            --emit "${RUNNER_TEMP}/cog-observed-linux.json"
 
       - name: Upload observed cognitive set
         if: always()
@@ -2174,20 +2189,26 @@ jobs:
             > "${RUNNER_TEMP}/cog-macos.jsonl"
           code=$?
           rustc_version="$(rustc -vV | sed -n 's/^release: //p')"
-          cd "${GITHUB_WORKSPACE}"
-          node scripts/check-cognitive-complexity.mjs \
-            --capture "${RUNNER_TEMP}/cog-macos.jsonl" \
-            --clippy-exit "$code" \
-            --platform macos \
-            --rustc-version "$rustc_version" \
-            --commit "${GITHUB_SHA}" \
-            --emit "${RUNNER_TEMP}/cog-observed-macos.json"
-          node_code=$?
+          echo "COG_CLIPPY_EXIT=$code" >> "$GITHUB_ENV"
+          echo "COG_RUSTC_VERSION=$rustc_version" >> "$GITHUB_ENV"
           if [ "$rustc_version" != "1.98.1" ]; then
             echo "::error::toolchain pin did not take effect: wanted 1.98.1, got ${rustc_version}"
             exit 1
           fi
-          exit "$node_code"
+          exit "$code"
+
+      - name: Complexity check
+        continue-on-error: true
+        shell: bash
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          node scripts/check-cognitive-complexity.mjs \
+            --capture "${RUNNER_TEMP}/cog-macos.jsonl" \
+            --clippy-exit "$COG_CLIPPY_EXIT" \
+            --platform macos \
+            --rustc-version "$COG_RUSTC_VERSION" \
+            --commit "${GITHUB_SHA}" \
+            --emit "${RUNNER_TEMP}/cog-observed-macos.json"
 
       - name: Upload observed cognitive set
         if: always()

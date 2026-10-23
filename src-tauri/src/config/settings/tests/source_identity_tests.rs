@@ -1,4 +1,4 @@
-use super::super::*;
+use super::*;
 
 fn env(key: &str, value: &str, enabled: bool) -> CodingAgentEnv {
     CodingAgentEnv {

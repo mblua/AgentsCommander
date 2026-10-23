@@ -42,7 +42,7 @@
       "resolution": "Run manually with cargo test --release --test cli_powershell_capture -- --ignored on a machine with bash.exe."
     },
     {
-      "id": "rust:src-tauri/src/commands/telegram.rs::attach_detach_persistence_tests::telegram_attach_detach_persistence_ordering_harness_note",
+      "id": "rust:src-tauri/src/commands/telegram/tests/attach_detach_persistence.rs::telegram_attach_detach_persistence_ordering_harness_note",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 295,
@@ -50,7 +50,7 @@
       "resolution": "Convert to an executable integration test when a command-level Tauri fixture is available."
     },
     {
-      "id": "rust:src-tauri/src/commands/telegram.rs::attach_detach_persistence_tests::telegram_attach_detach_persistence_ordering_harness_note",
+      "id": "rust:src-tauri/src/commands/telegram/tests/attach_detach_persistence.rs::telegram_attach_detach_persistence_ordering_harness_note",
       "category": "placeholder-rust-test",
       "owner": "dev-rust",
       "issue": 295,
@@ -58,7 +58,7 @@
       "resolution": "Replace the note with an executable attach and detach persistence regression test."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::close_session_rejects_direct_outbox_write_with_unqualified_target",
+      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::close_session_rejects_direct_outbox_write_with_unqualified_target",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -66,7 +66,7 @@
       "resolution": "Convert to an end-to-end mailbox test when the fixture exists."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::close_session_rejects_direct_outbox_write_with_unqualified_target",
+      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::close_session_rejects_direct_outbox_write_with_unqualified_target",
       "category": "placeholder-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -74,7 +74,7 @@
       "resolution": "Replace with executable full-pipeline close-session coverage."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::deliver_wake_rejects_unqualified_to_with_cross_project_matches",
+      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::deliver_wake_rejects_unqualified_to_with_cross_project_matches",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -82,7 +82,7 @@
       "resolution": "Convert to an end-to-end mailbox wake routing test when the fixture exists."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::deliver_wake_rejects_unqualified_to_with_cross_project_matches",
+      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::deliver_wake_rejects_unqualified_to_with_cross_project_matches",
       "category": "placeholder-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -90,7 +90,7 @@
       "resolution": "Replace with executable full-pipeline wake routing coverage."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::resolve_repo_path_wg_fallback_honors_target_project",
+      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::resolve_repo_path_wg_fallback_honors_target_project",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -98,7 +98,7 @@
       "resolution": "Convert to an executable integration test when the AppHandle filesystem fixture exists."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::resolve_repo_path_wg_fallback_honors_target_project",
+      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::resolve_repo_path_wg_fallback_honors_target_project",
       "category": "placeholder-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -106,7 +106,7 @@
       "resolution": "Replace with executable target-project fallback coverage."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::resolve_repo_path_returns_none_on_ambiguous_unqualified",
+      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::resolve_repo_path_returns_none_on_ambiguous_unqualified",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -114,7 +114,7 @@
       "resolution": "Convert to an executable integration test when the mailbox fixture exists."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::resolve_repo_path_returns_none_on_ambiguous_unqualified",
+      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::resolve_repo_path_returns_none_on_ambiguous_unqualified",
       "category": "placeholder-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -122,7 +122,7 @@
       "resolution": "Replace with executable ambiguous target coverage."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::deliver_wake_spawned_session_name_has_no_colon",
+      "id": "rust:src-tauri/src/phone/mailbox/tests/project_refresh.rs::deliver_wake_spawned_session_name_has_no_colon",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -130,7 +130,7 @@
       "resolution": "Convert to an executable integration test when the mailbox fixture exists."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::deliver_wake_spawned_session_name_has_no_colon",
+      "id": "rust:src-tauri/src/phone/mailbox/tests/project_refresh.rs::deliver_wake_spawned_session_name_has_no_colon",
       "category": "placeholder-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -138,7 +138,7 @@
       "resolution": "Replace with executable spawned-session naming coverage."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::resolve_to_target_round_trip_integration",
+      "id": "rust:src-tauri/src/phone/mailbox/tests/project_refresh.rs::resolve_to_target_round_trip_integration",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -146,7 +146,7 @@
       "resolution": "Convert to an executable full round-trip integration test when the fixture exists."
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/tests.rs::resolve_to_target_round_trip_integration",
+      "id": "rust:src-tauri/src/phone/mailbox/tests/project_refresh.rs::resolve_to_target_round_trip_integration",
       "category": "placeholder-rust-test",
       "owner": "dev-rust",
       "issue": 228,
@@ -194,7 +194,7 @@
       "resolution": "Run manually with AC_STAGE_D_LOCK_ORDER_DRIVE=1 cargo test --lib -- --ignored --test-threads=1 --exact cli::team::tests::cli_member_lock_order_inversion_driver."
     },
     {
-      "id": "rust:src-tauri/src/cli/workgroup.rs::tests::cli_workgroup_lock_order_inversion_child",
+      "id": "rust:src-tauri/src/cli/workgroup/tests.rs::cli_workgroup_lock_order_inversion_child",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 1063,
@@ -202,7 +202,7 @@
       "resolution": "Stays ignored by design as a spawn-target helper. Exercised by the Stage E cross-process parent and in-process via the driven-path proof AC_STAGE_D_LOCK_ORDER_DRIVE=1 cargo test --lib -- --ignored --test-threads=1 --exact cli::workgroup::tests::cli_workgroup_lock_order_inversion_driver."
     },
     {
-      "id": "rust:src-tauri/src/cli/workgroup.rs::tests::cli_workgroup_lock_order_inversion_driver",
+      "id": "rust:src-tauri/src/cli/workgroup/tests.rs::cli_workgroup_lock_order_inversion_driver",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 1063,
@@ -218,7 +218,7 @@
       "resolution": "Run as Stage F acceptance or manually with cargo test --release --lib -- --ignored --test-threads=1 --exact config::seed_manifest::tests::stage_e_conformance::bench_adversarial_parser_memory_stays_bounded."
     },
     {
-      "id": "rust:src-tauri/src/config/config_seed.rs::tests::bench_end_to_end_config_staging_1k_10k_100k",
+      "id": "rust:src-tauri/src/config/config_seed/tests.rs::bench_end_to_end_config_staging_1k_10k_100k",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
       "issue": 1064,

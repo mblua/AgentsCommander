@@ -1,4 +1,4 @@
-use super::super::*;
+use super::*;
 use serde_json::json;
 
 fn row(id: &str, command: &str, order: Value, marker: &str) -> Value {

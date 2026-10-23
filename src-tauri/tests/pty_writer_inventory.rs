@@ -118,7 +118,13 @@ fn every_production_pty_writer_is_in_the_explicit_permit_inventory() {
             "src/commands/pty.rs",
             "src/phone/mailbox/self_switch.rs",
             "src/pty/inject.rs",
+            // Moved out of pty::inject: its permit-write tests.
+            "src/pty/inject/tests/submit.rs",
             "src/pty/manager.rs",
+            // Moved out of pty::manager: the write_with_permit body and its tests.
+            "src/pty/manager/route_proof.rs",
+            "src/pty/manager/tests.rs",
+            "src/pty/manager/tests/response_close_writer.rs",
             "src/web/commands.rs",
             "src/web/mod.rs",
         ],

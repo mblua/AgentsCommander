@@ -1,4 +1,4 @@
-use super::super::*;
+use super::*;
 use serde_json::json;
 
 /// One remote file with a single `byCommand` stem, shaped like the published file.

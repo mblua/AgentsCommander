@@ -94,6 +94,7 @@ impl fmt::Debug for ModuleBody {
 struct ModuleIndex {
     bodies: Vec<ModuleBody>,
     declared_modules: BTreeSet<String>,
+    test_only_sources: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -303,6 +304,29 @@ fn descendant_base_for_source(source: &Path) -> Result<PathBuf, GuardError> {
     }
 }
 
+fn canonicalize(path: &Path, operation: &'static str) -> Result<PathBuf, GuardError> {
+    fs::canonicalize(path).map_err(|error| {
+        GuardError::new(
+            operation,
+            format!("could not canonicalize {}: {error}", path.display()),
+        )
+    })
+}
+
+/// Base that `#[path]` attributes resolve against for modules declared in `parent`.
+fn declaration_base(parent: &ModuleBody) -> Result<PathBuf, GuardError> {
+    if parent.inline {
+        return Ok(parent.descendant_base.clone());
+    }
+    let base = parent.source.parent().ok_or_else(|| {
+        GuardError::new(
+            "module declaration base",
+            format!("source has no parent: {}", parent.source.display()),
+        )
+    })?;
+    Ok(base.to_path_buf())
+}
+
 struct ModuleTreeBuilder {
     manifest_root: PathBuf,
     index: ModuleIndex,
@@ -317,6 +341,7 @@ impl ModuleTreeBuilder {
             index: ModuleIndex {
                 bodies: Vec::new(),
                 declared_modules: BTreeSet::new(),
+                test_only_sources: BTreeSet::new(),
             },
             out_of_line_owners: BTreeMap::new(),
             active_sources: Vec::new(),
@@ -328,12 +353,7 @@ impl ModuleTreeBuilder {
         path: &Path,
         operation: &'static str,
     ) -> Result<PathBuf, GuardError> {
-        let canonical = fs::canonicalize(path).map_err(|error| {
-            GuardError::new(
-                operation,
-                format!("could not canonicalize {}: {error}", path.display()),
-            )
-        })?;
+        let canonical = canonicalize(path, operation)?;
         render_relative(&self.manifest_root, &canonical)?;
         Ok(canonical)
     }
@@ -395,21 +415,7 @@ impl ModuleTreeBuilder {
         let name = unraw(&item.ident);
         let direct_path = direct_path_attribute(item)?;
         let candidates = if let Some(path) = direct_path {
-            let declaration_base = if parent.inline {
-                parent.descendant_base.clone()
-            } else {
-                parent
-                    .source
-                    .parent()
-                    .ok_or_else(|| {
-                        GuardError::new(
-                            "module declaration base",
-                            format!("source has no parent: {}", parent.source.display()),
-                        )
-                    })?
-                    .to_path_buf()
-            };
-            vec![declaration_base.join(path)]
+            vec![declaration_base(parent)?.join(path)]
         } else {
             vec![
                 parent.descendant_base.join(format!("{name}.rs")),
@@ -461,20 +467,7 @@ impl ModuleTreeBuilder {
 
         let mut sources = vec![self.conventional_source(parent, item)?];
         if !conditional.is_empty() {
-            let declaration_base = if parent.inline {
-                parent.descendant_base.clone()
-            } else {
-                parent
-                    .source
-                    .parent()
-                    .ok_or_else(|| {
-                        GuardError::new(
-                            "module declaration base",
-                            format!("source has no parent: {}", parent.source.display()),
-                        )
-                    })?
-                    .to_path_buf()
-            };
+            let declaration_base = declaration_base(parent)?;
             for variant in conditional {
                 let candidate = declaration_base.join(&variant);
                 if !candidate.is_file() {
@@ -497,6 +490,37 @@ impl ModuleTreeBuilder {
         Ok(sources)
     }
 
+    /// Records the files of an out-of-line test-only module and, recursively, of
+    /// the out-of-line modules they declare. None of them is indexed as production.
+    fn record_test_only_sources(
+        &mut self,
+        parent: &ModuleBody,
+        module: &ItemMod,
+    ) -> Result<(), GuardError> {
+        if module.content.is_some() {
+            return Ok(());
+        }
+        for source in self.out_of_line_sources(parent, module)? {
+            let relative = render_relative(&self.manifest_root, &source)?;
+            let body = ModuleBody {
+                module_id: format!("{}::{}", parent.module_id, unraw(&module.ident)),
+                body_id: format!("{relative}@test-only"),
+                descendant_base: descendant_base_for_source(&source)?,
+                items: self.parse_source(&source)?,
+                inline: false,
+                relative_source: relative.clone(),
+                source,
+            };
+            self.index.test_only_sources.insert(relative);
+            for item in &body.items {
+                if let Item::Mod(child) = item {
+                    self.record_test_only_sources(&body, child)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn index_body(&mut self, body: ModuleBody) -> Result<(), GuardError> {
         self.index.declared_modules.insert(body.module_id.clone());
         self.index.bodies.push(body.clone());
@@ -507,6 +531,8 @@ impl ModuleTreeBuilder {
                 continue;
             };
             if is_exact_cfg_test(module) {
+                // Not indexed, but a `#[cfg(test)] mod x;` file is still declared.
+                self.record_test_only_sources(&body, module)?;
                 continue;
             }
             let name = unraw(&module.ident);
@@ -603,15 +629,7 @@ fn build_module_index(
             "crate ID must be explicit and nonempty",
         ));
     }
-    let canonical_manifest = fs::canonicalize(manifest_root).map_err(|error| {
-        GuardError::new(
-            "manifest canonicalization",
-            format!(
-                "could not canonicalize {}: {error}",
-                manifest_root.display()
-            ),
-        )
-    })?;
+    let canonical_manifest = canonicalize(manifest_root, "manifest canonicalization")?;
     let mut builder = ModuleTreeBuilder::new(canonical_manifest);
     let crate_root = builder.canonical_source(crate_root_file, "crate-root selection")?;
     builder.claim_out_of_line_source(crate_id, &crate_root)?;
@@ -1171,24 +1189,8 @@ fn analyze_guard(
         ));
     }
 
-    let canonical_manifest = fs::canonicalize(manifest_root).map_err(|error| {
-        GuardError::new(
-            "manifest canonicalization",
-            format!(
-                "could not canonicalize {}: {error}",
-                manifest_root.display()
-            ),
-        )
-    })?;
-    let canonical_crate_root = fs::canonicalize(crate_root_file).map_err(|error| {
-        GuardError::new(
-            "crate-root selection",
-            format!(
-                "could not canonicalize {}: {error}",
-                crate_root_file.display()
-            ),
-        )
-    })?;
+    let canonical_manifest = canonicalize(manifest_root, "manifest canonicalization")?;
+    let canonical_crate_root = canonicalize(crate_root_file, "crate-root selection")?;
     render_relative(&canonical_manifest, &canonical_crate_root)?;
 
     let mut report = GuardReport {
@@ -1196,12 +1198,7 @@ fn analyze_guard(
         dependencies: BTreeSet::new(),
     };
     for spec in source_specs {
-        let canonical_source = fs::canonicalize(&spec.path).map_err(|error| {
-            GuardError::new(
-                "target source read",
-                format!("could not canonicalize {}: {error}", spec.path.display()),
-            )
-        })?;
+        let canonical_source = canonicalize(&spec.path, "target source read")?;
         let relative_source = render_relative(&canonical_manifest, &canonical_source)?;
         let source = fs::read_to_string(&canonical_source).map_err(|error| {
             GuardError::new(
@@ -2088,6 +2085,12 @@ impl Fixture {
         }
     }
 
+    fn with_telegram(label: &str) -> Self {
+        let fixture = Self::new(label);
+        fixture.write("src/lib.rs", "mod telegram;\n");
+        fixture
+    }
+
     fn write(&self, relative: &str, text: &str) {
         let path = self.manifest.join(relative);
         if let Some(parent) = path.parent() {
@@ -2227,8 +2230,7 @@ impl Drop for Fixture {
 }
 
 fn inline_spelling_report(label: &str, body: &str) -> Result<GuardReport, GuardError> {
-    let fixture = Fixture::new(label);
-    fixture.write("src/lib.rs", "mod telegram;\n");
+    let fixture = Fixture::with_telegram(label);
     fixture.write(
         "src/telegram.rs",
         &format!(
@@ -2251,8 +2253,7 @@ fn inline_spelling_report(label: &str, body: &str) -> Result<GuardReport, GuardE
 }
 
 fn out_of_line_spelling_report(label: &str, probe: &str) -> Result<GuardReport, GuardError> {
-    let fixture = Fixture::new(label);
-    fixture.write("src/lib.rs", "mod telegram;\n");
+    let fixture = Fixture::with_telegram(label);
     fixture.write(
         "src/telegram.rs",
         "pub mod bridge { pub struct BridgeLogger; }\npub mod claude_watcher;\n",
@@ -2390,8 +2391,7 @@ fn cfg_disabled_out_of_line_spelling_rows_are_scanned() {
 
 #[test]
 fn recursively_nested_cfg_attr_path_variants_scan_every_alternative() {
-    let fixture = Fixture::new("21-nested-cfg-attr-raw-child");
-    fixture.write("src/lib.rs", "mod telegram;\n");
+    let fixture = Fixture::with_telegram("21-nested-cfg-attr-raw-child");
     fixture.write(
         "src/telegram.rs",
         "pub mod bridge { pub struct BridgeLogger; }\npub mod claude_watcher;\n",
@@ -2559,29 +2559,29 @@ fn alias_conflicts_cycles_and_globs_fail_closed() {
     }
 }
 
+fn production_index() -> ModuleIndex {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
+        .expect("production module index should build")
+}
+
 #[test]
 fn production_moved_symbols_and_all_seven_methods_exist_once_at_the_destination() {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
-        .expect("production module index should build");
+    let index = production_index();
     verify_exact_moved_symbols(&index, CRATE_ID)
         .unwrap_or_else(|error| panic!("moved-symbol proof failed: {error}"));
 }
 
 #[test]
 fn production_interface_is_exactly_telegram_internal_and_canonical() {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
-        .expect("production module index should build");
+    let index = production_index();
     verify_exact_interface(&index, CRATE_ID)
         .unwrap_or_else(|error| panic!("exact interface proof failed: {error}"));
 }
 
 #[test]
 fn production_output_module_owns_the_seam_alone() {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
-        .expect("production module index should build");
+    let index = production_index();
     let report = analyze_module_index(&index, CRATE_ID, OUTPUT_MODULE)
         .unwrap_or_else(|error| panic!("output guard analysis failed:\n{error}"));
     require_exact_output_report(&report)
@@ -2590,9 +2590,7 @@ fn production_output_module_owns_the_seam_alone() {
 
 #[test]
 fn production_claude_and_codex_reach_output_without_bridge() {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
-        .expect("production module index should build");
+    let index = production_index();
     // Both watchers keep their `use super::*;` inside a `#[cfg(test)] mod`, which
     // `index_body` skips, so no glob reaches `build_scope`. Lifting one to the top
     // level would abort this analysis with "glob import forbidden".
@@ -2655,12 +2653,12 @@ fn production_claude_and_codex_reach_output_without_bridge() {
 #[test]
 fn production_every_telegram_source_is_reachable_from_the_module_tree() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
-        .expect("production module index should build");
+    let index = production_index();
     let indexed = index
         .bodies
         .iter()
         .map(|body| body.relative_source.clone())
+        .chain(index.test_only_sources.iter().cloned())
         .collect::<BTreeSet<_>>();
 
     let mut on_disk = BTreeSet::new();
@@ -2782,8 +2780,7 @@ fn visibility_matrix_distinguishes_canonical_shorthand_from_path_spelling() {
 
 #[test]
 fn moved_symbol_map_preserves_duplicates_locations_and_rejects_local_substitutes() {
-    let duplicate = Fixture::new("duplicate-symbol-bodies");
-    duplicate.write("src/lib.rs", "mod telegram;\n");
+    let duplicate = Fixture::with_telegram("duplicate-symbol-bodies");
     duplicate.write(
         "src/telegram.rs",
         "pub mod claude_watcher {}\n#[cfg(unix)] pub mod output { pub struct BridgeLogger; } #[cfg(windows)] pub mod output { pub struct BridgeLogger; }\n",
@@ -2797,8 +2794,7 @@ fn moved_symbol_map_preserves_duplicates_locations_and_rejects_local_substitutes
     assert_eq!(duplicate_rows.len(), 2);
     assert_ne!(duplicate_rows[0].body_id, duplicate_rows[1].body_id);
 
-    let misplaced = Fixture::new("misplaced-inherent-method");
-    misplaced.write("src/lib.rs", "mod telegram;\n");
+    let misplaced = Fixture::with_telegram("misplaced-inherent-method");
     misplaced.write(
         "src/telegram.rs",
         "pub mod claude_watcher {}\npub mod output { pub struct BridgeLogger; impl BridgeLogger { pub fn new() -> Self { Self } pub fn log(&mut self) {} } }\npub mod bridge { impl crate::telegram::output::BridgeLogger { pub fn log(&mut self) {} } }\n",
@@ -2818,8 +2814,7 @@ fn moved_symbol_map_preserves_duplicates_locations_and_rejects_local_substitutes
         .iter()
         .any(|row| row.body_id.contains("::bridge#")));
 
-    let local = Fixture::new("local-item-not-definition");
-    local.write("src/lib.rs", "mod telegram;\n");
+    let local = Fixture::with_telegram("local-item-not-definition");
     local.write(
         "src/telegram.rs",
         "pub mod claude_watcher {}\npub mod output { fn wrapper() { struct BridgeLogger; } }\n",
@@ -2840,8 +2835,7 @@ fn module_tree_resolves_both_conventional_source_forms() {
         ("name-rs", "src/telegram.rs"),
         ("name-mod-rs", "src/telegram/mod.rs"),
     ] {
-        let fixture = Fixture::new(label);
-        fixture.write("src/lib.rs", "mod telegram;\n");
+        let fixture = Fixture::with_telegram(label);
         fixture.write(telegram_source, "pub mod claude_watcher {}\n");
         let index = fixture.index().expect("conventional source should resolve");
         assert!(index.declared_modules.contains("fixture::telegram"));
@@ -2853,8 +2847,7 @@ fn module_tree_resolves_both_conventional_source_forms() {
 
 #[test]
 fn module_tree_rejects_ambiguous_and_missing_conventional_sources() {
-    let ambiguous = Fixture::new("ambiguous");
-    ambiguous.write("src/lib.rs", "mod telegram;\n");
+    let ambiguous = Fixture::with_telegram("ambiguous");
     ambiguous.write("src/telegram.rs", "");
     ambiguous.write("src/telegram/mod.rs", "");
     let ambiguous_error = ambiguous
@@ -2867,8 +2860,7 @@ fn module_tree_rejects_ambiguous_and_missing_conventional_sources() {
         ambiguous_error.contains("telegram\\mod.rs") || ambiguous_error.contains("telegram/mod.rs")
     );
 
-    let missing = Fixture::new("missing");
-    missing.write("src/lib.rs", "mod telegram;\n");
+    let missing = Fixture::with_telegram("missing");
     let missing_error = missing
         .index()
         .expect_err("zero candidates must fail")
@@ -2880,8 +2872,7 @@ fn module_tree_rejects_ambiguous_and_missing_conventional_sources() {
 
 #[test]
 fn nested_inline_modules_share_a_source_without_losing_body_identity() {
-    let fixture = Fixture::new("nested-inline");
-    fixture.write("src/lib.rs", "mod telegram;\n");
+    let fixture = Fixture::with_telegram("nested-inline");
     fixture.write(
         "src/telegram.rs",
         "pub mod bridge {}\npub mod claude_watcher { mod nested { use super::super::bridge::Forbidden; } }\n",
@@ -2908,8 +2899,7 @@ fn nested_inline_modules_share_a_source_without_losing_body_identity() {
 
 #[test]
 fn cfg_disjoint_inline_variants_keep_distinct_scopes_and_scan_the_second_body() {
-    let fixture = Fixture::new("cfg-inline-variants");
-    fixture.write("src/lib.rs", "mod telegram;\n");
+    let fixture = Fixture::with_telegram("cfg-inline-variants");
     fixture.write(
         "src/telegram.rs",
         "pub mod bridge {}\n#[cfg(unix)] pub mod claude_watcher { fn first() {} }\n#[cfg(windows)] pub mod claude_watcher { use crate::telegram::bridge::Forbidden; }\n",
@@ -2934,8 +2924,7 @@ fn cfg_disjoint_inline_variants_keep_distinct_scopes_and_scan_the_second_body() 
 
 #[test]
 fn cfg_disjoint_out_of_line_variants_scan_every_selected_file() {
-    let fixture = Fixture::new("cfg-out-of-line-variants");
-    fixture.write("src/lib.rs", "mod telegram;\n");
+    let fixture = Fixture::with_telegram("cfg-out-of-line-variants");
     fixture.write(
         "src/telegram.rs",
         "pub mod bridge {}\n#[cfg(unix)] #[path = \"claude_a.rs\"] pub mod claude_watcher;\n#[cfg(windows)] #[path = \"claude_b.rs\"] pub mod claude_watcher;\n",
@@ -2964,8 +2953,7 @@ fn cfg_disjoint_out_of_line_variants_scan_every_selected_file() {
 
 #[test]
 fn module_tree_fails_on_source_set_shrink_and_zero_target() {
-    let fixture = Fixture::new("source-set-shrink");
-    fixture.write("src/lib.rs", "mod telegram;\n");
+    let fixture = Fixture::with_telegram("source-set-shrink");
     fixture.write("src/telegram.rs", "pub mod claude_watcher {}\n");
     let index = fixture.index().expect("fixture tree should index");
     let report = analyze_module_index(&index, "fixture", "fixture::telegram::claude_watcher")

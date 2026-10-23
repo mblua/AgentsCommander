@@ -1,8 +1,8 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{self, Command, Output, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::process::{self, Command};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Subcommand};
 use serde::Serialize;
@@ -14,11 +14,16 @@ use crate::commands::role_templates::{
     AgencyTemplatesManifest, AGENCY_MANIFEST_FILE, AGENCY_TEMPLATES_DIR,
 };
 
+mod git;
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+use git::run_process_with_timeout;
+use git::{fetch_repo_with_git, resolve_commit_with_git};
+
 pub const DEFAULT_REPO: &str = "https://github.com/msitarzewski/agency-agents";
 pub const DEFAULT_REFERENCE: &str = "main";
-const GIT_LS_REMOTE_TIMEOUT: Duration = Duration::from_secs(30);
-const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-const GIT_CHECKOUT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -167,7 +172,9 @@ impl CacheLock {
                         continue;
                     }
                     return Err(format!(
-                        "Agency template cache lock exists at {}; another agency-templates update is already running or recovery is required",
+                        "Agency template cache lock exists at {}; \
+                         another agency-templates update is already running \
+                         or recovery is required",
                         path.display()
                     ));
                 }
@@ -373,7 +380,8 @@ fn list(args: AgencyTemplatesListArgs) -> Result<(), String> {
         }
         Err(e) if e.contains("already running") => {
             return Err(format!(
-                "Agency template cache is locked; run agency-templates status and retry after the updater finishes ({})",
+                "Agency template cache is locked; run agency-templates status \
+                 and retry after the updater finishes ({})",
                 e
             ));
         }
@@ -497,179 +505,6 @@ fn parse_github_repo(input: &str) -> Result<(), String> {
         return Err("Agency repository must be https://github.com/<owner>/<repo>".into());
     }
     Ok(())
-}
-
-fn run_git_with_timeout(
-    current_dir: Option<&Path>,
-    args: &[&str],
-    timeout: Duration,
-) -> Result<Output, String> {
-    run_process_with_timeout("git", current_dir, args, timeout)
-        .map_err(|e| format!("Failed to run git {:?}: {}", args, e))
-}
-
-fn run_process_with_timeout(
-    program: &str,
-    current_dir: Option<&Path>,
-    args: &[&str],
-    timeout: Duration,
-) -> Result<Output, String> {
-    let mut cmd = Command::new(program);
-    crate::pty::credentials::scrub_credentials_from_std_command(&mut cmd);
-    crate::config::agent_path::apply_search_path_to_std_command(&mut cmd);
-    if let Some(dir) = current_dir {
-        cmd.current_dir(dir);
-    }
-    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("spawn failed for {} {:?}: {}", program, args, e))?;
-
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "failed to capture stdout".to_string())?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "failed to capture stderr".to_string())?;
-
-    let stdout_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let result = stdout.read_to_end(&mut bytes);
-        (result, bytes)
-    });
-    let stderr_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let result = stderr.read_to_end(&mut bytes);
-        (result, bytes)
-    });
-
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|e| format!("wait failed for {} {:?}: {}", program, args, e))?
-        {
-            break status;
-        }
-
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            let stdout = join_reader(stdout_reader, "stdout")?;
-            let stderr = join_reader(stderr_reader, "stderr")?;
-            let stderr_text = String::from_utf8_lossy(&stderr);
-            return Err(format!(
-                "{} {:?} timed out after {} seconds; killed and reaped. stderr: {} stdout_bytes={}",
-                program,
-                args,
-                timeout.as_secs(),
-                stderr_text.trim(),
-                stdout.len()
-            ));
-        }
-
-        std::thread::sleep(Duration::from_millis(50));
-    };
-
-    let stdout = join_reader(stdout_reader, "stdout")?;
-    let stderr = join_reader(stderr_reader, "stderr")?;
-
-    Ok(Output {
-        status,
-        stdout,
-        stderr,
-    })
-}
-
-fn join_reader(
-    reader: std::thread::JoinHandle<(std::io::Result<usize>, Vec<u8>)>,
-    stream_name: &str,
-) -> Result<Vec<u8>, String> {
-    let (result, bytes) = reader
-        .join()
-        .map_err(|_| format!("{stream_name} reader thread panicked"))?;
-    result.map_err(|e| format!("{stream_name} read failed: {e}"))?;
-    Ok(bytes)
-}
-
-fn resolve_commit_with_git(repo: &str, reference: &str) -> Result<String, String> {
-    #[cfg(test)]
-    if let Ok(commit) = std::env::var("AGENTSCOMMANDER_AGENCY_TEST_COMMIT") {
-        let _ = (repo, reference);
-        return Ok(commit);
-    }
-
-    let output = run_git_with_timeout(None, &["ls-remote", repo, reference], GIT_LS_REMOTE_TIMEOUT)
-        .map_err(|e| {
-            format!(
-                "Failed to run git. Install git or use an environment where git is on PATH: {}",
-                e
-            )
-        })?;
-    if !output.status.success() {
-        return Err(format!(
-            "Failed to resolve Agency repository ref with git ls-remote: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let sha = stdout
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .find(|candidate| candidate.len() == 40 && candidate.chars().all(|c| c.is_ascii_hexdigit()))
-        .ok_or_else(|| "git ls-remote did not return a 40-character commit sha".to_string())?;
-    if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err("git ls-remote returned an invalid sha".into());
-    }
-    Ok(sha.to_string())
-}
-
-fn fetch_repo_with_git(repo: &str, commit: &str, config_dir: &Path) -> Result<PathBuf, String> {
-    let temp = config_dir.join(format!(
-        "{}.download-{}",
-        AGENCY_TEMPLATES_DIR,
-        uuid::Uuid::new_v4()
-    ));
-    fs::create_dir_all(&temp).map_err(|e| {
-        format!(
-            "Failed to create Agency download dir {}: {}",
-            temp.display(),
-            e
-        )
-    })?;
-    let run = |args: &[&str], timeout: Duration| -> Result<(), String> {
-        let output = run_git_with_timeout(Some(&temp), args, timeout)?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "git {:?} failed: {}",
-                args,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ))
-        }
-    };
-    run(&["init", "--quiet"], GIT_CHECKOUT_TIMEOUT)?;
-    run(&["remote", "add", "origin", repo], GIT_CHECKOUT_TIMEOUT)?;
-    run(
-        &["fetch", "--depth", "1", "origin", commit],
-        GIT_FETCH_TIMEOUT,
-    )?;
-    run(
-        &["checkout", "--quiet", "--detach", commit],
-        GIT_CHECKOUT_TIMEOUT,
-    )?;
-    Ok(temp)
 }
 
 pub(crate) fn normalize_extracted_repo_to_cache(
@@ -998,299 +833,5 @@ fn cleanup_publish_residue(config_dir: &Path) {
                 let _ = fs::remove_dir_all(entry.path());
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn manifest(template_count: usize) -> AgencyTemplatesManifest {
-        AgencyTemplatesManifest {
-            repo: "https://github.com/example/agency-agents".into(),
-            reference: "main".into(),
-            commit: "0123456789abcdef0123456789abcdef01234567".into(),
-            template_count,
-        }
-    }
-
-    fn write_valid_cache(root: &Path) {
-        let role_dir = root.join("engineering").join("planner");
-        fs::create_dir_all(&role_dir).expect("create role dir");
-        fs::write(
-            role_dir.join("Role.md"),
-            "---\nname: Planner\n---\n\nPlan backend work.\n",
-        )
-        .expect("write role");
-        fs::write(
-            root.join(AGENCY_MANIFEST_FILE),
-            serde_json::to_string_pretty(&manifest(1)).expect("manifest json"),
-        )
-        .expect("write manifest");
-    }
-
-    #[test]
-    fn bounded_process_timeout_kills_and_reaps_child() {
-        #[cfg(windows)]
-        let (program, args) = (
-            "powershell.exe",
-            vec!["-NoProfile", "-Command", "Start-Sleep -Seconds 5"],
-        );
-        #[cfg(not(windows))]
-        let (program, args) = ("sh", vec!["-c", "sleep 5"]);
-
-        let err =
-            run_process_with_timeout(program, None, &args, Duration::from_millis(100)).unwrap_err();
-
-        assert!(err.contains("timed out"), "unexpected error: {err}");
-        assert!(err.contains("killed and reaped"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn normalize_rejects_directory_named_md_role_entry() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let extracted = tmp.path().join("extracted");
-        let division = extracted.join("Engineering");
-        let staging = tmp.path().join("staging");
-        fs::create_dir_all(division.join("Planner.md")).expect("create directory named md");
-
-        let err = normalize_extracted_repo_to_cache(&extracted, &staging, manifest(0))
-            .expect_err("directory named md must be rejected");
-
-        assert!(err.contains("not a regular file"));
-    }
-
-    #[test]
-    fn normalize_skips_root_metadata_files_and_loads_valid_division() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let extracted = tmp.path().join("extracted");
-        let division = extracted.join("Engineering");
-        let staging = tmp.path().join("staging");
-        fs::create_dir_all(&division).expect("create division");
-        for name in [
-            ".gitattributes",
-            ".gitignore",
-            "CONTRIBUTING.md",
-            "LICENSE",
-            "README.md",
-            "SECURITY.md",
-        ] {
-            fs::write(extracted.join(name), "repo metadata\n").expect("write metadata file");
-        }
-        fs::write(
-            division.join("Planner.md"),
-            "---\nname: Planner\n---\n\nPlan backend work.\n",
-        )
-        .expect("write role");
-
-        normalize_extracted_repo_to_cache(&extracted, &staging, manifest(0))
-            .expect("normalize repo");
-
-        let templates = collect_agency_templates_from_dir(&staging).expect("collect templates");
-        assert_eq!(templates.len(), 1);
-        assert!(staging
-            .join("engineering")
-            .join("planner")
-            .join("Role.md")
-            .is_file());
-    }
-
-    #[test]
-    fn normalize_and_publish_handles_upstream_worktree_with_nested_roles() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_dir = tmp.path().join("config");
-        let extracted = tmp.path().join("extracted");
-        let direct = extracted.join("Game Development");
-        let nested = direct.join("Unity");
-        let staging = tmp.path().join("staging");
-        fs::create_dir_all(&config_dir).expect("create config dir");
-        fs::create_dir_all(&nested).expect("create nested division");
-        for name in [
-            ".gitattributes",
-            ".gitignore",
-            "CONTRIBUTING.md",
-            "LICENSE",
-            "README.md",
-            "SECURITY.md",
-        ] {
-            fs::write(extracted.join(name), "repo metadata\n").expect("write metadata file");
-        }
-        fs::write(
-            direct.join("game-designer.md"),
-            "---\nname: Game Designer\n---\n\nDesign game systems.\n",
-        )
-        .expect("write direct role");
-        fs::write(
-            nested.join("unity-architect.md"),
-            "---\nname: Unity Architect\n---\n\nDesign\u{4} Unity architecture.\n",
-        )
-        .expect("write nested role");
-
-        normalize_extracted_repo_to_cache(&extracted, &staging, manifest(0))
-            .expect("normalize repo");
-        publish_staging(&config_dir, &staging).expect("publish cache");
-
-        let live = agency_templates_dir(&config_dir);
-        let manifest: AgencyTemplatesManifest = serde_json::from_str(
-            &fs::read_to_string(live.join(AGENCY_MANIFEST_FILE)).expect("read manifest"),
-        )
-        .expect("parse manifest");
-        assert_eq!(manifest.template_count, 2);
-        assert!(live
-            .join("game-development")
-            .join("game-designer")
-            .join("Role.md")
-            .is_file());
-        assert!(live
-            .join("game-development")
-            .join("unity-unity-architect")
-            .join("Role.md")
-            .is_file());
-        let nested_body = fs::read_to_string(
-            live.join("game-development")
-                .join("unity-unity-architect")
-                .join("Role.md"),
-        )
-        .expect("read nested role");
-        assert!(!nested_body.contains('\u{4}'));
-    }
-
-    #[test]
-    fn normalize_rejects_symlinked_upstream_md_role_file() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let extracted = tmp.path().join("extracted");
-        let division = extracted.join("Engineering");
-        let staging = tmp.path().join("staging");
-        fs::create_dir_all(&division).expect("create division");
-        let outside = tmp.path().join("outside.md");
-        fs::write(&outside, "External role body.\n").expect("write outside target");
-        let link = division.join("Planner.md");
-        if !try_symlink_file(&outside, &link) {
-            return;
-        }
-
-        let err = normalize_extracted_repo_to_cache(&extracted, &staging, manifest(0))
-            .expect_err("symlinked md must be rejected");
-
-        assert!(err.contains("symlink") || err.contains("reparse"));
-    }
-
-    #[test]
-    fn legacy_stale_lock_with_missing_live_cache_recovers_one_valid_previous_cache() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_dir = tmp.path();
-        let prev = config_dir.join(format!("{}.prev-one", AGENCY_TEMPLATES_DIR));
-        write_valid_cache(&prev);
-        let lock_path = config_dir.join(format!("{}.lock", AGENCY_TEMPLATES_DIR));
-        fs::write(&lock_path, "").expect("write legacy stale lock");
-
-        let lock = CacheLock::acquire(config_dir).expect("recover stale lock");
-        assert!(lock_path.exists(), "new lock should be held after recovery");
-        assert_eq!(
-            recover_interrupted_publish(config_dir).expect("recover previous cache"),
-            "recovered"
-        );
-        drop(lock);
-
-        assert!(agency_templates_dir(config_dir).is_dir());
-        assert!(!lock_path.exists(), "lock should be removed on drop");
-    }
-
-    #[test]
-    fn dead_owner_lock_is_replaced() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_dir = tmp.path();
-        let lock_path = config_dir.join(format!("{}.lock", AGENCY_TEMPLATES_DIR));
-        let dead_pid = 999_999;
-        if process_is_running(dead_pid) {
-            return;
-        }
-        fs::write(
-            &lock_path,
-            format!(r#"{{"pid":{},"createdUnixSecs":1}}"#, dead_pid),
-        )
-        .expect("write dead-owner lock");
-
-        let lock = CacheLock::acquire(config_dir).expect("replace dead-owner lock");
-        assert!(lock_path.exists(), "new lock should be held");
-        drop(lock);
-
-        assert!(!lock_path.exists(), "lock should be removed on drop");
-    }
-
-    #[test]
-    fn status_cache_at_recovers_valid_previous_cache() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_dir = tmp.path();
-        let prev = config_dir.join(format!("{}.prev-one", AGENCY_TEMPLATES_DIR));
-        write_valid_cache(&prev);
-
-        let status = status_cache_at(config_dir).expect("status recovers previous cache");
-
-        assert!(status.available);
-        assert!(agency_templates_dir(config_dir).is_dir());
-        assert!(!prev.exists(), "previous cache should be promoted");
-        assert_eq!(status.template_count, Some(1));
-    }
-
-    #[test]
-    fn status_cache_at_reports_live_lock_as_locked() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_dir = tmp.path();
-        let lock_path = config_dir.join(format!("{}.lock", AGENCY_TEMPLATES_DIR));
-        fs::write(
-            &lock_path,
-            format!(r#"{{"pid":{},"createdUnixSecs":1}}"#, process::id()),
-        )
-        .expect("write live lock");
-
-        let status = status_cache_at(config_dir).expect("locked status should be non-fatal");
-
-        assert!(!status.available);
-        assert_eq!(status.reason.as_deref(), Some("locked"));
-        fs::remove_file(lock_path).expect("cleanup live lock");
-    }
-
-    #[test]
-    fn update_cache_at_reports_already_current_without_printed_json() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_dir = tmp.path();
-        let live = agency_templates_dir(config_dir);
-        write_valid_cache(&live);
-        let current = current_manifest_if_valid(config_dir).expect("valid manifest");
-        std::env::set_var("AGENTSCOMMANDER_AGENCY_TEST_COMMIT", &current.commit);
-
-        let result = update_cache_at(
-            config_dir,
-            AgencyTemplatesUpdateArgs {
-                repo: current.repo.clone(),
-                reference: current.reference.clone(),
-                json: true,
-            },
-        )
-        .expect("already-current update should succeed");
-
-        std::env::remove_var("AGENTSCOMMANDER_AGENCY_TEST_COMMIT");
-        assert!(!result.updated);
-        assert_eq!(result.repo, current.repo);
-        assert_eq!(result.reference, current.reference);
-        assert_eq!(result.commit, current.commit);
-        assert_eq!(result.template_count, current.template_count);
-        assert_eq!(result.path, live.to_string_lossy().to_string());
-    }
-
-    #[cfg(unix)]
-    fn try_symlink_file(target: &Path, link: &Path) -> bool {
-        std::os::unix::fs::symlink(target, link).is_ok()
-    }
-
-    #[cfg(windows)]
-    fn try_symlink_file(target: &Path, link: &Path) -> bool {
-        std::os::windows::fs::symlink_file(target, link).is_ok()
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    fn try_symlink_file(_target: &Path, _link: &Path) -> bool {
-        false
     }
 }

@@ -214,7 +214,7 @@ fn assert_frozen(id: &str, hits: &[Hit], pin: &Pin) {
 #[test]
 fn the_inventory_is_the_certified_file_set() {
     let sources = rust_sources();
-    assert_eq!(sources.len(), 875, "inventory count");
+    assert_eq!(sources.len(), 1137, "inventory count");
     for (path, text) in &sources {
         assert!(path.starts_with("src-tauri/src/"), "path form: {path}");
         assert!(!path.contains('\\'), "path separator: {path}");
@@ -227,7 +227,7 @@ fn p1_is_frozen() {
     let pin = Pin {
         total: 139,
         distinct: 133,
-        sha256: "004060B04045327AFD6BC57AE23ACA0D36256F41E089E11F5861B61B9861D63F",
+        sha256: "0366ECB8C79763E5271C1C8B41F280E38C343F650E743726825B0775923A078C",
         per_file: &[
             ("cli/list_peers/tests/lean_json.rs", 1),
             ("commands/ac_discovery/replica_read.rs", 1),
@@ -235,7 +235,9 @@ fn p1_is_frozen() {
             ("commands/config/tests/selection_api/removal.rs", 6),
             ("commands/entity_creation/tests.rs", 8),
             ("commands/entity_creation/tests/replica_config.rs", 6),
-            ("commands/session/tests.rs", 12),
+            ("commands/session/tests/agent_stamps.rs", 2),
+            ("commands/session/tests/descriptor.rs", 6),
+            ("commands/session/tests/matched_selection.rs", 4),
             ("config/agent_command/matching.rs", 1),
             (
                 "config/coding_agent_mutations/tests/source_transition_driver/driver.rs",
@@ -258,8 +260,10 @@ fn p1_is_frozen() {
             ("config/root_agent/tests/config_merge.rs", 16),
             ("config/root_agent/tests/tracked_state.rs", 8),
             ("config/settings/source.rs", 1),
-            ("loops/delivery.rs", 4),
-            ("phone/mailbox/tests.rs", 8),
+            ("loops/delivery/tests.rs", 2),
+            ("loops/delivery/tests/restart.rs", 2),
+            ("phone/mailbox/tests/internal_live.rs", 1),
+            ("phone/mailbox/tests/notice_prefilter.rs", 7),
         ],
     };
     assert_frozen("P1", &line_census(QUOTED_KEY, Scope::NonOwners), &pin);
@@ -284,10 +288,10 @@ fn p3_is_frozen() {
     let pin = Pin {
         total: 2,
         distinct: 2,
-        sha256: "5D16F6EC8C0163F92C7AC529BE462CB348B5B4E3CA16949F599904B05335B733",
+        sha256: "8CF76D6BB90599382571CCCC7B574466091176167017CFA9940EAD749ED9ABFA",
         per_file: &[
             ("phone/mailbox/pty_authority.rs", 1),
-            ("phone/mailbox/tests.rs", 1),
+            ("phone/mailbox/tests/notice_prefilter.rs", 1),
         ],
     };
     assert_frozen("P3", &line_census(P3, Scope::All), &pin);
@@ -298,7 +302,7 @@ fn p4_is_frozen() {
     let pin = Pin {
         total: 14,
         distinct: 12,
-        sha256: "0F04B5F200FBE1B62B200FFA18464ECBE57AE9D4D80B7BEB32506BD696A938D1",
+        sha256: "33B59295390C3E478CA95851D86BF4B7E35EDDE9263D549EF82A35A5033154C7",
         per_file: &[
             ("cli/list_peers/discovery.rs", 4),
             ("config/agent_config.rs", 1),
@@ -307,7 +311,7 @@ fn p4_is_frozen() {
             ("phone/mailbox/internal_delivery.rs", 1),
             ("phone/mailbox/pty_authority.rs", 1),
             ("phone/mailbox/self_switch.rs", 1),
-            ("phone/mailbox/tests.rs", 2),
+            ("phone/mailbox/tests/notice_prefilter.rs", 2),
         ],
     };
     assert_frozen("P4", &line_census(P4, Scope::All), &pin);
@@ -318,7 +322,7 @@ fn p5_is_frozen() {
     let pin = Pin {
         total: 20,
         distinct: 18,
-        sha256: "5332803971EDE9A6458A46676622B8BD24C60194CFCDE24F882C60C72DF4F58F",
+        sha256: "351AA8CF66A0713C7338B3BB0F1D01D0D43256AC25BBC7ABD25D76311E9F32D1",
         per_file: &[
             ("cli/list_peers/discovery.rs", 4),
             ("config/agent_config.rs", 2),
@@ -328,7 +332,7 @@ fn p5_is_frozen() {
             ("phone/mailbox/internal_delivery.rs", 1),
             ("phone/mailbox/pty_authority.rs", 2),
             ("phone/mailbox/self_switch.rs", 1),
-            ("phone/mailbox/tests.rs", 3),
+            ("phone/mailbox/tests/notice_prefilter.rs", 3),
         ],
     };
     assert_frozen("P5", &whole_file_census(), &pin);
@@ -337,16 +341,17 @@ fn p5_is_frozen() {
 #[test]
 fn p6_is_frozen() {
     let pin = Pin {
-        total: 48,
-        distinct: 43,
-        sha256: "96EF08355BEFBE69EF75476DADB95F0682BB90F2AFEF7C1580E2682BEFE0F33F",
+        total: 50,
+        distinct: 45,
+        sha256: "F2A0832FB73819FFB8F683AE15C93CA7344BBC429A781599F464F0BF56039A87",
         per_file: &[
             ("commands/ac_discovery/tests/discovery.rs", 1),
             ("commands/config/tests/selection_api/error_code.rs", 1),
             ("commands/config/tests/selection_api/removal.rs", 1),
             ("commands/entity_creation/tests.rs", 2),
             ("commands/entity_creation/tests/replica_config.rs", 2),
-            ("commands/session/tests.rs", 2),
+            ("commands/session/tests/agent_stamps.rs", 1),
+            ("commands/session/tests/descriptor.rs", 1),
             ("config/agent_config.rs", 1),
             ("config/agent_config/load_probe_harness.rs", 1),
             ("config/agent_config/tests/loader.rs", 3),
@@ -368,15 +373,18 @@ fn p6_is_frozen() {
             ("config/coding_agent_profiles/tests/c4_state.rs", 1),
             ("config/coding_agent_profiles/tests/resolve.rs", 1),
             ("config/coding_agent_profiles/tests/selection_state.rs", 1),
-            ("config/instance_artifacts.rs", 2),
+            ("config/instance_artifacts.rs", 1),
+            ("config/instance_artifacts/names.rs", 1),
+            ("config/instance_artifacts/tests.rs", 1),
             ("config/local_config_io/tests.rs", 2),
-            ("config/naming_migration.rs", 4),
+            ("config/naming_migration.rs", 1),
+            ("config/naming_migration/ignore_rows.rs", 4),
             ("config/replica_identity.rs", 3),
             ("config/root_agent/tests/config_merge.rs", 1),
             ("config/root_agent/tests/tracked_state.rs", 1),
             ("config/settings/source.rs", 1),
             ("phone/mailbox/poller.rs", 1),
-            ("phone/mailbox/tests.rs", 3),
+            ("phone/mailbox/tests/notice_prefilter.rs", 3),
         ],
     };
     assert_frozen("P6", &line_census(P6, Scope::All), &pin);
@@ -387,7 +395,7 @@ fn p7_is_frozen() {
     let pin = Pin {
         total: 72,
         distinct: 51,
-        sha256: "FAFB3CD52D4E4A045128A1FC11E1CBA3C0655C8CDBF550AAED63AA9077166950",
+        sha256: "3FD404DFA5044997FDE5700EAA9C9D3E661CFFEF0EE71BE2E17B729AE578E459",
         per_file: &[
             ("config/agent_config.rs", 6),
             ("config/agent_config/load_probe_harness.rs", 1),
@@ -398,7 +406,7 @@ fn p7_is_frozen() {
             ("config/agent_config/tests/pair_activity.rs", 5),
             ("config/agent_config/tests/pair_fixture.rs", 2),
             ("config/agent_config/tests/sweep_and_writers.rs", 13),
-            ("config/local_config_io.rs", 2),
+            ("config/local_config_io/staging.rs", 2),
             ("config/local_config_io/tests.rs", 22),
             ("config/local_config_io/tests/pair.rs", 2),
             ("config/local_config_io/tests/pair_activity.rs", 9),
@@ -413,7 +421,7 @@ fn p8_is_frozen() {
     let pin = Pin {
         total: 215,
         distinct: 172,
-        sha256: "2ED3F0EF84B43B252CF10488AB9E014E272D0B5B7C65EEB28E57225A065318BA",
+        sha256: "B7F490965F035260607C2172953F4B874283FEBE69E8628A44D77DC10B98DD2A",
         per_file: &[
             ("config/agent_config.rs", 9),
             ("config/agent_config/load_probe_harness.rs", 2),
@@ -425,7 +433,8 @@ fn p8_is_frozen() {
             ("config/agent_config/tests/pair_activity.rs", 4),
             ("config/agent_config/tests/pair_fixture.rs", 4),
             ("config/agent_config/tests/sweep_and_writers.rs", 30),
-            ("config/local_config_io.rs", 4),
+            ("config/local_config_io/pair_reservation.rs", 1),
+            ("config/local_config_io/pair_revision.rs", 3),
             ("config/local_config_io/tests/pair.rs", 17),
             ("config/local_config_io/tests/pair_activity.rs", 6),
             ("config/local_config_io/tests/pair_activity/p22.rs", 1),

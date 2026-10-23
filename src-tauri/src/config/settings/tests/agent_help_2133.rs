@@ -1,4 +1,4 @@
-use super::super::*;
+use super::*;
 use std::collections::BTreeSet;
 
 fn settings_path_in(dir: &tempfile::TempDir) -> PathBuf {
