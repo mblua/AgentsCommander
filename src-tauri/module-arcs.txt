@@ -2443,6 +2443,7 @@ agentscommander_lib::session::manager::turn -> agentscommander_lib::pty::manager
 agentscommander_lib::session::manager::turn -> agentscommander_lib::session::manager
 agentscommander_lib::session::manager::turn -> agentscommander_lib::session::manager::carrier
 agentscommander_lib::session::manager::turn -> agentscommander_lib::session::session
+agentscommander_lib::session::profile::pty_submission -> agentscommander_lib::session::profile
 agentscommander_lib::session::remote_alerts -> agentscommander_lib::config::settings
 agentscommander_lib::session::remote_alerts -> agentscommander_lib::config::teams
 agentscommander_lib::session::remote_alerts -> agentscommander_lib::phone::mailbox
