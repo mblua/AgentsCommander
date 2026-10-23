@@ -84,7 +84,8 @@ pub struct BlockerProcess {
     /// Current working directory if this process was identified by the CWD fallback.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    /// Sample of paths inside the workgroup that this process holds. Capped at MAX_FILES_PER_PROCESS.
+    /// Sample of paths inside the workgroup that this process holds.
+    /// Capped at MAX_FILES_PER_PROCESS.
     pub files: Vec<String>,
 }
 
@@ -207,7 +208,9 @@ pub async fn diagnose_delete_root_blockers(
     );
 
     log::info!(
-        "[wg_delete_diagnostic] diagnostic done: live_sessions={}, exited_session_records_ignored={}, external_processes={}, restart_manager_available={}, restart_manager_error={}, raw_delete_error={}",
+        "[wg_delete_diagnostic] diagnostic done: live_sessions={}, \
+        exited_session_records_ignored={}, external_processes={}, restart_manager_available={}, \
+        restart_manager_error={}, raw_delete_error={}",
         report.live_sessions.len(),
         report.exited_session_records_ignored.len(),
         report.external_processes.len(),
@@ -490,7 +493,8 @@ fn scan_external_processes_windows(wg_dir: &Path) -> ExternalProcessScan {
         },
         (Ok(rm_processes), Err(cwd_err)) => {
             log::warn!(
-                "[wg_delete_diagnostic] CWD fallback scan failed; preserving Restart Manager result: {}",
+                "[wg_delete_diagnostic] CWD fallback scan failed; preserving Restart Manager \
+                result: {}",
                 cwd_err.message
             );
             ExternalProcessScan {
@@ -502,7 +506,8 @@ fn scan_external_processes_windows(wg_dir: &Path) -> ExternalProcessScan {
         }
         (Err(rm_err), Ok(cwd_processes)) => {
             log::warn!(
-                "[wg_delete_diagnostic] Restart Manager scan failed; preserving CWD fallback result: {}",
+                "[wg_delete_diagnostic] Restart Manager scan failed; preserving CWD fallback \
+                result: {}",
                 rm_err.message
             );
             ExternalProcessScan {
@@ -808,7 +813,8 @@ fn scan_restart_manager_processes_windows(
             Ok(s) => s,
             Err(e) => {
                 log::warn!(
-                    "[wg_delete_diagnostic] bulk-pass RmStartSession failed (giving up on this sub-batch of {}): {}",
+                    "[wg_delete_diagnostic] bulk-pass RmStartSession failed (giving up on this \
+                    sub-batch of {}): {}",
                     wide.len(),
                     e.message
                 );

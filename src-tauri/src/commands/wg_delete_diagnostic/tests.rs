@@ -590,7 +590,8 @@ fn collect_files_to_probe_orders_dirs_before_files() {
     match (first_file_idx, last_dir_idx) {
         (Some(file_i), Some(dir_i)) => assert!(
             dir_i < file_i,
-            "all dirs must precede all files in output; got dirs ending at {} but a file at {}; result={:?}",
+            "all dirs must precede all files in output; got dirs ending at {} but a file at {}; \
+            result={:?}",
             dir_i,
             file_i,
             result
