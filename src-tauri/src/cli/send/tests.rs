@@ -142,7 +142,10 @@ fn root_agent_command_clear_and_compact_are_rejected_before_outbox_write() {
     for command in ["clear", "compact"] {
         assert_eq!(
             validate_root_agent_delivery_kind(true, Some(command)),
-            Err("Root Agent messaging is file-based; use --send with a root-to-orchestrator Markdown file, not --command")
+            Err(
+                "Root Agent messaging is file-based; use --send with a root-to-orchestrator \
+                Markdown file, not --command"
+            )
         );
     }
 }

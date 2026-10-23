@@ -17,11 +17,14 @@ use crate::phone::types::OutboxMessage;
 ))]
 #[command(after_help = "\
 DELIVERY MODES:\n  \
-  wake            File messages inject into PTY and can spawn or respawn a persistent session. Logical PTY actions are capability- and idle-gated and can be terminally rejected before spawn.\n\n\
-ROUTING: Before delivery, the CLI validates that the sender can reach the destination based on team \
-membership and orchestrator rules (teams.json). If routing fails, the CLI exits immediately with code 1.\n\n\
-DISCOVERY: Use `list-peers-lean` to get valid agent names for --to. The \"name\" field in the JSON output \
-is the value to use.\n\n\
+  wake            File messages inject into PTY and can spawn or respawn a persistent session. \
+Logical PTY actions are capability- and idle-gated and can be terminally rejected before spawn.\n\n\
+ROUTING: Before delivery, the CLI validates that the sender can reach the destination based on \
+team \
+membership and orchestrator rules (teams.json). If routing fails, the CLI exits immediately with \
+code 1.\n\n\
+DISCOVERY: Use `list-peers-lean` to get valid agent names for --to. The \"name\" field in the JSON \
+output is the value to use.\n\n\
 FILE-BASED MESSAGING: --send <filename> delivers a Markdown file. For Room \
 replicas the file is resolved from <room-root>/messaging/<filename>. \
 For the Root Agent the file is resolved from <root-agent-dir>/messaging/<filename>. \
@@ -30,7 +33,12 @@ verified Room orchestrator replica names returned by list-peers-lean. \
 Orchestrator --to targets may include the Root Agent canonical name \
 `agentscommander://root-agent`; only identity-verified Room orchestrator \
 replicas may use it.\n\n\
-PRIVILEGED PTY INPUT: --pty-input and --pty-input-stdin submit validated exact UTF-8 text to one authorized coding-agent PTY. This never directly executes a host or container OS shell command. The caller's shell performs quoting and expansion before AC receives an argument, so prefer stdin for multiline, leading-hyphen, clipboard, process-list-sensitive, or otherwise sensitive text. `Queued` is not `Injected`; after a confirmation timeout keep the reported operation ID and do not resubmit under a new ID.\n\n\
+PRIVILEGED PTY INPUT: --pty-input and --pty-input-stdin submit validated exact UTF-8 text to one \
+authorized coding-agent PTY. This never directly executes a host or container OS shell command. \
+The caller's shell performs quoting and expansion before AC receives an argument, so prefer stdin \
+for multiline, leading-hyphen, clipboard, process-list-sensitive, or otherwise sensitive text. \
+`Queued` is not `Injected`; after a confirmation timeout keep the reported operation ID and do not \
+resubmit under a new ID.\n\n\
 DELIVERY CONFIRMATION: After queuing, send blocks up to --confirm-timeout seconds (default 90) \
 waiting for the app's poller to confirm delivery. This bounds ONLY the synchronous confirmation \
 handshake, not delivery itself: on confirmation timeout the CLI exits 1, but the message remains \
@@ -41,11 +49,13 @@ bounds only the --get-output response wait. On enqueue, the CLI prints `Queued: 
 stdout; a missing `Queued:` line means the message was NOT enqueued.")]
 pub struct SendArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
-    /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION MODEL.
+    /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION
+    /// MODEL.
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Destination agent name (e.g., "repos/my-project"). Use `list-peers-lean` to discover valid names
+    /// Destination agent name (e.g., "repos/my-project"). Use `list-peers-lean` to discover valid
+    /// names
     #[arg(long)]
     pub to: String,
 
@@ -148,7 +158,10 @@ fn validate_root_agent_delivery_kind(
     command: Option<&str>,
 ) -> Result<(), &'static str> {
     if root_is_root_agent && command.is_some() {
-        Err("Root Agent messaging is file-based; use --send with a root-to-orchestrator Markdown file, not --command")
+        Err(
+            "Root Agent messaging is file-based; use --send with a root-to-orchestrator Markdown \
+            file, not --command",
+        )
     } else {
         Ok(())
     }
@@ -358,7 +371,8 @@ fn reject_comanaged_queue_outbox(outbox_dir: &Path) -> Result<(), String> {
         .is_some_and(|canonical| resolved_queue_shape(&canonical) == Some(true));
     if resolved_queue_shape(outbox_dir) != Some(false) || aliased {
         return Err(format!(
-            "--outbox may not target the Co-managed provenance queue ({}); only the Co-managed supervisor writes there",
+            "--outbox may not target the Co-managed provenance queue ({}); only the Co-managed \
+                supervisor writes there",
             outbox_dir.display()
         ));
     }
@@ -789,7 +803,8 @@ fn execute_pty_input(args: SendArgs, root: String, text: String) -> i32 {
             .flatten()
             .is_some();
         eprintln!(
-            "Indeterminate: {injection_id} code={code} published={final_exists} correlatedArtifact={correlated_artifact}; do not resubmit under a new ID"
+            "Indeterminate: {injection_id} code={code} published={final_exists} \
+                correlatedArtifact={correlated_artifact}; do not resubmit under a new ID"
         );
         return 1;
     }
@@ -831,7 +846,9 @@ fn execute_pty_input(args: SendArgs, root: String, text: String) -> i32 {
         },
         Err("confirmation_timeout") => {
             eprintln!(
-                "Confirmation timeout: operation {injection_id} remains queued or actuating; do not resubmit under a new ID. Inspect its delivered, rejected, and indeterminate artifacts."
+                "Confirmation timeout: operation {injection_id} remains queued or actuating; do \
+                    not resubmit under a new ID. Inspect its delivered, rejected, and \
+                    indeterminate artifacts."
             );
             1
         }
@@ -981,7 +998,9 @@ pub fn execute(args: SendArgs) -> i32 {
     if root_is_root_agent {
         if !root_agent_target_allowed(&resolved_to, &effective_project_paths) {
             eprintln!(
-                "Error: root-agent routing rejected — '{}' is not a verified Room orchestrator replica. Use list-peers-lean from the Root Agent and pass one of its name values.",
+                "Error: root-agent routing rejected — '{}' is not a verified Room orchestrator \
+                    replica. Use list-peers-lean from the Root Agent and pass one of its name \
+                    values.",
                 resolved_to
             );
             return 1;
@@ -994,7 +1013,9 @@ pub fn execute(args: SendArgs) -> i32 {
         // cheap.
         if !coordinator_to_root_target_allowed(&sender, &effective_project_paths) {
             eprintln!(
-                "Error: routing rejected — '{}' is not a verified Room orchestrator replica and cannot message '{}'. Replies to the Root Agent are reserved for verified Room orchestrators.",
+                "Error: routing rejected — '{}' is not a verified Room orchestrator replica and \
+                    cannot message '{}'. Replies to the Root Agent are reserved for verified Room \
+                    orchestrators.",
                 sender,
                 crate::config::root_agent::ROOT_AGENT_SENDER
             );
@@ -1040,7 +1061,8 @@ pub fn execute(args: SendArgs) -> i32 {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!(
-                        "Error: --send requires --root under a `room-*` or legacy `wg-*` Room directory unless --root is the canonical Root Agent directory; {}",
+                        "Error: --send requires --root under a `room-*` or legacy `wg-*` Room \
+                            directory unless --root is the canonical Root Agent directory; {}",
                         e
                     );
                     return 1;
@@ -1199,7 +1221,8 @@ pub fn execute(args: SendArgs) -> i32 {
         pty_input: None,
     };
 
-    // Write to --outbox if specified, app outbox if root/master token, otherwise <root>/<local_dir>/outbox/
+    // Write to --outbox if specified, app outbox if root/master token, otherwise
+    // <root>/<local_dir>/outbox/
     let outbox_dir = if let Some(ref outbox_path) = args.outbox {
         PathBuf::from(outbox_path)
     } else if is_root {
