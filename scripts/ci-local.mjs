@@ -102,9 +102,16 @@ function rustChecks(results) {
     + `--clippy-exit ${clippyResult.status} --platform ${PLATFORM} --rustc-version ${pin}`;
   const cogResult = run(cog);
   fs.rmSync(jsonl, { force: true });
-  results.push([`cargo +${pin} clippy`, clippyResult]);
-  // CI runs this step with continue-on-error, so a red result warns and does not fail.
-  results.push(['complexity check (advisory, as in CI)', { ...cogResult, advisory: true }]);
+  // CI runs the complexity step with continue-on-error, so a red result warns and does not fail.
+  results.push(
+    [`cargo +${pin} clippy`, clippyResult],
+    ['complexity check (advisory, as in CI)', { ...cogResult, advisory: true }],
+  );
+}
+
+function summaryLabel({ ok, advisory }) {
+  if (ok) return 'ok  ';
+  return advisory ? 'WARN' : 'FAIL';
 }
 
 function main() {
@@ -126,9 +133,8 @@ function main() {
   if (opts.rust) rustChecks(results);
 
   console.log('\n=== Summary');
-  for (const [name, { ok, advisory, seconds }] of results) {
-    const label = ok ? 'ok  ' : advisory ? 'WARN' : 'FAIL';
-    console.log(`${label} ${seconds.toFixed(0).padStart(4)}s  ${name}`);
+  for (const [name, result] of results) {
+    console.log(`${summaryLabel(result)} ${result.seconds.toFixed(0).padStart(4)}s  ${String(name)}`);
   }
   const failed = results.filter(([, r]) => !r.ok && !r.advisory).length;
   console.log(failed === 0 ? 'All checks passed.' : `${failed} check(s) failed.`);
