@@ -1,5 +1,7 @@
 use super::*;
 use crate::pty::inject::validate_pty_input_text;
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // ---- fixtures ---------------------------------------------------------
