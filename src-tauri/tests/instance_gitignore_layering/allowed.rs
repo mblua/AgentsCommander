@@ -450,14 +450,15 @@ pub(crate) const ALLOWED_REGISTRY_CRATE_REFERENCES: [(&str, &str); 0] = [];
 /// under `super::`, sorted.
 ///
 /// One row, and it is the same shape as the constant home's: the `use super::*;`
-/// inside this file's own `#[cfg(test)] mod tests`, where `super` is the
-/// registry itself. That glob resolves to the module under test and contributes
-/// no arc to the record, which is emitted without test code, so it does not cost
-/// the zero-outgoing-arc property. Any other row here is the registry reaching
-/// into `crate::config`, which ends that property and with it the reason
-/// `config::instance_gitignore` may name this module from production code.
+/// inside the registry's own `#[cfg(test)] mod tests` (`instance_artifacts/tests.rs`),
+/// where `super` is the registry itself. That glob resolves to the module under
+/// test and contributes no arc to the record, which is emitted without test code,
+/// so it does not cost the zero-outgoing-arc property. Any other row here is the
+/// registry reaching into `crate::config`, which ends that property and with it
+/// the reason `config::instance_gitignore` may name this module from production
+/// code.
 pub(crate) const ALLOWED_REGISTRY_SUPER_REFERENCES: [(&str, &str); 1] =
-    [("src/config/instance_artifacts.rs", "*")];
+    [("src/config/instance_artifacts/tests.rs", "*")];
 
 /// Every `(file, child)` reference the artifact registry is allowed to make
 /// under `self::`, sorted.
@@ -535,10 +536,11 @@ pub(crate) enum Literals {
 /// Whether a module's submodules are read with it.
 ///
 /// `WithSubmodules` for the guarded module, so a reference cannot be parked in a
-/// future child of it, and for the artifact registry, which has no children and
-/// is meant never to have any. `OwnFilesOnly` for the constant's home, because
-/// every child of `config` is a separate module in the graph with its own arcs
-/// and most of them are knot members.
+/// future child of it, and for the artifact registry, whose only children are
+/// its `names` table and its tests, so a reference parked there is still seen.
+/// `OwnFilesOnly` for the constant's home, because every child of `config` is a
+/// separate module in the graph with its own arcs and most of them are knot
+/// members.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Reach {
     OwnFilesOnly,

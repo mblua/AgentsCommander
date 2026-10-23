@@ -15,9 +15,9 @@ use super::*;
 /// row in `ALLOWED_GUARDED_SUPER_REFERENCES` now permits, and nothing else in
 /// this repository goes red.
 ///
-/// It is read `WithSubmodules`, unlike the constant's home. The registry has no
-/// children and is meant never to have any, so the deeper reach costs nothing
-/// today and refuses a future child that parks a reference out of sight.
+/// It is read `WithSubmodules`, unlike the constant's home. The registry's only
+/// children are its `names` table, which names nothing, and its tests, so the
+/// deeper reach refuses a child that parks a reference out of sight.
 #[test]
 fn the_registry_names_nothing_at_all() {
     let seen = observe(&REGISTRY_MODULE, Reach::WithSubmodules);
@@ -50,9 +50,9 @@ fn the_registry_names_nothing_at_all() {
 
     assert_eq!(
         seen.globs, 1,
-        "src/config/instance_artifacts.rs must contain exactly one glob import.\n\
+        "config::instance_artifacts and its children must contain exactly one glob import.\n\
          \n\
-         WHY: the one that exists is the `use super::*;` inside this file's own \
+         WHY: the one that exists is the `use super::*;` inside the registry's own \
          `#[cfg(test)] mod tests`, where `super` is the registry itself, so it \
          reaches nothing and costs no arc. A SECOND test module, or a nested one, \
          would add a second glob that the deduplicated set below cannot see, which \
@@ -95,7 +95,7 @@ fn the_registry_names_nothing_at_all() {
         "the set of names reached by `super::` from config::instance_artifacts \
          moved.\n\
          \n\
-         The one allowed row is this file's own `#[cfg(test)] mod tests` glob, \
+         The one allowed row is the registry's own `#[cfg(test)] mod tests` glob, \
          where `super` is the registry itself. It contributes no arc because the \
          record is emitted without test code, which is why the spelling contract \
          and the arc contract legitimately differ on this one row.\n\
