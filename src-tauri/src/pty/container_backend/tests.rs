@@ -1,9 +1,18 @@
+use super::shutdown_work::{ContainerShutdownWorkContext, ContainerShutdownWorkProvenance};
+use super::start_request::{build_start_request_with_settings, sanitized_child_env};
 use super::*;
 use crate::pty::backend::SessionBackendKind;
+use crate::pty::container_paths::ContainerPathMap;
 use crate::pty::container_paths::CLAUDE_CONFIG_DIR_KEY;
 use crate::pty::container_runtime::{ContainerCleanupReport, RETAINED_OWNER_REPORT_CAPACITY};
+use crate::pty::container_runtime::{
+    ContainerDiagnostics, ContainerRuntimeControl, ContainerStartRequest,
+    RetainedContainerOwnerContext,
+};
+use crate::pty::container_tokens::ContainerApiToken;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[derive(Default)]
