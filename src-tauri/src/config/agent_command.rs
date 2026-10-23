@@ -1096,7 +1096,10 @@ fn resolve_portable_reference_logged(
             let agent_id = &settings.agents[winner].id;
             if let Some((other, letter, _)) = hits.iter().find(|(index, _, _)| *index != winner) {
                 warnings.push(format!(
-                    "reference '{}' matched by digest in agents '{}' and '{}' (letter {}); using '{}'",
+                    concat!(
+                        "reference '{}' matched by digest in agents '{}' and '{}' ",
+                        "(letter {}); using '{}'",
+                    ),
                     reference.id, agent_id, settings.agents[*other].id, letter, agent_id
                 ));
             }
@@ -1232,7 +1235,10 @@ pub(crate) fn resolve_agent_spawn_command(
     // secrets); the hash already fingerprints them, and the key set + count
     // reveal whether an env row participated.
     log::debug!(
-        "[profile-hash] spawn-stamp: agent={} profile={} hash={} effective_command={:?} canonical_command={:?} env_keys=[{}] ({} entries)",
+        concat!(
+            "[profile-hash] spawn-stamp: agent={} profile={} hash={} ",
+            "effective_command={:?} canonical_command={:?} env_keys=[{}] ({} entries)",
+        ),
         agent.id,
         profile_resolution.effective_profile,
         profile_hash,
