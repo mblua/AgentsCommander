@@ -1118,7 +1118,8 @@ fn execute_requires_runtime_guard(args: &RunArgs) -> Result<(), Vec<CliError>> {
     if args.execute && !args.fake_executor {
         Err(vec![err(
             "execution_requires_running_app",
-            "Real role-experiment execution requires a running AgentsCommander app or daemon; Phase 3A CLI-only execution has no side effects",
+            "Real role-experiment execution requires a running AgentsCommander app or daemon; \
+             Phase 3A CLI-only execution has no side effects",
             None,
         )])
     } else {
@@ -1442,7 +1443,8 @@ fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
         ),
         warn(
             "transcript_capture_best_effort",
-            "Provider-native transcript paths may be unavailable; use run metadata and retained room for inspection.",
+            "Provider-native transcript paths may be unavailable; \
+             use run metadata and retained room for inspection.",
             None,
         ),
         warn(
@@ -2129,7 +2131,10 @@ fn write_attempt_prompt_file(
         .join(format!("{}.md", attempt.attempt_id));
     validate_child_path(run_dir, &path)?;
     let content = format!(
-        "# Role Experiment Attempt\n\nRun: {}\nAttempt: {}\nVariant: {}\nPrompt: {}\nReplicate: {}\n\n## Runner Instructions\n\nRespond to the prompt below. Do not modify files outside paths allowed by your session instructions.\n\n## Prompt\n\n{}\n",
+        "# Role Experiment Attempt\n\nRun: {}\nAttempt: {}\nVariant: {}\nPrompt: {}\n\
+         Replicate: {}\n\n## Runner Instructions\n\nRespond to the prompt below. \
+         Do not modify files outside paths allowed by your session instructions.\n\n\
+         ## Prompt\n\n{}\n",
         attempt.run_id,
         attempt.attempt_id,
         attempt.variant,
@@ -3352,7 +3357,8 @@ fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<CliError>> {
             errors.push(err_at_line(
                 "prompt_suite_unparseable",
                 format!(
-                    "Prompt suite line {} has invalid id '{}'; use lowercase ASCII letters, digits, hyphen, or underscore",
+                    "Prompt suite line {} has invalid id '{}'; \
+                     use lowercase ASCII letters, digits, hyphen, or underscore",
                     physical_line, id
                 ),
                 physical_line,
@@ -3924,7 +3930,10 @@ fn render_report_markdown(report: &ReportArtifact) -> String {
     }
     markdown.push('\n');
     markdown.push_str("## Variants\n\n");
-    markdown.push_str("| Variant | Agent | Planned | Running | Completed | Failed | Timed out | Inconclusive | Cancelled |\n|---|---|---:|---:|---:|---:|---:|---:|---:|\n");
+    markdown.push_str(
+        "| Variant | Agent | Planned | Running | Completed | Failed | Timed out | \
+         Inconclusive | Cancelled |\n|---|---|---:|---:|---:|---:|---:|---:|---:|\n",
+    );
     for variant in &report.variants {
         markdown.push_str(&format!(
             "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
@@ -3940,7 +3949,10 @@ fn render_report_markdown(report: &ReportArtifact) -> String {
         ));
     }
     markdown.push_str("\n## Prompts\n\n");
-    markdown.push_str("| Prompt | Title | Planned | Running | Completed | Failed | Timed out | Inconclusive | Cancelled |\n|---|---|---:|---:|---:|---:|---:|---:|---:|\n");
+    markdown.push_str(
+        "| Prompt | Title | Planned | Running | Completed | Failed | Timed out | \
+         Inconclusive | Cancelled |\n|---|---|---:|---:|---:|---:|---:|---:|---:|\n",
+    );
     for prompt in &report.prompts {
         markdown.push_str(&format!(
             "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
