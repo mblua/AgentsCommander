@@ -1,4 +1,7 @@
 use super::*;
+use std::io::Read;
+use std::path::Path;
+use std::time::Duration;
 #[test]
 fn issue_3029_cursor_query_stream_contract() {
     let mut cases: Vec<(Vec<u8>, Vec<u8>, usize)> = vec![
