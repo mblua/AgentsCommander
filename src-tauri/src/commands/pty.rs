@@ -7,6 +7,22 @@ use uuid::Uuid;
 use crate::pty::manager::PtyManager;
 use crate::voice::tracker::VoiceTrackingState;
 
+mod boundary;
+mod typing_hold;
+mod watcher_reach;
+
+use boundary::{combine_boundary_metadata, write_start_fresh_mirror_outcome};
+pub(crate) use boundary::{
+    note_post_boundary_content_to_session, stamp_fresh_boundary_to_session,
+    write_start_fresh_mirror_for_session, BoundaryMetadataOutcome,
+};
+pub(crate) use typing_hold::{clear_held_wake, note_held_wake, typing_hold_defers_injection};
+use typing_hold::{record_typing_hold_keystroke, typing_hold_snapshot, typing_hold_window};
+use watcher_reach::resolve_draft_reach;
+pub use watcher_reach::{
+    WatcherAgentDraftEntry, WatcherDraftEntry, WatcherReachEntry, WatcherReachRow,
+};
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PtyScreenSnapshotPayload {
@@ -78,7 +94,8 @@ pub async fn pty_write(
             _ => "other",
         };
         log::debug!(
-            "[pty-input] session={} source=desktop bytes={} kind={} busy_path=mark_successful_pty_write_busy",
+            "[pty-input] session={} source=desktop bytes={} \
+                kind={} busy_path=mark_successful_pty_write_busy",
             uuid,
             data.len(),
             kind
@@ -385,133 +402,6 @@ fn response_close_hold_publisher<R: tauri::Runtime>(
         .map(|state| state.inner().clone())
 }
 
-fn record_typing_hold_keystroke<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    session_id: Uuid,
-    data: &[u8],
-) {
-    if !crate::pty::input_activity::chunk_qualifies_typing_hold(data) {
-        return;
-    }
-    let window = app
-        .try_state::<crate::config::settings::SettingsState>()
-        .and_then(|settings| {
-            settings
-                .try_current_read()
-                .inspect_err(|error| {
-                    log::debug!("[typing-hold] typing window unavailable: {error}");
-                })
-                .ok()
-                .map(|settings| {
-                    Duration::from_secs(u64::from(settings.typing_hold_seconds.clamp(
-                        crate::config::settings::TYPING_HOLD_SECONDS_MIN,
-                        crate::config::settings::TYPING_HOLD_SECONDS_MAX,
-                    )))
-                })
-        });
-    if let Some(state) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
-        let mut hold = state.lock().unwrap_or_else(|error| error.into_inner());
-        hold.note_qualifying_key(session_id);
-        if let Some(publisher) = response_close_hold_publisher(app) {
-            publisher.publish_typing_key(session_id, window, std::time::Instant::now());
-        }
-    }
-}
-
-/// #2336 - the live natural-hold window. Read from settings on every evaluation
-/// so an edit takes effect without a restart; clamped because the Settings API
-/// rejects out-of-range values but a hand-edited settings.json still loads.
-async fn typing_hold_window<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<Duration, String> {
-    let settings = app
-        .try_state::<crate::config::settings::SettingsState>()
-        .ok_or_else(|| "settings owner unavailable (missing state)".to_string())?;
-    let seconds = settings
-        .current_read()
-        .await
-        .map_err(|error| error.to_string())?
-        .typing_hold_seconds
-        .clamp(
-            crate::config::settings::TYPING_HOLD_SECONDS_MIN,
-            crate::config::settings::TYPING_HOLD_SECONDS_MAX,
-        );
-    Ok(Duration::from_secs(u64::from(seconds)))
-}
-
-/// #2336 - pure in-memory padlock snapshot for one session. An absent state or
-/// session reads as open with no held ids; no lock is held across an await.
-fn typing_hold_snapshot<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    session_id: Uuid,
-    window: Duration,
-) -> crate::pty::input_activity::TypingHoldSnapshot {
-    match app.try_state::<crate::pty::input_activity::TypingHoldState>() {
-        Some(state) => {
-            let hold = state.lock().unwrap_or_else(|error| error.into_inner());
-            let snapshot = hold.snapshot(session_id, window);
-            if let Some(publisher) = response_close_hold_publisher(app) {
-                publisher.refresh_hold_snapshot(
-                    session_id,
-                    window,
-                    snapshot.closed,
-                    std::time::Instant::now(),
-                );
-            }
-            snapshot
-        }
-        None => crate::pty::input_activity::TypingHoldSnapshot {
-            closed: false,
-            held_count: 0,
-        },
-    }
-}
-
-/// #2336 - evaluated inside `pty::inject` at the serialized write boundary of a
-/// peer wake. Read-only, so evaluating it never consumes the hold.
-pub(crate) async fn typing_hold_defers_injection<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    session_id: Uuid,
-) -> bool {
-    let window = match typing_hold_window(app).await {
-        Ok(window) => window,
-        Err(error) => {
-            log::debug!("[typing-hold] deferring injection: {error}");
-            return true;
-        }
-    };
-    typing_hold_snapshot(app, session_id, window).closed
-}
-
-/// #2336 - count a peer wake message ID as deferred, once (the set dedupes, so
-/// a retried poll of the same message never increases the count).
-pub(crate) fn note_held_wake<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    session_id: Uuid,
-    message_id: &str,
-) {
-    if let Some(state) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
-        let mut hold = state.lock().unwrap_or_else(|error| error.into_inner());
-        hold.record_held_message(session_id, message_id);
-        if let Some(publisher) = response_close_hold_publisher(app) {
-            publisher.publish_held_key(session_id, message_id, true, std::time::Instant::now());
-        }
-    }
-}
-
-/// #2336 - drop a held message ID after an observed delivery.
-pub(crate) fn clear_held_wake<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    session_id: Uuid,
-    message_id: &str,
-) {
-    if let Some(state) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
-        let mut hold = state.lock().unwrap_or_else(|error| error.into_inner());
-        hold.clear_held_message(session_id, message_id);
-        if let Some(publisher) = response_close_hold_publisher(app) {
-            publisher.publish_held_key(session_id, message_id, false, std::time::Instant::now());
-        }
-    }
-}
-
 /// #2336 - confirm a session exists before reading or flipping its padlock, so
 /// an invalid or absent session errors instead of silently touching nothing.
 async fn ensure_session_exists<R: tauri::Runtime>(
@@ -594,204 +484,6 @@ pub async fn toggle_typing_hold(
     }
 }
 
-/// (#756) Record an AC-driven fresh-conversation boundary for `session_id`:
-/// write the coordinator-clocks mirror (`start_fresh_at`, persisted
-/// immediately) and THEN stamp the durable record intent
-/// (`start_fresh_on_restore = true`, persisted under the sessions save lock).
-/// Mirror-first (section 19.3): the death-between-halves residue must fail
-/// FRESH, never resurrect. The intent survives record destruction (idle
-/// auto-close, manual close). Call only after a successful logical clear
-/// injection (/clear or Pi /new; C1 remote action, C2 self-clear phase 1). The restart
-/// path (C3) stamps the record itself and calls only the mirror half.
-/// Root-agent sessions skip the record half (the root restore path ignores the
-/// marker, #630 scope; mirrors the restart site's exclusion in
-/// commands/session.rs); the mirror half self-gates on coordinators.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BoundaryMetadataOutcome {
-    Applied,
-    Unchanged,
-    Failed,
-}
-
-fn combine_boundary_metadata(
-    first: BoundaryMetadataOutcome,
-    second: BoundaryMetadataOutcome,
-) -> BoundaryMetadataOutcome {
-    use BoundaryMetadataOutcome as O;
-    match (first, second) {
-        (O::Failed, _) | (_, O::Failed) => O::Failed,
-        (O::Applied, _) | (_, O::Applied) => O::Applied,
-        (O::Unchanged, O::Unchanged) => O::Unchanged,
-    }
-}
-
-pub(crate) async fn stamp_fresh_boundary_to_session<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    session_id: Uuid,
-) -> BoundaryMetadataOutcome {
-    // (#756, section 19.3) MIRROR-FIRST: if the app dies between the halves,
-    // the residue (mirror=Some, record=false) forces fresh on every reopen
-    // path and self-heals (E3 re-propagates; typed input or injected content
-    // clears both). Record-first residue (record=true, mirror=None) would let
-    // a later record destroy resurrect the pre-boundary conversation: the
-    // exact #756 bug.
-    let mirror = write_start_fresh_mirror_outcome(app, session_id, true).await;
-    if let Some(state) = app.try_state::<crate::pty::input_activity::SubstantiveInputState>() {
-        state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .reset(session_id);
-    }
-    let manager = {
-        let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
-        let guard = mgr.read().await;
-        guard.clone()
-    };
-    // Single-clone lookup; DUAL root predicate mirrors the restart path so the
-    // two exclusions never disagree.
-    let is_root = manager
-        .get_session(session_id)
-        .await
-        .map(|s| {
-            s.is_root_agent || crate::config::root_agent::is_root_agent_path(&s.working_directory)
-        })
-        .unwrap_or(false);
-    let record = if is_root {
-        BoundaryMetadataOutcome::Unchanged
-    } else {
-        match crate::config::sessions_persistence::set_start_fresh_and_persist_result(
-            &manager, session_id,
-        )
-        .await
-        {
-            Ok(true) => {
-                log::info!(
-                    "[session-state] {} fresh-boundary stamped (record, #756)",
-                    &session_id.to_string()[..8]
-                );
-                BoundaryMetadataOutcome::Applied
-            }
-            Ok(false) => BoundaryMetadataOutcome::Unchanged,
-            Err(_) => {
-                log::error!(
-                    "[session-state] fresh-boundary stamp persist failed session={} code=boundary_metadata_failed",
-                    session_id
-                );
-                BoundaryMetadataOutcome::Failed
-            }
-        }
-    };
-    combine_boundary_metadata(mirror, record)
-}
-
-/// (#756) Drop the durable fresh intent after AC successfully injected message
-/// CONTENT into `session_id` (standard mailbox body, follow-up after a remote
-/// command, phase-2 handoff prompts, loop prompts). The injected body creates a
-/// post-boundary transcript, so provider resume becomes safe and desirable
-/// again; a lingering stamp would wipe a live autonomous conversation on the
-/// next reopen. DELIBERATELY NARROW: must NOT reuse
-/// `note_user_message_to_session`, whose injection-exclusion protects
-/// silence/badge/auto-close semantics (see its doc comment above); this helper
-/// touches ONLY the fresh intent (mirror first, then record; section 19.3).
-/// Never call it for bare logical-action text (/clear, Pi /new, or /compact).
-pub(crate) async fn note_post_boundary_content_to_session<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    session_id: Uuid,
-) -> BoundaryMetadataOutcome {
-    // (#756, section 19.3) MIRROR-FIRST: the drop residue (mirror=None,
-    // record=true) only mis-freshes the record-alive restore until the next
-    // heal; record-first residue (record=false, mirror=Some) would wrongly
-    // force-fresh BOTH reopen paths.
-    let mirror = write_start_fresh_mirror_outcome(app, session_id, false).await;
-    let manager = {
-        let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
-        let guard = mgr.read().await;
-        guard.clone()
-    };
-    let record = match crate::config::sessions_persistence::clear_start_fresh_and_persist_result(
-        &manager, session_id,
-    )
-    .await
-    {
-        Ok(true) => {
-            log::info!(
-                "[session-state] {} fresh intent dropped (post-boundary content, #756)",
-                &session_id.to_string()[..8]
-            );
-            BoundaryMetadataOutcome::Applied
-        }
-        Ok(false) => BoundaryMetadataOutcome::Unchanged,
-        Err(_) => {
-            log::error!(
-                "[session-state] post-boundary-content drop persist failed session={} code=boundary_metadata_failed",
-                session_id
-            );
-            BoundaryMetadataOutcome::Failed
-        }
-    };
-    combine_boundary_metadata(mirror, record)
-}
-
-/// (#756) Mirror half: write the coordinator-clocks `start_fresh_at` for the
-/// session's cwd. Returns false without touching anything for non-coordinators
-/// (`coordinator_cwd` -> None; root agents land here too) or when the value is
-/// already in the target state. Persists the clocks file immediately on a real
-/// transition: these boundaries are rare and must survive an app close inside
-/// the 60s flush tick (same discipline as close_coordinator's explicit save).
-pub(crate) async fn write_start_fresh_mirror_for_session<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    session_id: Uuid,
-    on: bool,
-) -> bool {
-    write_start_fresh_mirror_outcome(app, session_id, on).await == BoundaryMetadataOutcome::Applied
-}
-
-async fn write_start_fresh_mirror_outcome<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    session_id: Uuid,
-    on: bool,
-) -> BoundaryMetadataOutcome {
-    let cwd = {
-        let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
-        let cwd = mgr.read().await.coordinator_cwd(session_id).await;
-        cwd
-    };
-    let Some(cwd) = cwd else {
-        return BoundaryMetadataOutcome::Unchanged;
-    };
-    let Some(clocks) = app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
-    else {
-        return BoundaryMetadataOutcome::Unchanged;
-    };
-    // agent_fqn_from_path returns String (teams.rs:80), not Option.
-    let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
-    let changed = {
-        let mut guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
-        if on {
-            guard.mark_start_fresh(&fqn, chrono::Utc::now())
-        } else {
-            guard.clear_start_fresh(&fqn)
-        }
-    };
-    if changed {
-        log::info!(
-            "[coordinator-clocks] start_fresh_at {} for '{}' (#756)",
-            if on { "set" } else { "cleared" },
-            fqn
-        );
-        let snapshot = { clocks.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
-        if crate::config::coordinator_clocks::save_map(&snapshot).is_err() {
-            log::warn!(
-                "[coordinator-clocks] start_fresh_at save failed code=boundary_metadata_failed"
-            );
-            return BoundaryMetadataOutcome::Failed;
-        }
-        BoundaryMetadataOutcome::Applied
-    } else {
-        BoundaryMetadataOutcome::Unchanged
-    }
-}
-
 #[tauri::command]
 pub fn pty_resize<R: tauri::Runtime>(
     pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
@@ -847,7 +539,8 @@ pub fn get_screen_snapshot(
     };
 
     log::info!(
-        "[pty] screen-snapshot session={} handler_ms={:.3} lock_ms={:.3} found={} bytes={} sequence={}",
+        "[pty] screen-snapshot session={} handler_ms={:.3} \
+            lock_ms={:.3} found={} bytes={} sequence={}",
         session_id,
         started.elapsed().as_secs_f64() * 1000.0,
         lock_ms,
@@ -950,12 +643,13 @@ pub fn get_session_context(app: AppHandle, session_id: String) -> Result<Option<
     Ok(scraper.last_reading(uuid))
 }
 
-/// #2566 - every published weekly-quota reading, keyed by AGENT id, for a frontend that just mounted and
-/// missed the `agent_quota` events. Agents sharing one command share one value. A `None` value and an ABSENT
-/// key both mean unavailable, NEVER 0 and NEVER 100, and are interchangeable to the caller: an agent
-/// published as null and still configured keeps a `Some(None)` row, one never published has no row, and p2
-/// renders the plain chip for both. An unmanaged engine answers an EMPTY map, not an error. Generic over `R`
-/// so a `tauri::test` mock app can call it, as `get_watcher_activity` does.
+/// #2566 - every published weekly-quota reading, keyed by AGENT id, for a frontend that just
+/// mounted and missed the `agent_quota` events. Agents sharing one command share one value. A
+/// `None` value and an ABSENT key both mean unavailable, NEVER 0 and NEVER 100, and are
+/// interchangeable to the caller: an agent published as null and still configured keeps a
+/// `Some(None)` row, one never published has no row, and p2 renders the plain chip for both. An
+/// unmanaged engine answers an EMPTY map, not an error. Generic over `R` so a `tauri::test` mock
+/// app can call it, as `get_watcher_activity` does.
 #[tauri::command]
 pub fn get_agent_quota_readings<R: tauri::Runtime>(
     app: AppHandle<R>,
@@ -1134,68 +828,6 @@ async fn read_watcher_preview_frame(
     .flatten()
 }
 
-/// #1171 - one watcher row of the draft the Settings modal holds in memory.
-///
-/// Only the three fields `reaches` and the budget depend on (plan 4.8). `pattern`, `mode`,
-/// `dedupe` and `capturedAgainst` take part in neither and are deliberately not sent: the row
-/// already shows its pattern, and `preview_watcher_pattern` answers compilability separately,
-/// so carrying it here would inflate every debounced payload to restate an answer that is
-/// already on screen next to this one.
-#[derive(Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WatcherDraftEntry {
-    pub id: String,
-    pub enabled: bool,
-    #[serde(default)]
-    pub commands: Option<Vec<String>>,
-}
-
-/// #1171 - one agent row of the same draft.
-///
-/// The modal edits agents and watchers in ONE store and one Save writes both, so resolving
-/// against the SAVED agent list would answer about a state the user has already left. Two of
-/// the three agent edits over-report that way: deleting an agent leaves it named in a reach
-/// list it will not be in, and changing an agent's `command` leaves a watcher reported as
-/// reaching it under the old stem. Only adding an agent under-reports.
-#[derive(Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WatcherAgentDraftEntry {
-    pub id: String,
-    pub label: String,
-    pub command: String,
-}
-
-/// #1171 - one agent that a draft row's selector reaches.
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WatcherReachEntry {
-    pub agent_id: String,
-    pub agent_label: String,
-    pub command_stem: String,
-    /// Whether this row is enabled in the draft AND holds one of this agent's 8 slots once
-    /// every other ENABLED row of the draft is counted. It is membership of the engine's own
-    /// `running` list, and NOT a promise that the watcher will emit anything: a resolved
-    /// watcher whose pattern does not compile is allocated a slot and is inert. Compilability
-    /// is a separate dimension, answered per row by `preview_watcher_pattern`, and this field
-    /// deliberately does not restate it. A disabled row is always false here, and the editor,
-    /// which owns `enabled`, must say "disabled" rather than "budget".
-    pub allocated: bool,
-}
-
-/// #1171 - the reach of one draft row.
-///
-/// Exactly one per requested row, in request order. It carries `id` back because the editor
-/// filters unrecognised rows out of the request, so its table positions do not match the
-/// response positions.
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WatcherReachRow {
-    pub id: String,
-    /// Every agent this row's SELECTOR reaches, whether or not the row is enabled. Reach is a
-    /// property of the selector alone; `allocated` is where enablement and budget land.
-    pub entries: Vec<WatcherReachEntry>,
-}
-
 /// #1171 - resolve the WHOLE Settings draft, watchers and agents, and report per row which
 /// agents its selector reaches and which of those it holds a slot on.
 ///
@@ -1233,115 +865,6 @@ pub async fn preview_watcher_reach(
     tokio::task::spawn_blocking(move || resolve_draft_reach(&watchers, &agents))
         .await
         .map_err(|e| e.to_string())
-}
-
-/// The two passes behind `preview_watcher_reach`, pure and off the runtime.
-///
-/// Reach and allocation are different questions, and each gets its own pass over the SAME
-/// draft, so no counterfactual budget is computed and no set of answers can disagree with
-/// itself:
-///
-/// - **Pass A, every row forced enabled**, supplies `entries`. Reach does not depend on any
-///   other row, so forcing enablement changes no row's answer but its own presence, and a
-///   disabled row still shows the agents its selector reaches - the state where the control is
-///   needed most.
-/// - **Pass B, every row at its real draft `enabled`**, is the engine's own resolution and
-///   supplies `allocated`.
-///
-/// Running one forced-enabled pass PER ROW instead would let nine rows all report a slot on an
-/// agent that has eight, because each row's own pass silently displaces a different one.
-///
-/// Fixed points that the editor cannot produce but the contract still defines: a duplicate id
-/// means the later row wins when the map is built and both response rows report that one
-/// resolution, and an empty id is a legal key that sorts first and is not special-cased.
-fn resolve_draft_reach(
-    watchers: &[WatcherDraftEntry],
-    agents: &[WatcherAgentDraftEntry],
-) -> Vec<WatcherReachRow> {
-    use crate::config::settings::{WatcherConfig, WatcherEntry, WatcherMode};
-    use crate::pty::watchers::{resolve_watchers, WatcherAgent};
-    use std::collections::BTreeMap;
-
-    let resolution_agents: Vec<WatcherAgent> = agents
-        .iter()
-        .map(|agent| WatcherAgent {
-            id: agent.id.clone(),
-            command: agent.command.clone(),
-        })
-        .collect();
-
-    // `mode`, `pattern`, `dedupe` and `dedupeWindowMs` take no part in resolution and do not
-    // travel, so they are placeholders here and are never read back out.
-    let draft_map = |force_enabled: bool| -> BTreeMap<String, WatcherEntry> {
-        watchers
-            .iter()
-            .map(|row| {
-                (
-                    row.id.clone(),
-                    WatcherEntry::Valid(WatcherConfig {
-                        enabled: force_enabled || row.enabled,
-                        mode: WatcherMode::Occurrence,
-                        pattern: String::new(),
-                        commands: row.commands.clone(),
-                        dedupe: Default::default(),
-                        dedupe_window_ms: 0,
-                        captured_against: None,
-                    }),
-                )
-            })
-            .collect()
-    };
-
-    let (reach_pass, _notices) = resolve_watchers(&resolution_agents, &draft_map(true));
-    let (allocation_pass, _notices) = resolve_watchers(&resolution_agents, &draft_map(false));
-
-    // Keyed by agent id and not iterated straight off `agents`, so a draft that names the same
-    // agent twice produces one entry rather than two, matching the map `resolve_watchers`
-    // itself builds.
-    let mut agent_meta: BTreeMap<String, (String, String)> = BTreeMap::new();
-    for agent in agents {
-        let stem =
-            crate::config::coding_agents_catalog::command_executable_basename(&agent.command)
-                .unwrap_or_default();
-        agent_meta.insert(agent.id.clone(), (agent.label.clone(), stem));
-    }
-
-    let mut rows = Vec::with_capacity(watchers.len());
-    for row in watchers {
-        let mut entries: Vec<WatcherReachEntry> = Vec::new();
-        for (agent_id, (label, stem)) in &agent_meta {
-            // Reach is `running` OR `over_budget`: together they hold everything whose selector
-            // matches this agent.
-            let reaches = reach_pass.get(agent_id).is_some_and(|resolution| {
-                resolution.running.iter().any(|w| w.id == row.id)
-                    || resolution.over_budget.iter().any(|id| id == &row.id)
-            });
-            if !reaches {
-                continue;
-            }
-            let allocated = allocation_pass
-                .get(agent_id)
-                .is_some_and(|resolution| resolution.running.iter().any(|w| w.id == row.id));
-            entries.push(WatcherReachEntry {
-                agent_id: agent_id.clone(),
-                agent_label: label.clone(),
-                command_stem: stem.clone(),
-                allocated,
-            });
-        }
-        // `resolve_watchers` returns a `HashMap`, so a stable order has to be imposed here
-        // rather than assumed: the Settings list must not reshuffle between keystrokes.
-        entries.sort_by(|left, right| {
-            left.agent_label
-                .cmp(&right.agent_label)
-                .then_with(|| left.agent_id.cmp(&right.agent_id))
-        });
-        rows.push(WatcherReachRow {
-            id: row.id.clone(),
-            entries,
-        });
-    }
-    rows
 }
 
 #[cfg(test)]
