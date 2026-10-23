@@ -88,7 +88,7 @@ fn complete_physical_cwd_child(wrapper: &str) {
 #[tokio::test]
 async fn response_request_physical_cwd_boundary() {
     if physical_cwd_child_or_parent(
-        "phone::mailbox::tests::seed_shared::response_request_physical_cwd_boundary",
+        "phone::mailbox::tests::physical_cwd::response_request_physical_cwd_boundary",
     ) {
         return;
     }
@@ -314,7 +314,7 @@ async fn response_request_physical_cwd_boundary() {
         drop(permit);
     }
     complete_physical_cwd_child(
-        "phone::mailbox::tests::seed_shared::response_request_physical_cwd_boundary",
+        "phone::mailbox::tests::physical_cwd::response_request_physical_cwd_boundary",
     );
 }
 
@@ -322,7 +322,7 @@ async fn response_request_physical_cwd_boundary() {
 #[tokio::test]
 async fn response_pair_physical_cwd_boundary() {
     if physical_cwd_child_or_parent(
-        "phone::mailbox::tests::seed_shared::response_pair_physical_cwd_boundary",
+        "phone::mailbox::tests::physical_cwd::response_pair_physical_cwd_boundary",
     ) {
         return;
     }
@@ -526,7 +526,7 @@ async fn response_pair_physical_cwd_boundary() {
         drop(permit);
     }
     complete_physical_cwd_child(
-        "phone::mailbox::tests::seed_shared::response_pair_physical_cwd_boundary",
+        "phone::mailbox::tests::physical_cwd::response_pair_physical_cwd_boundary",
     );
 }
 
@@ -534,7 +534,7 @@ async fn response_pair_physical_cwd_boundary() {
 #[tokio::test]
 async fn response_close_physical_cwd_reaches_dormant() {
     if physical_cwd_child_or_parent(
-        "phone::mailbox::tests::seed_shared::response_close_physical_cwd_reaches_dormant",
+        "phone::mailbox::tests::physical_cwd::response_close_physical_cwd_reaches_dormant",
     ) {
         return;
     }
@@ -606,6 +606,6 @@ async fn response_close_physical_cwd_reaches_dormant() {
         drop(permit);
     }
     complete_physical_cwd_child(
-        "phone::mailbox::tests::seed_shared::response_close_physical_cwd_reaches_dormant",
+        "phone::mailbox::tests::physical_cwd::response_close_physical_cwd_reaches_dormant",
     );
 }
