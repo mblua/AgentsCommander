@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "03080aaa698f33b1",
+      "id": "0f7d406c9c4eb3bc",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::api::auth",
@@ -50,7 +50,6 @@
         "agentscommander_lib::restore",
         "agentscommander_lib::restore::native",
         "agentscommander_lib::session::auto_close",
-        "agentscommander_lib::session::context_alerts",
         "agentscommander_lib::session::manager",
         "agentscommander_lib::session::selection",
         "agentscommander_lib::session::session",
