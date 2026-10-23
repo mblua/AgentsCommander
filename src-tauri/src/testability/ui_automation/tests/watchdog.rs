@@ -235,7 +235,8 @@ async fn unsupported_backend_reports_disabled_and_never_kills() {
                 "state": "disabled",
                 "tag": "backend",
                 "text": format!(
-                    "resource monitor watchdog {mode}: 0 group(s), 0 warn match(es), 0 kill match(es)"
+                    "resource monitor watchdog {mode}: 0 group(s), 0 warn match(es), 0 kill \
+                        match(es)"
                 ),
                 "visible": true,
                 "disabled": false,

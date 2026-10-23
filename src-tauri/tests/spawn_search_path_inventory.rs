@@ -131,10 +131,16 @@ const INVENTORY: &[Row] = &[
         &[(ContainerInternal, 1)],
     ),
     (
-        "src-tauri/src/agent_update.rs",
-        6,
+        "src-tauri/src/agent_update/tests/update_cancellation.rs",
+        4,
         0,
-        &[(CoveredBy2589, 2), (TestOnly, 4)],
+        &[(TestOnly, 4)],
+    ),
+    (
+        "src-tauri/src/agent_update/updater.rs",
+        2,
+        0,
+        &[(CoveredBy2589, 2)],
     ),
     (
         "src-tauri/src/agent_version.rs",
@@ -150,13 +156,41 @@ const INVENTORY: &[Row] = &[
     ),
     ("src-tauri/src/cli/harness.rs", 3, 2, &[(WindowsOnly, 1)]),
     ("src-tauri/src/cli/mod.rs", 1, 0, &[(TestOnly, 1)]),
-    // #2839: issue_2837_child relaunches the test binary inside #[cfg(test)].
-    ("src-tauri/src/cli/task_ops.rs", 1, 0, &[(TestOnly, 1)]),
     (
-        "src-tauri/src/commands/ac_discovery.rs",
-        34,
+        "src-tauri/src/cli/task_ops/tests/issue_2837_recovery.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/commands/ac_discovery/project_git.rs",
         2,
-        &[(TestOnly, 32)],
+        2,
+        &[],
+    ),
+    (
+        "src-tauri/src/commands/ac_discovery/tests/discovery.rs",
+        10,
+        0,
+        &[(TestOnly, 10)],
+    ),
+    (
+        "src-tauri/src/commands/ac_discovery/tests/gitignore_layout.rs",
+        7,
+        0,
+        &[(TestOnly, 7)],
+    ),
+    (
+        "src-tauri/src/commands/ac_discovery/tests/gitignore_rules.rs",
+        14,
+        0,
+        &[(TestOnly, 14)],
+    ),
+    (
+        "src-tauri/src/commands/ac_discovery/tests/snapshot_null.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
     ),
     (
         "src-tauri/src/commands/config/tests/room_idle_confirmation.rs",
@@ -177,10 +211,34 @@ const INVENTORY: &[Row] = &[
         &[(DesktopOpener, 1)],
     ),
     (
-        "src-tauri/src/commands/entity_creation.rs",
-        7,
-        4,
-        &[(TestOnly, 3)],
+        "src-tauri/src/commands/entity_creation/repo_clone.rs",
+        2,
+        2,
+        &[],
+    ),
+    (
+        "src-tauri/src/commands/entity_creation/tests/stage_e_cross_process.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/commands/entity_creation/tests/team_config.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/commands/entity_creation/tests/workgroup_delete.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/commands/entity_creation/workgroup_delete.rs",
+        2,
+        2,
+        &[],
     ),
     ("src-tauri/src/commands/repos.rs", 2, 1, &[(TestOnly, 1)]),
     (
@@ -202,10 +260,16 @@ const INVENTORY: &[Row] = &[
         &[(DesktopOpener, 2)],
     ),
     (
-        "src-tauri/src/config/agent_config.rs",
-        4,
+        "src-tauri/src/config/agent_config/load_probe_harness.rs",
+        3,
         0,
-        &[(TestOnly, 4)],
+        &[(TestOnly, 3)],
+    ),
+    (
+        "src-tauri/src/config/agent_config/tests/pair_fixture.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
     ),
     (
         "src-tauri/src/config/agent_memory.rs",
@@ -220,10 +284,22 @@ const INVENTORY: &[Row] = &[
         &[(Owner, 1), (TestOnly, 3)],
     ),
     (
-        "src-tauri/src/config/coding_agents_catalog.rs",
-        5,
+        "src-tauri/src/config/coding_agents_catalog/tests.rs",
+        1,
         0,
-        &[(TestOnly, 5)],
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/config/coding_agents_catalog/tests/catalog_rename_migration.rs",
+        3,
+        0,
+        &[(TestOnly, 3)],
+    ),
+    (
+        "src-tauri/src/config/coding_agents_catalog/tests/managed_catalog_publication.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
     ),
     (
         "src-tauri/src/config/config_seed.rs",
@@ -233,7 +309,7 @@ const INVENTORY: &[Row] = &[
     ),
     ("src-tauri/src/config/daemon_pid.rs", 1, 0, &[(TestOnly, 1)]),
     (
-        "src-tauri/src/config/injected_messages.rs",
+        "src-tauri/src/config/injected_messages/tests/n_cases.rs",
         1,
         0,
         &[(TestOnly, 1)],
@@ -245,10 +321,16 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 1)],
     ),
     (
-        "src-tauri/src/config/local_config_io.rs",
-        2,
+        "src-tauri/src/config/local_config_io/tests.rs",
+        1,
         0,
-        &[(TestOnly, 2)],
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/config/local_config_io/tests/pair.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
     ),
     ("src-tauri/src/config/loops.rs", 3, 0, &[(TestOnly, 3)]),
     (
@@ -257,8 +339,6 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 1)],
     ),
-    // #2717 (B4a): both inside `#[cfg(test)]`: the one `git` helper that E7 and
-    // E17 share, and the `current_exe()` child of E7d and E13.
     (
         "src-tauri/src/config/project_settings.rs",
         2,
@@ -267,7 +347,7 @@ const INVENTORY: &[Row] = &[
     ),
     ("src-tauri/src/config/session_context.rs", 1, 1, &[]),
     (
-        "src-tauri/src/config/sessions_persistence.rs",
+        "src-tauri/src/config/sessions_persistence/tests.rs",
         1,
         0,
         &[(TestOnly, 1)],
@@ -278,8 +358,12 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 2)],
     ),
-    ("src-tauri/src/config/teams.rs", 1, 0, &[(TestOnly, 1)]),
-    ("src-tauri/src/lib.rs", 1, 0, &[(TestOnly, 1)]),
+    (
+        "src-tauri/src/config/teams/discovery.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
     ("src-tauri/src/loops/scheduler.rs", 1, 0, &[(TestOnly, 1)]),
     ("src-tauri/src/path_identity.rs", 1, 0, &[(TestOnly, 1)]),
     (
@@ -292,28 +376,105 @@ const INVENTORY: &[Row] = &[
     ("src-tauri/src/pty/docker_runtime.rs", 1, 1, &[]),
     ("src-tauri/src/pty/git_watcher.rs", 2, 1, &[(TestOnly, 1)]),
     ("src-tauri/src/pty/job.rs", 2, 0, &[(TestOnly, 2)]),
-    // cursor_host_observer uses cmd.exe /D /C ver only for test metadata.
     (
-        "src-tauri/src/pty/local_backend.rs",
-        5,
+        "src-tauri/src/pty/local_backend/git_guard.rs",
+        1,
         0,
-        &[(CoveredByP1, 1), (WindowsOnly, 1), (TestOnly, 3)],
+        &[(WindowsOnly, 1)],
     ),
-    ("src-tauri/src/pty/remote_watcher.rs", 2, 2, &[]),
     (
-        "src-tauri/src/pty/terminal_snapshot.rs",
+        "src-tauri/src/pty/local_backend/launch.rs",
+        1,
+        0,
+        &[(CoveredByP1, 1)],
+    ),
+    (
+        "src-tauri/src/pty/local_backend/tests/blocked_writer_teardown.rs",
         1,
         0,
         &[(TestOnly, 1)],
     ),
     (
-        "src-tauri/src/pty/terminal_snapshot/acceptance_tests.rs",
-        10,
+        "src-tauri/src/pty/local_backend/tests/conpty.rs",
+        1,
         0,
-        &[(TestOnly, 10)],
+        &[(TestOnly, 1)],
     ),
     (
-        "src-tauri/src/pty/terminal_snapshot/resource_tests.rs",
+        "src-tauri/src/pty/local_backend/tests/context_gate.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    ("src-tauri/src/pty/remote_watcher/gh_command.rs", 2, 2, &[]),
+    (
+        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/api_cancellation.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/common_blocking.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/daemon_paths.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/host_cancellation.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/host_finalizer.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/leakage.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/panic_boundaries.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/room_targets.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/scanner_shutdown.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/window_screenshot_router.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/pty/terminal_snapshot/tests/p44_denial.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/pty/terminal_snapshot/tests/resource.rs",
         1,
         0,
         &[(TestOnly, 1)],
@@ -325,7 +486,7 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 1)],
     ),
     (
-        "src-tauri/src/session/context_alerts.rs",
+        "src-tauri/src/session/context_alerts/tests/resolution.rs",
         1,
         0,
         &[(TestOnly, 1)],
@@ -336,14 +497,25 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 1)],
     ),
-    ("src-tauri/src/session/selection.rs", 1, 0, &[(TestOnly, 1)]),
     (
-        "src-tauri/src/testability/ui_automation.rs",
+        "src-tauri/src/session/selection/tests/response_registration.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/testability/ui_automation/tests/pid.rs",
         2,
         0,
         &[(TestOnly, 2)],
     ),
-    ("src-tauri/src/web/commands.rs", 1, 0, &[(TestOnly, 1)]),
+    ("src-tauri/src/tests/startup.rs", 1, 0, &[(TestOnly, 1)]),
+    (
+        "src-tauri/src/web/commands/tests/room_idle.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
 ];
 
 const NEEDLES: &[&str] = &[
@@ -442,11 +614,13 @@ fn every_production_spawn_site_is_covered_or_classified() {
         let decorators = occurrences(&scanned[*file], concat!("apply_search_path", "_to_"));
         assert_eq!(decorators, *covered, "{file}: decorator count != covered");
     }
-    let p1_file = "src-tauri/src/pty/local_backend.rs";
+    // The P1 site's `CommandBuilder` is built in `local_backend/launch.rs`; the
+    // P1 statement that decorates it runs in `local_backend.rs`.
+    let p1_file = "src-tauri/src/pty/local_backend/launch.rs";
     let p1_row = INVENTORY
         .iter()
         .find(|row| row.0 == p1_file)
-        .expect("local_backend.rs row");
+        .expect("local_backend/launch.rs row");
     assert_eq!(p1_row.2, 0, "{p1_file} must stay covered 0");
     assert_eq!(
         p1_row
@@ -465,8 +639,12 @@ fn every_production_spawn_site_is_covered_or_classified() {
         "apply_search_path_to_pty_command",
         "(&mut command);"
     );
+    let p1_statement_body = normalized(
+        &std::fs::read_to_string(workspace_root().join("src-tauri/src/pty/local_backend.rs"))
+            .expect("read local_backend.rs"),
+    );
     assert_eq!(
-        occurrences(&scanned[p1_file], p1_statement),
+        occurrences(&p1_statement_body, p1_statement),
         1,
         "P1 statement"
     );

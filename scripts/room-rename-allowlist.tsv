@@ -2989,7 +2989,7 @@ P2-fixture	src-tauri/src/session/session.rs	let p = find_workgroup_task_path_for
 P2-fixture	src-tauri/src/session/session.rs	assert!(p.ends_with(r"\wg-3-team\TASK.md"));
 P2-fixture	src-tauri/src/telegram/bridge.rs	"   ▄▀▀    ▀▀▄     D:/0_repos/AgentsCommander_iac/.ac/wg-21-ac-dev-team-v3/__agent_ac-cli-tester-v3",
 P2-fixture	src-tauri/src/telegram/bridge.rs	"  D:/0_repos/AgentsCommander_iac/.ac/wg-21-ac-dev-team-v3/__agent_ac-cli-tester-v3"
-P2-fixture	src-tauri/src/testability/ui_automation.rs	workgroup: None,
+P2-fixture	src-tauri/src/testability/ui_automation/tests/watchdog.rs	workgroup: None,
 P0-identifier	src-tauri/src/web/commands.rs	let config: crate::config::project_settings::WorkgroupGroupsConfig =
 P2-fixture	src-tauri/src/web/commands.rs	use crate::config::project_settings::{WorkgroupGroup, WorkgroupGroupsConfig};
 P2-fixture	src-tauri/src/web/commands.rs	let config = WorkgroupGroupsConfig {

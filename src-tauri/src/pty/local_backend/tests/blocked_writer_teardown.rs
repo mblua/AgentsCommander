@@ -1,4 +1,5 @@
 use super::*;
+use portable_pty::CommandBuilder;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};

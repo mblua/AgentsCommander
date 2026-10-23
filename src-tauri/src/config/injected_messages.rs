@@ -20,14 +20,32 @@
 //!   from `crate::pty::inject::is_forbidden_pty_scalar`, the same predicate
 //!   `validate_pty_input_text` uses, so the two can never drift.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::config::local_config_io::write_file_atomic;
+mod provision;
+mod render;
+
+pub(crate) use provision::ensure_injected_messages;
+#[cfg(all(test, windows))]
+use provision::is_link_or_reparse;
+pub(crate) use provision::known_message_ids;
+use provision::read_source;
+pub(crate) use provision::reseed;
+#[cfg(test)]
+use provision::{provision, verify_candidate};
+pub(crate) use render::render;
+#[cfg(test)]
+pub(crate) use render::render_with_template;
+use render::spec_for;
+#[cfg(test)]
+use render::{expand_tokens, render_resolved, sanitize};
+#[cfg(test)]
+use tests::record_write;
 
 pub(crate) const INJECTED_MESSAGES_FILENAME: &str = "injected-messages.toml";
 pub(crate) const INJECTED_MESSAGES_REFERENCE_FILENAME: &str = "injected-messages.default.toml";
@@ -61,27 +79,35 @@ pub(crate) const TOKEN_SINCE: &str = "%SINCE%";
 
 /// The only embedded copy of the context-alert wording. 125 characters, 125
 /// UTF-8 bytes, sha256 `e672581d47e7e4a4749b510f23eff72982ff3fa5261109122b3bdf8fdfda153f`.
-pub(crate) const DEFAULT_CONTEXT_ALERT_TEMPLATE: &str = "[AC context alert] `%MEMBER%` in `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No action taken; you decide any follow-up.";
+pub(crate) const DEFAULT_CONTEXT_ALERT_TEMPLATE: &str = "[AC context alert] `%MEMBER%` in \
+    `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No action taken; you decide any follow-up.";
 
 /// sha256 `e8d7993332268690db1220277b0c3926c99ce4d1e3e4af8c0978c22e3b01c50a`.
-pub(crate) const DEFAULT_CI_STARTED_TEMPLATE: &str = "[AgentsCommander] CI started on %REPO% %BRANCH% (commit %SHA%) at %AT%. Status notice only; no action is required.";
+pub(crate) const DEFAULT_CI_STARTED_TEMPLATE: &str = "[AgentsCommander] CI started on %REPO% \
+    %BRANCH% (commit %SHA%) at %AT%. Status notice only; no action is required.";
 
 /// sha256 `8e9df5e4986e93999f10401d31b12f3f629f43cde6519691802ddf68e77f0b85`. The
 /// second sentence is mandatory and is not filler: `conclusion` is never read,
 /// so "CI finished" must never be read as "CI passed".
-pub(crate) const DEFAULT_CI_FINISHED_TEMPLATE: &str = "[AgentsCommander] CI finished on %REPO% %BRANCH% (commit %SHA%) at %AT%. AgentsCommander does not track pass or fail: run 'gh run list --branch %BRANCH%' before acting on this.";
+pub(crate) const DEFAULT_CI_FINISHED_TEMPLATE: &str = "[AgentsCommander] CI finished on %REPO% \
+    %BRANCH% (commit %SHA%) at %AT%. AgentsCommander does not track pass or fail: run 'gh run list \
+    --branch %BRANCH%' before acting on this.";
 
-/// sha256 `3c03dc790a9d3b36edbf1174dc3e661572ad0f93e70e1b200daff8945ff6e468`. The second sentence is conditional on purpose: #2141
+/// sha256 `3c03dc790a9d3b36edbf1174dc3e661572ad0f93e70e1b200daff8945ff6e468`. The second sentence
+/// is conditional on purpose: #2141
 /// suppresses the notice for a branch with no commits of its own, but a branch
 /// WITH its own commits and no runs still receives it, so the old wording
 /// asserted a premise that need not hold.
-pub(crate) const DEFAULT_BRANCH_STALE_TEMPLATE: &str = "[AgentsCommander] %REPO% %BRANCH% is now %BEHIND% commits behind %BASE% as of %AT%. If CI runs on this branch, it is validating an out-of-date base.";
+pub(crate) const DEFAULT_BRANCH_STALE_TEMPLATE: &str = "[AgentsCommander] %REPO% %BRANCH% is now \
+    %BEHIND% commits behind %BASE% as of %AT%. If CI runs on this branch, it is validating an \
+    out-of-date base.";
 
 /// sha256 `e895fefbd3e482568d4e21ac22f3826d10d8a7911b3303239726a2b8ade49aff`. It
 /// begins with ONE space because it is concatenated onto a sentence that
 /// already ends in a period. A suffix id, not twin ids: with twins an operator
 /// who edits one and forgets the other gets two silently diverging texts.
-pub(crate) const DEFAULT_NOTICE_BLIND_GAP_TEMPLATE: &str = " AgentsCommander could not reach GitHub for %GAP%; the previous confirmed state is from %SINCE%.";
+pub(crate) const DEFAULT_NOTICE_BLIND_GAP_TEMPLATE: &str = " AgentsCommander could not reach \
+    GitHub for %GAP%; the previous confirmed state is from %SINCE%.";
 
 /// The only bound between an operator's template and the coordinator's PTY.
 /// `PTY_INPUT_MAX_BYTES` is enforced inside `validate_pty_input_text`, which the
@@ -274,221 +300,6 @@ pub(crate) enum ReseedTarget {
 }
 
 // ---------------------------------------------------------------------------
-// Pure rendering engine
-// ---------------------------------------------------------------------------
-
-/// True for `%`, one or more of `A-Za-z0-9_`, `%`. The character class is wider
-/// than the substitution grammar on purpose: substitution matches known tokens
-/// case-sensitively, while recognition for the unknown-token warning is
-/// case-insensitive, so an operator who types `%member%` is told about it
-/// instead of finding a literal `%member%` in a coordinator's terminal.
-fn unknown_token_len(rest: &str) -> Option<usize> {
-    let mut chars = rest.char_indices();
-    if !matches!(chars.next(), Some((_, '%'))) {
-        return None;
-    }
-    let mut body = 0usize;
-    for (offset, ch) in chars {
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            body += 1;
-            continue;
-        }
-        if ch == '%' && body > 0 {
-            return Some(offset + 1);
-        }
-        return None;
-    }
-    None
-}
-
-/// Single left-to-right pass. Substituted values are never rescanned, so a value
-/// that itself contains `%WORKGROUP%` survives verbatim. The chained
-/// `for (k, v) in tokens { s = s.replace(k, v) }` form is prohibited: it
-/// rescans, and corrupts a template such as `%THRESHOLDS%OBSERVED%` even with
-/// today's upstream-validated values.
-fn expand_tokens(template: &str, values: &[(&str, &str)]) -> (String, Vec<String>) {
-    let mut out = String::with_capacity(template.len());
-    let mut unknown: Vec<String> = Vec::new();
-    let mut index = 0usize;
-
-    while index < template.len() {
-        let rest = &template[index..];
-        if rest.starts_with('%') {
-            if let Some((token, value)) = values.iter().find(|(token, _)| rest.starts_with(token)) {
-                out.push_str(value);
-                index += token.len();
-                continue;
-            }
-            if let Some(length) = unknown_token_len(rest) {
-                let token = &rest[..length];
-                if !unknown.iter().any(|seen| seen == token) {
-                    unknown.push(token.to_string());
-                }
-                out.push_str(token);
-                index += length;
-                continue;
-            }
-        }
-        let Some(ch) = rest.chars().next() else { break };
-        out.push(ch);
-        index += ch.len_utf8();
-    }
-
-    (out, unknown)
-}
-
-const RESPONSE_MARKER_BODY: &str = "AC_RESPONSE::";
-
-/// Collapses, for every occurrence of `AC_RESPONSE::`, the maximal run of `%`
-/// immediately preceding it down to a single `%` when that run is two
-/// characters or longer. Runs of length 0 or 1 are left untouched and nothing
-/// else in the text changes.
-///
-/// A single `replace("%%AC_RESPONSE::", "%AC_RESPONSE::")` is not sufficient:
-/// `%%%AC_RESPONSE::` becomes `%%AC_RESPONSE::` and matches the scanner again,
-/// and the bar is low because expansion runs first, so `%OBSERVED%` expands to
-/// `91%` and gets a third `%` from an operator who typed two. The obvious
-/// `while contains { replace }` repair is prohibited as a denial of service:
-/// truncation is step 4, so at step 3 the text is still the operator's whole
-/// template with no bound on its length.
-///
-/// This form is O(n) and a fixed point by construction: the runs it produces
-/// are already of length 1 or 0, so sanitizing twice equals sanitizing once.
-fn collapse_response_marker_prefix(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = String::with_capacity(input.len());
-    let mut cursor = 0usize;
-    while let Some(hit) = input[cursor..].find(RESPONSE_MARKER_BODY) {
-        let at = cursor + hit;
-        let mut run_start = at;
-        // `%` is ASCII 0x25, a byte no multi-byte UTF-8 scalar can contain, so
-        // walking back over bytes can never land inside a scalar. Bounding the
-        // walk at `cursor` also keeps it inside the not-yet-copied region; it
-        // changes no result, since the byte before `cursor` is always the `:`
-        // ending the previous marker.
-        while run_start > cursor && bytes[run_start - 1] == b'%' {
-            run_start -= 1;
-        }
-        out.push_str(&input[cursor..run_start]);
-        if run_start < at {
-            out.push('%');
-        }
-        out.push_str(RESPONSE_MARKER_BODY);
-        cursor = at + RESPONSE_MARKER_BODY.len();
-    }
-    out.push_str(&input[cursor..]);
-    out
-}
-
-/// Applied to the fully expanded string, in the order below.
-///
-/// Step 2 is the correctness core: the internal-notice path reaches
-/// `inject_text_into_session` with no validation at all, so without it this
-/// module would deliver into a coordinator's terminal exactly the bidi and
-/// separator class AC refuses on every other injection route.
-fn sanitize(value: &str) -> String {
-    // 1. CRLF to LF.
-    let converted = value.replace("\r\n", "\n");
-    // 2. Drop every scalar AC's own PTY-input validator forbids, keeping the
-    //    two it allows. Derived, never restated.
-    let mut out: String = converted
-        .chars()
-        .filter(|ch| matches!(ch, '\n' | '\t') || !crate::pty::inject::is_forbidden_pty_scalar(*ch))
-        .collect();
-    // 3. Neutralize the reply-marker prefix `pty/output.rs` scans for in PTY
-    //    output, which injected text echoes into. Stays after step 2, which can
-    //    bring two `%` together that a stripped scalar separated, as in
-    //    `%\u{202e}%AC_RESPONSE::`. Test 6c guards that order.
-    if out.contains(RESPONSE_MARKER_BODY) {
-        out = collapse_response_marker_prefix(&out);
-    }
-    // 4. Truncate on a character boundary. `str::floor_char_boundary` is
-    //    unstable on the pinned toolchain.
-    let mut end = MAX_RENDERED_BYTES.min(out.len());
-    while end > 0 && !out.is_char_boundary(end) {
-        end -= 1;
-    }
-    out.truncate(end);
-    out
-}
-
-/// Pure seam: expand then sanitize. Tests and future ids feed it arbitrary
-/// values, so it may not assume the upstream validation `InternalSystemNotice`
-/// applies to `member` and `workgroup`.
-pub(crate) fn render_with_template(template: &str, values: &[(&str, &str)]) -> String {
-    let (expanded, unknown) = expand_tokens(template, values);
-    for token in unknown {
-        warn_once(
-            format!("token:{}", token),
-            &format!(
-                "[injected-messages] unknown placeholder {} left as literal text",
-                token
-            ),
-        );
-    }
-    sanitize(&expanded)
-}
-
-/// Blankness gate 2, after rendering. `sanitize` can empty a template that
-/// `trim()` called non-blank at the parse boundary, because the bidi and format
-/// scalars it strips are not `White_Space`: a template made only of U+202E, of
-/// U+200E and U+200F, of U+061C, of U+2066 through U+2069, or of a
-/// non-whitespace C0 scalar such as BEL passes gate 1 and renders to nothing.
-/// Without this the alert is lost with no warning at all, `format_wake_content`
-/// injects a bare `"\n\n\r"`, and `validate_pty_input_text("")` is `Err(Empty)`.
-///
-/// A pure seam on purpose, so it is testable without installing anything in the
-/// process-global registry, which is empty under `cfg(test)` by rule.
-fn render_resolved(
-    id: &str,
-    template: &str,
-    from_registry: bool,
-    values: &[(&str, &str)],
-) -> String {
-    let rendered = render_with_template(template, values);
-    if !rendered.is_empty() {
-        return rendered;
-    }
-    // One retry, never a loop: a shipped default can never render empty (N17),
-    // so no second failure is reachable. `from_registry` is what distinguishes
-    // an operator's template from an embedded default rendering empty, and an
-    // id absent from `KNOWN_MESSAGES` never reaches here.
-    if from_registry {
-        if let Some(spec) = spec_for(id) {
-            warn_once(
-                format!("empty:{}", id),
-                &format!(
-                    "[injected-messages] the `{}` template renders to nothing after sanitization; the built-in default is used instead",
-                    id
-                ),
-            );
-            return render_with_template(spec.default_template, values);
-        }
-    }
-    rendered
-}
-
-/// Resolves `id` from the registry, or from the embedded default, then renders.
-/// Never fails and never blocks an alert. Returns a non-empty string for every
-/// id in `KNOWN_MESSAGES`; it returns `""` only for an id this binary does not
-/// know, which no production call site can produce.
-pub(crate) fn render(id: &str, values: &[(&str, &str)]) -> String {
-    let (template, from_registry) = match registry().get(id) {
-        Some(template) => (template.clone(), true),
-        None => match spec_for(id) {
-            Some(spec) => (spec.default_template.to_string(), false),
-            // Not a message this binary knows; there is nothing to render.
-            None => return String::new(),
-        },
-    };
-    render_resolved(id, &template, from_registry, values)
-}
-
-fn spec_for(id: &str) -> Option<&'static MessageSpec> {
-    KNOWN_MESSAGES.iter().find(|spec| spec.id == id)
-}
-
-// ---------------------------------------------------------------------------
 // Registry load
 // ---------------------------------------------------------------------------
 
@@ -540,7 +351,8 @@ fn load_registry_from_dir(dir: &Path) -> BTreeMap<String, String> {
         warn_once(
             format!("invalid:{}:{}", display_path(&path), reason),
             &format!(
-                "[injected-messages] {} is invalid ({}); the file is preserved untouched and built-in defaults are rendered",
+                "[injected-messages] {} is invalid ({}); the file is preserved untouched and \
+                 built-in defaults are rendered",
                 display_path(&path),
                 reason
             ),
@@ -820,567 +632,6 @@ struct WriteDoc {
 struct WriteEntry {
     #[serde(default)]
     template: Option<toml::Spanned<toml::Value>>,
-}
-
-// ---------------------------------------------------------------------------
-// Provisioning
-// ---------------------------------------------------------------------------
-
-fn read_source(path: &Path) -> Result<Option<String>, String> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            if is_link_or_reparse(&metadata) || !metadata.is_file() {
-                return Err("the path is not a regular file".to_string());
-            }
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("it cannot be inspected: {}", e)),
-    }
-
-    let bytes = std::fs::read(path).map_err(|e| format!("it cannot be read: {}", e))?;
-    match String::from_utf8(bytes) {
-        Ok(source) => Ok(Some(source)),
-        Err(e) => Err(format!("it is not valid UTF-8: {}", e)),
-    }
-}
-
-fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    }
-
-    #[cfg(not(windows))]
-    {
-        false
-    }
-}
-
-fn load_state(path: &Path) -> InjectedMessagesState {
-    match std::fs::read_to_string(path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-        Err(_) => InjectedMessagesState::default(),
-    }
-}
-
-/// Write-if-different. An unconditional write would mean an atomic publish on
-/// every launch forever: mtime churn, pointless fsyncs, extra sharing-violation
-/// surface, and a warning on every launch in a read-only config directory.
-fn write_if_different(path: &Path, contents: &str) -> Result<bool, String> {
-    if let Ok(existing) = std::fs::read(path) {
-        if existing == contents.as_bytes() {
-            return Ok(false);
-        }
-    }
-    publish(path, contents.as_bytes()).map(|()| true)
-}
-
-/// The module's single publication point, so a test can count writes without
-/// depending on filesystem timestamp resolution.
-fn publish(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    #[cfg(test)]
-    tests::record_write(path);
-    write_file_atomic(path, bytes)
-}
-
-pub(crate) fn ensure_injected_messages(dir: &Path) -> Result<ProvisionReport, String> {
-    provision(dir, &KNOWN_MESSAGES, None)
-}
-
-/// Seeds, reconciles and appends, then regenerates the companion.
-///
-/// `forced` marks ids that must be rewritten to the current default regardless
-/// of their content, which is what `reseed` is; a forced run takes a timestamped
-/// backup before publishing, because it can overwrite operator text. Refresh
-/// deliberately takes none: it only ever fires on content whose hash is provably
-/// a shipped default, so there is no operator text to lose.
-fn provision(
-    dir: &Path,
-    specs: &[MessageSpec],
-    forced: Option<&BTreeSet<String>>,
-) -> Result<ProvisionReport, String> {
-    let path = dir.join(INJECTED_MESSAGES_FILENAME);
-    let state_path = dir.join(INJECTED_MESSAGES_STATE_FILENAME);
-    let mut report = ProvisionReport::default();
-
-    let source = match read_source(&path) {
-        Ok(source) => source,
-        Err(reason) => {
-            report.writer_disabled = Some(reason.clone());
-            log::warn!(
-                "[injected-messages] {} is unusable ({}); it is left untouched and built-in defaults are rendered",
-                display_path(&path),
-                reason
-            );
-            write_reference(dir, specs);
-            return Ok(report);
-        }
-    };
-
-    match source {
-        None => seed_new_file(&path, &state_path, specs, &mut report)?,
-        Some(source) => reconcile(&path, &state_path, &source, specs, forced, &mut report)?,
-    }
-
-    write_reference(dir, specs);
-    Ok(report)
-}
-
-fn write_reference(dir: &Path, specs: &[MessageSpec]) {
-    let path = dir.join(INJECTED_MESSAGES_REFERENCE_FILENAME);
-    if let Err(e) = write_if_different(&path, &canonical_reference_bytes(specs)) {
-        log::warn!(
-            "[injected-messages] failed to write {}: {}",
-            display_path(&path),
-            e
-        );
-    }
-}
-
-fn seed_new_file(
-    path: &Path,
-    state_path: &Path,
-    specs: &[MessageSpec],
-    report: &mut ProvisionReport,
-) -> Result<(), String> {
-    let candidate = canonical_seed_bytes(specs);
-    let intended: BTreeMap<String, String> = specs
-        .iter()
-        .map(|spec| (spec.id.to_string(), spec.default_template.to_string()))
-        .collect();
-    if let Err(reason) = verify_candidate(&candidate, &BTreeSet::new(), &intended) {
-        report.writer_disabled = Some(reason.clone());
-        log::warn!(
-            "[injected-messages] refusing to seed {}: {}",
-            display_path(path),
-            reason
-        );
-        return Ok(());
-    }
-
-    if let Err(e) = publish(path, candidate.as_bytes()) {
-        report.writer_disabled = Some(e.clone());
-        log::warn!(
-            "[injected-messages] failed to seed {}: {}",
-            display_path(path),
-            e
-        );
-        return Ok(());
-    }
-
-    // The sidecar is touched only after the main-file publish returns Ok. The
-    // opposite order freezes an entry permanently on a plain failed write.
-    let mut state = InjectedMessagesState {
-        schema_version: SCHEMA_VERSION,
-        messages: BTreeMap::new(),
-    };
-    for spec in specs {
-        report
-            .outcomes
-            .insert(spec.id.to_string(), EntryOutcome::Seeded);
-        state.messages.insert(
-            spec.id.to_string(),
-            MessageStateEntry {
-                last_seeded_sha256: Some(sha256_hex(spec.default_template.as_bytes())),
-                last_observed_sha256: None,
-            },
-        );
-    }
-    save_state(state_path, &state);
-    Ok(())
-}
-
-fn save_state(path: &Path, state: &InjectedMessagesState) {
-    let mut json = match serde_json::to_string_pretty(state) {
-        Ok(json) => json,
-        Err(e) => {
-            log::warn!("[injected-messages] failed to serialize local state: {}", e);
-            return;
-        }
-    };
-    json.push('\n');
-    if let Err(e) = write_if_different(path, &json) {
-        log::warn!(
-            "[injected-messages] failed to write {}: {}",
-            display_path(path),
-            e
-        );
-    }
-}
-
-/// One read, one publish. Every block rewrite and every append is applied to a
-/// single in-memory string, which removes mixed-operation interleaving and
-/// shrinks the cross-process window to one publish.
-fn reconcile(
-    path: &Path,
-    state_path: &Path,
-    source: &str,
-    specs: &[MessageSpec],
-    forced: Option<&BTreeSet<String>>,
-    report: &mut ProvisionReport,
-) -> Result<(), String> {
-    let model = analyze_source(source);
-    if let Some(reason) = model
-        .strict_invalid
-        .as_ref()
-        .or(model.writer_blocked.as_ref())
-    {
-        report.writer_disabled = Some(reason.clone());
-        log::warn!(
-            "[injected-messages] {} is preserved untouched and the writer is disabled for this run: {}",
-            display_path(path),
-            reason
-        );
-        return Ok(());
-    }
-
-    let mut state = load_state(state_path);
-    let mut state_changed = false;
-    let mut refresh: BTreeMap<String, &MessageSpec> = BTreeMap::new();
-    let mut append: Vec<&MessageSpec> = Vec::new();
-
-    for spec in specs {
-        let is_forced = forced.is_some_and(|ids| ids.contains(spec.id));
-        let current_hash = sha256_hex(spec.default_template.as_bytes());
-        let entry_state = state.messages.entry(spec.id.to_string()).or_default();
-
-        match model.entries.get(spec.id) {
-            None => {
-                append.push(spec);
-                report
-                    .outcomes
-                    .insert(spec.id.to_string(), EntryOutcome::Appended);
-            }
-            Some(EntryValue::Malformed) => {
-                // A non-string or absent `template` has no span a writer can
-                // safely target, so not even a forced run rewrites it:
-                // "repair by re-adding the missing template" would clobber a
-                // deliberate deletion on the very next start.
-                report
-                    .outcomes
-                    .insert(spec.id.to_string(), EntryOutcome::PreservedUserEdit);
-                warn_once(
-                    format!("entry:{}:malformed", spec.id),
-                    &format!(
-                        "[injected-messages] `{}` in {} has no usable `template`; it is left untouched and the built-in default is rendered",
-                        spec.id,
-                        display_path(path)
-                    ),
-                );
-            }
-            Some(EntryValue::Template(template)) => {
-                let observed_hash = sha256_hex(template.as_bytes());
-                let recognized = entry_state.last_seeded_sha256.as_deref() == Some(&observed_hash)
-                    || spec
-                        .known_default_sha256
-                        .iter()
-                        .any(|known| *known == observed_hash);
-
-                if is_forced {
-                    refresh.insert(spec.id.to_string(), spec);
-                    report
-                        .outcomes
-                        .insert(spec.id.to_string(), EntryOutcome::Refreshed);
-                } else if template.trim().is_empty() {
-                    report
-                        .outcomes
-                        .insert(spec.id.to_string(), EntryOutcome::PreservedUserEdit);
-                    warn_once(
-                        format!("entry:{}:blank", spec.id),
-                        &format!(
-                            "[injected-messages] `{}` in {} is blank; it is left untouched and the built-in default is rendered",
-                            spec.id,
-                            display_path(path)
-                        ),
-                    );
-                    if entry_state.last_observed_sha256.as_deref() != Some(&observed_hash) {
-                        entry_state.last_observed_sha256 = Some(observed_hash);
-                        state_changed = true;
-                    }
-                } else if template == spec.default_template {
-                    report
-                        .outcomes
-                        .insert(spec.id.to_string(), EntryOutcome::AlreadyCurrent);
-                    if entry_state.last_seeded_sha256.as_deref() != Some(&current_hash) {
-                        entry_state.last_seeded_sha256 = Some(current_hash.clone());
-                        state_changed = true;
-                    }
-                    if entry_state.last_observed_sha256.is_some() {
-                        entry_state.last_observed_sha256 = None;
-                        state_changed = true;
-                    }
-                } else if recognized {
-                    refresh.insert(spec.id.to_string(), spec);
-                    report
-                        .outcomes
-                        .insert(spec.id.to_string(), EntryOutcome::Refreshed);
-                } else {
-                    report
-                        .outcomes
-                        .insert(spec.id.to_string(), EntryOutcome::PreservedUserEdit);
-                    warn_once(
-                        format!("entry:{}:user-edit", spec.id),
-                        &format!(
-                            "[injected-messages] `{}` in {} was edited; it is kept as it is, and a newer built-in default is available",
-                            spec.id,
-                            display_path(path)
-                        ),
-                    );
-                    if entry_state.last_observed_sha256.as_deref() != Some(&observed_hash) {
-                        entry_state.last_observed_sha256 = Some(observed_hash);
-                        state_changed = true;
-                    }
-                }
-            }
-        }
-    }
-
-    if !refresh.is_empty() || !append.is_empty() {
-        if let Err(reason) =
-            publish_edits(path, source, &model, &refresh, &append, forced.is_some())
-        {
-            report.writer_disabled = Some(reason.clone());
-            log::warn!(
-                "[injected-messages] {} is left untouched: {}",
-                display_path(path),
-                reason
-            );
-            // Nothing reached disk, so no outcome may claim it did, and the
-            // sidecar must not be advanced either.
-            for id in refresh.keys() {
-                report
-                    .outcomes
-                    .insert(id.clone(), EntryOutcome::PreservedUserEdit);
-            }
-            for spec in &append {
-                report.outcomes.remove(spec.id);
-            }
-            return Ok(());
-        }
-    }
-
-    // The sidecar is advisory and is touched only after the main file is safely
-    // on disk.
-    for spec in specs {
-        if refresh.contains_key(spec.id) || append.iter().any(|queued| queued.id == spec.id) {
-            let entry_state = state.messages.entry(spec.id.to_string()).or_default();
-            let current_hash = sha256_hex(spec.default_template.as_bytes());
-            if entry_state.last_seeded_sha256.as_deref() != Some(&current_hash) {
-                entry_state.last_seeded_sha256 = Some(current_hash);
-                state_changed = true;
-            }
-            if entry_state.last_observed_sha256.is_some() {
-                entry_state.last_observed_sha256 = None;
-                state_changed = true;
-            }
-        }
-    }
-    if state.schema_version != SCHEMA_VERSION {
-        state.schema_version = SCHEMA_VERSION;
-        state_changed = true;
-    }
-    if state_changed {
-        save_state(state_path, &state);
-    }
-
-    Ok(())
-}
-
-/// Builds the candidate, verifies it, and publishes exactly once.
-fn publish_edits(
-    path: &Path,
-    source: &str,
-    model: &ReadModel,
-    refresh: &BTreeMap<String, &MessageSpec>,
-    append: &[&MessageSpec],
-    backup: bool,
-) -> Result<(), String> {
-    let crlf = source.contains("\r\n");
-    let mut candidate = source.to_string();
-
-    if !refresh.is_empty() {
-        let doc: WriteDoc = toml::from_str(source)
-            .map_err(|e| format!("its structure cannot be located for a write ({})", e))?;
-
-        let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
-        for (id, spec) in refresh {
-            let Some(entry) = doc.messages.get(id) else {
-                return Err(format!("`{}` could not be located for a write", id));
-            };
-            let Some(spanned) = &entry.template else {
-                return Err(format!("`{}` has no `template` value to rewrite", id));
-            };
-            if !spanned.get_ref().is_str() {
-                return Err(format!("`{}` has a non-string `template`", id));
-            }
-            if !is_literal_quotable(spec.default_template) {
-                return Err(format!(
-                    "the built-in default for `{}` cannot be written as a TOML literal",
-                    id
-                ));
-            }
-            edits.push((spanned.span(), quote_literal(spec.default_template, crlf)));
-        }
-
-        // Descending, so an earlier edit never shifts a later span.
-        edits.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
-        for (span, literal) in edits {
-            if span.end > candidate.len() || !candidate.is_char_boundary(span.start) {
-                return Err("a `template` span does not address the source".to_string());
-            }
-            candidate.replace_range(span, &literal);
-        }
-    }
-
-    if !append.is_empty() {
-        if !candidate.is_empty() && !candidate.ends_with('\n') {
-            candidate.push('\n');
-        }
-        for spec in append {
-            if !is_literal_quotable(spec.default_template) {
-                return Err(format!(
-                    "the built-in default for `{}` cannot be written as a TOML literal",
-                    spec.id
-                ));
-            }
-            let block = message_block(spec);
-            candidate.push_str(&if crlf {
-                block.replace('\n', "\r\n")
-            } else {
-                block
-            });
-        }
-    }
-
-    let previous_ids: BTreeSet<String> = model.entries.keys().cloned().collect();
-    let mut intended: BTreeMap<String, String> = BTreeMap::new();
-    for (id, spec) in refresh {
-        intended.insert(id.clone(), spec.default_template.to_string());
-    }
-    for spec in append {
-        intended.insert(spec.id.to_string(), spec.default_template.to_string());
-    }
-    verify_candidate(&candidate, &previous_ids, &intended)?;
-
-    if backup {
-        take_backup(path, source);
-    }
-    publish(path, candidate.as_bytes())
-}
-
-/// The writer never publishes text it has not re-parsed. Without this gate a
-/// blind append onto a file whose `messages` is an inline table would make the
-/// operator's own config invalid on the next start.
-fn verify_candidate(
-    candidate: &str,
-    previous_ids: &BTreeSet<String>,
-    intended: &BTreeMap<String, String>,
-) -> Result<(), String> {
-    let model = analyze_source(candidate);
-    if let Some(reason) = model.strict_invalid {
-        return Err(format!("the result would be invalid ({})", reason));
-    }
-    for id in previous_ids {
-        if !model.entries.contains_key(id) {
-            return Err(format!("the result would lose `{}`", id));
-        }
-    }
-    for (id, expected) in intended {
-        match model.entries.get(id) {
-            Some(EntryValue::Template(template)) if template == expected => {}
-            _ => return Err(format!("the result would not carry `{}` as intended", id)),
-        }
-    }
-    Ok(())
-}
-
-fn take_backup(path: &Path, source: &str) {
-    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
-    let mut name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| INJECTED_MESSAGES_FILENAME.to_string());
-    name.push_str(&format!(".bak-{}", stamp));
-    let backup: PathBuf = path.with_file_name(name);
-    if let Err(e) = publish(&backup, source.as_bytes()) {
-        log::warn!(
-            "[injected-messages] failed to write backup {}: {}",
-            display_path(&backup),
-            e
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Reseed
-// ---------------------------------------------------------------------------
-
-pub(crate) fn known_message_ids() -> Vec<&'static str> {
-    KNOWN_MESSAGES.iter().map(|spec| spec.id).collect()
-}
-
-/// Resets templates to the shipped defaults through the same surgical writer,
-/// so comments, unknown keys, entry order and every other id's edits survive.
-pub(crate) fn reseed(dir: &Path, target: ReseedTarget) -> Result<Vec<String>, String> {
-    let ids: BTreeSet<String> = match &target {
-        ReseedTarget::All => KNOWN_MESSAGES
-            .iter()
-            .map(|spec| spec.id.to_string())
-            .collect(),
-        ReseedTarget::Id(id) => {
-            if spec_for(id).is_none() {
-                return Err(format!(
-                    "Unknown message id '{}'. Valid ids: {}",
-                    id,
-                    known_message_ids().join(", ")
-                ));
-            }
-            BTreeSet::from([id.clone()])
-        }
-    };
-
-    let report = provision(dir, &KNOWN_MESSAGES, Some(&ids))?;
-    if let Some(reason) = report.writer_disabled {
-        return Err(format!(
-            "{} was left untouched: {}",
-            display_path(&dir.join(INJECTED_MESSAGES_FILENAME)),
-            reason
-        ));
-    }
-
-    let mut reset: Vec<String> = Vec::new();
-    for id in &ids {
-        match report.outcomes.get(id) {
-            Some(
-                EntryOutcome::Refreshed
-                | EntryOutcome::Seeded
-                | EntryOutcome::Appended
-                | EntryOutcome::AlreadyCurrent,
-            ) => reset.push(id.clone()),
-            // 4.8 forbids repairing a deliberately deleted `template`, and a
-            // forced run must not become a back door around it. The log is the
-            // only channel to the operator, so the message states both the
-            // cause and the remedy rather than only that nothing changed.
-            _ => {
-                let path = display_path(&dir.join(INJECTED_MESSAGES_FILENAME));
-                return Err(format!(
-                    "`{id}` could not be reset and {path} was left untouched: its \
-                     `[messages.{id}]` table exists but `template` is absent or is not a \
-                     string, and re-adding it would clobber a deliberate deletion. Delete \
-                     the whole `[messages.{id}]` entry and run this command again to \
-                     rebuild it from the shipped default."
-                ));
-            }
-        }
-    }
-    Ok(reset)
 }
 
 #[cfg(test)]

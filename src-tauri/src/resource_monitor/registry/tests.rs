@@ -1,8 +1,8 @@
+use super::*;
+use crate::resource_monitor::types::{ResourceGroupWarningLevel, ResourceOverallState};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-
-use super::*;
 
 #[derive(Default)]
 struct FakeProcessTreeBackend {

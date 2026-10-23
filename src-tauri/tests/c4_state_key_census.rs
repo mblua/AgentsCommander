@@ -14,7 +14,9 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// The two owner modules: the loader and the pair primitive.
+/// The two owner modules: the loader and the pair primitive. Each owns its
+/// child module files too (`<owner>/...`), so splitting an owner never moves
+/// a hit out of owner scope.
 const OWNERS: [&str; 2] = [
     "src-tauri/src/config/agent_config.rs",
     "src-tauri/src/config/local_config_io.rs",
@@ -46,7 +48,9 @@ enum Scope {
 
 impl Scope {
     fn holds(self, path: &str) -> bool {
-        let owner = OWNERS.contains(&path);
+        let owner = OWNERS.iter().any(|owner| {
+            path == *owner || path.starts_with(&format!("{}/", owner.trim_end_matches(".rs")))
+        });
         match self {
             Scope::All => true,
             Scope::Owners => owner,
@@ -210,7 +214,7 @@ fn assert_frozen(id: &str, hits: &[Hit], pin: &Pin) {
 #[test]
 fn the_inventory_is_the_certified_file_set() {
     let sources = rust_sources();
-    assert_eq!(sources.len(), 337, "inventory count");
+    assert_eq!(sources.len(), 875, "inventory count");
     for (path, text) in &sources {
         assert!(path.starts_with("src-tauri/src/"), "path form: {path}");
         assert!(!path.contains('\\'), "path separator: {path}");
@@ -221,20 +225,38 @@ fn the_inventory_is_the_certified_file_set() {
 #[test]
 fn p1_is_frozen() {
     let pin = Pin {
-        total: 124,
-        distinct: 116,
-        sha256: "9A5BA8E0605436066C839507C717EAF5494C0DA1D8ED83D6253513EEC60C5C82",
+        total: 139,
+        distinct: 133,
+        sha256: "004060B04045327AFD6BC57AE23ACA0D36256F41E089E11F5861B61B9861D63F",
         per_file: &[
-            ("cli/list_peers.rs", 1),
-            ("commands/ac_discovery.rs", 15),
+            ("cli/list_peers/tests/lean_json.rs", 1),
+            ("commands/ac_discovery/replica_read.rs", 1),
+            ("commands/ac_discovery/tests/discovery.rs", 17),
             ("commands/config/tests/selection_api/removal.rs", 6),
-            ("commands/entity_creation.rs", 11),
+            ("commands/entity_creation/tests.rs", 8),
+            ("commands/entity_creation/tests/replica_config.rs", 6),
             ("commands/session/tests.rs", 12),
-            ("config/agent_command.rs", 1),
-            ("config/coding_agent_mutations.rs", 1),
-            ("config/coding_agent_profiles.rs", 36),
+            ("config/agent_command/matching.rs", 1),
+            (
+                "config/coding_agent_mutations/tests/source_transition_driver/driver.rs",
+                1,
+            ),
+            ("config/coding_agent_profiles.rs", 1),
+            ("config/coding_agent_profiles/replica_profile.rs", 2),
+            ("config/coding_agent_profiles/source_selection.rs", 1),
+            ("config/coding_agent_profiles/tests/c4_state.rs", 11),
+            ("config/coding_agent_profiles/tests/resolve.rs", 8),
+            ("config/coding_agent_profiles/tests/selection_state.rs", 9),
+            ("config/coding_agent_profiles/tests/selection_write.rs", 9),
+            (
+                "config/coding_agent_profiles/tests/transition_reference.rs",
+                1,
+            ),
             ("config/replica_identity.rs", 5),
-            ("config/root_agent.rs", 23),
+            ("config/root_agent/file_io.rs", 1),
+            ("config/root_agent/tests/agency_migration.rs", 1),
+            ("config/root_agent/tests/config_merge.rs", 16),
+            ("config/root_agent/tests/tracked_state.rs", 8),
             ("config/settings/source.rs", 1),
             ("loops/delivery.rs", 4),
             ("phone/mailbox/tests.rs", 8),
@@ -248,8 +270,11 @@ fn p2_is_frozen() {
     let pin = Pin {
         total: 2,
         distinct: 2,
-        sha256: "D4FCAB7648479CD4DECFAE9A98CD16EBBCE8E91A561F815BFD78EBE969E3925B",
-        per_file: &[("config/agent_config.rs", 2)],
+        sha256: "10683C8970917BBDE540993C761C58A4F91D3BEC2620C8DCDD4ED626642AFC3B",
+        per_file: &[
+            ("config/agent_config.rs", 1),
+            ("config/agent_config/tests/loader.rs", 1),
+        ],
     };
     assert_frozen("P2", &line_census(P2, Scope::All), &pin);
 }
@@ -273,10 +298,12 @@ fn p4_is_frozen() {
     let pin = Pin {
         total: 14,
         distinct: 12,
-        sha256: "82E822F157FD29FBE690CF41CABBFDABF6BE15AEA20E4EE97F0956AEBCE8607B",
+        sha256: "0F04B5F200FBE1B62B200FFA18464ECBE57AE9D4D80B7BEB32506BD696A938D1",
         per_file: &[
-            ("cli/list_peers.rs", 4),
-            ("config/agent_config.rs", 5),
+            ("cli/list_peers/discovery.rs", 4),
+            ("config/agent_config.rs", 1),
+            ("config/agent_config/tests/loader.rs", 3),
+            ("config/agent_config/tests/migration.rs", 1),
             ("phone/mailbox/internal_delivery.rs", 1),
             ("phone/mailbox/pty_authority.rs", 1),
             ("phone/mailbox/self_switch.rs", 1),
@@ -291,10 +318,12 @@ fn p5_is_frozen() {
     let pin = Pin {
         total: 20,
         distinct: 18,
-        sha256: "44433DF825FAC100EC74C773F2541A20CEB5C7B9D18EC6A9324B8B87994DB390",
+        sha256: "5332803971EDE9A6458A46676622B8BD24C60194CFCDE24F882C60C72DF4F58F",
         per_file: &[
-            ("cli/list_peers.rs", 4),
-            ("config/agent_config.rs", 8),
+            ("cli/list_peers/discovery.rs", 4),
+            ("config/agent_config.rs", 2),
+            ("config/agent_config/tests/loader.rs", 5),
+            ("config/agent_config/tests/migration.rs", 1),
             ("loops/delivery.rs", 1),
             ("phone/mailbox/internal_delivery.rs", 1),
             ("phone/mailbox/pty_authority.rs", 2),
@@ -309,22 +338,42 @@ fn p5_is_frozen() {
 fn p6_is_frozen() {
     let pin = Pin {
         total: 48,
-        distinct: 41,
-        sha256: "D597511A82C0343A43FDFFE7C7A986D7CC1A412200ADDF74F391CC740D83E5F1",
+        distinct: 43,
+        sha256: "96EF08355BEFBE69EF75476DADB95F0682BB90F2AFEF7C1580E2682BEFE0F33F",
         per_file: &[
-            ("commands/ac_discovery.rs", 1),
+            ("commands/ac_discovery/tests/discovery.rs", 1),
             ("commands/config/tests/selection_api/error_code.rs", 1),
             ("commands/config/tests/selection_api/removal.rs", 1),
-            ("commands/entity_creation.rs", 4),
+            ("commands/entity_creation/tests.rs", 2),
+            ("commands/entity_creation/tests/replica_config.rs", 2),
             ("commands/session/tests.rs", 2),
-            ("config/agent_config.rs", 8),
-            ("config/coding_agent_mutations.rs", 9),
-            ("config/coding_agent_profiles.rs", 4),
+            ("config/agent_config.rs", 1),
+            ("config/agent_config/load_probe_harness.rs", 1),
+            ("config/agent_config/tests/loader.rs", 3),
+            ("config/agent_config/tests/pair_fixture.rs", 1),
+            ("config/agent_config/tests/sweep_and_writers.rs", 2),
+            (
+                "config/coding_agent_mutations/tests/source_transition_driver.rs",
+                1,
+            ),
+            (
+                "config/coding_agent_mutations/tests/source_transition_driver/driver.rs",
+                4,
+            ),
+            (
+                "config/coding_agent_mutations/tests/source_transition_driver/durable_resume.rs",
+                4,
+            ),
+            ("config/coding_agent_profiles/tests.rs", 1),
+            ("config/coding_agent_profiles/tests/c4_state.rs", 1),
+            ("config/coding_agent_profiles/tests/resolve.rs", 1),
+            ("config/coding_agent_profiles/tests/selection_state.rs", 1),
             ("config/instance_artifacts.rs", 2),
-            ("config/local_config_io.rs", 2),
+            ("config/local_config_io/tests.rs", 2),
             ("config/naming_migration.rs", 4),
             ("config/replica_identity.rs", 3),
-            ("config/root_agent.rs", 2),
+            ("config/root_agent/tests/config_merge.rs", 1),
+            ("config/root_agent/tests/tracked_state.rs", 1),
             ("config/settings/source.rs", 1),
             ("phone/mailbox/poller.rs", 1),
             ("phone/mailbox/tests.rs", 3),
@@ -338,10 +387,22 @@ fn p7_is_frozen() {
     let pin = Pin {
         total: 72,
         distinct: 51,
-        sha256: "011F7555603963CFD29FB98CDCA609B758E7556FE57ADB4EBAF98BA986D9006A",
+        sha256: "FAFB3CD52D4E4A045128A1FC11E1CBA3C0655C8CDBF550AAED63AA9077166950",
         per_file: &[
-            ("config/agent_config.rs", 36),
-            ("config/local_config_io.rs", 36),
+            ("config/agent_config.rs", 6),
+            ("config/agent_config/load_probe_harness.rs", 1),
+            ("config/agent_config/tests/activity_stamp.rs", 2),
+            ("config/agent_config/tests/coding_agent_entries.rs", 1),
+            ("config/agent_config/tests/identity_pair.rs", 3),
+            ("config/agent_config/tests/loader.rs", 3),
+            ("config/agent_config/tests/pair_activity.rs", 5),
+            ("config/agent_config/tests/pair_fixture.rs", 2),
+            ("config/agent_config/tests/sweep_and_writers.rs", 13),
+            ("config/local_config_io.rs", 2),
+            ("config/local_config_io/tests.rs", 22),
+            ("config/local_config_io/tests/pair.rs", 2),
+            ("config/local_config_io/tests/pair_activity.rs", 9),
+            ("config/local_config_io/tests/publish_path.rs", 1),
         ],
     };
     assert_frozen("P7", &line_census(P7, Scope::Owners), &pin);
@@ -350,12 +411,25 @@ fn p7_is_frozen() {
 #[test]
 fn p8_is_frozen() {
     let pin = Pin {
-        total: 204,
-        distinct: 157,
-        sha256: "A3B4CC23C5FF59F62A9345299396BA5A8C16B0728947CD3AA40799B8AD06A1F3",
+        total: 215,
+        distinct: 172,
+        sha256: "2ED3F0EF84B43B252CF10488AB9E014E272D0B5B7C65EEB28E57225A065318BA",
         per_file: &[
-            ("config/agent_config.rs", 168),
-            ("config/local_config_io.rs", 36),
+            ("config/agent_config.rs", 9),
+            ("config/agent_config/load_probe_harness.rs", 2),
+            ("config/agent_config/tests/activity_stamp.rs", 9),
+            ("config/agent_config/tests/coding_agent_entries.rs", 15),
+            ("config/agent_config/tests/identity_pair.rs", 4),
+            ("config/agent_config/tests/loader.rs", 30),
+            ("config/agent_config/tests/migration.rs", 71),
+            ("config/agent_config/tests/pair_activity.rs", 4),
+            ("config/agent_config/tests/pair_fixture.rs", 4),
+            ("config/agent_config/tests/sweep_and_writers.rs", 30),
+            ("config/local_config_io.rs", 4),
+            ("config/local_config_io/tests/pair.rs", 17),
+            ("config/local_config_io/tests/pair_activity.rs", 6),
+            ("config/local_config_io/tests/pair_activity/p22.rs", 1),
+            ("config/local_config_io/tests/pair_activity/recovery.rs", 9),
         ],
     };
     assert_frozen("P8", &line_census(QUOTED_KEY, Scope::Owners), &pin);
@@ -365,9 +439,14 @@ fn p8_is_frozen() {
 fn p9_is_frozen() {
     let pin = Pin {
         total: 10,
-        distinct: 8,
-        sha256: "8360D7CA2B8731AE91D92BF8B1D4BF5E43721E02CEE7D491471E7C8FC29068CF",
-        per_file: &[("config/agent_config.rs", 10)],
+        distinct: 9,
+        sha256: "A39CA3790C2FA99819AC72E8991155243871849C036E20B5147305A011164C24",
+        per_file: &[
+            ("config/agent_config.rs", 6),
+            ("config/agent_config/tests/activity_stamp.rs", 1),
+            ("config/agent_config/tests/loader.rs", 1),
+            ("config/agent_config/tests/pair_fixture.rs", 2),
+        ],
     };
     assert_frozen("P9", &line_census(P9, Scope::Owners), &pin);
 }
@@ -379,8 +458,11 @@ fn p10_is_frozen() {
     let pin = Pin {
         total: 4,
         distinct: 4,
-        sha256: "DE95F07F259EFC840E7FA3220DAC01ABF4DC1EC4DF41A9116EACC152F39EE50C",
-        per_file: &[("config/coding_agent_profiles.rs", 4)],
+        sha256: "57281ABE448E14C1C8FF2682B3B331BAF24D8FA8228A9B71BE1E3E3C150709CC",
+        per_file: &[
+            ("config/coding_agent_profiles.rs", 2),
+            ("config/coding_agent_profiles/replica_profile.rs", 2),
+        ],
     };
     assert_frozen("P10", &line_census(P10, Scope::All), &pin);
 }
@@ -412,7 +494,7 @@ fn p5_covers_every_one_line_hit_of_p2_p3_p4() {
     assert_eq!(
         surplus,
         [
-            "src-tauri/src/config/agent_config.rs\t.tooling",
+            "src-tauri/src/config/agent_config/tests/loader.rs\t.tooling",
             "src-tauri/src/loops/delivery.rs\t.tooling",
         ],
         "P5 surplus"
