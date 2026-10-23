@@ -2303,6 +2303,9 @@ agentscommander_lib::pty::inject -> agentscommander_lib::pty::manager
 agentscommander_lib::pty::inject -> agentscommander_lib::pty::menu_guard
 agentscommander_lib::pty::inject -> agentscommander_lib::session::manager
 agentscommander_lib::pty::inject -> agentscommander_lib::session::session
+agentscommander_lib::pty::job::tests -> agentscommander_lib::pty::job
+agentscommander_lib::pty::job::tests -> agentscommander_lib::pty::job::windows_impl
+agentscommander_lib::pty::job::windows_impl -> agentscommander_lib::pty::job
 agentscommander_lib::pty::local_backend -> agentscommander_lib::config::agent_path
 agentscommander_lib::pty::local_backend -> agentscommander_lib::config::session_context
 agentscommander_lib::pty::local_backend -> agentscommander_lib::errors
