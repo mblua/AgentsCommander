@@ -82,11 +82,10 @@
       ]
     },
     {
-      "id": "16036a39ef6c7656",
+      "id": "98dd386091329e51",
       "members": [
         "agentscommander_lib::config::projects",
         "agentscommander_lib::config::root_agent",
-        "agentscommander_lib::config::seeded_context_templates",
         "agentscommander_lib::config::session_context",
         "agentscommander_lib::config::settings",
         "agentscommander_lib::phone::messaging",
