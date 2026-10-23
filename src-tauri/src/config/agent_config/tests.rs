@@ -6,19 +6,24 @@ fn prepared_identity_pair_serializer_cleanup_and_split_parity() {
     use crate::config::local_config_io::{read_config_pair_physical, PhysicalState};
     let decision_seeds = [
         None,
-        Some(
-            r#"{"unknown":[1],"tooling":{"lastCodingAgent":"tracked","selectionLocked":true,"configurationRef":{"keep":1}}}"#,
-        ),
+        Some(concat!(
+            r#"{"unknown":[1],"tooling":{"lastCodingAgent":"tracked","selectionLocked":true,"#,
+            r#""configurationRef":{"keep":1}}}"#
+        )),
     ];
-    let mut marked = serde_json::json!({"unknownState":null,"tooling":{"lastCodingAgent":"state","codingAgents":{"a":{"unknown":7}}}});
+    let mut marked = serde_json::json!({
+        "unknownState": null,
+        "tooling": {"lastCodingAgent": "state", "codingAgents": {"a": {"unknown": 7}}}
+    });
     stamp_split_marker(marked.as_object_mut().unwrap());
     let marked = marked.to_string();
     for decisions_seed in decision_seeds {
         for state_seed in [
             None,
-            Some(
-                r#"{"unknownState":null,"tooling":{"lastCodingAgent":"state","codingAgents":{"a":{"unknown":7}}}}"#,
-            ),
+            Some(concat!(
+                r#"{"unknownState":null,"#,
+                r#""tooling":{"lastCodingAgent":"state","codingAgents":{"a":{"unknown":7}}}}"#
+            )),
             Some(marked.as_str()),
         ] {
             for changed in [false, true] {
@@ -455,7 +460,10 @@ fn issue_1937_selection_state_tooling_shape_malformed_selection_locked_is_preser
         std::fs::create_dir_all(path.parent().expect("parent")).expect("parent dir");
         std::fs::write(
             &path,
-            r#"{"tooling":{"selectionLocked":"yes","lastCodingAgent":"claude"},"repos":["repo-a"]}"#,
+            concat!(
+                r#"{"tooling":{"selectionLocked":"yes","lastCodingAgent":"claude"},"#,
+                r#""repos":["repo-a"]}"#
+            ),
         )
         .expect("seed");
         upsert_config(&path, "codex", &codex_entry(), true).expect("metadata write must succeed");
@@ -476,7 +484,10 @@ fn issue_1937_selection_state_tooling_shape_plain_repo_metadata_stays_compatible
         std::fs::create_dir_all(path.parent().expect("parent")).expect("parent dir");
         std::fs::write(
             &path,
-            r#"{"identity":"../../_agent_dev-rust","repos":["repo-a"],"tooling":{"lastCodingAgent":"claude"}}"#,
+            concat!(
+                r#"{"identity":"../../_agent_dev-rust","repos":["repo-a"],"#,
+                r#""tooling":{"lastCodingAgent":"claude"}}"#
+            ),
         )
         .expect("seed");
         upsert_config(&path, "codex", &codex_entry(), true)
@@ -1010,7 +1021,9 @@ impl AdoptedChild {
         assert_eq!(
             before,
             PidState::Alive,
-            "the injected failed kill must leave pid {pid} running; the detector said                  {before:?}"
+            "the injected failed kill must leave pid {pid} running; \
+             the detector said                  \
+             {before:?}"
         );
         println!("PID-BEFORE-CLEANUP pid={pid} state={before:?} (the harness did NOT reap it)");
         let bad = pid_state_by_filter(BAD_PID_SELECTOR);
@@ -1962,7 +1975,8 @@ fn nothing_lands_between_the_cleanup_and_the_caller_sequence() {
             join_within(handle, JOIN_BOUND)
         });
         panic!(
-            "{why}\nsequence: {:?}\nlast stage: {last_stage:?}\nchild: {child_status}\nthread: {thread_status:?}",
+            "{why}\nsequence: {:?}\nlast stage: {last_stage:?}\n\
+             child: {child_status}\nthread: {thread_status:?}",
             lines_of(&sequence)
         );
     };
@@ -2262,7 +2276,8 @@ fn an_interrupted_move_leaves_the_value_in_both_files() {
     assert_eq!(
         (&tracked, &state),
         (&json!("claude"), &json!("claude")),
-        "after the kill at {stage:?} the value must be in both files: tracked {tracked}, state {state}"
+        "after the kill at {stage:?} the value must be in both files: \
+         tracked {tracked}, state {state}"
     );
 
     p.write(no_change).expect("re-run");
@@ -2916,8 +2931,12 @@ fn the_require_existing_wrapper_refuses_an_absent_file_and_creates_nothing() {
 /// C4 (#2470): the seeded state file of every row that seeds one. All four
 /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
 #[rustfmt::skip]
-const C4_SEEDED_STATE: &str =
-    r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
+const C4_SEEDED_STATE: &str = concat!(
+    r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"#,
+    r#""lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"#,
+    r#""split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","#,
+    r#""profileContentHash"]}}"#
+);
 
 /// C4 (#2470): the state file beside a tracked `config.json`.
 fn c4_state_path(tracked: &std::path::Path) -> std::path::PathBuf {
@@ -2957,11 +2976,21 @@ fn c4_state_is(state: &std::path::Path, expected: &str, site: &str) {
 }
 
 #[rustfmt::skip]
-const C4_STATE_AFTER_SITE_1: &str =
-    r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-06-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
+const C4_STATE_AFTER_SITE_1: &str = concat!(
+    r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"#,
+    r#""lastAgentMessageAt":"2026-06-01T00:00:00Z","profileContentHash":"h"},"#,
+    r#""split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","#,
+    r#""profileContentHash"]}}"#
+);
 #[rustfmt::skip]
-const C4_STATE_AFTER_SITE_2: &str =
-    r#"{"tooling":{"lastCodingAgent":"claude","codingAgents":{"claude":{"app":"Claude Code","acSessionId":"sid","lastUsed":"2026-09-02T01:00:00+00:00","command":"claude","identity":{"A":"aa"}}},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
+const C4_STATE_AFTER_SITE_2: &str = concat!(
+    r#"{"tooling":{"lastCodingAgent":"claude","codingAgents":{"claude":{"app":"Claude Code","#,
+    r#""acSessionId":"sid","lastUsed":"2026-09-02T01:00:00+00:00","command":"claude","#,
+    r#""identity":{"A":"aa"}}},"lastAgentMessageAt":"2026-01-01T00:00:00Z","#,
+    r#""profileContentHash":"h"},"#,
+    r#""split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","#,
+    r#""profileContentHash"]}}"#
+);
 
 /// C4 (#2470) E11, sites 1 and 2: each writes the state file and leaves the
 /// tracked file without a state key.

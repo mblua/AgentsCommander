@@ -342,7 +342,8 @@ pub(crate) fn pid_state_by_filter(filter: &str) -> PidState {
 pub(crate) fn pid_state_by_filter(filter: &str) -> PidState {
     if filter.is_empty() || !filter.bytes().all(|b| b.is_ascii_digit()) {
         return PidState::QueryError(format!(
-            "not a pid selector for ps: {filter:?};                  ps answers a malformed selector exactly as it answers an absent pid"
+            "not a pid selector for ps: {filter:?};                  \
+             ps answers a malformed selector exactly as it answers an absent pid"
         ));
     }
     let out = match Command::new("ps")
