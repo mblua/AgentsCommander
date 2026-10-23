@@ -140,7 +140,9 @@ pub struct ScreenshotHotkeyRuntime {
 
 /// The refusal message when macOS has not granted Screen Recording.
 #[cfg(target_os = "macos")]
-pub const MACOS_SCREEN_RECORDING_REQUIRED: &str = "Screenshot capture needs the Screen Recording permission. Allow AgentsCommander in System Settings > Privacy & Security > Screen Recording, then quit and reopen AgentsCommander.";
+pub const MACOS_SCREEN_RECORDING_REQUIRED: &str = "Screenshot capture needs the Screen \
+    Recording permission. Allow AgentsCommander in System Settings > Privacy & Security > \
+    Screen Recording, then quit and reopen AgentsCommander.";
 
 #[cfg(target_os = "macos")]
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -556,7 +558,8 @@ async fn capture_all_monitors() -> Result<Vec<CapturedMonitor>, String> {
     tokio::task::spawn_blocking(|| -> Result<Vec<CapturedMonitor>, String> {
         #[cfg(target_os = "macos")]
         ensure_macos_screen_capture_access()?;
-        let monitors = xcap::Monitor::all().map_err(|e| format!("xcap monitor enumeration failed: {e}"))?;
+        let monitors =
+            xcap::Monitor::all().map_err(|e| format!("xcap monitor enumeration failed: {e}"))?;
         let mut captured = Vec::with_capacity(monitors.len());
         for (idx, monitor) in monitors.iter().enumerate() {
             let image = monitor
@@ -572,7 +575,8 @@ async fn capture_all_monitors() -> Result<Vec<CapturedMonitor>, String> {
             let height = image.height();
             let preview_data_url = encode_preview_data_url(&image, width, height)?;
             log::info!(
-                "[screenshot] monitor {idx} '{name}' origin=({x},{y}) size={width}x{height} scale={scale_factor}"
+                "[screenshot] monitor {idx} '{name}' origin=({x},{y}) size={width}x{height} \
+                    scale={scale_factor}"
             );
             captured.push(CapturedMonitor {
                 monitor_id: idx as u32,

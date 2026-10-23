@@ -289,8 +289,13 @@ pub(super) fn build_placements(
             let g = build_placement(matched, &captured, frame);
             if g.frame == PlacementFrame::Physical && (g.width != m.width || g.height != m.height) {
                 log::warn!(
-                    "[screenshot] monitor {} placement size {}x{} differs from captured bitmap {}x{}; using placement for window, bitmap for crop",
-                    m.monitor_id, g.width, g.height, m.width, m.height
+                    "[screenshot] monitor {} placement size {}x{} differs from captured bitmap \
+                        {}x{}; using placement for window, bitmap for crop",
+                    m.monitor_id,
+                    g.width,
+                    g.height,
+                    m.width,
+                    m.height
                 );
             }
             OverlayPlacement {

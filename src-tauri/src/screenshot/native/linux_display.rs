@@ -11,7 +11,12 @@
 /// from an earlier session — without claiming which member fired, because the
 /// classifier cannot tell. The literal `"Xorg"` is asserted by a test.
 #[cfg(target_os = "linux")]
-pub const WAYLAND_UNSUPPORTED: &str = "Screenshot capture needs an X11 session, and this one was detected as Wayland, so the hotkey was not registered. Log out and choose the Xorg option (on Ubuntu: \"Ubuntu on Xorg\") at the login screen, then start AgentsCommander again. If you are already on Xorg, a Wayland setting or socket left over from an earlier session caused this: start AgentsCommander from a fresh login shell, not from a terminal multiplexer or service that was started under Wayland.";
+pub const WAYLAND_UNSUPPORTED: &str = "Screenshot capture needs an X11 session, and this one \
+    was detected as Wayland, so the hotkey was not registered. Log out and choose the Xorg \
+    option (on Ubuntu: \"Ubuntu on Xorg\") at the login screen, then start AgentsCommander \
+    again. If you are already on Xorg, a Wayland setting or socket left over from an earlier \
+    session caused this: start AgentsCommander from a fresh login shell, not from a terminal \
+    multiplexer or service that was started under Wayland.";
 
 /// The display server the capture path believes it is running under.
 #[cfg(target_os = "linux")]

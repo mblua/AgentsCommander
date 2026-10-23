@@ -63,7 +63,9 @@ pub(super) fn resolve_session_replica_root(working_directory: &str) -> Result<Pa
     let canonical_cwd = std::fs::canonicalize(working_directory)
         .map_err(|e| format!("Cannot resolve the active session directory: {e}"))?;
     let root = find_replica_root(&canonical_cwd).ok_or_else(|| {
-        "The active session is not inside a room replica directory, so there is no place to save the screenshot".to_string()
+        "The active session is not inside a room replica directory, so there is no place to \
+            save the screenshot"
+            .to_string()
     })?;
 
     let meta = std::fs::symlink_metadata(&root)
