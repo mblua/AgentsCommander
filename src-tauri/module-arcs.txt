@@ -1724,6 +1724,7 @@ agentscommander_lib::loops::delivery -> agentscommander_lib::session::session
 agentscommander_lib::loops::events -> agentscommander_lib::config::loops
 agentscommander_lib::loops::ipc_observer -> agentscommander_lib::config
 agentscommander_lib::loops::ipc_observer -> agentscommander_lib::shutdown
+agentscommander_lib::loops::ipc_observer::report -> agentscommander_lib::loops::ipc_observer
 agentscommander_lib::loops::non_stop_watchdog -> agentscommander_lib::config::settings
 agentscommander_lib::loops::non_stop_watchdog -> agentscommander_lib::network
 agentscommander_lib::loops::non_stop_watchdog -> agentscommander_lib::shutdown
