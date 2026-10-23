@@ -95,6 +95,7 @@ fn overlay_owned_agents_settings(dir: &std::path::Path) -> AppSettings {
 
 mod agent_update;
 mod coding_agent;
+#[cfg(windows)]
 mod room_idle;
 mod routes;
 mod transport_parity;
