@@ -1024,6 +1024,7 @@ agentscommander_lib::commands::session::create::context_prep -> agentscommander_
 agentscommander_lib::commands::session::create::context_prep -> agentscommander_lib::config::session_context
 agentscommander_lib::commands::session::create::context_prep -> agentscommander_lib::pty::container_repos
 agentscommander_lib::commands::session::create::context_prep -> agentscommander_lib::session::selection
+agentscommander_lib::commands::session::create::effects -> agentscommander_lib::session::selection
 agentscommander_lib::commands::session::create::launch -> agentscommander_lib::commands::session
 agentscommander_lib::commands::session::create::launch -> agentscommander_lib::config::agent_command
 agentscommander_lib::commands::session::create::launch -> agentscommander_lib::config::coding_agent_profiles

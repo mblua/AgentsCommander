@@ -103,12 +103,14 @@ use create::resolve_launch_auto_self_clear;
 use create::resolve_launch_idle_tuning;
 use create::revalidate_owned_create_effect;
 use create::rollback_pre_created_session;
+use create::start_create_effect;
 #[cfg(test)]
 use create::try_acquire_create_publication_region;
 use create::with_create_resource_region;
 pub(crate) use create::CoordinatorCreateTicket;
 use create::CreateCapacityContext;
 use create::CreateCompletion;
+use create::CreateEffectStart;
 use create::CreateResourceAdmission;
 pub use create::CreateSelectionIntent;
 use create::DeferredCreateOutput;
@@ -1429,26 +1431,17 @@ async fn create_session_inner_core<R: tauri::Runtime>(
                 )
                 .await?;
             }
-            let context_effect = inline_transaction
-                .and_then(|transaction| {
-                    transaction.start_lifecycle_effect(
-                        crate::session::selection::LifecycleEffectSlot::ContextPreparation,
-                    )
-                })
-                .or_else(|| {
-                    owned_replacement.as_ref().and_then(|continuation| {
-                        continuation.start_effect(
-                            crate::session::selection::LifecycleEffectSlot::ContextPreparation,
-                        )
-                    })
-                });
-            if (owned_replacement.is_some()
-                || inline_transaction.is_some_and(|transaction| transaction.has_lifecycle_entry()))
-                && context_effect.is_none()
-            {
-                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-                return Ok(CreateCompletion::Retained);
-            }
+            let context_effect = match start_create_effect(
+                inline_transaction,
+                owned_replacement.as_ref(),
+                crate::session::selection::LifecycleEffectSlot::ContextPreparation,
+            ) {
+                CreateEffectStart::Started(effect) => effect,
+                CreateEffectStart::Retain => {
+                    release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                    return Ok(CreateCompletion::Retained);
+                }
+            };
             #[cfg(test)]
             let context_fixture = owned_replacement
                 .as_ref()
@@ -1691,26 +1684,17 @@ async fn create_session_inner_core<R: tauri::Runtime>(
                 )
                 .await?;
             }
-            let seed_effect = inline_transaction
-                .and_then(|transaction| {
-                    transaction.start_lifecycle_effect(
-                        crate::session::selection::LifecycleEffectSlot::ConfigSeed,
-                    )
-                })
-                .or_else(|| {
-                    owned_replacement.as_ref().and_then(|continuation| {
-                        continuation.start_effect(
-                            crate::session::selection::LifecycleEffectSlot::ConfigSeed,
-                        )
-                    })
-                });
-            if (inline_transaction.is_some_and(|transaction| transaction.has_lifecycle_entry())
-                || owned_replacement.is_some())
-                && seed_effect.is_none()
-            {
-                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-                return Ok(CreateCompletion::Retained);
-            }
+            let seed_effect = match start_create_effect(
+                inline_transaction,
+                owned_replacement.as_ref(),
+                crate::session::selection::LifecycleEffectSlot::ConfigSeed,
+            ) {
+                CreateEffectStart::Started(effect) => effect,
+                CreateEffectStart::Retain => {
+                    release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                    return Ok(CreateCompletion::Retained);
+                }
+            };
             let lock = app.state::<crate::ConfigSeedLockState>().inner().clone();
             #[cfg(test)]
             let seed_fixture = owned_replacement
@@ -1902,25 +1886,17 @@ async fn create_session_inner_core<R: tauri::Runtime>(
             )
             .await?;
         }
-        let backend_effect = inline_transaction
-            .and_then(|transaction| {
-                transaction.start_lifecycle_effect(
-                    crate::session::selection::LifecycleEffectSlot::BackendSpawn,
-                )
-            })
-            .or_else(|| {
-                owned_replacement.as_ref().and_then(|continuation| {
-                    continuation
-                        .start_effect(crate::session::selection::LifecycleEffectSlot::BackendSpawn)
-                })
-            });
-        if (inline_transaction.is_some_and(|transaction| transaction.has_lifecycle_entry())
-            || owned_replacement.is_some())
-            && backend_effect.is_none()
-        {
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-            return Ok(CreateCompletion::Retained);
-        }
+        let backend_effect = match start_create_effect(
+            inline_transaction,
+            owned_replacement.as_ref(),
+            crate::session::selection::LifecycleEffectSlot::BackendSpawn,
+        ) {
+            CreateEffectStart::Started(effect) => effect,
+            CreateEffectStart::Retain => {
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Ok(CreateCompletion::Retained);
+            }
+        };
         #[cfg(test)]
         if let Some(owned) = owned_replacement.as_ref() {
             if !owned
