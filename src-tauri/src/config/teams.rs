@@ -1663,8 +1663,12 @@ fn is_coordinator(agent_name: &str, team: &DiscoveredTeam) -> bool {
                 // Strict: unqualified `agent_name` cannot hold coordinator authority.
                 if wg_team == team.name && agent_suffix(agent_name) == agent_suffix(coord_name) {
                     log::trace!(
-                        "[teams] is_coordinator: reject-unqualified → false — agent='{}' team='{}/{}' coord='{}' (suffix would match)",
-                        agent_name, team.project, team.name, coord_name
+                        "[teams] is_coordinator: reject-unqualified → false — agent='{}' \
+                         team='{}/{}' coord='{}' (suffix would match)",
+                        agent_name,
+                        team.project,
+                        team.name,
+                        coord_name
                     );
                 }
                 return false;
@@ -1674,8 +1678,13 @@ fn is_coordinator(agent_name: &str, team: &DiscoveredTeam) -> bool {
                 && agent_suffix(agent_name) == agent_suffix(coord_name)
             {
                 log::trace!(
-                    "[teams] is_coordinator: wg-aware-match → true — agent='{}' team='{}/{}' coord='{}' agent_project='{}'",
-                    agent_name, team.project, team.name, coord_name, agent_project
+                    "[teams] is_coordinator: wg-aware-match → true — agent='{}' team='{}/{}' \
+                     coord='{}' agent_project='{}'",
+                    agent_name,
+                    team.project,
+                    team.name,
+                    coord_name,
+                    agent_project
                 );
                 return true;
             }
@@ -1684,8 +1693,13 @@ fn is_coordinator(agent_name: &str, team: &DiscoveredTeam) -> bool {
                 && agent_suffix(agent_name) == agent_suffix(coord_name)
             {
                 log::trace!(
-                    "[teams] is_coordinator: reject-project-mismatch → false — agent='{}' agent_project='{}' team_project='{}' team='{}' coord='{}'",
-                    agent_name, agent_project, team.project, team.name, coord_name
+                    "[teams] is_coordinator: reject-project-mismatch → false — agent='{}' \
+                     agent_project='{}' team_project='{}' team='{}' coord='{}'",
+                    agent_name,
+                    agent_project,
+                    team.project,
+                    team.name,
+                    coord_name
                 );
             }
             if wg_team == team.name
@@ -1693,9 +1707,14 @@ fn is_coordinator(agent_name: &str, team: &DiscoveredTeam) -> bool {
                 && agent_suffix(agent_name) != agent_suffix(coord_name)
             {
                 log::trace!(
-                    "[teams] is_coordinator: reject-suffix-mismatch → false — agent='{}' team='{}/{}' coord='{}' agent_suffix='{}' coord_suffix='{}'",
-                    agent_name, team.project, team.name, coord_name,
-                    agent_suffix(agent_name), agent_suffix(coord_name)
+                    "[teams] is_coordinator: reject-suffix-mismatch → false — agent='{}' \
+                     team='{}/{}' coord='{}' agent_suffix='{}' coord_suffix='{}'",
+                    agent_name,
+                    team.project,
+                    team.name,
+                    coord_name,
+                    agent_suffix(agent_name),
+                    agent_suffix(coord_name)
                 );
             }
             if wg_team == team.name
@@ -1703,9 +1722,16 @@ fn is_coordinator(agent_name: &str, team: &DiscoveredTeam) -> bool {
                 && agent_suffix(agent_name) != agent_suffix(coord_name)
             {
                 log::trace!(
-                    "[teams] is_coordinator: reject-both-mismatch → false — agent='{}' agent_project='{}' team_project='{}' team='{}' coord='{}' agent_suffix='{}' coord_suffix='{}'",
-                    agent_name, agent_project, team.project, team.name, coord_name,
-                    agent_suffix(agent_name), agent_suffix(coord_name)
+                    "[teams] is_coordinator: reject-both-mismatch → false — agent='{}' \
+                     agent_project='{}' team_project='{}' team='{}' coord='{}' agent_suffix='{}' \
+                     coord_suffix='{}'",
+                    agent_name,
+                    agent_project,
+                    team.project,
+                    team.name,
+                    coord_name,
+                    agent_suffix(agent_name),
+                    agent_suffix(coord_name)
                 );
             }
         }
@@ -1725,8 +1751,10 @@ pub fn is_any_coordinator(agent_name: &str, teams: &[DiscoveredTeam]) -> bool {
     teams.iter().any(|t| is_coordinator(agent_name, t))
 }
 
-/// Resolve whether the agent running at `working_directory` is a coordinator of any discovered team.
-/// Thin wrapper so call sites don't have to duplicate the `agent_fqn_from_path` + `is_any_coordinator` pair.
+/// Resolve whether the agent running at `working_directory` is a coordinator of any discovered
+/// team.
+/// Thin wrapper so call sites don't have to duplicate the `agent_fqn_from_path` +
+/// `is_any_coordinator` pair.
 ///
 /// §DR2: uses `agent_fqn_from_path` so WG replicas get project-precise
 /// coordinator checks. `is_coordinator` is strict (§AR2-strict) — the FQN
@@ -1919,14 +1947,16 @@ pub(crate) fn discover_teams_in_project_filtered(
                     std::io::ErrorKind::NotFound => {
                         if note_missing_team_config(&project_folder, dir_name) {
                             log::debug!(
-                                "[teams] team config missing (logged once per startup) — project='{}' team_dir='{}' path='{}'",
+                                "[teams] team config missing (logged once per startup) — \
+                                 project='{}' team_dir='{}' path='{}'",
                                 project_folder,
                                 dir_name,
                                 config_path.display()
                             );
                         }
                         log::debug!(
-                            "[teams] dropped team — project='{}' team_dir='{}' reason='not_found' path='{}'",
+                            "[teams] dropped team — project='{}' team_dir='{}' reason='not_found' \
+                             path='{}'",
                             project_folder,
                             dir_name,
                             config_path.display()
@@ -1934,7 +1964,8 @@ pub(crate) fn discover_teams_in_project_filtered(
                     }
                     _ => {
                         log::warn!(
-                            "[teams] dropped team — project='{}' team_dir='{}' reason='read_failed' err='{}' path='{}'",
+                            "[teams] dropped team — project='{}' team_dir='{}' \
+                             reason='read_failed' err='{}' path='{}'",
                             project_folder,
                             dir_name,
                             e,
@@ -1949,7 +1980,8 @@ pub(crate) fn discover_teams_in_project_filtered(
             Ok(v) => v,
             Err(e) => {
                 log::warn!(
-                    "[teams] dropped team — project='{}' team_dir='{}' reason='parse_failed' err='{}' path='{}'",
+                    "[teams] dropped team — project='{}' team_dir='{}' reason='parse_failed' \
+                     err='{}' path='{}'",
                     project_folder,
                     dir_name,
                     e,
@@ -2003,11 +2035,15 @@ pub(crate) fn discover_teams_in_project_filtered(
         });
         let pushed = teams.last().expect("just pushed");
         log::debug!(
-            "[teams] discovered team — project='{}' team='{}' coord_name={:?} coord_path={:?} agent_count={}",
+            "[teams] discovered team — project='{}' team='{}' coord_name={:?} coord_path={:?} \
+             agent_count={}",
             pushed.project,
             pushed.name,
             pushed.coordinator_name,
-            pushed.coordinator_path.as_ref().map(|p| p.display().to_string()),
+            pushed
+                .coordinator_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
             pushed.agent_names.len()
         );
     }

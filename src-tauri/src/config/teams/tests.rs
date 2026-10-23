@@ -294,7 +294,10 @@ fn make_coordinator_fixture(spoofed_coordinator_identity: bool) -> (FixtureRoot,
 
     std::fs::write(
         team_dir.join("config.json"),
-        r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead"}"#,
+        concat!(
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"#,
+            r#""coordinator":"../_agent_tech-lead"}"#
+        ),
     )
     .unwrap();
     let tech_lead_identity = if spoofed_coordinator_identity {
@@ -340,7 +343,10 @@ fn make_writer_shaped_team_fixture() -> (FixtureRoot, Vec<String>) {
     }
     std::fs::write(
         team_dir.join("config.json"),
-        r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead","../_agent_dev-ts"],"coordinator":"../_agent_tech-lead"}"#,
+        concat!(
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead","../_agent_dev-ts"],"#,
+            r#""coordinator":"../_agent_tech-lead"}"#
+        ),
     )
     .unwrap();
 
@@ -545,7 +551,10 @@ fn privileged_route_is_exact_and_uses_duplicate_free_identity_snapshots() {
 
     std::fs::write(
         ac_root.join("_team_dev-team").join("config.json"),
-        r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"agents":[],"coordinator":"../_agent_tech-lead"}"#,
+        concat!(
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"agents":[],"#,
+            r#""coordinator":"../_agent_tech-lead"}"#
+        ),
     )
     .unwrap();
     assert!(
@@ -570,7 +579,10 @@ fn sender_incarnation_survives_benign_config_content_changes() {
     .unwrap();
     std::fs::write(
         ac_root.join("_team_dev-team").join("config.json"),
-        r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead","benign":"changed"}"#,
+        concat!(
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"#,
+            r#""coordinator":"../_agent_tech-lead","benign":"changed"}"#
+        ),
     )
     .unwrap();
     let second =
@@ -939,7 +951,10 @@ fn identity_compare_key_equal_for_stale_paths_pointing_to_same_target() {
     // Two refs expressed differently but logically pointing at the same
     // non-existent legacy location should produce equal keys.
     let a = Path::new("/some/where/legacy/.ac/_agent_test-alpha");
-    let b = Path::new("/some/where/proj/.ac/wg-1-test-team/__agent_test-alpha/../../../../legacy/.ac/_agent_test-alpha");
+    let b = Path::new(
+        "/some/where/proj/.ac/wg-1-test-team/__agent_test-alpha/\
+         ../../../../legacy/.ac/_agent_test-alpha",
+    );
     assert_eq!(identity_compare_key(a), identity_compare_key(b));
 }
 
