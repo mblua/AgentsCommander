@@ -1,4 +1,3 @@
-use super::super::super::projects;
 use super::super::agents_instance_groups;
 use super::super::agents_instance_path;
 use super::super::apply_project_decode_to_value;
@@ -40,6 +39,7 @@ use super::SourceSnapshot;
 use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME;
 use crate::config::local_overlay::LocalSettingsOverlay;
+use crate::config::settings::project_path as projects;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;

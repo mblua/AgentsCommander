@@ -84,7 +84,7 @@ pub(crate) struct SideOutcome {
 }
 
 impl SideOutcome {
-    pub(super) fn failed(status: SideStatus, syntactic: Option<String>) -> Self {
+    pub(in crate::config) fn failed(status: SideStatus, syntactic: Option<String>) -> Self {
         SideOutcome {
             status,
             syntactic_path: syntactic,

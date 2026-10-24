@@ -1,4 +1,3 @@
-use super::super::super::projects;
 use super::super::{
     agents_instance_groups, agents_instance_path, apply_project_decode_to_value,
     apply_selected_project_state, coding_agent_identity_with_physical_overlay,
@@ -20,6 +19,7 @@ use super::{
     SettingsFileLock, SettingsSaveLegacyOutward, SettingsSaveReportSurface, SettingsSaveStage,
 };
 use crate::config::local_overlay::LocalSettingsOverlay;
+use crate::config::settings::project_path as projects;
 use serde_json::{Map, Value};
 use std::path::Path;
 use std::sync::Arc;

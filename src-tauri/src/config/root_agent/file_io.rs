@@ -321,9 +321,7 @@ pub(crate) fn merge_root_agent_config(config_path: &Path) -> Result<(), String> 
                 // and is later resolved as a path. Non-string values are preserved.
                 let filtered: Vec<Value> = arr
                     .iter()
-                    .filter(|value| {
-                        value.as_str() != Some(crate::config::session_context::CONTEXT_TOKEN_GLOBAL)
-                    })
+                    .filter(|value| value.as_str() != Some(super::CONTEXT_TOKEN_GLOBAL))
                     .cloned()
                     .collect();
                 if filtered.len() == arr.len() {

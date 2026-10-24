@@ -12,7 +12,7 @@ use super::{
     decode_project_state, hidden_state_for_write, production_instance_base, write_active_group,
     write_archived_group,
 };
-use crate::config::projects;
+use crate::config::settings::project_path as projects;
 use serde_json::{Map, Value};
 use std::path::Path;
 use std::sync::Arc;

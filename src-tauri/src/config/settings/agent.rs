@@ -435,13 +435,7 @@ pub enum CodingAgentEnvSource {
     System,
 }
 
-pub fn normalize_env_key_for_platform(key: &str) -> String {
-    if cfg!(windows) {
-        key.to_ascii_uppercase()
-    } else {
-        key.to_string()
-    }
-}
+pub use crate::pty::container_paths::normalize_env_key_for_platform;
 
 pub fn is_codex_home_key(key: &str) -> bool {
     normalize_env_key_for_platform(key) == normalize_env_key_for_platform("CODEX_HOME")

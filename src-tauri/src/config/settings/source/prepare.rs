@@ -1,4 +1,3 @@
-use super::super::super::projects;
 use super::super::agents_instance_groups;
 use super::super::apply_project_decode_to_value;
 use super::super::canonical_profile_source;
@@ -29,6 +28,7 @@ use super::SourcePreparationError;
 use super::SourceRef;
 use super::SourceRevision;
 use crate::config::local_overlay::LocalSettingsOverlay;
+use crate::config::settings::project_path as projects;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Map;

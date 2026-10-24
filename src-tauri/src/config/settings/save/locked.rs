@@ -1,4 +1,3 @@
-use super::super::super::projects;
 use super::super::{
     agents_instance_path, apply_project_decode_to_value, capture_registered_profile_gate,
     captured_registered_profile_object, coding_agent_identity_with_physical_overlay,
@@ -23,6 +22,7 @@ use super::{
     read_disk_object_for_write_typed, write_value_atomic, SettingsSaveError,
     SettingsSaveLegacyOutward, SettingsSaveReason, SettingsSaveStage,
 };
+use crate::config::settings::project_path as projects;
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::path::Path;

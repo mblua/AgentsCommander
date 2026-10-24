@@ -3,7 +3,7 @@ mod app_defaults;
 mod field;
 mod load;
 mod owner;
-mod project_path;
+pub(crate) mod project_path;
 mod save;
 mod source;
 
@@ -571,7 +571,7 @@ pub struct AppSettings {
     /// owns the six on-disk fields); behind an `Arc` so the ubiquitous
     /// `AppSettings::clone()` stays cheap and copy-on-write mutation is explicit.
     #[serde(skip, default)]
-    pub(crate) project_path_state: Arc<crate::config::projects::ProjectPathPersistenceState>,
+    pub(crate) project_path_state: Arc<project_path::ProjectPathPersistenceState>,
     /// An unavailable source must never become an empty retention list.
     #[serde(skip, default)]
     pub(crate) project_paths_persistence_error: Option<String>,
