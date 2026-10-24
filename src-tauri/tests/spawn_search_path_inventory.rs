@@ -148,13 +148,6 @@ const INVENTORY: &[Row] = &[
         0,
         &[(CoveredBy2589, 1)],
     ),
-    (
-        "src-tauri/src/cli/agency_templates.rs",
-        2,
-        0,
-        &[(WindowsOnly, 1), (PosixBaseUtility, 1)],
-    ),
-    ("src-tauri/src/cli/agency_templates/git.rs", 1, 1, &[]),
     ("src-tauri/src/cli/harness.rs", 3, 2, &[(WindowsOnly, 1)]),
     (
         "src-tauri/src/cli/tests/startup_message_tests.rs",
@@ -271,6 +264,13 @@ const INVENTORY: &[Row] = &[
         0,
         &[(DesktopOpener, 2)],
     ),
+    (
+        "src-tauri/src/config/agency_cache.rs",
+        2,
+        0,
+        &[(WindowsOnly, 1), (PosixBaseUtility, 1)],
+    ),
+    ("src-tauri/src/config/agency_cache/git.rs", 1, 1, &[]),
     (
         "src-tauri/src/config/agent_config/load_probe_harness.rs",
         3,
