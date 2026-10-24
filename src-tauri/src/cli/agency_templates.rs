@@ -2,10 +2,7 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 
 use crate::config::agency_cache::{config_dir_or_err, list_cache_at};
-pub use crate::config::agency_cache::{
-    status_cache, status_cache_at, update_cache, update_cache_at, AgencyTemplatesUpdateArgs,
-    UpdateResult, DEFAULT_REFERENCE, DEFAULT_REPO,
-};
+pub use crate::config::agency_cache::{status_cache, update_cache, AgencyTemplatesUpdateArgs};
 
 #[derive(Args)]
 #[command(after_help = "\

@@ -2,12 +2,8 @@
 
 pub(crate) use crate::config::role_templates::copy_dir_recursive;
 pub use crate::config::role_templates::{
-    agency_manifest_path, agency_template_metas_from_cache, agency_templates_dir,
-    agency_templates_status, collect_role_templates, ensure_default_templates_dir,
-    ensure_default_templates_dir_at_config, read_agency_manifest, resolve_local_templates_dir,
-    resolve_role_template, validate_role_template_body, AgencyTemplatesManifest,
-    AgencyTemplatesStatus, LocalTemplatesDir, ResolvedRoleTemplate, RoleTemplateMeta,
-    AGENCY_MANIFEST_FILE, AGENCY_TEMPLATES_DIR,
+    collect_role_templates, ensure_default_templates_dir_at_config, resolve_role_template,
+    AgencyTemplatesStatus, ResolvedRoleTemplate, RoleTemplateMeta, AGENCY_TEMPLATES_DIR,
 };
 
 // ---------------------------------------------------------------------------
