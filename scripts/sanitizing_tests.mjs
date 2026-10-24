@@ -796,3 +796,66 @@ test('ambiguous moved aliases never receive transfer credit', () => {
   const result=processGate(trees({[p]:code},{[q]:code}));
   assert.equal(result.exit,1); assert.ok(result.diagnostics.some(d=>d.status==='WARN'));
 });
+
+import { runGate as containersGate, parseRegistry, measureSource } from './sanitizing_containers.mjs';
+const attemptsScope = rustRoot + 'cli/role_experiment/';
+const attemptsRegistry = () => ({
+  version: 1,
+  containers: [{
+    id: 'RoleExperiment/Attempts', name: 'attempts.jsonl', scope: attemptsScope,
+    owner: attemptsScope + 'storage.rs', externalLiteralBaseline: 0,
+    writerInventory: { files: 0, sites: 0 },
+  }],
+});
+function containerTree(files = {}, registry = attemptsRegistry()) {
+  return trees({
+    'scripts/containers.json': JSON.stringify(registry),
+    [attemptsScope + 'storage.rs']: 'const NAME: &str = "attempts.jsonl";',
+    ...files,
+  });
+}
+test('04 registered literal: external fails, owner and test fixtures pass', () => {
+  const consumer = attemptsScope + 'resume.rs';
+  assert.equal(containersGate(containerTree()).exit, 0);
+  const bad = containersGate(containerTree({ [consumer]: 'fn f() { let p = "attempts.jsonl"; }' }));
+  assert.equal(bad.exit, 1);
+  assert.equal(bad.metrics[0].externalLiterals, 1);
+  assert.equal(containersGate(containerTree({
+    [attemptsScope + 'tests.rs']: 'fn fixture() { let p = "attempts.jsonl"; }',
+    [consumer]: '#[cfg(test)] fn fixture() { let p = "attempts.jsonl"; }',
+  })).exit, 0);
+  assert.equal(containersGate(containerTree({
+    [consumer]: '#[cfg(any(test, windows))] fn f() { let p = r#"attempts.jsonl"#; }',
+  })).exit, 1);
+  assert.equal(containersGate(containerTree({
+    [consumer]: '// "attempts.jsonl"\nfn f() { let p = "other.jsonl"; }',
+  })).exit, 0);
+});
+test('04 writer inventory recognizes aliases, excludes cfg and warns unknown identities', () => {
+  const source = 'use std::fs::{write as save, File as F, OpenOptions as O}; ' +
+    'fn f() { save("unknown.json", ""); F::create("x"); O::new(); } ' +
+    '#[cfg(test)] fn fixture() { std::fs::write("fixture", ""); }';
+  assert.equal(measureSource(rustRoot + 'example.rs', source).writers.length, 3);
+  assert.equal(measureSource(rustRoot + 'example/tests.rs', source).writers.length, 0);
+  const result = containersGate(containerTree({ [rustRoot + 'example.rs']: source }));
+  assert.equal(result.exit, 0);
+  assert.equal(result.inventory.sites, 3);
+  assert.equal(result.diagnostics.find(d => d.rule === 'unclassified_writers').files, 1);
+});
+test('04 rejects invalid registries and missing owners rather than passing silently', () => {
+  for (const mutate of [
+    r => { r.version = 2; },
+    r => { r.containers[0].externalLiteralBaseline = 1; },
+    r => { r.containers[0].owner = '../outside.rs'; },
+    r => { r.containers[0].writerInventory.sites = -1; },
+    r => { r.containers.push({ ...r.containers[0] }); },
+  ]) {
+    const registry = attemptsRegistry(); mutate(registry);
+    assert.throws(() => parseRegistry(JSON.stringify(registry)));
+    assert.equal(containersGate(containerTree({}, registry)).status, 'ERROR');
+  }
+  assert.throws(() => parseRegistry('{'));
+  const snapshot = containerTree();
+  snapshot.headTree.delete(attemptsScope + 'storage.rs');
+  assert.equal(containersGate(snapshot).status, 'ERROR');
+});

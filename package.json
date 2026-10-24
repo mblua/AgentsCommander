@@ -55,7 +55,8 @@
     "sanitizing:tauri_edge": "node scripts/sanitizing_tauri_edge.mjs",
     "sanitizing:global_state": "node scripts/sanitizing_global_state.mjs",
     "sanitizing:process_env": "node scripts/sanitizing_process_env.mjs",
-    "sanitizing:self": "node --test scripts/sanitizing_tests.mjs"
+    "sanitizing:self": "node --test scripts/sanitizing_tests.mjs",
+    "sanitizing:containers": "node scripts/sanitizing_containers.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
