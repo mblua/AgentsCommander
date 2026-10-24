@@ -4,6 +4,6 @@ mod claude_watcher;
 mod codex_watcher;
 mod jsonl_kernel;
 pub mod manager;
-mod output;
+pub mod output;
 pub(crate) mod redact;
 pub(crate) mod types;
