@@ -862,3 +862,31 @@ fn settings_save_diagnostic_redacts_values_and_encodes_untrusted_paths() {
         assert!(super::super::render_diagnostic_path(&path).contains(r"\u{fffd}"));
     }
 }
+
+#[test]
+fn settings_save_operation_ids_are_unique_across_concurrent_callers() {
+    const CALLERS: usize = 8;
+    const OPERATIONS: usize = 128;
+    let barrier = std::sync::Barrier::new(CALLERS);
+    let ids = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..CALLERS)
+            .map(|_| {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    let ids: Vec<_> = (0..OPERATIONS)
+                        .map(|_| super::super::next_settings_save_op_id())
+                        .collect();
+                    assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+                    ids
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let unique: std::collections::HashSet<_> = ids.into_iter().collect();
+    assert_eq!(unique.len(), CALLERS * OPERATIONS);
+}

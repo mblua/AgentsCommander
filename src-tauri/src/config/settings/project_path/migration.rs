@@ -1,7 +1,7 @@
 use super::super::{
-    rotate_settings_backups_labeled, write_value_atomic_labeled, AppSettings, SettingsFileLock,
-    SettingsSaveError, SettingsSaveLegacyOutward, SettingsSaveReason, SettingsSaveStage,
-    SAVE_OP_ID,
+    next_settings_save_op_id, rotate_settings_backups_labeled, write_value_atomic_labeled,
+    AppSettings, SettingsFileLock, SettingsSaveError, SettingsSaveLegacyOutward,
+    SettingsSaveReason, SettingsSaveStage,
 };
 use super::{
     FIELD_ARCHIVED, FIELD_ARCHIVED_REL, FIELD_PROJECT_PATH, FIELD_PROJECT_PATHS,
@@ -9,7 +9,6 @@ use super::{
 };
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 
 // Sole project registration authority; callers hold the shared settings lock.
 pub(crate) fn project_paths_path(settings_path: &Path) -> PathBuf {
@@ -327,7 +326,7 @@ pub(crate) fn publish_project_migration_backup_labeled(
     name.push(format!(
         ".{}.{}.tmp",
         std::process::id(),
-        SAVE_OP_ID.fetch_add(1, Ordering::Relaxed)
+        next_settings_save_op_id()
     ));
     let temp = parent.join(name);
     checkpoint("backup_create", &temp)?;

@@ -264,12 +264,6 @@ const INVENTORY: &[Row] = &[
         0,
         &[(DesktopOpener, 2)],
     ),
-    (
-        "src-tauri/src/config/agency_cache.rs",
-        2,
-        0,
-        &[(WindowsOnly, 1), (PosixBaseUtility, 1)],
-    ),
     ("src-tauri/src/config/agency_cache/git.rs", 1, 1, &[]),
     (
         "src-tauri/src/config/agent_config/load_probe_harness.rs",
@@ -423,6 +417,13 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 1)],
     ),
+    (
+        "src-tauri/src/process.rs",
+        2,
+        0,
+        &[(WindowsOnly, 1), (PosixBaseUtility, 1)],
+    ),
+    ("src-tauri/src/process/tests.rs", 2, 0, &[(TestOnly, 2)]),
     (
         "src-tauri/src/pty/credentials/tests.rs",
         4,

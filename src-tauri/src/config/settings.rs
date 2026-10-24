@@ -210,20 +210,20 @@ use save::{
     read_terminal_snapshot_security_settings_strict_from_path, render_diagnostic_path,
     render_settings_save_diagnostic, save_settings_to_path,
     save_settings_to_path_preserving_project_paths_typed, save_settings_value,
-    save_settings_value_locked, settings_lock_debug_path, settings_lock_debug_transport,
-    SettingsLockDebugAttempt, SettingsLockDebugContext, SettingsLockDebugTestHooks,
-    SettingsSaveDiagnosticCapture, PROJECT_MIGRATION_ATOMIC_FAULT, SETTINGS_LOCK_DEBUG_ATTEMPT,
-    SETTINGS_LOCK_DEBUG_CAPACITY, SETTINGS_LOCK_DEBUG_LOST, SETTINGS_LOCK_DEBUG_PATH_BYTES,
-    SETTINGS_LOCK_DEBUG_TEST_HOOKS, SETTINGS_LOCK_DEBUG_TEST_UNLOCK_ERROR,
-    SETTINGS_LOCK_DEBUG_TRANSPORT, SETTINGS_LOCK_UNAVAILABLE_CODE,
+    save_settings_value_locked, settings_lock_debug_lost_count, settings_lock_debug_path,
+    settings_lock_debug_sender, settings_lock_debug_set_attempt, settings_lock_debug_transport,
+    settings_lock_debug_transport_initialized, SettingsLockDebugAttempt, SettingsLockDebugContext,
+    SettingsLockDebugTestHooks, SettingsSaveDiagnosticCapture, PROJECT_MIGRATION_ATOMIC_FAULT,
+    SETTINGS_LOCK_DEBUG_CAPACITY, SETTINGS_LOCK_DEBUG_PATH_BYTES, SETTINGS_LOCK_DEBUG_TEST_HOOKS,
+    SETTINGS_LOCK_DEBUG_TEST_UNLOCK_ERROR, SETTINGS_LOCK_UNAVAILABLE_CODE,
     SETTINGS_SAVE_DIAGNOSTIC_CAPTURE,
 };
 use save::{
-    io_error_kind_as_str, json_error_category_as_str, project_lists_from_projection,
-    read_disk_object_for_write_typed, report_settings_save_error, save_settings_value_with_startup,
-    serialize_settings_component, write_value_atomic, write_value_atomic_labeled, SettingsFileLock,
-    SettingsSaveCause, SettingsSaveError, SettingsSaveLegacyOutward, SettingsSaveReason,
-    SettingsSaveReportSurface, SettingsSaveStage, SAVE_OP_ID,
+    io_error_kind_as_str, json_error_category_as_str, next_settings_save_op_id,
+    project_lists_from_projection, read_disk_object_for_write_typed, report_settings_save_error,
+    save_settings_value_with_startup, serialize_settings_component, write_value_atomic,
+    write_value_atomic_labeled, SettingsFileLock, SettingsSaveCause, SettingsSaveError,
+    SettingsSaveLegacyOutward, SettingsSaveReason, SettingsSaveReportSurface, SettingsSaveStage,
 };
 #[cfg(test)]
 pub(crate) use save::{

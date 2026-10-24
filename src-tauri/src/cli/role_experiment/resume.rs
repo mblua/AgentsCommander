@@ -1,11 +1,12 @@
 use super::report::build_attempts;
 use super::report::default_run_artifact_paths;
 use super::report::validate_report_artifacts;
+use super::storage::load_attempts;
 use super::storage::read_json;
+use super::storage::replace_attempts;
 use super::storage::validate_workgroup_under_ac_root;
-use super::storage::write_attempts_jsonl_replace;
+use super::storage::{attempts_name, attempts_path, attempts_path_display};
 use super::support::err;
-use super::support::err_at_line;
 use super::support::err_at_path;
 use super::validation::reject_link_or_reparse;
 use super::AttemptArtifact;
@@ -43,7 +44,7 @@ pub(super) fn load_and_validate_resume_artifacts(
     Vec<CliError>,
 > {
     let run_path = run_dir.join("run.json");
-    let attempts_path = run_dir.join("attempts.jsonl");
+    let attempts_path = attempts_path(run_dir);
     let report_path = run_dir.join("report.json");
     let markdown_path = run_dir.join("report.md");
     let state_dir = run_dir.join("attempt-state");
@@ -68,7 +69,7 @@ pub(super) fn load_and_validate_resume_artifacts(
 
     let run_artifact: RunArtifact = read_json(&run_path)
         .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &run_path)])?;
-    let attempts = read_attempts_jsonl(&attempts_path)?;
+    let attempts = load_attempts(run_dir)?;
     let report_artifact: ReportArtifact = read_json(&report_path)
         .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &report_path)])?;
 
@@ -89,9 +90,13 @@ pub(super) fn load_and_validate_resume_artifacts(
     };
 
     let mut errors = Vec::new();
-    if let Err(mut report_errors) =
-        validate_report_artifacts(loaded, run_id, &run_artifact, &report_artifact)
-    {
+    if let Err(mut report_errors) = validate_report_artifacts(
+        loaded,
+        run_id,
+        &run_artifact,
+        &report_artifact,
+        attempts_path_display(&super::report::run_dir(loaded, run_id)),
+    ) {
         errors.append(&mut report_errors);
     }
     if run_artifact.schema_version != 1 || run_artifact.project != args.project {
@@ -116,7 +121,7 @@ pub(super) fn load_and_validate_resume_artifacts(
         || run_artifact.replicates != args.replicates
         || run_artifact.variants != expected_variants
         || run_artifact.attempt_count != expected_attempts.len()
-        || run_artifact.artifacts != default_run_artifact_paths()
+        || run_artifact.artifacts != default_run_artifact_paths(attempts_name())
     {
         errors.push(err(
             "run_artifact_mismatch",
@@ -369,34 +374,12 @@ pub(super) fn replica_root_for_attempt(
     }
 }
 
-fn read_attempts_jsonl(path: &Path) -> Result<Vec<AttemptArtifact>, Vec<CliError>> {
-    let content = fs::read_to_string(path).map_err(|e| {
-        vec![err_at_path(
-            "run_artifact_unparseable",
-            format!("Failed to read {}: {}", path.display(), e),
-            path,
-        )]
-    })?;
-    let mut attempts = Vec::new();
-    for (idx, line) in content.lines().enumerate() {
-        attempts.push(serde_json::from_str(line).map_err(|e| {
-            vec![err_at_line(
-                "run_artifact_unparseable",
-                format!("Attempt line {} is invalid JSON: {}", idx + 1, e),
-                idx + 1,
-                None,
-            )]
-        })?);
-    }
-    Ok(attempts)
-}
-
 pub(super) fn reconcile_mutable_artifacts(
     run_dir: &Path,
     workgroup: &RunWorkgroupArtifact,
     retry_failed: bool,
 ) -> Result<Vec<AttemptArtifact>, Vec<CliError>> {
-    let mut attempts = read_attempts_jsonl(&run_dir.join("attempts.jsonl"))?;
+    let mut attempts = load_attempts(run_dir)?;
     let state_dir = run_dir.join("attempt-state");
     reject_link_or_reparse(&state_dir, "run_artifact_link_or_reparse", None)?;
     for attempt in &mut attempts {
@@ -439,7 +422,7 @@ pub(super) fn reconcile_mutable_artifacts(
             }
         }
     }
-    write_attempts_jsonl_replace(&run_dir.join("attempts.jsonl"), &attempts)?;
+    replace_attempts(run_dir, &attempts)?;
     Ok(attempts)
 }
 

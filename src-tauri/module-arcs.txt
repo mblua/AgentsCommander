@@ -286,6 +286,7 @@ agentscommander_lib::app_run::setup -> agentscommander_lib::session::selection
 agentscommander_lib::app_run::setup -> agentscommander_lib::testability::ui_automation
 agentscommander_lib::app_run::setup -> agentscommander_lib::testability::window_placement
 agentscommander_lib::app_run::setup -> agentscommander_lib::update_check
+agentscommander_lib::capture::catalog -> agentscommander_lib::filesystem
 agentscommander_lib::capture::jev -> agentscommander_lib::capture::catalog
 agentscommander_lib::capture::jev -> agentscommander_lib::network
 agentscommander_lib::capture::key -> agentscommander_lib::capture::record
@@ -1166,6 +1167,7 @@ agentscommander_lib::config::activity_log -> agentscommander_lib::session::profi
 agentscommander_lib::config::activity_log -> agentscommander_lib::session::session
 agentscommander_lib::config::agency_cache -> agentscommander_lib::config
 agentscommander_lib::config::agency_cache -> agentscommander_lib::config::role_templates
+agentscommander_lib::config::agency_cache -> agentscommander_lib::process
 agentscommander_lib::config::agency_cache::git -> agentscommander_lib::config::agent_path
 agentscommander_lib::config::agency_cache::git -> agentscommander_lib::config::role_templates
 agentscommander_lib::config::agency_cache::git -> agentscommander_lib::pty::credentials
@@ -2885,6 +2887,7 @@ agentscommander_lib::testability::ui_automation::files -> agentscommander_lib::t
 agentscommander_lib::testability::window_info -> agentscommander_lib
 agentscommander_lib::testability::window_info::windows_impl -> agentscommander_lib::config::profile
 agentscommander_lib::testability::window_info::windows_impl -> agentscommander_lib::testability::window_info
+agentscommander_lib::testability::window_placement -> agentscommander_lib::config::environment
 agentscommander_lib::update_check -> agentscommander_lib::config
 agentscommander_lib::update_check -> agentscommander_lib::config::settings
 agentscommander_lib::update_check -> agentscommander_lib::network
