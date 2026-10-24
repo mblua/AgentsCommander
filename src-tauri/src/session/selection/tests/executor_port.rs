@@ -182,7 +182,7 @@ async fn real_authority_explicit_and_fallback_release_free_claim_once() {
         }
         assert_eq!(receipt.load(Ordering::Acquire), 1);
         assert!(tracker.is_healthy());
-        // A second real claim on the same target proves the first was released.
+        // A later real claim must not change the first lease's settled receipt.
         let LifecycleAdmission::Ready(next) = executor
             .prepare(&transaction, Uuid::new_v4(), Some(source), false, None)
             .await
