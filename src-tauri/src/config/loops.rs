@@ -237,7 +237,6 @@ pub struct LoopConfigDetails {
 #[derive(Debug, Clone)]
 pub struct ResolvedLoopTarget {
     pub target_fqn: String,
-    pub project_dir: PathBuf,
     pub ac_root: PathBuf,
     pub wg_dir: PathBuf,
     pub coordinator_replica_dir: PathBuf,
@@ -401,7 +400,6 @@ pub fn resolve_loop_target(
     );
     Ok(ResolvedLoopTarget {
         target_fqn,
-        project_dir: project_dir.to_path_buf(),
         ac_root,
         wg_dir,
         coordinator_replica_dir: resolved.replica_dir,

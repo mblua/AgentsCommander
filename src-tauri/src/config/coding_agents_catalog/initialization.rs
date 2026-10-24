@@ -596,6 +596,7 @@ pub(crate) fn fail_soft_outcome(diagnostic: CatalogDiagnostic) -> CatalogInitOut
 /// publication time sampled at the commit point when the managed base was
 /// actually written or replaced; `None` means no base publication. Fail-soft:
 /// every failure is logged and surfaced as a warning, never a panic.
+#[cfg(test)]
 pub fn ensure_seeded(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) -> Option<DateTime<Utc>> {
     run_catalog_initialization(ac_dir, legacy_catalog_dir, None).published_at
 }

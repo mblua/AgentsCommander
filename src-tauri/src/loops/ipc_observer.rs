@@ -554,6 +554,7 @@ impl IpcObserver {
     }
 
     /// `(total, last_at_ms, cmd)`. Exists for intake; the tick never calls it.
+    #[cfg(test)]
     pub fn last_invoke_snapshot(&self) -> (u64, u64, String) {
         let total = self.total_invokes.load(Ordering::Relaxed);
         let at = self.last_invoke_at_ms.load(Ordering::Relaxed);

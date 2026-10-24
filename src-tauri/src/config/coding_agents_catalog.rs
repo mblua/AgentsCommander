@@ -80,12 +80,16 @@ pub(crate) use definition::{
     embedded_default_catalog, independent_catalog_path, primary_project_root,
     registered_project_roots, resolve_install_command, validate_catalog_key,
 };
-pub use definition::{
-    load_catalog, load_catalog_for_settings, parse_catalog_schema2, welcome_status_for,
-    CodingAgentCatalog, CodingAgentCatalogSchema2, CodingAgentDefinition, CodingAgentWelcomeStatus,
-    IdentityCatalogError, IdleBurstConfig, InstallCommands, TestedLevel,
+#[cfg(test)]
+pub(crate) use definition::{
+    load_catalog, CodingAgentCatalog, CodingAgentCatalogSchema2, IdentityCatalogError,
 };
-pub use initialization::ensure_seeded;
+pub use definition::{
+    load_catalog_for_settings, parse_catalog_schema2, welcome_status_for, CodingAgentDefinition,
+    CodingAgentWelcomeStatus, IdleBurstConfig, InstallCommands, TestedLevel,
+};
+#[cfg(test)]
+pub(crate) use initialization::ensure_seeded;
 #[cfg(test)]
 use initialization::{
     catalog_scope_key, ensure_seeded_for_project_in, ensure_seeded_instance_in,
@@ -126,8 +130,6 @@ use migration::{
 use publication::{
     acquire_catalog_lock, ensure_catalog_dir, publish_exclusive, publish_replace, CatalogPaths,
 };
-#[cfg(test)]
-use report::load_catalog_report_with_context;
 use report::{
     catalog_diagnostic, is_reparse_point, load_catalog_report_for_settings_with_config_dir,
     read_instance_legacy_source, read_optional_regular_file, CatalogSourceContext,
@@ -136,9 +138,10 @@ use report::{
     REPORT_CODE_BASE_UNAVAILABLE, REPORT_CODE_DUPLICATE_KEY, REPORT_CODE_INVALID_DEFINITION,
     REPORT_CODE_MIGRATION_PENDING,
 };
+#[cfg(test)]
+use report::{load_catalog_report, load_catalog_report_with_context};
 pub use report::{
-    load_catalog_report, load_catalog_report_for_settings, CatalogDiagnostic, CatalogReport,
-    CatalogUnavailable,
+    load_catalog_report_for_settings, CatalogDiagnostic, CatalogReport, CatalogUnavailable,
 };
 #[cfg(test)]
 use seed_master::{all_masters_present, EmbeddedSeedMaster, EMBEDDED_SEED_MASTERS};
