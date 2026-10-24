@@ -1,0 +1,2 @@
+#[cfg_attr(any(), cfg_attr(any(), r#path = "probe_a.rs"), path = "probe_b.rs")]
+mod r#child;

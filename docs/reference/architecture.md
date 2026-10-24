@@ -230,7 +230,7 @@ graph LR
 > back into it would pull the watchers into the cycle. The effect side lives in modules
 > that are already inside it, and the supervisor in `lib.rs` bridges the two by calling
 > **down** into the leaves. A second, independent gate,
-> `src-tauri/tests/claude_watcher_layering.rs`, equality-pins the Claude watcher's
+> `src-tauri/tests/claude_watcher_layering/main.rs`, equality-pins the Claude watcher's
 > dependency set, so any new watcher arc must be recorded there deliberately.
 
 Data flows one way: watcher → leaf sink → supervisor in `lib.rs` → effect inside the cycle. `config::co_managed` and `capture::catalog`, `capture::jev` and `capture::secrets` are leaves for the same reason, and none of them may name the `phone`, `session` or `commands` subtrees, or `config::settings` and `config::teams`.
@@ -815,7 +815,7 @@ graph TD
 | `phone/messaging.rs` | Message pump and delivery |
 | `phone/consumption.rs` | Message consumption tracking |
 | `phone/terminal_snapshot.rs` | Snapshot request/response plumbing |
-| `config/mod.rs` | `config_dir()`: current `main` override, adjacent-candidate, write-probe, and home-fallback resolution; inspect release tags for shipped behavior |
+| `config.rs` | `config_dir()`: current `main` override, adjacent-candidate, write-probe, and home-fallback resolution; inspect release tags for shipped behavior |
 | `config/settings.rs` | `AppSettings`, `AgentConfig`, load/save JSON |
 | `config/co_managed.rs` | Per-room Co-managed `config.json`, `CoManagedState`, `OffReason` (leaf) |
 | `config/teams.rs` | Team discovery, FQNs, routing rules |

@@ -210,20 +210,20 @@ use save::{
     read_terminal_snapshot_security_settings_strict_from_path, render_diagnostic_path,
     render_settings_save_diagnostic, save_settings_to_path,
     save_settings_to_path_preserving_project_paths_typed, save_settings_value,
-    save_settings_value_locked, settings_lock_debug_path, settings_lock_debug_transport,
-    SettingsLockDebugAttempt, SettingsLockDebugContext, SettingsLockDebugTestHooks,
-    SettingsSaveDiagnosticCapture, PROJECT_MIGRATION_ATOMIC_FAULT, SETTINGS_LOCK_DEBUG_ATTEMPT,
-    SETTINGS_LOCK_DEBUG_CAPACITY, SETTINGS_LOCK_DEBUG_LOST, SETTINGS_LOCK_DEBUG_PATH_BYTES,
-    SETTINGS_LOCK_DEBUG_TEST_HOOKS, SETTINGS_LOCK_DEBUG_TEST_UNLOCK_ERROR,
-    SETTINGS_LOCK_DEBUG_TRANSPORT, SETTINGS_LOCK_UNAVAILABLE_CODE,
+    save_settings_value_locked, settings_lock_debug_lost_count, settings_lock_debug_path,
+    settings_lock_debug_sender, settings_lock_debug_set_attempt, settings_lock_debug_transport,
+    settings_lock_debug_transport_initialized, SettingsLockDebugAttempt, SettingsLockDebugContext,
+    SettingsLockDebugTestHooks, SettingsSaveDiagnosticCapture, PROJECT_MIGRATION_ATOMIC_FAULT,
+    SETTINGS_LOCK_DEBUG_CAPACITY, SETTINGS_LOCK_DEBUG_PATH_BYTES, SETTINGS_LOCK_DEBUG_TEST_HOOKS,
+    SETTINGS_LOCK_DEBUG_TEST_UNLOCK_ERROR, SETTINGS_LOCK_UNAVAILABLE_CODE,
     SETTINGS_SAVE_DIAGNOSTIC_CAPTURE,
 };
 use save::{
-    io_error_kind_as_str, json_error_category_as_str, project_lists_from_projection,
-    read_disk_object_for_write_typed, report_settings_save_error, save_settings_value_with_startup,
-    serialize_settings_component, write_value_atomic, write_value_atomic_labeled, SettingsFileLock,
-    SettingsSaveCause, SettingsSaveError, SettingsSaveLegacyOutward, SettingsSaveReason,
-    SettingsSaveReportSurface, SettingsSaveStage, SAVE_OP_ID,
+    io_error_kind_as_str, json_error_category_as_str, next_settings_save_op_id,
+    project_lists_from_projection, read_disk_object_for_write_typed, report_settings_save_error,
+    save_settings_value_with_startup, serialize_settings_component, write_value_atomic,
+    write_value_atomic_labeled, SettingsFileLock, SettingsSaveCause, SettingsSaveError,
+    SettingsSaveLegacyOutward, SettingsSaveReason, SettingsSaveReportSurface, SettingsSaveStage,
 };
 #[cfg(test)]
 pub(crate) use save::{
@@ -863,16 +863,21 @@ fn default_selected_row_rail_color() -> String {
     "#FFFFFF".to_string()
 }
 
-/// #1925 (D2) - the published file: one pinned literal with the source ref `main` and a
+/// #1925 (D2) - the published file: one pinned value built with concat! of literals,
+/// source ref `main` and a
 /// `v1` segment that must equal `BLOCKING_MENUS_SCHEMA_VERSION`; a test pins both.
-pub(crate) const REMOTE_BLOCKING_MENUS_URL: &str =
-    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/blocking-menus/v1/settings-blocking-menus.json";
+pub(crate) const REMOTE_BLOCKING_MENUS_URL: &str = concat!(
+    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/",
+    "remote-resources/blocking-menus/v1/settings-blocking-menus.json",
+);
 
-/// #2133 - the published file: one pinned literal whose ref segment must equal
+/// #2133 - the published file: one pinned value built with concat! of literals whose ref must equal
 /// `REMOTE_AGENT_HELP_SOURCE_REF` (P6's) and whose `v1` segment must equal
 /// `AGENT_HELP_SCHEMA_VERSION`; T1 pins both.
-pub(crate) const REMOTE_AGENT_HELP_URL: &str =
-    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/agent-help/v1/agent-help.json";
+pub(crate) const REMOTE_AGENT_HELP_URL: &str = concat!(
+    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/",
+    "remote-resources/agent-help/v1/agent-help.json",
+);
 
 #[cfg(test)]
 mod tests;

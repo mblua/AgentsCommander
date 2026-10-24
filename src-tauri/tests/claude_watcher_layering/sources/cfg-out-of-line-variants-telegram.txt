@@ -1,0 +1,3 @@
+pub mod bridge {}
+#[cfg(unix)] #[path = "claude_a.rs"] pub mod claude_watcher;
+#[cfg(windows)] #[path = "claude_b.rs"] pub mod claude_watcher;

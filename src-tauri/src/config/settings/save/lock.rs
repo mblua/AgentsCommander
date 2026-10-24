@@ -11,12 +11,33 @@ use std::sync::{Arc, OnceLock};
 // only place that formats or writes logs; an owner never waits for its sink.
 pub(crate) const SETTINGS_LOCK_DEBUG_CAPACITY: usize = 256;
 pub(crate) const SETTINGS_LOCK_DEBUG_PATH_BYTES: usize = 4096;
-pub(crate) static SETTINGS_LOCK_DEBUG_TRANSPORT: OnceLock<
+static SETTINGS_LOCK_DEBUG_TRANSPORT: OnceLock<
     Option<std::sync::mpsc::SyncSender<SettingsLockDebugEvent>>,
 > = OnceLock::new();
-pub(crate) static SETTINGS_LOCK_DEBUG_INSTANCE: OnceLock<uuid::Uuid> = OnceLock::new();
-pub(crate) static SETTINGS_LOCK_DEBUG_ATTEMPT: AtomicU64 = AtomicU64::new(0);
-pub(crate) static SETTINGS_LOCK_DEBUG_LOST: AtomicU64 = AtomicU64::new(0);
+static SETTINGS_LOCK_DEBUG_INSTANCE: OnceLock<uuid::Uuid> = OnceLock::new();
+static SETTINGS_LOCK_DEBUG_ATTEMPT: AtomicU64 = AtomicU64::new(0);
+static SETTINGS_LOCK_DEBUG_LOST: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+pub(crate) fn settings_lock_debug_transport_initialized() -> bool {
+    SETTINGS_LOCK_DEBUG_TRANSPORT.get().is_some()
+}
+
+#[cfg(test)]
+pub(crate) fn settings_lock_debug_sender(
+) -> Option<&'static std::sync::mpsc::SyncSender<SettingsLockDebugEvent>> {
+    SETTINGS_LOCK_DEBUG_TRANSPORT.get().and_then(Option::as_ref)
+}
+
+#[cfg(test)]
+pub(crate) fn settings_lock_debug_lost_count() -> u64 {
+    SETTINGS_LOCK_DEBUG_LOST.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn settings_lock_debug_set_attempt(value: u64) {
+    SETTINGS_LOCK_DEBUG_ATTEMPT.store(value, Ordering::Relaxed);
+}
 
 pub(crate) struct SettingsLockDebugContext {
     pub(crate) instance: uuid::Uuid,

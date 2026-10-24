@@ -72,7 +72,7 @@ pub(crate) fn live_settle_action(
 /// over-estimating only adds bounded, capped latency for a session younger than
 /// this that is genuinely mid-turn (rare - a just-booted agent has no work yet),
 /// while under-estimating re-opens the still-starting drop. See the `startup_probe`
-/// mode in tests/wake_consumption_measure.rs.
+/// mode in tests/wake_consumption_measure/main.rs.
 pub(crate) const STARTUP_SETTLE_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// (#1001 PR2 P2 / B, option-a) Route a live wake by session age: a candidate whose

@@ -14,15 +14,16 @@ use super::report::run_dir;
 use super::report::validate_replicates;
 use super::report::validate_report_artifacts;
 use super::report::validate_run_id;
+use super::storage::create_attempts;
 use super::storage::load_experiment;
 use super::storage::load_variant_metadata;
 use super::storage::read_json;
 use super::storage::resolve_ac_root;
 use super::storage::resolve_project;
-use super::storage::write_attempts_jsonl_new;
 use super::storage::write_json;
 use super::storage::write_json_new;
 use super::storage::write_new_file;
+use super::storage::{attempts_name, attempts_path, attempts_path_display};
 use super::support::err;
 use super::support::err_at_path;
 use super::support::line_diff;
@@ -712,7 +713,7 @@ pub(super) fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
         &validation.variant_metas,
         args.replicates,
     );
-    let artifacts = default_run_artifact_paths();
+    let artifacts = default_run_artifact_paths(attempts_name());
     let run_artifact = RunArtifact {
         schema_version: 1,
         run_id: run_id.clone(),
@@ -756,7 +757,7 @@ pub(super) fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
     let report_artifact = build_report_artifact(
         &run_id,
         &loaded.experiment.name,
-        &run_dir,
+        report_artifact_paths(&run_dir, attempts_path_display(&run_dir)),
         &timestamp,
         &suite.prompts,
         &validation.variant_metas,
@@ -768,7 +769,7 @@ pub(super) fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
     let report_markdown = render_report_markdown(&report_artifact);
 
     write_json_new(&run_dir.join("run.json"), &run_artifact)?;
-    write_attempts_jsonl_new(&run_dir.join("attempts.jsonl"), &attempts)?;
+    create_attempts(&run_dir, &attempts)?;
     write_json_new(&run_dir.join("report.json"), &report_artifact)?;
     write_new_file(&run_dir.join("report.md"), report_markdown.as_bytes())?;
 
@@ -834,7 +835,7 @@ pub(super) fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
         )]);
     }
     let run_path = dir.join("run.json");
-    let attempts_path = dir.join("attempts.jsonl");
+    let attempts_path = attempts_path(&dir);
     let report_path = dir.join("report.json");
     let markdown_path = dir.join("report.md");
     for path in [&run_path, &attempts_path, &report_path, &markdown_path] {
@@ -851,8 +852,14 @@ pub(super) fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
         .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &run_path)])?;
     let report_artifact: ReportArtifact = read_json(&report_path)
         .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &report_path)])?;
-    validate_report_artifacts(&loaded, &args.run_id, &run_artifact, &report_artifact)?;
-    let expected_artifact_paths = report_artifact_paths(&dir);
+    validate_report_artifacts(
+        &loaded,
+        &args.run_id,
+        &run_artifact,
+        &report_artifact,
+        attempts_path_display(&dir),
+    )?;
+    let expected_artifact_paths = report_artifact_paths(&dir, attempts_path_display(&dir));
     let artifact_paths =
         serde_json::to_value(&expected_artifact_paths).unwrap_or(serde_json::Value::Null);
     if args.format == "json" {

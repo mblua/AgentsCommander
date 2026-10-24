@@ -126,6 +126,7 @@ jobs:
         run: |
           npm run sanitizing:file_layout -- --base-ref "${GATE_BASE_REF:-origin/main}"
           npm run sanitizing:tauri_edge -- --base-ref "${GATE_BASE_REF:-origin/main}"
+          npm run sanitizing:disk_access -- --base-ref "${GATE_BASE_REF:-origin/main}"
           npm run sanitizing:global_state -- --base-ref "${GATE_BASE_REF:-origin/main}"
           npm run sanitizing:process_env -- --base-ref "${GATE_BASE_REF:-origin/main}"
 
