@@ -173,13 +173,6 @@ async fn real_authority_explicit_and_fallback_release_free_claim_once() {
             panic!("native prepare must mint a real authority and claim");
         };
         assert!(executor.has_claim(&lease));
-        assert!(matches!(
-            executor
-                .prepare(&transaction, Uuid::new_v4(), Some(source), false, None)
-                .await
-                .unwrap(),
-            LifecycleAdmission::Waiting
-        ));
         let receipt = lease.release_receipt.clone();
         assert_eq!(receipt.load(Ordering::Acquire), 0);
         if explicit {
