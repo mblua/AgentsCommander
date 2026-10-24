@@ -286,6 +286,7 @@ agentscommander_lib::app_run::setup -> agentscommander_lib::session::selection
 agentscommander_lib::app_run::setup -> agentscommander_lib::testability::ui_automation
 agentscommander_lib::app_run::setup -> agentscommander_lib::testability::window_placement
 agentscommander_lib::app_run::setup -> agentscommander_lib::update_check
+agentscommander_lib::capture::catalog -> agentscommander_lib::filesystem
 agentscommander_lib::capture::jev -> agentscommander_lib::capture::catalog
 agentscommander_lib::capture::jev -> agentscommander_lib::network
 agentscommander_lib::capture::key -> agentscommander_lib::capture::record

@@ -12,7 +12,7 @@
 //! could express the user's approval is rejected **at load time** (plan section
 //! 8), so a bad catalog fails visibly once instead of silently on every turn.
 //!
-//! Leaf module: `serde`, `std` and nothing from the rest of this crate. It
+//! Catalog validation uses `serde` and delegates disk reads to `filesystem`. It
 //! never names the phone, session or commands subtrees, either config module
 //! named in plan section 4, or the network module, which is what keeps it out
 //! of the 88-module SCC.
@@ -114,7 +114,7 @@ impl Catalog {
     /// Read and validate the catalog file. A missing file is [`Self::missing`];
     /// any other read failure or parse failure is an unusable catalog.
     pub fn load(path: &Path) -> Self {
-        match std::fs::read_to_string(path) {
+        match crate::filesystem::read_capture_catalog(path) {
             Ok(raw) => Self::from_json_str(&raw),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::missing(),
             Err(error) => Self {
