@@ -483,7 +483,10 @@ fn issue_1867_isolation_source_contract() {
         ),
         (
             "cli_create_agent_matrix.rs",
-            include_str!("cli_create_agent_matrix.rs"),
+            concat!(
+                include_str!("cli_create_agent_matrix/main.rs"),
+                include_str!("cli_create_agent_matrix/launch.rs"),
+            ),
             18,
             &[
                 (
