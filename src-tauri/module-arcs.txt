@@ -2218,7 +2218,7 @@ agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::contain
 agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::container_tokens
 agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::context_scrape
 agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::idle_detector
-agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::manager
+agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::input_route
 agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::output
 agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::output_senders
 agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::watchers
@@ -2323,8 +2323,8 @@ agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::context_scr
 agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::credentials
 agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::git_watcher
 agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::idle_detector
+agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::input_route
 agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::job
-agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::manager
 agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::output
 agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::output_senders
 agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::spawn_diagnostics
