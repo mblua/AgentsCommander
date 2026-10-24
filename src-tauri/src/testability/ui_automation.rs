@@ -5,6 +5,16 @@ mod cli_run;
 mod files;
 mod liveness;
 
+use self::cli::CliRequest;
+pub use self::cli::{
+    execute_backend, execute_click, execute_context_click, execute_hover, execute_key,
+    execute_pointer, execute_query, execute_set, execute_terminal, execute_type, execute_wait,
+};
+#[cfg(test)]
+use self::cli::{
+    key_cli_request, parse_terminal_operation, pointer_cli_request, terminal_cli_request,
+    valid_key_chord, valid_pointer_operation, valid_terminal_session_id, UiTerminalOperation,
+};
 use crate::shutdown::ShutdownSignal;
 pub use args::{
     UiBackendArgs, UiClickArgs, UiContextClickArgs, UiHoverArgs, UiKeyArgs, UiPointerArgs,
@@ -13,16 +23,6 @@ pub use args::{
 use backend_watchdog::handle_backend_request;
 #[cfg(test)]
 use backend_watchdog::handle_resource_watchdog_backend_request_with_config;
-use cli::CliRequest;
-pub use cli::{
-    execute_backend, execute_click, execute_context_click, execute_hover, execute_key,
-    execute_pointer, execute_query, execute_set, execute_terminal, execute_type, execute_wait,
-};
-#[cfg(test)]
-use cli::{
-    key_cli_request, parse_terminal_operation, pointer_cli_request, terminal_cli_request,
-    valid_key_chord, valid_pointer_operation, valid_terminal_session_id, UiTerminalOperation,
-};
 #[cfg(test)]
 use cli_run::timeout_phase;
 pub use cli_run::{

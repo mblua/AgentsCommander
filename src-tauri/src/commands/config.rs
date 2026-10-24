@@ -97,8 +97,8 @@ pub(crate) use profile_selection::{
 };
 
 mod web_server;
-pub(crate) use web_server::begin_web_server_start;
-pub use web_server::{
+pub(crate) use self::web_server::begin_web_server_start;
+pub use self::web_server::{
     __cmd__api_server_status, __cmd__get_web_server_owned_status, __cmd__get_web_server_status,
     __cmd__list_web_server_interfaces, __cmd__mint_api_client, __cmd__open_web_remote,
     __cmd__start_api_server, __cmd__start_web_server, __cmd__stop_api_server,
@@ -145,6 +145,13 @@ pub use agent_update::{
 };
 
 mod agent_file_source;
+#[cfg(test)]
+use self::web_server::{
+    api_server_probe_addr, build_web_server_owned_status, classify_virtual_interface,
+    ensure_web_remote_open_allowed, is_tcp_listening, is_tcp_socket_listening,
+    map_web_server_interfaces, mint_api_client_with_path, resolve_web_server_owned_status,
+    select_current_bind_failure, stop_web_server_handle, web_remote_url, web_server_probe_addr,
+};
 #[cfg(test)]
 use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 #[cfg(test)]
@@ -216,13 +223,6 @@ use settings_update::{
 };
 #[cfg(test)]
 use sha2::{Digest, Sha256};
-#[cfg(test)]
-use web_server::{
-    api_server_probe_addr, build_web_server_owned_status, classify_virtual_interface,
-    ensure_web_remote_open_allowed, is_tcp_listening, is_tcp_socket_listening,
-    map_web_server_interfaces, mint_api_client_with_path, resolve_web_server_owned_status,
-    select_current_bind_failure, stop_web_server_handle, web_remote_url, web_server_probe_addr,
-};
 
 const HOME_MARKDOWN_URL: &str =
     "https://raw.githubusercontent.com/mblua/AgentsCommander/main/docs/home-en.md";

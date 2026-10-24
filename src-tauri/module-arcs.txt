@@ -682,9 +682,9 @@ agentscommander_lib::commands::co_managed -> agentscommander_lib::path_identity
 agentscommander_lib::commands::co_managed -> agentscommander_lib::session::manager
 agentscommander_lib::commands::codex_resolver -> agentscommander_lib::path_utils
 agentscommander_lib::commands::config -> agentscommander_lib::agent_update
+agentscommander_lib::commands::config -> agentscommander_lib::commands::config::web_server
 agentscommander_lib::commands::config -> agentscommander_lib::config::settings
 agentscommander_lib::commands::config -> agentscommander_lib::network
-agentscommander_lib::commands::config -> agentscommander_lib::web_server
 agentscommander_lib::commands::config::agent_file_source -> agentscommander_lib::config::coding_agent_profiles
 agentscommander_lib::commands::config::agent_file_source -> agentscommander_lib::config::settings
 agentscommander_lib::commands::config::agent_file_source -> agentscommander_lib::web::broadcast
@@ -2865,9 +2865,9 @@ agentscommander_lib::testability::reset -> agentscommander_lib
 agentscommander_lib::testability::reset -> agentscommander_lib::testability
 agentscommander_lib::testability::reset -> agentscommander_lib::testability::mutex_holders
 agentscommander_lib::testability::reset -> agentscommander_lib::testability::window_placement
-agentscommander_lib::testability::ui_automation -> agentscommander_lib::cli
 agentscommander_lib::testability::ui_automation -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::testability::ui_automation -> agentscommander_lib::shutdown
+agentscommander_lib::testability::ui_automation -> agentscommander_lib::testability::ui_automation::cli
 agentscommander_lib::testability::ui_automation::args -> agentscommander_lib::testability::ui_automation
 agentscommander_lib::testability::ui_automation::backend_watchdog -> agentscommander_lib::config::settings
 agentscommander_lib::testability::ui_automation::backend_watchdog -> agentscommander_lib::resource_monitor

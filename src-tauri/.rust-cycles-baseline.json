@@ -8,9 +8,11 @@
   },
   "moduleCycles": [
     {
-      "id": "60342a4bb2bf76db",
+      "id": "8c9e176e2bd160c7",
       "members": [
         "agentscommander_lib",
+        "agentscommander_lib::api",
+        "agentscommander_lib::api::audit",
         "agentscommander_lib::api::auth",
         "agentscommander_lib::api::error",
         "agentscommander_lib::api::message_store",
@@ -21,12 +23,12 @@
         "agentscommander_lib::co_managed",
         "agentscommander_lib::co_managed::route",
         "agentscommander_lib::commands::config",
+        "agentscommander_lib::commands::config::web_server",
         "agentscommander_lib::commands::pty",
         "agentscommander_lib::commands::role_templates",
         "agentscommander_lib::commands::session",
         "agentscommander_lib::commands::telegram",
         "agentscommander_lib::config::activity_log",
-        "agentscommander_lib::config::daemon_pid",
         "agentscommander_lib::phone::types",
         "agentscommander_lib::pty::backend",
         "agentscommander_lib::pty::container_backend",
@@ -54,7 +56,6 @@
         "agentscommander_lib::telegram::bridge",
         "agentscommander_lib::telegram::manager",
         "agentscommander_lib::testability::reset",
-        "agentscommander_lib::testability::ui_automation",
         "agentscommander_lib::testability::window_info",
         "agentscommander_lib::web",
         "agentscommander_lib::web::commands",
@@ -72,6 +73,13 @@
         "agentscommander_lib::phone::messaging",
         "agentscommander_lib::pty::container_paths",
         "agentscommander_lib::pty::container_repos"
+      ]
+    },
+    {
+      "id": "bba33347ff93cb97",
+      "members": [
+        "agentscommander_lib::testability::ui_automation",
+        "agentscommander_lib::testability::ui_automation::cli"
       ]
     }
   ],
