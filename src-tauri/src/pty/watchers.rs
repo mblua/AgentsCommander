@@ -39,9 +39,9 @@
 mod activity;
 pub mod dedupe;
 mod evaluation;
-pub mod frame;
-pub mod history;
-pub mod pattern;
+pub(crate) mod frame;
+pub(crate) mod history;
+pub(crate) mod pattern;
 mod resolution;
 mod screen_frame;
 
