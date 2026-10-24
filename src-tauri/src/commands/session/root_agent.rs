@@ -46,14 +46,7 @@ pub(crate) fn classify_existing_root(status: &SessionStatus, has_pty: bool) -> E
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct RootJobRequest {
-    pub requested_agent_id: Option<String>,
-    pub requested_profile: Option<String>,
-    pub skip_auto_resume_for_new_session: bool,
-    pub intent: TrustedCreateIntent,
-    pub select_after: bool,
-}
+pub(crate) use crate::session::selection::RootJobRequest;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_root_agent_inner(

@@ -221,6 +221,7 @@ agentscommander_lib::app_run -> agentscommander_lib::api::message_store
 agentscommander_lib::app_run -> agentscommander_lib::capture
 agentscommander_lib::app_run -> agentscommander_lib::commands
 agentscommander_lib::app_run -> agentscommander_lib::commands::session
+agentscommander_lib::app_run -> agentscommander_lib::commands::session::selection_executor
 agentscommander_lib::app_run -> agentscommander_lib::config
 agentscommander_lib::app_run -> agentscommander_lib::config::activity_log
 agentscommander_lib::app_run -> agentscommander_lib::config::coordinator_clocks
@@ -1031,7 +1032,7 @@ agentscommander_lib::commands::session::create::launch -> agentscommander_lib::p
 agentscommander_lib::commands::session::create::launch -> agentscommander_lib::pty::inject
 agentscommander_lib::commands::session::create::launch -> agentscommander_lib::session::profile
 agentscommander_lib::commands::session::create::launch -> agentscommander_lib::session::session
-agentscommander_lib::commands::session::destroy -> agentscommander_lib
+agentscommander_lib::commands::session::destroy -> agentscommander_lib::app_state
 agentscommander_lib::commands::session::destroy -> agentscommander_lib::commands::session
 agentscommander_lib::commands::session::destroy -> agentscommander_lib::config::root_agent
 agentscommander_lib::commands::session::destroy -> agentscommander_lib::config::sessions_persistence
@@ -1041,7 +1042,7 @@ agentscommander_lib::commands::session::destroy -> agentscommander_lib::session:
 agentscommander_lib::commands::session::destroy -> agentscommander_lib::session::selection
 agentscommander_lib::commands::session::destroy -> agentscommander_lib::session::session
 agentscommander_lib::commands::session::destroy -> agentscommander_lib::telegram::manager
-agentscommander_lib::commands::session::destroy::response_close -> agentscommander_lib
+agentscommander_lib::commands::session::destroy::response_close -> agentscommander_lib::app_state
 agentscommander_lib::commands::session::destroy::response_close -> agentscommander_lib::commands::session
 agentscommander_lib::commands::session::destroy::response_close -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::commands::session::destroy::response_close -> agentscommander_lib::config::settings
@@ -1064,7 +1065,7 @@ agentscommander_lib::commands::session::lifecycle -> agentscommander_lib::pty::m
 agentscommander_lib::commands::session::lifecycle -> agentscommander_lib::session::manager
 agentscommander_lib::commands::session::lifecycle -> agentscommander_lib::session::selection
 agentscommander_lib::commands::session::lifecycle -> agentscommander_lib::session::session
-agentscommander_lib::commands::session::restart -> agentscommander_lib
+agentscommander_lib::commands::session::restart -> agentscommander_lib::app_state
 agentscommander_lib::commands::session::restart -> agentscommander_lib::commands::pty
 agentscommander_lib::commands::session::restart -> agentscommander_lib::commands::session
 agentscommander_lib::commands::session::restart -> agentscommander_lib::config::agent_command
@@ -1110,6 +1111,12 @@ agentscommander_lib::commands::session::root_agent -> agentscommander_lib::sessi
 agentscommander_lib::commands::session::root_agent -> agentscommander_lib::session::selection
 agentscommander_lib::commands::session::root_agent -> agentscommander_lib::session::session
 agentscommander_lib::commands::session::root_agent -> agentscommander_lib::telegram::manager
+agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::commands::session::destroy
+agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::commands::session::lifecycle
+agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::commands::session::restart
+agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::commands::session::root_agent
+agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::pty::manager
+agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::session::selection
 agentscommander_lib::commands::session::telegram -> agentscommander_lib::commands::telegram
 agentscommander_lib::commands::session::telegram -> agentscommander_lib::config
 agentscommander_lib::commands::session::telegram -> agentscommander_lib::config::agent_config
@@ -2859,6 +2866,7 @@ agentscommander_lib::telegram::output -> agentscommander_lib::config::instance_a
 agentscommander_lib::telegram::output -> agentscommander_lib::network
 agentscommander_lib::telegram::output -> agentscommander_lib::telegram::api
 agentscommander_lib::telegram::output -> agentscommander_lib::telegram::redact
+agentscommander_lib::test_support -> agentscommander_lib::commands::session::selection_executor
 agentscommander_lib::testability -> agentscommander_lib::config::profile
 agentscommander_lib::testability::mutex_holders -> agentscommander_lib::config::profile
 agentscommander_lib::testability::mutex_holders -> agentscommander_lib::testability

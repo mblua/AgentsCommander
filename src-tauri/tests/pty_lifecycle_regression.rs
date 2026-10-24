@@ -339,8 +339,7 @@ fn make_test_app(
         s
     });
     let git_app = Box::leak(Box::new(
-        tauri::Builder::default()
-            .any_thread()
+        agentscommander_lib::test_support::test_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build git watcher handle app"),
     ));
@@ -367,8 +366,7 @@ fn make_test_app(
     let captured_sequences = Arc::clone(captured_sequences);
     let captured_deliveries = Arc::clone(captured_deliveries);
     let listener_errors = Arc::clone(listener_errors);
-    let app = tauri::Builder::default()
-        .any_thread()
+    let app = agentscommander_lib::test_support::test_builder()
         .manage(MasterToken::new("pty-lifecycle-master-token".into()))
         .manage(AppOutbox::new(
             repo_root.join(".app-outbox").to_string_lossy().to_string(),

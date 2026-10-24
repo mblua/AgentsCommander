@@ -46,7 +46,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use uuid::Uuid;
-
 mod agent_command;
 mod co_managed;
 mod create;
@@ -57,6 +56,7 @@ mod restart_resume;
 mod resume_args;
 mod resume_probe;
 mod root_agent;
+pub(crate) mod selection_executor;
 mod telegram;
 #[cfg(test)]
 use agent_command::coding_agent_descriptor;
