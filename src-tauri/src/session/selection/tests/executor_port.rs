@@ -219,9 +219,18 @@ fn assert_unstarted(coordinator: &SelectionCoordinator) {
         .is_none());
     assert!(coordinator.inner.receiver.lock().unwrap().is_some());
     assert!(coordinator.inner.worker.lock().unwrap().is_none());
-    assert_eq!(coordinator.inner.sender.capacity(), 65);
-    assert_eq!(coordinator.inner.admission.available_permits(), 64);
-    assert_eq!(coordinator.inner.create_tickets.available_permits(), 16);
+    assert_eq!(
+        coordinator.inner.sender.capacity(),
+        COORDINATOR_QUEUE_CAPACITY
+    );
+    assert_eq!(
+        coordinator.inner.admission.available_permits(),
+        COORDINATOR_ADMISSION_CAPACITY
+    );
+    assert_eq!(
+        coordinator.inner.create_tickets.available_permits(),
+        CREATE_TICKET_CAPACITY
+    );
 }
 
 fn restart_request() -> RestartJobRequest {
