@@ -41,11 +41,11 @@ fn structured_spelling_corpus_resolves_every_supported_bridge_path() {
         ),
         (
             "10-type-and-expression",
-            include_str!("sources/source-1.txt"),
+            include_str!("sources/10-type-and-expression.txt"),
         ),
         (
             "13-use-tree-self-chain",
-            include_str!("sources/source-2.txt"),
+            include_str!("sources/13-use-tree-self-chain.txt"),
         ),
         (
             "14-sibling-grouped-rename",
@@ -57,7 +57,7 @@ fn structured_spelling_corpus_resolves_every_supported_bridge_path() {
         ),
         (
             "16-current-crate-extern-alias",
-            include_str!("sources/source-3.txt"),
+            include_str!("sources/16-current-crate-extern-alias.txt"),
         ),
         (
             "17-anonymous-import",
@@ -120,7 +120,7 @@ fn recursively_nested_cfg_attr_path_variants_scan_every_alternative() {
     );
     fixture.write(
         "src/telegram/claude_watcher.rs",
-        include_str!("sources/source-4.txt"),
+        include_str!("sources/21-nested-cfg-attr-raw-child.txt"),
     );
     fixture.write(
         "src/telegram/claude_watcher/child.rs",
@@ -236,7 +236,10 @@ fn inert_text_and_macro_tokens_do_not_create_bridge_dependencies() {
             "raw-string",
             "#[cfg(any())] const TEXT: &str = r#\"crate::telegram::bridge::BridgeLogger\"#;",
         ),
-        ("stringify-tokens", include_str!("sources/source-5.txt")),
+        (
+            "stringify-tokens",
+            include_str!("sources/stringify-tokens.txt"),
+        ),
     ];
     for (label, body) in rows {
         let report = inline_spelling_report(label, body)
@@ -256,7 +259,7 @@ fn alias_conflicts_cycles_and_globs_fail_closed() {
     for (label, body, marker) in [
         (
             "alias-conflict",
-            include_str!("sources/source-6.txt"),
+            include_str!("sources/alias-conflict.txt"),
             "lexical alias conflict",
         ),
         (

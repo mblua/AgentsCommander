@@ -92,7 +92,10 @@ fn visibility_matrix_distinguishes_canonical_shorthand_from_path_spelling() {
 #[test]
 fn moved_symbol_map_preserves_duplicates_locations_and_rejects_local_substitutes() {
     let duplicate = Fixture::with_telegram("duplicate-symbol-bodies");
-    duplicate.write("src/telegram.rs", include_str!("sources/source-7.txt"));
+    duplicate.write(
+        "src/telegram.rs",
+        include_str!("sources/duplicate-telegram.txt"),
+    );
     let duplicate_index = duplicate
         .index_as(CRATE_ID)
         .expect("duplicate fixture should index");
@@ -103,7 +106,10 @@ fn moved_symbol_map_preserves_duplicates_locations_and_rejects_local_substitutes
     assert_ne!(duplicate_rows[0].body_id, duplicate_rows[1].body_id);
 
     let misplaced = Fixture::with_telegram("misplaced-inherent-method");
-    misplaced.write("src/telegram.rs", include_str!("sources/source-8.txt"));
+    misplaced.write(
+        "src/telegram.rs",
+        include_str!("sources/misplaced-telegram.txt"),
+    );
     let misplaced_index = misplaced
         .index_as(CRATE_ID)
         .expect("misplaced fixture should index");
@@ -178,7 +184,10 @@ fn module_tree_rejects_ambiguous_and_missing_conventional_sources() {
 #[test]
 fn nested_inline_modules_share_a_source_without_losing_body_identity() {
     let fixture = Fixture::with_telegram("nested-inline");
-    fixture.write("src/telegram.rs", include_str!("sources/source-9.txt"));
+    fixture.write(
+        "src/telegram.rs",
+        include_str!("sources/nested-inline-telegram.txt"),
+    );
     let index = fixture.index().expect("inline tree should index");
     let target_bodies = index
         .bodies
@@ -202,7 +211,10 @@ fn nested_inline_modules_share_a_source_without_losing_body_identity() {
 #[test]
 fn cfg_disjoint_inline_variants_keep_distinct_scopes_and_scan_the_second_body() {
     let fixture = Fixture::with_telegram("cfg-inline-variants");
-    fixture.write("src/telegram.rs", include_str!("sources/source-10.txt"));
+    fixture.write(
+        "src/telegram.rs",
+        include_str!("sources/cfg-inline-variants-telegram.txt"),
+    );
     let index = fixture
         .index()
         .expect("cfg-disjoint inline variants should index");
@@ -224,7 +236,10 @@ fn cfg_disjoint_inline_variants_keep_distinct_scopes_and_scan_the_second_body() 
 #[test]
 fn cfg_disjoint_out_of_line_variants_scan_every_selected_file() {
     let fixture = Fixture::with_telegram("cfg-out-of-line-variants");
-    fixture.write("src/telegram.rs", include_str!("sources/source-11.txt"));
+    fixture.write(
+        "src/telegram.rs",
+        include_str!("sources/cfg-out-of-line-variants-telegram.txt"),
+    );
     fixture.write("src/claude_a.rs", "fn first() {}\n");
     fixture.write(
         "src/claude_b.rs",
@@ -317,7 +332,10 @@ fn module_tree_rejects_escape_duplicate_owner_and_active_source_cycle() {
 fn raw_module_ids_normalize_and_exact_cfg_test_bodies_are_excluded() {
     let fixture = Fixture::new("raw-modules-and-cfg-test");
     fixture.write("src/lib.rs", "mod r#telegram;\n");
-    fixture.write("src/telegram.rs", include_str!("sources/source-12.txt"));
+    fixture.write(
+        "src/telegram.rs",
+        include_str!("sources/raw-modules-and-cfg-test-telegram.txt"),
+    );
     let index = fixture
         .index_as(CRATE_ID)
         .expect("raw target tree should index");
