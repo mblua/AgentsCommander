@@ -859,3 +859,68 @@ test('04 rejects invalid registries and missing owners rather than passing silen
   snapshot.headTree.delete(attemptsScope + 'storage.rs');
   assert.equal(containersGate(snapshot).status, 'ERROR');
 });
+
+import { runGate as diskGate } from './sanitizing_disk_access.mjs';
+test('07 calls, aliases, multiline, ambiguity and shadowing', () => {
+  for (const bad of [
+    'fn f() { std::fs::read("x"); }',
+    'use std::fs as disk; fn f() { disk::read("x"); }',
+    'use std::fs::read as load; fn f() { load("x"); }',
+    'use std::fs::{File as F, OpenOptions as O}; fn f() { F::open("x"); O::new(); }',
+    'fn f() { File::create("x"); OpenOptions::new(); }',
+    'fn f() { std\n::fs\n::read\n("x"); }',
+  ]) control(diskGate, 'disk_files', 'disk.rs', 'fn f() {}', bad);
+  const p = rustRoot + 'disk.rs';
+  const ambiguous = diskGate(trees({}, {[p]:
+    'use std::fs as disk; use other as disk; fn f() { disk::read("x"); }'}));
+  assert.equal(ambiguous.exit, 1);
+  assert.ok(ambiguous.diagnostics.some(d => d.status === 'WARN' && d.reason === 'duplicate binding'));
+  const glob = diskGate(trees({}, {[p]:'use std::fs::*; fn f() { read("x"); }'}));
+  assert.equal(glob.exit, 1);
+  assert.ok(glob.diagnostics.some(d => d.reason === 'glob import may bind path'));
+  for (const clean of [
+    'fn f() { read("x"); }',
+    'fn f() { /* std::fs::read("x"); */ let s = "File::open"; }',
+    '#[cfg(test)] mod tests { fn f() { std::fs::read("x"); } }',
+    'mod File { fn open() {} } fn f() { File::open(); }',
+    'use custom::fs; fn f() { fs::read("x"); }',
+    'use std::fs::read as load; fn f() { let load = || (); load(); }',
+  ]) assert.equal(diskGate(trees({}, {[p]:clean})).exit, 0, clean);
+});
+test('07 exact owners, tests and separate untyped receiver approximation', () => {
+  const bad = 'fn f() { std::fs::read("x"); }';
+  for (const name of ['filesystem.rs', 'filesystem/read.rs', 'path_identity.rs',
+    'path_identity/read.rs', 'path_utils.rs', 'path_utils/read.rs', 'tests.rs',
+    'foo/tests/read.rs', 'foo_tests.rs'])
+    assert.equal(diskGate(trees({}, {[rustRoot + name]:bad})).exit, 0, name);
+  for (const name of ['filesystem_extra.rs', 'store.rs', 'containers/read.rs'])
+    assert.equal(diskGate(trees({}, {[rustRoot + name]:bad})).exit, 1, name);
+  const result = diskGate(trees({}, {[rustRoot + 'model.rs']:
+    'fn f(record: Record) { record.metadata(); record.exists(); record.canonicalize(); }'}));
+  assert.equal(result.exit, 0);
+  assert.equal(result.totals[1].disk_files, 0);
+  assert.deepEqual(result.approximation.head, {files:1, sites:3, paths:[rustRoot + 'model.rs']});
+});
+test('07 file counts equal/down/up, no compensated new file or move credit', () => {
+  const p = rustRoot + 'old.rs', q = rustRoot + 'new.rs';
+  const bad = 'fn f() { std::fs::read("x"); }';
+  const base = {[p]:bad};
+  assert.equal(diskGate(trees(base, {[p]:bad + bad})).exit, 0);
+  assert.equal(diskGate(trees(base, {[p]:''})).exit, 0);
+  assert.equal(diskGate(trees(base, {[p]:bad, [q]:bad})).exit, 1);
+  assert.equal(diskGate(trees(base, {[p]:'', [q]:bad})).exit, 1);
+  assert.equal(diskGate(trees(base, {[q]:bad})).exit, 1);
+});
+test('07 immutable real Git base, working tree ignored, drift and blob errors', t => {
+  const f = fixture(t), p = rustRoot + 'disk.rs';
+  f.write(p, 'fn f() {}'); const base = f.commit();
+  f.write(p, 'fn f() { std::fs::read("x"); }'); f.commit();
+  const snapshot = f.snapshot(base);
+  f.write(p, 'fn f() {}');
+  assert.equal(diskGate(snapshot).exit, 1);
+  f.write('next', 'next'); f.commit();
+  assert.equal(diskGate(snapshot).exit, 3);
+  const broken = trees({}, {[p]:'x'});
+  broken.readBlob = () => { throw Error('missing blob'); };
+  assert.equal(diskGate(broken).status, 'ERROR');
+});
