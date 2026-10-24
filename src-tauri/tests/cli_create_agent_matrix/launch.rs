@@ -2,8 +2,9 @@ use std::path::Path;
 use std::process::Stdio;
 
 use super::{
-    command_for_binary, config_dir_for_bin, copy_binary_into, project_with_workspace,
-    session_request_paths, spawn_lock, write_settings, Tmp,
+    assert_same_path, assert_single_project_refresh_request, command_for_binary,
+    config_dir_for_bin, copy_binary_into, project_with_workspace, session_request_paths,
+    spawn_lock, write_settings, Tmp,
 };
 
 /// #1163: watch `config_dir/session-requests/` for the CLI's request file and
