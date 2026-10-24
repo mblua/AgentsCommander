@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { codeOrder } from './sanitizing_baseline.mjs';
 import { scanRust } from './sanitizing_rust_scan.mjs';
 
@@ -20,11 +21,73 @@ export function qualified(scan, tokens, i, relevantPath) {
   return { ...resolved, end, raw: tokens.slice(start, end).map(t => t.name ?? t.text).join('') };
 }
 
+// A transfer is proven only by unchanged item tokens and resolved bindings.
+// Paths, enclosing modules, whitespace and comments do not identify an occurrence.
+// Unknown/ambiguous bindings get no transfer credit; this is deliberately finite.
+const itemIdentities = new WeakMap();
+export function occurrenceIdentity(scan, token, declaration) {
+  const item = scan.items.filter(i => !['mod', 'impl', 'trait'].includes(i.kind) &&
+    i.start <= token.start && token.start < i.end).sort((a,b) => (a.end-a.start)-(b.end-b.start))[0];
+  if (!item && declaration) return tokenIdentity(scan,declaration,token);
+  if (!item) return undefined;
+  if (!itemIdentities.has(item)) {
+    const tokens = scan.tokens.filter(t => t.start >= item.start && t.start < item.end);
+    const hash = tokenHash(scan,tokens);
+    itemIdentities.set(item, hash ? { hash, tokens } : null);
+  }
+  const identity = itemIdentities.get(item);
+  return identity ? identity.hash + ':' + identity.tokens.indexOf(token) : undefined;
+}
+
+// Match retained sites first, then spend each removed occurrence at most once.
+// Equal totals alone never prove that code in a new file was moved.
+function transferredSites(byPath, rules) {
+  const moved = new Set();
+  for (const rule of rules) {
+    const removed = new Map(), added = [];
+    for (const path of new Set([...byPath[0].keys(), ...byPath[1].keys()])) {
+      const available = new Map();
+      for (const site of byPath[0].get(path)?.sites[rule] ?? []) if (site.identity)
+        available.set(site.identity, (available.get(site.identity) ?? 0) + 1);
+      for (const site of byPath[1].get(path)?.sites[rule] ?? []) {
+        const n = available.get(site.identity) ?? 0;
+        if (n) available.set(site.identity, n - 1);
+        else added.push(site);
+      }
+      for (const [id,n] of available) removed.set(id, (removed.get(id) ?? 0) + n);
+    }
+    for (const site of added) {
+      const n = removed.get(site.identity) ?? 0;
+      if (n) { moved.add(site); removed.set(site.identity, n - 1); }
+    }
+  }
+  return moved;
+}
+
+function tokenHash(scan, tokens) {
+  const normalized = [];
+  for (const [i,t] of tokens.entries()) {
+    // A declaration's own name is not a reference to its initializer binding.
+    const declaration = ['static','const'].includes(tokens[i - 1]?.name) ||
+      tokens[i - 1]?.name === 'mut' && tokens[i - 2]?.name === 'static';
+    const r = t.kind === 'ident' && !declaration ? scan.resolvePath(t.name,t.scope) : null;
+    if (r?.ambiguous) return undefined;
+    normalized.push([t.kind,t.text,r?.path ?? null]);
+  }
+  return createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
+}
+function tokenIdentity(scan, tokens, token) {
+  const hash = tokenHash(scan,tokens);
+  return hash ? hash + ':' + tokens.indexOf(token) : undefined;
+}
+
 export function metric() { return { counts: {}, sites: {}, commands: new Map(), warnings: [] }; }
 
 export function hit(m, rule, line, identity) {
   m.counts[rule] = (m.counts[rule] ?? 0) + 1;
-  (m.sites[rule] ??= []).push({ line, ...(identity ? { identity } : {}) });
+  const site = { line, ...(identity ? { identity } : {}) };
+  (m.sites[rule] ??= []).push(site);
+  return site;
 }
 
 export function warning(m, path, line, resolved) {
@@ -32,7 +95,7 @@ export function warning(m, path, line, resolved) {
     remedy: 'use an explicit unambiguous import; signal counted conservatively' });
 }
 
-export function runMeasuredGate(snapshot, { gate, rules, newFileRules, inUniverse, measure, extraChecks }) {
+export function runMeasuredGate(snapshot, { gate, rules, newFileRules, inUniverse, measure, extraChecks, recognizeMoves = false }) {
   const diagnostics = [], measurements = { base: [], head: [] };
   try {
     const trees = [snapshot.baseTree, snapshot.headTree], totals = [{}, {}], byPath = [new Map(), new Map()];
@@ -53,10 +116,11 @@ export function runMeasuredGate(snapshot, { gate, rules, newFileRules, inUnivers
       violation(rule, source?.[0] ?? '<universe>', source?.[1].sites[rule]?.[0]?.line ?? 1,
         totals[0][rule] ?? 0, totals[1][rule], 'global subrule debt increased');
     }
+    const moved = recognizeMoves ? transferredSites(byPath, rules) : new Set();
     for (const [path, m] of byPath[1]) {
-      if (!snapshot.baseTree.has(path)) for (const rule of newFileRules) if (m.counts[rule])
-        violation(rule, path, m.sites[rule][0].line, 0, m.counts[rule], 'new file must satisfy this subrule even with compensated totals');
-      extraChecks(path, m, byPath[0].get(path), violation);
+      if (!snapshot.baseTree.has(path)) for (const rule of newFileRules) if (m.sites[rule]?.some(site => !moved.has(site)))
+        violation(rule, path, m.sites[rule].find(site => !moved.has(site)).line, 0, m.counts[rule], 'new file must satisfy this subrule even with compensated totals');
+      extraChecks(path, m, byPath[0].get(path), violation, moved);
     }
     snapshot.assertStableHead();
     const fail = diagnostics.some(d => d.status === 'FAIL');

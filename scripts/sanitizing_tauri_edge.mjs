@@ -1,5 +1,5 @@
 import { gateCli, isMain } from './sanitizing_baseline.mjs';
-import { runMeasuredGate, metric, hit, warning, resolveAlias as resolveGateAlias, qualified as qualifiedGatePath } from './sanitizing_gate_support.mjs';
+import { runMeasuredGate, metric, hit, warning, occurrenceIdentity, resolveAlias as resolveGateAlias, qualified as qualifiedGatePath } from './sanitizing_gate_support.mjs';
 
 const relevantPath = new RegExp("^(?:tauri(?:::|$)|(?:(?:std|tokio)::)?fs::|(?:(?:std|tokio)::fs::)?(?:AppHandle|File|OpenOptions|read_dir)(?:::|$))");
 function resolveAlias(scan, input, scope) {
@@ -14,32 +14,39 @@ function signals(scan, item) {
   return item.attributes.flatMap(a => a.signals.map(meta => ({ ...resolveAlias(scan,meta.name,a.scope), meta, line: a.line })));
 }
 export function runGate(snapshot) {
-  return runMeasuredGate(snapshot, { gate, rules, newFileRules, inUniverse, measure, extraChecks });
+  return runMeasuredGate(snapshot, { gate, rules, newFileRules, inUniverse, measure, extraChecks, recognizeMoves: true });
 }
 
 const gate = '06';
 const rules = ['tauri_files', 'emit_files', 'state_files', 'command_files', 'disk_commands'];
 const newFileRules = ['tauri_files'];
 const inUniverse = p => /^src-tauri\/src\/.*\.rs$/.test(p);
-function extraChecks(path, m, before, violation) {
-  for (const [id, line] of m.commands) if (!before?.commandIds.has(id))
-    violation('new_disk_command', path, line, 0, 1, `new command with disk access: ${id}`);
+function extraChecks(path, m, before, violation, moved) {
+  for (const [id, site] of m.commands) if (!before?.commandIds.has(id) && !moved.has(site))
+    violation('new_disk_command', path, site.line, 0, 1, `new command with disk access: ${id}`);
 }
 function measure(path, scan) {
   const m = metric(), ts = scan.productionTokens;
   const edge = /^src-tauri\/src\/(?:(?:lib|main|commands|events)\.rs$|(?:commands|events)\/)/.test(path);
-  let tauri, emit, state, command;
+  const imports = scan.items.filter(item => item.kind === 'use'), imported = [], references = [];
+  const record = (rule, t) => { if (!edge) hit(m,rule,t.line,occurrenceIdentity(scan,t)); };
   for (let i = 0; i < ts.length; i++) {
     const t = ts[i];
-    if (t.text === '.' && ['emit','emit_to'].includes(ts[i + 1]?.name) && ts[i + 2]?.text === '(') emit ??= t.line;
-    if (t.text === '.' && ts[i + 1]?.name === 'state' && ts[i + 2]?.text === '::' && ts[i + 3]?.text === '<') state ??= t.line;
+    if (t.text === '.' && ['emit','emit_to'].includes(ts[i + 1]?.name) && ts[i + 2]?.text === '(') record('emit_files',t);
+    if (t.text === '.' && ts[i + 1]?.name === 'state' && ts[i + 2]?.text === '::' && ts[i + 3]?.text === '<') record('state_files',t);
     if (t.kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' && ts[i - 2]?.kind === 'ident')) continue;
     const r = qualified(scan,ts,i), value = r.path ?? (r.ambiguous ? r.raw : '');
     if (value.startsWith('tauri::') || value === 'tauri' || /(?:^|::)AppHandle$/.test(value)) {
-      tauri ??= t.line; warning(m,path,t.line,r);
+      // Imports establish names; repeated imports needed by a split are not
+      // additional uses. An unused import still contributes its own signal.
+      if (imports.some(item => item.start <= t.start && t.start < item.end)) imported.push({t,value});
+      else { references.push(value); record('tauri_files',t); }
+      warning(m,path,t.line,r);
     }
     i = r.end - 1;
   }
+  for (const {t,value} of imported) if (!references.some(ref => ref === value || ref.startsWith(value + '::')))
+    record('tauri_files',t);
   const ordinals = new Map(); m.commandIds = new Set();
   for (const item of scan.items) {
     if (item.kind !== 'fn' || item.testOnly) continue;
@@ -49,7 +56,7 @@ function measure(path, scan) {
     ordinals.set(key,ordinal + 1);
     const attrs = signals(scan,item).filter(a => a.path === 'tauri::command' || a.ambiguous && /(?:^|::)command$/.test(a.path ?? a.meta.name));
     if (!attrs.length) continue;
-    command ??= item.line;
+    record('command_files',scan.tokens[item.first]);
     for (const a of attrs) warning(m,path,a.line,a);
     const identity = `${path}:${key}#${ordinal}`; m.commandIds.add(identity);
     let disk = false;
@@ -63,9 +70,8 @@ function measure(path, scan) {
       }
       i = r.end - 1;
     }
-    if (disk) { const id = identity; m.commands.set(id,item.line); hit(m,'disk_commands',item.line,id); }
+    if (disk) m.commands.set(identity,hit(m,'disk_commands',item.line,occurrenceIdentity(scan,scan.tokens[item.first])));
   }
-  if (!edge) for (const [rule,line] of [['tauri_files',tauri],['emit_files',emit],['state_files',state],['command_files',command]]) if (line) hit(m,rule,line);
   return m;
 }
 
