@@ -466,7 +466,10 @@ fn issue_1867_isolation_source_contract() {
         ),
         (
             "cli_behavior_contract.rs",
-            include_str!("cli_behavior_contract.rs"),
+            concat!(
+                include_str!("cli_behavior_contract/main.rs"),
+                include_str!("cli_behavior_contract/public_commands.rs"),
+            ),
             3,
             &[("run", 1), ("run_task_title", 1), ("invoke", 1)],
             &[],
@@ -480,7 +483,10 @@ fn issue_1867_isolation_source_contract() {
         ),
         (
             "cli_create_agent_matrix.rs",
-            include_str!("cli_create_agent_matrix.rs"),
+            concat!(
+                include_str!("cli_create_agent_matrix/main.rs"),
+                include_str!("cli_create_agent_matrix/launch.rs"),
+            ),
             18,
             &[
                 (
@@ -581,7 +587,7 @@ fn issue_1867_isolation_source_contract() {
         ),
         (
             "cli_role_experiment.rs",
-            include_str!("cli_role_experiment.rs"),
+            include_str!("cli_role_experiment/main.rs"),
             2,
             &[("run", 1), ("run_fake", 1)],
             &[],
