@@ -11,7 +11,7 @@ use crate::config::settings::SettingsState;
 use crate::session::manager::SessionManager;
 use tauri::Manager;
 
-use crate::CoManagedSupervisorHandle;
+use crate::co_managed::CoManagedSupervisorHandle;
 use crate::{capture, commands};
 
 /// #2456 period of the Room reader-demand re-raise tick.

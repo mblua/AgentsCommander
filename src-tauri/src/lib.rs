@@ -25,6 +25,7 @@ pub mod voice;
 pub mod web;
 
 mod app_run;
+mod app_state;
 mod co_managed;
 mod pty_wiring;
 mod quit_gate;
@@ -35,7 +36,6 @@ mod web_server;
 mod window;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use commands::ac_discovery::DiscoveryBranchWatcher;
@@ -54,16 +54,16 @@ use voice::tracker::{VoiceTracker, VoiceTrackingState};
 use web::auth::WebAccessToken;
 use web::broadcast::WsBroadcaster;
 
+pub use app_state::{ConfigSeedLockState, DetachedSessionsState, RestoreInProgress};
 pub(crate) use co_managed::route::spawn_co_managed_supervisor;
 #[cfg(test)]
 pub(crate) use co_managed::CoManagedTestHooks;
+#[cfg(test)]
 pub(crate) use co_managed::{
-    abstain_reason_label, co_managed_catalog, co_managed_jev_settings, co_managed_state_reason,
-    co_managed_user_message, emit_co_managed_state, emit_session_idle_edge, route_co_managed_wake,
-    surface_co_managed_user_message, write_co_managed_message_file, CoManagedRoute,
-    CoManagedSupervisorHandle, CoManagedTrigger, CO_MANAGED_MAX_ATTEMPTS,
-    CO_MANAGED_RETRY_BACKOFF_MS,
+    abstain_reason_label, co_managed_state_reason, co_managed_user_message, route_co_managed_wake,
+    CoManagedRoute,
 };
+pub(crate) use co_managed::{emit_session_idle_edge, CoManagedSupervisorHandle, CoManagedTrigger};
 pub(crate) use commands::quit_gate::{
     quit_application, quit_gate_progress, quit_gate_register, quit_gate_resolve,
     quit_gate_unregister,
@@ -80,18 +80,20 @@ pub use quit_gate::{
     QuitGateClock, QuitGateEffects, QuitGateHost, QuitGateRegistration, QuitOutcome,
     QuitOutcomeKind, TauriQuitHost, TokioQuitClock, QUIT_GATE_MAIN_LABEL, QUIT_GATE_TIMEOUT,
 };
-pub(crate) use reader_demand::{
-    reader_demand_pass, recovery_pass, watch_capture_slots, READER_DEMAND_TICK_SECS,
-};
+#[cfg(test)]
+pub(crate) use reader_demand::{reader_demand_pass, recovery_pass, watch_capture_slots};
 #[cfg(test)]
 pub(crate) use reader_demand::{tick_raise_calls, tick_recheck_calls};
 pub(crate) use restore::native::start_native_restore_startup;
 pub(crate) use restore::{
-    load_startup_sessions, normalize_persisted_active_flags, resolve_is_coord_for_restore,
-    restore_session_should_become_active, restore_session_should_wake,
-    should_auto_create_root_agent_on_first_restore, should_wake_root_agent_on_restore,
-    skip_auto_resume_for_restore, spawn_restore_startup, PersistedActiveFlagNormalization,
+    load_startup_sessions, normalize_persisted_active_flags, PersistedActiveFlagNormalization,
     RestoreObserverStartBarrier,
+};
+#[cfg(test)]
+pub(crate) use restore::{
+    resolve_is_coord_for_restore, restore_session_should_become_active,
+    restore_session_should_wake, should_auto_create_root_agent_on_first_restore,
+    should_wake_root_agent_on_restore, skip_auto_resume_for_restore, spawn_restore_startup,
 };
 pub(crate) use startup::prepare_app_outbox;
 pub use startup::{log_naming_migration_summary, preflight_config_startup, StartupError};
@@ -244,16 +246,6 @@ pub(crate) fn install_container_route_remover(pty_mgr: &Arc<Mutex<PtyManager>>) 
     }));
 }
 
-/// Tracks which sessions are currently detached into their own windows.
-pub type DetachedSessionsState = Arc<Mutex<HashSet<uuid::Uuid>>>;
-
-/// Serializes the config-seed critical section (`perform_config_seed`) for a
-/// replica, so two concurrent same-replica spawns cannot clobber each other's
-/// in-flight `<dest>.acseed-*` scratch during `clear_stale_seed_scratch`
-/// (grinch HIGH-1; see `config/config_seed.rs` CONCURRENCY CONTRACT). Acquired
-/// in `commands::session.rs` around the seed swap.
-pub type ConfigSeedLockState = Arc<tokio::sync::Mutex<()>>;
-
 // Issue #609 - cached "npm update available" result. Set ONCE by the startup
 // check task; read by `get_update_status` so a late-mounting sidebar still
 // sees a pending update.
@@ -298,13 +290,6 @@ impl MasterToken {
         &self.0
     }
 }
-
-/// §224 A.2.5 / G1 — set true while the post-startup session-restore loop is
-/// running (`lib.rs` setup task that calls `create_session_inner` for every
-/// persisted session). Read by `mailbox::handle_close_session` to decide
-/// whether `session_ids.is_empty()` means "no live session for this FQN" or
-/// "restore loop hasn't reached this session yet — retry briefly."
-pub struct RestoreInProgress(pub AtomicBool);
 
 /// (#617/#668) Sessions with a self context operation awaiting their sustained-idle
 /// window. Insert on queue; remove when the deferred task completes, the session

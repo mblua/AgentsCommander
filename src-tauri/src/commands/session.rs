@@ -1,3 +1,4 @@
+use crate::app_state::{ConfigSeedLockState, DetachedSessionsState};
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::config::agent_config;
 use crate::config::coordinator_clocks::CoordinatorClocksState;
@@ -25,7 +26,6 @@ use crate::session::selection::{
 use crate::session::session::{SessionCommunication, SessionInfo, SessionRepo, SessionStatus};
 use crate::session::warnings::{emit_session_warning, SessionWarning};
 use crate::telegram::manager::TelegramBridgeState;
-use crate::DetachedSessionsState;
 pub(crate) use resume_args::trusted_muse_auto_resume_spawn;
 use resume_args::{
     antigravity_tokens_have_resume, codex_has_explicit_subcommand, codex_tokens_have_resume,
@@ -1709,7 +1709,7 @@ async fn create_session_inner_core<R: tauri::Runtime>(
                     return Ok(CreateCompletion::Retained);
                 }
             };
-            let lock = app.state::<crate::ConfigSeedLockState>().inner().clone();
+            let lock = app.state::<ConfigSeedLockState>().inner().clone();
             #[cfg(test)]
             let seed_fixture = owned_replacement
                 .as_ref()

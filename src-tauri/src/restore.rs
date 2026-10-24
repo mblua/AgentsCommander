@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::config::sessions_persistence;
 use crate::config::settings::SettingsState;
 
-use crate::RestoreInProgress;
+use crate::app_state::RestoreInProgress;
 use crate::{commands, config};
 
 /// Decide whether a persisted session should be restored with a live PTY
