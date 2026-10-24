@@ -2193,16 +2193,18 @@ agentscommander_lib::phone::terminal_snapshot::scanner -> agentscommander_lib::p
 agentscommander_lib::phone::terminal_snapshot::scanner -> agentscommander_lib::phone::terminal_snapshot::shutdown
 agentscommander_lib::phone::terminal_snapshot::scanner -> agentscommander_lib::pty::terminal_snapshot
 agentscommander_lib::phone::terminal_snapshot::shutdown -> agentscommander_lib::phone::terminal_snapshot::failure
-agentscommander_lib::phone::types -> agentscommander_lib::pty::backend
+agentscommander_lib::phone::types -> agentscommander_lib::pty::input_limits
 agentscommander_lib::pty::agent_quota -> agentscommander_lib::pty::agent_quota::source
 agentscommander_lib::pty::agent_quota -> agentscommander_lib::pty::context_scrape
 agentscommander_lib::pty::agent_quota -> agentscommander_lib::shutdown
 agentscommander_lib::pty::agent_quota::source -> agentscommander_lib::pty::context_scrape::pattern
 agentscommander_lib::pty::agent_quota::source -> agentscommander_lib::pty::context_scrape::rows
 agentscommander_lib::pty::backend -> agentscommander_lib::errors
+agentscommander_lib::pty::backend -> agentscommander_lib::pty::backend_kind
 agentscommander_lib::pty::backend -> agentscommander_lib::pty::container_credentials
 agentscommander_lib::pty::backend -> agentscommander_lib::pty::container_repos
 agentscommander_lib::pty::backend -> agentscommander_lib::pty::context_scrape
+agentscommander_lib::pty::backend -> agentscommander_lib::pty::input_limits
 agentscommander_lib::pty::backend -> agentscommander_lib::pty::manager
 agentscommander_lib::pty::backend -> agentscommander_lib::pty::output
 agentscommander_lib::pty::backend -> agentscommander_lib::pty::watchers
@@ -2587,7 +2589,7 @@ agentscommander_lib::session::manager -> agentscommander_lib::config::settings
 agentscommander_lib::session::manager -> agentscommander_lib::config::teams
 agentscommander_lib::session::manager -> agentscommander_lib::errors
 agentscommander_lib::session::manager -> agentscommander_lib::path_identity
-agentscommander_lib::session::manager -> agentscommander_lib::pty::backend
+agentscommander_lib::session::manager -> agentscommander_lib::pty::backend_kind
 agentscommander_lib::session::manager -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::session::manager -> agentscommander_lib::pty::manager
 agentscommander_lib::session::manager -> agentscommander_lib::session::selection
@@ -2800,7 +2802,7 @@ agentscommander_lib::session::selection::worker -> agentscommander_lib::session:
 agentscommander_lib::session::session -> agentscommander_lib::config::agent_command
 agentscommander_lib::session::session -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::session::session -> agentscommander_lib::config::settings
-agentscommander_lib::session::session -> agentscommander_lib::pty::backend
+agentscommander_lib::session::session -> agentscommander_lib::pty::backend_kind
 agentscommander_lib::session::session -> agentscommander_lib::session::profile
 agentscommander_lib::startup -> agentscommander_lib
 agentscommander_lib::startup -> agentscommander_lib::config

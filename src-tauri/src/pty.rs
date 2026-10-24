@@ -1,5 +1,6 @@
 pub mod agent_quota; // #2482 - weekly quota reading per agent session
 pub mod backend;
+pub(crate) mod backend_kind;
 pub(crate) mod container_backend;
 pub(crate) mod container_credentials;
 pub mod container_paths;
@@ -13,6 +14,7 @@ pub mod git_watcher;
 pub mod idle_detector;
 pub mod inject;
 pub mod input_activity;
+pub(crate) mod input_limits;
 pub mod job; // #632 - per-agent Job Object for tree-kill
 pub mod local_backend;
 pub mod manager;

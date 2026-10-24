@@ -1,5 +1,5 @@
 use super::session::{Session, SessionCommunicationKind, SessionInfo, SessionStatus};
-use crate::pty::backend::SessionBackendKind;
+use crate::pty::backend_kind::SessionBackendKind;
 use crate::session::selection::{
     CommitCapability, DormantRuntimeWitness, LiveRuntimeWitness, SelectionCause, SelectionMode,
     SessionSelection,
