@@ -400,7 +400,7 @@ impl ManagedContextTarget {
 /// Special token in context[] that resolves to the global AgentsCommanderContext.md.
 /// #979: `pub(crate)` so `root_agent.rs` migrates Root `context[]` arrays against this
 /// exact constant instead of duplicating the literal.
-pub(crate) const CONTEXT_TOKEN_GLOBAL: &str = "$AGENTSCOMMANDER_CONTEXT";
+pub(crate) use super::root_agent::CONTEXT_TOKEN_GLOBAL;
 
 /// Special token in context[] that generates workspace repo info from the "repos" field.
 const CONTEXT_TOKEN_REPOS: &str = "$REPOS_WORKSPACE_INFO";

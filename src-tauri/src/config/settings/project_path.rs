@@ -1,3 +1,4 @@
+use super::project_path as projects;
 #[cfg(test)]
 use super::{
     project_state_has_structural, report_settings_save_error, save_settings_value_locked,
@@ -8,14 +9,40 @@ use super::{
     AGENTS_INSTANCE_KEYS, CONFIGURATION_COMMAND_PAIRS,
 };
 use crate::config::local_overlay::{DerivedIdClosure, LocalSettingsOverlay};
-use crate::config::projects;
-use crate::config::projects::{
+pub(crate) use resolution::{
     ProjectPathPersistenceState, ProjectSource, RawJsonField, RawPair, RawStringField, RepairKind,
-    ResolvedPair, SideOutcome, SideStatus, StructuralIssue,
+    ResolvedPair, StructuralIssue,
 };
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+mod codec;
+mod identity;
+mod resolution;
+pub(crate) use codec::encode_instance_relative;
+#[cfg(test)]
+pub(crate) use codec::{decode_instance_relative, RelDecodeError};
+pub(crate) use identity::display_canonical;
+#[cfg(test)]
+pub(crate) use identity::DirectoryIdentity;
+pub(crate) use identity::{CandidateResolver, FsCandidateResolver, SideOutcome, SideStatus};
+pub(crate) use resolution::resolve_registrations;
+pub(crate) use resolution::IssueKind;
+
+/// Mirrors the frontend `normalizePath` at
+/// `src/sidebar/stores/project.ts:17-19`. Comparison only — the persisted
+/// entry retains the original byte sequence.
+pub(crate) fn normalize_for_compare(s: &str) -> String {
+    let s = crate::path_utils::normalize_windows_verbatim_path(s);
+    // Slashes normalised, lowercased, trailing `/` stripped. The trailing
+    // strip closes Round-1 IR.3.2 (shell tab-completion appends `\` on dirs;
+    // without trim, `C:\foo\` and `C:\foo` would become DIFFERENT entries).
+    s.replace('\\', "/")
+        .to_lowercase()
+        .trim_end_matches('/')
+        .to_string()
+}
 
 mod migration;
 mod transaction;

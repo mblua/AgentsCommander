@@ -139,7 +139,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
     }
     if state
         .app_handle
-        .try_state::<Arc<crate::RestoreInProgress>>()
+        .try_state::<Arc<crate::app_state::RestoreInProgress>>()
         .is_some_and(|restore| restore.0.load(std::sync::atomic::Ordering::SeqCst))
     {
         return Err("selectionCoordinatorBusy".to_string());
@@ -721,7 +721,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         }
 
         "list_detached_sessions" => {
-            let detached = state.app_handle.state::<crate::DetachedSessionsState>();
+            let detached = state.app_handle.state::<crate::app_state::DetachedSessionsState>();
             let set = detached.lock().unwrap();
             Ok(json!(set.iter().map(|u| u.to_string()).collect::<Vec<_>>()))
         }

@@ -16,9 +16,10 @@ use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use tauri::Manager;
 use tokio_util::sync::CancellationToken;
-use tokio_util::task::task_tracker::TaskTrackerToken;
-use tokio_util::task::TaskTracker;
 use tower_http::services::ServeDir;
+
+pub use crate::web_server::StartServerError;
+pub(super) use crate::web_server::{WebSocketAdmission, WebSocketAdmissionGuard};
 
 use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
@@ -44,102 +45,12 @@ struct WebSocketConnectionContext {
     generation_token: CancellationToken,
 }
 
-/// Per-generation admission gate and semantic-work tracker. The lifecycle
-/// always takes its own mutex before calling `open` or `close`; this type never
-/// calls back into the lifecycle, preserving the global lock order.
-pub(super) struct WebSocketAdmission {
-    open: Mutex<bool>,
-    tracker: TaskTracker,
-    generation_token: CancellationToken,
-}
-
-impl WebSocketAdmission {
-    pub(super) fn new(generation_token: CancellationToken) -> Self {
-        Self {
-            open: Mutex::new(false),
-            tracker: TaskTracker::new(),
-            generation_token,
-        }
-    }
-
-    pub(super) fn open(&self, shutdown: &crate::shutdown::ShutdownSignal) -> bool {
-        let mut open = self.open.lock().unwrap();
-        if self.generation_token.is_cancelled() || shutdown.is_cancelled() {
-            return false;
-        }
-        *open = true;
-        // A global trigger does not take the lifecycle mutex. Recheck after the
-        // write so a trigger racing the first observation cannot leave a window
-        // in which the generation appears open after shutdown won.
-        if self.generation_token.is_cancelled() || shutdown.is_cancelled() {
-            *open = false;
-            self.tracker.close();
-            return false;
-        }
-        true
-    }
-
-    pub(super) fn close(&self) {
-        let mut open = self.open.lock().unwrap();
-        *open = false;
-        self.tracker.close();
-    }
-
-    pub(super) fn try_acquire(&self) -> Option<WebSocketAdmissionGuard> {
-        let open = self.open.lock().unwrap();
-        if !*open || self.generation_token.is_cancelled() {
-            return None;
-        }
-        let token = self.tracker.token();
-        drop(open);
-        Some(WebSocketAdmissionGuard { _token: token })
-    }
-
-    pub(super) async fn wait(&self) {
-        self.tracker.wait().await;
-    }
-
-    #[cfg(test)]
-    pub(super) fn is_empty(&self) -> bool {
-        self.tracker.is_empty()
-    }
-}
-
-pub(super) struct WebSocketAdmissionGuard {
-    _token: TaskTrackerToken,
-}
-
 fn acquire_websocket_upgrade_guard(
     admission: &WebSocketAdmission,
 ) -> Result<WebSocketAdmissionGuard, axum::http::StatusCode> {
     admission
         .try_acquire()
         .ok_or(axum::http::StatusCode::SERVICE_UNAVAILABLE)
-}
-
-/// §1453: error tipado del arranque. Reemplaza el String opaco para que los
-/// call sites registren bind/port/causa sin parsear texto. `Display`
-/// reproduce byte a byte los dos mensajes historicos que app.log ya conoce
-/// (los dashboards/greps existentes no cambian).
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum StartServerError {
-    /// El valor de settings no parsea como SocketAddr.
-    #[error("Invalid web server bind address {bind}:{port}: {detail}")]
-    InvalidAddr {
-        bind: String,
-        port: u16,
-        detail: String,
-    },
-    /// TcpListener::bind fallo sobre una direccion parseada.
-    /// `bind` es el string CRUDO de settings y existe solo para la guardia de
-    /// obsolescencia y el payload (contrato de D2); `addr` es el SocketAddr
-    /// parseado y existe solo para que Display sea byte-exacto.
-    #[error("Failed to bind web server on {addr}: {detail}")]
-    BindFailed {
-        bind: String,
-        addr: std::net::SocketAddr,
-        detail: String,
-    },
 }
 
 /// Start the embedded HTTP/WebSocket server.

@@ -296,7 +296,7 @@ pub(crate) fn migrate_root_role(role_path: &Path) -> Result<(), String> {
     // (`config/projects.rs`) still call it, and `config_dir` is still needed here
     // for the Root supplement path.
     let context_template_path =
-        config_dir.join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        config_dir.join(crate::config::instance_artifacts::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
 
     migrate_root_context_template(&context_template_path)?;
     match create_missing_role(role_path, MINIMAL_ROOT_ROLE_MD)? {

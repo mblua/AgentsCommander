@@ -11,7 +11,98 @@ use futures_util::FutureExt;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::web;
+use tokio_util::task::task_tracker::TaskTrackerToken;
+use tokio_util::task::TaskTracker;
+
+/// Per-generation admission gate and semantic-work tracker. The lifecycle
+/// always takes its own mutex before calling `open` or `close`; this type never
+/// calls back into the lifecycle, preserving the global lock order.
+pub(super) struct WebSocketAdmission {
+    open: Mutex<bool>,
+    tracker: TaskTracker,
+    generation_token: CancellationToken,
+}
+
+impl WebSocketAdmission {
+    pub(super) fn new(generation_token: CancellationToken) -> Self {
+        Self {
+            open: Mutex::new(false),
+            tracker: TaskTracker::new(),
+            generation_token,
+        }
+    }
+
+    pub(super) fn open(&self, shutdown: &crate::shutdown::ShutdownSignal) -> bool {
+        let mut open = self.open.lock().unwrap();
+        if self.generation_token.is_cancelled() || shutdown.is_cancelled() {
+            return false;
+        }
+        *open = true;
+        // A global trigger does not take the lifecycle mutex. Recheck after the
+        // write so a trigger racing the first observation cannot leave a window
+        // in which the generation appears open after shutdown won.
+        if self.generation_token.is_cancelled() || shutdown.is_cancelled() {
+            *open = false;
+            self.tracker.close();
+            return false;
+        }
+        true
+    }
+
+    pub(super) fn close(&self) {
+        let mut open = self.open.lock().unwrap();
+        *open = false;
+        self.tracker.close();
+    }
+
+    pub(super) fn try_acquire(&self) -> Option<WebSocketAdmissionGuard> {
+        let open = self.open.lock().unwrap();
+        if !*open || self.generation_token.is_cancelled() {
+            return None;
+        }
+        let token = self.tracker.token();
+        drop(open);
+        Some(WebSocketAdmissionGuard { _token: token })
+    }
+
+    pub(super) async fn wait(&self) {
+        self.tracker.wait().await;
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.tracker.is_empty()
+    }
+}
+
+pub(super) struct WebSocketAdmissionGuard {
+    _token: TaskTrackerToken,
+}
+
+/// §1453: error tipado del arranque. Reemplaza el String opaco para que los
+/// call sites registren bind/port/causa sin parsear texto. `Display`
+/// reproduce byte a byte los dos mensajes historicos que app.log ya conoce
+/// (los dashboards/greps existentes no cambian).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum StartServerError {
+    /// El valor de settings no parsea como SocketAddr.
+    #[error("Invalid web server bind address {bind}:{port}: {detail}")]
+    InvalidAddr {
+        bind: String,
+        port: u16,
+        detail: String,
+    },
+    /// TcpListener::bind fallo sobre una direccion parseada.
+    /// `bind` es el string CRUDO de settings y existe solo para la guardia de
+    /// obsolescencia y el payload (contrato de D2); `addr` es el SocketAddr
+    /// parseado y existe solo para que Display sea byte-exacto.
+    #[error("Failed to bind web server on {addr}: {detail}")]
+    BindFailed {
+        bind: String,
+        addr: std::net::SocketAddr,
+        detail: String,
+    },
+}
 
 pub(crate) const WEB_SERVER_STOP_TIMEOUT_MS: u64 = 5_000;
 pub(crate) const WEB_SERVER_START_CANCELLED: &str = "Web server start cancelled by stop";
@@ -39,7 +130,7 @@ pub(crate) struct WebServerGeneration {
     endpoint: Option<(String, u16)>,
     generation_token: CancellationToken,
     shutdown: ShutdownSignal,
-    admission: Arc<web::WebSocketAdmission>,
+    admission: Arc<WebSocketAdmission>,
     start_result: watch::Receiver<Option<Result<bool, String>>>,
     stop_result: watch::Receiver<Option<Result<(), String>>>,
     stop_deadline: Option<Instant>,
@@ -105,7 +196,7 @@ pub struct WebServerHandle {
     inner: Arc<Mutex<WebServerControl>>,
     /// §1453: ultimo arranque fallido (autostart o comando). Lo consume
     /// get_web_server_owned_status; lo limpian el start exitoso y el stop.
-    bind_failure: Arc<std::sync::Mutex<Option<crate::web::StartServerError>>>,
+    bind_failure: Arc<std::sync::Mutex<Option<StartServerError>>>,
     #[cfg(test)]
     start_output_gate: Arc<Mutex<Option<WebServerStartOutputGate>>>,
 }
@@ -123,7 +214,7 @@ impl WebServerHandle {
         factory: F,
     ) -> WebServerStartWaiter
     where
-        F: FnOnce(u64, Arc<web::WebSocketAdmission>, CancellationToken) -> Fut + Send + 'static,
+        F: FnOnce(u64, Arc<WebSocketAdmission>, CancellationToken) -> Fut + Send + 'static,
         Fut: Future<Output = Result<Option<tauri::async_runtime::JoinHandle<()>>, String>>
             + Send
             + 'static,
@@ -153,8 +244,7 @@ impl WebServerHandle {
                         .checked_add(1)
                         .expect("web server lifecycle revision exhausted");
                     let generation_token = CancellationToken::new();
-                    let admission =
-                        Arc::new(web::WebSocketAdmission::new(generation_token.clone()));
+                    let admission = Arc::new(WebSocketAdmission::new(generation_token.clone()));
                     let (start_sender, start_result) = watch::channel(None);
                     let (stop_sender, stop_result) = watch::channel(None);
                     let result = WebServerStartWaiter {
@@ -451,14 +541,14 @@ impl WebServerHandle {
     async fn supervise_generation<F, Fut>(
         &self,
         generation: u64,
-        admission: Arc<web::WebSocketAdmission>,
+        admission: Arc<WebSocketAdmission>,
         generation_token: CancellationToken,
         shutdown: ShutdownSignal,
         start_sender: watch::Sender<Option<Result<bool, String>>>,
         stop_sender: watch::Sender<Option<Result<(), String>>>,
         factory: F,
     ) where
-        F: FnOnce(u64, Arc<web::WebSocketAdmission>, CancellationToken) -> Fut,
+        F: FnOnce(u64, Arc<WebSocketAdmission>, CancellationToken) -> Fut,
         Fut: Future<Output = Result<Option<tauri::async_runtime::JoinHandle<()>>, String>>,
     {
         let start_future = AssertUnwindSafe(factory(
@@ -524,7 +614,7 @@ impl WebServerHandle {
         }
     }
 
-    pub fn record_bind_failure(&self, failure: crate::web::StartServerError) {
+    pub fn record_bind_failure(&self, failure: StartServerError) {
         *self.bind_failure.lock().unwrap() = Some(failure);
     }
 
@@ -532,7 +622,7 @@ impl WebServerHandle {
         *self.bind_failure.lock().unwrap() = None;
     }
 
-    pub fn last_bind_failure(&self) -> Option<crate::web::StartServerError> {
+    pub fn last_bind_failure(&self) -> Option<StartServerError> {
         self.bind_failure.lock().unwrap().clone()
     }
 }

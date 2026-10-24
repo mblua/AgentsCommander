@@ -13,7 +13,7 @@ pub const PTY_INPUT_TTL_SECS: i64 = 10 * 60;
 pub const PTY_INPUT_FUTURE_SKEW_SECS: i64 = 30;
 /// Bound for a raw host request, including worst-case JSON escaping.
 pub const PTY_INPUT_HOST_ENVELOPE_MAX_BYTES: usize =
-    6 * crate::pty::backend::PTY_INPUT_MAX_BYTES + (16 * 1024);
+    6 * crate::pty::input_limits::PTY_INPUT_MAX_BYTES + (16 * 1024);
 /// Bound for a metadata-only marker, result, or HTTP response.
 pub const PTY_INPUT_METADATA_MAX_BYTES: usize = 16 * 1024;
 

@@ -13,21 +13,14 @@ use std::path::{Path, PathBuf};
 use super::ac_root::{ac_root_for_project, existing_ac_root, has_ac_root};
 use super::settings::AppSettings;
 
-mod codec;
-mod identity;
-mod resolution;
-
-pub(crate) use codec::encode_instance_relative;
 #[cfg(test)]
-pub(crate) use codec::{decode_instance_relative, RelDecodeError};
-#[cfg(test)]
-pub(crate) use identity::DirectoryIdentity;
-pub(crate) use identity::{
-    display_canonical, CandidateResolver, FsCandidateResolver, SideOutcome, SideStatus,
+pub(crate) use super::settings::project_path::{
+    decode_instance_relative, encode_instance_relative, resolve_registrations, CandidateResolver,
+    DirectoryIdentity, FsCandidateResolver, RawPair, RelDecodeError, RepairKind, SideOutcome,
 };
-pub(crate) use resolution::{
-    resolve_registrations, IssueKind, ProjectPathPersistenceState, ProjectSource, RawJsonField,
-    RawPair, RawStringField, RepairKind, ResolvedPair, StructuralIssue,
+pub(crate) use super::settings::project_path::{
+    display_canonical, normalize_for_compare, IssueKind, ProjectPathPersistenceState,
+    ProjectSource, RawJsonField, RawStringField, ResolvedPair, SideStatus, StructuralIssue,
 };
 
 /// Outcome of a register call. Callers translate this into the verb-specific
@@ -512,20 +505,6 @@ pub(crate) fn absolutise(raw: &str) -> Result<PathBuf, ProjectError> {
     // symlink-safety reasons; documented as §6.10. No filesystem IO,
     // no symlink resolution.
     std::path::absolute(raw).map_err(|e| ProjectError::CwdFailure(raw.to_string(), e))
-}
-
-/// Mirrors the frontend `normalizePath` at
-/// `src/sidebar/stores/project.ts:17-19`. Comparison only — the persisted
-/// entry retains the original byte sequence.
-pub(crate) fn normalize_for_compare(s: &str) -> String {
-    let s = crate::path_utils::normalize_windows_verbatim_path(s);
-    // Slashes normalised, lowercased, trailing `/` stripped. The trailing
-    // strip closes Round-1 IR.3.2 (shell tab-completion appends `\` on dirs;
-    // without trim, `C:\foo\` and `C:\foo` would become DIFFERENT entries).
-    s.replace('\\', "/")
-        .to_lowercase()
-        .trim_end_matches('/')
-        .to_string()
 }
 
 /// Append `abs_path` to `settings.project_paths` iff no existing entry

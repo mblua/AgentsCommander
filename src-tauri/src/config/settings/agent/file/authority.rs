@@ -1,4 +1,3 @@
-use super::super::super::super::projects;
 use super::super::super::{
     capture_source_file, decode_project_state, io_error_kind_as_str, list_active_sources,
     production_instance_base, project_paths_path, raw_project_source_from_bytes,
@@ -16,6 +15,7 @@ use super::{
     AgentFileSourcePreferences, AgentFileSources, SelectedAgentFileSnapshot,
 };
 use crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME;
+use crate::config::settings::project_path as projects;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

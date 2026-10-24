@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::config::settings::WindowGeometry;
-use crate::pty::backend::SessionBackendKind;
+use crate::pty::backend_kind::SessionBackendKind;
 use crate::session::profile::{
     detect_configured_pty_submission_agent, detect_pty_submission_agent, CodingAgentKind,
     PtySubmissionAgent,

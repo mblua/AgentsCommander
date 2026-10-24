@@ -9,13 +9,16 @@ use crate::session::manager::SessionManager;
 use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 
-use crate::capture;
-use crate::{
+use super::{
     abstain_reason_label, co_managed_catalog, co_managed_jev_settings, co_managed_state_reason,
-    co_managed_user_message, emit_co_managed_state, reader_demand_pass, recovery_pass,
-    route_co_managed_wake, surface_co_managed_user_message, watch_capture_slots,
-    write_co_managed_message_file, CoManagedRoute, CoManagedSupervisorHandle, CoManagedTrigger,
-    CO_MANAGED_MAX_ATTEMPTS, CO_MANAGED_RETRY_BACKOFF_MS, READER_DEMAND_TICK_SECS,
+    co_managed_user_message, emit_co_managed_state, route_co_managed_wake,
+    surface_co_managed_user_message, write_co_managed_message_file, CoManagedRoute,
+    CoManagedSupervisorHandle, CoManagedTrigger, CO_MANAGED_MAX_ATTEMPTS,
+    CO_MANAGED_RETRY_BACKOFF_MS,
+};
+use crate::capture;
+use crate::reader_demand::{
+    reader_demand_pass, recovery_pass, watch_capture_slots, READER_DEMAND_TICK_SECS,
 };
 
 /// Settings project paths plus the project derived from the room root, the

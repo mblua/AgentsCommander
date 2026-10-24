@@ -1,4 +1,3 @@
-use super::super::super::super::projects;
 use super::super::super::{
     apply_project_decode_to_value, production_instance_base, read_disk_object_for_write_typed,
     AppSettings, CodingAgentProfilesConfig, SettingsSaveError, SettingsSaveStage,
@@ -11,6 +10,7 @@ use super::super::{
 };
 use super::empty_profile_cell;
 use crate::config::local_overlay::LocalSettingsOverlay;
+use crate::config::settings::project_path as projects;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;

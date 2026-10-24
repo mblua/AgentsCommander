@@ -154,7 +154,7 @@ pub(crate) struct TerminalSnapshotServiceContext {
     pub session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     pub pty_manager: Arc<std::sync::Mutex<PtyManager>>,
     pub settings: SettingsState,
-    pub restore: Arc<crate::RestoreInProgress>,
+    pub restore: Arc<crate::app_state::RestoreInProgress>,
     pub purge: Arc<crate::session::purge_guard::PurgeGuard>,
 }
 

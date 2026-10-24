@@ -61,23 +61,19 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{LazyLock, Mutex, OnceLock};
 
+pub(crate) const CONTEXT_TOKEN_GLOBAL: &str = "$AGENTSCOMMANDER_CONTEXT";
+
 pub const ROOT_AGENT_SESSION_NAME: &str = "Root Agent";
 pub const ROOT_AGENT_SENDER: &str = "agentscommander://root-agent";
 pub const ROOT_AGENT_SHORT_NAME: &str = "root";
 /// Canonical Root context order. The selected file owns all instructional prose.
 const ROOT_AGENT_DEFAULT_CONTEXT: &[&str] = &["../Context.root-agent.md", "Role.md"];
 /// Frozen pre-979 default, kept for exact legacy recognition during migration.
-const ROOT_AGENT_PRE_979_DEFAULT_CONTEXT: &[&str] = &[
-    crate::config::session_context::CONTEXT_TOKEN_GLOBAL,
-    "../Context.root-agent.md",
-    "Role.md",
-];
+const ROOT_AGENT_PRE_979_DEFAULT_CONTEXT: &[&str] =
+    &[CONTEXT_TOKEN_GLOBAL, "../Context.root-agent.md", "Role.md"];
 /// Older default, kept because it must still upgrade to the new default (and so
 /// gain the Root supplement) rather than degrade to a bare `["Role.md"]`.
-const ROOT_AGENT_OLD_DEFAULT_CONTEXT: &[&str] = &[
-    crate::config::session_context::CONTEXT_TOKEN_GLOBAL,
-    "Role.md",
-];
+const ROOT_AGENT_OLD_DEFAULT_CONTEXT: &[&str] = &[CONTEXT_TOKEN_GLOBAL, "Role.md"];
 const ROOT_AGENT_SKILLS_DIR: &str = "skills";
 const SKILL_MD_FILENAME: &str = "SKILL.md";
 /// #909: slack added to the cap in `max_migratable_len`, covering the leading and trailing

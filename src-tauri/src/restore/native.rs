@@ -17,14 +17,14 @@ use crate::session::selection::TrustedCreateIntent;
 use crate::shutdown::ShutdownSignal;
 use tauri::Manager;
 
-use crate::RestoreInProgress;
-use crate::{commands, config, loops, phone, resource_monitor};
-use crate::{
+use crate::app_state::RestoreInProgress;
+use crate::restore::{
     resolve_is_coord_for_restore, restore_session_should_become_active,
     restore_session_should_wake, should_auto_create_root_agent_on_first_restore,
     should_wake_root_agent_on_restore, skip_auto_resume_for_restore, spawn_restore_startup,
     RestoreObserverStartBarrier,
 };
+use crate::{commands, config, loops, phone, resource_monitor};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn start_native_restore_startup(

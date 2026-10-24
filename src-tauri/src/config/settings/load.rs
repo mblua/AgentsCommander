@@ -1,5 +1,5 @@
-use super::super::projects;
-use super::super::projects::ProjectPathPersistenceState;
+use super::project_path as projects;
+use super::project_path::ProjectPathPersistenceState;
 #[cfg(test)]
 use super::select_project_source_locked;
 use super::{

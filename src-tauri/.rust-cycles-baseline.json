@@ -8,91 +8,42 @@
   },
   "moduleCycles": [
     {
-      "id": "60342a4bb2bf76db",
+      "id": "7b3b4a60ae802414",
       "members": [
-        "agentscommander_lib",
-        "agentscommander_lib::api::auth",
-        "agentscommander_lib::api::error",
         "agentscommander_lib::api::message_store",
-        "agentscommander_lib::api::schema",
-        "agentscommander_lib::cli",
-        "agentscommander_lib::cli::agency_templates",
-        "agentscommander_lib::cli::list_peers",
         "agentscommander_lib::co_managed",
-        "agentscommander_lib::co_managed::route",
-        "agentscommander_lib::commands::config",
         "agentscommander_lib::commands::pty",
-        "agentscommander_lib::commands::role_templates",
         "agentscommander_lib::commands::session",
-        "agentscommander_lib::commands::telegram",
-        "agentscommander_lib::config::activity_log",
-        "agentscommander_lib::config::daemon_pid",
-        "agentscommander_lib::phone::types",
         "agentscommander_lib::pty::backend",
         "agentscommander_lib::pty::container_backend",
-        "agentscommander_lib::pty::container_tokens",
         "agentscommander_lib::pty::git_watcher",
-        "agentscommander_lib::pty::idle_detector",
         "agentscommander_lib::pty::inject",
         "agentscommander_lib::pty::local_backend",
         "agentscommander_lib::pty::manager",
         "agentscommander_lib::pty::menu_guard",
-        "agentscommander_lib::pty::output",
-        "agentscommander_lib::pty::terminal_snapshot",
         "agentscommander_lib::pty::watchers",
         "agentscommander_lib::pty::watchers::frame",
         "agentscommander_lib::pty::watchers::history",
-        "agentscommander_lib::pty_wiring",
-        "agentscommander_lib::reader_demand",
-        "agentscommander_lib::restore",
-        "agentscommander_lib::restore::native",
-        "agentscommander_lib::session::auto_close",
         "agentscommander_lib::session::manager",
         "agentscommander_lib::session::selection",
-        "agentscommander_lib::session::session",
-        "agentscommander_lib::startup",
         "agentscommander_lib::telegram::bridge",
-        "agentscommander_lib::telegram::manager",
-        "agentscommander_lib::testability::reset",
-        "agentscommander_lib::testability::ui_automation",
-        "agentscommander_lib::testability::window_info",
+        "agentscommander_lib::telegram::manager"
+      ]
+    },
+    {
+      "id": "ffa526a35c677d6b",
+      "members": [
+        "agentscommander_lib::commands::config",
+        "agentscommander_lib::commands::config::web_server",
         "agentscommander_lib::web",
-        "agentscommander_lib::web::commands",
-        "agentscommander_lib::web_server",
-        "agentscommander_lib::window"
+        "agentscommander_lib::web::commands"
       ]
     },
     {
-      "id": "fa5266e34a30725c",
+      "id": "bba33347ff93cb97",
       "members": [
-        "agentscommander_lib::cli::create_agent",
-        "agentscommander_lib::cli::create_agent_matrix"
-      ]
-    },
-    {
-      "id": "583db36b97dffa93",
-      "members": [
-        "agentscommander_lib::config::agent_command",
-        "agentscommander_lib::config::config_seed"
-      ]
-    },
-    {
-      "id": "98dd386091329e51",
-      "members": [
-        "agentscommander_lib::config::projects",
-        "agentscommander_lib::config::root_agent",
-        "agentscommander_lib::config::session_context",
-        "agentscommander_lib::config::settings",
-        "agentscommander_lib::phone::messaging",
-        "agentscommander_lib::pty::container_paths",
-        "agentscommander_lib::pty::container_repos"
-      ]
-    },
-    {
-      "id": "936898c11aa1c0f6",
-      "members": [
-        "agentscommander_lib::resource_monitor::registry",
-        "agentscommander_lib::resource_monitor::windows"
+        "agentscommander_lib::testability::ui_automation",
+        "agentscommander_lib::testability::ui_automation::cli"
       ]
     }
   ],

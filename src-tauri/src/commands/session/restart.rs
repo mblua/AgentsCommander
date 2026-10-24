@@ -208,7 +208,7 @@ pub(crate) async fn publish_restart_before_warnings<R: tauri::Runtime>(
             .unwrap_or_else(|error| error.into_inner())
             .remove(&uuid);
     }
-    crate::commands::telegram::release_all_reader_demands(app, uuid).await;
+    crate::telegram::manager::release_all_reader_demands(app, uuid).await;
     raise_room_reader_demand(app, new_uuid).await;
     transaction.observe_entry_reader_demand(
         binding,
@@ -604,7 +604,7 @@ pub(crate) async fn complete_owned_replacement_retirement<R: tauri::Runtime>(
 ) {
     crate::session::selection::forget_response_close_registration(session_id);
     detach_restart_telegram(transaction, session_id).await;
-    crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
+    crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
     transaction
         .app()
         .state::<DetachedSessionsState>()
@@ -660,7 +660,7 @@ pub(crate) async fn teardown_old_for_restart<R: tauri::Runtime>(
         // Section 5.2: the old runtime is confirmed gone, so its reader
         // demands are released before the replacement is created. A failure to
         // create the replacement therefore leaves no old reader behind.
-        crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
+        crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
         return Ok(true);
     }
 
@@ -742,7 +742,7 @@ pub(crate) async fn teardown_old_for_restart<R: tauri::Runtime>(
     detach_restart_telegram(transaction, session_id).await;
     // Section 5.2: old runtime loss is confirmed, so the old id's reader
     // demands are released before the replacement is created.
-    crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
+    crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
     Ok(true)
 }
 
@@ -775,7 +775,7 @@ pub(crate) async fn finalize_failed_restart<R: tauri::Runtime>(
         // Section 5.2: the old row is gone, so any old-id reader demand that
         // survived teardown (or was raised while it was in flight) is released and
         // its capture slot closed before the destroyed publication.
-        crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
+        crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
         transaction
             .persist(SelectionSource::Restart, Some(session_id))
             .await;
@@ -875,8 +875,7 @@ pub(crate) async fn accept_restart_teardown<R: tauri::Runtime>(
             if error.old_lost {
                 // Section 5.2: the old PTY is already gone, so its demands must
                 // not outlive the failed restart.
-                crate::commands::telegram::release_all_reader_demands(transaction.app(), uuid)
-                    .await;
+                crate::telegram::manager::release_all_reader_demands(transaction.app(), uuid).await;
                 if let Err(finalize_error) =
                     finalize_failed_restart(transaction, uuid, old_selected, intent).await
                 {

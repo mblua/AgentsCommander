@@ -150,14 +150,20 @@ pub fn classify_container_env(key: &str) -> ContainerEnvClass {
     }
 }
 
+pub fn normalize_env_key_for_platform(key: &str) -> String {
+    if cfg!(windows) {
+        key.to_ascii_uppercase()
+    } else {
+        key.to_string()
+    }
+}
+
 pub fn canonical_host_path_env_key(key: &str) -> Option<&'static str> {
-    let normalized = crate::config::settings::normalize_env_key_for_platform(key);
+    let normalized = normalize_env_key_for_platform(key);
     HOST_PATH_TRANSLATE_ENV_KEYS
         .iter()
         .copied()
-        .find(|candidate| {
-            crate::config::settings::normalize_env_key_for_platform(candidate) == normalized
-        })
+        .find(|candidate| normalize_env_key_for_platform(candidate) == normalized)
 }
 
 pub fn host_path_env_validation_regime(key: &str) -> Option<ContainerEnvValidationRegime> {

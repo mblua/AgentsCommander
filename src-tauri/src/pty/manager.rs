@@ -13,7 +13,7 @@ use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::local_backend::LocalProcessBackend;
 use crate::pty::output::PtyScreenSnapshot;
-use crate::telegram::manager::OutputSenderMap;
+use crate::pty::output_senders::OutputSenderMap;
 
 pub(crate) use crate::pty::output::TerminalOutputAttachError;
 

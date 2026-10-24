@@ -1,3 +1,4 @@
+use crate::app_state::{ConfigSeedLockState, DetachedSessionsState};
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::config::agent_config;
 use crate::config::coordinator_clocks::CoordinatorClocksState;
@@ -25,7 +26,6 @@ use crate::session::selection::{
 use crate::session::session::{SessionCommunication, SessionInfo, SessionRepo, SessionStatus};
 use crate::session::warnings::{emit_session_warning, SessionWarning};
 use crate::telegram::manager::TelegramBridgeState;
-use crate::DetachedSessionsState;
 pub(crate) use resume_args::trusted_muse_auto_resume_spawn;
 use resume_args::{
     antigravity_tokens_have_resume, codex_has_explicit_subcommand, codex_tokens_have_resume,
@@ -1709,7 +1709,7 @@ async fn create_session_inner_core<R: tauri::Runtime>(
                     return Ok(CreateCompletion::Retained);
                 }
             };
-            let lock = app.state::<crate::ConfigSeedLockState>().inner().clone();
+            let lock = app.state::<ConfigSeedLockState>().inner().clone();
             #[cfg(test)]
             let seed_fixture = owned_replacement
                 .as_ref()
@@ -2452,7 +2452,7 @@ async fn publish_legacy_destroy_outcome<R: tauri::Runtime>(
         purge_session_side_state(transaction.app(), session_id);
         // #2232 phase 4 section 5: destroy releases **both** demands, which
         // cancels the reader and closes the session's `CaptureRegistry` entry.
-        crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
+        crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
     }
 
     for row in committed.changed_rows.iter().filter(|row| {
