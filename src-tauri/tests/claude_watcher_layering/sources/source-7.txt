@@ -1,0 +1,2 @@
+pub mod claude_watcher {}
+#[cfg(unix)] pub mod output { pub struct BridgeLogger; } #[cfg(windows)] pub mod output { pub struct BridgeLogger; }

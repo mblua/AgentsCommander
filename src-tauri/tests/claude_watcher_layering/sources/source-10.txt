@@ -1,0 +1,3 @@
+pub mod bridge {}
+#[cfg(unix)] pub mod claude_watcher { fn first() {} }
+#[cfg(windows)] pub mod claude_watcher { use crate::telegram::bridge::Forbidden; }

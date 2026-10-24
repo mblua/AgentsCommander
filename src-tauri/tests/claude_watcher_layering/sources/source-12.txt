@@ -1,0 +1,3 @@
+pub mod r#bridge {}
+#[cfg(test)] mod ignored { mod missing; use super::bridge::Forbidden; }
+pub mod r#claude_watcher {}

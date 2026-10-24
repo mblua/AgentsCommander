@@ -1,0 +1,1 @@
+#[cfg(any())] fn probe(_: crate::telegram::bridge::BridgeLogger) { let _ = crate::telegram::bridge::BridgeLogger::new; }
