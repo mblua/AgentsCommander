@@ -1,10 +1,10 @@
 //! HTTP handlers for the control-plane API (#791 §6, §7).
 
-pub mod list_peers;
-pub mod pty_input;
-pub mod send;
-pub mod session_transport;
-pub mod terminal_snapshot;
+pub(crate) mod list_peers;
+pub(crate) mod pty_input;
+pub(crate) mod send;
+pub(crate) mod session_transport;
+pub(crate) mod terminal_snapshot;
 
 use std::net::IpAddr;
 
