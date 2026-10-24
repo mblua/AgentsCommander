@@ -1110,6 +1110,12 @@ agentscommander_lib::commands::session::root_agent -> agentscommander_lib::sessi
 agentscommander_lib::commands::session::root_agent -> agentscommander_lib::session::selection
 agentscommander_lib::commands::session::root_agent -> agentscommander_lib::session::session
 agentscommander_lib::commands::session::root_agent -> agentscommander_lib::telegram::manager
+agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::commands::session::destroy
+agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::commands::session::lifecycle
+agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::commands::session::restart
+agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::commands::session::root_agent
+agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::pty::manager
+agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::session::selection
 agentscommander_lib::commands::session::telegram -> agentscommander_lib::commands::telegram
 agentscommander_lib::commands::session::telegram -> agentscommander_lib::config
 agentscommander_lib::commands::session::telegram -> agentscommander_lib::config::agent_config

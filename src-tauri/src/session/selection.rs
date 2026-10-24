@@ -2,10 +2,12 @@ use shutdown_cleanup::{
     begin_container_shutdown, cleanup_pending_creates_after_join, remove_critical_key,
     seal_and_drain_container_shutdown_work_after_join,
 };
+use std::any::Any;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::AtomicU8;
-#[cfg(test)]
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
@@ -25,13 +27,219 @@ use uuid::Uuid;
 use crate::pty::container_backend::ContainerTransportBackend;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::{PendingCreateBinding, SessionManager};
-use crate::session::session::SessionInfo;
 #[cfg(test)]
 use crate::session::session::SessionStatus;
+use crate::session::session::{SessionCommunication, SessionInfo};
 use crate::session::warnings::SessionWarning;
 use crate::web::broadcast::WsBroadcaster;
 #[cfg(test)]
 use crate::DetachedSessionsState;
+
+/// Selection's lifecycle operations; transport remains on SelectionTransaction until later phases.
+pub(crate) trait LifecycleExecutor<R: Runtime>: Send + Sync {
+    fn prepare<'a>(
+        &'a self,
+        transaction: &'a SelectionTransaction<R>,
+        operation: Uuid,
+        source: Option<Uuid>,
+        root: bool,
+        directory: Option<&'a str>,
+    ) -> LifecycleFuture<'a, Result<LifecycleAdmission, String>>;
+    fn validate<'a>(
+        &'a self,
+        transaction: &'a SelectionTransaction<R>,
+        lease: &'a mut LifecycleLease,
+    ) -> LifecycleFuture<'a, bool>;
+    fn has_claim(&self, lease: &LifecycleLease) -> bool;
+    fn release(&self, lease: LifecycleLease) -> bool;
+    fn ensure_root_directory(&self, effect: LifecycleEffectGuard) -> Result<String, String>;
+    fn destroy<'a>(
+        &'a self,
+        transaction: &'a SelectionTransaction<R>,
+        request: DestroyRequest,
+    ) -> LifecycleFuture<'a, Result<DestroyOutcome, String>>;
+    fn restart<'a>(
+        &'a self,
+        transaction: &'a SelectionTransaction<R>,
+        request: RestartJobRequest,
+        lease: &'a LifecycleLease,
+    ) -> LifecycleFuture<'a, LifecycleEntryOutcome>;
+    fn root<'a>(
+        &'a self,
+        transaction: &'a SelectionTransaction<R>,
+        request: RootJobRequest,
+        lease: &'a LifecycleLease,
+    ) -> LifecycleFuture<'a, LifecycleEntryOutcome>;
+    fn conditional_close<'a>(
+        &'a self,
+        transaction: &'a SelectionTransaction<R>,
+        ticket: crate::pty::manager::ResponseCloseTicket,
+    ) -> LifecycleFuture<'a, Result<(), String>>;
+    fn reconcile<'a>(&'a self, transaction: &'a SelectionTransaction<R>)
+        -> LifecycleFuture<'a, ()>;
+    fn complete_retirement<'a>(
+        &'a self,
+        transaction: &'a SelectionTransaction<R>,
+        id: Uuid,
+    ) -> LifecycleFuture<'a, ()>;
+}
+
+pub(crate) type LifecycleFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+pub(crate) enum LifecycleAdmission {
+    Ready(LifecycleLease),
+    Waiting,
+    NeedsRootDirectory,
+}
+
+pub(crate) struct LifecycleExecutorState<R: Runtime> {
+    executor: Arc<dyn LifecycleExecutor<R>>,
+}
+
+impl<R: Runtime> LifecycleExecutorState<R> {
+    pub(crate) fn new(executor: Arc<dyn LifecycleExecutor<R>>) -> Self {
+        Self { executor }
+    }
+
+    pub(crate) fn get(&self) -> &Arc<dyn LifecycleExecutor<R>> {
+        &self.executor
+    }
+}
+
+/// Non-Clone native sidecar, erased without retaining an executor or application handle.
+pub(crate) struct LifecycleLease {
+    payload: Box<dyn Any + Send + Sync>,
+    release_receipt: Arc<AtomicU8>,
+}
+
+impl fmt::Debug for LifecycleLease {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LifecycleLease").finish_non_exhaustive()
+    }
+}
+
+impl LifecycleLease {
+    pub(crate) fn new(payload: Box<dyn Any + Send + Sync>, release_receipt: Arc<AtomicU8>) -> Self {
+        Self {
+            payload,
+            release_receipt,
+        }
+    }
+
+    pub(crate) fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        self.payload.downcast_ref()
+    }
+
+    pub(crate) fn downcast_mut<T: Any>(&mut self) -> Option<&mut T> {
+        self.payload.downcast_mut()
+    }
+
+    pub(crate) fn release(self) -> bool {
+        let Self {
+            payload,
+            release_receipt,
+        } = self;
+        drop(payload);
+        release_receipt.load(Ordering::Acquire) == 1
+    }
+}
+
+/// Core session destruction logic shared by the Tauri command and the MailboxPoller.
+/// Kills PTY, detaches Telegram bridge, removes from SessionManager, persists, and emits events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DestructionSource {
+    ManualClose,
+    AutoClose,
+    SpawnRollback,
+    BackgroundCleanup,
+}
+
+impl DestructionSource {
+    pub(crate) fn cause(self) -> SelectionCause {
+        match self {
+            Self::ManualClose => SelectionCause::ManualClose,
+            Self::AutoClose => SelectionCause::AutoClose,
+            Self::SpawnRollback => SelectionCause::SpawnRollback,
+            Self::BackgroundCleanup => SelectionCause::BackgroundCleanup,
+        }
+    }
+
+    pub(crate) fn selection_source(self) -> SelectionSource {
+        match self {
+            Self::ManualClose => SelectionSource::ManualClose,
+            Self::AutoClose => SelectionSource::AutoClose,
+            Self::SpawnRollback => SelectionSource::SpawnRollback,
+            Self::BackgroundCleanup => SelectionSource::BackgroundCleanup,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DestroyRequest {
+    pub ids: Vec<Uuid>,
+    pub source: DestructionSource,
+    pub force_destroy_root: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DestroyOutcome {
+    pub destroyed_ids: Vec<Uuid>,
+    pub retained_exited_ids: Vec<Uuid>,
+    pub failed: Vec<(Uuid, String)>,
+}
+
+impl DestroyOutcome {
+    pub fn succeeded(&self, id: Uuid) -> bool {
+        self.destroyed_ids.contains(&id) || self.retained_exited_ids.contains(&id)
+    }
+
+    pub(crate) fn into_single_result(self, id: Uuid) -> Result<(), String> {
+        if self.succeeded(id) {
+            return Ok(());
+        }
+        let message = self
+            .failed
+            .into_iter()
+            .find(|(failed_id, _)| *failed_id == id)
+            .map(|(_, message)| message)
+            .unwrap_or_else(|| "Session not found".to_string());
+        Err(message)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RestartJobRequest {
+    pub session_id: Uuid,
+    pub agent_id: Option<String>,
+    pub requested_profile: Option<String>,
+    pub skip_auto_resume: Option<bool>,
+    pub activate_after: bool,
+    pub intent: TrustedRestartIntent,
+    pub communication_override: Option<SessionCommunication>,
+    /// §1295 5.1b — creation-gate enforcement for the restart replacement.
+    /// Root-agent and archived-root cwds are exempt by the gate itself, so
+    /// callers pass the build default; the mailbox wake-restart passes
+    /// `Enforce` explicitly (§1295 6.6 / mailbox.rs:9796).
+    pub enforcement: crate::config::sessions_persistence::CreationGateEnforcement,
+}
+
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Preserve lifecycle result and Interrupted dispatch ownership without new allocation"
+)]
+pub(crate) enum LifecycleEntryOutcome {
+    Returned(Result<SessionInfo, String>),
+    Interrupted,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RootJobRequest {
+    pub requested_agent_id: Option<String>,
+    pub requested_profile: Option<String>,
+    pub skip_auto_resume_for_new_session: bool,
+    pub intent: TrustedCreateIntent,
+    pub select_after: bool,
+}
 
 fn response_close_registrations() -> &'static Mutex<BTreeMap<Uuid, ResponseCloseRegistration>> {
     static REGISTRATIONS: OnceLock<Mutex<BTreeMap<Uuid, ResponseCloseRegistration>>> =

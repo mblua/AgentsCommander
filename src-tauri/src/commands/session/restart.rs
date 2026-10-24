@@ -460,21 +460,7 @@ pub(crate) fn resolve_restart_selected_agent_id(
     current_selection.or_else(|| stored_agent_id.map(str::to_string))
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct RestartJobRequest {
-    pub session_id: Uuid,
-    pub agent_id: Option<String>,
-    pub requested_profile: Option<String>,
-    pub skip_auto_resume: Option<bool>,
-    pub activate_after: bool,
-    pub intent: TrustedRestartIntent,
-    pub communication_override: Option<SessionCommunication>,
-    /// §1295 5.1b — creation-gate enforcement for the restart replacement.
-    /// Root-agent and archived-root cwds are exempt by the gate itself, so
-    /// callers pass the build default; the mailbox wake-restart passes
-    /// `Enforce` explicitly (§1295 6.6 / mailbox.rs:9796).
-    pub enforcement: crate::config::sessions_persistence::CreationGateEnforcement,
-}
+pub(crate) use crate::session::selection::RestartJobRequest;
 
 /// Restart a session: destroy the existing one and recreate it with the same
 /// configuration but a fresh PTY. By default suppresses provider auto-resume
@@ -832,14 +818,7 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
     .await
 }
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Preserve lifecycle result and Interrupted dispatch ownership without new allocation"
-)]
-pub(crate) enum LifecycleEntryOutcome {
-    Returned(Result<SessionInfo, String>),
-    Interrupted,
-}
+pub(crate) use crate::session::selection::LifecycleEntryOutcome;
 
 pub(crate) async fn execute_external_restart_transaction<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,

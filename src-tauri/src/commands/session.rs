@@ -57,6 +57,7 @@ mod restart_resume;
 mod resume_args;
 mod resume_probe;
 mod root_agent;
+pub(crate) mod selection_executor;
 mod telegram;
 #[cfg(test)]
 use agent_command::coding_agent_descriptor;
