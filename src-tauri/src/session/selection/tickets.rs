@@ -26,7 +26,7 @@ impl AutoCloseBatchTicket {
     pub async fn finalize(
         mut self,
         ids: Vec<Uuid>,
-    ) -> Result<crate::commands::session::DestroyOutcome, String> {
+    ) -> Result<crate::session::selection::DestroyOutcome, String> {
         let slot = self
             .slot
             .take()
@@ -38,9 +38,9 @@ impl AutoCloseBatchTicket {
         let (response, receiver) = oneshot::channel();
         drop(slot.send(CoordinatorEnvelope {
             job: CoordinatorJob::Destroy {
-                request: crate::commands::session::DestroyRequest {
+                request: crate::session::selection::DestroyRequest {
                     ids,
-                    source: crate::commands::session::DestructionSource::AutoClose,
+                    source: crate::session::selection::DestructionSource::AutoClose,
                     force_destroy_root: false,
                 },
                 response,

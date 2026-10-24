@@ -127,27 +127,25 @@ use destroy::detach_response_close_telegram;
 pub(crate) use destroy::execute_destroy_transaction;
 use destroy::execute_destroy_transaction_common;
 use destroy::execute_manual_coordinator_destroy;
-pub(crate) use destroy::execute_response_close_transaction;
 pub(crate) use destroy::reconcile_response_closes;
 pub use destroy::CoordinatorCloseOutcome;
 pub(crate) use destroy::DestroyOutcome;
 pub(crate) use destroy::DestroyRequest;
 pub use destroy::DestructionSource;
+#[cfg(test)]
 pub(crate) use lifecycle::prepare_lifecycle_entry_authority;
 use lifecycle::prepare_restore_lifecycle_authority;
 use lifecycle::retire_lifecycle_entry_protection;
-pub(crate) use lifecycle::validate_lifecycle_entry_authority;
+#[cfg(test)]
 pub(crate) use lifecycle::LifecycleAuthorityAdmission;
 pub(crate) use lifecycle::LifecycleEntryAuthority;
 use restart::accept_restart_deferred_completion;
 use restart::accept_restart_teardown;
 pub(crate) use restart::carry_communication_for_restart;
-pub(crate) use restart::complete_owned_replacement_retirement;
 use restart::effective_create_skip_auto_resume;
 use restart::effective_restart_requested_profile;
 #[cfg(test)]
 use restart::effective_restart_skip_auto_resume;
-pub(crate) use restart::execute_external_restart_transaction;
 use restart::finalize_restart_deferred;
 pub(crate) use restart::matched_selection;
 use restart::mirror_forces_fresh;
@@ -175,8 +173,6 @@ pub(crate) use restart_resume::RestartResumeTarget;
 use root_agent::classify_existing_root;
 pub(crate) use root_agent::create_root_agent_inner;
 use root_agent::ensure_lifecycle_root_directory;
-pub(crate) use root_agent::ensure_owned_root_directory;
-pub(crate) use root_agent::execute_external_root_transaction;
 pub(crate) use root_agent::execute_root_transaction;
 #[cfg(test)]
 use root_agent::ExistingRootAction;

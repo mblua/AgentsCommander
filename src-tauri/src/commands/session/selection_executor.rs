@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager, Runtime};
 use uuid::Uuid;
 
-use super::destroy;
 use super::lifecycle::LifecycleEntryAuthority;
+use super::{destroy, lifecycle, restart, root_agent};
 use crate::session::selection::{
     DestroyOutcome, DestroyRequest, LifecycleAdmission, LifecycleEffectGuard,
     LifecycleEntryOutcome, LifecycleExecutor, LifecycleExecutorState, LifecycleFuture,
@@ -71,7 +71,7 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
     ) -> LifecycleFuture<'a, Result<LifecycleAdmission, String>> {
         Box::pin(async move {
             Ok(
-                match super::prepare_lifecycle_entry_authority(
+                match lifecycle::prepare_lifecycle_entry_authority(
                     transaction.app(),
                     operation,
                     source,
@@ -80,11 +80,11 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
                 )
                 .await?
                 {
-                    super::LifecycleAuthorityAdmission::Ready(authority) => {
+                    lifecycle::LifecycleAuthorityAdmission::Ready(authority) => {
                         LifecycleAdmission::Ready(NativeLifecycleLease::wrap(authority))
                     }
-                    super::LifecycleAuthorityAdmission::Waiting => LifecycleAdmission::Waiting,
-                    super::LifecycleAuthorityAdmission::NeedsRootDirectory => {
+                    lifecycle::LifecycleAuthorityAdmission::Waiting => LifecycleAdmission::Waiting,
+                    lifecycle::LifecycleAuthorityAdmission::NeedsRootDirectory => {
                         LifecycleAdmission::NeedsRootDirectory
                     }
                 },
@@ -104,7 +104,7 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
             let Some(authority) = native.authority.as_mut() else {
                 return false;
             };
-            super::validate_lifecycle_entry_authority(transaction.app(), authority).await
+            lifecycle::validate_lifecycle_entry_authority(transaction.app(), authority).await
         })
     }
 
@@ -123,7 +123,7 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
     }
 
     fn ensure_root_directory(&self, effect: LifecycleEffectGuard) -> Result<String, String> {
-        super::ensure_owned_root_directory(effect)
+        root_agent::ensure_owned_root_directory(effect)
     }
 
     fn destroy<'a>(
@@ -147,7 +147,7 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
             else {
                 return LifecycleEntryOutcome::Interrupted;
             };
-            super::execute_external_restart_transaction(transaction, request, authority).await
+            restart::execute_external_restart_transaction(transaction, request, authority).await
         })
     }
 
@@ -164,7 +164,7 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
             else {
                 return LifecycleEntryOutcome::Interrupted;
             };
-            super::execute_external_root_transaction(transaction, request, authority).await
+            root_agent::execute_external_root_transaction(transaction, request, authority).await
         })
     }
 
@@ -174,7 +174,7 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
         ticket: crate::pty::manager::ResponseCloseTicket,
     ) -> LifecycleFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            super::execute_response_close_transaction(transaction, ticket)
+            destroy::execute_response_close_transaction(transaction, ticket)
                 .await
                 .map(|_| ())
         })
@@ -192,7 +192,7 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
         transaction: &'a SelectionTransaction<R>,
         id: Uuid,
     ) -> LifecycleFuture<'a, ()> {
-        Box::pin(super::complete_owned_replacement_retirement(
+        Box::pin(restart::complete_owned_replacement_retirement(
             transaction,
             id,
         ))

@@ -172,8 +172,8 @@ impl SelectionCoordinator {
 
     pub(crate) async fn destroy(
         &self,
-        request: crate::commands::session::DestroyRequest,
-    ) -> Result<crate::commands::session::DestroyOutcome, String> {
+        request: crate::session::selection::DestroyRequest,
+    ) -> Result<crate::session::selection::DestroyOutcome, String> {
         let (admission, slot) = self
             .try_reserve_envelope()
             .map_err(|error| error.to_string())?;
@@ -526,7 +526,7 @@ impl SelectionCoordinator {
     #[cfg(test)]
     pub(crate) fn fixture_initial_reservation_refusal(
         &self,
-        request: crate::commands::session::RestartJobRequest,
+        request: crate::session::selection::RestartJobRequest,
     ) -> Result<(), String> {
         {
             let root = self

@@ -1112,9 +1112,10 @@ agentscommander_lib::commands::session::root_agent -> agentscommander_lib::sessi
 agentscommander_lib::commands::session::root_agent -> agentscommander_lib::session::selection
 agentscommander_lib::commands::session::root_agent -> agentscommander_lib::session::session
 agentscommander_lib::commands::session::root_agent -> agentscommander_lib::telegram::manager
-agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::commands::session
 agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::commands::session::destroy
 agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::commands::session::lifecycle
+agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::commands::session::restart
+agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::commands::session::root_agent
 agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::pty::manager
 agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::session::selection
 agentscommander_lib::commands::session::telegram -> agentscommander_lib::commands::telegram
@@ -2700,7 +2701,6 @@ agentscommander_lib::session::selection::continuation_runtime -> agentscommander
 agentscommander_lib::session::selection::continuation_runtime -> agentscommander_lib::session::selection::replacement
 agentscommander_lib::session::selection::continuation_runtime -> agentscommander_lib::session::selection::transaction
 agentscommander_lib::session::selection::continuation_runtime -> agentscommander_lib::session::session
-agentscommander_lib::session::selection::coordinator_lifecycle -> agentscommander_lib::commands::session
 agentscommander_lib::session::selection::coordinator_lifecycle -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::session::selection::coordinator_lifecycle -> agentscommander_lib::pty::backend
 agentscommander_lib::session::selection::coordinator_lifecycle -> agentscommander_lib::pty::manager
@@ -2772,7 +2772,6 @@ agentscommander_lib::session::selection::shutdown_cleanup -> agentscommander_lib
 agentscommander_lib::session::selection::shutdown_cleanup -> agentscommander_lib::session::selection
 agentscommander_lib::session::selection::shutdown_cleanup -> agentscommander_lib::session::selection::admission
 agentscommander_lib::session::selection::shutdown_cleanup -> agentscommander_lib::session::selection::replacement
-agentscommander_lib::session::selection::tickets -> agentscommander_lib::commands::session
 agentscommander_lib::session::selection::tickets -> agentscommander_lib::session
 agentscommander_lib::session::selection::tickets -> agentscommander_lib::session::manager
 agentscommander_lib::session::selection::tickets -> agentscommander_lib::session::selection
