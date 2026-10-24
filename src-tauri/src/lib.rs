@@ -6,6 +6,7 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub(crate) mod errors;
+pub(crate) mod filesystem;
 pub mod logging;
 pub(crate) mod loops;
 pub mod network;
