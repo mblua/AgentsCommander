@@ -44,11 +44,11 @@ pub(crate) use error::{
 pub(crate) use lock::SettingsFileLock;
 #[cfg(test)]
 pub(crate) use lock::{
-    settings_lock_debug_path, settings_lock_debug_transport, SettingsLockDebugAttempt,
-    SettingsLockDebugContext, SettingsLockDebugTestHooks, SETTINGS_LOCK_DEBUG_ATTEMPT,
-    SETTINGS_LOCK_DEBUG_CAPACITY, SETTINGS_LOCK_DEBUG_LOST, SETTINGS_LOCK_DEBUG_PATH_BYTES,
+    settings_lock_debug_lost_count, settings_lock_debug_path, settings_lock_debug_sender,
+    settings_lock_debug_set_attempt, settings_lock_debug_transport,
+    settings_lock_debug_transport_initialized, SettingsLockDebugAttempt, SettingsLockDebugContext,
+    SettingsLockDebugTestHooks, SETTINGS_LOCK_DEBUG_CAPACITY, SETTINGS_LOCK_DEBUG_PATH_BYTES,
     SETTINGS_LOCK_DEBUG_TEST_HOOKS, SETTINGS_LOCK_DEBUG_TEST_UNLOCK_ERROR,
-    SETTINGS_LOCK_DEBUG_TRANSPORT,
 };
 pub(crate) use locked::save_settings_value_locked_with_startup;
 #[cfg(test)]
