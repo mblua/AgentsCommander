@@ -8,23 +8,18 @@
   },
   "moduleCycles": [
     {
-      "id": "5240f8fd0dc18ec6",
+      "id": "ab231fc1d9e023bd",
       "members": [
         "agentscommander_lib",
-        "agentscommander_lib::api",
         "agentscommander_lib::api::auth",
         "agentscommander_lib::api::error",
         "agentscommander_lib::api::message_store",
         "agentscommander_lib::api::schema",
         "agentscommander_lib::cli",
-        "agentscommander_lib::cli::agency_templates",
         "agentscommander_lib::cli::list_peers",
         "agentscommander_lib::co_managed",
         "agentscommander_lib::co_managed::route",
-        "agentscommander_lib::commands::config",
-        "agentscommander_lib::commands::config::web_server",
         "agentscommander_lib::commands::pty",
-        "agentscommander_lib::commands::role_templates",
         "agentscommander_lib::commands::session",
         "agentscommander_lib::commands::telegram",
         "agentscommander_lib::pty::backend",
@@ -52,10 +47,23 @@
         "agentscommander_lib::telegram::manager",
         "agentscommander_lib::testability::reset",
         "agentscommander_lib::testability::window_info",
-        "agentscommander_lib::web",
-        "agentscommander_lib::web::commands",
-        "agentscommander_lib::web_server",
         "agentscommander_lib::window"
+      ]
+    },
+    {
+      "id": "94e26523c02c3de3",
+      "members": [
+        "agentscommander_lib::cli::agency_templates",
+        "agentscommander_lib::commands::role_templates"
+      ]
+    },
+    {
+      "id": "ffa526a35c677d6b",
+      "members": [
+        "agentscommander_lib::commands::config",
+        "agentscommander_lib::commands::config::web_server",
+        "agentscommander_lib::web",
+        "agentscommander_lib::web::commands"
       ]
     },
     {

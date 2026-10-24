@@ -2901,6 +2901,7 @@ agentscommander_lib::web -> agentscommander_lib::shutdown
 agentscommander_lib::web -> agentscommander_lib::web::auth
 agentscommander_lib::web -> agentscommander_lib::web::broadcast
 agentscommander_lib::web -> agentscommander_lib::web::commands
+agentscommander_lib::web -> agentscommander_lib::web_server
 agentscommander_lib::web::commands -> agentscommander_lib
 agentscommander_lib::web::commands -> agentscommander_lib::cli::agency_templates
 agentscommander_lib::web::commands -> agentscommander_lib::commands::ac_discovery
@@ -2936,7 +2937,6 @@ agentscommander_lib::web::commands::coding_agent_dispatch -> agentscommander_lib
 agentscommander_lib::web::commands::coding_agent_dispatch -> agentscommander_lib::web::event_broadcast
 agentscommander_lib::web::event_broadcast -> agentscommander_lib::web::broadcast
 agentscommander_lib::web_server -> agentscommander_lib::shutdown
-agentscommander_lib::web_server -> agentscommander_lib::web
 agentscommander_lib::window -> agentscommander_lib::config
 agentscommander_lib::window -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::window -> agentscommander_lib::pty::manager
