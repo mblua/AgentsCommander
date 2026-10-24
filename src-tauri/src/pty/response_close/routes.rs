@@ -1,9 +1,9 @@
-use crate::pty::manager::response_close::ResponseCloseError;
-use crate::pty::manager::response_close::ResponseCloseRoute;
-use crate::pty::manager::response_close::ResponseCloseState;
-use crate::pty::manager::response_close::ResponseRouteIdentity;
-use crate::pty::manager::response_close::WriterAdmission;
-use crate::pty::manager::response_close::DIAG_TARGET;
+use crate::pty::response_close::ResponseCloseError;
+use crate::pty::response_close::ResponseCloseRoute;
+use crate::pty::response_close::ResponseCloseState;
+use crate::pty::response_close::ResponseRouteIdentity;
+use crate::pty::response_close::WriterAdmission;
+use crate::pty::response_close::DIAG_TARGET;
 use uuid::Uuid;
 
 impl ResponseCloseState {

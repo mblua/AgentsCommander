@@ -1,18 +1,18 @@
-use crate::pty::manager::response_close::ResponseCloseError;
-use crate::pty::manager::response_close::ResponseCloseInner;
-use crate::pty::manager::response_close::ResponseClosePolicy;
-use crate::pty::manager::response_close::ResponseCloseRoute;
-use crate::pty::manager::response_close::ResponseCloseSettlementEvidence;
-use crate::pty::manager::response_close::ResponseCloseSettlementOutcome;
-use crate::pty::manager::response_close::ResponseCloseState;
-use crate::pty::manager::response_close::ResponseCloseTicket;
-use crate::pty::manager::response_close::ResponseDeliveryContext;
-use crate::pty::manager::response_close::ResponseDeliveryProof;
-use crate::pty::manager::response_close::ResponseRouteIdentity;
-use crate::pty::manager::response_close::ReturnDeliveryProof;
-use crate::pty::manager::response_close::ReturnObservationContext;
-use crate::pty::manager::response_close::StaleOrInvalidSettlement;
-use crate::pty::manager::response_close::DIAG_TARGET;
+use crate::pty::response_close::ResponseCloseError;
+use crate::pty::response_close::ResponseCloseInner;
+use crate::pty::response_close::ResponseClosePolicy;
+use crate::pty::response_close::ResponseCloseRoute;
+use crate::pty::response_close::ResponseCloseSettlementEvidence;
+use crate::pty::response_close::ResponseCloseSettlementOutcome;
+use crate::pty::response_close::ResponseCloseState;
+use crate::pty::response_close::ResponseCloseTicket;
+use crate::pty::response_close::ResponseDeliveryContext;
+use crate::pty::response_close::ResponseDeliveryProof;
+use crate::pty::response_close::ResponseRouteIdentity;
+use crate::pty::response_close::ReturnDeliveryProof;
+use crate::pty::response_close::ReturnObservationContext;
+use crate::pty::response_close::StaleOrInvalidSettlement;
+use crate::pty::response_close::DIAG_TARGET;
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -247,7 +247,7 @@ impl ResponseCloseState {
     }
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) fn settle_return(
+    pub(in crate::pty) fn settle_return(
         &self,
         context: &ReturnObservationContext,
         success: bool,
@@ -303,7 +303,7 @@ impl ResponseCloseState {
     }
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) fn safe(
+    pub(in crate::pty) fn safe(
         inner: &ResponseCloseInner,
         route: &ResponseCloseRoute,
         now: std::time::Instant,
@@ -388,7 +388,7 @@ impl ResponseCloseState {
     }
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) fn try_commit_response_close(
+    pub(in crate::pty) fn try_commit_response_close(
         &self,
         ticket: &ResponseCloseTicket,
         now: std::time::Instant,
