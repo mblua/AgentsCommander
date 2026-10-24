@@ -5,7 +5,20 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::config;
-use crate::AppOutbox;
+
+/// Instance-private outbox directory. Only this app instance polls it.
+/// Created at startup, path printed to stdout alongside master token.
+pub struct AppOutbox(String);
+
+impl AppOutbox {
+    pub fn new(path: String) -> Self {
+        Self(path)
+    }
+
+    pub fn path(&self) -> &str {
+        &self.0
+    }
+}
 
 #[derive(Debug)]
 pub struct StartupError {

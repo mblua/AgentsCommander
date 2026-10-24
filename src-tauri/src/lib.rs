@@ -73,6 +73,8 @@ pub(crate) use pty_wiring::{
     ScraperRows, ScraperSamples, ScraperSink, WatcherBackends, WatcherDelivery, WatcherPatterns,
     WatcherSink,
 };
+pub use startup::AppOutbox;
+
 pub use quit_gate::{
     apply_quit_gate_effects, quit_gate_run, quit_gate_window_gone, QuitAbortReason, QuitGate,
     QuitGateClock, QuitGateEffects, QuitGateHost, QuitGateRegistration, QuitOutcome,
@@ -315,20 +317,6 @@ pub struct RestoreInProgress(pub AtomicBool);
 /// a second bare alias would collide. Mirrors `RestoreInProgress`.
 #[derive(Default)]
 pub struct PendingSelfClear(pub Mutex<HashSet<uuid::Uuid>>);
-
-/// Instance-private outbox directory. Only this app instance polls it.
-/// Created at startup, path printed to stdout alongside master token.
-pub struct AppOutbox(String);
-
-impl AppOutbox {
-    pub fn new(path: String) -> Self {
-        Self(path)
-    }
-
-    pub fn path(&self) -> &str {
-        &self.0
-    }
-}
 
 /// (#1652) Pins the type of the closure `generate_handler!` produces. The
 /// macro's closure parameter is UNANNOTATED and rustc type-checks the body at

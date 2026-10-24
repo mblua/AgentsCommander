@@ -2798,7 +2798,6 @@ agentscommander_lib::session::session -> agentscommander_lib::config::entity_pre
 agentscommander_lib::session::session -> agentscommander_lib::config::settings
 agentscommander_lib::session::session -> agentscommander_lib::pty::backend_kind
 agentscommander_lib::session::session -> agentscommander_lib::session::profile
-agentscommander_lib::startup -> agentscommander_lib
 agentscommander_lib::startup -> agentscommander_lib::config
 agentscommander_lib::startup -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::startup -> agentscommander_lib::config::naming_migration

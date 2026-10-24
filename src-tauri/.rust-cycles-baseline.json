@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "590cc22d64ccf731",
+      "id": "675d37b1a95f24a9",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::api::message_store",
@@ -35,7 +35,6 @@
         "agentscommander_lib::session::auto_close",
         "agentscommander_lib::session::manager",
         "agentscommander_lib::session::selection",
-        "agentscommander_lib::startup",
         "agentscommander_lib::telegram::bridge",
         "agentscommander_lib::telegram::manager",
         "agentscommander_lib::window"
