@@ -13,7 +13,10 @@ use super::{
     ScreenshotSelection,
 };
 
-const UNSUPPORTED: &str = "Screenshot capture is not available on this platform; it is supported on Windows, macOS and Linux/X11";
+const UNSUPPORTED: &str = concat!(
+    "Screenshot capture is not available on this platform; ",
+    "it is supported on Windows, macOS and Linux/X11"
+);
 
 /// The non-Windows lifecycle can never leave `Idle`, but the variant must exist
 /// so the `ScreenshotCaptureState` alias and `lib.rs` (`...::Idle`) compile.
@@ -85,28 +88,4 @@ pub async fn clear_capture_and_destroy_overlays(
 pub async fn handle_overlay_window_destroyed(_app: AppHandle, _label: String) {}
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_hotkey_runtime_is_unregistered() {
-        // The non-Windows stub never registers a global shortcut: its hotkey
-        // runtime starts unregistered with no error, and only records the
-        // unsupported status once `register_configured_hotkey` runs at settings
-        // time. (`ScreenshotCaptureLifecycle::Idle` still compiles via lib.rs.)
-        let runtime = ScreenshotHotkeyRuntime::default();
-        assert!(!runtime.status.registered);
-        assert!(runtime.status.error.is_none());
-    }
-
-    #[tokio::test]
-    async fn begin_capture_reports_unsupported() {
-        // The free function returns the unsupported message without any app.
-        // (overlay/confirm mirror this; covered indirectly.)
-        assert_eq!(begin_capture_message(), UNSUPPORTED);
-    }
-
-    fn begin_capture_message() -> &'static str {
-        UNSUPPORTED
-    }
-}
+mod tests;
