@@ -15,6 +15,7 @@ pub mod idle_detector;
 pub mod inject;
 pub mod input_activity;
 pub(crate) mod input_limits;
+pub(crate) mod input_route;
 pub mod job; // #632 - per-agent Job Object for tree-kill
 pub mod local_backend;
 pub mod manager;

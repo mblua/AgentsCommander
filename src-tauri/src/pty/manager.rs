@@ -1,5 +1,6 @@
+#[cfg(test)]
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, TryLockError};
+use std::sync::{Arc, Mutex};
 
 use uuid::Uuid;
 
@@ -25,7 +26,7 @@ pub(crate) use response_close::{
     ResponseCloseError, ResponseClosePublisher, ResponseCloseSettlementEvidence,
     ResponseCloseSettlementOutcome, ResponseCloseState, ResponseCloseTicket,
     ResponseDeliveryContext, ResponseDeliveryProof, ResponseRouteIdentity, ReturnDeliveryProof,
-    ReturnObservationContext, WorkAdmission, WorkDeliveryReservation, WriterAdmission,
+    ReturnObservationContext, WorkAdmission, WorkDeliveryReservation,
 };
 pub(crate) use route_proof::lock_route_for_verified_write;
 pub use route_proof::{acquire_input_writer, lock_route_for_write, write_with_permit};
@@ -37,129 +38,23 @@ pub(crate) struct PendingSpawn {
     pub label: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PtyRouteRemovalError {
-    Busy,
-    LockPoisoned,
-}
+pub use crate::pty::input_route::{BackendWriteAuthority, PtyInputPermit, PtyRouteWriteGuard};
+use crate::pty::input_route::{NonWritingRouteProof, PendingRegistration, RouteRegistry};
+pub(crate) use crate::pty::input_route::{PtyAuthorityRouteProof, PtyRouteRemovalError};
 
-struct RouteEntry {
-    kind: SessionBackendKind,
-    generation: u64,
-    input_gate: Arc<tokio::sync::Mutex<()>>,
-    lifecycle_gate: Arc<std::sync::Mutex<()>>,
-    canonical_cwd_identity: Option<crate::path_identity::VerifiedPathIdentity>,
-    verified_replica_anchor: Option<crate::path_identity::VerifiedPathIdentity>,
-}
-
-#[derive(Default)]
-struct SpawnRegistry {
-    routes: HashMap<Uuid, RouteEntry>,
-    pending: HashMap<u64, PendingSpawn>,
-    next_seq: u64,
-    next_route_generation: u64,
-}
-
-/// Unforgeable safe-code authority for a raw backend PTY write. Only the
-/// route-guard chokepoint can issue a production value, so adding an alias or
-/// reformatting a call cannot bypass the permit inventory.
-#[doc(hidden)]
-pub struct BackendWriteAuthority {
-    _private: (),
-}
-
-impl BackendWriteAuthority {
-    fn for_route_guard() -> Self {
-        Self { _private: () }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_backend_test() -> Self {
-        Self { _private: () }
-    }
-}
-
-/// Exclusive per-session input ownership. Holding this guard serializes a
-/// complete multi-phase submission against every other production writer.
-pub struct PtyInputPermit {
-    session_id: Uuid,
-    route_generation: u64,
-    route_registry: Arc<std::sync::Mutex<SpawnRegistry>>,
-    route_lifecycle: Arc<std::sync::Mutex<()>>,
-    backend: Arc<dyn PtyBackend>,
-    _guard: tokio::sync::OwnedMutexGuard<()>,
-    _response_writer: WriterAdmission,
-}
-
-/// Generation and lifecycle ownership for final sender-route authorization.
-/// It carries no backend or credential and cannot write PTY bytes.
-pub(crate) struct PtyAuthorityRouteProof {
-    session_id: Uuid,
-    route_generation: u64,
-    route_registry: Arc<std::sync::Mutex<SpawnRegistry>>,
-    route_lifecycle: Arc<std::sync::Mutex<()>>,
-}
-
-/// Non-writing proof for one frozen PTY route generation. It carries no input
-/// gate and cannot mint a backend write authority.
 pub(crate) struct PtySnapshotRouteProof {
-    session_id: Uuid,
-    route_generation: u64,
-    route_kind: SessionBackendKind,
-    route_registry: Arc<std::sync::Mutex<SpawnRegistry>>,
-    route_lifecycle: Arc<std::sync::Mutex<()>>,
+    proof: NonWritingRouteProof,
     backend: Arc<dyn PtyBackend>,
-    saved_cwd: crate::path_identity::VerifiedPathIdentity,
-    saved_replica: Option<crate::path_identity::VerifiedPathIdentity>,
-}
-
-/// A short-lived route lifecycle guard for one synchronous backend write.
-pub struct PtyRouteWriteGuard<'a> {
     session_id: Uuid,
-    backend: Arc<dyn PtyBackend>,
-    _guard: std::sync::MutexGuard<'a, ()>,
-    _authority_guard: Option<std::sync::MutexGuard<'a, ()>>,
-    _settings_guard: Option<crate::config::settings::SettingsReadPermit>,
-}
-
-impl<'a> PtyRouteWriteGuard<'a> {
-    pub fn write(&self, bytes: &[u8]) -> Result<(), AppError> {
-        let authority = BackendWriteAuthority::for_route_guard();
-        self.backend.write(&authority, self.session_id, bytes)
-    }
-
-    pub(crate) fn retain_authority_guard(
-        &mut self,
-        authority_guard: std::sync::MutexGuard<'a, ()>,
-    ) {
-        self._authority_guard = Some(authority_guard);
-    }
-
-    pub(crate) fn retain_settings_guard(
-        &mut self,
-        settings_guard: crate::config::settings::SettingsReadPermit,
-    ) {
-        self._settings_guard = Some(settings_guard);
-    }
 }
 
 pub(crate) struct SpawnMark {
-    response_close: ResponseCloseState,
-    registry: Arc<Mutex<SpawnRegistry>>,
-    seq: u64,
-}
-
-impl Drop for SpawnMark {
-    fn drop(&mut self) {
-        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-        registry.pending.remove(&self.seq);
-        self.response_close.end_unresolved_spawn();
-    }
+    _registration: PendingRegistration,
 }
 
 pub struct PtyManager {
     response_close: ResponseCloseState,
-    registry: Arc<Mutex<SpawnRegistry>>,
+    registry: RouteRegistry,
     local_backend: Arc<dyn PtyBackend>,
     container_backend: Arc<ContainerTransportBackend>,
 }
@@ -219,7 +114,7 @@ impl PtyManager {
         debug_assert!(container_backend.as_any().is::<ContainerTransportBackend>());
         Self {
             response_close: ResponseCloseState::default(),
-            registry: Arc::new(Mutex::new(SpawnRegistry::default())),
+            registry: RouteRegistry::default(),
             local_backend,
             container_backend,
         }
@@ -231,7 +126,7 @@ impl PtyManager {
         let idle_detector = IdleDetector::new(|_| {}, |_| {});
         Self {
             response_close: ResponseCloseState::default(),
-            registry: Arc::new(Mutex::new(SpawnRegistry::default())),
+            registry: RouteRegistry::default(),
             local_backend,
             container_backend: Arc::new(ContainerTransportBackend::new(
                 output_senders,
@@ -249,7 +144,7 @@ impl PtyManager {
     ) -> Self {
         Self {
             response_close: ResponseCloseState::default(),
-            registry: Arc::new(Mutex::new(SpawnRegistry::default())),
+            registry: RouteRegistry::default(),
             local_backend,
             container_backend,
         }
@@ -318,85 +213,19 @@ impl PtyManager {
         canonical_cwd_identity: Option<crate::path_identity::VerifiedPathIdentity>,
         verified_replica_anchor: Option<crate::path_identity::VerifiedPathIdentity>,
     ) -> Result<(), AppError> {
-        let mut registry = self
-            .registry
-            .lock()
-            .map_err(|_| AppError::PtyError("route_registry_poisoned".to_string()))?;
-        if self.response_close.uuid_closing(id) {
-            return Err(AppError::PtyError("response_close_deferred".to_string()));
-        }
-        if registry.routes.contains_key(&id) {
-            return Err(AppError::PtyError("duplicate_pty_route".to_string()));
-        }
-        let generation = registry
-            .next_route_generation
-            .checked_add(1)
-            .ok_or_else(|| AppError::PtyError("route_generation_overflow".to_string()))?;
-        registry.next_route_generation = generation;
-        self.response_close
-            .register_route(id, generation, std::time::Instant::now());
-        registry.routes.insert(
+        self.registry.publish(
             id,
-            RouteEntry {
-                kind,
-                generation,
-                input_gate: Arc::new(tokio::sync::Mutex::new(())),
-                lifecycle_gate: Arc::new(std::sync::Mutex::new(())),
-                canonical_cwd_identity,
-                verified_replica_anchor,
-            },
-        );
-        Ok(())
+            kind,
+            canonical_cwd_identity,
+            verified_replica_anchor,
+            crate::pty::backend::raw_writer(self.backend_for_kind(kind)),
+            &self.response_close,
+        )
     }
 
     pub fn remove_route_if_kind(&self, id: Uuid, kind: SessionBackendKind) {
-        let route = {
-            let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-            registry
-                .routes
-                .get(&id)
-                .filter(|entry| entry.kind == kind)
-                .map(|entry| (Arc::clone(&entry.lifecycle_gate), entry.generation))
-        };
-        let Some((lifecycle, generation)) = route else {
-            return;
-        };
-        let deferred_lifecycle = Arc::clone(&lifecycle);
-        match lifecycle.try_lock() {
-            Ok(_lifecycle_guard) => {
-                let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-                if registry
-                    .routes
-                    .get(&id)
-                    .is_some_and(|entry| entry.kind == kind && entry.generation == generation)
-                {
-                    self.response_close.remove_route(id, generation);
-                    registry.routes.remove(&id);
-                }
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {
-                log::debug!("[pty] route removal deferred for busy session {id}");
-                let registry = Arc::clone(&self.registry);
-                let response_close = self.response_close.clone();
-                std::thread::spawn(move || {
-                    let _lifecycle_guard = deferred_lifecycle
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    let mut registry = registry.lock().unwrap_or_else(|error| error.into_inner());
-                    if registry
-                        .routes
-                        .get(&id)
-                        .is_some_and(|entry| entry.kind == kind && entry.generation == generation)
-                    {
-                        response_close.remove_route(id, generation);
-                        registry.routes.remove(&id);
-                    }
-                });
-            }
-            Err(std::sync::TryLockError::Poisoned(_)) => {
-                log::warn!("[pty] route removal failed session={id} code=route_lifecycle_poisoned");
-            }
-        };
+        self.registry
+            .remove_route_if_kind(id, kind, &self.response_close);
     }
 
     pub(crate) fn try_remove_route_if_kind(
@@ -404,72 +233,26 @@ impl PtyManager {
         id: Uuid,
         kind: SessionBackendKind,
     ) -> Result<(), PtyRouteRemovalError> {
-        let route = {
-            let registry = match self.registry.try_lock() {
-                Ok(registry) => registry,
-                Err(TryLockError::Poisoned(_)) => return Err(PtyRouteRemovalError::LockPoisoned),
-                Err(TryLockError::WouldBlock) => return Err(PtyRouteRemovalError::Busy),
-            };
-            registry
-                .routes
-                .get(&id)
-                .filter(|entry| entry.kind == kind)
-                .map(|entry| (Arc::clone(&entry.lifecycle_gate), entry.generation))
-        };
-        let Some((lifecycle, generation)) = route else {
-            return Ok(());
-        };
-        let _lifecycle_guard = lifecycle
-            .try_lock()
-            .map_err(|_| PtyRouteRemovalError::Busy)?;
-        let mut registry = match self.registry.try_lock() {
-            Ok(registry) => registry,
-            Err(TryLockError::Poisoned(_)) => return Err(PtyRouteRemovalError::LockPoisoned),
-            Err(TryLockError::WouldBlock) => return Err(PtyRouteRemovalError::Busy),
-        };
-        if registry
-            .routes
-            .get(&id)
-            .is_some_and(|entry| entry.kind == kind && entry.generation == generation)
-        {
-            self.response_close.remove_route(id, generation);
-            registry.routes.remove(&id);
-        }
-        Ok(())
+        self.registry
+            .try_remove_route_if_kind(id, kind, &self.response_close)
     }
 
     #[cfg(test)]
     pub(crate) fn poison_route_registry_for_test(&self) {
-        let registry = Arc::clone(&self.registry);
-        let result = std::panic::catch_unwind(move || {
-            let _registry_guard = registry.lock().unwrap();
-            panic!("poison the PTY route registry for deterministic test coverage");
-        });
-        assert!(result.is_err(), "route-registry poison fixture must panic");
+        self.registry.poison_route_registry_for_test();
     }
 
     #[cfg(test)]
     pub(crate) fn clear_route_registry_poison_for_test(&self) {
-        self.registry.clear_poison();
+        self.registry.clear_route_registry_poison_for_test();
     }
 
     fn kind_for_session(&self, id: Uuid) -> Result<SessionBackendKind, AppError> {
-        self.registry
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .routes
-            .get(&id)
-            .map(|entry| entry.kind)
-            .ok_or_else(|| AppError::SessionNotFound(id.to_string()))
+        self.registry.kind_for_session(id)
     }
 
     pub fn backend_kind(&self, id: Uuid) -> Option<SessionBackendKind> {
-        self.registry
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .routes
-            .get(&id)
-            .map(|entry| entry.kind)
+        self.registry.backend_kind(id)
     }
 
     pub(crate) fn route_identities(
@@ -480,61 +263,33 @@ impl PtyManager {
         Option<crate::path_identity::VerifiedPathIdentity>,
         u64,
     )> {
-        let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = registry.routes.get(&id)?;
-        Some((
-            entry.canonical_cwd_identity.clone(),
-            entry.verified_replica_anchor.clone(),
-            entry.generation,
-        ))
+        self.registry.route_identities(id)
     }
 
     pub(crate) fn has_pending_spawn_for_replica(
         &self,
         replica: &crate::path_identity::VerifiedPathIdentity,
     ) -> bool {
-        let registry = self
-            .registry
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        registry.pending.values().any(|pending| {
-            crate::path_identity::verify_directory(std::path::Path::new(&pending.cwd))
-                .is_ok_and(|cwd| crate::path_identity::is_verified_descendant(&cwd, replica))
-        })
+        self.registry.has_pending_spawn_for_replica(replica)
     }
 
     pub(crate) fn mark_spawning(&self, cwd: &str, label: &str) -> SpawnMark {
-        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-        let seq = registry.next_seq;
-        if registry.next_seq == u64::MAX {
-            self.response_close.fail_closed();
-        }
-        self.response_close.begin_unresolved_spawn();
-        registry.next_seq = registry.next_seq.wrapping_add(1);
-        registry.pending.insert(
-            seq,
-            PendingSpawn {
-                cwd: cwd.to_string(),
-                label: label.to_string(),
-            },
-        );
         SpawnMark {
-            response_close: self.response_close.clone(),
-            registry: Arc::clone(&self.registry),
-            seq,
+            _registration: self
+                .registry
+                .mark_spawning(cwd, label, &self.response_close),
         }
     }
 
     pub(crate) fn archive_liveness(&self, ids: &[Uuid]) -> (Vec<PendingSpawn>, Vec<bool>) {
-        let (pending, route_kinds) = {
-            let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-            (
-                registry.pending.values().cloned().collect::<Vec<_>>(),
-                ids.iter()
-                    .map(|id| registry.routes.get(id).map(|entry| entry.kind))
-                    .collect::<Vec<_>>(),
-            )
-        };
+        let (pending, route_kinds) = self.registry.joint_archive_snapshot(ids);
+        let pending = pending
+            .into_iter()
+            .map(|row| PendingSpawn {
+                cwd: row.cwd,
+                label: row.label,
+            })
+            .collect();
         let live = ids
             .iter()
             .zip(route_kinds)
@@ -617,11 +372,7 @@ impl PtyManager {
     pub fn kill(&self, id: Uuid) -> Result<(), AppError> {
         let kind = self
             .registry
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .routes
-            .get(&id)
-            .map(|entry| entry.kind)
+            .backend_kind(id)
             .unwrap_or(SessionBackendKind::LocalProcess);
         self.kill_for_kind(id, kind)
     }
@@ -732,11 +483,7 @@ impl PtyManager {
     ) {
         let kind = self
             .registry
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .routes
-            .get(&session_id)
-            .map(|entry| entry.kind)
+            .backend_kind(session_id)
             .unwrap_or(SessionBackendKind::LocalProcess);
         self.backend_for_kind(kind)
             .register_response_watcher(session_id, request_id, response_dir);
@@ -770,30 +517,18 @@ impl PtyManager {
         let manager_guard = manager
             .lock()
             .map_err(|_| AppError::PtyError("pty_manager_poisoned".to_string()))?;
-        let registry = manager_guard
-            .registry
-            .lock()
-            .map_err(|_| AppError::PtyError("route_registry_poisoned".to_string()))?;
-        let mut proofs = Vec::new();
-        proofs
-            .try_reserve_exact(session_ids.len())
-            .map_err(|_| AppError::PtyError("snapshot_route_capacity".to_string()))?;
-        for session_id in session_ids {
-            let proof = registry.routes.get(session_id).and_then(|entry| {
-                Some(PtySnapshotRouteProof {
-                    session_id: *session_id,
-                    route_generation: entry.generation,
-                    route_kind: entry.kind,
-                    route_registry: Arc::clone(&manager_guard.registry),
-                    route_lifecycle: Arc::clone(&entry.lifecycle_gate),
-                    backend: manager_guard.backend_for_kind(entry.kind),
-                    saved_cwd: entry.canonical_cwd_identity.clone()?,
-                    saved_replica: entry.verified_replica_anchor.clone(),
+        let proofs = manager_guard.registry.batch_snapshot_proofs(session_ids)?;
+        Ok(session_ids
+            .iter()
+            .zip(proofs)
+            .map(|(id, proof)| {
+                proof.map(|proof| PtySnapshotRouteProof {
+                    backend: manager_guard.backend_for_kind(proof.backend_kind()),
+                    proof,
+                    session_id: *id,
                 })
-            });
-            proofs.push(proof);
-        }
-        Ok(proofs)
+            })
+            .collect())
     }
 
     pub fn lock_route_for_write(

@@ -8,22 +8,18 @@
   },
   "moduleCycles": [
     {
-      "id": "7b3b4a60ae802414",
+      "id": "2bb61502cb40f4a6",
       "members": [
         "agentscommander_lib::api::message_store",
         "agentscommander_lib::co_managed",
         "agentscommander_lib::commands::pty",
         "agentscommander_lib::commands::session",
-        "agentscommander_lib::pty::backend",
         "agentscommander_lib::pty::container_backend",
         "agentscommander_lib::pty::git_watcher",
         "agentscommander_lib::pty::inject",
         "agentscommander_lib::pty::local_backend",
         "agentscommander_lib::pty::manager",
         "agentscommander_lib::pty::menu_guard",
-        "agentscommander_lib::pty::watchers",
-        "agentscommander_lib::pty::watchers::frame",
-        "agentscommander_lib::pty::watchers::history",
         "agentscommander_lib::session::manager",
         "agentscommander_lib::session::selection",
         "agentscommander_lib::telegram::bridge",
@@ -37,6 +33,13 @@
         "agentscommander_lib::commands::config::web_server",
         "agentscommander_lib::web",
         "agentscommander_lib::web::commands"
+      ]
+    },
+    {
+      "id": "174d5a49d4c3fa91",
+      "members": [
+        "agentscommander_lib::pty::backend",
+        "agentscommander_lib::pty::watchers"
       ]
     },
     {

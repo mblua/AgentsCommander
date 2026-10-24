@@ -2204,7 +2204,7 @@ agentscommander_lib::pty::backend -> agentscommander_lib::pty::container_credent
 agentscommander_lib::pty::backend -> agentscommander_lib::pty::container_repos
 agentscommander_lib::pty::backend -> agentscommander_lib::pty::context_scrape
 agentscommander_lib::pty::backend -> agentscommander_lib::pty::input_limits
-agentscommander_lib::pty::backend -> agentscommander_lib::pty::manager
+agentscommander_lib::pty::backend -> agentscommander_lib::pty::input_route
 agentscommander_lib::pty::backend -> agentscommander_lib::pty::output
 agentscommander_lib::pty::backend -> agentscommander_lib::pty::watchers
 agentscommander_lib::pty::backend -> agentscommander_lib::resource_monitor
@@ -2306,6 +2306,11 @@ agentscommander_lib::pty::inject -> agentscommander_lib::pty::manager
 agentscommander_lib::pty::inject -> agentscommander_lib::pty::menu_guard
 agentscommander_lib::pty::inject -> agentscommander_lib::session::manager
 agentscommander_lib::pty::inject -> agentscommander_lib::session::session
+agentscommander_lib::pty::input_route -> agentscommander_lib::config::settings
+agentscommander_lib::pty::input_route -> agentscommander_lib::errors
+agentscommander_lib::pty::input_route -> agentscommander_lib::path_identity
+agentscommander_lib::pty::input_route -> agentscommander_lib::pty::backend_kind
+agentscommander_lib::pty::input_route -> agentscommander_lib::pty::response_close
 agentscommander_lib::pty::job::tests -> agentscommander_lib::pty::job
 agentscommander_lib::pty::job::tests -> agentscommander_lib::pty::job::windows_impl
 agentscommander_lib::pty::job::windows_impl -> agentscommander_lib::pty::job
@@ -2340,7 +2345,6 @@ agentscommander_lib::pty::local_backend::liveness -> agentscommander_lib::pty::c
 agentscommander_lib::pty::local_backend::liveness -> agentscommander_lib::pty::local_backend
 agentscommander_lib::pty::local_backend::liveness -> agentscommander_lib::pty::output
 agentscommander_lib::pty::local_backend::liveness -> agentscommander_lib::pty::spawn_diagnostics
-agentscommander_lib::pty::manager -> agentscommander_lib::config::settings
 agentscommander_lib::pty::manager -> agentscommander_lib::config::teams
 agentscommander_lib::pty::manager -> agentscommander_lib::errors
 agentscommander_lib::pty::manager -> agentscommander_lib::path_identity
@@ -2351,6 +2355,7 @@ agentscommander_lib::pty::manager -> agentscommander_lib::pty::context_scrape
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::docker_runtime
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::git_watcher
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::idle_detector
+agentscommander_lib::pty::manager -> agentscommander_lib::pty::input_route
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::local_backend
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::output
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::output_senders
@@ -2363,6 +2368,7 @@ agentscommander_lib::pty::manager::route_proof -> agentscommander_lib::errors
 agentscommander_lib::pty::manager::route_proof -> agentscommander_lib::path_identity
 agentscommander_lib::pty::manager::route_proof -> agentscommander_lib::pty::backend
 agentscommander_lib::pty::manager::route_proof -> agentscommander_lib::pty::context_scrape
+agentscommander_lib::pty::manager::route_proof -> agentscommander_lib::pty::input_route
 agentscommander_lib::pty::manager::route_proof -> agentscommander_lib::pty::manager
 agentscommander_lib::pty::menu_guard -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::pty::menu_guard -> agentscommander_lib::config::settings
