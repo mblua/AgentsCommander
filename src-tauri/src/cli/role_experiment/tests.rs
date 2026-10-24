@@ -446,3 +446,28 @@ fn role_exp_room_dir_name_is_padded() {
         "room-100-role-exp-team"
     );
 }
+
+#[test]
+fn attempts_reader_preserves_empty_and_invalid_line_behavior() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("reader-fixture.jsonl");
+    std::fs::write(&path, "").expect("empty fixture");
+    assert!(storage::read_attempts_jsonl(&path)
+        .expect("empty attempts")
+        .is_empty());
+
+    let (_tmp, _loaded, _suite, _variants, _args, run_dir, _run_id, _report) = resume_fixture();
+    let fixture = std::fs::read_to_string(run_dir.join("attempts.jsonl")).expect("fixture");
+    let first = fixture.lines().next().expect("first attempt");
+    std::fs::write(&path, format!("{}\ninvalid\n", first)).expect("invalid fixture");
+    let errors = storage::read_attempts_jsonl(&path).expect_err("invalid line");
+    assert_eq!(errors[0].code, "run_artifact_unparseable");
+    assert_eq!(errors[0].line, Some(2));
+    assert!(errors[0]
+        .message
+        .starts_with("Attempt line 2 is invalid JSON: "));
+
+    std::fs::write(&path, format!("{}\n\n", first)).expect("blank line fixture");
+    let errors = storage::read_attempts_jsonl(&path).expect_err("blank line");
+    assert_eq!(errors[0].line, Some(2));
+}

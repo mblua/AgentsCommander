@@ -1,5 +1,6 @@
 use super::report::experiments_dir;
 use super::support::err;
+use super::support::err_at_line;
 use super::support::err_at_path;
 use super::support::variant_matrix_path;
 use super::validation::reject_link_or_reparse;
@@ -117,6 +118,28 @@ pub(super) fn write_json_new<T: Serialize>(path: &Path, value: &T) -> Result<(),
     })?;
     json.push('\n');
     write_new_file(path, json.as_bytes())
+}
+
+pub(super) fn read_attempts_jsonl(path: &Path) -> Result<Vec<AttemptArtifact>, Vec<CliError>> {
+    let content = fs::read_to_string(path).map_err(|e| {
+        vec![err_at_path(
+            "run_artifact_unparseable",
+            format!("Failed to read {}: {}", path.display(), e),
+            path,
+        )]
+    })?;
+    let mut attempts = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        attempts.push(serde_json::from_str(line).map_err(|e| {
+            vec![err_at_line(
+                "run_artifact_unparseable",
+                format!("Attempt line {} is invalid JSON: {}", idx + 1, e),
+                idx + 1,
+                None,
+            )]
+        })?);
+    }
+    Ok(attempts)
 }
 
 pub(super) fn write_attempts_jsonl_new(

@@ -1,11 +1,11 @@
 use super::report::build_attempts;
 use super::report::default_run_artifact_paths;
 use super::report::validate_report_artifacts;
+use super::storage::read_attempts_jsonl;
 use super::storage::read_json;
 use super::storage::validate_workgroup_under_ac_root;
 use super::storage::write_attempts_jsonl_replace;
 use super::support::err;
-use super::support::err_at_line;
 use super::support::err_at_path;
 use super::validation::reject_link_or_reparse;
 use super::AttemptArtifact;
@@ -367,28 +367,6 @@ pub(super) fn replica_root_for_attempt(
             Some(&attempt.variant),
         )])
     }
-}
-
-fn read_attempts_jsonl(path: &Path) -> Result<Vec<AttemptArtifact>, Vec<CliError>> {
-    let content = fs::read_to_string(path).map_err(|e| {
-        vec![err_at_path(
-            "run_artifact_unparseable",
-            format!("Failed to read {}: {}", path.display(), e),
-            path,
-        )]
-    })?;
-    let mut attempts = Vec::new();
-    for (idx, line) in content.lines().enumerate() {
-        attempts.push(serde_json::from_str(line).map_err(|e| {
-            vec![err_at_line(
-                "run_artifact_unparseable",
-                format!("Attempt line {} is invalid JSON: {}", idx + 1, e),
-                idx + 1,
-                None,
-            )]
-        })?);
-    }
-    Ok(attempts)
 }
 
 pub(super) fn reconcile_mutable_artifacts(
