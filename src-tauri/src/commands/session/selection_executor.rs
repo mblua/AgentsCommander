@@ -16,6 +16,10 @@ use crate::session::selection::{
 
 struct NativeLifecycleExecutor;
 
+#[expect(
+    dead_code,
+    reason = "P04 switches native dispatch to the execution port"
+)]
 struct NativeLifecycleLease {
     authority: Option<LifecycleEntryAuthority>,
     release_receipt: Arc<AtomicU8>,
@@ -32,6 +36,10 @@ impl Drop for NativeLifecycleLease {
     }
 }
 
+#[expect(
+    dead_code,
+    reason = "P04 switches native dispatch to the execution port"
+)]
 impl NativeLifecycleLease {
     fn wrap(authority: LifecycleEntryAuthority) -> LifecycleLease {
         let release_receipt = Arc::new(AtomicU8::new(0));

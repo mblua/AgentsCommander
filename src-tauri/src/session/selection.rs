@@ -36,6 +36,10 @@ use crate::web::broadcast::WsBroadcaster;
 use crate::DetachedSessionsState;
 
 /// Selection's lifecycle operations; transport remains on SelectionTransaction until later phases.
+#[expect(
+    dead_code,
+    reason = "P04 switches native dispatch to the execution port"
+)]
 pub(crate) trait LifecycleExecutor<R: Runtime>: Send + Sync {
     fn prepare<'a>(
         &'a self,
@@ -84,8 +88,16 @@ pub(crate) trait LifecycleExecutor<R: Runtime>: Send + Sync {
     ) -> LifecycleFuture<'a, ()>;
 }
 
+#[expect(
+    dead_code,
+    reason = "P04 switches native dispatch to the execution port"
+)]
 pub(crate) type LifecycleFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+#[expect(
+    dead_code,
+    reason = "P04 switches native dispatch to the execution port"
+)]
 pub(crate) enum LifecycleAdmission {
     Ready(LifecycleLease),
     Waiting,
@@ -93,6 +105,10 @@ pub(crate) enum LifecycleAdmission {
 }
 
 pub(crate) struct LifecycleExecutorState<R: Runtime> {
+    #[expect(
+        dead_code,
+        reason = "P04 switches native dispatch to the execution port"
+    )]
     executor: Arc<dyn LifecycleExecutor<R>>,
 }
 
@@ -101,12 +117,20 @@ impl<R: Runtime> LifecycleExecutorState<R> {
         Self { executor }
     }
 
+    #[expect(
+        dead_code,
+        reason = "P04 switches native dispatch to the execution port"
+    )]
     pub(crate) fn get(&self) -> &Arc<dyn LifecycleExecutor<R>> {
         &self.executor
     }
 }
 
 /// Non-Clone native sidecar, erased without retaining an executor or application handle.
+#[expect(
+    dead_code,
+    reason = "P04 switches native dispatch to the execution port"
+)]
 pub(crate) struct LifecycleLease {
     payload: Box<dyn Any + Send + Sync>,
     release_receipt: Arc<AtomicU8>,
@@ -118,6 +142,10 @@ impl fmt::Debug for LifecycleLease {
     }
 }
 
+#[expect(
+    dead_code,
+    reason = "P04 switches native dispatch to the execution port"
+)]
 impl LifecycleLease {
     pub(crate) fn new(payload: Box<dyn Any + Send + Sync>, release_receipt: Arc<AtomicU8>) -> Self {
         Self {
