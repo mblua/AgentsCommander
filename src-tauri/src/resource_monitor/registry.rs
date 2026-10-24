@@ -217,10 +217,6 @@ impl ResourceLaunchRegistration {
 }
 
 impl ResourceMonitorState {
-    pub fn new() -> Self {
-        Self::with_backend(Arc::new(super::windows::PlatformProcessTreeBackend::new()))
-    }
-
     pub fn with_backend(backend: Arc<dyn ProcessTreeBackend>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(ResourceMonitorInner {

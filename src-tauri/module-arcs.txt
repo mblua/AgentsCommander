@@ -2494,7 +2494,6 @@ agentscommander_lib::reader_demand -> agentscommander_lib::config::co_managed
 agentscommander_lib::reader_demand -> agentscommander_lib::config::settings
 agentscommander_lib::reader_demand -> agentscommander_lib::session::manager
 agentscommander_lib::resource_monitor::registry -> agentscommander_lib::resource_monitor::types
-agentscommander_lib::resource_monitor::registry -> agentscommander_lib::resource_monitor::windows
 agentscommander_lib::resource_monitor::registry::sampling -> agentscommander_lib::resource_monitor::registry
 agentscommander_lib::resource_monitor::registry::sampling -> agentscommander_lib::resource_monitor::types
 agentscommander_lib::resource_monitor::registry::snapshot -> agentscommander_lib::resource_monitor::registry

@@ -80,13 +80,6 @@
         "agentscommander_lib::pty::container_paths",
         "agentscommander_lib::pty::container_repos"
       ]
-    },
-    {
-      "id": "936898c11aa1c0f6",
-      "members": [
-        "agentscommander_lib::resource_monitor::registry",
-        "agentscommander_lib::resource_monitor::windows"
-      ]
     }
   ],
   "functionCycles": []
