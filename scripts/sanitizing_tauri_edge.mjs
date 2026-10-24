@@ -33,7 +33,7 @@ function measure(path, scan) {
   for (let i = 0; i < ts.length; i++) {
     const t = ts[i];
     if (t.text === '.' && ['emit','emit_to'].includes(ts[i + 1]?.name) && ts[i + 2]?.text === '(') record('emit_files',t);
-    if (t.text === '.' && ts[i + 1]?.name === 'state' && ts[i + 2]?.text === '::' && ts[i + 3]?.text === '<') record('state_files',t);
+    if (t.text === '.' && ['state','try_state'].includes(ts[i + 1]?.name) && ts[i + 2]?.text === '::' && ts[i + 3]?.text === '<') record('state_files',t);
     if (t.kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' && ts[i - 2]?.kind === 'ident')) continue;
     const r = qualified(scan,ts,i), value = r.path ?? (r.ambiguous ? r.raw : '');
     if (value.startsWith('tauri::') || value === 'tauri' || /(?:^|::)AppHandle$/.test(value)) {

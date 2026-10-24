@@ -24,7 +24,7 @@
 //! makes is written `super::` or `super::super::`; it contains no `crate::` at
 //! all. A guard that asserted only the `crate::`-anchored set would therefore
 //! observe **nothing** in this module and pass everything, which is exactly the
-//! failure `project_settings_layering.rs` records against itself as entry 13 of
+//! failure `project_settings_layering/main.rs` records against itself as entry 13 of
 //! its own uncovered list and issue #1268 tracks: adding
 //! `use crate::session::manager::SessionManager;` to that guarded module moved
 //! the knot 88 to 89 and `sccSize` 1 to 89 with that file green throughout,
@@ -167,7 +167,7 @@
 //!      `required_rules` would leave the pair
 //!      `("src/config/instance_gitignore.rs", "ROOT_AGENT_DIR_NAME")` standing
 //!      and the equality green. Unlike the equivalent entry in
-//!      `project_settings_layering.rs`, **that deletion can be made to compile**:
+//!      `project_settings_layering/main.rs`, **that deletion can be made to compile**:
 //!      hard-coding the directory name in `required_rules` does it. The
 //!      shrinking-set argument is correspondingly weaker for this one pair.
 //!
