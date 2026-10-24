@@ -927,6 +927,7 @@ agentscommander_lib::commands::quit_gate -> agentscommander_lib::quit_gate
 agentscommander_lib::commands::repos -> agentscommander_lib::config::agent_path
 agentscommander_lib::commands::repos -> agentscommander_lib::config::settings
 agentscommander_lib::commands::repos -> agentscommander_lib::pty::credentials
+agentscommander_lib::commands::repos -> agentscommander_lib::repos
 agentscommander_lib::commands::resource_monitor -> agentscommander_lib
 agentscommander_lib::commands::resource_monitor -> agentscommander_lib::config::settings
 agentscommander_lib::commands::resource_monitor -> agentscommander_lib::pty::manager
@@ -1412,6 +1413,7 @@ agentscommander_lib::config::session_context -> agentscommander_lib::config::sha
 agentscommander_lib::config::session_context -> agentscommander_lib::phone::messaging
 agentscommander_lib::config::session_context -> agentscommander_lib::pty::container_repos
 agentscommander_lib::config::session_context -> agentscommander_lib::pty::credentials
+agentscommander_lib::config::session_context -> agentscommander_lib::repos
 agentscommander_lib::config::session_context::agent_template -> agentscommander_lib::config::root_agent
 agentscommander_lib::config::session_context::agent_template -> agentscommander_lib::config::seed_manifest
 agentscommander_lib::config::session_context::agent_template -> agentscommander_lib::config::session_context

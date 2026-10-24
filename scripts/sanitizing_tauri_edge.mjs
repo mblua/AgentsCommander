@@ -14,7 +14,19 @@ function signals(scan, item) {
   return item.attributes.flatMap(a => a.signals.map(meta => ({ ...resolveAlias(scan,meta.name,a.scope), meta, line: a.line })));
 }
 export function runGate(snapshot) {
-  return runMeasuredGate(snapshot, { gate, rules, newFileRules, inUniverse, measure, extraChecks, recognizeMoves: true });
+  const measureFile = (path, scan) => {
+    const m = measure(path, scan);
+    // Production debt stays comparable. New core files must also be Tauri-free
+    // in test-only code, using the same alias-aware analysis as production.
+    if (!snapshot.baseTree.has(path)) {
+      const testTokens = scan.tokens.filter(t => scan.isTestOffset(t.start));
+      m.testTauri = measure(path, { ...scan, productionTokens: testTokens }).sites.tauri_files;
+    }
+    return m;
+  };
+  return runMeasuredGate(snapshot, {
+    gate, rules, newFileRules, inUniverse, measure: measureFile, extraChecks, recognizeMoves: true,
+  });
 }
 
 const gate = '06';
@@ -22,6 +34,9 @@ const rules = ['tauri_files', 'emit_files', 'state_files', 'command_files', 'dis
 const newFileRules = ['tauri_files'];
 const inUniverse = p => /^src-tauri\/src\/.*\.rs$/.test(p);
 function extraChecks(path, m, before, violation, moved) {
+  if (!before && m.testTauri?.length)
+    violation('tauri_files', path, m.testTauri[0].line, 0, m.testTauri.length,
+      'new core file must be Tauri-free, including test-only code');
   for (const [id, site] of m.commands) if (!before?.commandIds.has(id) && !moved.has(site))
     violation('new_disk_command', path, site.line, 0, 1, `new command with disk access: ${id}`);
 }

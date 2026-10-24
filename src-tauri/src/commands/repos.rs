@@ -3,6 +3,8 @@ use std::path::Path;
 use tauri::State;
 
 use crate::config::settings::SettingsState;
+pub(crate) use crate::repos::derive_repo_name;
+use crate::repos::strip_userinfo;
 
 /// Agent detection: label + list of possible markers (files or dirs)
 /// An agent is detected if ANY of its markers exist in the repo.
@@ -29,21 +31,6 @@ fn detect_agents(repo_path: &Path) -> Vec<String> {
         .filter(|(_, markers)| markers.iter().any(|m| repo_path.join(m).exists()))
         .map(|(label, _)| label.to_string())
         .collect()
-}
-
-/// Derive extended repo name as "parent/repo" from an absolute path.
-/// Always uses forward slash as separator regardless of OS.
-pub fn derive_repo_name(path: &Path) -> Option<String> {
-    let file_name = path.file_name().and_then(|n| n.to_str())?;
-    let name = match path
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-    {
-        Some(parent) => format!("{}/{}", parent, file_name),
-        None => file_name.to_string(),
-    };
-    Some(name)
 }
 
 /// Add a repo to results if it matches the query and hasn't been seen yet
@@ -147,36 +134,6 @@ pub async fn search_repos(
 /// the git sweeper's `detect_status_with_timeout` (src-tauri/src/pty/git_watcher.rs).
 /// The context menu must never wait on a stalled git.
 const GIT_REMOTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// #943 - drop `user[:password]@` from a scheme-form remote URL.
-///
-/// `git remote get-url` returns whatever `.git/config` holds, and a repo cloned
-/// with a token carries `https://<user>:<ghp_...>@github.com/o/r.git`. The caller
-/// only needs host + owner + repo, so the secret is destroyed here and never
-/// crosses the IPC boundary into the webview (nor into devtools, nor into any
-/// future console log). scp-like remotes (`git@github.com:o/r.git`) are returned
-/// untouched: that `git` is an ssh user name, not a credential, and the frontend
-/// parser ignores it.
-fn strip_userinfo(remote: &str) -> String {
-    let Some(scheme_end) = remote.find("://") else {
-        return remote.to_string();
-    };
-    let authority_start = scheme_end + 3;
-    let authority_end = remote[authority_start..]
-        .find('/')
-        .map(|i| authority_start + i)
-        .unwrap_or(remote.len());
-    let authority = &remote[authority_start..authority_end];
-    match authority.rfind('@') {
-        Some(at) => format!(
-            "{}{}{}",
-            &remote[..authority_start],
-            &authority[at + 1..],
-            &remote[authority_end..]
-        ),
-        None => remote.to_string(),
-    }
-}
 
 /// #943 - `origin`'s URL for a repo working dir, userinfo stripped, or `None`.
 ///
