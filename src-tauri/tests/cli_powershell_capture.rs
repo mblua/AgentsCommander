@@ -581,7 +581,7 @@ fn issue_1867_isolation_source_contract() {
         ),
         (
             "cli_role_experiment.rs",
-            include_str!("cli_role_experiment.rs"),
+            include_str!("cli_role_experiment/main.rs"),
             2,
             &[("run", 1), ("run_fake", 1)],
             &[],
