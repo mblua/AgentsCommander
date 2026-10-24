@@ -466,7 +466,10 @@ fn issue_1867_isolation_source_contract() {
         ),
         (
             "cli_behavior_contract.rs",
-            include_str!("cli_behavior_contract.rs"),
+            concat!(
+                include_str!("cli_behavior_contract/main.rs"),
+                include_str!("cli_behavior_contract/public_commands.rs"),
+            ),
             3,
             &[("run", 1), ("run_task_title", 1), ("invoke", 1)],
             &[],
