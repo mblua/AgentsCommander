@@ -1,7 +1,7 @@
-pub mod registry;
-pub mod types;
-pub mod watchdog;
-pub mod windows;
+pub(crate) mod registry;
+pub(crate) mod types;
+pub(crate) mod watchdog;
+pub(crate) mod windows;
 
 pub use registry::{
     AgentLaunchPermit, ProcessTreeBackend, ResourceLaunchRegistration, ResourceLogicalAgentSlot,
