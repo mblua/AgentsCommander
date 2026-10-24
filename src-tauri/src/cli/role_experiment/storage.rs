@@ -120,7 +120,25 @@ pub(super) fn write_json_new<T: Serialize>(path: &Path, value: &T) -> Result<(),
     write_new_file(path, json.as_bytes())
 }
 
-pub(super) fn read_attempts_jsonl(path: &Path) -> Result<Vec<AttemptArtifact>, Vec<CliError>> {
+const ATTEMPTS_FILE_NAME: &str = "attempts.jsonl";
+
+pub(super) fn attempts_name() -> String {
+    ATTEMPTS_FILE_NAME.to_string()
+}
+
+pub(super) fn attempts_path(run_dir: &Path) -> PathBuf {
+    run_dir.join(ATTEMPTS_FILE_NAME)
+}
+
+pub(super) fn attempts_path_display(run_dir: &Path) -> String {
+    attempts_path(run_dir).to_string_lossy().to_string()
+}
+
+pub(super) fn load_attempts(run_dir: &Path) -> Result<Vec<AttemptArtifact>, Vec<CliError>> {
+    read_attempts_jsonl(&attempts_path(run_dir))
+}
+
+fn read_attempts_jsonl(path: &Path) -> Result<Vec<AttemptArtifact>, Vec<CliError>> {
     let content = fs::read_to_string(path).map_err(|e| {
         vec![err_at_path(
             "run_artifact_unparseable",
@@ -142,10 +160,11 @@ pub(super) fn read_attempts_jsonl(path: &Path) -> Result<Vec<AttemptArtifact>, V
     Ok(attempts)
 }
 
-pub(super) fn write_attempts_jsonl_new(
-    path: &Path,
+pub(super) fn create_attempts(
+    run_dir: &Path,
     attempts: &[AttemptArtifact],
 ) -> Result<(), Vec<CliError>> {
+    let path = &attempts_path(run_dir);
     let mut content = String::new();
     for attempt in attempts {
         let line = serde_json::to_string(attempt).map_err(|e| {
@@ -165,10 +184,11 @@ pub(super) fn write_attempts_jsonl_new(
     write_new_file(path, content.as_bytes())
 }
 
-pub(super) fn write_attempts_jsonl_replace(
-    path: &Path,
+pub(super) fn replace_attempts(
+    run_dir: &Path,
     attempts: &[AttemptArtifact],
 ) -> Result<(), Vec<CliError>> {
+    let path = &attempts_path(run_dir);
     let mut content = String::new();
     for attempt in attempts {
         let line = serde_json::to_string(attempt).map_err(|e| {

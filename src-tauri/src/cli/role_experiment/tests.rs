@@ -1,3 +1,4 @@
+use super::storage::{attempts_name, attempts_path, attempts_path_display};
 use super::*;
 
 fn loaded_fixture(source_agent: &str) -> (tempfile::TempDir, LoadedExperiment) {
@@ -141,7 +142,7 @@ fn resume_fixture() -> (
     let report = build_report_artifact(
         &run_id,
         &loaded.experiment.name,
-        &run_dir,
+        report::report_artifact_paths(&run_dir, attempts_path_display(&run_dir)),
         "2026-06-01T18:15:00Z",
         &suite.prompts,
         &variants,
@@ -177,7 +178,7 @@ fn resume_fixture() -> (
             })
             .collect(),
         attempt_count: attempts.len(),
-        artifacts: default_run_artifact_paths(),
+        artifacts: default_run_artifact_paths(attempts_name()),
         execution: Some(RunExecutionArtifact {
             provider: "auto".to_string(),
             attempt_timeout_secs: 900,
@@ -450,17 +451,17 @@ fn role_exp_room_dir_name_is_padded() {
 #[test]
 fn attempts_reader_preserves_empty_and_invalid_line_behavior() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let path = tmp.path().join("reader-fixture.jsonl");
+    let path = attempts_path(tmp.path());
     std::fs::write(&path, "").expect("empty fixture");
-    assert!(storage::read_attempts_jsonl(&path)
+    assert!(storage::load_attempts(tmp.path())
         .expect("empty attempts")
         .is_empty());
 
     let (_tmp, _loaded, _suite, _variants, _args, run_dir, _run_id, _report) = resume_fixture();
-    let fixture = std::fs::read_to_string(run_dir.join("attempts.jsonl")).expect("fixture");
+    let fixture = std::fs::read_to_string(attempts_path(&run_dir)).expect("fixture");
     let first = fixture.lines().next().expect("first attempt");
     std::fs::write(&path, format!("{}\ninvalid\n", first)).expect("invalid fixture");
-    let errors = storage::read_attempts_jsonl(&path).expect_err("invalid line");
+    let errors = storage::load_attempts(tmp.path()).expect_err("invalid line");
     assert_eq!(errors[0].code, "run_artifact_unparseable");
     assert_eq!(errors[0].line, Some(2));
     assert!(errors[0]
@@ -468,6 +469,55 @@ fn attempts_reader_preserves_empty_and_invalid_line_behavior() {
         .starts_with("Attempt line 2 is invalid JSON: "));
 
     std::fs::write(&path, format!("{}\n\n", first)).expect("blank line fixture");
-    let errors = storage::read_attempts_jsonl(&path).expect_err("blank line");
+    let errors = storage::load_attempts(tmp.path()).expect_err("blank line");
     assert_eq!(errors[0].line, Some(2));
+}
+
+#[test]
+fn attempts_storage_preserves_bytes_order_and_create_new() {
+    let (_tmp, _loaded, _suite, _variants, _args, run_dir, _run_id, _report) = resume_fixture();
+    let fixture = std::fs::read_to_string(attempts_path(&run_dir)).expect("fixture");
+    let attempts: Vec<AttemptArtifact> = fixture
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("fixture attempt"))
+        .collect();
+    let target = tempfile::tempdir().expect("target");
+    storage::create_attempts(target.path(), &attempts).expect("create");
+    let expected = format!("{}\n", fixture);
+    assert_eq!(
+        std::fs::read_to_string(attempts_path(target.path())).unwrap(),
+        expected
+    );
+    let errors = storage::create_attempts(target.path(), &[]).expect_err("already exists");
+    assert_eq!(errors[0].code, "run_artifact_write_failed");
+    assert_eq!(
+        std::fs::read_to_string(attempts_path(target.path())).unwrap(),
+        expected
+    );
+    let loaded = storage::load_attempts(target.path()).expect("read");
+    assert_eq!(
+        serde_json::to_value(loaded).unwrap(),
+        serde_json::to_value(&attempts).unwrap()
+    );
+    storage::replace_attempts(target.path(), &attempts[..1]).expect("replace");
+    assert_eq!(
+        std::fs::read_to_string(attempts_path(target.path())).unwrap(),
+        format!("{}\n", fixture.lines().next().unwrap())
+    );
+}
+
+#[test]
+fn resume_checks_run_presence_before_invalid_attempts() {
+    let (_tmp, loaded, suite, variants, args, run_dir, run_id, _report) = resume_fixture();
+    std::fs::remove_file(run_dir.join("run.json")).expect("remove run");
+    std::fs::write(attempts_path(&run_dir), "invalid").expect("invalid attempts");
+    let errors = resume::load_and_validate_resume_artifacts(
+        &args, &loaded, &suite, &run_id, &run_dir, &variants,
+    )
+    .expect_err("missing run precedes parsing attempts");
+    assert_eq!(errors[0].code, "run_artifact_missing");
+    assert_eq!(
+        errors[0].path,
+        Some(run_dir.join("run.json").to_string_lossy().to_string())
+    );
 }
