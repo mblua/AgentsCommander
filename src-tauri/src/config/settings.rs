@@ -219,11 +219,11 @@ use save::{
     SETTINGS_SAVE_DIAGNOSTIC_CAPTURE,
 };
 use save::{
-    io_error_kind_as_str, json_error_category_as_str, project_lists_from_projection,
-    read_disk_object_for_write_typed, report_settings_save_error, save_settings_value_with_startup,
-    serialize_settings_component, write_value_atomic, write_value_atomic_labeled, SettingsFileLock,
-    SettingsSaveCause, SettingsSaveError, SettingsSaveLegacyOutward, SettingsSaveReason,
-    SettingsSaveReportSurface, SettingsSaveStage, SAVE_OP_ID,
+    io_error_kind_as_str, json_error_category_as_str, next_settings_save_op_id,
+    project_lists_from_projection, read_disk_object_for_write_typed, report_settings_save_error,
+    save_settings_value_with_startup, serialize_settings_component, write_value_atomic,
+    write_value_atomic_labeled, SettingsFileLock, SettingsSaveCause, SettingsSaveError,
+    SettingsSaveLegacyOutward, SettingsSaveReason, SettingsSaveReportSurface, SettingsSaveStage,
 };
 #[cfg(test)]
 pub(crate) use save::{

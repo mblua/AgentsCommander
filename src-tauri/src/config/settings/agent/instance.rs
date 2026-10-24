@@ -5,11 +5,10 @@ mod overlay;
 use super::super::project_atomic_checkpoint;
 use super::super::replace_settings_file_atomic;
 use super::super::{
-    read_disk_object_for_write_typed, refresh_physical_pair_id_hashes,
+    next_settings_save_op_id, read_disk_object_for_write_typed, refresh_physical_pair_id_hashes,
     serialize_settings_component, validate_physical_identity_delta, AgentsInstanceRead,
     AppSettings, CodingAgentProfilesConfig, ProjectWriteMode, SettingsFileLock, SettingsSaveError,
     SettingsSaveLegacyOutward, SettingsSaveReason, SettingsSaveStage, OVERLAY_KEY_AGENTS,
-    SAVE_OP_ID,
 };
 use super::{
     duplicate_profile_document, registered_profile_raw_gate, registered_profiles_for_read,
@@ -38,7 +37,6 @@ pub(crate) use overlay::{
 };
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 
 /// #2716 (B3) - the two top-level groups that live in `agents.30.instance.no-git.json`
 /// instead of the settings file. Serde names, so the file reuses the settings shape.
@@ -198,7 +196,7 @@ pub(crate) fn write_agents_instance_file(
             SettingsSaveLegacyOutward::SettingsSaveFailed,
         )
     })?;
-    let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
+    let op_id = next_settings_save_op_id();
     let tmp_path = path.with_file_name(format!(
         "{AGENTS_INSTANCE_FILE_NAME}.{}.{op_id}.tmp",
         std::process::id()

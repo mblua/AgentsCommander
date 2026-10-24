@@ -65,7 +65,11 @@ pub(crate) use value::{
 /// from any leftover temp written by a prior crashed run. Mirrors
 /// `sessions_persistence::SAVE_OP_ID` (sessions_persistence.rs:47); a separate
 /// counter so the two can be reasoned about independently in diagnostics.
-pub(crate) static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
+static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn next_settings_save_op_id() -> u64 {
+    SAVE_OP_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Save unrelated settings under the shared settings lock. Migration completes
 /// first; afterward the sidecar bytes are preserved exactly and all six project
@@ -201,7 +205,7 @@ pub(crate) fn write_value_atomic_labeled(
         ));
     }
 
-    let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
+    let op_id = next_settings_save_op_id();
     let pid = std::process::id();
     // Settings keep their existing instance-qualified temp prefix, including
     // callers supplying a fixture path. The fixed sidecar uses its own name.
