@@ -175,6 +175,10 @@ export function applyAllowlist(result, entries) {
     warnings: diagnostics.filter(d => d.status === 'WARN').length, diagnostics };
 }
 export function isMain(url) { return !!process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(url); }
+export function formatWarning(d) {
+  const label = d.rule === 'stale_allowlist' ? 'stale allowlist entry' : 'scan ambiguity';
+  return `WARN ${label}: gate ${d.gate} ${d.path} (${d.reason})`;
+}
 export async function gateCli(runGate, argv = process.argv.slice(2)) {
   try {
     const options = parseArgs(argv);
@@ -184,7 +188,7 @@ export async function gateCli(runGate, argv = process.argv.slice(2)) {
     const result = applyAllowlist(await runGate(snapshot), entries);
     console.log(JSON.stringify(result, null, 2));
     for (const d of result.diagnostics ?? [])
-      if (d.status === 'WARN') console.error(`WARN stale allowlist entry: gate ${d.gate} ${d.path} (${d.reason})`);
+      if (d.status === 'WARN') console.error(formatWarning(d));
     if (result.status !== 'ERROR') console.error(`gate ${result.gate}: ${result.status}, ACCEPTED ${result.accepted} finding(s) from ${ALLOWLIST_FILE}`);
     return result.exit;
   } catch (e) { console.error(`ERROR ${e.message}`); return e.exit ?? 3; }

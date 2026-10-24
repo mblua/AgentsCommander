@@ -610,8 +610,6 @@ fn commit_automatic(
     let pre = EffectPreconditions {
         session_alive: true,
         session_id: record.session_id.clone(),
-        anchor: "agent".to_owned(),
-        provider: CaptureProvider::Claude,
         unique_live_session_for_cwd: true,
         no_pending_user_input: true,
         effective_ready: true,

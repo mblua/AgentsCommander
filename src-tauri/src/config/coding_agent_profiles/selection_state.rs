@@ -164,13 +164,7 @@ pub enum ReplicaSelectionState {
 }
 
 impl ReplicaSelectionState {
-    pub fn identity(&self) -> Option<&str> {
-        match self {
-            Self::Unlocked { identity, .. } | Self::Locked { identity, .. } => Some(identity),
-            Self::Invalid { .. } => None,
-        }
-    }
-
+    #[cfg(test)]
     pub fn pair(&self) -> Option<&ReplicaSelectionPair> {
         match self {
             Self::Unlocked { pair, .. } => pair.as_ref(),
@@ -179,6 +173,7 @@ impl ReplicaSelectionState {
         }
     }
 
+    #[cfg(test)]
     pub fn is_locked(&self) -> bool {
         matches!(self, Self::Locked { .. })
     }

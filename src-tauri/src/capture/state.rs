@@ -17,7 +17,9 @@
 //!   return `PreconditionsStale` and the caller's bounded retry would turn the
 //!   feature into a silent no-op behind a plausible-looking reason.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(test)]
+use std::collections::HashSet;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
@@ -27,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::capture::key::{
     classify_observation, extend_observation, ConsumptionKey, Cut, FileObservation,
 };
-use crate::capture::record::{CaptureProvider, CapturedRecord, RecordOrigin};
+use crate::capture::record::{CapturedRecord, RecordOrigin};
 use crate::capture::sink::CaptureSlot;
 use crate::config::co_managed::{co_managed_dir, lock_path};
 
@@ -167,8 +169,6 @@ pub enum EffectKind {
 pub struct EffectPreconditions {
     pub session_alive: bool,
     pub session_id: String,
-    pub anchor: String,
-    pub provider: CaptureProvider,
     pub unique_live_session_for_cwd: bool,
     pub no_pending_user_input: bool,
     pub effective_ready: bool,
@@ -466,6 +466,7 @@ pub fn observe(room_root: &Path, path: &Path, observation: FileObservation) -> u
 }
 
 /// The current epoch for `path`, without recording an observation.
+#[cfg(test)]
 pub fn epoch_of(room_root: &Path, path: &Path) -> u64 {
     let path = crate::capture::key::normalise_path(path);
     with_room(room_root, |room| {
@@ -475,6 +476,7 @@ pub fn epoch_of(room_root: &Path, path: &Path) -> u64 {
 
 /// `consumed_through` for `path`. `None` means "nothing consumed", so a record
 /// starting at offset 0 **is** acted on.
+#[cfg(test)]
 pub fn watermark(room_root: &Path, path: &Path) -> Option<u64> {
     let path = crate::capture::key::normalise_path(path);
     with_room(room_root, |room| room.watermarks.get(&path).copied())
@@ -485,6 +487,7 @@ pub fn watermark(room_root: &Path, path: &Path) -> Option<u64> {
 /// * start > watermark: new, act.
 /// * start <= watermark and in the recent set: just consumed by this run.
 /// * start <= watermark and not in the recent set: consumed and pruned, abstain.
+#[cfg(test)]
 pub fn is_actionable(
     room_root: &Path,
     session_id: &str,
@@ -504,6 +507,7 @@ pub fn is_actionable(
 }
 
 /// Drop the state of paths that no longer exist. Only those are pruned.
+#[cfg(test)]
 pub fn prune_missing_paths(room_root: &Path) {
     with_room(room_root, |room| {
         let gone: Vec<PathBuf> = room
@@ -525,6 +529,7 @@ pub fn prune_missing_paths(room_root: &Path) {
 
 /// Record the cut for a demand raised over an already-running reader, under the
 /// same critical section as the demand, and mirror it onto `slot`.
+#[cfg(test)]
 pub fn register_cut(room_root: &Path, slot: &CaptureSlot, cut: Cut) {
     with_room(room_root, |room| {
         room.cut = Some(cut.clone());
@@ -533,6 +538,7 @@ pub fn register_cut(room_root: &Path, slot: &CaptureSlot, cut: Cut) {
     slot.set_cut(cut);
 }
 
+#[cfg(test)]
 pub fn cut(room_root: &Path) -> Option<Cut> {
     with_room(room_root, |room| room.cut.clone())
 }
@@ -541,6 +547,7 @@ pub fn cut(room_root: &Path) -> Option<Cut> {
 // Budget
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 pub fn budget(room_root: &Path) -> u32 {
     with_room(room_root, |room| room.budget())
 }

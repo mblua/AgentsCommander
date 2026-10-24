@@ -37,7 +37,8 @@ pub fn reject_if_root(from: &str, to: &str) -> Result<(), ApiError> {
 /// it inside the sender's `<workgroup>/messaging/` on the HOST (canonicalized-
 /// parent confinement), and format the pointer notification. The container path
 /// is never embedded because the CLI helper canonicalizes host-side.
-pub fn build_send_body(bound_root: &str, basename: &str, from: &str) -> Result<String, ApiError> {
+#[cfg(test)]
+fn build_send_body(bound_root: &str, basename: &str, from: &str) -> Result<String, ApiError> {
     let abs = resolve_send_file_path(bound_root, basename)?;
 
     // UNC-strip at the single emission site, mirroring cli/send.rs.

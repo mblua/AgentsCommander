@@ -6,6 +6,7 @@ pub enum ContainerEnvClass {
     Opaque,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContainerEnvValidationRegime {
     StrictAbsolutePath,
@@ -166,6 +167,7 @@ pub fn canonical_host_path_env_key(key: &str) -> Option<&'static str> {
         .find(|candidate| normalize_env_key_for_platform(candidate) == normalized)
 }
 
+#[cfg(test)]
 pub fn host_path_env_validation_regime(key: &str) -> Option<ContainerEnvValidationRegime> {
     canonical_host_path_env_key(key).map(|canonical| {
         if canonical == CODEX_HOME_KEY {

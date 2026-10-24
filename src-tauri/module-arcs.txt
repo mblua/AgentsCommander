@@ -1160,7 +1160,6 @@ agentscommander_lib::commands::window -> agentscommander_lib::session::manager
 agentscommander_lib::commands::window -> agentscommander_lib::session::selection
 agentscommander_lib::commands::window -> agentscommander_lib::session::session
 agentscommander_lib::config::ac_root -> agentscommander_lib::config::entity_prefix
-agentscommander_lib::config::activity_log -> agentscommander_lib::config
 agentscommander_lib::config::activity_log -> agentscommander_lib::config::daemon_pid
 agentscommander_lib::config::activity_log -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::activity_log -> agentscommander_lib::session::profile

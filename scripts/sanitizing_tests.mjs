@@ -482,7 +482,8 @@ test('08 static mutation, state wrappers/aliases/multiline and thread_local each
   const p=rustRoot+'old.rs',q=rustRoot+'new.rs',bad='static X: Mutex<u8> = init();';
   assert.equal(globalsGate(trees({[p]:bad},{[p]:''})).exit,0);
   control(globalsGate,'globals','old.rs',bad,bad+'static Y: OnceLock<X> = init();');
-  assert.equal(globalsGate(trees({[p]:bad},{[q]:bad})).exit,1);
+  assert.equal(globalsGate(trees({[p]:bad},{[q]:bad})).exit,0);
+  assert.equal(globalsGate(trees({[p]:bad},{[q]:bad.replace('X:', 'Y:')})).exit,1);
   assert.equal(globalsGate(trees({}, {[p]:'static N: usize = 0; static S: &str = "x";'})).exit,0);
 });
 const regexImports='use std::sync::{LazyLock,OnceLock}; use regex::Regex; ';
@@ -549,12 +550,14 @@ test('P02 production predicates preserve following code; comments/strings and te
     for(const p of ['tests.rs','x_tests.rs','tests/a.rs']) assert.equal(gate(trees({}, {[rustRoot+p]:`fn f() { ${bad} }`})).exit,0);
   }
 });
-test('09 compensated new launch/env read files fail; unchanged/down debt passes independently', () => {
+test('09 moved occurrences pass; compensated new code and copies fail', () => {
   for(const [rule,code] of [['launch_files','Command::new("x");'],['env_read_files','env::var("x");']]) {
     const p=rustRoot+'old.rs',q=rustRoot+'new.rs',before=`fn f() { ${code} }`;
     assert.equal(processGate(trees({[p]:before},{[p]:''})).exit,0);
     const r=processGate(trees({[p]:before},{[q]:before}));
-    assert.equal(r.exit,1);assert.ok(r.diagnostics.some(d=>d.rule===rule));
+    assert.equal(r.exit,0,JSON.stringify(r));
+    const changed=processGate(trees({[p]:before},{[q]:before.replace('fn f()', 'fn fresh()')}));
+    assert.equal(changed.exit,1); assert.ok(changed.diagnostics.some(d=>d.rule===rule));
     const up=processGate(trees({[p]:before},{[p]:before,[q]:before}));
     assert.equal(up.exit,1); assert.ok(up.diagnostics.some(d=>d.rule===rule));
   }
@@ -660,4 +663,95 @@ test('allowlist: schema refuses malformed and duplicate entries', () => {
     doc([{ ...allow('08', 'globals', 'a.rs'), issue: 'x' }]), doc([{ ...allow('08', 'globals', 'a.rs'), hash: 'abc' }]),
     doc([allow('cog', 'new', 'a.rs')]), doc([allow('08', 'globals', 'a.rs'), allow('08', 'globals', 'a.rs')])])
     assert.throws(() => parseAllowlist(bad));
+});
+
+// Batch 7: occurrence totals are invariant under splits, with one-use transfer credit.
+test('06/08/09 splits preserve debt; extra occurrences in existing/new files fail', () => {
+  const p=rustRoot+'old.rs', q=rustRoot+'new.rs', r=rustRoot+'copy.rs';
+  for (const [gate,rule,a,b,extra] of [
+    [edgeGate,'tauri_files','fn a(x: tauri::AppHandle) {}','fn b(x: tauri::AppHandle) {}','fn c(x: tauri::AppHandle) {}'],
+    [edgeGate,'emit_files','fn a(x: X) { x.emit("a",0); }','fn b(x: X) { x.emit_to("b",0); }','fn c(x: X) { x.emit("c",0); }'],
+    [edgeGate,'state_files','fn a(x: X) { x.state::<X>(); }','fn b(x: X) { x.state::<X>(); }','fn c(x: X) { x.state::<X>(); }'],
+    [edgeGate,'command_files','#[tauri::command] fn a() {}','#[tauri::command] fn b() {}','#[tauri::command] fn c() {}'],
+    [globalsGate,'globals','static A: Mutex<u8> = init();','static B: Mutex<u8> = init();','static C: Mutex<u8> = init();'],
+    [processGate,'launch_files','fn a() { Command::new("a"); }','fn b() { Command::new("b"); }','fn c() { Command::new("c"); }'],
+    [processGate,'env_read_files','fn a() { env::var("a"); }','fn b() { env::var_os("b"); }','fn c() { env::var("c"); }'],
+  ]) {
+    const base={[p]:a+'\n'+b};
+    const split=gate(trees(base,{[p]:a,[q]:b}));
+    assert.equal(split.exit,0,JSON.stringify(split));
+    assert.equal(split.totals[0][rule],2); assert.equal(split.totals[1][rule],2);
+    for (const head of [{[p]:a+extra,[q]:b},{[p]:a,[q]:b+extra},{[p]:a,[q]:b,[r]:b}]) {
+      const bad=gate(trees(base,head)); assert.equal(bad.exit,1,JSON.stringify(bad));
+      assert.ok(bad.diagnostics.some(d=>d.rule===rule && d.status==='FAIL'));
+    }
+    const compensated=gate(trees(base,{[p]:a,[q]:extra}));
+    // Strict new-file rules require an actual match, even with equal totals.
+    if (['tauri_files','globals','launch_files','env_read_files'].includes(rule))
+      assert.equal(compensated.exit,1,JSON.stringify(compensated));
+  }
+});
+test('06 disk commands may move unchanged, but new identities/copies still fail', () => {
+  const p=rustRoot+'commands.rs',q=rustRoot+'commands/disk.rs';
+  const a='#[tauri::command] fn a() { fs::read("a"); }', b='#[tauri::command] fn b() { fs::read("b"); }';
+  const base={[p]:a+b};
+  assert.equal(edgeGate(trees(base,{[p]:a,[q]:b})).exit,0);
+  for (const head of [{[p]:a,[q]:b.replace('fn b()', 'fn fresh()')},{[p]:a+b,[q]:b}])
+    assert.equal(edgeGate(trees(base,head)).exit,1);
+});
+test('transfer matching reserves retained debt before spending removed occurrences', () => {
+  const p=rustRoot+'a.rs',q=rustRoot+'b.rs',r=rustRoot+'c.rs',code='static A: Mutex<u8> = init();';
+  const result=globalsGate(trees({[p]:code,[q]:code},{[r]:code,[q]:code}));
+  assert.equal(result.exit,0,JSON.stringify(result));
+  assert.equal(globalsGate(trees({[p]:code,[q]:code},{[r]:code+code,[q]:code})).exit,1);
+});
+test('moved aliases require matching bindings and production ownership', () => {
+  const p=rustRoot+'a.rs',q=rustRoot+'b.rs',code='fn f(){ C::new("a"); }';
+  const imports='use std::process::Command as C;';
+  assert.equal(processGate(trees({[p]:imports+code},{[q]:imports+'\n// moved\n'+code})).exit,0);
+  assert.equal(processGate(trees({[p]:imports+'#[cfg(test)] '+code},{[q]:imports+code})).exit,1);
+  assert.equal(processGate(trees({[rustRoot+'process.rs']:imports+code},{[q]:imports+code})).exit,1);
+  assert.equal(processGate(trees({[p]:imports+code},{[q]:'use tokio::process::Command as C;'+code})).exit,1);
+});
+test('occurrence increases still apply path-scoped allowlist without hiding unlisted debt', () => {
+  const p=rustRoot+'a.rs',q=rustRoot+'b.rs',code='fn f(){ env::var("a"); }';
+  const result=processGate(trees({[p]:code},{[p]:code+code}));
+  assert.equal(result.exit,1);
+  assert.equal(applyAllowlist(result,[allow('09','env_read_files',p)]).exit,0);
+  const unlisted=processGate(trees({[p]:code},{[p]:code,[q]:code}));
+  assert.equal(applyAllowlist(unlisted,[allow('09','env_read_files',p)]).exit,1);
+});
+
+import { formatWarning } from './sanitizing_baseline.mjs';
+test('05 glob ambiguity warnings are distinct from stale allowlist warnings', () => {
+  const p=rustRoot+'glob.rs',result=layoutGate(trees({}, {[p]:'use unknown::*; #[test] fn f() {}'}));
+  const warning=result.diagnostics.find(d=>d.status==='WARN'); assert.ok(warning);
+  assert.match(formatWarning(warning),/^WARN scan ambiguity:/);
+  assert.doesNotMatch(formatWarning(warning),/stale allowlist/);
+  assert.match(formatWarning({gate:'05',path:p,rule:'stale_allowlist',reason:'unused'}),/^WARN stale allowlist entry:/);
+});
+test('08 thread_local declarations can split without hiding an added static', () => {
+  const p=rustRoot+'a.rs',q=rustRoot+'b.rs';
+  const a='static A: Cell<u8> = Cell::new(0);',b='static B: Cell<u8> = Cell::new(0);';
+  const wrap=s=>'thread_local! {'+s+'}';
+  const base={[p]:wrap(a+b)},head={[p]:wrap(a),[q]:wrap(b)};
+  assert.equal(globalsGate(trees(base,head)).exit,0);
+  assert.equal(globalsGate(trees(base,{...head,[q]:wrap(b+b)})).exit,1);
+});
+
+test('06 splitting aliased Tauri uses does not count the repeated supporting import', () => {
+  const p=rustRoot+'a.rs',q=rustRoot+'b.rs',imports='use tauri::AppHandle as H;';
+  const a='fn a(x: H) {}',b='fn b(x: H) {}';
+  const base={[p]:imports+a+b},head={[p]:imports+a,[q]:imports+b};
+  const result=edgeGate(trees(base,head)); assert.equal(result.exit,0,JSON.stringify(result));
+  assert.equal(result.totals[0].tauri_files,2); assert.equal(result.totals[1].tauri_files,2);
+  assert.equal(edgeGate(trees(base,{...head,[q]:imports+b+'fn c(x: H) {}'})).exit,1);
+  assert.equal(edgeGate(trees({}, {[q]:imports})).exit,1,'an unused new import remains a signal');
+});
+
+test('ambiguous moved aliases never receive transfer credit', () => {
+  const p=rustRoot+'a.rs',q=rustRoot+'b.rs';
+  const code='use std::process::Command as C; use other::C; fn f(){ C::new("a"); }';
+  const result=processGate(trees({[p]:code},{[q]:code}));
+  assert.equal(result.exit,1); assert.ok(result.diagnostics.some(d=>d.status==='WARN'));
 });

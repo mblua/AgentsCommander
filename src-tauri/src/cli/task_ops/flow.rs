@@ -75,10 +75,7 @@ where
     // Ordered before the reserved-prefix check so a coordinator re-sending the
     // same `USER: X` is rejected here (not treated as invalid input).
     if matches!(op, TaskOp::SetTitle(_)) && current_is_user_owned {
-        return Ok(EditOutcome::RejectedUserTitle {
-            content: existing.clone(),
-            title: current_title.clone(),
-        });
+        return Ok(EditOutcome::RejectedUserTitle {});
     }
 
     // #738 reserved-prefix: a coordinator SetTitle whose own input starts with
@@ -110,10 +107,7 @@ where
         TaskOp::SetBody(ref text) => *text == parsed.body,
     };
     if is_noop {
-        return Ok(EditOutcome::NoOp {
-            content: existing.clone(),
-            title: title_value_of(&parsed),
-        });
+        return Ok(EditOutcome::NoOp {});
     }
 
     // ── 5b. Render to bytes for the upcoming write ────────────────────────
@@ -243,7 +237,7 @@ where
 
     Ok(EditOutcome::Wrote {
         backup: backup_path,
-        content: new_content.clone(),
-        title: title_value_of(&new_parsed),
+        #[cfg(test)]
+        content: new_content,
     })
 }
