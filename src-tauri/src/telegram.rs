@@ -1,9 +1,9 @@
-pub mod api;
-pub mod bridge;
-pub mod claude_watcher;
-pub mod codex_watcher;
-pub mod jsonl_kernel;
+pub(crate) mod api;
+pub(crate) mod bridge;
+mod claude_watcher;
+mod codex_watcher;
+mod jsonl_kernel;
 pub mod manager;
-pub mod output;
-pub mod redact;
-pub mod types;
+mod output;
+pub(crate) mod redact;
+pub(crate) mod types;
