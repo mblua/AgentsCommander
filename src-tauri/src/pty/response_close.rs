@@ -14,7 +14,7 @@ const DIAG_TARGET: &str = "agentscommander_lib::response_close_diag";
 // Runtime-only authority. No persisted lease, filesystem, settings or transport callouts.
 #[derive(Clone, Default)]
 pub(crate) struct ResponseCloseState {
-    pub(in crate::pty::manager) inner: Arc<Mutex<ResponseCloseInner>>,
+    pub(in crate::pty) inner: Arc<Mutex<ResponseCloseInner>>,
 }
 
 #[derive(Clone, Copy)]
@@ -29,33 +29,33 @@ pub(crate) enum ResponseClosePublisher {
 
 #[derive(Default)]
 pub(super) struct ResponseCloseInner {
-    pub(in crate::pty::manager) diagnostic_poll_modulo: u8,
-    pub(in crate::pty::manager) diagnostic_poll_initialized: bool,
+    pub(in crate::pty) diagnostic_poll_modulo: u8,
+    pub(in crate::pty) diagnostic_poll_initialized: bool,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) ready: bool,
-    pub(in crate::pty::manager) publishers: u8,
+    pub(in crate::pty) ready: bool,
+    pub(in crate::pty) publishers: u8,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) work_bootstrapped: bool,
-    pub(in crate::pty::manager) enabled: bool,
-    pub(in crate::pty::manager) seconds: u32,
-    pub(in crate::pty::manager) settings_epoch: u64,
-    pub(in crate::pty::manager) failed: bool,
-    pub(in crate::pty::manager) routes: HashMap<Uuid, ResponseCloseRoute>,
+    pub(in crate::pty) work_bootstrapped: bool,
+    pub(in crate::pty) enabled: bool,
+    pub(in crate::pty) seconds: u32,
+    pub(in crate::pty) settings_epoch: u64,
+    pub(in crate::pty) failed: bool,
+    pub(in crate::pty) routes: HashMap<Uuid, ResponseCloseRoute>,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) work: HashMap<String, ResponseCloseWork>,
+    pub(in crate::pty) work: HashMap<String, ResponseCloseWork>,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) create_owners: HashMap<String, HashMap<Uuid, bool>>,
+    pub(in crate::pty) create_owners: HashMap<String, HashMap<Uuid, bool>>,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) next_return_sequence: u64,
-    pub(in crate::pty::manager) unknown_spawns: usize,
+    pub(in crate::pty) next_return_sequence: u64,
+    pub(in crate::pty) unknown_spawns: usize,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) terminal_returns:
+    pub(in crate::pty) terminal_returns:
         HashMap<(ResponseRouteIdentity, ResponseRouteIdentity, String), String>,
 }
 
@@ -63,16 +63,16 @@ pub(super) struct ResponseCloseInner {
 pub(super) struct ResponseCloseWork {
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) provisional: usize,
+    pub(in crate::pty) provisional: usize,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) dispatch: usize,
+    pub(in crate::pty) dispatch: usize,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) pending: HashMap<String, String>,
+    pub(in crate::pty) pending: HashMap<String, String>,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) terminal: HashMap<String, String>,
+    pub(in crate::pty) terminal: HashMap<String, String>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -89,67 +89,67 @@ pub(crate) struct ResponseRouteIdentity {
 pub(super) struct ResponseClosePolicy {
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) nonce: Uuid,
+    pub(in crate::pty) nonce: Uuid,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) member: ResponseRouteIdentity,
-    pub(in crate::pty::manager) coordinator: ResponseRouteIdentity,
+    pub(in crate::pty) member: ResponseRouteIdentity,
+    pub(in crate::pty) coordinator: ResponseRouteIdentity,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) work_epoch: u64,
-    pub(in crate::pty::manager) settings_epoch: u64,
+    pub(in crate::pty) work_epoch: u64,
+    pub(in crate::pty) settings_epoch: u64,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) request_key: String,
+    pub(in crate::pty) request_key: String,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) request_digest: String,
+    pub(in crate::pty) request_digest: String,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) opened_at: std::time::Instant,
+    pub(in crate::pty) opened_at: std::time::Instant,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) submitted: bool,
-    pub(in crate::pty::manager) registered_at: Option<std::time::Instant>,
+    pub(in crate::pty) submitted: bool,
+    pub(in crate::pty) registered_at: Option<std::time::Instant>,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) success_at: Option<std::time::Instant>,
+    pub(in crate::pty) success_at: Option<std::time::Instant>,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) returns: HashMap<String, (String, u64)>,
-    pub(in crate::pty::manager) selected: Option<Uuid>,
+    pub(in crate::pty) returns: HashMap<String, (String, u64)>,
+    pub(in crate::pty) selected: Option<Uuid>,
 }
 
 pub(super) struct ResponseCloseRoute {
-    pub(in crate::pty::manager) diagnostic_select: Option<(u64, u64, u8)>,
-    pub(in crate::pty::manager) generation: u64,
-    pub(in crate::pty::manager) facts: Option<ResponseRouteIdentity>,
-    pub(in crate::pty::manager) eligible: bool,
-    pub(in crate::pty::manager) manager_token: Option<Uuid>,
-    pub(in crate::pty::manager) manager_version: u64,
-    pub(in crate::pty::manager) manager_working: Option<bool>,
-    pub(in crate::pty::manager) detector_working: Option<bool>,
-    pub(in crate::pty::manager) menu_blocked: Option<bool>,
-    pub(in crate::pty::manager) hold_until: Option<std::time::Instant>,
-    pub(in crate::pty::manager) hold_known: bool,
-    pub(in crate::pty::manager) hold_window: Option<std::time::Duration>,
-    pub(in crate::pty::manager) held: std::collections::HashSet<String>,
-    pub(in crate::pty::manager) writers: usize,
-    pub(in crate::pty::manager) work_epoch: u64,
-    pub(in crate::pty::manager) activity_version: u64,
-    pub(in crate::pty::manager) last_change: std::time::Instant,
-    pub(in crate::pty::manager) policy: Option<ResponseClosePolicy>,
-    pub(in crate::pty::manager) closing: Option<Uuid>,
+    pub(in crate::pty) diagnostic_select: Option<(u64, u64, u8)>,
+    pub(in crate::pty) generation: u64,
+    pub(in crate::pty) facts: Option<ResponseRouteIdentity>,
+    pub(in crate::pty) eligible: bool,
+    pub(in crate::pty) manager_token: Option<Uuid>,
+    pub(in crate::pty) manager_version: u64,
+    pub(in crate::pty) manager_working: Option<bool>,
+    pub(in crate::pty) detector_working: Option<bool>,
+    pub(in crate::pty) menu_blocked: Option<bool>,
+    pub(in crate::pty) hold_until: Option<std::time::Instant>,
+    pub(in crate::pty) hold_known: bool,
+    pub(in crate::pty) hold_window: Option<std::time::Duration>,
+    pub(in crate::pty) held: std::collections::HashSet<String>,
+    pub(in crate::pty) writers: usize,
+    pub(in crate::pty) work_epoch: u64,
+    pub(in crate::pty) activity_version: u64,
+    pub(in crate::pty) last_change: std::time::Instant,
+    pub(in crate::pty) policy: Option<ResponseClosePolicy>,
+    pub(in crate::pty) closing: Option<Uuid>,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) closing_target: Option<String>,
+    pub(in crate::pty) closing_target: Option<String>,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
-    pub(in crate::pty::manager) committed_binding: Option<ResponseCloseCommittedBinding>,
+    pub(in crate::pty) committed_binding: Option<ResponseCloseCommittedBinding>,
 }
 
 impl ResponseCloseRoute {
-    pub(in crate::pty::manager) fn diagnostic_policy_loss(&self, outcome: &'static str, site: u32) {
+    pub(in crate::pty) fn diagnostic_policy_loss(&self, outcome: &'static str, site: u32) {
         if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
             if let Some(policy) = &self.policy {
                 log::debug!(
@@ -171,7 +171,7 @@ impl ResponseCloseRoute {
     }
 
     #[track_caller]
-    pub(in crate::pty::manager) fn touch(&mut self, now: std::time::Instant) -> bool {
+    pub(in crate::pty) fn touch(&mut self, now: std::time::Instant) -> bool {
         self.last_change = self.last_change.max(now);
         if let Some(policy) = &mut self.policy {
             policy.selected = None;
@@ -191,7 +191,7 @@ impl ResponseCloseRoute {
         }
     }
     #[track_caller]
-    pub(in crate::pty::manager) fn invalidate(&mut self, now: std::time::Instant) -> bool {
+    pub(in crate::pty) fn invalidate(&mut self, now: std::time::Instant) -> bool {
         let diagnostic_before = if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
             self.policy.as_ref().map(|policy| {
                 (
@@ -242,33 +242,33 @@ pub(crate) enum ResponseCloseError {
 // Dormant until P05 integration; remove with real callers.
 #[allow(dead_code)]
 pub(crate) struct WorkAdmission {
-    pub(in crate::pty::manager) state: ResponseCloseState,
-    pub(in crate::pty::manager) target: String,
-    pub(in crate::pty::manager) key: String,
-    pub(in crate::pty::manager) active: bool,
+    pub(in crate::pty) state: ResponseCloseState,
+    pub(in crate::pty) target: String,
+    pub(in crate::pty) key: String,
+    pub(in crate::pty) active: bool,
 }
 
 // Dormant until P05 integration; remove with real callers.
 #[allow(dead_code)]
 pub(crate) struct WorkDeliveryReservation {
-    pub(in crate::pty::manager) state: ResponseCloseState,
-    pub(in crate::pty::manager) target: String,
+    pub(in crate::pty) state: ResponseCloseState,
+    pub(in crate::pty) target: String,
 }
 
 pub(crate) struct WriterAdmission {
-    pub(in crate::pty::manager) counted: bool,
-    pub(in crate::pty::manager) state: ResponseCloseState,
-    pub(in crate::pty::manager) session_id: Uuid,
-    pub(in crate::pty::manager) generation: u64,
+    pub(in crate::pty) counted: bool,
+    pub(in crate::pty) state: ResponseCloseState,
+    pub(in crate::pty) session_id: Uuid,
+    pub(in crate::pty) generation: u64,
 }
 
 // Dormant until P05 integration; remove with real callers.
 #[allow(dead_code)]
 pub(crate) struct CreateOwnerReservation {
-    pub(in crate::pty::manager) state: ResponseCloseState,
-    pub(in crate::pty::manager) target: String,
-    pub(in crate::pty::manager) nonce: Uuid,
-    pub(in crate::pty::manager) classification: CreateClassification,
+    pub(in crate::pty) state: ResponseCloseState,
+    pub(in crate::pty) target: String,
+    pub(in crate::pty) nonce: Uuid,
+    pub(in crate::pty) classification: CreateClassification,
 }
 
 /// P05 supplies current ALL-scopes classification under the publication permit.
@@ -316,8 +316,8 @@ pub(crate) enum CreateAdmission {
 // Dormant until P05 integration; remove with real callers.
 #[allow(dead_code)]
 pub(crate) struct ResponseDeliveryContext {
-    pub(in crate::pty::manager) session_id: Uuid,
-    pub(in crate::pty::manager) nonce: Uuid,
+    pub(in crate::pty) session_id: Uuid,
+    pub(in crate::pty) nonce: Uuid,
 }
 
 // Dormant until P05 integration; remove with real callers.
@@ -333,15 +333,15 @@ pub(crate) struct ResponseDeliveryProof {
 // Dormant until P05 integration; remove with real callers.
 #[allow(dead_code)]
 pub(crate) struct ReturnObservationContext {
-    pub(in crate::pty::manager) settings_epoch: u64,
-    pub(in crate::pty::manager) sequence: u64,
-    pub(in crate::pty::manager) session_id: Uuid,
-    pub(in crate::pty::manager) nonce: Uuid,
-    pub(in crate::pty::manager) key: String,
-    pub(in crate::pty::manager) digest: String,
-    pub(in crate::pty::manager) member: ResponseRouteIdentity,
-    pub(in crate::pty::manager) coordinator: ResponseRouteIdentity,
-    pub(in crate::pty::manager) work_epoch: u64,
+    pub(in crate::pty) settings_epoch: u64,
+    pub(in crate::pty) sequence: u64,
+    pub(in crate::pty) session_id: Uuid,
+    pub(in crate::pty) nonce: Uuid,
+    pub(in crate::pty) key: String,
+    pub(in crate::pty) digest: String,
+    pub(in crate::pty) member: ResponseRouteIdentity,
+    pub(in crate::pty) coordinator: ResponseRouteIdentity,
+    pub(in crate::pty) work_epoch: u64,
 }
 
 // Dormant until P05 integration; remove with real callers.
@@ -354,15 +354,15 @@ pub(crate) struct ReturnDeliveryProof {
 // Dormant until P05 integration; remove with real callers.
 #[allow(dead_code)]
 pub(crate) struct ResponseCloseTicket {
-    pub(in crate::pty::manager) session_id: Uuid,
-    pub(in crate::pty::manager) generation: u64,
-    pub(in crate::pty::manager) nonce: Uuid,
-    pub(in crate::pty::manager) selection_nonce: Uuid,
-    pub(in crate::pty::manager) work_epoch: u64,
-    pub(in crate::pty::manager) activity_version: u64,
-    pub(in crate::pty::manager) carrier_version: u64,
-    pub(in crate::pty::manager) settings_epoch: u64,
-    pub(in crate::pty::manager) member: ResponseRouteIdentity,
+    pub(in crate::pty) session_id: Uuid,
+    pub(in crate::pty) generation: u64,
+    pub(in crate::pty) nonce: Uuid,
+    pub(in crate::pty) selection_nonce: Uuid,
+    pub(in crate::pty) work_epoch: u64,
+    pub(in crate::pty) activity_version: u64,
+    pub(in crate::pty) carrier_version: u64,
+    pub(in crate::pty) settings_epoch: u64,
+    pub(in crate::pty) member: ResponseRouteIdentity,
 }
 
 /// Incarnation is the exact UUID/token/generation tuple; backend kind and the
@@ -432,7 +432,7 @@ pub(crate) struct ResponseCloseSettlementEvidence {
 pub(crate) struct StaleOrInvalidSettlement;
 
 impl ResponseCloseInner {
-    pub(in crate::pty::manager) fn target_is_closing(&self, target: &str) -> bool {
+    pub(in crate::pty) fn target_is_closing(&self, target: &str) -> bool {
         self.routes
             .values()
             .any(|route| route.closing.is_some() && route.closing_target.as_deref() == Some(target))
@@ -532,7 +532,7 @@ impl ResponseCloseState {
             route.eligible = eligible;
         });
     }
-    pub(in crate::pty::manager) fn uuid_closing(&self, id: Uuid) -> bool {
+    pub(in crate::pty) fn uuid_closing(&self, id: Uuid) -> bool {
         self.inner
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -540,7 +540,7 @@ impl ResponseCloseState {
             .get(&id)
             .is_some_and(|route| route.closing.is_some())
     }
-    pub(in crate::pty::manager) fn begin_unresolved_spawn(&self) {
+    pub(in crate::pty) fn begin_unresolved_spawn(&self) {
         let _ = self.with_inner(|inner| {
             let Some(next) = inner.unknown_spawns.checked_add(1) else {
                 if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
@@ -570,7 +570,7 @@ impl ResponseCloseState {
             }
         });
     }
-    pub(in crate::pty::manager) fn end_unresolved_spawn(&self) {
+    pub(in crate::pty) fn end_unresolved_spawn(&self) {
         let _ = self.with_inner(|inner| {
             let Some(next) = inner.unknown_spawns.checked_sub(1) else {
                 if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
@@ -606,7 +606,7 @@ impl ResponseCloseState {
     pub(crate) fn same_state(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
-    pub(in crate::pty::manager) fn with_inner<R>(
+    pub(in crate::pty) fn with_inner<R>(
         &self,
         f: impl FnOnce(&mut ResponseCloseInner) -> R,
     ) -> Result<R, ResponseCloseError> {

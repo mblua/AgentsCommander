@@ -23,6 +23,7 @@ pub(crate) mod output;
 pub(crate) mod output_senders;
 // #2064 - the remote activity producer. `pub(crate)`: only `lib.rs` constructs it.
 pub(crate) mod remote_watcher;
+pub(crate) mod response_close;
 pub mod spawn_diagnostics; // #942 - spawn/first-output/exit evidence for hang triage
 pub(crate) mod terminal_snapshot;
 pub mod watchers; // #1171 - generic regex pattern watchers over PTY output

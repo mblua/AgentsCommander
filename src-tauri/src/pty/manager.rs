@@ -17,7 +17,7 @@ use crate::pty::output_senders::OutputSenderMap;
 
 pub(crate) use crate::pty::output::TerminalOutputAttachError;
 
-mod response_close;
+pub(crate) use crate::pty::response_close;
 mod route_proof;
 
 pub(crate) use response_close::{
