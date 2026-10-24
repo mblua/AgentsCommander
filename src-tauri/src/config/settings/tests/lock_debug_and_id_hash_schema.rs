@@ -184,7 +184,7 @@ fn settings_lock_debug_child() {
             let guard = super::super::SettingsFileLock::acquire(&path, std::time::Duration::ZERO)
                 .unwrap_or_else(|_| panic!("probe lock unavailable"));
             drop(guard);
-            assert!(super::super::SETTINGS_LOCK_DEBUG_TRANSPORT.get().is_none());
+            assert!(!super::super::settings_lock_debug_transport_initialized());
             assert!(processed.try_recv().is_err());
             assert!(!log().contains("settings-lock phase="));
             if mode == "probe" {
@@ -240,7 +240,7 @@ fn settings_lock_debug_owner_scenario(
         let guard = super::super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
             .unwrap_or_else(|_| panic!("initial INFO acquisition"));
         drop(guard);
-        assert!(super::super::SETTINGS_LOCK_DEBUG_TRANSPORT.get().is_none());
+        assert!(!super::super::settings_lock_debug_transport_initialized());
         assert!(processed.try_recv().is_err());
         assert!(!log().contains("settings-lock phase="));
         assert!(crate::logging::set_runtime_log_level("debug"));
@@ -268,11 +268,7 @@ fn settings_lock_debug_owner_scenario(
     assert!(log().contains("settings-lock phase=release"));
     settings_lock_debug_receipt(&release);
     if mode == "runtime" {
-        let sender = super::super::SETTINGS_LOCK_DEBUG_TRANSPORT
-            .get()
-            .unwrap()
-            .as_ref()
-            .unwrap();
+        let sender = super::super::settings_lock_debug_sender().unwrap();
         assert!(crate::logging::set_runtime_log_level("info"));
         let guard = super::super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
             .unwrap_or_else(|_| panic!("INFO re-acquisition"));
@@ -284,11 +280,7 @@ fn settings_lock_debug_owner_scenario(
         // The same OnceLock sender/worker serves the next acquisition.
         assert!(std::ptr::eq(
             sender,
-            super::super::SETTINGS_LOCK_DEBUG_TRANSPORT
-                .get()
-                .unwrap()
-                .as_ref()
-                .unwrap()
+            super::super::settings_lock_debug_sender().unwrap()
         ));
         settings_lock_debug_processed(processed, "acquire-start");
         settings_lock_debug_processed(processed, "acquired");
@@ -338,15 +330,9 @@ fn settings_lock_debug_saturated_scenario(
     for _ in 0..super::super::SETTINGS_LOCK_DEBUG_CAPACITY + 10 {
         debug.event("acquire-start", None, None);
     }
-    assert_eq!(
-        super::super::SETTINGS_LOCK_DEBUG_LOST.load(super::super::Ordering::Relaxed),
-        10
-    );
+    assert_eq!(super::super::settings_lock_debug_lost_count(), 10);
     drop(guard);
-    assert_eq!(
-        super::super::SETTINGS_LOCK_DEBUG_LOST.load(super::super::Ordering::Relaxed),
-        11
-    );
+    assert_eq!(super::super::settings_lock_debug_lost_count(), 11);
     settings_lock_debug_receipt(&serde_json::json!({"phase":"closed-sink-blocked"}));
     settings_lock_debug_wait_command("resume");
     resume.send(()).unwrap();
@@ -488,7 +474,7 @@ fn settings_lock_debug_failure_scenarios(
         drop(transaction);
         settings_lock_debug_processed(processed, "release");
     }
-    super::super::SETTINGS_LOCK_DEBUG_ATTEMPT.store(u64::MAX, super::super::Ordering::Relaxed);
+    super::super::settings_lock_debug_set_attempt(u64::MAX);
     let guard = super::super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
         .unwrap_or_else(|_| panic!("counter overflow changed lock result"));
     assert!(guard.debug.is_none());
@@ -630,9 +616,9 @@ fn settings_lock_debug_disabled_spawn_failure_and_disconnected_transport() {
         retry_started: None,
         acquired_at: None,
     };
-    let before = super::super::SETTINGS_LOCK_DEBUG_LOST.load(super::super::Ordering::Relaxed);
+    let before = super::super::settings_lock_debug_lost_count();
     debug.event("acquire-start", None, None);
-    assert!(super::super::SETTINGS_LOCK_DEBUG_LOST.load(super::super::Ordering::Relaxed) > before);
+    assert!(super::super::settings_lock_debug_lost_count() > before);
     let fixture = tempfile::tempdir().unwrap();
     let path = fixture.path().join("settings.json");
     let mut debug = Some(debug);

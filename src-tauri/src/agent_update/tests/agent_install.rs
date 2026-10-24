@@ -31,10 +31,7 @@ async fn next_install_frame(
 }
 
 fn install_in_flight(command: &str) -> bool {
-    INSTALLS_IN_FLIGHT
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains(command)
+    contains_install_command(command)
 }
 
 /// A shell command valid under the host shell: `windows` for cmd.exe /C,

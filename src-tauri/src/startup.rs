@@ -101,8 +101,7 @@ pub(crate) const INSTANCE_FAMILIES_SCOPE: &str = "instance-families";
 
 /// The summary `run()` logs once `init_logger` has run: the migration runs
 /// before the logger, so `log::*` from inside it goes nowhere.
-pub(crate) static NAMING_MIGRATION_SUMMARY: std::sync::Mutex<Option<String>> =
-    std::sync::Mutex::new(None);
+static NAMING_MIGRATION_SUMMARY: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 pub(crate) fn record_naming_migration_summary(summary: Option<String>) {
     if let Ok(mut slot) = NAMING_MIGRATION_SUMMARY.lock() {

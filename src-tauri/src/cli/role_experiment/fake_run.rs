@@ -19,8 +19,9 @@ use super::storage::ensure_run_artifact_dirs;
 use super::storage::load_experiment;
 use super::storage::load_variant_metadata;
 use super::storage::next_attempt_output_path;
+use super::storage::replace_attempts;
 use super::storage::write_attempt_prompt_file;
-use super::storage::write_attempts_jsonl_replace;
+use super::storage::{attempts_name, attempts_path_display};
 use super::support::err;
 use super::support::err_at_path;
 use super::support::source_matrix_path;
@@ -100,7 +101,7 @@ pub(super) fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<Cli
                 })
                 .collect(),
             attempt_count: plan.attempts.len(),
-            artifacts: default_run_artifact_paths(),
+            artifacts: default_run_artifact_paths(attempts_name()),
             execution: Some(RunExecutionArtifact {
                 provider: args.provider.clone(),
                 attempt_timeout_secs: args.attempt_timeout_secs,
@@ -128,11 +129,11 @@ pub(super) fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<Cli
     run_artifact.updated_at = completed_at.clone();
     run_artifact.status = summarize_run_status(&plan.attempts, false);
     atomic_write_json(&plan.run_dir.join("run.json"), &run_artifact)?;
-    write_attempts_jsonl_replace(&plan.run_dir.join("attempts.jsonl"), &plan.attempts)?;
+    replace_attempts(&plan.run_dir, &plan.attempts)?;
     let report_artifact = build_report_artifact(
         &plan.run_id,
         &loaded.experiment.name,
-        &plan.run_dir,
+        super::report::report_artifact_paths(&plan.run_dir, attempts_path_display(&plan.run_dir)),
         &completed_at,
         &plan.suite.prompts,
         &plan.variants,
@@ -187,7 +188,7 @@ pub(super) fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<Cli
             "seedProvided": run_artifact.seed_provided,
             "artifacts": {
                 "run": "run.json",
-                "attempts": "attempts.jsonl",
+                "attempts": attempts_name(),
                 "reportJson": "report.json",
                 "reportMarkdown": "report.md",
                 "prompts": "prompts",
@@ -350,7 +351,7 @@ fn execute_attempts_with_fake_executor(
         plan.attempts[idx].replica_root = Some(replica_root.to_string_lossy().to_string());
         plan.attempts[idx].workgroup = Some(plan.workgroup.name.clone());
         plan.attempts[idx].provider = Some(args.provider.clone());
-        write_attempts_jsonl_replace(&plan.run_dir.join("attempts.jsonl"), &plan.attempts)?;
+        replace_attempts(&plan.run_dir, &plan.attempts)?;
         run_artifact.status = "running".to_string();
         run_artifact.updated_at = started_at.clone();
         atomic_write_json(&plan.run_dir.join("run.json"), run_artifact)?;

@@ -124,7 +124,7 @@ export function createSnapshot({ baseRef = 'origin/main', cwd, runner = gitRunne
 // an entry that matches nothing is only a WARN: these gates compare against the PR base,
 // so an entry goes stale once its debt is merged.
 export const ALLOWLIST_FILE = 'sanitizing.allowlist.json';
-const ALLOWLIST_GATES = ['01', '02', '05', '06', '08', '09', 'cog'];
+const ALLOWLIST_GATES = ['01', '02', '05', '06', '07', '08', '09', 'cog'];
 export function parseAllowlist(text) {
   let document;
   try { document = JSON.parse(text); } catch { throw new GateError(`${ALLOWLIST_FILE}: invalid JSON`); }

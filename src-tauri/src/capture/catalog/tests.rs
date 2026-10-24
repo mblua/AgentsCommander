@@ -132,3 +132,50 @@ fn a_sibling_with_a_missing_question_does_not_poison_the_valid_one() {
         .collect();
     assert_eq!(ids, vec!["a"]);
 }
+
+#[test]
+fn loads_a_valid_document_from_disk() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("catalog.json");
+    std::fs::write(&path, include_str!("tests/fixtures/valid-reply.json")).unwrap();
+
+    let catalog = Catalog::load(&path);
+    assert!(!catalog.is_missing());
+    assert_eq!(catalog.unparseable_reason(), None);
+    assert!(matches!(
+        catalog.resolve("note"),
+        Resolution::Valid {
+            destination: Destination::DefaultReply,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn invalid_utf8_preserves_the_unreadable_catalog_reason() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("catalog.json");
+    std::fs::write(&path, [0xff]).unwrap();
+    let error = std::fs::read_to_string(&path).unwrap_err();
+    let expected = format!("catalog is unreadable: {error}");
+
+    let catalog = Catalog::load(&path);
+    assert!(!catalog.is_missing());
+    assert_eq!(catalog.unparseable_reason(), Some(expected.as_str()));
+    assert!(catalog.questions_in_order().is_empty());
+    assert_eq!(catalog.resolve("note"), Resolution::Unknown);
+}
+
+#[test]
+fn a_directory_preserves_the_non_missing_read_error() {
+    let directory = tempfile::tempdir().unwrap();
+    let error = std::fs::read_to_string(directory.path()).unwrap_err();
+    assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+    let expected = format!("catalog is unreadable: {error}");
+
+    let catalog = Catalog::load(directory.path());
+    assert!(!catalog.is_missing());
+    assert_eq!(catalog.unparseable_reason(), Some(expected.as_str()));
+    assert!(catalog.questions_in_order().is_empty());
+    assert_eq!(catalog.resolve("note"), Resolution::Unknown);
+}

@@ -354,7 +354,56 @@ async fn native_rename_failure_keeps_epoch_checkpoint_and_own_pending_payload() 
     let write = super::super::PreparedSessionsWrite::prepare(temp.path(), &[]).unwrap();
     let attempt = manager
         .with_current_carrier_snapshot(&permit, |_| {
-            super::super::rename_and_publish(temp.path(), &slot, before.epoch, &mut next, &write)
+            // Process-wide contention prevents rename even for a private fixture.
+            {
+                let leaf = super::super::write::SAVE_SESSIONS_LOCK
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let contended = super::super::rename_and_publish(
+                    temp.path(),
+                    &slot,
+                    before.epoch,
+                    &mut next,
+                    &write,
+                );
+                assert!(matches!(
+                    contended,
+                    super::super::RenamePublicationAttempt::Retry
+                ));
+                assert!(matches!(
+                    super::super::settle_rename_attempt(
+                        contended,
+                        &slot,
+                        &write.path,
+                        nonce,
+                        epoch,
+                        0,
+                        None,
+                    ),
+                    super::super::SettledRenameAttempt::Recapture
+                ));
+                drop(leaf);
+            }
+            // Retry only contention; every other outcome reaches the strict
+            // native-failure assertion below with the original pending payload.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let attempt = super::super::rename_and_publish(
+                    temp.path(),
+                    &slot,
+                    before.epoch,
+                    &mut next,
+                    &write,
+                );
+                if !matches!(attempt, super::super::RenamePublicationAttempt::Retry) {
+                    break attempt;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "publication locks stayed busy"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
         })
         .await;
     let super::super::SettledRenameAttempt::Failed(error) =

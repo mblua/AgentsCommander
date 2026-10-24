@@ -147,9 +147,9 @@ pub(super) fn generated_seed_from_uuid(uuid: uuid::Uuid) -> u64 {
     u64::from_le_bytes(bytes[0..8].try_into().expect("uuid slice is 8 bytes"))
 }
 
-pub(super) fn default_run_artifact_paths() -> RunArtifactPaths {
+pub(super) fn default_run_artifact_paths(attempts: String) -> RunArtifactPaths {
     RunArtifactPaths {
-        attempts: "attempts.jsonl".to_string(),
+        attempts,
         report_json: "report.json".to_string(),
         report_markdown: "report.md".to_string(),
         prompts: "prompts".to_string(),
@@ -159,10 +159,10 @@ pub(super) fn default_run_artifact_paths() -> RunArtifactPaths {
     }
 }
 
-pub(super) fn report_artifact_paths(run_dir: &Path) -> ReportArtifactPaths {
+pub(super) fn report_artifact_paths(run_dir: &Path, attempts: String) -> ReportArtifactPaths {
     ReportArtifactPaths {
         run: run_dir.join("run.json").to_string_lossy().to_string(),
-        attempts: run_dir.join("attempts.jsonl").to_string_lossy().to_string(),
+        attempts,
         report_json: run_dir.join("report.json").to_string_lossy().to_string(),
         report_markdown: run_dir.join("report.md").to_string_lossy().to_string(),
     }
@@ -218,7 +218,7 @@ pub(super) fn build_attempts(
 pub(super) fn build_report_artifact(
     run_id: &str,
     experiment: &str,
-    run_dir: &Path,
+    artifact_paths: ReportArtifactPaths,
     timestamp: &str,
     prompts: &[PromptCase],
     variants: &[VariantMetadata],
@@ -285,7 +285,7 @@ pub(super) fn build_report_artifact(
                 }
             })
             .collect(),
-        artifact_paths: report_artifact_paths(run_dir),
+        artifact_paths,
         notes: report_notes(dry_run, workgroup),
     }
 }
@@ -449,6 +449,7 @@ pub(super) fn validate_report_artifacts(
     run_id: &str,
     run: &RunArtifact,
     report: &ReportArtifact,
+    attempts_path: String,
 ) -> Result<(), Vec<CliError>> {
     let mut errors = Vec::new();
     if run.schema_version != 1 || report.schema_version != 1 {
@@ -510,7 +511,7 @@ pub(super) fn validate_report_artifacts(
             None,
         ));
     }
-    let expected_artifact_paths = report_artifact_paths(&run_dir(loaded, run_id));
+    let expected_artifact_paths = report_artifact_paths(&run_dir(loaded, run_id), attempts_path);
     if report.artifact_paths != expected_artifact_paths {
         errors.push(err(
             "run_artifact_mismatch",

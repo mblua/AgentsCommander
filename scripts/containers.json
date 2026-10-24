@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "containers": [
+    {
+      "id": "RoleExperiment/Attempts",
+      "name": "attempts.jsonl",
+      "scope": "src-tauri/src/cli/role_experiment/",
+      "owner": "src-tauri/src/cli/role_experiment/storage.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 2,
+        "sites": 4
+      }
+    }
+  ]
+}

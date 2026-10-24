@@ -24,7 +24,7 @@ pub fn resolve_from_cli_or_env(
 ) -> Result<Option<TestWindowPlacement>, String> {
     let exe_path =
         std::env::current_exe().map_err(|e| format!("failed_to_resolve_current_exe: {e}"))?;
-    let env_value = std::env::var("AC_TEST_WINDOW_PLACEMENT").ok();
+    let env_value = crate::config::environment::test_window_placement();
     resolve_from_cli_or_env_for_exe(
         &exe_path,
         env_value.as_deref(),
