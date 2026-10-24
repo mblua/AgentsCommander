@@ -8,22 +8,16 @@
   },
   "moduleCycles": [
     {
-      "id": "deb29896c738cc03",
+      "id": "590cc22d64ccf731",
       "members": [
         "agentscommander_lib",
-        "agentscommander_lib::api::auth",
-        "agentscommander_lib::api::error",
         "agentscommander_lib::api::message_store",
-        "agentscommander_lib::api::schema",
-        "agentscommander_lib::cli",
-        "agentscommander_lib::cli::list_peers",
         "agentscommander_lib::co_managed",
         "agentscommander_lib::co_managed::route",
         "agentscommander_lib::commands::pty",
         "agentscommander_lib::commands::session",
         "agentscommander_lib::pty::backend",
         "agentscommander_lib::pty::container_backend",
-        "agentscommander_lib::pty::container_tokens",
         "agentscommander_lib::pty::git_watcher",
         "agentscommander_lib::pty::inject",
         "agentscommander_lib::pty::local_backend",
@@ -44,8 +38,6 @@
         "agentscommander_lib::startup",
         "agentscommander_lib::telegram::bridge",
         "agentscommander_lib::telegram::manager",
-        "agentscommander_lib::testability::reset",
-        "agentscommander_lib::testability::window_info",
         "agentscommander_lib::window"
       ]
     },

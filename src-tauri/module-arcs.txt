@@ -213,7 +213,6 @@ agentscommander_lib::api::message_store::rows -> agentscommander_lib::phone::typ
 agentscommander_lib::api::message_store::rows -> agentscommander_lib::pty::manager
 agentscommander_lib::api::message_store::types -> agentscommander_lib::api::message_store
 agentscommander_lib::api::message_store::types -> agentscommander_lib::phone::types
-agentscommander_lib::api::schema -> agentscommander_lib::cli::list_peers
 agentscommander_lib::api::schema -> agentscommander_lib::phone::types
 agentscommander_lib::app_run -> agentscommander_lib
 agentscommander_lib::app_run -> agentscommander_lib::agent_update
@@ -349,6 +348,7 @@ agentscommander_lib::cli::injected_messages -> agentscommander_lib
 agentscommander_lib::cli::injected_messages -> agentscommander_lib::config
 agentscommander_lib::cli::injected_messages -> agentscommander_lib::config::injected_messages
 agentscommander_lib::cli::list_peers -> agentscommander_lib
+agentscommander_lib::cli::list_peers -> agentscommander_lib::api::schema
 agentscommander_lib::cli::list_peers -> agentscommander_lib::cli
 agentscommander_lib::cli::list_peers -> agentscommander_lib::config::agent_config
 agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::cli::list_peers
