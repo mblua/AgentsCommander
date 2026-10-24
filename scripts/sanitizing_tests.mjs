@@ -444,6 +444,26 @@ test('05 debt equal/improved/worse and strict compensated new file, C8 ratchet o
   // Visibility has a global ratchet, not an invented strict new-file prohibition.
   assert.equal(layoutGate(trees({[p]:'pub mod a;'},{[q]:'pub mod a;'})).exit,0);
 });
+test('06 new core nodes reject Tauri directly, by alias and under cfg(test)', () => {
+  for (const name of ['repos.rs', 'another_core.rs']) {
+    const p = rustRoot + name;
+    const clean = 'fn name() {}';
+    assert.equal(edgeGate(trees({}, {[p]: clean})).exit, 0);
+    for (const code of [
+      'fn f(x: tauri::AppHandle) {}',
+      'use tauri::AppHandle as Handle; fn f(x: Handle) {}',
+      '#[cfg(test)] fn f(x: tauri::AppHandle) {}',
+      '#![cfg(test)] use tauri as ui; fn f(x: ui::AppHandle) {}',
+      '#[cfg(test)] mod tests { use tauri::AppHandle as Handle; fn f(x: Handle) {} }',
+    ]) {
+      const result = edgeGate(trees({}, {[p]: code}));
+      assert.equal(result.exit, 1, name + ': ' + code);
+      assert.ok(result.diagnostics.some(d => d.status === 'FAIL' &&
+        d.rule === 'tauri_files' && d.path === p && d.line > 0 && d.remedy));
+    }
+    assert.equal(edgeGate(trees({}, {[p]: clean})).exit, 0);
+  }
+});
 test('06 every counter and exact boundary, alias imports and homonymous methods', () => {
   for(const [rule,bad] of [
     ['tauri_files','fn f(x: tauri::AppHandle) {}'],
@@ -553,12 +573,20 @@ test('09 independent counters, absolute write, exact ownership and aliases/shado
   const shadow='use std::env::var as read; fn f(read: F) { read("x"); }';
   assert.equal(processGate(trees({}, {[rustRoot+'x.rs']:shadow})).exit,0);
 });
-test('P02 production predicates preserve following code; comments/strings and tests do not signal', () => {
+test('P02 production predicates preserve following code; comments/strings and tests add no production debt', () => {
+  const assertTestOnly = (gate, rule, path, code) => {
+    const base = {[path]: code};
+    assert.equal(gate(trees(base)).exit, 0);
+    const added = gate(trees({}, base));
+    assert.equal(added.totals[1][rule] ?? 0, 0);
+    // The new-file Tauri rule includes tests; production counters still exclude them.
+    assert.equal(added.exit, gate === edgeGate ? 1 : 0);
+  };
   for(const [gate,bad,rule] of [[edgeGate,'tauri::AppHandle::new();','tauri_files'],
     [globalsGate,'static X: Mutex<X> = init();','globals'],[processGate,'env::var("x");','env_read_files']]) {
     for(const cfg of ['test','all(test,unix)','any(test,test)']) {
       const s=`#[cfg(${cfg})] fn test_only() { ${bad} }`;
-      assert.equal(gate(trees({}, {[rustRoot+'x.rs']:s})).exit,0);
+      assertTestOnly(gate,rule,rustRoot+'x.rs',s);
       control(gate,rule,'x.rs',s,s+` fn production() { ${bad} }`);
     }
     for(const cfg of ['any(has_embedded_dist,test)','not(test)','all()','any()'])
@@ -566,12 +594,13 @@ test('P02 production predicates preserve following code; comments/strings and te
     control(gate,rule,'x.rs','',`#[cfg_attr(unix,cfg(test))] fn production() { ${bad} }`);
     for(const attr of ['#[test]','#[tokio::test]','#[async_std::test]','use tokio::test as check; #[check]']) {
       const s=`${attr} async fn test_fn() { ${bad} }`;
-      assert.equal(gate(trees({}, {[rustRoot+'x.rs']:s})).exit,0);
+      assertTestOnly(gate,rule,rustRoot+'x.rs',s);
       control(gate,rule,'x.rs',s,s+` fn production() { ${bad} }`);
     }
     const inert='// '+bad+'\nfn f() { let x = r###"'+bad+'"###; }';
     assert.equal(gate(trees({}, {[rustRoot+'x.rs']:inert})).exit,0);
-    for(const p of ['tests.rs','x_tests.rs','tests/a.rs']) assert.equal(gate(trees({}, {[rustRoot+p]:`fn f() { ${bad} }`})).exit,0);
+    for(const p of ['tests.rs','x_tests.rs','tests/a.rs'])
+      assertTestOnly(gate,rule,rustRoot+p,`fn f() { ${bad} }`);
   }
 });
 test('09 moved occurrences pass; compensated new code and copies fail', () => {
