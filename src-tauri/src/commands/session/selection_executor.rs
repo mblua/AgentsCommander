@@ -53,7 +53,7 @@ impl NativeLifecycleLease {
     }
 }
 
-impl<R: Runtime> LifecycleExecutor<R> for NativeLifecycleExecutor {
+impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleExecutor {
     fn prepare<'a>(
         &'a self,
         transaction: &'a SelectionTransaction<R>,
@@ -196,6 +196,6 @@ impl<R: Runtime> LifecycleExecutor<R> for NativeLifecycleExecutor {
     dead_code,
     reason = "P02 registers the native execution port at composition"
 )]
-pub(crate) fn state<R: Runtime>() -> LifecycleExecutorState<R> {
+pub(crate) fn state<R: Runtime>() -> LifecycleExecutorState<SelectionTransaction<R>> {
     LifecycleExecutorState::new(Arc::new(NativeLifecycleExecutor))
 }

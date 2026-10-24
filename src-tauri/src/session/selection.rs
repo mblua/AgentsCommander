@@ -40,10 +40,10 @@ use crate::DetachedSessionsState;
     dead_code,
     reason = "P04 switches native dispatch to the execution port"
 )]
-pub(crate) trait LifecycleExecutor<R: Runtime>: Send + Sync {
+pub(crate) trait LifecycleExecutor<T>: Send + Sync {
     fn prepare<'a>(
         &'a self,
-        transaction: &'a SelectionTransaction<R>,
+        transaction: &'a T,
         operation: Uuid,
         source: Option<Uuid>,
         root: bool,
@@ -51,7 +51,7 @@ pub(crate) trait LifecycleExecutor<R: Runtime>: Send + Sync {
     ) -> LifecycleFuture<'a, Result<LifecycleAdmission, String>>;
     fn validate<'a>(
         &'a self,
-        transaction: &'a SelectionTransaction<R>,
+        transaction: &'a T,
         lease: &'a mut LifecycleLease,
     ) -> LifecycleFuture<'a, bool>;
     fn has_claim(&self, lease: &LifecycleLease) -> bool;
@@ -59,33 +59,28 @@ pub(crate) trait LifecycleExecutor<R: Runtime>: Send + Sync {
     fn ensure_root_directory(&self, effect: LifecycleEffectGuard) -> Result<String, String>;
     fn destroy<'a>(
         &'a self,
-        transaction: &'a SelectionTransaction<R>,
+        transaction: &'a T,
         request: DestroyRequest,
     ) -> LifecycleFuture<'a, Result<DestroyOutcome, String>>;
     fn restart<'a>(
         &'a self,
-        transaction: &'a SelectionTransaction<R>,
+        transaction: &'a T,
         request: RestartJobRequest,
         lease: &'a LifecycleLease,
     ) -> LifecycleFuture<'a, LifecycleEntryOutcome>;
     fn root<'a>(
         &'a self,
-        transaction: &'a SelectionTransaction<R>,
+        transaction: &'a T,
         request: RootJobRequest,
         lease: &'a LifecycleLease,
     ) -> LifecycleFuture<'a, LifecycleEntryOutcome>;
     fn conditional_close<'a>(
         &'a self,
-        transaction: &'a SelectionTransaction<R>,
+        transaction: &'a T,
         ticket: crate::pty::manager::ResponseCloseTicket,
     ) -> LifecycleFuture<'a, Result<(), String>>;
-    fn reconcile<'a>(&'a self, transaction: &'a SelectionTransaction<R>)
-        -> LifecycleFuture<'a, ()>;
-    fn complete_retirement<'a>(
-        &'a self,
-        transaction: &'a SelectionTransaction<R>,
-        id: Uuid,
-    ) -> LifecycleFuture<'a, ()>;
+    fn reconcile<'a>(&'a self, transaction: &'a T) -> LifecycleFuture<'a, ()>;
+    fn complete_retirement<'a>(&'a self, transaction: &'a T, id: Uuid) -> LifecycleFuture<'a, ()>;
 }
 
 #[expect(
@@ -104,16 +99,16 @@ pub(crate) enum LifecycleAdmission {
     NeedsRootDirectory,
 }
 
-pub(crate) struct LifecycleExecutorState<R: Runtime> {
+pub(crate) struct LifecycleExecutorState<T> {
     #[expect(
         dead_code,
         reason = "P04 switches native dispatch to the execution port"
     )]
-    executor: Arc<dyn LifecycleExecutor<R>>,
+    executor: Arc<dyn LifecycleExecutor<T>>,
 }
 
-impl<R: Runtime> LifecycleExecutorState<R> {
-    pub(crate) fn new(executor: Arc<dyn LifecycleExecutor<R>>) -> Self {
+impl<T> LifecycleExecutorState<T> {
+    pub(crate) fn new(executor: Arc<dyn LifecycleExecutor<T>>) -> Self {
         Self { executor }
     }
 
@@ -121,7 +116,7 @@ impl<R: Runtime> LifecycleExecutorState<R> {
         dead_code,
         reason = "P04 switches native dispatch to the execution port"
     )]
-    pub(crate) fn get(&self) -> &Arc<dyn LifecycleExecutor<R>> {
+    pub(crate) fn get(&self) -> &Arc<dyn LifecycleExecutor<T>> {
         &self.executor
     }
 }
