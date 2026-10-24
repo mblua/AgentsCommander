@@ -2885,6 +2885,7 @@ agentscommander_lib::testability::ui_automation::files -> agentscommander_lib::t
 agentscommander_lib::testability::window_info -> agentscommander_lib
 agentscommander_lib::testability::window_info::windows_impl -> agentscommander_lib::config::profile
 agentscommander_lib::testability::window_info::windows_impl -> agentscommander_lib::testability::window_info
+agentscommander_lib::testability::window_placement -> agentscommander_lib::config::environment
 agentscommander_lib::update_check -> agentscommander_lib::config
 agentscommander_lib::update_check -> agentscommander_lib::config::settings
 agentscommander_lib::update_check -> agentscommander_lib::network

@@ -15,6 +15,7 @@ pub(crate) mod config_seed;
 pub(crate) mod coordinator_clocks;
 pub(crate) mod daemon_pid;
 pub(crate) mod entity_prefix;
+pub(crate) mod environment;
 pub(crate) mod injected_messages;
 pub(crate) mod instance_artifacts;
 pub(crate) mod instance_gitignore;
