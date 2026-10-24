@@ -9,12 +9,12 @@
 //! skip token validation.
 
 pub mod actuation;
-pub mod audit;
+pub(crate) mod audit;
 pub mod auth;
-pub mod dispatcher;
-pub mod error;
-pub mod handlers;
-pub mod identity;
+pub(crate) mod dispatcher;
+mod error;
+pub(crate) mod handlers;
+mod identity;
 pub mod message_store;
 pub mod schema;
 
