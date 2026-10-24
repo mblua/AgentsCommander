@@ -865,14 +865,18 @@ fn default_selected_row_rail_color() -> String {
 
 /// #1925 (D2) - the published file: one pinned literal with the source ref `main` and a
 /// `v1` segment that must equal `BLOCKING_MENUS_SCHEMA_VERSION`; a test pins both.
-pub(crate) const REMOTE_BLOCKING_MENUS_URL: &str =
-    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/blocking-menus/v1/settings-blocking-menus.json";
+pub(crate) const REMOTE_BLOCKING_MENUS_URL: &str = concat!(
+    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/",
+    "blocking-menus/v1/settings-blocking-menus.json",
+);
 
 /// #2133 - the published file: one pinned literal whose ref segment must equal
 /// `REMOTE_AGENT_HELP_SOURCE_REF` (P6's) and whose `v1` segment must equal
 /// `AGENT_HELP_SCHEMA_VERSION`; T1 pins both.
-pub(crate) const REMOTE_AGENT_HELP_URL: &str =
-    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/agent-help/v1/agent-help.json";
+pub(crate) const REMOTE_AGENT_HELP_URL: &str = concat!(
+    "https://raw.githubusercontent.com/mblua/AgentsCommander/main/remote-resources/",
+    "agent-help/v1/agent-help.json",
+);
 
 #[cfg(test)]
 mod tests;

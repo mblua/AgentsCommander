@@ -161,7 +161,7 @@ impl ContainerApiTokenManager {
     ///
     /// SCOPED CLAIM. This answers "did this config dir ever create a labeled
     /// container", NOT "does this machine hold one". The registry is per config dir
-    /// (config/mod.rs) while the label `com.agentscommander.session` is machine-wide
+    /// (config.rs) while the label `com.agentscommander.session` is machine-wide
     /// (container_runtime.rs). Read plan 992 section 0 before you rely on this for
     /// anything.
     ///

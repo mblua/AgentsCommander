@@ -1981,7 +1981,7 @@ jobs:
     #   * build.rs:8-19 turns PROFILE=release into BUILD_PROFILE=prod, emits it
     #     as cargo:rustc-env, and feeds it to configure_embedded_dist, so the
     #     BUILD SCRIPT takes a different path.
-    #   * config/mod.rs:850-853 has a real cfg(debug_assertions) /
+    #   * config.rs:850-853 has a real cfg(debug_assertions) /
     #     cfg(not(debug_assertions)) split in instance_location.
     # Cargo flips debug_assertions with the profile, so a debug build exercises
     # neither branch the release runner will take. Since this job's whole
