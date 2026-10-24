@@ -15,8 +15,16 @@ use tauri::AppHandle;
 
 /// #2736 - resolved install commands with a running install task. Keyed by the
 /// command string, so two catalog keys sharing one command never run it twice.
-pub(crate) static INSTALLS_IN_FLIGHT: std::sync::LazyLock<Mutex<HashSet<String>>> =
+static INSTALLS_IN_FLIGHT: std::sync::LazyLock<Mutex<HashSet<String>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+
+#[cfg(test)]
+pub(crate) fn contains_install_command(command: &str) -> bool {
+    INSTALLS_IN_FLIGHT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(command)
+}
 
 /// #2736 - RAII entry in `INSTALLS_IN_FLIGHT`; dropping it releases the command.
 pub(crate) struct InstallInFlight(pub(crate) String);
