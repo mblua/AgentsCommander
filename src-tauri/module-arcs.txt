@@ -2359,8 +2359,10 @@ agentscommander_lib::pty::manager -> agentscommander_lib::pty::watchers
 agentscommander_lib::pty::manager -> agentscommander_lib::session::selection
 agentscommander_lib::pty::manager -> agentscommander_lib::shutdown
 agentscommander_lib::pty::manager -> agentscommander_lib::web::broadcast
-agentscommander_lib::pty::manager::response_close -> agentscommander_lib::pty::backend
+agentscommander_lib::pty::manager::response_close -> agentscommander_lib::pty
+agentscommander_lib::pty::manager::response_close -> agentscommander_lib::pty::backend_kind
 agentscommander_lib::pty::manager::response_close -> agentscommander_lib::pty::manager
+agentscommander_lib::pty::manager::response_close::admission -> agentscommander_lib::pty
 agentscommander_lib::pty::manager::response_close::admission -> agentscommander_lib::pty::manager
 agentscommander_lib::pty::manager::response_close::admission -> agentscommander_lib::pty::manager::response_close
 agentscommander_lib::pty::manager::response_close::diagnostics -> agentscommander_lib::pty::manager

@@ -779,3 +779,34 @@ fn response_close_setting_epoch_changes_revoke_tickets_and_old_return_success() 
         .select_ticket(member.session_id, now + Duration::from_secs(100))
         .is_err());
 }
+
+#[test]
+fn ticket_identity_matches_original_route() {
+    let now = Instant::now() + Duration::from_secs(3600);
+    let (state, member, coordinator) = routes(now);
+    arm(&state, &member, &coordinator, now);
+    let ticket = state
+        .select_ticket(member.session_id, now + Duration::from_secs(30))
+        .unwrap();
+    let expected = (member.session_id, member.generation, member.backend);
+    assert_eq!(ticket.route_identity(), expected);
+    state
+        .try_commit_response_close(&ticket, now + Duration::from_secs(30))
+        .unwrap();
+    assert_eq!(ticket.route_identity(), expected);
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .routes
+        .get_mut(&member.session_id)
+        .unwrap()
+        .generation += 1;
+    assert_eq!(
+        state.is_closing(member.session_id, member.generation),
+        Err(ResponseCloseError::Unknown)
+    );
+    assert_eq!(ticket.route_identity(), expected);
+    state.fail_closed();
+    assert_eq!(ticket.route_identity(), expected);
+}

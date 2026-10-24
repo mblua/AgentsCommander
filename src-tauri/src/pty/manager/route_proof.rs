@@ -152,7 +152,8 @@ impl PtyAuthorityRouteProof {
         ticket: &ResponseCloseTicket,
         now: std::time::Instant,
     ) -> Result<Uuid, ResponseCloseError> {
-        if self.session_id != ticket.session_id || self.route_generation != ticket.generation {
+        let (session_id, generation, backend) = ticket.route_identity();
+        if self.session_id != session_id || self.route_generation != generation {
             return Err(ResponseCloseError::Unknown);
         }
         let _lifecycle = self
@@ -163,9 +164,11 @@ impl PtyAuthorityRouteProof {
             .route_registry
             .lock()
             .map_err(|_| ResponseCloseError::Unavailable)?;
-        if !registry.routes.get(&self.session_id).is_some_and(|route| {
-            route.generation == self.route_generation && route.kind == ticket.member.backend
-        }) {
+        if !registry
+            .routes
+            .get(&self.session_id)
+            .is_some_and(|route| route.generation == self.route_generation && route.kind == backend)
+        {
             return Err(ResponseCloseError::Unknown);
         }
         state.try_commit_response_close(ticket, now)
@@ -377,12 +380,7 @@ pub fn lock_route_for_write(permit: &PtyInputPermit) -> Result<PtyRouteWriteGuar
             .routes
             .get(&permit.session_id)
             .ok_or_else(|| AppError::SessionNotFound(permit.session_id.to_string()))?;
-        if permit
-            ._response_writer
-            .state
-            .is_closing(permit.session_id, permit.route_generation)
-            .unwrap_or(true)
-        {
+        if permit._response_writer.is_closing().unwrap_or(true) {
             return Err(AppError::PtyError("response_close_deferred".to_string()));
         }
         if current.generation != permit.route_generation {
@@ -422,12 +420,7 @@ pub(crate) fn lock_route_for_verified_write<'a>(
             .verified_replica_anchor
             .as_ref()
             .is_some_and(|identity| crate::path_identity::same_object(identity, expected_replica));
-        if permit
-            ._response_writer
-            .state
-            .is_closing(permit.session_id, permit.route_generation)
-            .unwrap_or(true)
-        {
+        if permit._response_writer.is_closing().unwrap_or(true) {
             return Err(AppError::PtyError("response_close_deferred".to_string()));
         }
         if current.generation != permit.route_generation

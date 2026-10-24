@@ -1,4 +1,4 @@
-use crate::pty::backend::SessionBackendKind;
+use crate::pty::backend_kind::SessionBackendKind;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -374,6 +374,10 @@ pub(crate) struct ResponseCloseCommittedBinding {
 }
 
 impl ResponseCloseTicket {
+    pub(in crate::pty) fn route_identity(&self) -> (Uuid, u64, SessionBackendKind) {
+        (self.session_id, self.generation, self.member.backend)
+    }
+
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
     pub(crate) fn committed_binding(&self) -> ResponseCloseCommittedBinding {

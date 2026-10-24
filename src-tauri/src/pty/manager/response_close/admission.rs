@@ -430,6 +430,12 @@ impl Drop for WorkDeliveryReservation {
         });
     }
 }
+impl WriterAdmission {
+    pub(in crate::pty) fn is_closing(&self) -> Result<bool, ResponseCloseError> {
+        self.state.is_closing(self.session_id, self.generation)
+    }
+}
+
 impl Drop for WriterAdmission {
     fn drop(&mut self) {
         if !self.counted {
