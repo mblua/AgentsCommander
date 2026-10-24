@@ -10,7 +10,7 @@ use super::execute::{
 };
 use super::payload::SelectionCoordinatorError;
 use super::transaction::SelectionTransaction;
-use super::{CoordinatorInner, CoordinatorJob};
+use super::{CoordinatorInner, CoordinatorJob, LifecycleEntryOutcome};
 
 #[cfg(test)]
 use super::replacement_fixture::{
@@ -339,19 +339,22 @@ pub(super) async fn execute_envelope<R: Runtime>(
             }
         }
         CoordinatorJob::ConditionalResponseClose { request } => {
-            if let Err(error) = crate::commands::session::execute_response_close_transaction(
-                transaction,
-                request.ticket,
-            )
-            .await
+            let executor = transaction
+                .lifecycle_executor()
+                .expect("selection start contract violated: lifecycle executor binding missing");
+            if let Err(error) = executor
+                .conditional_close(transaction, request.ticket)
+                .await
             {
                 log::warn!("[response-close] conditional operation failed: {}", error);
             }
             hold.release();
         }
         CoordinatorJob::Destroy { request, response } => {
-            let result =
-                crate::commands::session::execute_destroy_transaction(transaction, request).await;
+            let executor = transaction
+                .lifecycle_executor()
+                .expect("selection start contract violated: lifecycle executor binding missing");
+            let result = executor.destroy(transaction, request).await;
             if hold.respond(response, result).is_err() {
                 log::debug!("[selection] destroy caller dropped before result delivery");
             }
@@ -361,17 +364,15 @@ pub(super) async fn execute_envelope<R: Runtime>(
             mut entry,
             response,
         } => {
+            let executor = transaction
+                .lifecycle_executor()
+                .expect("selection start contract violated: lifecycle executor binding missing");
             let Some(authority) = entry.authority.as_mut() else {
                 hold.release();
                 drop(response);
                 return;
             };
-            if !crate::commands::session::validate_lifecycle_entry_authority(
-                transaction.app(),
-                authority,
-            )
-            .await
-            {
+            if !executor.validate(transaction, authority).await {
                 hold.release();
                 drop(response);
                 return;
@@ -387,15 +388,10 @@ pub(super) async fn execute_envelope<R: Runtime>(
                 drop(response);
                 return;
             };
-            let result = crate::commands::session::execute_external_restart_transaction(
-                &transaction,
-                request,
-                authority,
-            )
-            .await;
+            let result = executor.restart(&transaction, request, authority).await;
             let result = match result {
-                crate::commands::session::LifecycleEntryOutcome::Returned(result) => result,
-                crate::commands::session::LifecycleEntryOutcome::Interrupted => {
+                LifecycleEntryOutcome::Returned(result) => result,
+                LifecycleEntryOutcome::Interrupted => {
                     entry.observe_authority_interruption();
                     drop(transaction);
                     drop(entry);
@@ -405,7 +401,7 @@ pub(super) async fn execute_envelope<R: Runtime>(
                 }
             };
             entry.observe_return(&result);
-            entry.release_lease().await;
+            entry.release_lease(executor.as_ref()).await;
             drop(transaction);
             drop(entry);
             if hold.respond(response, result).is_err() {
@@ -417,17 +413,15 @@ pub(super) async fn execute_envelope<R: Runtime>(
             mut entry,
             response,
         } => {
+            let executor = transaction
+                .lifecycle_executor()
+                .expect("selection start contract violated: lifecycle executor binding missing");
             let Some(authority) = entry.authority.as_mut() else {
                 hold.release();
                 drop(response);
                 return;
             };
-            if !crate::commands::session::validate_lifecycle_entry_authority(
-                transaction.app(),
-                authority,
-            )
-            .await
-            {
+            if !executor.validate(transaction, authority).await {
                 hold.release();
                 drop(response);
                 return;
@@ -443,15 +437,10 @@ pub(super) async fn execute_envelope<R: Runtime>(
                 drop(response);
                 return;
             };
-            let result = crate::commands::session::execute_external_root_transaction(
-                &transaction,
-                request,
-                authority,
-            )
-            .await;
+            let result = executor.root(&transaction, request, authority).await;
             let result = match result {
-                crate::commands::session::LifecycleEntryOutcome::Returned(result) => result,
-                crate::commands::session::LifecycleEntryOutcome::Interrupted => {
+                LifecycleEntryOutcome::Returned(result) => result,
+                LifecycleEntryOutcome::Interrupted => {
                     entry.observe_authority_interruption();
                     drop(transaction);
                     drop(entry);
@@ -461,7 +450,7 @@ pub(super) async fn execute_envelope<R: Runtime>(
                 }
             };
             entry.observe_return(&result);
-            entry.release_lease().await;
+            entry.release_lease(executor.as_ref()).await;
             drop(transaction);
             drop(entry);
             if hold.respond(response, result).is_err() {

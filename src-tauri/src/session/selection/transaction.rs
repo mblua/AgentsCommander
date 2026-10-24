@@ -24,7 +24,7 @@ use super::replacement::{
     LifecycleEffectSlot, OwnedEffectState, OwnedLifecycleEntry, OwnedReplacementDescriptor,
     ReplacementOwner, ReplacementStage,
 };
-use super::CoordinatorInner;
+use super::{CoordinatorInner, LifecycleExecutor, LifecycleExecutorState};
 
 pub(crate) struct SelectionTransaction<R: Runtime> {
     pub(super) app: AppHandle<R>,
@@ -67,6 +67,12 @@ impl<R: Runtime> SelectionTransaction<R> {
             coordinator,
             restore_nonce: None,
         }
+    }
+
+    pub(super) fn lifecycle_executor(&self) -> Option<Arc<dyn LifecycleExecutor<Self>>> {
+        self.app
+            .try_state::<LifecycleExecutorState<Self>>()
+            .map(|state| Arc::clone(state.get()))
     }
 
     #[cfg(test)]

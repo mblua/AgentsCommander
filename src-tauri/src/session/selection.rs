@@ -36,10 +36,6 @@ use crate::web::broadcast::WsBroadcaster;
 use crate::DetachedSessionsState;
 
 /// Selection's lifecycle operations; transport remains on SelectionTransaction until later phases.
-#[expect(
-    dead_code,
-    reason = "P04 switches native dispatch to the execution port"
-)]
 pub(crate) trait LifecycleExecutor<T>: Send + Sync {
     fn prepare<'a>(
         &'a self,
@@ -79,20 +75,13 @@ pub(crate) trait LifecycleExecutor<T>: Send + Sync {
         transaction: &'a T,
         ticket: crate::pty::manager::ResponseCloseTicket,
     ) -> LifecycleFuture<'a, Result<(), String>>;
+    #[expect(dead_code, reason = "P05 routes reconcile through the execution port")]
     fn reconcile<'a>(&'a self, transaction: &'a T) -> LifecycleFuture<'a, ()>;
     fn complete_retirement<'a>(&'a self, transaction: &'a T, id: Uuid) -> LifecycleFuture<'a, ()>;
 }
 
-#[expect(
-    dead_code,
-    reason = "P04 switches native dispatch to the execution port"
-)]
 pub(crate) type LifecycleFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-#[expect(
-    dead_code,
-    reason = "P04 switches native dispatch to the execution port"
-)]
 pub(crate) enum LifecycleAdmission {
     Ready(LifecycleLease),
     Waiting,
@@ -100,10 +89,6 @@ pub(crate) enum LifecycleAdmission {
 }
 
 pub(crate) struct LifecycleExecutorState<T> {
-    #[expect(
-        dead_code,
-        reason = "P04 switches native dispatch to the execution port"
-    )]
     executor: Arc<dyn LifecycleExecutor<T>>,
 }
 
@@ -112,20 +97,12 @@ impl<T> LifecycleExecutorState<T> {
         Self { executor }
     }
 
-    #[expect(
-        dead_code,
-        reason = "P04 switches native dispatch to the execution port"
-    )]
     pub(crate) fn get(&self) -> &Arc<dyn LifecycleExecutor<T>> {
         &self.executor
     }
 }
 
 /// Non-Clone native sidecar, erased without retaining an executor or application handle.
-#[expect(
-    dead_code,
-    reason = "P04 switches native dispatch to the execution port"
-)]
 pub(crate) struct LifecycleLease {
     payload: Box<dyn Any + Send + Sync>,
     release_receipt: Arc<AtomicU8>,
@@ -137,10 +114,6 @@ impl fmt::Debug for LifecycleLease {
     }
 }
 
-#[expect(
-    dead_code,
-    reason = "P04 switches native dispatch to the execution port"
-)]
 impl LifecycleLease {
     pub(crate) fn new(payload: Box<dyn Any + Send + Sync>, release_receipt: Arc<AtomicU8>) -> Self {
         Self {
