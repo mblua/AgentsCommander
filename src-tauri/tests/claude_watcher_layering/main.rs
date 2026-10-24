@@ -308,12 +308,10 @@ fn require_exact_report(
     ))
 }
 
-use dependencies::{
-    analyze_guard, analyze_module_index, expand_use_tree, resolve_internal_module, UseLeaf,
-};
+use dependencies::{analyze_guard, analyze_module_index, expand_use_tree, UseLeaf};
 use fixtures::{
-    cleanup_fixture_on_drop, inline_spelling_report, out_of_line_spelling_report,
-    FailingDiagnostic, Fixture, RecordingDiagnostic,
+    inline_spelling_report, out_of_line_spelling_report, FailingDiagnostic, Fixture,
+    RecordingDiagnostic,
 };
 use interface::{
     collect_moved_symbol_occurrences, require_visibility, verify_exact_interface,
