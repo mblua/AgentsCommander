@@ -46,7 +46,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use uuid::Uuid;
-
 mod agent_command;
 mod co_managed;
 mod create;
