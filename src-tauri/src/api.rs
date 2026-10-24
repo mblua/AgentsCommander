@@ -45,7 +45,7 @@ pub struct ApiServerStart {
 // The native window-screenshot capture path exists only on Windows
 // (`handlers::window_screenshot` and `screenshot::native`'s window-capture
 // region are both gated on it), so the limiter that bounds it is scoped the same
-// way. The `test` disjunct keeps `window_screenshot_limiter_tests` below and the
+// way. The `test` disjunct keeps the tests in `api/tests.rs` and the
 // route-level queue tests in `pty/terminal_snapshot/tests/acceptance.rs`, neither
 // of which is platform-gated.
 #[cfg(any(target_os = "windows", test))]
@@ -83,7 +83,8 @@ pub(crate) enum WindowScreenshotAdmissionError {
 /// while waiting drops its admission permit and frees that slot; a dropped
 /// request whose worker already started keeps the lease until the native work
 /// ends, so detached workers cannot exceed the one-active, three-admitted
-/// bound. Covered by `window_screenshot_limiter_queue_is_bounded_and_waiter_drop_releases_admission`
+/// bound. Covered by
+/// `window_screenshot_limiter_queue_is_bounded_and_waiter_drop_releases_admission`
 /// and the route-level queue tests in `pty/terminal_snapshot/tests/acceptance.rs`.
 #[cfg(any(target_os = "windows", test))]
 pub(crate) struct WindowScreenshotLimiter {
@@ -143,62 +144,6 @@ impl WindowScreenshotLease {
             _admission: admission,
             _active: active,
         }
-    }
-}
-
-#[cfg(test)]
-mod window_screenshot_limiter_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn window_screenshot_limiter_queue_is_bounded_and_waiter_drop_releases_admission() {
-        let limiter = std::sync::Arc::new(WindowScreenshotLimiter::new());
-        let first_admission = match limiter.try_admit() {
-            Ok(permit) => permit,
-            Err(error) => panic!("first request must be admitted: {error:?}"),
-        };
-        let first_active = match limiter.acquire_active().await {
-            Ok(active) => active,
-            Err(error) => panic!("first request must acquire the active slot: {error:?}"),
-        };
-        let first_lease = WindowScreenshotLease::new(first_admission, first_active);
-
-        let waiting_admission = match limiter.try_admit() {
-            Ok(permit) => permit,
-            Err(error) => panic!("second request must be admitted: {error:?}"),
-        };
-        let queued_admission = match limiter.try_admit() {
-            Ok(permit) => permit,
-            Err(error) => panic!("third request must be admitted: {error:?}"),
-        };
-        assert!(matches!(
-            limiter.try_admit(),
-            Err(WindowScreenshotAdmissionError::CaptureBusy)
-        ));
-
-        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
-        let waiter_limiter = std::sync::Arc::clone(&limiter);
-        let mut waiter = tokio::spawn(async move {
-            let _ = started_sender.send(());
-            let active = waiter_limiter.acquire_active().await?;
-            Ok::<_, WindowScreenshotAdmissionError>(WindowScreenshotLease::new(
-                waiting_admission,
-                active,
-            ))
-        });
-        assert!(started_receiver.await.is_ok());
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(20), &mut waiter)
-                .await
-                .is_err()
-        );
-
-        waiter.abort();
-        let _ = waiter.await;
-        assert!(limiter.try_admit().is_ok());
-
-        drop(queued_admission);
-        drop(first_lease);
     }
 }
 
@@ -470,7 +415,8 @@ fn start_server_from(
 fn warn_on_non_loopback(addr: SocketAddr) {
     if !addr.ip().is_loopback() {
         let warning = format!(
-            "[api-server] WARNING: bound on {} (non-loopback); ensure a host firewall restricts this port to the Docker/WSL subnet.",
+            "[api-server] WARNING: bound on {} (non-loopback); ensure a host firewall \
+restricts this port to the Docker/WSL subnet.",
             addr
         );
         log::warn!("{}", warning);
@@ -515,3 +461,6 @@ async fn wait_for_dispatcher(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
