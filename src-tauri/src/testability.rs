@@ -1,7 +1,7 @@
 pub mod mutex_holders;
-pub mod reset;
+pub(crate) mod reset;
 pub mod ui_automation;
-pub mod window_info;
+pub(crate) mod window_info;
 pub mod window_placement;
 
 #[cfg(target_os = "windows")]
