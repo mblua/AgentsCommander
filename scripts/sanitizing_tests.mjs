@@ -449,15 +449,39 @@ test('06 every counter and exact boundary, alias imports and homonymous methods'
     ['tauri_files','fn f(x: tauri::AppHandle) {}'],
     ['emit_files','fn f(x: X) { x.emit("event",0); }'],
     ['state_files','fn f(x: X) { x.state::<X>(); }'],
+    ['state_files','fn f(x: X) { x.try_state::<X>(); }'],
     ['command_files','#[cfg_attr(unix,tauri::command)] fn f() {}'],
     ['disk_commands','#[tauri::command] fn f() { std::fs::read("a"); }'],
   ]) control(edgeGate,rule,'x.rs','fn f() {}',bad);
   for(const p of ['lib.rs','main.rs','commands.rs','events.rs','commands/a.rs','events/a.rs'])
-    assert.equal(edgeGate(trees({}, {[rustRoot+p]:'fn f(x: tauri::AppHandle) { x.emit("a",0); x.state::<X>(); }'})).exit,0,p);
+    assert.equal(edgeGate(trees({}, {[rustRoot+p]:'fn f(x: tauri::AppHandle) { x.emit("a",0); x.state::<X>(); x.try_state::<X>(); }'})).exit,0,p);
   for(const p of ['cli/a.rs','api/a.rs','web/a.rs','window.rs'])
     control(edgeGate,'tauri_files',p,'','use tauri::AppHandle as Handle; fn f(x: Handle) {}');
   control(edgeGate,'disk_commands','commands.rs','use tauri::command as cmd; #[cmd] fn f() {}',
     'use tauri::command as cmd; use std::fs::read as disk; #[cmd] fn f() { disk("a"); }');
+});
+test('06 state and try_state share the ratchet, including existing debt and lexical exclusions', () => {
+  const p=rustRoot+'state.rs',old='fn f(x: X) { x.try_state::<X>(); }';
+  const baseline=edgeGate(trees({[p]:old}));
+  assert.equal(baseline.exit,0);
+  assert.equal(baseline.totals[0].state_files,1);
+  assert.equal(baseline.totals[1].state_files,1);
+  assert.equal(edgeGate(trees({[p]:old},{[p]:old.replace('try_state','state')})).exit,0);
+  const growth=control(edgeGate,'state_files','state.rs',old,
+    'fn f(x: X) { x.try_state::<X>(); x.state::<X>(); }');
+  assert.equal(growth.totals[0].state_files,1);
+  assert.equal(growth.totals[1].state_files,2);
+  assert.equal(edgeGate(trees({[p]:old},{[p]:'fn f() {}'})).exit,0);
+  const source=[
+    'fn f(x: X) { x . try_state :: <X>(); x.r#try_state::<X>(); }',
+    '#[cfg(test)] fn only_tests(x: X) { x.try_state::<X>(); }',
+    '// x.try_state::<X>();',
+    'const EXAMPLE: &str = "x.try_state::<X>()";',
+    'fn other(x: X) { x.try_state(); x.try_state_other::<X>(); }',
+  ].join('\n');
+  const syntax=edgeGate(trees({}, {[p]:source}));
+  assert.equal(syntax.totals[1].state_files,2);
+  assert.equal(syntax.exit,1);
 });
 test('06 new disk command in existing file cannot hide behind reductions; cfg identity and renames', () => {
   const p=rustRoot+'commands.rs';
@@ -672,6 +696,7 @@ test('06/08/09 splits preserve debt; extra occurrences in existing/new files fai
     [edgeGate,'tauri_files','fn a(x: tauri::AppHandle) {}','fn b(x: tauri::AppHandle) {}','fn c(x: tauri::AppHandle) {}'],
     [edgeGate,'emit_files','fn a(x: X) { x.emit("a",0); }','fn b(x: X) { x.emit_to("b",0); }','fn c(x: X) { x.emit("c",0); }'],
     [edgeGate,'state_files','fn a(x: X) { x.state::<X>(); }','fn b(x: X) { x.state::<X>(); }','fn c(x: X) { x.state::<X>(); }'],
+    [edgeGate,'state_files','fn a(x: X) { x.try_state::<X>(); }','fn b(x: X) { x.try_state::<X>(); }','fn c(x: X) { x.try_state::<X>(); }'],
     [edgeGate,'command_files','#[tauri::command] fn a() {}','#[tauri::command] fn b() {}','#[tauri::command] fn c() {}'],
     [globalsGate,'globals','static A: Mutex<u8> = init();','static B: Mutex<u8> = init();','static C: Mutex<u8> = init();'],
     [processGate,'launch_files','fn a() { Command::new("a"); }','fn b() { Command::new("b"); }','fn c() { Command::new("c"); }'],
@@ -729,6 +754,22 @@ test('05 glob ambiguity warnings are distinct from stale allowlist warnings', ()
   assert.match(formatWarning(warning),/^WARN scan ambiguity:/);
   assert.doesNotMatch(formatWarning(warning),/stale allowlist/);
   assert.match(formatWarning({gate:'05',path:p,rule:'stale_allowlist',reason:'unused'}),/^WARN stale allowlist entry:/);
+});
+test('05 formatting real glob and stale warnings preserves PASS and FAIL exits', () => {
+  const p=rustRoot+'glob.rs',source='use unknown::*; #[test] fn f() {}';
+  for (const base of [{}, {[p]:source}]) {
+    const raw=layoutGate(trees(base,{[p]:source}));
+    const result=applyAllowlist(raw,[allow('05','inline_mod',p)]);
+    assert.equal(result.exit,raw.exit);
+    assert.equal(result.exit,Object.keys(base).length ? 0 : 1);
+    const ambiguity=result.diagnostics.find(d=>d.status==='WARN' && d.reason==='glob import may bind path');
+    assert.ok(ambiguity);
+    assert.match(formatWarning(ambiguity),/^WARN scan ambiguity:/);
+    assert.doesNotMatch(formatWarning(ambiguity),/stale allowlist/);
+    const stale=result.diagnostics.find(d=>d.rule==='stale_allowlist');
+    assert.ok(stale);
+    assert.match(formatWarning(stale),/^WARN stale allowlist entry:/);
+  }
 });
 test('08 thread_local declarations can split without hiding an added static', () => {
   const p=rustRoot+'a.rs',q=rustRoot+'b.rs';
