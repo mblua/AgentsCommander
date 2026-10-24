@@ -21,6 +21,9 @@ use crate::session::profile::CodingAgentKind;
 mod instructions;
 mod matching;
 mod profile_hash;
+mod seed_warning;
+
+pub use seed_warning::compute_config_dir_warning;
 
 pub use instructions::{
     default_instructions_filename_for_command, is_safe_instructions_filename,
@@ -535,7 +538,7 @@ const OPENCODE_ARG_FORMS: [&str; 4] = ["opencode", "opencode.exe", "opencode.cmd
 /// `opencode`). An arg cannot be a bare-stem executable the way a shell can, so
 /// the extension carries real signal here.
 ///
-/// `pub(crate)` so `config_seed::compute_config_dir_warning` can reuse it (#598).
+/// `pub(crate)` so the config-directory warning can reuse it (#598).
 pub(crate) fn command_runs_opencode(shell: &str, shell_args: &[String]) -> bool {
     if executable_basename(shell) == "opencode" {
         return true;
@@ -832,7 +835,7 @@ pub(crate) fn resolve_agent_spawn_command(
                             ),
                         });
                 }
-                r.config_dir_warning = crate::config::config_seed::compute_config_dir_warning(
+                r.config_dir_warning = compute_config_dir_warning(
                     &r.dest,
                     &shell,
                     &shell_args,

@@ -70,13 +70,6 @@
       ]
     },
     {
-      "id": "583db36b97dffa93",
-      "members": [
-        "agentscommander_lib::config::agent_command",
-        "agentscommander_lib::config::config_seed"
-      ]
-    },
-    {
       "id": "98dd386091329e51",
       "members": [
         "agentscommander_lib::config::projects",

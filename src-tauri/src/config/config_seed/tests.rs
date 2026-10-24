@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::copy::{
     clear_stale_seed_scratch, copy_file_substituted, manifest_source_for_tier, SeedFileCollector,
 };
@@ -6,8 +8,10 @@ use super::perform::{
     perform_config_seed_with_clock_and_hooks, ConfigSeedTestHooks,
 };
 use super::*;
+use crate::config::agent_command::compute_config_dir_warning;
 use crate::config::seed_manifest::{ManifestSource, SeedManifestError, MAX_MANIFEST_ROWS};
 use crate::config::settings::CONFIG_SEED_OS_TOKENS;
+use crate::session::profile::CodingAgentKind;
 
 mod copy_and_warnings;
 
