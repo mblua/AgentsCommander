@@ -7,8 +7,8 @@ mod screen;
 #[cfg(test)]
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::idle_detector::IdleDetector;
+use crate::pty::output_senders::OutputSenderMap;
 use crate::session::profile::IdleTuning;
-use crate::telegram::manager::OutputSenderMap;
 pub(crate) use attachments::TerminalOutputAttachments;
 use attachments::{Accumulated, WindowLabel};
 pub(crate) use capture::CapturedVtScreen;

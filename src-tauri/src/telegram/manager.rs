@@ -13,6 +13,7 @@ use crate::capture::registry::CaptureRegistry;
 use crate::errors::AppError;
 use crate::network::OutboundNetwork;
 use crate::pty::manager::PtyManager;
+pub use crate::pty::output_senders::OutputSenderMap;
 use crate::session::profile::CodingAgentKind;
 use crate::telegram::bridge::{self, BridgeHandle, ReaderDest, ReaderDestSender, ReaderTask};
 use crate::telegram::types::{BridgeInfo, BridgeStatus, TelegramBotConfig};
@@ -74,11 +75,6 @@ impl ReaderEntry {
         }
     }
 }
-
-/// Shared map of session_id → mpsc sender. The PTY read loop checks this
-/// to clone bytes to an active bridge. Uses std::sync::Mutex because the
-/// PTY read loop runs on a std::thread, not tokio.
-pub type OutputSenderMap = Arc<Mutex<HashMap<Uuid, tokio::sync::mpsc::Sender<Vec<u8>>>>>;
 
 pub struct TelegramBridgeManager {
     bridges: HashMap<Uuid, BridgeHandle>,

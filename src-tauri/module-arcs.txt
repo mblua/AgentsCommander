@@ -2220,12 +2220,12 @@ agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::context
 agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::manager
 agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::output
+agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::output_senders
 agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::watchers
 agentscommander_lib::pty::container_backend -> agentscommander_lib::resource_monitor
 agentscommander_lib::pty::container_backend -> agentscommander_lib::session::profile
 agentscommander_lib::pty::container_backend -> agentscommander_lib::session::selection
 agentscommander_lib::pty::container_backend -> agentscommander_lib::shutdown
-agentscommander_lib::pty::container_backend -> agentscommander_lib::telegram::manager
 agentscommander_lib::pty::container_backend -> agentscommander_lib::web::broadcast
 agentscommander_lib::pty::container_backend::cleanup -> agentscommander_lib::pty::container_backend
 agentscommander_lib::pty::container_backend::cleanup -> agentscommander_lib::pty::container_backend::retained_cleanup
@@ -2321,9 +2321,9 @@ agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::idle_detect
 agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::job
 agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::manager
 agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::output
+agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::output_senders
 agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::spawn_diagnostics
 agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::watchers
-agentscommander_lib::pty::local_backend -> agentscommander_lib::telegram::manager
 agentscommander_lib::pty::local_backend -> agentscommander_lib::web::broadcast
 agentscommander_lib::pty::local_backend::blocking_spawn -> agentscommander_lib::errors
 agentscommander_lib::pty::local_backend::git_guard -> agentscommander_lib::config
@@ -2353,10 +2353,10 @@ agentscommander_lib::pty::manager -> agentscommander_lib::pty::git_watcher
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::local_backend
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::output
+agentscommander_lib::pty::manager -> agentscommander_lib::pty::output_senders
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::watchers
 agentscommander_lib::pty::manager -> agentscommander_lib::session::selection
 agentscommander_lib::pty::manager -> agentscommander_lib::shutdown
-agentscommander_lib::pty::manager -> agentscommander_lib::telegram::manager
 agentscommander_lib::pty::manager -> agentscommander_lib::web::broadcast
 agentscommander_lib::pty::manager::response_close -> agentscommander_lib::pty::backend
 agentscommander_lib::pty::manager::response_close -> agentscommander_lib::pty::manager
@@ -2383,8 +2383,8 @@ agentscommander_lib::pty::menu_guard -> agentscommander_lib::session::session
 agentscommander_lib::pty::menu_guard -> agentscommander_lib::shutdown
 agentscommander_lib::pty::output -> agentscommander_lib::capture
 agentscommander_lib::pty::output -> agentscommander_lib::pty::idle_detector
+agentscommander_lib::pty::output -> agentscommander_lib::pty::output_senders
 agentscommander_lib::pty::output -> agentscommander_lib::session::profile
-agentscommander_lib::pty::output -> agentscommander_lib::telegram::manager
 agentscommander_lib::pty::output -> agentscommander_lib::web::broadcast
 agentscommander_lib::pty::output::attachments -> agentscommander_lib::pty::output
 agentscommander_lib::pty::output::capture -> agentscommander_lib::pty::backend
@@ -2849,6 +2849,7 @@ agentscommander_lib::telegram::manager -> agentscommander_lib::capture::registry
 agentscommander_lib::telegram::manager -> agentscommander_lib::errors
 agentscommander_lib::telegram::manager -> agentscommander_lib::network
 agentscommander_lib::telegram::manager -> agentscommander_lib::pty::manager
+agentscommander_lib::telegram::manager -> agentscommander_lib::pty::output_senders
 agentscommander_lib::telegram::manager -> agentscommander_lib::session::profile
 agentscommander_lib::telegram::manager -> agentscommander_lib::telegram::bridge
 agentscommander_lib::telegram::manager -> agentscommander_lib::telegram::types

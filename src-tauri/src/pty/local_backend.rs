@@ -19,9 +19,9 @@ use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::output::{PtyScreenSnapshot, SessionIoFanout};
+use crate::pty::output_senders::OutputSenderMap;
 use crate::pty::spawn_diagnostics::{self, ChildLiveness, ExitCause, SpawnRecord, SpawnRecordInit};
 use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
-use crate::telegram::manager::OutputSenderMap;
 
 mod blocking_spawn;
 #[cfg(windows)]
