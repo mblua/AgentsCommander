@@ -34,12 +34,16 @@ fn format_no_response_error(
 ) -> String {
     if delivered_seen {
         format!(
-            "close-session delivered but daemon did not write a response within {}s; outcome unknown (request {}, message {})",
+            "close-session delivered but daemon did not write a response within {}s; outcome \
+             unknown (request {}, message {})",
             budget_secs, request_id, msg_id
         )
     } else {
         format!(
-            "close-session: no confirmation within {}s; outcome unknown (request {}, message {} still queued or in progress). The daemon may still be closing sessions in the background: closing several sessions takes about sessions x --timeout seconds and this wait budgets one. Verify with list-peers-lean before retrying.",
+            "close-session: no confirmation within {}s; outcome unknown (request {}, message \
+             {} still queued or in progress). The daemon may still be closing sessions in \
+             the background: closing several sessions takes about sessions x --timeout \
+             seconds and this wait budgets one. Verify with list-peers-lean before retrying.",
             budget_secs, request_id, msg_id
         )
     }
@@ -123,7 +127,8 @@ DISCOVERY: Use `list-peers-lean` to get valid agent names. The `name` field of \
 each entry is the canonical FQN to pass to --target.")]
 pub struct CloseSessionArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
-    /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION MODEL.
+    /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION
+    /// MODEL.
     #[arg(long)]
     pub token: Option<String>,
 
@@ -212,7 +217,8 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
             || !teams::is_coordinator_of(&sender, &resolved_target, &discovered)
         {
             log::error!(
-                "authorization denied — '{}' is not an orchestrator of '{}'. Only orchestrators can close sessions of their team agents.",
+                "authorization denied — '{}' is not an orchestrator of '{}'. Only orchestrators \
+                 can close sessions of their team agents.",
                 sender,
                 resolved_target
             );
@@ -375,116 +381,4 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── §224 D.1 — interpret_close_response_exit_code (non-vacuous) ──
-
-    #[test]
-    fn closed_status_returns_zero() {
-        let resp = r#"{"status":"closed","sessions_closed":2,"session_ids":["a","b"],"target":"t","action":"close-session"}"#;
-        assert_eq!(interpret_close_response_exit_code(resp), 0);
-    }
-
-    #[test]
-    fn already_closed_status_returns_zero() {
-        let resp = r#"{"status":"already_closed","sessions_closed":0,"session_ids":[],"target":"t","action":"close-session"}"#;
-        assert_eq!(interpret_close_response_exit_code(resp), 0);
-    }
-
-    #[test]
-    fn no_match_status_returns_zero() {
-        let resp = r#"{"status":"no_match","sessions_closed":0,"session_ids":[],"target":"t","action":"close-session"}"#;
-        assert_eq!(interpret_close_response_exit_code(resp), 0);
-    }
-
-    #[test]
-    fn restore_in_progress_status_returns_zero() {
-        let resp = r#"{"status":"restore_in_progress","sessions_closed":0,"session_ids":[],"target":"t","action":"close-session"}"#;
-        assert_eq!(interpret_close_response_exit_code(resp), 0);
-    }
-
-    #[test]
-    fn unparseable_json_returns_two() {
-        assert_eq!(interpret_close_response_exit_code("not json"), 2);
-        assert_eq!(interpret_close_response_exit_code(""), 2);
-        assert_eq!(interpret_close_response_exit_code("{partial"), 2);
-    }
-
-    #[test]
-    fn missing_status_field_returns_two() {
-        let resp = r#"{"sessions_closed":0,"target":"t","action":"close-session"}"#;
-        assert_eq!(interpret_close_response_exit_code(resp), 2);
-    }
-
-    #[test]
-    fn unknown_status_returns_two() {
-        let resp = r#"{"status":"weird_new_state","target":"t","action":"close-session"}"#;
-        assert_eq!(interpret_close_response_exit_code(resp), 2);
-    }
-
-    #[test]
-    fn non_string_status_returns_two() {
-        let resp = r#"{"status":42,"target":"t","action":"close-session"}"#;
-        assert_eq!(interpret_close_response_exit_code(resp), 2);
-    }
-
-    /// §224 review: valid JSON that is not an object (array, scalar, null)
-    /// still fails the `.get("status")` lookup and must return exit 2 to
-    /// preserve the "daemon spoke incoherently" contract.
-    #[test]
-    fn non_object_json_returns_two() {
-        assert_eq!(interpret_close_response_exit_code("null"), 2);
-        assert_eq!(interpret_close_response_exit_code("[1,2,3]"), 2);
-        assert_eq!(interpret_close_response_exit_code("\"closed\""), 2);
-        assert_eq!(interpret_close_response_exit_code("42"), 2);
-        assert_eq!(interpret_close_response_exit_code("true"), 2);
-    }
-
-    // ── §224 D.1 — print_status_prose panic-resistance smoke tests ──
-    // Subprocess test (D.8) covers the actual stdout content end-to-end.
-
-    #[test]
-    fn print_status_prose_does_not_panic_on_known_statuses() {
-        for s in &[
-            "closed",
-            "already_closed",
-            "no_match",
-            "restore_in_progress",
-        ] {
-            let body = format!(r#"{{"status":"{}","target":"t"}}"#, s);
-            print_status_prose(&body);
-        }
-    }
-
-    #[test]
-    fn print_status_prose_does_not_panic_on_unknown_input() {
-        print_status_prose("not json");
-        print_status_prose("");
-        print_status_prose(r#"{"status":"unknown"}"#);
-        print_status_prose(r#"{"no_status_at_all":true}"#);
-        print_status_prose(r#"{"status":42}"#);
-    }
-    // ── §1440 ──
-
-    // §1440 D.1: presupuesto derivado de --timeout
-    #[test]
-    fn response_wait_budget_adds_fixed_overhead() {
-        assert_eq!(response_wait_budget(30).as_secs(), 90);
-        assert_eq!(response_wait_budget(120).as_secs(), 180);
-        assert_eq!(response_wait_budget(0).as_secs(), 60);
-    }
-
-    // §1440 D.2: los ids van etiquetados con su artefacto en ambos sabores
-    #[test]
-    fn no_response_error_labels_both_ids_in_both_flavors() {
-        let m = format_no_response_error(90, "rid-1", "mid-1", false);
-        assert!(m.contains("no confirmation within 90s"));
-        assert!(m.contains("request rid-1"));
-        assert!(m.contains("message mid-1"));
-        let m = format_no_response_error(90, "rid-1", "mid-1", true);
-        assert!(m.contains("did not write a response within 90s"));
-        assert!(m.contains("request rid-1"));
-        assert!(m.contains("message mid-1"));
-    }
-}
+mod tests;
