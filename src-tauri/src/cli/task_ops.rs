@@ -26,8 +26,8 @@ mod clean;
 mod flow;
 mod status;
 
-pub use clean::clean_pair;
-pub use clean::recover_clean_pair;
+#[cfg(test)]
+use clean::recover_clean_pair;
 use clean::recover_clean_pair_locked;
 #[cfg(test)]
 use clean::{backup_names, CleanJournal};
@@ -81,21 +81,15 @@ pub enum EditOutcome {
     /// File was written. `backup` is `None` when the file did not exist before.
     Wrote {
         backup: Option<PathBuf>,
+        #[cfg(test)]
         content: String,
-        title: Option<String>,
     },
     /// Set-title found the existing value already matched; no write performed.
-    NoOp {
-        content: String,
-        title: Option<String>,
-    },
+    NoOp {},
     /// Coordinator set-title rejected because the current title is user-owned
     /// (`USER:`). NOT an error: exit code 0, no write, no backup. The GUI/human
     /// path (`SetUserTitle`) never produces this.
-    RejectedUserTitle {
-        content: String,
-        title: Option<String>,
-    },
+    RejectedUserTitle {},
 }
 
 /// Reserved marker that flags a task title as human-set (#738).
@@ -519,10 +513,6 @@ impl LockGuard {
             }
         }
     }
-}
-
-pub fn read_latest_status(root: &Path) -> Result<TaskSnapshot, TaskOpError> {
-    read_snapshot(root)
 }
 
 pub fn read_snapshot(root: &Path) -> Result<TaskSnapshot, TaskOpError> {
