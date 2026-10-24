@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::commands::role_templates::AGENCY_TEMPLATES_DIR;
+use crate::config::role_templates::AGENCY_TEMPLATES_DIR;
 
 const GIT_LS_REMOTE_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(10 * 60);

@@ -41,13 +41,6 @@
       ]
     },
     {
-      "id": "94e26523c02c3de3",
-      "members": [
-        "agentscommander_lib::cli::agency_templates",
-        "agentscommander_lib::commands::role_templates"
-      ]
-    },
-    {
       "id": "ffa526a35c677d6b",
       "members": [
         "agentscommander_lib::commands::config",

@@ -1,5 +1,6 @@
 pub(crate) mod ac_root;
 pub mod activity_log;
+pub(crate) mod agency_cache;
 pub mod agent_command;
 pub(crate) mod agent_config;
 pub(crate) mod agent_creation;
@@ -27,6 +28,7 @@ pub(crate) mod project_settings;
 pub(crate) mod projects;
 pub(crate) mod remote_activity_cache;
 pub(crate) mod replica_identity;
+pub(crate) mod role_templates;
 pub(crate) mod root_agent;
 pub(crate) mod seed_manifest;
 pub mod seeded_context_templates;
