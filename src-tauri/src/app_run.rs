@@ -384,6 +384,8 @@ pub(crate) fn run(
     #[cfg(target_os = "linux")]
     let builder = builder.manage(display_env);
 
+    let builder = crate::commands::session::selection_executor::install(builder);
+
     builder
         .manage(master_token)
         .manage(app_outbox)

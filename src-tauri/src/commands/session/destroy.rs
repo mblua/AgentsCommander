@@ -1,3 +1,4 @@
+use crate::app_state::DetachedSessionsState;
 use crate::commands::session::publish_legacy_destroy_outcome;
 #[cfg(test)]
 use crate::commands::session::restart_reader_seam;
@@ -11,7 +12,6 @@ use crate::session::selection::SelectionCoordinator;
 use crate::session::selection::SelectionTransaction;
 use crate::session::session::SessionStatus;
 use crate::telegram::manager::TelegramBridgeState;
-use crate::DetachedSessionsState;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::AppHandle;

@@ -1,3 +1,4 @@
+use crate::app_state::DetachedSessionsState;
 use crate::commands::session::attach_local_config_telegram_if_any;
 use crate::commands::session::attach_persisted_telegram_if_configured;
 use crate::commands::session::execute_restart_transaction_in_context;
@@ -23,7 +24,6 @@ use crate::session::session::SessionCommunication;
 use crate::session::session::SessionCommunicationKind;
 use crate::session::session::SessionInfo;
 use crate::telegram::manager::TelegramBridgeState;
-use crate::DetachedSessionsState;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::AppHandle;
