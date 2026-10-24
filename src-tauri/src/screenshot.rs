@@ -14,7 +14,7 @@
 //! - `unsupported` is the every-other-target stub: same public surface, no
 //!   native screenshot crates, every capture path reports an unsupported status.
 //!
-//! `pub use <cfg-module>::*` lets callers use `crate::screenshot::*` without
+//! Explicit reexports let callers use `crate::screenshot` without
 //! per-call `cfg` blocks; the two cfg modules each provide
 //! `ScreenshotCaptureLifecycle`, `ScreenshotHotkeyRuntime`, and the runtime
 //! functions referenced by the type aliases and command layer below.
@@ -30,13 +30,31 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod native;
+#[cfg(target_os = "macos")]
+pub use native::MACOS_SCREEN_RECORDING_REQUIRED;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-pub use native::*;
+pub use native::{
+    begin_capture, begin_capture_from_hotkey, cancel_capture, clear_capture_and_destroy_overlays,
+    confirm_selection, handle_overlay_window_destroyed, overlay_state, register_configured_hotkey,
+    ActiveScreenshotCapture, BeginOutcome, CapturedMonitor, ScreenshotCaptureLifecycle,
+    ScreenshotCaptureStarting, ScreenshotHotkeyRuntime,
+};
+#[cfg(target_os = "windows")]
+pub(crate) use native::{capture_window_png, parse_window_id, WindowScreenshotCaptureError};
+#[cfg(target_os = "linux")]
+pub use native::{
+    classify_display_server, display_env_snapshot, DisplayEnvSnapshot, LinuxDisplayServer,
+    WAYLAND_UNSUPPORTED,
+};
 
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 mod unsupported;
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-pub use unsupported::*;
+pub use unsupported::{
+    begin_capture, begin_capture_from_hotkey, cancel_capture, clear_capture_and_destroy_overlays,
+    confirm_selection, handle_overlay_window_destroyed, overlay_state, register_configured_hotkey,
+    ScreenshotCaptureLifecycle, ScreenshotHotkeyRuntime,
+};
 
 /// Short-lived capture lifecycle, guarded by an async mutex. `Starting` is
 /// reserved under the lock before the (synchronous, off-thread) desktop capture
@@ -172,50 +190,4 @@ pub fn parse_screenshot_hotkey(value: &str) -> Result<ParsedHotkey, String> {
 }
 
 #[cfg(test)]
-mod parser_tests {
-    use super::*;
-
-    #[test]
-    fn accepts_ctrl_q_case_insensitive() {
-        for value in ["Ctrl+Q", "ctrl+q", "Control+Q", "CTRL+Q", "  Ctrl + q "] {
-            let parsed = parse_screenshot_hotkey(value)
-                .unwrap_or_else(|e| panic!("expected '{value}' to parse: {e}"));
-            assert_eq!(parsed.modifier, HotkeyModifier::Ctrl);
-            assert_eq!(parsed.key, 'Q', "value {value}");
-        }
-    }
-
-    #[test]
-    fn accepts_alphanumeric_keys() {
-        assert_eq!(parse_screenshot_hotkey("Ctrl+1").unwrap().key, '1');
-        assert_eq!(parse_screenshot_hotkey("Control+a").unwrap().key, 'A');
-    }
-
-    #[test]
-    fn rejects_empty_and_whitespace() {
-        assert!(parse_screenshot_hotkey("").is_err());
-        assert!(parse_screenshot_hotkey("   ").is_err());
-    }
-
-    #[test]
-    fn rejects_missing_modifier_or_key() {
-        assert!(parse_screenshot_hotkey("Q").is_err());
-        assert!(parse_screenshot_hotkey("Ctrl+").is_err());
-        assert!(parse_screenshot_hotkey("+Q").is_err());
-    }
-
-    #[test]
-    fn rejects_unknown_modifier() {
-        assert!(parse_screenshot_hotkey("Hyper+Q").is_err());
-        assert!(parse_screenshot_hotkey("Alt+Q").is_err());
-        assert!(parse_screenshot_hotkey("Shift+Q").is_err());
-    }
-
-    #[test]
-    fn rejects_multi_modifier_and_multi_key() {
-        // MVP accepts exactly one modifier plus one key.
-        assert!(parse_screenshot_hotkey("Ctrl+Shift+Q").is_err());
-        assert!(parse_screenshot_hotkey("Ctrl+QQ").is_err());
-        assert!(parse_screenshot_hotkey("Ctrl+F1").is_err());
-    }
-}
+mod tests;
