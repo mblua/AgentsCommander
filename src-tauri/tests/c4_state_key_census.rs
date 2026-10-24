@@ -214,7 +214,7 @@ fn assert_frozen(id: &str, hits: &[Hit], pin: &Pin) {
 #[test]
 fn the_inventory_is_the_certified_file_set() {
     let sources = rust_sources();
-    assert_eq!(sources.len(), 1137, "inventory count");
+    assert_eq!(sources.len(), 1266, "inventory count");
     for (path, text) in &sources {
         assert!(path.starts_with("src-tauri/src/"), "path form: {path}");
         assert!(!path.contains('\\'), "path separator: {path}");
@@ -225,9 +225,9 @@ fn the_inventory_is_the_certified_file_set() {
 #[test]
 fn p1_is_frozen() {
     let pin = Pin {
-        total: 139,
-        distinct: 133,
-        sha256: "0366ECB8C79763E5271C1C8B41F280E38C343F650E743726825B0775923A078C",
+        total: 138,
+        distinct: 132,
+        sha256: "8C2E1F76F527BF0BE91AFB750F82B2E7CB8F47363FCEE258C02B26CC3B4E0D08",
         per_file: &[
             ("cli/list_peers/tests/lean_json.rs", 1),
             ("commands/ac_discovery/replica_read.rs", 1),
@@ -254,7 +254,7 @@ fn p1_is_frozen() {
                 "config/coding_agent_profiles/tests/transition_reference.rs",
                 1,
             ),
-            ("config/replica_identity.rs", 5),
+            ("config/replica_identity/tests.rs", 4),
             ("config/root_agent/file_io.rs", 1),
             ("config/root_agent/tests/agency_migration.rs", 1),
             ("config/root_agent/tests/config_merge.rs", 16),
@@ -343,7 +343,7 @@ fn p6_is_frozen() {
     let pin = Pin {
         total: 50,
         distinct: 45,
-        sha256: "F2A0832FB73819FFB8F683AE15C93CA7344BBC429A781599F464F0BF56039A87",
+        sha256: "FFBCC12110D7DEA82BFEA97B33123DF9E7CC8D3A9B37FC196A0465471F405A11",
         per_file: &[
             ("commands/ac_discovery/tests/discovery.rs", 1),
             ("commands/config/tests/selection_api/error_code.rs", 1),
@@ -379,7 +379,7 @@ fn p6_is_frozen() {
             ("config/local_config_io/tests.rs", 2),
             ("config/naming_migration.rs", 1),
             ("config/naming_migration/ignore_rows.rs", 4),
-            ("config/replica_identity.rs", 3),
+            ("config/replica_identity/tests.rs", 3),
             ("config/root_agent/tests/config_merge.rs", 1),
             ("config/root_agent/tests/tracked_state.rs", 1),
             ("config/settings/source.rs", 1),

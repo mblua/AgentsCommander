@@ -684,7 +684,8 @@ impl MailboxPoller {
                 thresholds,
             } => {
                 log::info!(
-                    "[context-alert] delivered coordinatorSession={} project={} workgroup={} member={} observed={} thresholds={:?}",
+                    "[context-alert] delivered coordinatorSession={} project={} \
+                    workgroup={} member={} observed={} thresholds={:?}",
                     session_id,
                     project.unwrap_or(""),
                     workgroup,

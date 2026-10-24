@@ -7,8 +7,8 @@
 //! scraper cannot route, inject, or remediate the sampled session. That boundary is
 //! structural: it holds four narrow trait objects and no `AppHandle` or `PtyManager`.
 
-pub mod pattern;
-pub mod rows;
+pub(crate) mod pattern;
+pub(crate) mod rows;
 
 use futures::future::BoxFuture;
 use std::collections::HashMap;

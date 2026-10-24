@@ -19,9 +19,20 @@ mod pty_recovery;
 mod rows;
 mod types;
 
-pub use locks::*;
-pub use rows::*;
-pub use types::*;
+pub(crate) use locks::PtyInputTargetOwnership;
+#[cfg(test)]
+use locks::{sqlite_sidecar_paths, try_stripe_lock_at, verify_existing_sqlite_files};
+pub use locks::{
+    MessageStoreState, PreparationHeartbeatGuard, PtyInputActiveGuard, PtyInputActiveOperations,
+    PtyInputStripeGuard, PtyInputTargetGate, PtyInputTargetGateState, PtyInputTargetGuard,
+    PtyInputTargetLocks,
+};
+pub use rows::retry_backoff_seconds;
+pub(crate) use types::DuePtyInputCandidate;
+pub use types::{
+    ClaimedPtyInputOperation, EnqueueRequest, EnqueueResult, HostPtyInputRejectionRequest,
+    LeasedMessage, PtyInputEnqueueRequest, PtyInputEnqueueResult,
+};
 
 pub const DB_FILENAME: &str = crate::config::instance_artifacts::MESSAGE_BUS_DB_FILENAME;
 pub const INLINE_BODY_MAX_BYTES: usize = 256 * 1024;

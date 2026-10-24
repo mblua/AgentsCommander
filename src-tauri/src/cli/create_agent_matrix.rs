@@ -25,12 +25,14 @@ use crate::config::projects::resolve_project_reference;
 #[derive(Args)]
 #[command(after_help = "\
 NOTES:\n  \
-  --project is a registered AC project folder name from settings.projectPaths. Paths are not accepted.\n  \
+  --project is a registered AC project folder name from settings.projectPaths. \
+Paths are not accepted.\n  \
   The target project must contain .ac.\n  \
   --name is sanitized by the same backend as the UI into a lower-case Matrix id.\n  \
   --role-template must be an id from the same source as the New Agent picker.\n  \
   Invalid templates fail before creating the target Matrix directory.\n  \
-  Output is JSON with agentPath, agentName, rolePath, launched, launchStatus, launchError, launchAgent.")]
+  Output is JSON with agentPath, agentName, rolePath, launched, launchStatus, \
+launchError, launchAgent.")]
 pub struct CreateAgentMatrixArgs {
     /// Registered AC project folder name. Paths are not accepted.
     #[arg(long, value_name = "PROJECT")]
@@ -203,7 +205,8 @@ pub(crate) fn execute_matrix_project_create(
                                 create_agent::LaunchOutcome::Pending => {
                                     launch_status = LaunchStatus::Pending;
                                     eprintln!(
-                                        "Warning: no launch result within {}s (is the AgentsCommander app running?)",
+                                        "Warning: no launch result within {}s \
+                                         (is the AgentsCommander app running?)",
                                         create_agent::SESSION_REQUEST_RESULT_TIMEOUT.as_secs()
                                     );
                                 }
@@ -231,7 +234,8 @@ pub(crate) fn execute_matrix_project_create(
             None => {
                 let available: Vec<&str> = settings.agents.iter().map(|a| a.id.as_str()).collect();
                 let message = format!(
-                    "agent '{}' not found in settings. Available: {}. Matrix created but not launched.",
+                    "agent '{}' not found in settings. Available: {}. \
+                     Matrix created but not launched.",
                     requested,
                     available.join(", ")
                 );

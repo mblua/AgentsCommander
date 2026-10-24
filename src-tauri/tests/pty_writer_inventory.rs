@@ -68,7 +68,7 @@ fn every_production_pty_writer_is_in_the_explicit_permit_inventory() {
     // 1. Every interactive/automated writer surface routes through the permit.
     let expected_surfaces = [
         "src/commands/pty.rs",
-        "src/web/mod.rs",
+        "src/web.rs",
         "src/web/commands.rs",
         "src/pty/inject.rs",
         "src/phone/mailbox/self_switch.rs",
@@ -125,8 +125,8 @@ fn every_production_pty_writer_is_in_the_explicit_permit_inventory() {
             "src/pty/manager/route_proof.rs",
             "src/pty/manager/tests.rs",
             "src/pty/manager/tests/response_close_writer.rs",
+            "src/web.rs",
             "src/web/commands.rs",
-            "src/web/mod.rs",
         ],
         "a new PTY writer must be deliberately added to this complete permit inventory"
     );

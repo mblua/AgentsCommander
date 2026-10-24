@@ -47,13 +47,23 @@ impl WindowScreenshotCliError {
     fn detail(&self) -> String {
         match self {
             WindowScreenshotCliError::InvalidWindowId => {
-                "window id must be a canonical decimal (no sign, no leading zeros, at most 20 digits)".to_string()
+                "window id must be a canonical decimal (no sign, no leading zeros, \
+                 at most 20 digits)"
+                    .to_string()
             }
-            WindowScreenshotCliError::WindowNotFound => "no live window with that id was found".to_string(),
+            WindowScreenshotCliError::WindowNotFound => {
+                "no live window with that id was found".to_string()
+            }
             WindowScreenshotCliError::CaptureBusy => "capture capacity is full".to_string(),
-            WindowScreenshotCliError::CaptureTooLarge => "window capture exceeds the configured size limit".to_string(),
-            WindowScreenshotCliError::CaptureUnavailable => "window capture is unavailable".to_string(),
-            WindowScreenshotCliError::OutputWriteFailed(error) => format!("failed to write output file: {error}"),
+            WindowScreenshotCliError::CaptureTooLarge => {
+                "window capture exceeds the configured size limit".to_string()
+            }
+            WindowScreenshotCliError::CaptureUnavailable => {
+                "window capture is unavailable".to_string()
+            }
+            WindowScreenshotCliError::OutputWriteFailed(error) => {
+                format!("failed to write output file: {error}")
+            }
         }
     }
 }
@@ -105,33 +115,4 @@ fn execute_inner(args: WindowScreenshotArgs) -> Result<(), WindowScreenshotCliEr
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn execute_inner_rejects_noncanonical_window_ids_before_capture() {
-        for raw in [
-            "",
-            "abc",
-            "-1",
-            "+1",
-            " 1",
-            "1 ",
-            "01",
-            "007",
-            "1.5",
-            "%FF",
-            "123456789012345678901",
-            "18446744073709551616",
-        ] {
-            let args = WindowScreenshotArgs {
-                window_id: raw.to_string(),
-                output: PathBuf::from("out.png"),
-            };
-            assert_eq!(
-                execute_inner(args),
-                Err(WindowScreenshotCliError::InvalidWindowId)
-            );
-        }
-    }
-}
+mod tests;

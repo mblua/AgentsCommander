@@ -1,0 +1,1 @@
+{"projectPath":"/tmp/project","id":"daily-sync","name":"Renamed sync","expr":"30 9 * * *","workgroup":"wg-2-dev-team","promptBody":"Summarize status","busyCoordinator":"skip","enabled":true}

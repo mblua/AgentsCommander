@@ -1,0 +1,1 @@
+{"projectPath":"/tmp/project","name":"Daily sync","expr":"0 9 * * *","workgroup":"wg-1-dev-team","promptBody":"Send status"}

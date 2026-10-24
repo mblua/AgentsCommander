@@ -208,15 +208,15 @@ const ALLOWED_WEB_REFERENCES: [(&str, &str); 2] = [
 
 /// Every `(file, child)` reference the emitter module is allowed to make under
 /// `crate::`, sorted.
-///
-/// One row. The emitter module's whole in-crate dependency is the `WsBroadcaster`
-/// type in `broadcast_all`'s signature, and the non-absorption argument of the
-/// plan's Section 4.3 is exactly the claim that this stays true.
-const ALLOWED_EMITTER_CRATE_REFERENCES: [(&str, &str); 1] = [("src/web/event_broadcast.rs", "web")];
+/// The production row pins `WsBroadcaster` in `broadcast_all`'s signature.
+/// The child test file imports the same fan-out after its extraction in #3188.
+const ALLOWED_EMITTER_CRATE_REFERENCES: [(&str, &str); 2] = [
+    ("src/web/event_broadcast.rs", "web"),
+    ("src/web/event_broadcast/tests.rs", "web"),
+];
 
 /// Every `(file, child)` reference the emitter module is allowed to make into a
 /// child of `crate::web`, sorted.
-///
 /// Two equalities rather than one path, and this is deliberate: the `crate::`
 /// table above pins the first segment and this one pins the second, and together
 /// they admit `crate::web::broadcast` and nothing else. Expressing the contract
@@ -225,12 +225,13 @@ const ALLOWED_EMITTER_CRATE_REFERENCES: [(&str, &str); 1] = [("src/web/event_bro
 /// `use crate::web::{broadcast::A, commands::B}` and `use crate::{web::A, x::B}`
 /// correctly under each anchor. Reusing the audited matcher twice is worth more
 /// than a prettier table.
-const ALLOWED_EMITTER_WEB_REFERENCES: [(&str, &str); 1] =
-    [("src/web/event_broadcast.rs", "broadcast")];
+const ALLOWED_EMITTER_WEB_REFERENCES: [(&str, &str); 2] = [
+    ("src/web/event_broadcast.rs", "broadcast"),
+    ("src/web/event_broadcast/tests.rs", "broadcast"),
+];
 
 /// Every `(file, child)` reference the emitter module is allowed to make under
 /// `super::`, sorted.
-///
 /// **This anchor exists only for the emitter module, and the asymmetry is the
 /// point.** The dispatcher `web::commands` is the emitter's SIBLING: from inside
 /// `src/web/`, `super::commands` reaches it without the text `web::` appearing
@@ -240,15 +241,14 @@ const ALLOWED_EMITTER_WEB_REFERENCES: [(&str, &str); 1] =
 /// `commands::project_settings` needs no such anchor because it is not a sibling
 /// of anything under `web`: every path from there into `web` must spell `web`
 /// followed by `::`, or rename a group, which is refused separately.
-///
-/// The one allowed row is the test module reaching its own parent for the
+/// The one allowed row is the extracted test file reaching its own parent for the
 /// function under test. **A glob is deliberately not allowed.** `use super::*;`
 /// written at module level would pull `crate::web`'s children, `commands`
 /// included, into scope under no name this scan could follow, and it is
 /// indistinguishable by text from the same glob inside `mod tests`. That is why
 /// Section 5.1 imports by name instead of globbing its parent.
 const ALLOWED_EMITTER_SUPER_REFERENCES: [(&str, &str); 1] =
-    [("src/web/event_broadcast.rs", "broadcast_all")];
+    [("src/web/event_broadcast/tests.rs", "broadcast_all")];
 
 /// The child #1265 removed, called out separately so its failure carries the
 /// explanation of the cycle rather than the generic allowlist message.
@@ -1320,7 +1320,7 @@ fn the_emitter_home_names_nothing_but_the_websocket_fan_out() {
          A GLOB FAILS HERE ON PURPOSE. `use super::*;` at module level pulls \
          `crate::web`'s children, `commands` included, into scope under no name \
          a text scan can follow, and it is indistinguishable by text from the \
-         same glob inside `mod tests`. The test module therefore imports \
+         same glob inside `mod tests`. The extracted test file imports \
          `broadcast_all` by name, which is the one row this table allows.\n\
          \n\
          `commands::project_settings` has no equivalent assertion because it is \

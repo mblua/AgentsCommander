@@ -1,21 +1,24 @@
 use super::{
-    agents_instance_path, compose_settings_parts, empty_project_transaction, io_error_kind_as_str,
-    json_error_category_as_str, parse_agents_instance_contents, project_paths_path,
-    raw_project_source_from_bytes, repair_loaded_response_close_settings,
-    repair_loaded_room_idle_confirmation_settings, select_project_source_from_raw, AppSettings,
-    ProjectPathsWriteTransaction, SettingsFileLock, SettingsSaveCause, SettingsSaveError,
-    SettingsSaveReason, SourceReadContext, CONFIGURATION_COMMAND_PAIRS,
-    OVERLAY_DERIVED_ID_CLOSURES, OVERLAY_INELIGIBLE_DISK_KEYS, OVERLAY_INELIGIBLE_LEGACY_KEYS,
+    empty_project_transaction, io_error_kind_as_str, json_error_category_as_str, AppSettings,
+    ProjectPathsWriteTransaction, SettingsSaveCause, SettingsSaveError, SourceReadContext,
 };
-use crate::config::instance_artifacts::{
-    SETTINGS_LOCAL_OVERRIDE_FILE_NAME, SETTINGS_OWNER_LOCK_FILE_NAME,
-};
-use crate::config::local_overlay::LocalSettingsOverlay;
-use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+mod capture;
+mod lease;
+
+#[cfg(test)]
+pub(crate) use capture::OWNER_CAPTURE_PANIC;
+pub(crate) use capture::{
+    capture_source_file, capture_sources_locked, compose_captured_sources, recover_composition,
+    CapturedSource, SETTINGS_CAPTURE_LIMIT,
+};
+pub(crate) use lease::SettingsOwnerLease;
+#[cfg(all(test, windows))]
+pub(crate) use lease::{SettingsOwnerLeaseVerifyFaultGuard, SETTINGS_OWNER_LEASE_VERIFY_FAULT};
 
 // ---------------------------------------------------------------------------
 // #2994 (E2992 P41) - the settings owner
@@ -199,142 +202,6 @@ pub(crate) struct SettingsOwnerCounters {
     pub(crate) operations: AtomicU64,
 }
 
-/// The lifecycle lease: an exclusive lock on the stable owner sidecar inside a
-/// retained physical directory. Dropping it unlocks; the sidecar is never
-/// unlinked.
-pub(crate) struct SettingsOwnerLease {
-    pub(crate) _lock: SettingsFileLock,
-    pub(crate) retained: crate::path_identity::RetainedDirectory,
-    pub(crate) settings_path: PathBuf,
-}
-
-#[cfg(all(test, windows))]
-pub(crate) struct SettingsOwnerLeaseVerifyFault {
-    pub(crate) path: PathBuf,
-    pub(crate) armed: bool,
-    pub(crate) hits: std::rc::Rc<std::cell::Cell<usize>>,
-}
-
-#[cfg(all(test, windows))]
-thread_local! {
-    pub(crate) static SETTINGS_OWNER_LEASE_VERIFY_FAULT: std::cell::RefCell<
-        Option<SettingsOwnerLeaseVerifyFault>,
-    > = const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(all(test, windows))]
-pub(crate) struct SettingsOwnerLeaseVerifyFaultGuard {
-    pub(crate) path: PathBuf,
-    pub(crate) hits: std::rc::Rc<std::cell::Cell<usize>>,
-}
-
-#[cfg(all(test, windows))]
-impl SettingsOwnerLeaseVerifyFaultGuard {
-    pub(crate) fn install(path: PathBuf) -> Self {
-        let hits = std::rc::Rc::new(std::cell::Cell::new(0));
-        SETTINGS_OWNER_LEASE_VERIFY_FAULT.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            assert!(slot.is_none(), "lease verification faults cannot nest");
-            *slot = Some(SettingsOwnerLeaseVerifyFault {
-                path: path.clone(),
-                armed: true,
-                hits: std::rc::Rc::clone(&hits),
-            });
-        });
-        Self { path, hits }
-    }
-}
-
-#[cfg(all(test, windows))]
-impl Drop for SettingsOwnerLeaseVerifyFaultGuard {
-    fn drop(&mut self) {
-        SETTINGS_OWNER_LEASE_VERIFY_FAULT.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            if slot.as_ref().is_some_and(|fault| {
-                fault.path == self.path && std::rc::Rc::ptr_eq(&fault.hits, &self.hits)
-            }) {
-                *slot = None;
-            }
-        });
-    }
-}
-
-impl SettingsOwnerLease {
-    pub(crate) fn acquire(
-        settings_path: &Path,
-        wait: std::time::Duration,
-    ) -> Result<Self, SettingsOwnerError> {
-        let identity = |reason: &str| SettingsOwnerError::Lifecycle(reason.to_string());
-        let parent = settings_path
-            .parent()
-            .ok_or_else(|| identity("missing_parent_directory"))?;
-        let leaf = settings_path
-            .file_name()
-            .ok_or_else(|| identity("missing_file_name"))?;
-        // The chain check stops at the first link, so a `..` after a tolerated
-        // link (macOS `/var`) would otherwise be resolved by canonicalize.
-        if parent
-            .components()
-            .any(|component| component == std::path::Component::ParentDir)
-        {
-            return Err(identity("lock_identity_rejected"));
-        }
-        match crate::path_identity::verify_component_chain_reason(parent) {
-            Ok(()) | Err(crate::path_identity::PathRule::ComponentIsLink) => {}
-            Err(_) => return Err(identity("lock_identity_rejected")),
-        }
-        let physical_parent =
-            std::fs::canonicalize(parent).map_err(|_| identity("lock_identity_rejected"))?;
-        let retained = crate::path_identity::retain_directory(&physical_parent)
-            .map_err(|_| identity("lock_identity_rejected"))?;
-        let physical = retained.identity().canonical_path.join(leaf);
-        let lock = SettingsFileLock::acquire_named(
-            &physical,
-            SETTINGS_OWNER_LOCK_FILE_NAME,
-            wait,
-            "settings_owner_lifecycle",
-        )
-        .map_err(|error| match error.cause {
-            SettingsSaveCause::Semantic(SettingsSaveReason::LockTimedOut) => {
-                SettingsOwnerError::LifecycleTimedOut
-            }
-            _ => SettingsOwnerError::Lifecycle(owner_save_error_text(&error)),
-        })?;
-        retained
-            .verify_current()
-            .map_err(|_| identity("lock_identity_rejected"))?;
-        Ok(Self {
-            _lock: lock,
-            retained,
-            settings_path: physical,
-        })
-    }
-
-    pub(crate) fn verify(&self) -> Result<(), SettingsOwnerError> {
-        #[cfg(all(test, windows))]
-        if SETTINGS_OWNER_LEASE_VERIFY_FAULT.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            let Some(fault) = slot.as_mut() else {
-                return false;
-            };
-            if fault.armed && fault.path == self.settings_path {
-                fault.armed = false;
-                fault.hits.set(fault.hits.get() + 1);
-                true
-            } else {
-                false
-            }
-        }) {
-            return Err(SettingsOwnerError::Lifecycle(
-                "lock_identity_rejected".to_string(),
-            ));
-        }
-        self.retained
-            .verify_current()
-            .map_err(|_| SettingsOwnerError::Lifecycle("lock_identity_rejected".to_string()))
-    }
-}
-
 /// The single settings owner. `SettingsState` is `Arc<SettingsOwner>`.
 pub struct SettingsOwner {
     pub(crate) settings: Arc<RwLock<AppSettings>>,
@@ -475,206 +342,6 @@ impl SettingsOperationGuard<'_> {
         );
         result
     }
-}
-
-/// One captured source: verified absence, or its bytes with the identity witness
-/// of the object they were read from.
-#[derive(Debug, Clone)]
-pub(crate) enum CapturedSource {
-    Absent,
-    Present {
-        bytes: Vec<u8>,
-        witness: crate::path_identity::VerifiedPathIdentity,
-    },
-}
-
-impl CapturedSource {
-    pub(crate) fn bytes(&self) -> Option<&[u8]> {
-        match self {
-            Self::Absent => None,
-            Self::Present { bytes, .. } => Some(bytes),
-        }
-    }
-
-    /// A short, non-reversible witness label for DEBUG diagnostics.
-    pub(crate) fn witness_label(&self) -> String {
-        match self {
-            Self::Absent => "absent".to_string(),
-            Self::Present { witness, .. } => match witness.content_sha256 {
-                Some(digest) => digest[..4]
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect(),
-                None => format!("len{}", witness.metadata.len),
-            },
-        }
-    }
-}
-
-/// The four settings sources, captured once under the transactional lock.
-#[derive(Debug, Clone)]
-pub(crate) struct CapturedSettingsSources {
-    pub(crate) settings_path: PathBuf,
-    pub(crate) base: CapturedSource,
-    pub(crate) project_paths: CapturedSource,
-    pub(crate) agents: CapturedSource,
-    pub(crate) overlay: CapturedSource,
-}
-
-pub(crate) const SETTINGS_CAPTURE_LIMIT: usize = 16 * 1024 * 1024;
-
-pub(crate) fn capture_source_file(
-    path: &Path,
-    counters: &SettingsOwnerCounters,
-) -> Result<CapturedSource, SettingsOwnerError> {
-    counters.source_reads.fetch_add(1, Ordering::Relaxed);
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(CapturedSource::Absent);
-        }
-        Err(error) => {
-            let kind = io_error_kind_as_str(error.kind());
-            return Err(SettingsOwnerError::Capture(format!("{name}: {kind}")));
-        }
-    }
-    // A source that vanishes after the metadata probe is a race, not absence.
-    crate::path_identity::read_bounded_regular(path, SETTINGS_CAPTURE_LIMIT)
-        .map(|(bytes, witness)| CapturedSource::Present { bytes, witness })
-        .map_err(|reason| SettingsOwnerError::Capture(format!("{name}: {reason}")))
-}
-
-// Test seam: the next owner capture on this thread panics, so the panic is
-// raised outside the builder while the operation's guards are held.
-#[cfg(test)]
-thread_local! {
-    pub(crate) static OWNER_CAPTURE_PANIC: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
-}
-
-/// Captures base, project-paths, agents and overlay exactly once while the guard
-/// holds the transactional lock. No directory creation, migration or write.
-pub(crate) fn capture_sources_locked(
-    guard: &SettingsOperationGuard<'_>,
-) -> Result<CapturedSettingsSources, SettingsOwnerError> {
-    guard.counters.captures.fetch_add(1, Ordering::Relaxed);
-    #[cfg(test)]
-    OWNER_CAPTURE_PANIC.with(|armed| {
-        if armed.replace(false) {
-            panic!("injected settings owner capture panic");
-        }
-    });
-    let path = guard.settings_path();
-    let captured = CapturedSettingsSources {
-        settings_path: path.to_path_buf(),
-        base: capture_source_file(path, guard.counters)?,
-        project_paths: capture_source_file(&project_paths_path(path), guard.counters)?,
-        agents: capture_source_file(&agents_instance_path(path), guard.counters)?,
-        overlay: capture_source_file(
-            &path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
-            guard.counters,
-        )?,
-    };
-    guard.lease.verify()?;
-    log::debug!(
-        "[settings-owner] captured base={} project={} agents={} overlay={}",
-        captured.base.witness_label(),
-        captured.project_paths.witness_label(),
-        captured.agents.witness_label(),
-        captured.overlay.witness_label()
-    );
-    Ok(captured)
-}
-
-pub(crate) fn recover_composition(
-    captured: &CapturedSettingsSources,
-) -> Result<AppSettings, SettingsOwnerError> {
-    compose_captured_sources(captured, CapturePolicy::Recovery)
-}
-
-/// Composes captured bytes through the same selector and parser core the loaders
-/// use. No second read, no defaults for a present source that fails.
-pub(crate) fn compose_captured_sources(
-    captured: &CapturedSettingsSources,
-    policy: CapturePolicy,
-) -> Result<AppSettings, SettingsOwnerError> {
-    let path = captured.settings_path.as_path();
-    let destination_path = project_paths_path(path);
-    let selection_error = |error: SettingsSaveError| {
-        SettingsOwnerError::Compose(format!("selection: {}", owner_save_error_text(&error)))
-    };
-    let raw = |source: &CapturedSource, label: &Path, legacy: bool| {
-        source
-            .bytes()
-            .map(|bytes| raw_project_source_from_bytes(bytes.to_vec(), label, label, legacy))
-            .transpose()
-    };
-    let legacy = raw(&captured.base, path, true).map_err(selection_error)?;
-    let destination = raw(&captured.project_paths, &destination_path, false);
-    let destination = destination.map_err(selection_error)?;
-    let selected = select_project_source_from_raw(
-        legacy,
-        destination,
-        path,
-        &destination_path,
-        &destination_path,
-    )
-    .map_err(selection_error)?;
-    let agents_label = agents_instance_path(path);
-    let agents = match captured.agents.bytes() {
-        None => Ok(None),
-        Some(bytes) => std::str::from_utf8(bytes)
-            .map_err(|_| format!("{} is not valid UTF-8", agents_label.display()))
-            .and_then(|contents| parse_agents_instance_contents(contents, &agents_label))
-            .map(Some),
-    };
-    if policy == CapturePolicy::Recovery && agents.is_err() {
-        let reason = "agents source is invalid during recovery";
-        return Err(SettingsOwnerError::Compose(reason.to_string()));
-    }
-    let source = path.to_string_lossy();
-    // Only a verified-absent base composes over serialized defaults.
-    let value = match &selected.legacy {
-        Some(legacy) => Value::Object(legacy.object.clone()),
-        None => serde_json::to_value(AppSettings::default())
-            .map_err(|error| SettingsOwnerError::Compose(format!("defaults: {error}")))?,
-    };
-    let overlay_bytes = captured.overlay.bytes();
-    let (mut settings, _legacy_profiles, agents_layer) = compose_settings_parts(
-        value,
-        &source,
-        Some(path),
-        Some(&selected.projection),
-        Some(agents),
-        |value| match overlay_bytes {
-            Some(bytes) => LocalSettingsOverlay::from_overlay_bytes_paired(
-                value,
-                bytes,
-                OVERLAY_INELIGIBLE_DISK_KEYS,
-                OVERLAY_INELIGIBLE_LEGACY_KEYS,
-                OVERLAY_DERIVED_ID_CLOSURES,
-                CONFIGURATION_COMMAND_PAIRS,
-            ),
-            None => LocalSettingsOverlay::default(),
-        },
-        None,
-    )
-    .map_err(|_| SettingsOwnerError::Compose("base settings do not decode".to_string()))?;
-    let overlay_rejected = settings.local_overlay_state.rejection().is_some();
-    if policy == CapturePolicy::Recovery && overlay_rejected {
-        let reason = "overlay rejected during recovery";
-        return Err(SettingsOwnerError::Compose(reason.to_string()));
-    }
-    if let Some(state) = agents_layer {
-        settings.agents_layer = state;
-    }
-    repair_loaded_response_close_settings(&mut settings, &source);
-    repair_loaded_room_idle_confirmation_settings(&mut settings, &source);
-    Ok(settings)
 }
 
 impl SettingsOwner {

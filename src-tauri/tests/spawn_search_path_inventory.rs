@@ -156,7 +156,12 @@ const INVENTORY: &[Row] = &[
     ),
     ("src-tauri/src/cli/agency_templates/git.rs", 1, 1, &[]),
     ("src-tauri/src/cli/harness.rs", 3, 2, &[(WindowsOnly, 1)]),
-    ("src-tauri/src/cli/mod.rs", 1, 0, &[(TestOnly, 1)]),
+    (
+        "src-tauri/src/cli/tests/startup_message_tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
     (
         "src-tauri/src/cli/task_ops/tests/issue_2837_recovery.rs",
         1,
@@ -241,7 +246,13 @@ const INVENTORY: &[Row] = &[
         2,
         &[],
     ),
-    ("src-tauri/src/commands/repos.rs", 2, 1, &[(TestOnly, 1)]),
+    ("src-tauri/src/commands/repos.rs", 1, 1, &[]),
+    (
+        "src-tauri/src/commands/repos/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
     (
         "src-tauri/src/commands/session/tests/launch_and_probe.rs",
         1,
@@ -273,17 +284,12 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 1)],
     ),
     (
-        "src-tauri/src/config/agent_memory.rs",
+        "src-tauri/src/config/agent_memory/tests.rs",
         2,
         0,
         &[(TestOnly, 2)],
     ),
-    (
-        "src-tauri/src/config/agent_path.rs",
-        4,
-        0,
-        &[(Owner, 1), (TestOnly, 3)],
-    ),
+    ("src-tauri/src/config/agent_path.rs", 1, 0, &[(Owner, 1)]),
     (
         "src-tauri/src/config/coding_agents_catalog/tests.rs",
         1,
@@ -308,7 +314,18 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 1)],
     ),
-    ("src-tauri/src/config/daemon_pid.rs", 1, 0, &[(TestOnly, 1)]),
+    (
+        "src-tauri/src/config/agent_path/tests.rs",
+        3,
+        0,
+        &[(TestOnly, 3)],
+    ),
+    (
+        "src-tauri/src/config/daemon_pid/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
     (
         "src-tauri/src/config/injected_messages/tests/n_cases.rs",
         1,
@@ -406,7 +423,12 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 1)],
     ),
-    ("src-tauri/src/pty/credentials.rs", 4, 0, &[(TestOnly, 4)]),
+    (
+        "src-tauri/src/pty/credentials/tests.rs",
+        4,
+        0,
+        &[(TestOnly, 4)],
+    ),
     ("src-tauri/src/pty/docker_runtime/execution.rs", 1, 1, &[]),
     ("src-tauri/src/pty/git_watcher.rs", 1, 1, &[]),
     (
@@ -415,7 +437,7 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 1)],
     ),
-    ("src-tauri/src/pty/job.rs", 2, 0, &[(TestOnly, 2)]),
+    ("src-tauri/src/pty/job/tests.rs", 2, 0, &[(TestOnly, 2)]),
     (
         "src-tauri/src/pty/local_backend/git_guard.rs",
         1,
@@ -520,7 +542,7 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 1)],
     ),
     (
-        "src-tauri/src/resource_monitor/windows.rs",
+        "src-tauri/src/resource_monitor/windows/platform/tests.rs",
         1,
         0,
         &[(TestOnly, 1)],

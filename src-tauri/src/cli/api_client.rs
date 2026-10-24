@@ -97,7 +97,8 @@ fn registry_path() -> Result<std::path::PathBuf, i32> {
 fn mint(a: MintArgs) -> i32 {
     if !host_authority_ok(&a.token) {
         eprintln!(
-            "Error: `api-client mint` requires the master/root token (host authority). A container cannot self-mint."
+            "Error: `api-client mint` requires the master/root token (host authority). \
+             A container cannot self-mint."
         );
         return 1;
     }
@@ -109,7 +110,8 @@ fn mint(a: MintArgs) -> i32 {
         || bound_fqn == crate::config::root_agent::ROOT_AGENT_SENDER
     {
         eprintln!(
-            "Error: cannot mint an API client bound to the Root Agent; root-agent is API-excluded in increment 1."
+            "Error: cannot mint an API client bound to the Root Agent; \
+             root-agent is API-excluded in increment 1."
         );
         return 1;
     }
@@ -157,7 +159,10 @@ fn mint(a: MintArgs) -> i32 {
                 "boundFqn": bound_fqn,
                 "boundRoot": a.root,
                 "scopes": scopes,
-                "note": "Store this token now; it is shown only once. The registry keeps only a hash. A manually requested pty-input scope does not grant actuation without an automatically bound live container session."
+                "note": "Store this token now; it is shown only once. \
+                         The registry keeps only a hash. \
+                         A manually requested pty-input scope does not grant actuation without \
+                         an automatically bound live container session."
             });
             crate::cli_println!(
                 "{}",
@@ -258,72 +263,4 @@ fn list_output(snapshot: &auth::RegistrySnapshot) -> serde_json::Value {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::Parser;
-
-    #[test]
-    fn mint_parses_scopes_and_root() {
-        let parsed = crate::cli::Cli::try_parse_from([
-            "agentscommander",
-            "api-client",
-            "mint",
-            "--token",
-            "11111111-1111-1111-1111-111111111111",
-            "--root",
-            "C:/proj/.ac/wg-1/__agent_dev",
-            "--scopes",
-            "send,list-peers-lean",
-            "--label",
-            "docker:agent-1",
-        ])
-        .expect("api-client mint should parse");
-        match parsed.command {
-            Some(crate::cli::Commands::ApiClient(ApiClientArgs {
-                command: ApiClientCommand::Mint(a),
-            })) => {
-                assert_eq!(a.scopes, "send,list-peers-lean");
-                assert_eq!(a.root, "C:/proj/.ac/wg-1/__agent_dev");
-                assert_eq!(a.label.as_deref(), Some("docker:agent-1"));
-            }
-            _ => panic!("expected api-client mint"),
-        }
-    }
-
-    #[test]
-    fn revoke_parses_client_id() {
-        let parsed = crate::cli::Cli::try_parse_from([
-            "agentscommander",
-            "api-client",
-            "revoke",
-            "--token",
-            "11111111-1111-1111-1111-111111111111",
-            "--client-id",
-            "abc",
-        ])
-        .expect("api-client revoke should parse");
-        match parsed.command {
-            Some(crate::cli::Commands::ApiClient(ApiClientArgs {
-                command: ApiClientCommand::Revoke(a),
-            })) => assert_eq!(a.client_id, "abc"),
-            _ => panic!("expected api-client revoke"),
-        }
-    }
-
-    #[test]
-    fn list_output_surfaces_malformed_registry_status() {
-        let snapshot = auth::RegistrySnapshot {
-            registry: auth::ApiClientRegistry::default(),
-            problem: Some(auth::RegistryLoadProblem {
-                status: "malformed",
-                message: "api-clients.json is malformed: expected value".to_string(),
-            }),
-        };
-
-        let output = list_output(&snapshot);
-
-        assert_eq!(output["registryStatus"], "malformed");
-        assert!(output["error"].as_str().unwrap().contains("malformed"));
-        assert_eq!(output["clients"].as_array().unwrap().len(), 0);
-    }
-}
+mod tests;

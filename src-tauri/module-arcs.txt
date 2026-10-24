@@ -1585,6 +1585,7 @@ agentscommander_lib::config::settings::agent::profile::identity -> agentscommand
 agentscommander_lib::config::settings::agent::profile::registered -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::settings::agent::profile::registered -> agentscommander_lib::config::settings::agent
 agentscommander_lib::config::settings::agent::profile::registered -> agentscommander_lib::config::settings::agent::profile
+agentscommander_lib::config::settings::app_defaults -> agentscommander_lib::config::settings
 agentscommander_lib::config::settings::field -> agentscommander_lib::config::profile
 agentscommander_lib::config::settings::field -> agentscommander_lib::config::settings
 agentscommander_lib::config::settings::load -> agentscommander_lib::capture
@@ -1602,10 +1603,17 @@ agentscommander_lib::config::settings::load::capture -> agentscommander_lib::pat
 agentscommander_lib::config::settings::load::cli -> agentscommander_lib::config::settings::load
 agentscommander_lib::config::settings::load::validate -> agentscommander_lib::config::settings::load
 agentscommander_lib::config::settings::load::validate -> agentscommander_lib::screenshot
-agentscommander_lib::config::settings::owner -> agentscommander_lib::config::instance_artifacts
-agentscommander_lib::config::settings::owner -> agentscommander_lib::config::local_overlay
+agentscommander_lib::config::settings::owner -> agentscommander_lib::capture
 agentscommander_lib::config::settings::owner -> agentscommander_lib::config::settings
-agentscommander_lib::config::settings::owner -> agentscommander_lib::path_identity
+agentscommander_lib::config::settings::owner::capture -> agentscommander_lib::config::instance_artifacts
+agentscommander_lib::config::settings::owner::capture -> agentscommander_lib::config::local_overlay
+agentscommander_lib::config::settings::owner::capture -> agentscommander_lib::config::settings
+agentscommander_lib::config::settings::owner::capture -> agentscommander_lib::config::settings::owner
+agentscommander_lib::config::settings::owner::capture -> agentscommander_lib::path_identity
+agentscommander_lib::config::settings::owner::lease -> agentscommander_lib::config::instance_artifacts
+agentscommander_lib::config::settings::owner::lease -> agentscommander_lib::config::settings
+agentscommander_lib::config::settings::owner::lease -> agentscommander_lib::config::settings::owner
+agentscommander_lib::config::settings::owner::lease -> agentscommander_lib::path_identity
 agentscommander_lib::config::settings::project_path -> agentscommander_lib::config
 agentscommander_lib::config::settings::project_path -> agentscommander_lib::config::local_overlay
 agentscommander_lib::config::settings::project_path -> agentscommander_lib::config::projects
@@ -2295,6 +2303,9 @@ agentscommander_lib::pty::inject -> agentscommander_lib::pty::manager
 agentscommander_lib::pty::inject -> agentscommander_lib::pty::menu_guard
 agentscommander_lib::pty::inject -> agentscommander_lib::session::manager
 agentscommander_lib::pty::inject -> agentscommander_lib::session::session
+agentscommander_lib::pty::job::tests -> agentscommander_lib::pty::job
+agentscommander_lib::pty::job::tests -> agentscommander_lib::pty::job::windows_impl
+agentscommander_lib::pty::job::windows_impl -> agentscommander_lib::pty::job
 agentscommander_lib::pty::local_backend -> agentscommander_lib::config::agent_path
 agentscommander_lib::pty::local_backend -> agentscommander_lib::config::session_context
 agentscommander_lib::pty::local_backend -> agentscommander_lib::errors
@@ -2500,6 +2511,8 @@ agentscommander_lib::resource_monitor::watchdog -> agentscommander_lib::session:
 agentscommander_lib::resource_monitor::watchdog -> agentscommander_lib::shutdown
 agentscommander_lib::resource_monitor::windows -> agentscommander_lib::resource_monitor::registry
 agentscommander_lib::resource_monitor::windows -> agentscommander_lib::resource_monitor::types
+agentscommander_lib::resource_monitor::windows::platform -> agentscommander_lib::resource_monitor::windows
+agentscommander_lib::resource_monitor::windows::stub -> agentscommander_lib::resource_monitor::windows
 agentscommander_lib::restore -> agentscommander_lib
 agentscommander_lib::restore -> agentscommander_lib::commands
 agentscommander_lib::restore -> agentscommander_lib::config
@@ -2867,7 +2880,8 @@ agentscommander_lib::testability::ui_automation::cli_run -> agentscommander_lib:
 agentscommander_lib::testability::ui_automation::cli_run -> agentscommander_lib::testability::window_placement
 agentscommander_lib::testability::ui_automation::files -> agentscommander_lib::testability::ui_automation
 agentscommander_lib::testability::window_info -> agentscommander_lib
-agentscommander_lib::testability::window_info -> agentscommander_lib::config::profile
+agentscommander_lib::testability::window_info::windows_impl -> agentscommander_lib::config::profile
+agentscommander_lib::testability::window_info::windows_impl -> agentscommander_lib::testability::window_info
 agentscommander_lib::update_check -> agentscommander_lib::config
 agentscommander_lib::update_check -> agentscommander_lib::config::settings
 agentscommander_lib::update_check -> agentscommander_lib::network

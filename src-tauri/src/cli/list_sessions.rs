@@ -12,7 +12,8 @@ OUTPUT: JSON array of current sessions. Each entry contains:\n  \
   workingDirectory  Session's working directory path\n  \
   status            One of: \"active\", \"running\", \"idle\", or {\"exited\": <code>}\n  \
   waitingForInput   true when the session is waiting for user input\n  \
-  raisedHand        true when a visible raise-hand request is active (persists across app restarts until real user input)\n  \
+  raisedHand        true when a visible raise-hand request is active (persists across \
+app restarts until real user input)\n  \
   createdAt         ISO 8601 timestamp of session creation\n\n\
 REQUIREMENTS: The app must be running (sessions.json is kept up-to-date while the app runs).\n\n\
 EXAMPLES:\n  \
@@ -149,12 +150,14 @@ pub fn execute(args: ListSessionsArgs) -> i32 {
                 if std::env::var("AC_MACHINE_OUTPUT").is_err() {
                     eprintln!(
                         "[WARN] sessions.json may be stale — daemon.pid file is malformed. \
-                         list-sessions reads the file directly; results may not reflect current state."
+                         list-sessions reads the file directly; results may not reflect \
+                         current state."
                     );
                 } else {
                     log::warn!(
                         "sessions.json may be stale — daemon.pid file is malformed. \
-                         list-sessions reads the file directly; results may not reflect current state."
+                         list-sessions reads the file directly; results may not reflect \
+                         current state."
                     );
                 }
             }
