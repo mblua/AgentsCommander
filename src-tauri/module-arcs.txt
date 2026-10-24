@@ -1167,6 +1167,7 @@ agentscommander_lib::config::activity_log -> agentscommander_lib::session::profi
 agentscommander_lib::config::activity_log -> agentscommander_lib::session::session
 agentscommander_lib::config::agency_cache -> agentscommander_lib::config
 agentscommander_lib::config::agency_cache -> agentscommander_lib::config::role_templates
+agentscommander_lib::config::agency_cache -> agentscommander_lib::process
 agentscommander_lib::config::agency_cache::git -> agentscommander_lib::config::agent_path
 agentscommander_lib::config::agency_cache::git -> agentscommander_lib::config::role_templates
 agentscommander_lib::config::agency_cache::git -> agentscommander_lib::pty::credentials
