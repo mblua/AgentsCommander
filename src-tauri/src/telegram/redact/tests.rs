@@ -45,7 +45,7 @@ fn redacts_file_download_url() {
 #[test]
 fn redacts_gemini_query_key() {
     let s = include_str!("tests/fixtures/gemini-error.txt");
-    let got = redact(&s);
+    let got = redact(s);
     assert!(got.contains("?key=***"), "got: {got}");
     assert!(!got.contains(FAKE_GEMINI_KEY), "key leaked: {got}");
 }
