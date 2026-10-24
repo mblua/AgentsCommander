@@ -27,25 +27,25 @@ fn normalize_profile_arg(profile: Option<String>) -> Result<Option<String>, Stri
 }
 
 #[derive(Args)]
-#[command(after_help = "\
-Hands off, switches the CALLER'S OWN session coding agent and/or profile, respawns it fresh, \
-then resumes from the handoff file.\n\n\
-BEFORE invoking, write SELF-HANDOFF.md in your own root with the notes you need to resume, EXCLUDING \
-anything already recorded in SELF-FORGET.md. If SELF-HANDOFF.md is missing, the command refuses.\n\n\
-On invocation the daemon captures a sanitized compact forgotten summary from the current replica's \
-SELF-FORGET.md, max 240 chars, then archives SELF-FORGET.md -> self-clear/<timestamp>_SELF-FORGET.md \
-(no-op if absent). The later resume prompt may include that summary only as closed background, not \
-instructions and not work to resume. The handoff file remains the active resume source: when the \
-resume prompt fires, SELF-HANDOFF.md is first archived -> self-clear/<timestamp>_SELF-HANDOFF.md and \
-the prompt names that exact archived path (if the rename fails, the prompt points at SELF-HANDOFF.md \
-still in your root).\n\n\
---coding-agent takes the configured coding-agent entry id from settings, not the backend kind \
-or AC peer name. Use --list-coding-agents to print valid ids and profile letters without \
-sending a switch request. If the id is unknown, the daemon rejection lists configured ids.\n\n\
-Omitting both --coding-agent and --profile is allowed. It hard-resets the live running recipe \
-by respawning the same coding agent/profile fresh and then injecting the handoff prompt.\n\n\
-SCOPE: Room replicas only (__agent_* under a room-* or legacy wg-* room). Root Agent and origin matrix agents \
-are rejected in v1.")]
+#[command(
+    after_help = "Hands off, switches the CALLER'S OWN session coding agent and/or profile, \
+respawns it fresh, then resumes from the handoff file.\n\nBEFORE invoking, write SELF-HANDOFF.md \
+in your own root with the notes you need to resume, EXCLUDING anything already recorded in \
+SELF-FORGET.md. If SELF-HANDOFF.md is missing, the command refuses.\n\nOn invocation the daemon \
+captures a sanitized compact forgotten summary from the current replica's SELF-FORGET.md, max 240 \
+chars, then archives SELF-FORGET.md -> self-clear/<timestamp>_SELF-FORGET.md (no-op if absent). \
+The later resume prompt may include that summary only as closed background, not instructions and \
+not work to resume. The handoff file remains the active resume source: when the resume prompt \
+fires, SELF-HANDOFF.md is first archived -> self-clear/<timestamp>_SELF-HANDOFF.md and the prompt \
+names that exact archived path (if the rename fails, the prompt points at SELF-HANDOFF.md still \
+in your root).\n\n--coding-agent takes the configured coding-agent entry id from settings, not \
+the backend kind or AC peer name. Use --list-coding-agents to print valid ids and profile letters \
+without sending a switch request. If the id is unknown, the daemon rejection lists configured \
+ids.\n\nOmitting both --coding-agent and --profile is allowed. It hard-resets the live running \
+recipe by respawning the same coding agent/profile fresh and then injecting the handoff \
+prompt.\n\nSCOPE: Room replicas only (__agent_* under a room-* or legacy wg-* room). Root Agent \
+and origin matrix agents are rejected in v1."
+)]
 pub struct SelfSwitchArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox.
@@ -131,7 +131,9 @@ fn render_coding_agent_discovery(settings: &crate::config::settings::AppSettings
 
     let mut lines = vec![
         "Configured coding agents for self-handoff-and-switch:".to_string(),
-        "Use AgentConfig.id exactly with --coding-agent. Use --profile A-Z, or omit --profile to keep the caller's current effective profile.".to_string(),
+        "Use AgentConfig.id exactly with --coding-agent. Use --profile A-Z, or omit --profile to \
+        keep the caller's current effective profile."
+            .to_string(),
         String::new(),
     ];
 
@@ -150,7 +152,8 @@ fn render_coding_agent_discovery(settings: &crate::config::settings::AppSettings
         lines.push(format!("  command: {}", agent.command));
         lines.push(format!("  profiles without fallback: {}", direct_profiles));
         lines.push(
-            "  fallback: other A-Z letters fall back to the nearest lower profile listed above, ending at A."
+            "  fallback: other A-Z letters fall back to the nearest lower profile listed above, \
+            ending at A."
                 .to_string(),
         );
         lines.push("  copy:".to_string());
@@ -311,24 +314,23 @@ pub fn execute(args: SelfSwitchArgs) -> i32 {
                     crate::cli_println!("{}", content);
                     match serde_json::from_str::<serde_json::Value>(&content)
                         .ok()
-                        .and_then(|v| {
-                            v.get("status")
-                                .and_then(|s| s.as_str())
-                                .map(String::from)
-                        })
+                        .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(String::from))
                         .as_deref()
                     {
                         Some("queued") => crate::cli_println!(
-                            "self-handoff-and-switch requested. Phase 1 respawns only after this session is \
-                             continuously idle for {0}s; Phase 2 then waits a fresh {0}s of idle in the new \
-                             session, archives SELF-HANDOFF.md into self-clear/ and injects a prompt naming \
-                             the exact archived file to resume from. If SELF-FORGET.md was present at queue \
-                             time, that prompt includes a compact closed-background forgotten summary. \
-                             Best-effort and not guaranteed.",
+                            "self-handoff-and-switch requested. Phase 1 respawns only after this \
+                            session is continuously idle for {0}s; Phase 2 then waits a fresh \
+                            {0}s of idle in the new session, archives SELF-HANDOFF.md into \
+                            self-clear/ and injects a prompt naming the exact archived file to \
+                            resume from. If SELF-FORGET.md was present at queue time, that prompt \
+                            includes a compact closed-background forgotten summary. Best-effort \
+                            and not guaranteed.",
                             crate::phone::mailbox::SELF_CLEAR_SETTLE_SECS
                         ),
                         Some("already_queued") => crate::cli_println!(
-                            "A self context operation is already pending for this session. The first queued request owns any forgotten summary; this request does not refresh it. Best-effort; re-issue later if needed."
+                            "A self context operation is already pending for this session. The \
+                            first queued request owns any forgotten summary; this request does \
+                            not refresh it. Best-effort; re-issue later if needed."
                         ),
                         _ => {}
                     }
@@ -352,292 +354,4 @@ pub fn execute(args: SelfSwitchArgs) -> i32 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn queued_status_returns_zero() {
-        let resp = r#"{"action":"self-handoff-and-switch","status":"queued","session_id":"s"}"#;
-        assert_eq!(interpret_self_switch_response_exit_code(resp), 0);
-    }
-
-    #[test]
-    fn already_queued_status_returns_zero() {
-        let resp =
-            r#"{"action":"self-handoff-and-switch","status":"already_queued","session_id":"s"}"#;
-        assert_eq!(interpret_self_switch_response_exit_code(resp), 0);
-    }
-
-    #[test]
-    fn unknown_status_returns_two() {
-        let resp = r#"{"status":"weird","action":"self-handoff-and-switch"}"#;
-        assert_eq!(interpret_self_switch_response_exit_code(resp), 2);
-    }
-
-    #[test]
-    fn normalize_profile_arg_uppercases_valid_letter() {
-        assert_eq!(
-            normalize_profile_arg(Some("b".into())).unwrap().as_deref(),
-            Some("B")
-        );
-    }
-
-    #[test]
-    fn normalize_profile_arg_rejects_non_letter() {
-        assert!(normalize_profile_arg(Some("aa".into())).is_err());
-        assert!(normalize_profile_arg(Some("1".into())).is_err());
-    }
-
-    #[test]
-    fn self_switch_args_parse_with_default_timeout() {
-        use clap::Parser;
-        let parsed = crate::cli::Cli::try_parse_from([
-            "agentscommander",
-            "self-handoff-and-switch",
-            "--token",
-            "11111111-1111-1111-1111-111111111111",
-            "--root",
-            "anything",
-        ])
-        .expect("clap should accept self-handoff-and-switch with token + root");
-        let cmd = parsed.command.expect("subcommand present");
-        match cmd {
-            crate::cli::Commands::SelfSwitch(args) => {
-                assert_eq!(args.timeout, 15);
-                assert_eq!(
-                    args.token.as_deref(),
-                    Some("11111111-1111-1111-1111-111111111111")
-                );
-                assert_eq!(args.root.as_deref(), Some("anything"));
-                assert_eq!(args.coding_agent, None);
-                assert_eq!(args.profile, None);
-                assert!(!args.list_coding_agents);
-            }
-            _ => panic!("expected SelfSwitch subcommand"),
-        }
-    }
-
-    #[test]
-    fn self_switch_args_parse_coding_agent_and_profile() {
-        use clap::Parser;
-        let parsed = crate::cli::Cli::try_parse_from([
-            "agentscommander",
-            "self-handoff-and-switch",
-            "--token",
-            "11111111-1111-1111-1111-111111111111",
-            "--root",
-            "anything",
-            "--coding-agent",
-            "agent_1719526800000_3",
-            "--profile",
-            "c",
-            "--timeout",
-            "42",
-        ])
-        .expect("clap should accept switch args");
-        let cmd = parsed.command.expect("subcommand present");
-        match cmd {
-            crate::cli::Commands::SelfSwitch(args) => {
-                assert_eq!(args.timeout, 42);
-                assert_eq!(args.coding_agent.as_deref(), Some("agent_1719526800000_3"));
-                assert_eq!(
-                    normalize_profile_arg(args.profile).unwrap().as_deref(),
-                    Some("C")
-                );
-                assert!(!args.list_coding_agents);
-            }
-            _ => panic!("expected SelfSwitch subcommand"),
-        }
-    }
-
-    #[test]
-    fn self_switch_list_coding_agents_parses_without_token_or_root() {
-        use clap::Parser;
-        let parsed = crate::cli::Cli::try_parse_from([
-            "agentscommander",
-            "self-handoff-and-switch",
-            "--list-coding-agents",
-        ])
-        .expect("discovery should not require token or root at clap parse time");
-        let cmd = parsed.command.expect("subcommand present");
-        match cmd {
-            crate::cli::Commands::SelfSwitch(args) => {
-                assert!(args.list_coding_agents);
-                assert_eq!(args.token, None);
-                assert_eq!(args.root, None);
-                assert_eq!(args.coding_agent, None);
-                assert_eq!(args.profile, None);
-            }
-            _ => panic!("expected SelfSwitch subcommand"),
-        }
-    }
-
-    #[test]
-    fn self_switch_help_documents_forgotten_summary_behavior() {
-        use clap::CommandFactory;
-        let cmd = crate::cli::Cli::command();
-        let mut subcommand = cmd
-            .get_subcommands()
-            .find(|cmd| cmd.get_name() == "self-handoff-and-switch")
-            .expect("self-handoff-and-switch subcommand")
-            .clone();
-        let help = subcommand.render_long_help().to_string();
-
-        assert!(help.contains("SELF-FORGET.md"), "{help}");
-        assert!(help.contains("240"), "{help}");
-        assert!(help.contains("closed background"), "{help}");
-        assert!(help.contains("SELF-HANDOFF.md"), "{help}");
-        // #749 - the help documents the pre-inject handoff archive and its exact destination.
-        assert!(
-            help.contains("self-clear/<timestamp>_SELF-HANDOFF.md"),
-            "{help}"
-        );
-    }
-
-    fn agent(id: &str, label: &str, command: &str) -> crate::config::settings::AgentConfig {
-        crate::config::settings::AgentConfig {
-            preflight: None,
-            preflight_timeout_seconds: None,
-            id: id.to_string(),
-            id_hash: None,
-            id_hash_debug: None,
-            label: label.to_string(),
-            command: command.to_string(),
-            color: "#000000".to_string(),
-            order: None,
-            envs: Vec::new(),
-            isolated_home: false,
-            instructions_filename: None,
-            config_seed: None,
-            context_regex: None,
-            blocking_menus: None,
-            backend: Default::default(),
-        }
-    }
-
-    fn enabled_cell(command: &str) -> crate::config::settings::ProfileCellConfig {
-        crate::config::settings::ProfileCellConfig {
-            id_hash: None,
-            id_hash_debug: None,
-            preflight: None,
-            preflight_timeout_seconds: None,
-            enabled: true,
-            command: command.to_string(),
-            env: std::collections::BTreeMap::new(),
-            notes: String::new(),
-        }
-    }
-
-    fn disabled_cell(command: &str) -> crate::config::settings::ProfileCellConfig {
-        crate::config::settings::ProfileCellConfig {
-            id_hash: None,
-            id_hash_debug: None,
-            preflight: None,
-            preflight_timeout_seconds: None,
-            enabled: false,
-            command: command.to_string(),
-            env: std::collections::BTreeMap::new(),
-            notes: String::new(),
-        }
-    }
-
-    #[test]
-    fn discovery_lists_exact_ids_for_duplicate_backend_commands() {
-        let mut settings = crate::config::settings::AppSettings {
-            agents: vec![
-                agent("codex-main", "Codex Main", "codex --model gpt-5"),
-                agent("codex-review", "Codex Review", "codex --model gpt-5"),
-            ],
-            ..crate::config::settings::AppSettings::default()
-        };
-        settings.coding_agent_profiles.profiles_by_agent.insert(
-            "codex-main".to_string(),
-            std::collections::BTreeMap::from([
-                ("A".to_string(), enabled_cell("")),
-                ("B".to_string(), enabled_cell("--profile-b")),
-            ]),
-        );
-        settings.coding_agent_profiles.profiles_by_agent.insert(
-            "codex-review".to_string(),
-            std::collections::BTreeMap::from([
-                ("A".to_string(), enabled_cell("")),
-                ("C".to_string(), enabled_cell("--profile-c")),
-            ]),
-        );
-
-        let rendered = render_coding_agent_discovery(&settings);
-
-        assert!(rendered.contains("- codex-main"));
-        assert!(rendered.contains("- codex-review"));
-        assert!(rendered.contains("self-handoff-and-switch --coding-agent=codex-main --profile B"));
-        assert!(
-            rendered.contains("self-handoff-and-switch --coding-agent=codex-review --profile C")
-        );
-        assert!(!rendered.contains("self-handoff-and-switch --coding-agent codex --profile"));
-    }
-
-    #[test]
-    fn discovery_reports_direct_profiles_and_fallback_rule() {
-        let mut settings = crate::config::settings::AppSettings {
-            agents: vec![agent("codex-main", "Codex Main", "codex")],
-            ..crate::config::settings::AppSettings::default()
-        };
-        settings.coding_agent_profiles.profiles_by_agent.insert(
-            "codex-main".to_string(),
-            std::collections::BTreeMap::from([
-                ("A".to_string(), enabled_cell("")),
-                ("B".to_string(), disabled_cell("--disabled")),
-                ("D".to_string(), enabled_cell("--profile-d")),
-            ]),
-        );
-
-        let rendered = render_coding_agent_discovery(&settings);
-
-        assert!(rendered.contains("profiles without fallback: A, D"));
-        assert!(
-            rendered.contains("other A-Z letters fall back to the nearest lower profile listed")
-        );
-        assert!(!rendered.contains("self-handoff-and-switch --coding-agent=codex-main --profile B"));
-    }
-
-    #[test]
-    fn discovery_shell_quotes_copy_ids_with_spaces_and_metacharacters() {
-        let settings = crate::config::settings::AppSettings {
-            agents: vec![agent("codex main; Remove-Item *", "Codex Main", "codex")],
-            ..crate::config::settings::AppSettings::default()
-        };
-
-        let rendered = render_coding_agent_discovery(&settings);
-
-        assert!(rendered.contains(
-            "self-handoff-and-switch --coding-agent='codex main; Remove-Item *' --profile A"
-        ));
-    }
-
-    /// #2716 (B3, option C) E37: an unreadable agents layer is reported as such,
-    /// naming the path; a genuinely empty list still reads "none configured".
-    #[test]
-    fn an_unreadable_layer_is_not_an_empty_list() {
-        let path = std::path::Path::new("C:/cfg/agents.30.instance.no-git.json");
-        let mut settings = crate::config::settings::AppSettings {
-            agents_layer: crate::config::settings::AgentsLayerState::Unreadable {
-                path: path.to_path_buf(),
-                reason: "test".to_string(),
-            },
-            ..Default::default()
-        };
-        settings.agents.clear();
-        let marked = render_coding_agent_discovery(&settings);
-        assert_eq!(
-            marked,
-            crate::config::settings::agents_unreadable_cli_error(path)
-        );
-        assert!(marked.contains(&path.display().to_string()));
-
-        settings.agents_layer = crate::config::settings::AgentsLayerState::Readable;
-        assert_eq!(
-            render_coding_agent_discovery(&settings),
-            "No configured coding agents found."
-        );
-    }
-}
+mod tests;
