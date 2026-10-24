@@ -1,0 +1,1 @@
+C:\Windows\system32;"C:\Program Files\Tool";C:\Windows\system32;C:\Users\u\AppData\Roaming\npm;

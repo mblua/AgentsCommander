@@ -1,0 +1,3 @@
+Welcome banner
+nvm: using node 20
+__AC_PATH_BEGIN__/a b/bin:/usr/bin__AC_PATH_END__trailing motd
