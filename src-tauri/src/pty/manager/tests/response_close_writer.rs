@@ -508,3 +508,56 @@ async fn response_close_waiting_writer_is_counted_and_cancellation_releases_only
         }
     }
 }
+
+#[test]
+fn writer_closing_query_preserves_policy() {
+    for failed in [false, true] {
+        for poison in [false, true] {
+            let state = ResponseCloseState::default();
+            let id = Uuid::new_v4();
+            let now = std::time::Instant::now();
+            state.register_route(id, 7, now);
+            if failed {
+                state.fail_closed();
+            }
+            let writer = state.reserve_writer(id, 7).unwrap();
+            assert_eq!(writer.counted, !failed);
+            assert_eq!(writer.is_closing(), Ok(false));
+            state
+                .inner
+                .lock()
+                .unwrap()
+                .routes
+                .get_mut(&id)
+                .unwrap()
+                .closing = Some(Uuid::new_v4());
+            assert_eq!(writer.is_closing(), Ok(true));
+            if poison {
+                let copy = state.clone();
+                assert!(std::thread::spawn(move || {
+                    let _guard = copy.inner.lock().unwrap();
+                    panic!("poison tracker query control");
+                })
+                .join()
+                .is_err());
+                assert_eq!(writer.is_closing(), Ok(true));
+            }
+            {
+                let mut inner = state
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let route = inner.routes.get_mut(&id).unwrap();
+                route.generation += 1;
+                route.closing = None;
+            }
+            let expected = if failed {
+                Ok(false)
+            } else {
+                Err(ResponseCloseError::Unknown)
+            };
+            assert_eq!(writer.is_closing(), expected);
+            assert_eq!(writer.is_closing().unwrap_or(true), !failed);
+        }
+    }
+}

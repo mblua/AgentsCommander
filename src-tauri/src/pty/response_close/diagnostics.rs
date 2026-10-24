@@ -1,7 +1,7 @@
-use crate::pty::manager::response_close::ResponseCloseInner;
-use crate::pty::manager::response_close::ResponseCloseRoute;
-use crate::pty::manager::response_close::ResponseCloseState;
-use crate::pty::manager::response_close::DIAG_TARGET;
+use crate::pty::response_close::ResponseCloseInner;
+use crate::pty::response_close::ResponseCloseRoute;
+use crate::pty::response_close::ResponseCloseState;
+use crate::pty::response_close::DIAG_TARGET;
 use std::sync::TryLockError;
 use uuid::Uuid;
 
@@ -56,7 +56,7 @@ impl ResponseCloseState {
         emit
     }
 
-    pub(in crate::pty::manager) fn diagnostic_select_observation(
+    pub(in crate::pty) fn diagnostic_select_observation(
         inner: &mut ResponseCloseInner,
         id: Uuid,
         now: std::time::Instant,
@@ -208,7 +208,7 @@ impl ResponseCloseState {
         }
     }
 
-    pub(in crate::pty::manager) fn diagnostic_select_policy(
+    pub(in crate::pty) fn diagnostic_select_policy(
         inner: &ResponseCloseInner,
         route: &ResponseCloseRoute,
         now: std::time::Instant,

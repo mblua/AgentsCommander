@@ -573,7 +573,7 @@ fn duplicate_route_and_generation_overflow_fail_without_replacement() {
         manager.backend_kind(first_id),
         Some(SessionBackendKind::LocalProcess)
     );
-    manager.registry.lock().unwrap().next_route_generation = u64::MAX;
+    manager.registry.set_generation_for_test(u64::MAX);
     assert!(manager
         .try_record_route(second_id, SessionBackendKind::LocalProcess)
         .is_err());
