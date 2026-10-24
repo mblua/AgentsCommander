@@ -466,7 +466,7 @@ fn find_ac_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
 /// deterministic byte budget is unaffected (3.2).
 ///
 /// There is no Root Agent check here and none is needed: `ROOT_AGENT_DIR_NAME` is
-/// `"ac-root-agent"` (`config/mod.rs:49`), which never begins with `__agent_`, so check
+/// `"ac-root-agent"` (`config.rs:49`), which never begins with `__agent_`, so check
 /// one already rejects every Root Agent directory. The Root Agent exclusion that IS
 /// load-bearing lives at the call sites: `session_context.rs:187-188` for rendering and
 /// `ensure_replica_shared_locations` for creation, both testing the raw AND the

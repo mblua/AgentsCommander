@@ -1,6 +1,5 @@
 use super::apply_clean;
 use super::parse_task;
-use super::perform;
 use super::render;
 use super::status::io_boundary;
 use super::status::read_latest_status_locked;
@@ -11,12 +10,13 @@ use super::status::StatusRecord;
 use super::status::JOURNAL_NAME;
 use super::status::STATUS_LIMIT;
 use super::status::STATUS_NAME;
-use super::title_value_of;
 use super::EditOutcome;
+#[cfg(test)]
 use super::LockGuard;
-use super::TaskOp;
 use super::TaskOpError;
+#[cfg(test)]
 use super::LOCK_STALE_AFTER_5M;
+#[cfg(test)]
 use super::LOCK_TIMEOUT_5S;
 use chrono::DateTime;
 use chrono::Utc;
@@ -172,7 +172,8 @@ fn cleanup_owned(path: &Path, hash: &str) {
     }
 }
 
-pub fn recover_clean_pair(root: &Path) -> Result<(), TaskOpError> {
+#[cfg(test)]
+pub(super) fn recover_clean_pair(root: &Path) -> Result<(), TaskOpError> {
     let _lock = LockGuard::acquire(
         &root.join("TASK.md.lock"),
         LOCK_TIMEOUT_5S,
@@ -377,10 +378,6 @@ fn copy_backup(
     sync_file(dest, &format!("{boundary}_sync"))
 }
 
-pub fn clean_pair(root: &Path) -> Result<EditOutcome, TaskOpError> {
-    perform(root, TaskOp::Clean)
-}
-
 pub(super) fn clean_pair_locked(
     root: &Path,
     existing: &str,
@@ -406,10 +403,7 @@ pub(super) fn clean_pair_locked(
                             bytes.iter().filter(|b| **b == b'\n').count() == 1
                         })
             {
-                return Ok(EditOutcome::NoOp {
-                    content: existing.into(),
-                    title: title_value_of(&parsed),
-                });
+                return Ok(EditOutcome::NoOp {});
             }
         }
     }
@@ -595,8 +589,8 @@ pub(super) fn clean_pair_locked(
     finish_clean_locked(root, &journal, &journal_bytes)?;
     Ok(EditOutcome::Wrote {
         backup: journal.task.backup.map(|p| root.join(p)),
+        #[cfg(test)]
         content: new_content,
-        title: title_value_of(&cleaned),
     })
 }
 

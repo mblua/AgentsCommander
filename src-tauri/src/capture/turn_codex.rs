@@ -234,6 +234,7 @@ impl TurnAccumulator {
         self.counters
     }
 
+    #[cfg(test)]
     pub fn open_turns(&self) -> usize {
         self.open.len()
     }

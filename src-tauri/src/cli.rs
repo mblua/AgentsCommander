@@ -20,7 +20,7 @@ mod self_switch;
 pub(crate) mod send;
 mod session_safety;
 mod task_append_body;
-pub mod task_ops;
+pub(crate) mod task_ops;
 mod task_set_title;
 pub(crate) mod team;
 mod telegram_send_image;

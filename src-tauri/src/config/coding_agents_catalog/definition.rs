@@ -5,15 +5,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::agent_command::is_safe_instructions_filename;
 use crate::config::settings::{
-    validate_agent_command_text, validate_config_seed_dest, validate_env_rows,
-    validate_identity_snapshot, AppSettings, CodingAgentEnv, ConfigSeedConfig,
-    IdentitySnapshotEntry, IdentityValidationError, ProfileCellConfig,
+    validate_agent_command_text, validate_config_seed_dest, validate_env_rows, AppSettings,
+    CodingAgentEnv, ConfigSeedConfig, ProfileCellConfig,
+};
+
+#[cfg(test)]
+use super::load_catalog_report;
+#[cfg(test)]
+use crate::config::settings::{
+    validate_identity_snapshot, IdentitySnapshotEntry, IdentityValidationError,
 };
 
 use super::{
-    load_catalog_report, load_catalog_report_for_settings_with_config_dir, local_catalog_path,
-    parse_strict_json, project_catalog_path, validate_update_command_string, CatalogUnavailable,
-    BUILTIN_TESTED_LEVEL, CATALOG_DIR_NAME, CATALOG_MANIFEST_FILENAME, CATALOG_SCHEMA_VERSION,
+    load_catalog_report_for_settings_with_config_dir, local_catalog_path, parse_strict_json,
+    project_catalog_path, validate_update_command_string, CatalogUnavailable, BUILTIN_TESTED_LEVEL,
+    CATALOG_DIR_NAME, CATALOG_MANIFEST_FILENAME, CATALOG_SCHEMA_VERSION,
     EMBEDDED_DEFAULT_CATALOG_JSON,
 };
 
@@ -329,6 +335,7 @@ pub enum IdentityCatalogError {
     InvalidFormat(String),
 }
 
+#[cfg(test)]
 impl CodingAgentCatalogSchema2 {
     /// Explicit editor template only; not a seed, migration or reader fallback.
     pub fn empty() -> Self {
@@ -658,6 +665,7 @@ pub(crate) fn is_supported_builtin(key: &str, table: &[(&str, bool)]) -> bool {
 /// structurally. `ac_dir` is the project's `.ac` directory (or, in
 /// no-project mode, the legacy config dir, which yields
 /// `<config_dir>/coding-agents/agents.json` through the same relative layout).
+#[cfg(test)]
 pub fn load_catalog(ac_dir: &Path) -> Result<Vec<CodingAgentDefinition>, CatalogUnavailable> {
     load_catalog_report(ac_dir).into_result()
 }

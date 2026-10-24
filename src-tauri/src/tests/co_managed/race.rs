@@ -641,8 +641,6 @@ async fn the_blocking_commit_does_not_park_a_current_thread_worker() {
     let pre = crate::capture::state::EffectPreconditions {
         session_alive: true,
         session_id: session_id.to_string(),
-        anchor: fixture.coordinator_cwd.to_string_lossy().to_string(),
-        provider: CaptureProvider::Claude,
         unique_live_session_for_cwd: true,
         no_pending_user_input: true,
         effective_ready: true,

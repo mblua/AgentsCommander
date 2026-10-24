@@ -567,6 +567,7 @@ fn should_keep_clock_key(
 }
 
 /// Path-explicit load for unit tests, symmetric with `save_map_to`.
+#[cfg(test)]
 pub fn load_from(path: &Path) -> CoordinatorClocks {
     let map = match std::fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str::<HashMap<String, ClockEntry>>(&raw).unwrap_or_default(),

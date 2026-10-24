@@ -32,10 +32,13 @@ pub use agent_op::{
     DEFAULT_CUSTOM_COLOR,
 };
 pub use request_queue::{
-    is_expired, process_coding_agent_request, read_coding_agent_result, write_coding_agent_request,
-    write_coding_agent_result, CodingAgentRequest, CodingAgentResult, RequestDisposition,
-    CODING_AGENT_REQUESTS_DIR, REQUEST_EXPIRY_MS, RESULTS_SUBDIR,
+    process_coding_agent_request, read_coding_agent_result, write_coding_agent_request,
+    CodingAgentRequest, CodingAgentResult, RequestDisposition, CODING_AGENT_REQUESTS_DIR,
+    RESULTS_SUBDIR,
 };
+
+#[cfg(test)]
+use request_queue::{is_expired, write_coding_agent_result, REQUEST_EXPIRY_MS};
 
 #[cfg(test)]
 use crate::config::settings::{AgentConfig, AppSettings, CodingAgentEnv, ConfigSeedConfig};

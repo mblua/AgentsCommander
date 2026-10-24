@@ -29,12 +29,12 @@ pub(crate) use replica::validate_pty_input_target_syntax;
 pub(crate) use replica::validate_terminal_snapshot_target_syntax;
 pub use replica::verified_wg_coordinator_target;
 pub use replica::PtyInputAuthorityKind;
-pub use replica::TerminalSnapshotAuthorityKind;
+#[cfg(test)]
+use replica::TerminalSnapshotAuthorityKind;
 pub(crate) use replica::TerminalSnapshotTargetIdentity;
 pub use replica::VerifiedPtyInputIdentity;
 pub use replica::VerifiedPtyInputRoute;
 pub use replica::VerifiedTerminalSnapshotRoute;
-pub use replica::WgCoordinatorReplica;
 #[cfg(test)]
 use replica::{identity_compare_key, logical_path_resolve, team_members};
 pub(crate) use routes::discover_verified_terminal_snapshot_targets;

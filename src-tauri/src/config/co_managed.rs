@@ -194,6 +194,7 @@ fn read_config_object(path: &Path) -> Map<String, Value> {
 /// negations of `effective_state`'s `GlobalSwitchOff` and `NoApiKey` legs,
 /// with the same `trim()` rule. `Ready` implies it; the converse is not
 /// claimed, since a room can still be Off for a per-room reason.
+#[cfg(test)]
 pub fn globally_available(globally_enabled: bool, api_key: &str) -> bool {
     globally_enabled && !api_key.trim().is_empty()
 }

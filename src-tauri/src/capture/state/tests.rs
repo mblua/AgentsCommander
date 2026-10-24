@@ -1,5 +1,5 @@
 use super::*;
-use crate::capture::record::{CapturedRecord, RecordOrigin};
+use crate::capture::record::{CaptureProvider, CapturedRecord, RecordOrigin};
 use std::sync::Arc;
 
 fn room(temp: &tempfile::TempDir) -> PathBuf {
@@ -48,8 +48,6 @@ fn preconditions(kind: EffectKind) -> EffectPreconditions {
     EffectPreconditions {
         session_alive: true,
         session_id: "session-a".to_owned(),
-        anchor: "agent".to_owned(),
-        provider: CaptureProvider::Claude,
         unique_live_session_for_cwd: true,
         no_pending_user_input: true,
         effective_ready: true,

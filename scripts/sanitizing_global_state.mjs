@@ -1,5 +1,5 @@
 import { gateCli, isMain } from './sanitizing_baseline.mjs';
-import { runMeasuredGate, metric, hit, warning, resolveAlias as resolveGateAlias, qualified as qualifiedGatePath } from './sanitizing_gate_support.mjs';
+import { runMeasuredGate, metric, hit, warning, occurrenceIdentity, resolveAlias as resolveGateAlias, qualified as qualifiedGatePath } from './sanitizing_gate_support.mjs';
 
 const relevantPath = /(?:^|::)(?:Mutex|RwLock|Atomic\w*|OnceLock|OnceCell|Lazy|LazyLock|Cell|RefCell)$/;
 function resolveAlias(scan, input, scope) {
@@ -11,7 +11,7 @@ function qualified(scan, tokens, i) {
   return qualifiedGatePath(scan, tokens, i, relevantPath);
 }
 export function runGate(snapshot) {
-  return runMeasuredGate(snapshot, { gate, rules, newFileRules, inUniverse, measure, extraChecks });
+  return runMeasuredGate(snapshot, { gate, rules, newFileRules, inUniverse, measure, extraChecks, recognizeMoves: true });
 }
 
 const gate = '08';
@@ -93,7 +93,7 @@ function measure(path, scan) {
     }
     if (!state) continue;
     if (segment[1]?.name !== 'mut' && readonlyRegex(scan,d.item,type,init)) continue;
-    hit(m,'globals',ts[d.first].line);
+    hit(m,'globals',ts[d.first].line,occurrenceIdentity(scan,ts[d.first],segment));
   }
   return m;
 }

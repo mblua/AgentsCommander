@@ -281,6 +281,7 @@ pub(crate) fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
 pub(crate) enum CatalogSourceContext {
     Project,
     Instance,
+    #[cfg(test)]
     Direct,
 }
 
@@ -298,6 +299,7 @@ impl CatalogSourceContext {
                     persisted entries remain usable. Restart retries instance catalog refresh when \
                     no project is registered."
             }
+            #[cfg(test)]
             Self::Direct => {
                 "The persisted managed catalog revision differs from this build. Current persisted \
                     entries remain usable. Catalog refresh runs during initialization."
@@ -321,6 +323,7 @@ impl CatalogSourceContext {
 /// composes its local layer behind the same resolver; a legacy base stays
 /// readable and reports the pending migration. Definitions keep persisted order
 /// after filtering; no embedded donor is ever consulted.
+#[cfg(test)]
 pub fn load_catalog_report(ac_dir: &Path) -> CatalogReport {
     load_catalog_report_with_context(
         ac_dir,

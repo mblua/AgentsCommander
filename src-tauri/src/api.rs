@@ -8,12 +8,12 @@
 //! a machine-to-machine control-plane that can wake/inject peer PTYs must never
 //! skip token validation.
 
-pub mod actuation;
+mod actuation;
 pub(crate) mod audit;
 pub mod auth;
 pub(crate) mod dispatcher;
 mod error;
-pub mod handlers;
+pub(crate) mod handlers;
 mod identity;
 pub mod message_store;
 pub mod schema;

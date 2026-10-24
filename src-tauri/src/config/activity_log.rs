@@ -698,18 +698,6 @@ fn init_run_at(dir: &Path, run_id: &str) {
     );
 }
 
-/// Scan the live config directory for the previous run. Counterpart to
-/// [`scan_previous_run_at`], mirroring `daemon_pid::detect_daemon_state`.
-pub fn scan_previous_run() -> PreviousRunReport {
-    match crate::config::config_dir() {
-        Some(dir) => scan_previous_run_at(&dir),
-        None => PreviousRunReport {
-            scan: PreviousRunScan::Empty,
-            previous_run: None,
-        },
-    }
-}
-
 /// One record as the scan needs it: the four fields every valid line carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ScannedRecord {

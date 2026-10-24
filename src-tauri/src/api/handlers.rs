@@ -60,6 +60,7 @@ pub fn bearer_token_strict(headers: &HeaderMap) -> Result<String, ApiError> {
 #[cfg(target_os = "windows")]
 pub(crate) mod window_screenshot;
 
+#[cfg(target_os = "windows")]
 pub async fn authenticate_window_screenshot_fresh(
     state: &ApiState,
     headers: &HeaderMap,

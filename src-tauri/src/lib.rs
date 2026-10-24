@@ -7,7 +7,7 @@ pub mod commands;
 pub mod config;
 pub(crate) mod errors;
 pub mod logging;
-pub mod loops;
+pub(crate) mod loops;
 pub mod network;
 pub(crate) mod path_identity;
 pub(crate) mod path_utils;

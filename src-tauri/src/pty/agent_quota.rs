@@ -224,6 +224,7 @@ impl AgentQuotaEngine {
             .remove(&id);
     }
 
+    #[cfg(test)]
     pub fn is_session_registered(&self, id: Uuid) -> bool {
         self.registered
             .lock()

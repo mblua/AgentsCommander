@@ -286,6 +286,7 @@ impl TypingHoldTracker {
 
     /// Is the hold active for `id`? Read-only, so an injection attempt never
     /// mutates the state it is evaluating (expiry is evaluated on read).
+    #[cfg(test)]
     pub fn is_hold_active(&self, id: Uuid, window: Duration) -> bool {
         self.sessions
             .get(&id)

@@ -154,16 +154,13 @@ pub(crate) async fn gather_co_managed_preconditions<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_id: uuid::Uuid,
     room_root: &Path,
-    candidate: &capture::record::CapturedRecord,
     kind: capture::state::EffectKind,
 ) -> capture::state::EffectPreconditions {
-    let (session_alive, anchor, unique_live_session_for_cwd) = {
+    let (session_alive, unique_live_session_for_cwd) = {
         let Some(manager) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() else {
             return capture::state::EffectPreconditions {
                 session_alive: false,
                 session_id: session_id.to_string(),
-                anchor: String::new(),
-                provider: candidate.provider,
                 unique_live_session_for_cwd: false,
                 no_pending_user_input: false,
                 effective_ready: false,
@@ -186,7 +183,7 @@ pub(crate) async fn gather_co_managed_preconditions<R: tauri::Runtime>(
             })
             .count()
             == 1;
-        (session.is_some(), anchor, unique)
+        (session.is_some(), unique)
     };
 
     let no_pending_user_input =
@@ -214,8 +211,6 @@ pub(crate) async fn gather_co_managed_preconditions<R: tauri::Runtime>(
     capture::state::EffectPreconditions {
         session_alive,
         session_id: session_id.to_string(),
-        anchor,
-        provider: candidate.provider,
         unique_live_session_for_cwd,
         no_pending_user_input,
         effective_ready,
@@ -257,7 +252,6 @@ pub(crate) async fn commit_co_managed_with_retries<R: tauri::Runtime>(
     slot: &capture::sink::CaptureSlot,
     expected_seq: u64,
     expected_key: &capture::key::ConsumptionKey,
-    candidate: &capture::record::CapturedRecord,
     kind: capture::state::EffectKind,
 ) -> CoManagedCommit {
     for attempt in 0..CO_MANAGED_MAX_ATTEMPTS {
@@ -265,8 +259,7 @@ pub(crate) async fn commit_co_managed_with_retries<R: tauri::Runtime>(
             let backoff = CO_MANAGED_RETRY_BACKOFF_MS[(attempt - 1) as usize];
             tokio::time::sleep(Duration::from_millis(backoff)).await;
         }
-        let pre =
-            gather_co_managed_preconditions(app, session_id, room_root, candidate, kind).await;
+        let pre = gather_co_managed_preconditions(app, session_id, room_root, kind).await;
         handle.record_commit_call();
         let result = commit_co_managed_effect(
             room_root.to_path_buf(),
@@ -353,7 +346,6 @@ pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
             slot,
             expected_seq,
             &expected_key,
-            candidate.as_ref(),
             capture::state::EffectKind::TextToUser,
         )
         .await
@@ -418,7 +410,6 @@ pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
         slot,
         expected_seq,
         &expected_key,
-        candidate.as_ref(),
         kind,
     )
     .await
@@ -456,7 +447,6 @@ pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
                     slot,
                     expected_seq,
                     &expected_key,
-                    candidate.as_ref(),
                     capture::state::EffectKind::TextToUser,
                 )
                 .await

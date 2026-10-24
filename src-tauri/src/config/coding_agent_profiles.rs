@@ -14,16 +14,18 @@ pub(crate) use paths::{agent_name_from_dir, configured_ac_roots};
 pub use replica_profile::{
     read_replica_current_coding_agent, read_replica_profile, read_replica_profile_content_hash,
     read_replica_profile_result, set_agent_default_profile, set_instance_profile_override,
-    set_replica_profile_content_hash, ReplicaProfileRead,
+    set_replica_profile_content_hash,
 };
 pub use resolve::{resolve_profile, resolve_profile_selection};
+#[cfg(test)]
+use selection_state::SelectionWriteOutcome;
 pub(crate) use selection_state::{
     apply_replica_selection_default, selection_state_from_value, PreparedSourceSelection,
 };
 pub use selection_state::{
     read_replica_selection_default, read_replica_selection_state, write_replica_selection_default,
     ReplicaSelectionDefault, ReplicaSelectionExpectation, ReplicaSelectionPair,
-    ReplicaSelectionState, SelectionLockTransition, SelectionWriteIntent, SelectionWriteOutcome,
+    ReplicaSelectionState, SelectionLockTransition, SelectionWriteIntent,
 };
 pub use selection_write::{
     clear_replica_selection_lock, set_replica_coding_agent_selection, write_replica_selection,

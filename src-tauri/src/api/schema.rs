@@ -8,10 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use terminal_snapshot_renderer::{
-    TerminalSnapshotApiError, TerminalSnapshotApiRequest, TerminalSnapshotApiSuccess,
-    TerminalSnapshotPayload,
-};
+pub use terminal_snapshot_renderer::{TerminalSnapshotApiError, TerminalSnapshotApiRequest};
 
 /// Contract version. URL-versioned (`/api/v1`); this echo is a redundant,
 /// explicit assertion field for clients.
