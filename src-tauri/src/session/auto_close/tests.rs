@@ -539,6 +539,9 @@ async fn selected_idle_team_closes_as_one_batch_and_clears_selection_once() {
         TelegramBridgeManager::new(output_senders),
     ));
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(settings)
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))

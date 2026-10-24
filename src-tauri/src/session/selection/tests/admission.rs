@@ -133,6 +133,9 @@ async fn full_queue_critical_route_waiter_is_deduplicated_and_runs_after_capacit
         .record_route(session.id, SessionBackendKind::LocalProcess);
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(DetachedSessionsState::default())
@@ -254,6 +257,9 @@ async fn full_queue_keeps_critical_kinds_distinct_and_deduplicates_each_kind() {
     ))));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(pty)
         .manage(DetachedSessionsState::default())
@@ -332,6 +338,9 @@ async fn watchdog_kill_reports_no_public_session_for_absent_uuid() {
     ))));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(pty)
         .manage(DetachedSessionsState::default())
@@ -394,6 +403,9 @@ async fn watchdog_kill_reports_already_in_flight_when_key_held() {
     ))));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(pty)
         .manage(DetachedSessionsState::default())
@@ -450,6 +462,9 @@ async fn absent_session_outcomes_for_route_loss_and_background_destroy_are_uncha
     ))));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(pty)
         .manage(DetachedSessionsState::default())

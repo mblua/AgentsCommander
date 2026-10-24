@@ -114,6 +114,9 @@ async fn assert_serialized_resource_kills(watchdog_first: bool) {
     register_running(monitor.as_ref(), session.id, root);
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(Arc::clone(&monitor))
@@ -271,6 +274,9 @@ async fn full_queue_watchdog_waiter_deduplicates_then_runs_one_whole_finalizer()
     register_running(monitor.as_ref(), session.id, root);
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(monitor)
@@ -400,6 +406,9 @@ async fn full_coordinator_rejects_user_resource_kill_before_any_side_effect() {
     register_running(monitor.as_ref(), session.id, root);
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(monitor)
