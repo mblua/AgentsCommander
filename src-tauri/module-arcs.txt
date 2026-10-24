@@ -1,6 +1,7 @@
 agentscommander_lib -> agentscommander_lib::co_managed
 agentscommander_lib -> agentscommander_lib::co_managed::route
 agentscommander_lib -> agentscommander_lib::commands::ac_discovery
+agentscommander_lib -> agentscommander_lib::commands::quit_gate
 agentscommander_lib -> agentscommander_lib::config
 agentscommander_lib -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib -> agentscommander_lib::config::settings
@@ -924,6 +925,7 @@ agentscommander_lib::commands::pty::typing_hold -> agentscommander_lib::pty::inp
 agentscommander_lib::commands::pty::watcher_reach -> agentscommander_lib::config::coding_agents_catalog
 agentscommander_lib::commands::pty::watcher_reach -> agentscommander_lib::config::settings
 agentscommander_lib::commands::pty::watcher_reach -> agentscommander_lib::pty::watchers
+agentscommander_lib::commands::quit_gate -> agentscommander_lib::quit_gate
 agentscommander_lib::commands::repos -> agentscommander_lib::config::agent_path
 agentscommander_lib::commands::repos -> agentscommander_lib::config::settings
 agentscommander_lib::commands::repos -> agentscommander_lib::pty::credentials
@@ -1122,6 +1124,7 @@ agentscommander_lib::commands::session::telegram -> agentscommander_lib::config:
 agentscommander_lib::commands::session::telegram -> agentscommander_lib::config::settings
 agentscommander_lib::commands::session::telegram -> agentscommander_lib::session::manager
 agentscommander_lib::commands::session::telegram -> agentscommander_lib::telegram::manager
+agentscommander_lib::commands::session_warnings -> agentscommander_lib::session::warnings
 agentscommander_lib::commands::spec_board -> agentscommander_lib
 agentscommander_lib::commands::spec_board -> agentscommander_lib::config::settings
 agentscommander_lib::commands::spec_board::paths -> agentscommander_lib::config::settings

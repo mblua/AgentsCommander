@@ -64,6 +64,10 @@ pub(crate) use co_managed::{
     CoManagedSupervisorHandle, CoManagedTrigger, CO_MANAGED_MAX_ATTEMPTS,
     CO_MANAGED_RETRY_BACKOFF_MS,
 };
+pub(crate) use commands::quit_gate::{
+    quit_application, quit_gate_progress, quit_gate_register, quit_gate_resolve,
+    quit_gate_unregister,
+};
 pub(crate) use pty_wiring::{
     codex_activity_factory, QuotaRows, QuotaSink, QuotaSources, ScraperPatterns, ScraperPersist,
     ScraperRows, ScraperSamples, ScraperSink, WatcherBackends, WatcherDelivery, WatcherPatterns,
@@ -73,10 +77,6 @@ pub use quit_gate::{
     apply_quit_gate_effects, quit_gate_run, quit_gate_window_gone, QuitAbortReason, QuitGate,
     QuitGateClock, QuitGateEffects, QuitGateHost, QuitGateRegistration, QuitOutcome,
     QuitOutcomeKind, TauriQuitHost, TokioQuitClock, QUIT_GATE_MAIN_LABEL, QUIT_GATE_TIMEOUT,
-};
-pub(crate) use quit_gate::{
-    quit_application, quit_gate_progress, quit_gate_register, quit_gate_resolve,
-    quit_gate_unregister,
 };
 pub(crate) use reader_demand::{
     reader_demand_pass, recovery_pass, watch_capture_slots, READER_DEMAND_TICK_SECS,
@@ -400,7 +400,7 @@ fn invoke_handler(
         commands::session::list_sessions,
         commands::session::get_active_session,
         commands::session::get_last_agent_message,
-        session::warnings::drain_session_warnings,
+        commands::session_warnings::drain_session_warnings,
         quit_gate_register,
         quit_gate_unregister,
         quit_gate_resolve,

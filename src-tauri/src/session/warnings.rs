@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use uuid::Uuid;
 
 pub const SESSION_ENV_WARNING_EVENT: &str = "session_env_warning";
@@ -85,17 +85,6 @@ pub fn emit_session_warning<R: Runtime>(app: &AppHandle<R>, warning: SessionWarn
         log::warn!("[session-warning] warning buffer state missing; live emit only");
     }
     let _ = app.emit(SESSION_ENV_WARNING_EVENT, warning);
-}
-
-#[tauri::command]
-pub fn drain_session_warnings(
-    state: State<'_, SessionWarningState>,
-    session_id: Option<String>,
-) -> Result<Vec<SessionWarning>, String> {
-    let mut buffer = state
-        .lock()
-        .map_err(|err| format!("session warning buffer lock poisoned: {err}"))?;
-    Ok(buffer.drain(session_id.as_deref()))
 }
 
 #[cfg(test)]
