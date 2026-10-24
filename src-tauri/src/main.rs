@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use agentscommander_lib::cli::Commands;
+use agentscommander_lib::testability::{ui_automation, window_placement};
 use clap::{CommandFactory, FromArgMatches};
 
 fn main() {
@@ -100,7 +101,7 @@ fn main() {
                     }
                     None => {
                         // GUI mode (with or without --app)
-                        let placement = match agentscommander_lib::testability::window_placement::resolve_from_cli_or_env(
+                        let placement = match window_placement::resolve_from_cli_or_env(
                             cli.window_x,
                             cli.window_y,
                             cli.window_width,
@@ -116,31 +117,34 @@ fn main() {
                             }
                         };
 
-                        let ui_automation_enabled = match agentscommander_lib::testability::ui_automation::resolve_enabled_from_cli_or_env(cli.ui_automation) {
-                            Ok(enabled) => enabled,
-                            Err(e) => {
-                                agentscommander_lib::cli::attach_parent_console();
-                                eprintln!("{}", e);
-                                agentscommander_lib::cli::flush_outputs();
-                                std::process::exit(1);
-                            }
-                        };
+                        let ui_automation_enabled =
+                            match ui_automation::resolve_enabled_from_cli_or_env(cli.ui_automation)
+                            {
+                                Ok(enabled) => enabled,
+                                Err(e) => {
+                                    agentscommander_lib::cli::attach_parent_console();
+                                    eprintln!("{}", e);
+                                    agentscommander_lib::cli::flush_outputs();
+                                    std::process::exit(1);
+                                }
+                            };
 
                         if !try_acquire_single_instance() {
                             if ui_automation_enabled {
-                                if agentscommander_lib::testability::ui_automation::existing_enabled_session_for_current_config() {
+                                if ui_automation::existing_enabled_session_for_current_config() {
                                     std::process::exit(0);
                                 }
                                 agentscommander_lib::cli::attach_parent_console();
-                                eprintln!(
-                                    "{}",
-                                    agentscommander_lib::testability::ui_automation::automation_not_enabled_json()
-                                );
+                                eprintln!("{}", ui_automation::automation_not_enabled_json());
                                 agentscommander_lib::cli::flush_outputs();
                                 std::process::exit(1);
                             }
                             agentscommander_lib::cli::present_fatal_startup_message(
-                                "An AgentsCommander instance with this executable identity is already running.\n\nRename this executable to agentscommander_<name>.exe to start an independent instance with its own configuration directory and ports.",
+                                "An AgentsCommander instance with this executable identity is \
+                                already running.\n\n\
+                                Rename this executable to agentscommander_<name>.exe to start an \
+                                independent instance with its own configuration directory \
+                                and ports.",
                             );
                             std::process::exit(0);
                         }
