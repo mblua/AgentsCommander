@@ -17,7 +17,7 @@
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
-use crate::cli::create_agent;
+use crate::cli::create_agent::session_request;
 use crate::commands::entity_creation::{create_agent_matrix_on_disk, CreateAgentMatrixDiskArgs};
 use crate::config::instance_artifacts::PROJECT_REFRESH_REQUESTS_DIR_NAME;
 use crate::config::projects::resolve_project_reference;
@@ -175,39 +175,39 @@ pub(crate) fn execute_matrix_project_create(
     let mut launch_agent_id: Option<String> = None;
 
     if let Some(requested) = launch {
-        match create_agent::find_launch_agent(&settings, requested) {
+        match session_request::find_launch_agent(&settings, requested) {
             Some(agent) => {
-                match create_agent::build_session_request(
+                match session_request::build_session_request(
                     agent_path.clone(),
                     created.display_name.clone(),
                     agent,
                 ) {
-                    Ok(request) => match create_agent::write_session_request(&request) {
+                    Ok(request) => match session_request::write_session_request(&request) {
                         Ok(()) => {
                             // #1163: the request is on disk; the TRUTHFUL
                             // outcome comes from the running app's result
                             // sidecar, with a bounded wait. Rejection is
                             // distinguishable in this command's own output.
                             launch_agent_id = Some(agent.id.clone());
-                            match create_agent::wait_for_session_request_result(
+                            match session_request::wait_for_session_request_result(
                                 &request.id,
-                                create_agent::SESSION_REQUEST_RESULT_TIMEOUT,
+                                session_request::SESSION_REQUEST_RESULT_TIMEOUT,
                             ) {
-                                create_agent::LaunchOutcome::Launched { .. } => {
+                                session_request::LaunchOutcome::Launched { .. } => {
                                     launched = true;
                                     launch_status = LaunchStatus::Launched;
                                 }
-                                create_agent::LaunchOutcome::Rejected { error } => {
+                                session_request::LaunchOutcome::Rejected { error } => {
                                     launch_status = LaunchStatus::Rejected;
                                     launch_error = Some(error.clone());
                                     eprintln!("Warning: session launch rejected: {}", error);
                                 }
-                                create_agent::LaunchOutcome::Pending => {
+                                session_request::LaunchOutcome::Pending => {
                                     launch_status = LaunchStatus::Pending;
                                     eprintln!(
                                         "Warning: no launch result within {}s \
                                          (is the AgentsCommander app running?)",
-                                        create_agent::SESSION_REQUEST_RESULT_TIMEOUT.as_secs()
+                                        session_request::SESSION_REQUEST_RESULT_TIMEOUT.as_secs()
                                     );
                                 }
                             }

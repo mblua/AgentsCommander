@@ -63,13 +63,6 @@
       ]
     },
     {
-      "id": "fa5266e34a30725c",
-      "members": [
-        "agentscommander_lib::cli::create_agent",
-        "agentscommander_lib::cli::create_agent_matrix"
-      ]
-    },
-    {
       "id": "98dd386091329e51",
       "members": [
         "agentscommander_lib::config::projects",

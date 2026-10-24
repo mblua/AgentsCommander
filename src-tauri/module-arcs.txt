@@ -331,12 +331,12 @@ agentscommander_lib::cli::coding_agent -> agentscommander_lib::config::profile
 agentscommander_lib::cli::coding_agent -> agentscommander_lib::config::settings
 agentscommander_lib::cli::coding_agent -> agentscommander_lib::pty::backend
 agentscommander_lib::cli::create_agent -> agentscommander_lib::cli::create_agent_matrix
-agentscommander_lib::cli::create_agent -> agentscommander_lib::config
-agentscommander_lib::cli::create_agent -> agentscommander_lib::config::agent_command
-agentscommander_lib::cli::create_agent -> agentscommander_lib::config::instance_artifacts
-agentscommander_lib::cli::create_agent -> agentscommander_lib::config::settings
+agentscommander_lib::cli::create_agent::session_request -> agentscommander_lib::config
+agentscommander_lib::cli::create_agent::session_request -> agentscommander_lib::config::agent_command
+agentscommander_lib::cli::create_agent::session_request -> agentscommander_lib::config::instance_artifacts
+agentscommander_lib::cli::create_agent::session_request -> agentscommander_lib::config::settings
 agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib
-agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib::cli::create_agent
+agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib::cli::create_agent::session_request
 agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib::commands::entity_creation
 agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib::config
 agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib::config::instance_artifacts
