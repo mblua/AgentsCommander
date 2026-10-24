@@ -1,0 +1,1 @@
+#[cfg(any())] fn probe() { let _ = stringify!(crate::telegram::bridge::BridgeLogger); }
