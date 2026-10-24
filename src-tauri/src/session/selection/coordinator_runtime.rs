@@ -380,7 +380,8 @@ impl SelectionCoordinator {
                     return (Err(SelectionCoordinatorError::Unavailable.to_string()), true);
                 }
                 admission = executor.prepare(
-                    &transaction, owner.operation, requested, root_request, root_directory.as_deref(),
+                    &transaction, owner.operation, requested, root_request,
+                    root_directory.as_deref(),
                 ) => admission,
             };
             match admission {
