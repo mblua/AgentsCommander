@@ -13,7 +13,7 @@ pub(crate) mod audit;
 pub mod auth;
 pub(crate) mod dispatcher;
 mod error;
-pub(crate) mod handlers;
+pub mod handlers;
 mod identity;
 pub mod message_store;
 pub mod schema;
