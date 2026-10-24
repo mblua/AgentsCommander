@@ -2,6 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tauri::{AppHandle, Manager};
 use tokio::task::JoinHandle;
 use tokio::time::{timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
@@ -98,6 +99,24 @@ pub struct TelegramBridgeManager {
 }
 
 pub type TelegramBridgeState = Arc<tokio::sync::Mutex<TelegramBridgeManager>>;
+
+/// Release **every** demand for a session. Destroy and shutdown do this; a
+/// persistence rollback releases only the bot demand (section 5).
+pub(crate) async fn release_all_reader_demands<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) {
+    let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
+        return;
+    };
+    let shutdown = {
+        let mut tg = tg_state.lock().await;
+        tg.reader_release_all(session_id)
+    };
+    if let Some(shutdown) = shutdown {
+        shutdown.spawn_wait_or_abort();
+    }
+}
 
 #[must_use = "BridgeShutdown must be consumed with spawn_wait_or_abort() or abort_now() \
               after releasing TelegramBridgeState"]

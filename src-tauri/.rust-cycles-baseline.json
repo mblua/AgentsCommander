@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "ab231fc1d9e023bd",
+      "id": "deb29896c738cc03",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::api::auth",
@@ -21,7 +21,6 @@
         "agentscommander_lib::co_managed::route",
         "agentscommander_lib::commands::pty",
         "agentscommander_lib::commands::session",
-        "agentscommander_lib::commands::telegram",
         "agentscommander_lib::pty::backend",
         "agentscommander_lib::pty::container_backend",
         "agentscommander_lib::pty::container_tokens",

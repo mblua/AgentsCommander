@@ -550,7 +550,7 @@ pub(crate) async fn run_response_close_auxiliary<R: tauri::Runtime>(
     let Some(readers) = owner.start("readers") else {
         return;
     };
-    crate::commands::telegram::release_all_reader_demands(transaction.app(), id).await;
+    crate::telegram::manager::release_all_reader_demands(transaction.app(), id).await;
     if owner.complete(readers, Ok(())).is_none() {
         return;
     }

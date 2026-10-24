@@ -2452,7 +2452,7 @@ async fn publish_legacy_destroy_outcome<R: tauri::Runtime>(
         purge_session_side_state(transaction.app(), session_id);
         // #2232 phase 4 section 5: destroy releases **both** demands, which
         // cancels the reader and closes the session's `CaptureRegistry` entry.
-        crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
+        crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
     }
 
     for row in committed.changed_rows.iter().filter(|row| {

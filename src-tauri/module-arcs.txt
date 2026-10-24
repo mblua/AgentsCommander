@@ -947,7 +947,6 @@ agentscommander_lib::commands::session -> agentscommander_lib
 agentscommander_lib::commands::session -> agentscommander_lib::agent_update
 agentscommander_lib::commands::session -> agentscommander_lib::api::message_store
 agentscommander_lib::commands::session -> agentscommander_lib::co_managed
-agentscommander_lib::commands::session -> agentscommander_lib::commands::telegram
 agentscommander_lib::commands::session -> agentscommander_lib::config::agent_command
 agentscommander_lib::commands::session -> agentscommander_lib::config::agent_config
 agentscommander_lib::commands::session -> agentscommander_lib::config::agent_memory
@@ -1048,7 +1047,6 @@ agentscommander_lib::commands::session::destroy -> agentscommander_lib::session:
 agentscommander_lib::commands::session::destroy -> agentscommander_lib::telegram::manager
 agentscommander_lib::commands::session::destroy::response_close -> agentscommander_lib
 agentscommander_lib::commands::session::destroy::response_close -> agentscommander_lib::commands::session
-agentscommander_lib::commands::session::destroy::response_close -> agentscommander_lib::commands::telegram
 agentscommander_lib::commands::session::destroy::response_close -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::commands::session::destroy::response_close -> agentscommander_lib::config::settings
 agentscommander_lib::commands::session::destroy::response_close -> agentscommander_lib::config::teams
@@ -1073,7 +1071,6 @@ agentscommander_lib::commands::session::lifecycle -> agentscommander_lib::sessio
 agentscommander_lib::commands::session::restart -> agentscommander_lib
 agentscommander_lib::commands::session::restart -> agentscommander_lib::commands::pty
 agentscommander_lib::commands::session::restart -> agentscommander_lib::commands::session
-agentscommander_lib::commands::session::restart -> agentscommander_lib::commands::telegram
 agentscommander_lib::commands::session::restart -> agentscommander_lib::config::agent_command
 agentscommander_lib::commands::session::restart -> agentscommander_lib::config::agent_config
 agentscommander_lib::commands::session::restart -> agentscommander_lib::config::coding_agent_profiles
