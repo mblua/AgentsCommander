@@ -199,3 +199,6 @@ pub(crate) fn state<R: Runtime>() -> LifecycleExecutorState<SelectionTransaction
 pub(crate) fn install<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     builder.manage(state::<R>())
 }
+
+#[cfg(test)]
+mod tests;
