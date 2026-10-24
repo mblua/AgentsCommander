@@ -22,11 +22,13 @@ const USAGE = `Usage: node scripts/check-served-paths.mjs [--inventory <file>] [
 Checks that every path in the served-path inventory is a tracked file, and that
 every raw.githubusercontent.com/mblua/AgentsCommander fetch literal under
 src-tauri/ or src/ has a matching row with the same path and serving ref.
+String-only Rust concat! values are reconstructed (reported at the macro line).
+Other concat! expressions emit warnings and retain the original literal scan.
 
   --inventory <file>  Read the inventory from <file> instead of
                       ${DEFAULT_INVENTORY} (relative paths resolve
                       against the current directory).
-  --self-test         Run the in-memory self-test (12 cases).
+  --self-test         Run the in-memory self-test (including concat! cases).
   --help              Print this usage and exit 0.`;
 
 function lineOf(source, index) {
@@ -37,21 +39,118 @@ function lineOf(source, index) {
   return line;
 }
 
-function scanLiterals(trackedFiles, readSource) {
+// Read Rust string tokens and balanced macro bodies without evaluating Rust.
+// Unsupported concat! expressions keep the original URL scan and emit a warning.
+function rustToken(source, index) {
+  const rest = source.slice(index);
+  const comment = /^(?:\/\/[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/|\s+)/.exec(rest);
+  if (comment) return { end: index + comment[0].length, trivia: true };
+  const raw = /^r(#{0,255})"/.exec(rest);
+  if (raw) {
+    const start = index + raw[0].length;
+    const close = source.indexOf('"' + raw[1], start);
+    if (close !== -1) return { end: close + 1 + raw[1].length, value: source.slice(start, close) };
+  }
+  const quoted = /^"(?:[^"\\]|\\[\s\S])*"/.exec(rest);
+  if (!quoted) return { end: index + 1 };
+  let valid = true;
+  const value = quoted[0].slice(1, -1).replace(
+    /\\(?:\r?\n\s*|x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|[\s\S])/g,
+    (escape) => {
+      if (/^\\\r?\n/.test(escape)) return '';
+      const simple = { '\\n': '\n', '\\r': '\r', '\\t': '\t', '\\0': '\0', '\\\\': '\\', '\\"': '"', "\\'": "'" };
+      if (escape in simple) return simple[escape];
+      if (escape.startsWith('\\x')) return String.fromCharCode(parseInt(escape.slice(2), 16));
+      if (escape.startsWith('\\u{')) {
+        const code = parseInt(escape.slice(3, -1).replaceAll('_', ''), 16);
+        if (code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)) return String.fromCodePoint(code);
+      }
+      valid = false;
+      return escape;
+    },
+  );
+  return { end: index + quoted[0].length, ...(valid ? { value } : {}) };
+}
+
+function concatSources(source, file, warnings) {
+  const expressions = [];
+  const start = /\bconcat\s*!\s*([([{])/g;
+  let match;
+  while ((match = start.exec(source)) !== null) {
+    const stack = [({ '(': ')', '[': ']', '{': '}' })[match[1]]];
+    let index = start.lastIndex;
+    let value = '';
+    let expectString = true;
+    let valid = true;
+    const strings = [];
+    while (index < source.length && stack.length > 0) {
+      const token = rustToken(source, index);
+      const char = source[index];
+      if (token.trivia) { index = token.end; continue; }
+      if (token.value !== undefined) {
+        strings.push({ start: index, end: token.end });
+        if (!expectString || stack.length !== 1) valid = false;
+        value += token.value;
+        expectString = false;
+      } else if (char === stack.at(-1)) {
+        stack.pop();
+      } else if ('([{'.includes(char)) {
+        stack.push(({ '(': ')', '[': ']', '{': '}' })[char]);
+        valid = false;
+      } else if (char === ',' && !expectString && stack.length === 1) {
+        expectString = true;
+      } else {
+        valid = false;
+      }
+      index = token.end;
+    }
+    if (stack.length !== 0) valid = false;
+    if (valid) {
+      // All reconstructed URLs report the line of concat!, including multiline macros.
+      expressions.push({ start: match.index, end: index, value, strings });
+    } else {
+      warnings.push(
+        file + ':' + lineOf(source, match.index)
+        + ' concat! is outside reconstructed URL scanning: only string literals are supported;'
+        + ' original literal scanning remains active',
+      );
+    }
+    start.lastIndex = index;
+  }
+  return expressions;
+}
+
+function scanLiterals(trackedFiles, readSource, warnings) {
   const literals = [];
   for (const file of trackedFiles) {
     if (!SCAN_PREFIXES.some((prefix) => file.startsWith(prefix))) continue;
-    const source = readSource(file);
-    LITERAL_RE.lastIndex = 0;
-    let match;
-    while ((match = LITERAL_RE.exec(source)) !== null) {
-      if (match[1].toLowerCase() !== OWNER || match[2].toLowerCase() !== REPO) continue;
-      literals.push({
-        file,
-        line: lineOf(source, match.index),
-        ref: match[3],
-        path: match[4].replace(TRAILING_PATH_PUNCTUATION, ''),
-      });
+    const original = readSource(file);
+    const expressions = concatSources(original, file, warnings);
+    let source = original;
+    for (const token of expressions.flatMap((expression) => expression.strings).reverse()) {
+      // Keep comments visible to the original scan, including URLs in macro comments.
+      source = source.slice(0, token.start)
+        + source.slice(token.start, token.end).replace(/[^\n]/g, ' ')
+        + source.slice(token.end);
+    }
+    const inputs = [
+      { value: source, line: null },
+      ...expressions.map((expression) => ({
+        value: expression.value, line: lineOf(original, expression.start),
+      })),
+    ];
+    for (const input of inputs) {
+      LITERAL_RE.lastIndex = 0;
+      let match;
+      while ((match = LITERAL_RE.exec(input.value)) !== null) {
+        if (match[1].toLowerCase() !== OWNER || match[2].toLowerCase() !== REPO) continue;
+        literals.push({
+          file,
+          line: input.line ?? lineOf(source, match.index),
+          ref: match[3],
+          path: match[4].replace(TRAILING_PATH_PUNCTUATION, ''),
+        });
+      }
     }
   }
   return literals;
@@ -77,7 +176,8 @@ export function checkServedPaths({ inventoryText, inventoryName, trackedFiles, r
   if (rows.length === 0) errors.push('inventory has no rows');
 
   const tracked = new Set(trackedFiles);
-  const literals = scanLiterals(trackedFiles, readSource);
+  const warnings = [];
+  const literals = scanLiterals(trackedFiles, readSource, warnings);
 
   for (const row of rows) {
     if (!tracked.has(row.path)) {
@@ -93,7 +193,7 @@ export function checkServedPaths({ inventoryText, inventoryName, trackedFiles, r
     errors.push('no raw.githubusercontent.com/mblua/AgentsCommander literal found under src-tauri/ or src/; the scan is broken');
   }
 
-  return { rows, literals, errors };
+  return { rows, literals, errors, warnings };
 }
 
 function loadTrackedFiles() {
@@ -136,6 +236,7 @@ function runCheck(options) {
     return 3;
   }
 
+  for (const warning of result.warnings) console.warn(`served-paths warning: ${warning}`);
   if (result.errors.length === 0) {
     console.log(`served-paths: ${result.rows.length} rows, ${result.literals.length} literals, consistent`);
     return 0;
@@ -278,7 +379,61 @@ function selfTestCases() {
         throw new Error(`expected ${baseline.rows.length} rows and ${baseline.literals.length} literals, got ${result.rows.length} and ${result.literals.length}`);
       }
     }],
+    ['case 13: multiline concat matches its row once at the macro line', () => {
+      const result = concatFixture('main', 'docs/home-en.md');
+      expectNoErrors(result);
+      if (result.literals.length !== 1 || result.literals[0].line !== 2) {
+        throw new Error('expected one reconstructed URL at concat! line 2');
+      }
+    }],
+    ['case 14: concat path without a row fails', () => {
+      expectError(concatFixture('main', 'docs/new.md'), 'has no row');
+    }],
+    ['case 15: concat ref must match its row', () => {
+      expectError(concatFixture('dev', 'docs/home-en.md'), 'has no row');
+    }],
+    ['case 16: nonliteral concat warns and retains the original scan', () => {
+      const result = runServedPathsFixture({ sources: {
+        'src/main.ts': `concat!("${HOME_LITERAL}", suffix!("x", "y"));`,
+      } });
+      expectNoErrors(result);
+      if (result.warnings.length !== 1 || result.literals.length !== 1) {
+        throw new Error('expected an explicit unsupported-concat warning and the original URL');
+      }
+    }],
+    ['case 17: raw strings, comments and three arguments are reconstructed', () => {
+      const result = runServedPathsFixture({ sources: {
+        'src/main.ts': 'concat![r#"https://raw.githubusercontent.com/"#, /* gap */ "mblua/AgentsCommander/", "main/docs/home-en.md",];',
+      } });
+      expectNoErrors(result);
+      if (result.literals.length !== 1) throw new Error('expected a reconstructed raw-string URL');
+    }],
+    ['case 18: escaped strings are decoded before checking the path', () => {
+      const result = runServedPathsFixture({ sources: {
+        'src/main.ts': String.raw`concat!("https://raw.githubusercontent.com/mblua/AgentsCommander/", "main/docs/\x68ome-en.md");`,
+      } });
+      expectNoErrors(result);
+    }],
+    ['case 19: unsupported concat cannot hide a missing inventory row', () => {
+      const result = runServedPathsFixture({ sources: {
+        'src/main.ts': 'concat!("https://raw.githubusercontent.com/mblua/AgentsCommander/dev/docs/new.md", SUFFIX);',
+      } });
+      expectError(result, 'has no row');
+      if (result.warnings.length !== 1) throw new Error('expected an unsupported-concat warning');
+    }],
+    ['case 20: concat comments retain the original URL checks', () => {
+      const result = runServedPathsFixture({ sources: {
+        'src/main.ts': `concat!("${HOME_LITERAL}", /* https://raw.githubusercontent.com/mblua/AgentsCommander/dev/docs/new.md */ "");`,
+      } });
+      expectError(result, 'fetches dev/docs/new.md');
+    }],
   ];
+}
+
+function concatFixture(ref, resource) {
+  return runServedPathsFixture({ sources: {
+    'src/main.ts': `\nconcat!(\n"https://raw.githubusercontent.com/mblua/AgentsCommander/",\n"${ref}/",\n"${resource}",\n);`,
+  } });
 }
 
 function selfTest() {
