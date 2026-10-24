@@ -70,24 +70,6 @@
       "reason": "Came out of the split of dispatch_pty_input_operation_core in #3180 (138d9f0). Complexity is not a blocker for this function.",
       "issue": 3182,
       "since": "2026-10-23"
-    },
-    {
-      "gate": "09",
-      "rule": "launch_files",
-      "path": "src-tauri/src/config/agency_cache.rs",
-      "symbol": "process_is_running",
-      "reason": "moved unchanged from cli/agency_templates (03-R, batch 6)",
-      "issue": 3195,
-      "since": "2026-10-24"
-    },
-    {
-      "gate": "09",
-      "rule": "launch_files",
-      "path": "src-tauri/src/config/agency_cache/git.rs",
-      "symbol": "run_process_with_timeout",
-      "reason": "moved unchanged from cli/agency_templates (03-R, batch 6)",
-      "issue": 3195,
-      "since": "2026-10-24"
     }
   ]
 }
