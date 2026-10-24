@@ -1,5 +1,3 @@
-use super::*;
-
 /// #280 G-HIGH-2 / LOW-3 — guard against accidental re-introduction
 /// of `?key=<API_KEY>` in the Gemini request URL. The key MUST be
 /// passed via the `x-goog-api-key` header (transcribe_audio above);
