@@ -1,0 +1,9 @@
+{
+  "categories": {
+    "note": {
+      "destination": "default_reply",
+      "question": "?",
+      "reply": "No action needed."
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "categories": {
+    "answer": {
+      "destination": "default_reply",
+      "question": "?",
+      "reply": "Approved, go ahead"
+    }
+  }
+}
