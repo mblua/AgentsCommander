@@ -77,6 +77,7 @@ pub(crate) trait LifecycleExecutor<T>: Send + Sync {
     ) -> LifecycleFuture<'a, Result<(), String>>;
     #[expect(dead_code, reason = "P05 routes reconcile through the execution port")]
     fn reconcile<'a>(&'a self, transaction: &'a T) -> LifecycleFuture<'a, ()>;
+    #[expect(dead_code, reason = "P18 routes retirement through the execution port")]
     fn complete_retirement<'a>(&'a self, transaction: &'a T, id: Uuid) -> LifecycleFuture<'a, ()>;
 }
 
@@ -386,7 +387,7 @@ impl fmt::Debug for ConditionalResponseClose {
 enum CoordinatorJob {
     #[cfg(test)]
     InlineReplacementFixture {
-        input: crate::commands::session::FixtureReplacementInput,
+        input: Box<crate::commands::session::FixtureReplacementInput>,
         control: Arc<ReplacementFixtureControl>,
         response: oneshot::Sender<crate::commands::session::FixtureReplacementResult>,
     },

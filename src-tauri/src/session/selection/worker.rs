@@ -10,7 +10,7 @@ use super::execute::{
 };
 use super::payload::SelectionCoordinatorError;
 use super::transaction::SelectionTransaction;
-use super::{CoordinatorInner, CoordinatorJob, LifecycleEntryOutcome};
+use super::{CoordinatorInner, CoordinatorJob, LifecycleEntryOutcome, LifecycleExecutor};
 
 #[cfg(test)]
 use super::replacement_fixture::{
@@ -22,8 +22,10 @@ pub(super) async fn worker_loop<R: Runtime>(
     app: AppHandle<R>,
     inner: Arc<CoordinatorInner>,
     mut receiver: mpsc::Receiver<CoordinatorEnvelope>,
+    executor: Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>,
 ) {
-    let transaction = SelectionTransaction::new(app, Arc::downgrade(&inner));
+    let transaction =
+        SelectionTransaction::new(app, Arc::downgrade(&inner)).with_lifecycle_executor(executor);
     loop {
         let envelope = tokio::select! {
             biased;
@@ -238,7 +240,7 @@ pub(super) async fn execute_envelope<R: Runtime>(
                 outcome: None,
             };
             let result =
-                crate::commands::session::execute_inline_replacement_fixture(transaction, input)
+                crate::commands::session::execute_inline_replacement_fixture(transaction, *input)
                     .await;
             let outcome = match &result.outcome {
                 Ok(crate::commands::session::OwnedReplacementCreateStep::Finalized(_)) => {

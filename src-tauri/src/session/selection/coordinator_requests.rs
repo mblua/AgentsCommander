@@ -79,7 +79,7 @@ impl SelectionCoordinator {
             _critical_admission: None,
             _create_ticket: None,
             job: CoordinatorJob::InlineReplacementFixture {
-                input,
+                input: Box::new(input),
                 control: control.clone(),
                 response,
             },

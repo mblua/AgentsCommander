@@ -15,6 +15,7 @@ use crate::resource_monitor::ResourceMonitorState;
 use crate::session::manager::CommitDecision;
 use crate::session::manager::LifecycleMutations;
 use crate::session::manager::SessionManager;
+use crate::session::selection::LifecycleExecutorState;
 use crate::session::selection::SelectionCause;
 use crate::session::selection::SelectionCoordinator;
 use crate::session::selection::SelectionSource;
@@ -866,5 +867,19 @@ pub(crate) async fn accept_restart_teardown<R: tauri::Runtime>(
             }
             Err(error.message)
         }
+    }
+}
+
+impl SelectionCoordinator {
+    pub(crate) async fn restart_lifecycle<R: tauri::Runtime>(
+        &self,
+        app: AppHandle<R>,
+        request: RestartJobRequest,
+    ) -> Result<SessionInfo, String> {
+        let executor = app
+            .try_state::<LifecycleExecutorState<SelectionTransaction<R>>>()
+            .map(|state| Arc::clone(state.get()));
+        self.restart_lifecycle_with_executor(app, request, executor)
+            .await
     }
 }

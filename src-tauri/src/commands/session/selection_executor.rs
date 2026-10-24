@@ -3,16 +3,31 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
-use tauri::Runtime;
+use tauri::{AppHandle, Manager, Runtime};
 use uuid::Uuid;
 
-use super::lifecycle::{self, LifecycleAuthorityAdmission, LifecycleEntryAuthority};
-use super::{destroy, restart, root_agent};
+use super::destroy;
+use super::lifecycle::LifecycleEntryAuthority;
 use crate::session::selection::{
     DestroyOutcome, DestroyRequest, LifecycleAdmission, LifecycleEffectGuard,
     LifecycleEntryOutcome, LifecycleExecutor, LifecycleExecutorState, LifecycleFuture,
-    LifecycleLease, RestartJobRequest, RootJobRequest, SelectionTransaction,
+    LifecycleLease, RestartJobRequest, RootJobRequest, SelectionCoordinator,
+    SelectionCoordinatorError, SelectionTransaction,
 };
+
+fn executor<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>> {
+    app.try_state::<LifecycleExecutorState<SelectionTransaction<R>>>()
+        .map(|state| Arc::clone(state.get()))
+}
+
+impl SelectionCoordinator {
+    pub fn start<R: Runtime>(&self, app: AppHandle<R>) -> Result<(), SelectionCoordinatorError> {
+        let executor = executor(&app);
+        self.start_with_executor(app, executor)
+    }
+}
 
 struct NativeLifecycleExecutor;
 
@@ -56,7 +71,7 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
     ) -> LifecycleFuture<'a, Result<LifecycleAdmission, String>> {
         Box::pin(async move {
             Ok(
-                match lifecycle::prepare_lifecycle_entry_authority(
+                match super::prepare_lifecycle_entry_authority(
                     transaction.app(),
                     operation,
                     source,
@@ -65,11 +80,11 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
                 )
                 .await?
                 {
-                    LifecycleAuthorityAdmission::Ready(authority) => {
+                    super::LifecycleAuthorityAdmission::Ready(authority) => {
                         LifecycleAdmission::Ready(NativeLifecycleLease::wrap(authority))
                     }
-                    LifecycleAuthorityAdmission::Waiting => LifecycleAdmission::Waiting,
-                    LifecycleAuthorityAdmission::NeedsRootDirectory => {
+                    super::LifecycleAuthorityAdmission::Waiting => LifecycleAdmission::Waiting,
+                    super::LifecycleAuthorityAdmission::NeedsRootDirectory => {
                         LifecycleAdmission::NeedsRootDirectory
                     }
                 },
@@ -89,7 +104,7 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
             let Some(authority) = native.authority.as_mut() else {
                 return false;
             };
-            lifecycle::validate_lifecycle_entry_authority(transaction.app(), authority).await
+            super::validate_lifecycle_entry_authority(transaction.app(), authority).await
         })
     }
 
@@ -108,7 +123,7 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
     }
 
     fn ensure_root_directory(&self, effect: LifecycleEffectGuard) -> Result<String, String> {
-        root_agent::ensure_owned_root_directory(effect)
+        super::ensure_owned_root_directory(effect)
     }
 
     fn destroy<'a>(
@@ -132,7 +147,7 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
             else {
                 return LifecycleEntryOutcome::Interrupted;
             };
-            restart::execute_external_restart_transaction(transaction, request, authority).await
+            super::execute_external_restart_transaction(transaction, request, authority).await
         })
     }
 
@@ -149,7 +164,7 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
             else {
                 return LifecycleEntryOutcome::Interrupted;
             };
-            root_agent::execute_external_root_transaction(transaction, request, authority).await
+            super::execute_external_root_transaction(transaction, request, authority).await
         })
     }
 
@@ -159,7 +174,7 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
         ticket: crate::pty::manager::ResponseCloseTicket,
     ) -> LifecycleFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            destroy::execute_response_close_transaction(transaction, ticket)
+            super::execute_response_close_transaction(transaction, ticket)
                 .await
                 .map(|_| ())
         })
@@ -177,7 +192,7 @@ impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleE
         transaction: &'a SelectionTransaction<R>,
         id: Uuid,
     ) -> LifecycleFuture<'a, ()> {
-        Box::pin(restart::complete_owned_replacement_retirement(
+        Box::pin(super::complete_owned_replacement_retirement(
             transaction,
             id,
         ))
