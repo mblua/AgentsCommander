@@ -50,7 +50,8 @@ pub(crate) fn ensure_no_live_sessions_under(root: &Path) -> Result<(), String> {
         .collect::<Vec<_>>()
         .join("\n");
     let stale_note = if stale {
-        "\nDaemon state is not confirmed running, so this may be stale session state. Close sessions or clear stale state before retrying."
+        "\nDaemon state is not confirmed running, so this may be stale session state. \
+         Close sessions or clear stale state before retrying."
     } else {
         ""
     };
