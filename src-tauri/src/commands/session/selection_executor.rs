@@ -6,6 +6,11 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager, Runtime};
 use uuid::Uuid;
 
+#[cfg(test)]
+use crate::session::selection::{
+    OpaqueFixtureInput, OpaqueFixtureOutput, ReplacementFixtureControl, ReplacementFixtureOutcome,
+};
+
 use super::lifecycle::LifecycleEntryAuthority;
 use super::{destroy, lifecycle, restart, root_agent};
 use crate::session::selection::{
@@ -26,6 +31,28 @@ impl SelectionCoordinator {
     pub fn start<R: Runtime>(&self, app: AppHandle<R>) -> Result<(), SelectionCoordinatorError> {
         let executor = executor(&app);
         self.start_with_executor(app, executor)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn submit_inline_replacement_fixture(
+        &self,
+        input: super::FixtureReplacementInput,
+        control: Arc<ReplacementFixtureControl>,
+    ) -> Option<super::FixtureReplacementResult> {
+        let input = OpaqueFixtureInput {
+            continuation: input.continuation.clone(),
+            payload: Box::new(input),
+        };
+        let output = self
+            .submit_opaque_replacement_fixture(input, control)
+            .await?;
+        match output.payload.downcast::<super::FixtureReplacementResult>() {
+            Ok(result) => Some(*result),
+            Err(_) => {
+                log::error!("[selection] invalid native fixture result payload");
+                None
+            }
+        }
     }
 }
 
@@ -61,6 +88,39 @@ impl NativeLifecycleLease {
 }
 
 impl<R: Runtime> LifecycleExecutor<SelectionTransaction<R>> for NativeLifecycleExecutor {
+    #[cfg(test)]
+    fn execute_fixture<'a>(
+        &'a self,
+        transaction: &'a SelectionTransaction<R>,
+        input: OpaqueFixtureInput,
+    ) -> LifecycleFuture<'a, OpaqueFixtureOutput> {
+        Box::pin(async move {
+            let Ok(input) = input.payload.downcast::<super::FixtureReplacementInput>() else {
+                return OpaqueFixtureOutput {
+                    outcome: ReplacementFixtureOutcome::Error,
+                    payload: Box::new(super::FixtureReplacementResult {
+                        outcome: Err("invalid native fixture input payload".into()),
+                        ordinary_lease: None,
+                    }),
+                };
+            };
+            let result = super::execute_inline_replacement_fixture(transaction, *input).await;
+            let outcome = match &result.outcome {
+                Ok(super::OwnedReplacementCreateStep::Finalized(_)) => {
+                    ReplacementFixtureOutcome::Finalized
+                }
+                Ok(super::OwnedReplacementCreateStep::Retained) => {
+                    ReplacementFixtureOutcome::Retained
+                }
+                Err(_) => ReplacementFixtureOutcome::Error,
+            };
+            OpaqueFixtureOutput {
+                outcome,
+                payload: Box::new(result),
+            }
+        })
+    }
+
     fn prepare<'a>(
         &'a self,
         transaction: &'a SelectionTransaction<R>,

@@ -15,7 +15,6 @@ use super::{CoordinatorInner, CoordinatorJob, LifecycleEntryOutcome, LifecycleEx
 #[cfg(test)]
 use super::replacement_fixture::{
     ReplacementFixtureControl, ReplacementFixtureCut, ReplacementFixtureEnvelopeTrace,
-    ReplacementFixtureOutcome,
 };
 
 pub(super) async fn worker_loop<R: Runtime>(
@@ -239,18 +238,12 @@ pub(super) async fn execute_envelope<R: Runtime>(
                 released: false,
                 outcome: None,
             };
-            let result =
-                crate::commands::session::execute_inline_replacement_fixture(transaction, *input)
-                    .await;
-            let outcome = match &result.outcome {
-                Ok(crate::commands::session::OwnedReplacementCreateStep::Finalized(_)) => {
-                    ReplacementFixtureOutcome::Finalized
-                }
-                Ok(crate::commands::session::OwnedReplacementCreateStep::Retained) => {
-                    ReplacementFixtureOutcome::Retained
-                }
-                Err(_) => ReplacementFixtureOutcome::Error,
-            };
+            let result = transaction
+                .lifecycle_executor()
+                .expect("fixture worker has its injected executor")
+                .execute_fixture(transaction, input)
+                .await;
+            let outcome = result.outcome;
             control.record_outcome(
                 &owned,
                 ReplacementFixtureCut::AdapterReturned,
@@ -374,12 +367,29 @@ pub(super) async fn execute_envelope<R: Runtime>(
                 drop(response);
                 return;
             };
-            if !executor.validate(transaction, authority).await {
+            #[cfg(test)]
+            let record = {
+                let trace = authority.port_test_trace();
+                let identity = (entry.owner.operation, entry.executor_nonce);
+                move |event| {
+                    if let Some(trace) = &trace {
+                        trace.lock().unwrap().push((identity.0, identity.1, event));
+                    }
+                }
+            };
+            let valid = executor.validate(transaction, authority).await;
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::Validate(valid));
+            if !valid {
                 hold.release();
                 drop(response);
                 return;
             }
             let transaction = transaction.for_lifecycle_entry(&entry);
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::Accepted(
+                transaction.has_accepted_lifecycle_core(),
+            ));
             if !transaction.has_accepted_lifecycle_core() {
                 hold.release();
                 drop(response);
@@ -390,23 +400,59 @@ pub(super) async fn execute_envelope<R: Runtime>(
                 drop(response);
                 return;
             };
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::NativeEntered);
             let result = executor.restart(&transaction, request, authority).await;
+            #[cfg(test)]
+            record(match &result {
+                LifecycleEntryOutcome::Interrupted => {
+                    super::SelectionPortTestEvent::NativeOutcome(false, false)
+                }
+                LifecycleEntryOutcome::Returned(result) => {
+                    super::SelectionPortTestEvent::NativeOutcome(true, result.is_ok())
+                }
+            });
             let result = match result {
                 LifecycleEntryOutcome::Returned(result) => result,
                 LifecycleEntryOutcome::Interrupted => {
                     entry.observe_authority_interruption();
                     drop(transaction);
+                    #[cfg(test)]
+                    record(super::SelectionPortTestEvent::TransactionDropped);
                     drop(entry);
+                    #[cfg(test)]
+                    record(super::SelectionPortTestEvent::EntryDropped);
                     hold.release();
+                    #[cfg(test)]
+                    record(super::SelectionPortTestEvent::HoldReleased);
                     drop(response);
+                    #[cfg(test)]
+                    record(super::SelectionPortTestEvent::ResponseDropped);
                     return;
                 }
             };
             entry.observe_return(&result);
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::ReleaseAwaitBefore);
             entry.release_lease(executor.as_ref()).await;
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::ReleaseAwaitAfter);
             drop(transaction);
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::TransactionDropped);
             drop(entry);
-            if hold.respond(response, result).is_err() {
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::EntryDropped);
+            #[cfg(test)]
+            let sent = {
+                hold.release();
+                record(super::SelectionPortTestEvent::HoldReleased);
+                record(super::SelectionPortTestEvent::ResponseAttempted);
+                response.send(result)
+            };
+            #[cfg(not(test))]
+            let sent = hold.respond(response, result);
+            if sent.is_err() {
                 log::debug!("[selection] restart caller dropped before result delivery");
             }
         }
@@ -423,12 +469,29 @@ pub(super) async fn execute_envelope<R: Runtime>(
                 drop(response);
                 return;
             };
-            if !executor.validate(transaction, authority).await {
+            #[cfg(test)]
+            let record = {
+                let trace = authority.port_test_trace();
+                let identity = (entry.owner.operation, entry.executor_nonce);
+                move |event| {
+                    if let Some(trace) = &trace {
+                        trace.lock().unwrap().push((identity.0, identity.1, event));
+                    }
+                }
+            };
+            let valid = executor.validate(transaction, authority).await;
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::Validate(valid));
+            if !valid {
                 hold.release();
                 drop(response);
                 return;
             }
             let transaction = transaction.for_lifecycle_entry(&entry);
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::Accepted(
+                transaction.has_accepted_lifecycle_core(),
+            ));
             if !transaction.has_accepted_lifecycle_core() {
                 hold.release();
                 drop(response);
@@ -439,23 +502,59 @@ pub(super) async fn execute_envelope<R: Runtime>(
                 drop(response);
                 return;
             };
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::NativeEntered);
             let result = executor.root(&transaction, request, authority).await;
+            #[cfg(test)]
+            record(match &result {
+                LifecycleEntryOutcome::Interrupted => {
+                    super::SelectionPortTestEvent::NativeOutcome(false, false)
+                }
+                LifecycleEntryOutcome::Returned(result) => {
+                    super::SelectionPortTestEvent::NativeOutcome(true, result.is_ok())
+                }
+            });
             let result = match result {
                 LifecycleEntryOutcome::Returned(result) => result,
                 LifecycleEntryOutcome::Interrupted => {
                     entry.observe_authority_interruption();
                     drop(transaction);
+                    #[cfg(test)]
+                    record(super::SelectionPortTestEvent::TransactionDropped);
                     drop(entry);
+                    #[cfg(test)]
+                    record(super::SelectionPortTestEvent::EntryDropped);
                     hold.release();
+                    #[cfg(test)]
+                    record(super::SelectionPortTestEvent::HoldReleased);
                     drop(response);
+                    #[cfg(test)]
+                    record(super::SelectionPortTestEvent::ResponseDropped);
                     return;
                 }
             };
             entry.observe_return(&result);
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::ReleaseAwaitBefore);
             entry.release_lease(executor.as_ref()).await;
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::ReleaseAwaitAfter);
             drop(transaction);
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::TransactionDropped);
             drop(entry);
-            if hold.respond(response, result).is_err() {
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::EntryDropped);
+            #[cfg(test)]
+            let sent = {
+                hold.release();
+                record(super::SelectionPortTestEvent::HoldReleased);
+                record(super::SelectionPortTestEvent::ResponseAttempted);
+                response.send(result)
+            };
+            #[cfg(not(test))]
+            let sent = hold.respond(response, result);
+            if sent.is_err() {
                 log::debug!("[selection] Root caller dropped before result delivery");
             }
         }

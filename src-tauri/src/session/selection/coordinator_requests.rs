@@ -26,9 +26,7 @@ use super::{
 };
 
 #[cfg(test)]
-use super::replacement_fixture::{
-    ReplacementFixtureControl, ReplacementFixtureCut, ReplacementFixtureOutcome,
-};
+use super::replacement_fixture::{ReplacementFixtureControl, ReplacementFixtureCut};
 
 impl SelectionCoordinator {
     pub(super) fn remove_terminal_entry(&self, owner: &Arc<ReplacementOwner>) {
@@ -58,11 +56,11 @@ impl SelectionCoordinator {
     }
 
     #[cfg(test)]
-    pub(crate) async fn submit_inline_replacement_fixture(
+    pub(crate) async fn submit_opaque_replacement_fixture(
         &self,
-        input: crate::commands::session::FixtureReplacementInput,
+        input: super::OpaqueFixtureInput,
         control: Arc<ReplacementFixtureControl>,
-    ) -> Option<crate::commands::session::FixtureReplacementResult> {
+    ) -> Option<super::OpaqueFixtureOutput> {
         let owned = input.continuation.clone();
         let (admission, slot) = match self.try_reserve_envelope() {
             Ok(reserved) => reserved,
@@ -79,7 +77,7 @@ impl SelectionCoordinator {
             _critical_admission: None,
             _create_ticket: None,
             job: CoordinatorJob::InlineReplacementFixture {
-                input: Box::new(input),
+                input,
                 control: control.clone(),
                 response,
             },
@@ -91,15 +89,7 @@ impl SelectionCoordinator {
         match control.receive(&owned, receiver).await {
             Some(result) => {
                 control.received.store(true, Ordering::Release);
-                let outcome = match &result.outcome {
-                    Ok(crate::commands::session::OwnedReplacementCreateStep::Finalized(_)) => {
-                        ReplacementFixtureOutcome::Finalized
-                    }
-                    Ok(crate::commands::session::OwnedReplacementCreateStep::Retained) => {
-                        ReplacementFixtureOutcome::Retained
-                    }
-                    Err(_) => ReplacementFixtureOutcome::Error,
-                };
+                let outcome = result.outcome;
                 control.record_outcome(
                     &owned,
                     ReplacementFixtureCut::SourceReceived,
@@ -472,7 +462,7 @@ impl SelectionCoordinator {
     pub(crate) async fn background_destroy(
         &self,
         session_id: Uuid,
-    ) -> Result<CriticalAdmissionOutcome<crate::commands::session::DestroyOutcome>, String> {
+    ) -> Result<CriticalAdmissionOutcome<super::DestroyOutcome>, String> {
         if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
             return Err(SelectionCoordinatorError::RecursiveSubmission.to_string());
         }
@@ -504,9 +494,9 @@ impl SelectionCoordinator {
         let (response, receiver) = oneshot::channel();
         drop(slot.send(CoordinatorEnvelope {
             job: CoordinatorJob::Destroy {
-                request: crate::commands::session::DestroyRequest {
+                request: super::DestroyRequest {
                     ids: vec![session_id],
-                    source: crate::commands::session::DestructionSource::BackgroundCleanup,
+                    source: super::DestructionSource::BackgroundCleanup,
                     force_destroy_root: false,
                 },
                 response,

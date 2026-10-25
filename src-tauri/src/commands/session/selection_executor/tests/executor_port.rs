@@ -1,23 +1,22 @@
 //! P18 selection dispatch tests for the lifecycle execution port.
 
+use super::native_fixture::{
+    native_receipt, restart_request, root_request, NativeFixture, PortTestBackend,
+};
 use crate::commands::session::selection_executor::NativeLifecycleLease;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::selection::{
     LifecycleAdmission, LifecycleEntryOutcome, LifecycleExecutorState, LifecycleLease,
-    RestartJobRequest, RootJobRequest, SelectionCoordinator, SelectionCoordinatorError,
-    SelectionTransaction, TrustedCreateIntent, TrustedRestartIntent,
+    SelectionCoordinator, SelectionCoordinatorError, SelectionTransaction,
 };
-use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-#[tokio::test]
-async fn missing_binding_start_preserves_cleanup_receiver_and_capacity_for_retry() {
+async fn assert_missing_binding_start() {
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let pty = Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(
         PortTestBackend::default(),
@@ -69,6 +68,15 @@ async fn missing_binding_start_preserves_cleanup_receiver_and_capacity_for_retry
     coordinator.submit_restore_first().await.unwrap().finish();
     coordinator.snapshot().await.unwrap();
     coordinator.close_and_join().await;
+}
+
+#[tokio::test]
+async fn missing_binding_start_preserves_cleanup_receiver_and_capacity_for_retry() {
+    assert_missing_binding_start().await;
+}
+#[tokio::test]
+async fn port_native_missing_binding() {
+    assert_missing_binding_start().await;
 }
 
 #[tokio::test]
@@ -187,12 +195,14 @@ async fn real_authority_explicit_and_fallback_release_free_claim_once() {
             .release_receipt
             .clone();
         assert_eq!(receipt.load(Ordering::Acquire), 0);
-        if explicit {
-            assert!(executor.release(lease));
+        let released = if explicit {
+            Some(executor.release(lease))
         } else {
             drop(lease);
-        }
+            None
+        };
         assert_eq!(receipt.load(Ordering::Acquire), 1);
+        assert!(released.is_none_or(|released| released));
         assert!(tracker.is_healthy());
         // A later real claim must not change the first lease's settled receipt.
         let LifecycleAdmission::Ready(next) = executor
@@ -224,127 +234,480 @@ fn assert_unstarted(coordinator: &SelectionCoordinator) {
     );
 }
 
-fn restart_request() -> RestartJobRequest {
-    RestartJobRequest {
-        session_id: Uuid::new_v4(),
-        agent_id: None,
-        requested_profile: None,
-        skip_auto_resume: None,
-        activate_after: false,
-        intent: TrustedRestartIntent::User,
-        communication_override: None,
-        enforcement: crate::config::sessions_persistence::CreationGateEnforcement::Enforce,
+async fn native_returned_release(explicit: bool, failed: bool) {
+    let f = NativeFixture::new().await;
+    f.coordinator.port_test_running_unstarted();
+    let mut entry = f.coordinator.port_test_pending_entry(f.request()).unwrap();
+    let lease = f.prepare(entry.operation()).await;
+    let executor = f.executor();
+    assert!(executor.has_claim(&lease));
+    let receipt = native_receipt(&lease);
+    assert_eq!(receipt.load(Ordering::Acquire), 0);
+    entry.attach_lease(lease);
+    let transaction = f.transaction();
+    let entered = entry.enter(&transaction);
+    assert!(entered.has_accepted_lifecycle_core());
+    assert_ne!(entry.nonce(), Uuid::nil());
+    let LifecycleEntryOutcome::Returned(result) =
+        executor.restart(&entered, f.request(), entry.lease()).await
+    else {
+        panic!("native archived-project refusal must actually return")
+    };
+    assert!(result.as_ref().unwrap_err().contains("archived project"));
+    entry.observe_return(&result);
+    {
+        let records = f.receipt_records();
+        let record = records
+            .iter()
+            .find(|r| r.operation == entry.operation())
+            .unwrap();
+        assert_eq!(record.outcome, Some((true, false)));
+        assert!(Arc::ptr_eq(&record.receipt, &receipt));
     }
-}
-
-fn root_request() -> RootJobRequest {
-    RootJobRequest {
-        requested_agent_id: None,
-        requested_profile: None,
-        skip_auto_resume_for_new_session: false,
-        intent: TrustedCreateIntent::User,
-        select_after: false,
+    drop(entered);
+    if failed {
+        f.pty.lock().unwrap().response_close_state().fail_closed();
     }
+    if explicit {
+        entry.release(&*executor).await;
+    } else {
+        entry.drop_entry();
+    }
+    assert_eq!(receipt.load(Ordering::Acquire), if failed { 2 } else { 1 });
+    assert_eq!(entry.sidecar_released(), !failed);
+    if !failed {
+        let next = f.prepare(Uuid::new_v4()).await;
+        assert!(executor.has_claim(&next));
+        drop(next);
+        assert_eq!(receipt.load(Ordering::Acquire), 1);
+    }
+    assert!(f.manager.read().await.get_session(f.source).await.is_some());
+    assert!(f.cwd.path().exists());
 }
 
-#[derive(Default)]
-struct PortTestBackend {
-    live: Mutex<HashSet<Uuid>>,
-    kills: Mutex<std::collections::HashMap<Uuid, usize>>,
+#[tokio::test]
+async fn port_native_release_failure_explicit() {
+    super::protected_carrier::run_isolated(
+        concat!(
+            "commands::session::selection_executor::tests::executor_port::",
+            "port_native_release_failure_explicit"
+        ),
+        port_native_release_failure_explicit_body(),
+    )
+    .await;
 }
 
-impl PortTestBackend {
-    fn set_live(&self, session_id: Uuid, live: bool) {
-        let mut sessions = self.live.lock().unwrap();
-        if live {
-            sessions.insert(session_id);
-        } else {
-            sessions.remove(&session_id);
+async fn port_native_release_failure_explicit_body() {
+    native_returned_release(true, true).await;
+    let f = NativeFixture::new().await;
+    let lease = f.prepare(Uuid::new_v4()).await;
+    assert!(f.executor().has_claim(&lease));
+    let receipt = native_receipt(&lease);
+    f.pty.lock().unwrap().response_close_state().fail_closed();
+    let released = f.executor().release(lease);
+    assert_eq!(receipt.load(Ordering::Acquire), 2);
+    assert!(!released);
+    super::protected_carrier::complete_isolated(concat!(
+        "commands::session::selection_executor::tests::executor_port::",
+        "port_native_release_failure_explicit"
+    ));
+}
+
+#[tokio::test]
+async fn port_native_release_failure_drop() {
+    super::protected_carrier::run_isolated(
+        concat!(
+            "commands::session::selection_executor::tests::executor_port::",
+            "port_native_release_failure_drop"
+        ),
+        port_native_release_failure_drop_body(),
+    )
+    .await;
+}
+
+async fn port_native_release_failure_drop_body() {
+    native_returned_release(false, true).await;
+    let f = NativeFixture::new().await;
+    let lease = f.prepare(Uuid::new_v4()).await;
+    assert!(f.executor().has_claim(&lease));
+    let receipt = native_receipt(&lease);
+    f.pty.lock().unwrap().response_close_state().fail_closed();
+    drop(lease);
+    assert_eq!(receipt.load(Ordering::Acquire), 2);
+    super::protected_carrier::complete_isolated(concat!(
+        "commands::session::selection_executor::tests::executor_port::",
+        "port_native_release_failure_drop"
+    ));
+}
+
+#[tokio::test]
+async fn port_native_release_paths() {
+    super::protected_carrier::run_isolated(
+        concat!(
+            "commands::session::selection_executor::tests::executor_port::",
+            "port_native_release_paths"
+        ),
+        port_native_release_paths_body(),
+    )
+    .await;
+}
+
+async fn port_native_release_paths_body() {
+    native_returned_release(true, false).await;
+    native_returned_release(false, false).await;
+    for exit in [
+        crate::session::selection::SelectionPortTestExit::Drain,
+        crate::session::selection::SelectionPortTestExit::FailedEnqueue,
+        crate::session::selection::SelectionPortTestExit::ReceiverLoss,
+    ] {
+        let f = NativeFixture::new().await;
+        f.coordinator.port_test_running_unstarted();
+        let mut entry = f.coordinator.port_test_pending_entry(f.request()).unwrap();
+        let lease = f.prepare(entry.operation()).await;
+        assert!(f.executor().has_claim(&lease));
+        let receipt = native_receipt(&lease);
+        entry.attach_lease(lease);
+        let _owner = f
+            .coordinator
+            .port_test_drive(&f.transaction(), entry, f.request(), exit)
+            .await;
+        assert_eq!(receipt.load(Ordering::Acquire), 1);
+        let next = f.prepare(Uuid::new_v4()).await;
+        assert!(f.executor().has_claim(&next));
+        drop(next);
+        assert_eq!(receipt.load(Ordering::Acquire), 1);
+        let state = f.coordinator.port_test_state();
+        assert_eq!(state.admission_available, 65);
+    }
+    let f = NativeFixture::new().await;
+    let lease = f.prepare(Uuid::new_v4()).await;
+    assert!(f.executor().has_claim(&lease));
+    let receipt = native_receipt(&lease);
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _lease = lease;
+        panic!("native lease unwind stimulus");
+    }));
+    assert!(unwind.is_err());
+    assert_eq!(receipt.load(Ordering::Acquire), 1);
+    let next = f.prepare(Uuid::new_v4()).await;
+    assert!(f.executor().has_claim(&next));
+    drop(next);
+    assert_eq!(receipt.load(Ordering::Acquire), 1);
+    super::protected_carrier::complete_isolated(concat!(
+        "commands::session::selection_executor::tests::executor_port::",
+        "port_native_release_paths"
+    ));
+}
+
+async fn foreign_control(failed: bool, closing: bool, retained: bool) {
+    let f = NativeFixture::new().await;
+    f.coordinator.port_test_running_unstarted();
+    let entry = f.coordinator.port_test_pending_entry(f.request()).unwrap();
+    let operation = if retained {
+        entry.operation()
+    } else {
+        Uuid::new_v4()
+    };
+    let tracker = f.pty.lock().unwrap().response_close_state();
+    let target = format!(
+        "create-cwd:{}",
+        crate::path_identity::verify_directory(f.cwd.path())
+            .unwrap()
+            .canonical_path
+            .display()
+    );
+    if closing {
+        close_native_target(&f, &target);
+    }
+    assert_eq!(tracker.target_is_closing(&target), closing);
+    if failed {
+        tracker.fail_closed();
+    }
+    let t = f.transaction();
+    match f
+        .executor()
+        .prepare(&t, operation, Some(f.source), false, None)
+        .await
+        .unwrap()
+    {
+        LifecycleAdmission::Ready(lease) => {
+            assert!(!closing);
+            if failed {
+                assert!(retained);
+                assert!(!f.executor().has_claim(&lease));
+            } else {
+                assert!(
+                    f.executor().has_claim(&lease),
+                    "healthy Foreign keeps real claim"
+                );
+            }
+            let receipt = native_receipt(&lease);
+            let released = f.executor().release(lease);
+            assert_eq!(receipt.load(Ordering::Acquire), 1);
+            assert!(released);
         }
+        LifecycleAdmission::Waiting => assert!(failed && (closing || !retained)),
+        LifecycleAdmission::NeedsRootDirectory => panic!("ordinary target is not root"),
     }
-
-    fn kill_count(&self, session_id: Uuid) -> usize {
-        self.kills
-            .lock()
-            .unwrap()
-            .get(&session_id)
-            .copied()
-            .unwrap_or_default()
-    }
+    assert_eq!(tracker.target_is_closing(&target), closing);
+    assert!(f.manager.read().await.get_session(f.source).await.is_some());
 }
 
-impl crate::pty::backend::PtyBackend for PortTestBackend {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+fn close_native_target(f: &NativeFixture, target: &str) {
+    use crate::pty::manager::{ResponseDeliveryProof, ResponseRouteIdentity, ReturnDeliveryProof};
+    use std::time::{Duration, Instant};
+    let tracker = f.pty.lock().unwrap().response_close_state();
+    use crate::pty::manager::ResponseClosePublisher as P;
+    for publisher in [
+        P::Manager,
+        P::Pty,
+        P::RawOutput,
+        P::Detector,
+        P::Menu,
+        P::Hold,
+    ] {
+        tracker.bind_publisher(publisher);
     }
-
-    fn spawn(
-        &self,
-        spec: crate::pty::backend::BackendSpawnSpec,
-    ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
-        Box::pin(async move {
-            self.set_live(spec.id, true);
-            Ok(())
-        })
-    }
-
-    fn write(
-        &self,
-        _authority: &crate::pty::manager::BackendWriteAuthority,
-        id: Uuid,
-        _data: &[u8],
-    ) -> Result<(), crate::errors::AppError> {
-        self.live
+    tracker.mark_work_bootstrapped();
+    tracker.try_enable_readiness().unwrap();
+    let now = Instant::now() + Duration::from_secs(3600);
+    tracker.apply_settings(true, 30, now);
+    let peer = Uuid::new_v4();
+    for id in [f.source, peer] {
+        f.pty
             .lock()
             .unwrap()
-            .contains(&id)
-            .then_some(())
-            .ok_or_else(|| crate::errors::AppError::SessionNotFound(id.to_string()))
+            .try_record_route(id, crate::pty::backend::SessionBackendKind::LocalProcess)
+            .unwrap();
     }
-
-    fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
-        self.write(
-            &crate::pty::manager::BackendWriteAuthority::for_backend_test(),
-            id,
-            &[],
+    let member = ResponseRouteIdentity {
+        target: target.to_string(),
+        session_id: f.source,
+        token: Uuid::new_v4(),
+        generation: tracker.generation(f.source).unwrap(),
+        carrier_version: 1,
+        backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+    };
+    let coordinator = ResponseRouteIdentity {
+        target: format!("peer:{peer}"),
+        session_id: peer,
+        token: Uuid::new_v4(),
+        generation: tracker.generation(peer).unwrap(),
+        ..member.clone()
+    };
+    for (identity, eligible) in [(&member, true), (&coordinator, false)] {
+        tracker.publish_manager_row(
+            identity.session_id,
+            identity.token,
+            identity.generation,
+            1,
+            eligible,
+            false,
+            now,
+        );
+        tracker.publish_manager_facts(identity.clone(), eligible, false, now);
+    }
+    tracker.observe_detector(f.source, false, now);
+    tracker.publish_menu(f.source, Some(false), now);
+    tracker.publish_hold(f.source, None, true, now);
+    let mut admission = tracker.reserve_work(target, "native-request").unwrap();
+    admission.accept_durable("native-body").unwrap();
+    drop(admission);
+    let context = tracker
+        .reserve_policy_candidate(
+            member.clone(),
+            coordinator.clone(),
+            "native-request".into(),
+            "native-body".into(),
+            now,
         )
-    }
+        .unwrap();
+    tracker.mark_request_submitted(&context, true);
+    tracker
+        .register_request(
+            ResponseDeliveryProof {
+                context,
+                member: member.clone(),
+                coordinator: coordinator.clone(),
+                published_carrier_version: 1,
+            },
+            now,
+        )
+        .unwrap();
+    let context = tracker
+        .admit_return(
+            &member,
+            &coordinator,
+            "native-ack".into(),
+            "native-ack-body".into(),
+            now,
+        )
+        .unwrap();
+    tracker
+        .observe_return_success(ReturnDeliveryProof { context }, now)
+        .unwrap();
+    let at = now + Duration::from_secs(30);
+    let ticket = tracker.select_ticket(f.source, at).unwrap();
+    PtyManager::authority_route_proof(&f.pty, f.source)
+        .unwrap()
+        .try_commit_response_close(&tracker, &ticket, at)
+        .unwrap();
+    assert!(tracker.target_is_closing(target));
+}
 
-    fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
-        *self.kills.lock().unwrap().entry(id).or_default() += 1;
-        self.set_live(id, false);
-        Ok(())
-    }
+#[tokio::test]
+async fn port_native_foreign_failed() {
+    super::protected_carrier::run_isolated(
+        concat!(
+            "commands::session::selection_executor::tests::executor_port::",
+            "port_native_foreign_failed"
+        ),
+        port_native_foreign_failed_body(),
+    )
+    .await;
+}
 
-    fn has_session(&self, id: Uuid) -> bool {
-        self.live.lock().unwrap().contains(&id)
-    }
+async fn port_native_foreign_failed_body() {
+    foreign_control(true, false, true).await;
+    foreign_control(false, false, true).await;
+    super::protected_carrier::complete_isolated(concat!(
+        "commands::session::selection_executor::tests::executor_port::",
+        "port_native_foreign_failed"
+    ));
+}
 
-    fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
-        None
-    }
+#[tokio::test]
+async fn port_native_foreign_closing() {
+    super::protected_carrier::run_isolated(
+        concat!(
+            "commands::session::selection_executor::tests::executor_port::",
+            "port_native_foreign_closing"
+        ),
+        port_native_foreign_closing_body(),
+    )
+    .await;
+}
 
-    fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
-        self.has_session(id).then_some((30, 120))
-    }
+async fn port_native_foreign_closing_body() {
+    foreign_control(true, false, true).await;
+    foreign_control(true, true, true).await;
+    super::protected_carrier::complete_isolated(concat!(
+        "commands::session::selection_executor::tests::executor_port::",
+        "port_native_foreign_closing"
+    ));
+}
 
-    fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
-        crate::pty::context_scrape::ScreenRowsRead::SessionOver
-    }
+#[tokio::test]
+async fn port_native_foreign_unretained() {
+    super::protected_carrier::run_isolated(
+        concat!(
+            "commands::session::selection_executor::tests::executor_port::",
+            "port_native_foreign_unretained"
+        ),
+        port_native_foreign_unretained_body(),
+    )
+    .await;
+}
 
-    fn register_response_watcher(
-        &self,
-        _session_id: Uuid,
-        _request_id: String,
-        _response_dir: PathBuf,
-    ) {
-    }
+async fn port_native_foreign_unretained_body() {
+    foreign_control(true, false, true).await;
+    foreign_control(true, false, false).await;
+    super::protected_carrier::complete_isolated(concat!(
+        "commands::session::selection_executor::tests::executor_port::",
+        "port_native_foreign_unretained"
+    ));
+}
 
-    fn terminate_job_for_session(&self, _id: Uuid) -> bool {
-        false
-    }
+#[tokio::test]
+async fn port_native_protected_unknown() {
+    super::protected_carrier::run_isolated(
+        concat!(
+            "commands::session::selection_executor::tests::executor_port::",
+            "port_native_protected_unknown"
+        ),
+        port_native_protected_unknown_body(),
+    )
+    .await;
+}
 
-    fn kill_all_jobs(&self) -> (usize, usize) {
-        (0, 0)
+async fn port_native_protected_unknown_body() {
+    use super::protected_carrier::ProtectedFixture;
+    use crate::config::sessions_persistence::{
+        classify_lifecycle_carrier_scope, CreateCarrierScope,
+    };
+    let f = ProtectedFixture::new(true).await;
+    let n = &f.native;
+    let executor = n.executor();
+    let t = n.transaction();
+    let entry = n.coordinator.port_test_pending_entry(n.request()).unwrap();
+    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    assert!(matches!(
+        classify_lifecycle_carrier_scope(
+            &permit,
+            Some(&f.route.target.canonical_fqn),
+            &f.route.target.replica_identity.canonical_path,
+        ),
+        CreateCarrierScope::Protected { .. }
+    ));
+    drop(permit);
+    let lease = n.prepare(entry.operation()).await;
+    assert!(executor.has_claim(&lease));
+    let receipt = native_receipt(&lease);
+    let released = executor.release(lease);
+    assert_eq!(receipt.load(Ordering::Acquire), 1);
+    assert!(released);
+    let parent = f.route.target.replica_root.parent().unwrap();
+    let unknown = f.parent_source.unwrap();
+    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    let canonical = crate::path_identity::verify_directory(parent)
+        .unwrap()
+        .canonical_path;
+    assert!(!canonical.starts_with(&f.route.target.replica_identity.canonical_path));
+    assert!(matches!(
+        classify_lifecycle_carrier_scope(&permit, None, &canonical),
+        CreateCarrierScope::Waiting
+    ));
+    drop(permit);
+    let mut request = n.request();
+    request.session_id = unknown;
+    let unknown_entry = n.coordinator.port_test_pending_entry(request).unwrap();
+    n.pty.lock().unwrap().response_close_state().fail_closed();
+    for (source, operation) in [
+        (n.source, entry.operation()),
+        (unknown, unknown_entry.operation()),
+    ] {
+        assert!(matches!(
+            executor
+                .prepare(&t, operation, Some(source), false, None)
+                .await
+                .unwrap(),
+            LifecycleAdmission::Waiting
+        ));
+        assert_eq!(n.backend.kill_count(source), 0);
+        assert!(n.manager.read().await.get_session(source).await.is_some());
     }
+    drop(f.carrier);
+    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    assert!(matches!(
+        classify_lifecycle_carrier_scope(&permit, None, &canonical),
+        CreateCarrierScope::Foreign { .. }
+    ));
+    drop(permit);
+    let LifecycleAdmission::Ready(lease) = executor
+        .prepare(&t, unknown_entry.operation(), Some(unknown), false, None)
+        .await
+        .unwrap()
+    else {
+        panic!("same failed tracker Foreign fallback required")
+    };
+    assert!(!executor.has_claim(&lease));
+    let receipt = native_receipt(&lease);
+    let released = executor.release(lease);
+    assert_eq!(receipt.load(Ordering::Acquire), 1);
+    assert!(released);
+    let _report = n.coordinator.close_and_join().await;
+    super::protected_carrier::complete_isolated(concat!(
+        "commands::session::selection_executor::tests::executor_port::",
+        "port_native_protected_unknown"
+    ));
 }

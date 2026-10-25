@@ -78,6 +78,42 @@ pub(crate) trait LifecycleExecutor<T>: Send + Sync {
     #[expect(dead_code, reason = "P05 routes reconcile through the execution port")]
     fn reconcile<'a>(&'a self, transaction: &'a T) -> LifecycleFuture<'a, ()>;
     fn complete_retirement<'a>(&'a self, transaction: &'a T, id: Uuid) -> LifecycleFuture<'a, ()>;
+    #[cfg(test)]
+    fn execute_fixture<'a>(
+        &'a self,
+        transaction: &'a T,
+        input: OpaqueFixtureInput,
+    ) -> LifecycleFuture<'a, OpaqueFixtureOutput>;
+}
+
+#[cfg(test)]
+pub(crate) struct OpaqueFixtureInput {
+    pub(crate) continuation: OwnedReplacementContinuation,
+    pub(crate) payload: Box<dyn Any + Send + Sync>,
+}
+
+#[cfg(test)]
+pub(crate) struct OpaqueFixtureOutput {
+    pub(crate) outcome: replacement_fixture::ReplacementFixtureOutcome,
+    pub(crate) payload: Box<dyn Any + Send + Sync>,
+}
+
+#[cfg(test)]
+impl fmt::Debug for OpaqueFixtureOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpaqueFixtureOutput")
+            .field("outcome", &self.outcome)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+impl fmt::Debug for OpaqueFixtureInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpaqueFixtureInput")
+            .field("continuation", &self.continuation)
+            .finish_non_exhaustive()
+    }
 }
 
 pub(crate) type LifecycleFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -102,8 +138,29 @@ impl<T> LifecycleExecutorState<T> {
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SelectionPortTestEvent {
+    RootDirectoryComplete(bool),
+    Validate(bool),
+    Accepted(bool),
+    NativeEntered,
+    NativeOutcome(bool, bool),
+    ReleaseAwaitBefore,
+    ReleaseAwaitAfter,
+    TransactionDropped,
+    EntryDropped,
+    HoldReleased,
+    ResponseDropped,
+    ResponseAttempted,
+}
+#[cfg(test)]
+pub(crate) type SelectionPortTestTrace = Arc<Mutex<Vec<(Uuid, Uuid, SelectionPortTestEvent)>>>;
+
 /// Non-Clone native sidecar, erased without retaining an executor or application handle.
 pub(crate) struct LifecycleLease {
+    #[cfg(test)]
+    port_test_trace: Option<SelectionPortTestTrace>,
     payload: Box<dyn Any + Send + Sync>,
     release_receipt: Arc<AtomicU8>,
 }
@@ -115,10 +172,21 @@ impl fmt::Debug for LifecycleLease {
 }
 
 impl LifecycleLease {
+    #[cfg(test)]
+    pub(crate) fn port_test_attach_trace(&mut self, trace: SelectionPortTestTrace) {
+        self.port_test_trace = Some(trace);
+    }
+    #[cfg(test)]
+    pub(crate) fn port_test_trace(&self) -> Option<SelectionPortTestTrace> {
+        self.port_test_trace.clone()
+    }
+
     pub(crate) fn new(payload: Box<dyn Any + Send + Sync>, release_receipt: Arc<AtomicU8>) -> Self {
         Self {
             payload,
             release_receipt,
+            #[cfg(test)]
+            port_test_trace: None,
         }
     }
 
@@ -134,6 +202,7 @@ impl LifecycleLease {
         let Self {
             payload,
             release_receipt,
+            ..
         } = self;
         drop(payload);
         release_receipt.load(Ordering::Acquire) == 1
@@ -386,9 +455,9 @@ impl fmt::Debug for ConditionalResponseClose {
 enum CoordinatorJob {
     #[cfg(test)]
     InlineReplacementFixture {
-        input: Box<crate::commands::session::FixtureReplacementInput>,
+        input: OpaqueFixtureInput,
         control: Arc<ReplacementFixtureControl>,
-        response: oneshot::Sender<crate::commands::session::FixtureReplacementResult>,
+        response: oneshot::Sender<OpaqueFixtureOutput>,
     },
     Transition {
         request: SelectionRequest,
@@ -413,17 +482,17 @@ enum CoordinatorJob {
         request: ConditionalResponseClose,
     },
     Destroy {
-        request: crate::commands::session::DestroyRequest,
-        response: oneshot::Sender<Result<crate::commands::session::DestroyOutcome, String>>,
+        request: DestroyRequest,
+        response: oneshot::Sender<Result<DestroyOutcome, String>>,
     },
     RestartLifecycle {
         entry: OwnedLifecycleEntry,
-        request: crate::commands::session::RestartJobRequest,
+        request: RestartJobRequest,
         response: oneshot::Sender<Result<SessionInfo, String>>,
     },
     RootLifecycle {
         entry: OwnedLifecycleEntry,
-        request: crate::commands::session::RootJobRequest,
+        request: RootJobRequest,
         response: oneshot::Sender<Result<SessionInfo, String>>,
     },
     ResourceKill {
@@ -552,7 +621,8 @@ pub(crate) use replacement::{
 pub(crate) use replacement_fixture::{
     await_fixture_native, FixtureContextNotification, NativeAwaitPanicOnce,
     ReplacementFixtureAction, ReplacementFixtureControl, ReplacementFixtureCut,
-    ReplacementFixtureOwnerObservation, ReplacementFixtureOwnerWeak, ReplacementFixtureReceipt,
+    ReplacementFixtureOutcome, ReplacementFixtureOwnerObservation, ReplacementFixtureOwnerWeak,
+    ReplacementFixtureReceipt,
 };
 mod envelope;
 use admission::{BlockingSeedWorkTracker, CriticalAdmissionKey};
@@ -691,6 +761,202 @@ impl<R: Runtime> SelectionTransaction<R> {
 
     pub(crate) fn port_test_executor(&self) -> Option<Arc<dyn LifecycleExecutor<Self>>> {
         self.lifecycle_executor()
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct SelectionPortTestEntry {
+    entry: Option<OwnedLifecycleEntry>,
+    owner: Arc<replacement::ReplacementOwner>,
+}
+
+#[cfg(test)]
+impl SelectionPortTestEntry {
+    pub(crate) fn operation(&self) -> Uuid {
+        self.owner.operation
+    }
+
+    pub(crate) fn nonce(&self) -> Uuid {
+        self.entry.as_ref().unwrap().executor_nonce
+    }
+
+    pub(crate) fn sidecar_released(&self) -> bool {
+        self.owner.state.lock().unwrap().sidecar_released
+    }
+
+    pub(crate) fn attach_lease(&mut self, lease: LifecycleLease) {
+        let entry = self.entry.as_mut().unwrap();
+        assert!(entry.authority.is_none());
+        entry.authority = Some(lease);
+    }
+
+    pub(crate) fn lease(&self) -> &LifecycleLease {
+        self.entry.as_ref().unwrap().authority.as_ref().unwrap()
+    }
+
+    pub(crate) fn enter<R: Runtime>(&self, t: &SelectionTransaction<R>) -> SelectionTransaction<R> {
+        t.for_lifecycle_entry(self.entry.as_ref().unwrap())
+    }
+
+    pub(crate) fn observe_return(&self, result: &Result<SessionInfo, String>) {
+        self.entry.as_ref().unwrap().observe_return(result);
+    }
+
+    pub(crate) async fn release<T>(&mut self, executor: &dyn LifecycleExecutor<T>) {
+        self.entry.as_mut().unwrap().release_lease(executor).await;
+    }
+
+    pub(crate) fn drop_entry(&mut self) {
+        drop(self.entry.take());
+    }
+}
+
+#[cfg(test)]
+pub(crate) enum SelectionPortTestExit {
+    Drain,
+    FailedEnqueue,
+    ReceiverLoss,
+}
+
+#[cfg(test)]
+impl SelectionCoordinator {
+    pub(crate) fn port_test_active_restore_nonce(&self) -> Option<Uuid> {
+        let retained = self.inner.retained_replacements.lock().unwrap();
+        retained
+            .restore_active
+            .load(Ordering::Acquire)
+            .then_some(retained.restore_nonce)
+            .flatten()
+    }
+    pub(crate) fn port_test_retained_entry(&self, source: Uuid) -> Option<(Uuid, Uuid, String)> {
+        self.inner
+            .retained_replacements
+            .lock()
+            .unwrap()
+            .entries
+            .values()
+            .find_map(|owner| {
+                if !matches!(&owner.descriptor,
+                replacement::OwnedReplacementDescriptor::EntryRestart(r) if r.session_id == source)
+                {
+                    return None;
+                }
+                let state = owner.state.lock().unwrap();
+                Some((
+                    owner.operation,
+                    state.executor_nonce,
+                    format!("{:?}", state.stage),
+                ))
+            })
+    }
+    pub(crate) fn port_test_running_unstarted(&self) {
+        assert!(self.inner.worker.lock().unwrap().is_none());
+        assert!(self.inner.receiver.lock().unwrap().is_some());
+        self.inner
+            .phase
+            .compare_exchange(
+                CoordinatorPhase::Bootstrapping as u8,
+                CoordinatorPhase::Running as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .unwrap();
+    }
+
+    pub(crate) fn port_test_pending_entry(
+        &self,
+        request: RestartJobRequest,
+    ) -> Result<SelectionPortTestEntry, String> {
+        let (owner, executor_nonce) = Self::prepare_lifecycle_owner(
+            replacement::OwnedReplacementDescriptor::EntryRestart(request),
+        );
+        self.insert_lifecycle_entry(&owner)?;
+        owner.state.lock().unwrap().stage = ReplacementStage::Queued;
+        Ok(SelectionPortTestEntry {
+            entry: Some(OwnedLifecycleEntry {
+                owner: owner.clone(),
+                executor_nonce,
+                authority: None,
+            }),
+            owner,
+        })
+    }
+
+    pub(crate) fn port_test_transaction<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+    ) -> SelectionTransaction<R> {
+        SelectionTransaction::new(app, Arc::downgrade(&self.inner))
+    }
+
+    pub(crate) async fn port_test_drive<R: Runtime>(
+        &self,
+        t: &SelectionTransaction<R>,
+        mut entry: SelectionPortTestEntry,
+        request: RestartJobRequest,
+        exit: SelectionPortTestExit,
+    ) -> SelectionPortTestEntry {
+        if matches!(exit, SelectionPortTestExit::FailedEnqueue) {
+            let mut receiver = self.inner.receiver.lock().unwrap().take().unwrap();
+            receiver.close();
+            drop(receiver);
+            assert!(matches!(
+                self.try_reserve_envelope(),
+                Err(SelectionCoordinatorError::Unavailable)
+            ));
+            entry.drop_entry();
+            return entry;
+        }
+        let (admission, slot) = self.try_reserve_envelope().unwrap();
+        let (response, receiver) = oneshot::channel();
+        let envelope = CoordinatorEnvelope {
+            _admission: admission,
+            _critical_admission: None,
+            _create_ticket: None,
+            job: CoordinatorJob::RestartLifecycle {
+                entry: entry.entry.take().unwrap(),
+                request,
+                response,
+            },
+        };
+        match exit {
+            SelectionPortTestExit::Drain => {
+                drop(slot.send(envelope));
+                let mut queue = self.inner.receiver.lock().unwrap().take().unwrap();
+                queue.close();
+                worker::drain_after_shutdown(t, &mut queue).await;
+                assert!(receiver.await.unwrap().is_err());
+            }
+            SelectionPortTestExit::ReceiverLoss => {
+                drop(slot);
+                drop(receiver);
+                worker::execute_envelope(t, envelope).await;
+            }
+            SelectionPortTestExit::FailedEnqueue => unreachable!(),
+        }
+        entry
+    }
+}
+
+#[cfg(test)]
+impl<R: Runtime> SelectionTransaction<R> {
+    pub(crate) fn port_test_restore_nonce(&self) -> Option<Uuid> {
+        self.restore_nonce
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn port_test_binding(session_id: Uuid) -> PendingCreateBinding {
+    PendingCreateBinding::new(session_id, Uuid::new_v4())
+}
+
+#[cfg(test)]
+impl LifecycleEffectGuard {
+    pub(crate) fn port_test_identity(&self) -> (Uuid, Uuid) {
+        (
+            self.owner.operation,
+            self.owner.state.lock().unwrap().executor_nonce,
+        )
     }
 }
 
