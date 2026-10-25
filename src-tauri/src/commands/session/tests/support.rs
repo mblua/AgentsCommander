@@ -990,12 +990,7 @@ fn source_guards_round4_controls() {
             let end = pending + range.end;
             let statement = core[pending..end].to_string();
             core.replace_range(pending..end, "");
-            let after = core
-                .rfind(
-                    "
-    };",
-                )
-                .unwrap();
+            let after = core.rfind("\n    };").unwrap();
             core.insert_str(after, &statement);
             rejected(mode, "late pending insertion", source_pending(&probe));
         }
