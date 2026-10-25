@@ -217,7 +217,10 @@ pub(crate) async fn create_session_inner_core<R: tauri::Runtime>(
         marker_ticket: &marker_ticket,
         inline_pending_for_body: inline_pending_for_body.as_ref(),
     };
-    let &CreateBodyContext { create_manager, .. } = &ctx;
+    let &CreateBodyContext {
+        create_manager: admission_manager,
+        ..
+    } = &ctx;
     let create_body = async {
         // §1295 5.1a creation gate: FIRST statement of create_body, BEFORE the
         // existing `enforce_unarchived_for_spawn` (which the archive-gate source
@@ -232,7 +235,7 @@ pub(crate) async fn create_session_inner_core<R: tauri::Runtime>(
             &cwd,
             &session_label,
             &create_owner,
-            create_manager,
+            &create_manager,
             lifecycle_domain,
             inline_transaction,
         )
@@ -241,7 +244,7 @@ pub(crate) async fn create_session_inner_core<R: tauri::Runtime>(
         // It still reserves healthy ownership before the first create effect.
         let initial_admission = acquire_lifecycle_create_publication_region(
             &create_owner,
-            create_manager,
+            admission_manager,
             lifecycle_domain,
             inline_transaction,
         )
@@ -647,7 +650,7 @@ pub(crate) async fn create_session_inner_core<R: tauri::Runtime>(
                 &cwd,
                 &session_label,
                 &create_owner,
-                create_manager,
+                &create_manager,
                 lifecycle_domain,
                 inline_transaction,
             ),
