@@ -243,6 +243,15 @@ impl SelectionCoordinator {
     }
 
     pub async fn submit_restore_first(&self) -> Result<RestoreBarrierGuard, String> {
+        fn busy(reason: &str) -> String {
+            log::debug!(
+                target: "agentscommander_lib::selection_bootstrap",
+                "restore bootstrap busy: cause={reason}"
+            );
+            #[cfg(test)]
+            eprintln!("restore bootstrap busy: cause={reason}");
+            SelectionCoordinatorError::Busy.to_string()
+        }
         if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
             return Err(SelectionCoordinatorError::RecursiveSubmission.to_string());
         }
@@ -254,27 +263,36 @@ impl SelectionCoordinator {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
-            .map_err(|_| SelectionCoordinatorError::Busy.to_string())?;
+            .map_err(|_| busy("phase"))?;
         let _phase_guard = RestoreSubmissionPhaseGuard {
             phase: &self.inner.phase,
         };
         let carrier_permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-        match crate::config::sessions_persistence::restore_carrier_scopes_are_empty(&carrier_permit)
-        {
+        #[cfg(not(test))]
+        let scopes_empty =
+            crate::config::sessions_persistence::restore_carrier_scopes_are_empty(&carrier_permit);
+        #[cfg(test)]
+        let scopes_empty = self.restore_mint_exclusion().and_then(|scope| {
+            crate::config::sessions_persistence::restore_test_carrier_scopes_are_empty(
+                &carrier_permit,
+                &scope,
+            )
+        });
+        match scopes_empty {
             Some(true) => {}
-            Some(false) => return Err(SelectionCoordinatorError::Busy.to_string()),
+            Some(false) => return Err(busy("carrier_protections")),
             None => return Err(SelectionCoordinatorError::Unavailable.to_string()),
         }
         let admission = match Arc::clone(&self.inner.admission).try_acquire_owned() {
             Ok(admission) => admission,
             Err(_) => {
-                return Err(SelectionCoordinatorError::Busy.to_string());
+                return Err(busy("admission"));
             }
         };
         let slot = match self.inner.sender.clone().try_reserve_owned() {
             Ok(slot) => slot,
             Err(_) => {
-                return Err(SelectionCoordinatorError::Busy.to_string());
+                return Err(busy("channel"));
             }
         };
         let nonce = Uuid::new_v4();
