@@ -34,13 +34,6 @@
         "agentscommander_lib::web",
         "agentscommander_lib::web::commands"
       ]
-    },
-    {
-      "id": "174d5a49d4c3fa91",
-      "members": [
-        "agentscommander_lib::pty::backend",
-        "agentscommander_lib::pty::watchers"
-      ]
     }
   ],
   "functionCycles": []

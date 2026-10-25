@@ -7,13 +7,15 @@ use futures::future::BoxFuture;
 use uuid::Uuid;
 
 use crate::errors::AppError;
+use crate::pty::backend::screen_frame::{frame_from_screen_rows_read, FrameStamp, ScreenRowsSince};
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
 use crate::pty::output::{
     CapturedVtScreen, PtyOutputTarget, PtyScreenSnapshot, TerminalOutputAttachError,
 };
-use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 use crate::resource_monitor::{ResourceLaunchRegistration, ResourceLogicalAgentSlot};
 use crate::session::profile::{CodingAgentKind, IdleTuning};
+
+pub(crate) mod screen_frame;
 
 pub use super::backend_kind::SessionBackendKind;
 pub use super::input_limits::PTY_INPUT_MAX_BYTES;
@@ -271,7 +273,7 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
     /// The `Missing` / `Gone` split is the same distinction `get_screen_rows` draws between
     /// `Unavailable` and `SessionOver`, carried on a type that can also say "nothing changed".
     fn screen_rows_since(&self, id: Uuid, _seen: Option<FrameStamp>) -> ScreenRowsSince {
-        crate::pty::watchers::frame_from_screen_rows_read(self.get_screen_rows(id))
+        frame_from_screen_rows_read(self.get_screen_rows(id))
     }
 
     fn register_response_watcher(
