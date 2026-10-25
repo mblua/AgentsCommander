@@ -341,7 +341,7 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
     // configured agent's filename for cleanup. Computed under a single settings
     // read guard that is dropped before any filesystem I/O (no guard across the
     // materialize call).
-    let (target_filename, managed_filenames, auto_self_clear): (Option<String>, Vec<String>, bool) = {
+    let (target_filename, managed_filenames, auto_self_clear) = {
         let settings_state = app.state::<SettingsState>();
         let cfg = match settings_state.current_read().await {
             Ok(cfg) => cfg,
