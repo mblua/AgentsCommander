@@ -108,6 +108,7 @@ async fn assert_ordinary_target_released(f: &native_fixture::NativeFixture, sour
 
 async fn public_native_case(root: bool, interrupted: bool) {
     use crate::pty::backend::PtyBackend;
+    use crate::pty::manager::PtyManager;
     use crate::session::selection::SelectionPortTestEvent as Event;
     use native_fixture::{root_request, NativeFixture};
     let f = NativeFixture::running().await;
