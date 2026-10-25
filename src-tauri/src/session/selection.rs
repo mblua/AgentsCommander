@@ -641,4 +641,58 @@ impl<R: Runtime> SelectionTransaction<R> {
 }
 
 #[cfg(test)]
+pub(crate) struct SelectionPortTestState {
+    pub(crate) cleanup_pty: Option<Arc<Mutex<PtyManager>>>,
+    pub(crate) cleanup_backend_present: bool,
+    pub(crate) receiver_present: bool,
+    pub(crate) worker_present: bool,
+    pub(crate) queue_capacity: usize,
+    pub(crate) admission_available: usize,
+    pub(crate) create_tickets_available: usize,
+    pub(crate) expected_queue_capacity: usize,
+    pub(crate) expected_admission_capacity: usize,
+    pub(crate) expected_create_ticket_capacity: usize,
+}
+
+#[cfg(test)]
+impl SelectionCoordinator {
+    pub(crate) fn port_test_state(&self) -> SelectionPortTestState {
+        SelectionPortTestState {
+            cleanup_pty: self
+                .inner
+                .cleanup_pty
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(Weak::upgrade),
+            cleanup_backend_present: self
+                .inner
+                .cleanup_container_backend
+                .lock()
+                .unwrap()
+                .is_some(),
+            receiver_present: self.inner.receiver.lock().unwrap().is_some(),
+            worker_present: self.inner.worker.lock().unwrap().is_some(),
+            queue_capacity: self.inner.sender.capacity(),
+            admission_available: self.inner.admission.available_permits(),
+            create_tickets_available: self.inner.create_tickets.available_permits(),
+            expected_queue_capacity: COORDINATOR_QUEUE_CAPACITY,
+            expected_admission_capacity: COORDINATOR_ADMISSION_CAPACITY,
+            expected_create_ticket_capacity: CREATE_TICKET_CAPACITY,
+        }
+    }
+}
+
+#[cfg(test)]
+impl<R: Runtime> SelectionTransaction<R> {
+    pub(crate) fn port_test_binding_presence(&self) -> (bool, bool) {
+        (self.lifecycle_entry.is_some(), self.restore_nonce.is_some())
+    }
+
+    pub(crate) fn port_test_executor(&self) -> Option<Arc<dyn LifecycleExecutor<Self>>> {
+        self.lifecycle_executor()
+    }
+}
+
+#[cfg(test)]
 mod tests;

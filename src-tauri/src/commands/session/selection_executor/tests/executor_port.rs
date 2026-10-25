@@ -1,13 +1,26 @@
 //! P18 selection dispatch tests for the lifecycle execution port.
 
-use super::*;
-use std::sync::atomic::AtomicU8;
+use crate::commands::session::selection_executor::NativeLifecycleLease;
+use crate::pty::manager::PtyManager;
+use crate::session::manager::SessionManager;
+use crate::session::selection::{
+    LifecycleAdmission, LifecycleEntryOutcome, LifecycleExecutorState, LifecycleLease,
+    RestartJobRequest, RootJobRequest, SelectionCoordinator, SelectionCoordinatorError,
+    SelectionTransaction, TrustedCreateIntent, TrustedRestartIntent,
+};
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
+use tauri::Manager;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 #[tokio::test]
 async fn missing_binding_start_preserves_cleanup_receiver_and_capacity_for_retry() {
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let pty = Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(
-        LifecycleTestBackend::default(),
+        PortTestBackend::default(),
     ))));
     let coordinator = SelectionCoordinator::new(manager.clone(), CancellationToken::new());
     let app = tauri::test::mock_builder()
@@ -48,26 +61,11 @@ async fn missing_binding_start_preserves_cleanup_receiver_and_capacity_for_retry
         >())
     );
     coordinator.start(app.handle().clone()).unwrap();
-    assert!(coordinator.inner.receiver.lock().unwrap().is_none());
-    assert!(Arc::ptr_eq(
-        &coordinator
-            .inner
-            .cleanup_pty
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .upgrade()
-            .unwrap(),
-        &pty
-    ));
-    assert!(coordinator
-        .inner
-        .cleanup_container_backend
-        .lock()
-        .unwrap()
-        .is_some());
-    assert!(coordinator.inner.worker.lock().unwrap().is_some());
+    let state = coordinator.port_test_state();
+    assert!(!state.receiver_present);
+    assert!(Arc::ptr_eq(state.cleanup_pty.as_ref().unwrap(), &pty));
+    assert!(state.cleanup_backend_present);
+    assert!(state.worker_present);
     coordinator.submit_restore_first().await.unwrap().finish();
     coordinator.snapshot().await.unwrap();
     coordinator.close_and_join().await;
@@ -97,7 +95,7 @@ async fn duplicate_binding_keeps_original_executor() {
     assert!(Arc::ptr_eq(&original, managed.get()));
     assert!(Arc::ptr_eq(
         &original,
-        &transaction.lifecycle_executor().unwrap()
+        &transaction.port_test_executor().unwrap()
     ));
     let mut lease = LifecycleLease::new(Box::new(()), Arc::new(AtomicU8::new(0)));
     assert!(!original.validate(&transaction, &mut lease).await);
@@ -134,8 +132,7 @@ async fn wrong_payload_is_rejected_without_native_state_or_teardown() {
     ));
     assert!(!executor.release(lease));
     assert_eq!(receipt.load(Ordering::Acquire), 0);
-    assert!(transaction.lifecycle_entry.is_none());
-    assert!(transaction.restore_nonce.is_none());
+    assert_eq!(transaction.port_test_binding_presence(), (false, false));
 }
 
 #[tokio::test]
@@ -158,7 +155,7 @@ async fn real_authority_explicit_and_fallback_release_free_claim_once() {
         .await
         .unwrap();
     let source = source.id;
-    let backend = Arc::new(LifecycleTestBackend::default());
+    let backend = Arc::new(PortTestBackend::default());
     let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
     let tracker = pty.lock().unwrap().response_close_state();
     let app = tauri::test::mock_builder()
@@ -184,7 +181,11 @@ async fn real_authority_explicit_and_fallback_release_free_claim_once() {
             panic!("native prepare must mint a real authority and claim");
         };
         assert!(executor.has_claim(&lease));
-        let receipt = lease.release_receipt.clone();
+        let receipt = lease
+            .downcast_ref::<NativeLifecycleLease>()
+            .unwrap()
+            .release_receipt
+            .clone();
         assert_eq!(receipt.load(Ordering::Acquire), 0);
         if explicit {
             assert!(executor.release(lease));
@@ -210,26 +211,16 @@ async fn real_authority_explicit_and_fallback_release_free_claim_once() {
 }
 
 fn assert_unstarted(coordinator: &SelectionCoordinator) {
-    assert!(coordinator.inner.cleanup_pty.lock().unwrap().is_none());
-    assert!(coordinator
-        .inner
-        .cleanup_container_backend
-        .lock()
-        .unwrap()
-        .is_none());
-    assert!(coordinator.inner.receiver.lock().unwrap().is_some());
-    assert!(coordinator.inner.worker.lock().unwrap().is_none());
+    let state = coordinator.port_test_state();
+    assert!(state.cleanup_pty.is_none());
+    assert!(!state.cleanup_backend_present);
+    assert!(state.receiver_present);
+    assert!(!state.worker_present);
+    assert_eq!(state.queue_capacity, state.expected_queue_capacity);
+    assert_eq!(state.admission_available, state.expected_admission_capacity);
     assert_eq!(
-        coordinator.inner.sender.capacity(),
-        COORDINATOR_QUEUE_CAPACITY
-    );
-    assert_eq!(
-        coordinator.inner.admission.available_permits(),
-        COORDINATOR_ADMISSION_CAPACITY
-    );
-    assert_eq!(
-        coordinator.inner.create_tickets.available_permits(),
-        CREATE_TICKET_CAPACITY
+        state.create_tickets_available,
+        state.expected_create_ticket_capacity
     );
 }
 
@@ -253,5 +244,107 @@ fn root_request() -> RootJobRequest {
         skip_auto_resume_for_new_session: false,
         intent: TrustedCreateIntent::User,
         select_after: false,
+    }
+}
+
+#[derive(Default)]
+struct PortTestBackend {
+    live: Mutex<HashSet<Uuid>>,
+    kills: Mutex<std::collections::HashMap<Uuid, usize>>,
+}
+
+impl PortTestBackend {
+    fn set_live(&self, session_id: Uuid, live: bool) {
+        let mut sessions = self.live.lock().unwrap();
+        if live {
+            sessions.insert(session_id);
+        } else {
+            sessions.remove(&session_id);
+        }
+    }
+
+    fn kill_count(&self, session_id: Uuid) -> usize {
+        self.kills
+            .lock()
+            .unwrap()
+            .get(&session_id)
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
+impl crate::pty::backend::PtyBackend for PortTestBackend {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn spawn(
+        &self,
+        spec: crate::pty::backend::BackendSpawnSpec,
+    ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+        Box::pin(async move {
+            self.set_live(spec.id, true);
+            Ok(())
+        })
+    }
+
+    fn write(
+        &self,
+        _authority: &crate::pty::manager::BackendWriteAuthority,
+        id: Uuid,
+        _data: &[u8],
+    ) -> Result<(), crate::errors::AppError> {
+        self.live
+            .lock()
+            .unwrap()
+            .contains(&id)
+            .then_some(())
+            .ok_or_else(|| crate::errors::AppError::SessionNotFound(id.to_string()))
+    }
+
+    fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+        self.write(
+            &crate::pty::manager::BackendWriteAuthority::for_backend_test(),
+            id,
+            &[],
+        )
+    }
+
+    fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+        *self.kills.lock().unwrap().entry(id).or_default() += 1;
+        self.set_live(id, false);
+        Ok(())
+    }
+
+    fn has_session(&self, id: Uuid) -> bool {
+        self.live.lock().unwrap().contains(&id)
+    }
+
+    fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+        None
+    }
+
+    fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
+        self.has_session(id).then_some((30, 120))
+    }
+
+    fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+        crate::pty::context_scrape::ScreenRowsRead::SessionOver
+    }
+
+    fn register_response_watcher(
+        &self,
+        _session_id: Uuid,
+        _request_id: String,
+        _response_dir: PathBuf,
+    ) {
+    }
+
+    fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+        false
+    }
+
+    fn kill_all_jobs(&self) -> (usize, usize) {
+        (0, 0)
     }
 }
