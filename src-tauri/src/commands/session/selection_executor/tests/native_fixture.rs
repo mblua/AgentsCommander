@@ -163,11 +163,16 @@ struct NativePause {
     reached: tokio::sync::oneshot::Sender<(bool, bool, u8)>,
     resume: tokio::sync::oneshot::Receiver<()>,
 }
+struct RootDirectoryRecord {
+    operation: Uuid,
+    nonce: Uuid,
+    result: Result<String, String>,
+}
 #[derive(Default)]
 pub(crate) struct NativeSchedule {
     before: Mutex<Option<NativePause>>,
     after: Mutex<Option<NativePause>>,
-    root_outcomes: Mutex<Vec<(Uuid, Uuid, Result<String, String>)>>,
+    root_outcomes: Mutex<Vec<RootDirectoryRecord>>,
     traces:
         Mutex<std::collections::HashMap<Uuid, crate::session::selection::SelectionPortTestTrace>>,
     waiting: tokio::sync::Notify,
@@ -185,7 +190,12 @@ impl NativeSchedule {
         self.waiting.notified().await;
     }
     pub(crate) fn root_outcomes(&self) -> Vec<(Uuid, Uuid, Result<String, String>)> {
-        self.root_outcomes.lock().unwrap().clone()
+        self.root_outcomes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|record| (record.operation, record.nonce, record.result.clone()))
+            .collect()
     }
     pub(crate) fn gate(
         &self,
@@ -334,7 +344,11 @@ impl LifecycleExecutor<SelectionTransaction<MockRuntime>> for NativeReceiptObser
             .root_outcomes
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push((identity.0, identity.1, result.clone()));
+            .push(RootDirectoryRecord {
+                operation: identity.0,
+                nonce: identity.1,
+                result: result.clone(),
+            });
         result
     }
 

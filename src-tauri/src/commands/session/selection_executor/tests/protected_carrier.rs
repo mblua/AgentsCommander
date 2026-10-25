@@ -395,7 +395,9 @@ pub(crate) async fn run_isolated(name: &str, body: impl std::future::Future<Outp
         owner.retain_failure("child exit or completion receipt failed");
     }
     eprintln!(
-        "P17 child {name}: config={} receipt={identity:?} exit={status}",
-        config.display()
+        "P17 child {name}: config={} receipt={identity:?} exit={status} pid={} elapsed={:?}",
+        config.display(),
+        owner.child.id(),
+        started.elapsed()
     );
 }
