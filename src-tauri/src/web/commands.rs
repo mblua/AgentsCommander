@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex};
 
-use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::Manager;
 use uuid::Uuid;
@@ -18,9 +17,14 @@ use super::broadcast::WsBroadcaster;
 mod agent_update_dispatch;
 mod args;
 mod coding_agent_dispatch;
+mod protocol;
 
 use agent_update_dispatch::dispatch_agent_update_command;
 use args::{require_json, require_str, str_or, str_vec_or, terminal_dimension};
+
+use protocol::{
+    route_web_command, validate_client_broadcast, BrowserProjectCommand, WebCommandRoute,
+};
 
 /// Shared state passed to the WS command dispatcher.
 #[derive(Clone)]
@@ -32,94 +36,31 @@ pub struct WsState {
     pub app_handle: tauri::AppHandle,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BrowserProjectCommand {
-    CheckProjectPath,
-    DiscoverProject,
-    GetProjectFileDifference,
-    GetProjectGroups,
-    UpdateProjectGroups,
-    OpenProject,
-    RemoveProject,
-    ArchiveProject,
-    UnarchiveProject,
-    ListArchivedProjects,
+pub(crate) struct WebCommandsDispatcher {
+    state: WsState,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WebCommandRoute {
-    BrowserProject(BrowserProjectCommand),
-    Other,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ThemeChangedPayload {
-    light: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ResourceMonitorAttachPayload {}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OpenSettingsPayload {
-    #[serde(default)]
-    section: Option<String>,
-}
-
-fn validate_client_broadcast(event: &str, payload: &Value) -> Result<(), String> {
-    if !payload.is_object() {
-        return Err(format!("Invalid {event} payload: expected object"));
+impl WebCommandsDispatcher {
+    pub(crate) fn new(state: WsState) -> Self {
+        Self { state }
     }
-    match event {
-        "theme_changed" => {
-            let decoded: ThemeChangedPayload = serde_json::from_value(payload.clone())
-                .map_err(|error| format!("Invalid theme_changed payload: {error}"))?;
-            let _ = decoded.light;
-        }
-        "resource_monitor_attach" => {
-            serde_json::from_value::<ResourceMonitorAttachPayload>(payload.clone())
-                .map_err(|error| format!("Invalid resource_monitor_attach payload: {error}"))?;
-        }
-        "open_settings" => {
-            let decoded: OpenSettingsPayload = serde_json::from_value(payload.clone())
-                .map_err(|error| format!("Invalid open_settings payload: {error}"))?;
-            let _ = decoded.section;
-        }
-        _ => return Err(format!("Client broadcast event is not allowed: {event}")),
-    }
-    Ok(())
 }
 
-fn route_web_command(cmd: &str) -> WebCommandRoute {
-    match cmd {
-        "check_project_path" => {
-            WebCommandRoute::BrowserProject(BrowserProjectCommand::CheckProjectPath)
-        }
-        "discover_project" => {
-            WebCommandRoute::BrowserProject(BrowserProjectCommand::DiscoverProject)
-        }
-        "get_project_file_difference" => {
-            WebCommandRoute::BrowserProject(BrowserProjectCommand::GetProjectFileDifference)
-        }
-        "get_project_groups" => {
-            WebCommandRoute::BrowserProject(BrowserProjectCommand::GetProjectGroups)
-        }
-        "update_project_groups" => {
-            WebCommandRoute::BrowserProject(BrowserProjectCommand::UpdateProjectGroups)
-        }
-        "open_project" => WebCommandRoute::BrowserProject(BrowserProjectCommand::OpenProject),
-        "remove_project" => WebCommandRoute::BrowserProject(BrowserProjectCommand::RemoveProject),
-        "archive_project" => WebCommandRoute::BrowserProject(BrowserProjectCommand::ArchiveProject),
-        "unarchive_project" => {
-            WebCommandRoute::BrowserProject(BrowserProjectCommand::UnarchiveProject)
-        }
-        "list_archived_projects" => {
-            WebCommandRoute::BrowserProject(BrowserProjectCommand::ListArchivedProjects)
-        }
-        _ => WebCommandRoute::Other,
+impl super::command_port::WebCommandDispatcher for WebCommandsDispatcher {
+    fn dispatch<'a>(
+        &'a self,
+        id: u64,
+        cmd: &'a str,
+        args: &'a Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Value> + Send + 'a>> {
+        Box::pin(dispatch(&self.state, id, cmd, args))
+    }
+
+    fn binary<'a>(
+        &'a self,
+        data: &'a [u8],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(handle_binary_message(&self.state, data))
     }
 }
 
@@ -959,6 +900,78 @@ async fn project_file_difference_value(args: &Value) -> Result<Value, String> {
     let path = require_str(args, "path")?;
     let result = crate::commands::ac_discovery::get_project_file_difference_inner(&path).await;
     serde_json::to_value(result).map_err(|e| e.to_string())
+}
+
+/// Handle a binary PTY write from a WS client.
+/// Format: [36 bytes UUID ASCII][raw PTY input bytes]
+async fn handle_binary_message(state: &WsState, data: &[u8]) {
+    if data.len() < 36 {
+        return;
+    }
+
+    let session_id_str = match std::str::from_utf8(&data[..36]) {
+        Ok(s) => s.trim(),
+        Err(_) => return,
+    };
+
+    let uuid = match uuid::Uuid::parse_str(session_id_str) {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+
+    let pty_data = &data[36..];
+    let write_result =
+        match crate::pty::manager::PtyManager::acquire_input_writer(&state.pty_mgr, uuid).await {
+            Ok(permit) => {
+                if state
+                    .app_handle
+                    .try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>()
+                    .is_some_and(|guard| guard.blocks_session(uuid))
+                {
+                    return;
+                }
+                let result = crate::pty::manager::PtyManager::write_with_permit(&permit, pty_data);
+                if result.is_ok() {
+                    crate::commands::pty::mark_successful_pty_write_busy(
+                        &state.app_handle,
+                        uuid,
+                        pty_data.len(),
+                    )
+                    .await;
+                }
+                result
+            }
+            Err(error) => Err(error),
+        };
+    if !binary_pty_write_succeeded(write_result, uuid) {
+        return;
+    }
+
+    // #552 web UI keystrokes (binary frame) are the real web input path and a
+    // genuine user message: reset the badge clock + auto-close silence.
+    crate::commands::pty::note_user_message_to_session(
+        &state.app_handle,
+        uuid,
+        crate::commands::pty::UserInputSource::Web(pty_data),
+    )
+    .await;
+}
+
+pub(crate) fn binary_pty_write_succeeded(
+    result: Result<(), crate::errors::AppError>,
+    uuid: uuid::Uuid,
+) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(err) => {
+            log::warn!(
+                "[web-server] PTY binary write failed for session {}: {}",
+                uuid,
+                err
+            );
+            false
+        }
+    }
 }
 
 #[cfg(test)]
