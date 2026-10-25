@@ -67,7 +67,7 @@ fn build_git_guard_env() -> Result<Option<GitGuardEnv>, AppError> {
     };
 
     let guard_dir = ensure_git_guard_wrapper()?;
-    let current_path = std::env::var_os("PATH").unwrap_or_default();
+    let current_path = crate::config::environment::inherited_path().unwrap_or_default();
     let mut path_entries: Vec<std::path::PathBuf> = vec![guard_dir];
     path_entries.extend(std::env::split_paths(&current_path));
     let path = std::env::join_paths(path_entries.iter())
@@ -250,7 +250,7 @@ impl LocalProcessBackend {
                 {
                     None
                 } else {
-                    std::env::var("CODEX_HOME").ok()
+                    crate::config::environment::codex_home().ok()
                 }
             });
 

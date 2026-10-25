@@ -34,5 +34,42 @@ pub(crate) fn container_image() -> Result<String, std::env::VarError> {
     std::env::var("AGENTSCOMMANDER_CONTAINER_IMAGE")
 }
 
+pub(crate) fn rust_log() -> Result<String, std::env::VarError> {
+    std::env::var("RUST_LOG")
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn xdg_runtime_dir() -> Option<std::ffi::OsString> {
+    std::env::var_os("XDG_RUNTIME_DIR")
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn xdg_session_type() -> Result<String, std::env::VarError> {
+    std::env::var("XDG_SESSION_TYPE")
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn wayland_display() -> Result<String, std::env::VarError> {
+    std::env::var("WAYLAND_DISPLAY")
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn wayland_socket() -> Result<String, std::env::VarError> {
+    std::env::var("WAYLAND_SOCKET")
+}
+
+#[cfg(windows)]
+pub(crate) fn inherited_path() -> Option<std::ffi::OsString> {
+    std::env::var_os("PATH")
+}
+
+pub(crate) fn codex_home() -> Result<String, std::env::VarError> {
+    std::env::var("CODEX_HOME")
+}
+
+pub(crate) fn spawn_diagnostic_value(key: &str) -> Result<String, std::env::VarError> {
+    std::env::var(key)
+}
+
 #[cfg(test)]
 mod tests;

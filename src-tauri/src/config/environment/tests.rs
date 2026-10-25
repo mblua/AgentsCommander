@@ -10,6 +10,22 @@ const INPUT_KEYS: &[&str] = &[
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
     "AGENTSCOMMANDER_CONTAINER_IMAGE",
+    "RUST_LOG",
+    #[cfg(target_os = "linux")]
+    "XDG_SESSION_TYPE",
+    #[cfg(target_os = "linux")]
+    "WAYLAND_DISPLAY",
+    #[cfg(target_os = "linux")]
+    "WAYLAND_SOCKET",
+    #[cfg(target_os = "linux")]
+    "XDG_RUNTIME_DIR",
+    #[cfg(windows)]
+    "PATH",
+    "AC_SPAWN_STALL_TIMEOUT_MS",
+    "AC_SPAWN_HEAD_BYTES",
+    "AC_SPAWN_PAINT_FLOOR_BYTES",
+    "AC_SPAWN_CONCURRENCY_WINDOW_MS",
+    "AC_SPAWN_STOP_ATTRIBUTION_MS",
 ];
 const UNICODE_VALUE: &str = "machine-ñ-東京";
 
@@ -85,12 +101,41 @@ fn environment_child_case() {
         (INPUT_KEYS[5], container_credential_override(INPUT_KEYS[5])),
         (INPUT_KEYS[6], container_credential_override(INPUT_KEYS[6])),
         (INPUT_KEYS[7], container_image()),
+        ("RUST_LOG", rust_log()),
+        ("CODEX_HOME", codex_home()),
+        #[cfg(target_os = "linux")]
+        ("XDG_SESSION_TYPE", xdg_session_type()),
+        #[cfg(target_os = "linux")]
+        ("WAYLAND_DISPLAY", wayland_display()),
+        #[cfg(target_os = "linux")]
+        ("WAYLAND_SOCKET", wayland_socket()),
     ];
-    for (key, actual) in inputs {
+    for (key, actual) in inputs.into_iter().chain(
+        INPUT_KEYS
+            .iter()
+            .filter(|key| key.starts_with("AC_SPAWN_"))
+            .map(|key| (*key, spawn_diagnostic_value(key))),
+    ) {
         let expected = match case.as_str() {
             "missing" => Err(std::env::VarError::NotPresent),
             "unicode" => Ok(format!("{key}-{UNICODE_VALUE}")),
             "non-unicode" => Err(std::env::VarError::NotUnicode(non_unicode_value())),
+            _ => panic!("unknown environment child case: {case}"),
+        };
+        assert_eq!(actual, expected, "{key}");
+    }
+    let os_inputs = [
+        ("AC_MACHINE_OUTPUT", machine_output_os()),
+        #[cfg(target_os = "linux")]
+        ("XDG_RUNTIME_DIR", xdg_runtime_dir()),
+        #[cfg(windows)]
+        ("PATH", inherited_path()),
+    ];
+    for (key, actual) in os_inputs {
+        let expected = match case.as_str() {
+            "missing" => None,
+            "unicode" => Some(format!("{key}-{UNICODE_VALUE}").into()),
+            "non-unicode" => Some(non_unicode_value()),
             _ => panic!("unknown environment child case: {case}"),
         };
         assert_eq!(actual, expected, "{key}");

@@ -281,7 +281,7 @@ const APP_LOG_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const APP_LOG_KEEP: u32 = 5;
 
 fn machine_output_enabled() -> bool {
-    std::env::var_os("AC_MACHINE_OUTPUT").is_some()
+    crate::config::environment::machine_output_os().is_some()
 }
 
 /// #280 §2 — log file plus a bookkeeping counter for size-based rotation.
@@ -557,7 +557,7 @@ fn init_logger_inner() {
     // restart without RUST_LOG. read_log_level_only is read-only and
     // side-effect-free (no migration / token-gen / save), so log calls inside
     // the later full load_settings() flow still reach this sink.
-    if let Ok(rust_log) = std::env::var("RUST_LOG") {
+    if let Ok(rust_log) = crate::config::environment::rust_log() {
         let mut builder = env_logger::Builder::from_env(env_logger::Env::default());
         builder.parse_filters(&rust_log);
         install_format(&mut builder, Arc::clone(&log_state));

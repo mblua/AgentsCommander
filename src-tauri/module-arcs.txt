@@ -1734,6 +1734,7 @@ agentscommander_lib::config::teams::routes -> agentscommander_lib::config::teams
 agentscommander_lib::config::teams::routes -> agentscommander_lib::config::teams::replica
 agentscommander_lib::config::teams::routes -> agentscommander_lib::path_identity
 agentscommander_lib::logging -> agentscommander_lib::config
+agentscommander_lib::logging -> agentscommander_lib::config::environment
 agentscommander_lib::logging -> agentscommander_lib::config::instance_gitignore
 agentscommander_lib::logging -> agentscommander_lib::config::settings
 agentscommander_lib::logging -> agentscommander_lib::telegram::redact
@@ -2332,6 +2333,7 @@ agentscommander_lib::pty::job::tests -> agentscommander_lib::pty::job
 agentscommander_lib::pty::job::tests -> agentscommander_lib::pty::job::windows_impl
 agentscommander_lib::pty::job::windows_impl -> agentscommander_lib::pty::job
 agentscommander_lib::pty::local_backend -> agentscommander_lib::config::agent_path
+agentscommander_lib::pty::local_backend -> agentscommander_lib::config::environment
 agentscommander_lib::pty::local_backend -> agentscommander_lib::config::session_context
 agentscommander_lib::pty::local_backend -> agentscommander_lib::errors
 agentscommander_lib::pty::local_backend -> agentscommander_lib::path_utils
@@ -2441,6 +2443,7 @@ agentscommander_lib::pty::response_close::diagnostics -> agentscommander_lib::pt
 agentscommander_lib::pty::response_close::returns -> agentscommander_lib::pty
 agentscommander_lib::pty::response_close::returns -> agentscommander_lib::pty::response_close
 agentscommander_lib::pty::response_close::routes -> agentscommander_lib::pty::response_close
+agentscommander_lib::pty::spawn_diagnostics -> agentscommander_lib::config::environment
 agentscommander_lib::pty::spawn_diagnostics -> agentscommander_lib::session::profile
 agentscommander_lib::pty::spawn_diagnostics -> agentscommander_lib::telegram::redact
 agentscommander_lib::pty::spawn_diagnostics::registry -> agentscommander_lib::pty::spawn_diagnostics
@@ -2577,6 +2580,7 @@ agentscommander_lib::screenshot::native -> agentscommander_lib::session::selecti
 agentscommander_lib::screenshot::native -> agentscommander_lib::session::session
 agentscommander_lib::screenshot::native::confirm -> agentscommander_lib::path_utils
 agentscommander_lib::screenshot::native::confirm -> agentscommander_lib::screenshot::native
+agentscommander_lib::screenshot::native::linux_display -> agentscommander_lib::config::environment
 agentscommander_lib::screenshot::native::overlay -> agentscommander_lib::path_utils
 agentscommander_lib::screenshot::native::overlay -> agentscommander_lib::screenshot::native
 agentscommander_lib::screenshot::native::replica_root -> agentscommander_lib::config::entity_prefix
