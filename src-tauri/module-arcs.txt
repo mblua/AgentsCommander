@@ -1725,6 +1725,9 @@ agentscommander_lib::config::teams::routes -> agentscommander_lib::config::root_
 agentscommander_lib::config::teams::routes -> agentscommander_lib::config::teams
 agentscommander_lib::config::teams::routes -> agentscommander_lib::config::teams::replica
 agentscommander_lib::config::teams::routes -> agentscommander_lib::path_identity
+agentscommander_lib::events::loops -> agentscommander_lib::filesystem
+agentscommander_lib::events::loops -> agentscommander_lib::loops::events
+agentscommander_lib::events::session -> agentscommander_lib::session::warnings
 agentscommander_lib::logging -> agentscommander_lib::config
 agentscommander_lib::logging -> agentscommander_lib::config::instance_gitignore
 agentscommander_lib::logging -> agentscommander_lib::config::settings

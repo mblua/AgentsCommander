@@ -214,12 +214,13 @@ fn fenced_ticket_never_restores() {
 /// state (last event) must match the clock.
 #[test]
 fn restore_emit_never_lands_after_newer_create_clear() {
+    // The process-wide seam is keyed by FQN; other marker tests must not hit it.
+    const CWD: &str = "C:/ac-test/project/.ac/wg-2413-restore-emit/__agent_tech-lead";
     let (app, clocks, events) = marker_unit_app();
-    let fqn = crate::config::teams::agent_fqn_from_path(MARKER_CWD);
+    let fqn = crate::config::teams::agent_fqn_from_path(CWD);
     let t = marker_ts(0);
     assert!(clocks.lock().unwrap().mark_auto_closed(&fqn, t));
-    let failing =
-        super::super::note_coordinator_create_on_app(app.handle(), MARKER_CWD).expect("ticket");
+    let failing = super::super::note_coordinator_create_on_app(app.handle(), CWD).expect("ticket");
     let (reached_tx, reached_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     super::super::restore_emit_seam::install(&fqn, reached_tx, release_rx);
@@ -232,7 +233,7 @@ fn restore_emit_never_lands_after_newer_create_clear() {
     let handle = app.handle().clone();
     let (newer_done_tx, newer_done_rx) = std::sync::mpsc::channel();
     let newer = std::thread::spawn(move || {
-        super::super::note_coordinator_create_on_app(&handle, MARKER_CWD)
+        super::super::note_coordinator_create_on_app(&handle, CWD)
             .expect("ticket")
             .succeeded();
         let _ = newer_done_tx.send(());

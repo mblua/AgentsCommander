@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, Runtime};
 use uuid::Uuid;
 
 pub const SESSION_ENV_WARNING_EVENT: &str = "session_env_warning";
@@ -69,22 +68,13 @@ pub fn new_session_warning_state() -> SessionWarningState {
     Arc::new(Mutex::new(SessionWarningBuffer::default()))
 }
 
-pub fn emit_session_warning<R: Runtime>(app: &AppHandle<R>, warning: SessionWarning) {
+pub trait SessionWarningEvents {
+    fn session_warning(&self, warning: SessionWarning);
+}
+
+pub fn emit_session_warning<E: SessionWarningEvents + ?Sized>(events: &E, warning: SessionWarning) {
     log::warn!("{}", warning.message);
-    if let Some(state) = app.try_state::<SessionWarningState>() {
-        match state.lock() {
-            Ok(mut buffer) => buffer.push(warning.clone()),
-            Err(err) => {
-                log::warn!(
-                    "[session-warning] warning buffer lock poisoned; live emit only: {}",
-                    err
-                );
-            }
-        }
-    } else {
-        log::warn!("[session-warning] warning buffer state missing; live emit only");
-    }
-    let _ = app.emit(SESSION_ENV_WARNING_EVENT, warning);
+    events.session_warning(warning);
 }
 
 #[cfg(test)]
