@@ -204,12 +204,6 @@ const INVENTORY: &[Row] = &[
         &[(DesktopOpener, 1)],
     ),
     (
-        "src-tauri/src/commands/entity_creation/repo_clone.rs",
-        2,
-        2,
-        &[],
-    ),
-    (
         "src-tauri/src/commands/entity_creation/tests/stage_e_cross_process.rs",
         1,
         0,
@@ -226,12 +220,6 @@ const INVENTORY: &[Row] = &[
         1,
         0,
         &[(TestOnly, 1)],
-    ),
-    (
-        "src-tauri/src/commands/entity_creation/workgroup_delete.rs",
-        2,
-        2,
-        &[],
     ),
     (
         "src-tauri/src/commands/repos/tests.rs",
@@ -276,6 +264,7 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 2)],
     ),
+    ("src-tauri/src/process/git/mutation.rs", 4, 4, &[]),
     ("src-tauri/src/process/git/read.rs", 3, 3, &[]),
     (
         "src-tauri/src/process/git/read/tests.rs",
