@@ -2,7 +2,9 @@ use super::{restore_carrier_scopes_are_empty, restore_test_carrier_scopes_are_em
 use crate::config::sessions_persistence::{persist_initial_carrier, InitialCarrierIntent};
 use crate::pty::backend::SessionBackendKind;
 use crate::session::manager::{acquire_carrier_mutation_permit, SessionManager};
-use crate::session::selection::{SelectionCoordinator, SelectionCoordinatorError};
+use crate::session::selection::{
+    SelectionCoordinator, SelectionCoordinatorError, TrustedCreateIntent,
+};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -14,13 +16,6 @@ async fn restore_bootstrap_isolates_mock_apps_but_keeps_same_scope_protection() 
     let cwd = tempfile::tempdir().expect("carrier replica");
     let manager = Arc::new(RwLock::new(SessionManager::new()));
     let owner = SelectionCoordinator::new(manager.clone(), CancellationToken::new());
-    let owner_app = tauri::test::mock_builder()
-        .manage(manager.clone())
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("owner app");
-    owner
-        .start(owner_app.handle().clone())
-        .expect("start owner");
     let scope = owner.restore_mint_exclusion().expect("owner restore scope");
     // Mint through real persistence, then model a bootstrap while that same
     // app still owns a live protection. The production publication gate remains
@@ -67,13 +62,6 @@ async fn restore_bootstrap_isolates_mock_apps_but_keeps_same_scope_protection() 
 
     let other_manager = Arc::new(RwLock::new(SessionManager::new()));
     let other = SelectionCoordinator::new(other_manager.clone(), CancellationToken::new());
-    let other_app = tauri::test::mock_builder()
-        .manage(other_manager)
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("independent app");
-    other
-        .start(other_app.handle().clone())
-        .expect("start other");
     let other_scope = other.restore_mint_exclusion().expect("other restore scope");
     let permit = acquire_carrier_mutation_permit().await;
     assert_eq!(
@@ -93,17 +81,32 @@ async fn restore_bootstrap_isolates_mock_apps_but_keeps_same_scope_protection() 
 
     let blocked = owner.submit_restore_first().await;
     assert!(matches!(blocked, Err(error) if error == SelectionCoordinatorError::Busy.to_string()));
-    // Before #3233 this returns selectionCoordinatorBusy even with a fresh
-    // phase, available admission and an empty channel: only the foreign
-    // publication protection makes the old ALL-scopes bootstrap fail.
-    let independent = other.submit_restore_first().await;
-    assert!(
-        independent.is_ok(),
-        "independent bootstrap: {:?}",
-        independent.err()
-    );
-    independent.unwrap().finish();
-    other.close_and_join().await;
-    owner.close_and_join().await;
+    // No worker is started: after accepting the restore barrier, bootstrap
+    // must wait for it. Public create admission proves it passed the carrier
+    // check and reserved FIFO position one, without constructing a Tauri app.
+    // Before #3233 the bootstrap instead returns Busy immediately here.
+    let bootstrap = other.submit_restore_first();
+    tokio::pin!(bootstrap);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::select! {
+            result = &mut bootstrap => {
+                panic!("independent bootstrap rejected before barrier: {:?}", result.err());
+            }
+            () = async {
+                loop {
+                    match other.reserve_create(TrustedCreateIntent::Background).await {
+                        Ok(ticket) => {
+                            drop(ticket);
+                            break;
+                        }
+                        Err(SelectionCoordinatorError::Busy) => tokio::task::yield_now().await,
+                        Err(error) => panic!("independent admission: {error}"),
+                    }
+                }
+            } => {}
+        }
+    })
+    .await
+    .expect("independent bootstrap admits work behind its restore barrier");
     drop(protection);
 }
