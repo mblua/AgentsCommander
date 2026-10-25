@@ -132,7 +132,10 @@ async fn public_native_case(root: bool, interrupted: bool) {
                 row.status,
                 crate::session::session::SessionStatus::Exited(_)
             ));
-            assert!(PtyManager::snapshot_route_proof(&f.pty, f.source).is_none());
+            assert!(matches!(
+                PtyManager::snapshot_route_proof(&f.pty, f.source),
+                Err(crate::errors::AppError::SessionNotFound(id)) if id == f.source.to_string()
+            ));
             assert!(!f.backend.has_session(f.source));
         }
     }
