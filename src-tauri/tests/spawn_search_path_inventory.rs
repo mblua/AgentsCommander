@@ -87,8 +87,8 @@ fn workspace_members() -> Vec<String> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Reason {
-    /// `config/agent_path.rs`: defines the adapters and runs the login-shell
-    /// probe that is the source of the search path.
+    /// `process/host/login.rs`: runs the login-shell probe that is the source
+    /// of the search path.
     Owner,
     /// Already resolves and executes with `effective_search_path()`.
     CoveredBy2589,
@@ -283,7 +283,7 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 2)],
     ),
-    ("src-tauri/src/config/agent_path.rs", 1, 0, &[(Owner, 1)]),
+    ("src-tauri/src/process/host/login.rs", 1, 0, &[(Owner, 1)]),
     (
         "src-tauri/src/config/coding_agents_catalog/tests.rs",
         1,

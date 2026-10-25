@@ -1210,6 +1210,7 @@ agentscommander_lib::config::agent_memory -> agentscommander_lib::commands::enti
 agentscommander_lib::config::agent_memory -> agentscommander_lib::config::replica_identity
 agentscommander_lib::config::agent_memory -> agentscommander_lib::config::session_context
 agentscommander_lib::config::agent_memory -> agentscommander_lib::path_utils
+agentscommander_lib::config::agent_path -> agentscommander_lib::process::host::login
 agentscommander_lib::config::archive_gate -> agentscommander_lib::commands::ac_discovery
 agentscommander_lib::config::archive_gate -> agentscommander_lib::config
 agentscommander_lib::config::archive_gate -> agentscommander_lib::config::ac_root
