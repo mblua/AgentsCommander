@@ -644,7 +644,10 @@ fn issue_1867_isolation_source_contract() {
         ),
         (
             "cli_ui_automation.rs",
-            include_str!("cli_ui_automation.rs"),
+            concat!(
+                include_str!("cli_ui_automation.rs"),
+                include_str!("cli_ui_automation/pointer_and_query.rs"),
+            ),
             4,
             &[
                 ("run", 1),
