@@ -29,10 +29,12 @@ use crate::telegram::manager::TelegramBridgeState;
 pub(crate) use resume_args::trusted_muse_auto_resume_spawn;
 use resume_args::{
     inject_antigravity_resume, inject_codex_resume, maybe_inject_muse_resume,
-    maybe_inject_pi_resume, pi_has_explicit_session_control,
+    maybe_inject_pi_resume,
 };
 #[cfg(test)]
-use resume_args::{inject_pi_resume, pi_is_non_conversation_invocation};
+use resume_args::{
+    inject_pi_resume, pi_has_explicit_session_control, pi_is_non_conversation_invocation,
+};
 use resume_probe::{
     build_title_prompt_appendage, claude_resume_probe_target_for_kind, configured_prompt_identity,
     container_path_context_for_cwd, effective_codex_home_for_backend,
