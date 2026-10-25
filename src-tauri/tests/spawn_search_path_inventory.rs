@@ -321,6 +321,12 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 1)],
     ),
     (
+        "src-tauri/src/config/environment/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
         "src-tauri/src/config/injected_messages/tests/n_cases.rs",
         1,
         0,

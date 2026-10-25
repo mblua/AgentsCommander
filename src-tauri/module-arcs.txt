@@ -356,6 +356,7 @@ agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::config
 agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::config::ac_root
 agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::config::agent_config
 agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::config::entity_prefix
+agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::config::environment
 agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::config::replica_identity
 agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::config::root_agent
 agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::config::settings
@@ -371,10 +372,12 @@ agentscommander_lib::cli::list_peers::status -> agentscommander_lib::config::ses
 agentscommander_lib::cli::list_peers::status -> agentscommander_lib::session::session
 agentscommander_lib::cli::list_sessions -> agentscommander_lib
 agentscommander_lib::cli::list_sessions -> agentscommander_lib::config::daemon_pid
+agentscommander_lib::cli::list_sessions -> agentscommander_lib::config::environment
 agentscommander_lib::cli::list_sessions -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::cli::list_sessions -> agentscommander_lib::session::session
 agentscommander_lib::cli::loop_cmd -> agentscommander_lib
 agentscommander_lib::cli::loop_cmd -> agentscommander_lib::cli::workgroup
+agentscommander_lib::cli::loop_cmd -> agentscommander_lib::config::environment
 agentscommander_lib::cli::loop_cmd -> agentscommander_lib::config::loops
 agentscommander_lib::cli::new_project -> agentscommander_lib
 agentscommander_lib::cli::new_project -> agentscommander_lib::cli::workgroup
@@ -531,6 +534,7 @@ agentscommander_lib::cli::workgroup -> agentscommander_lib::cli::session_safety
 agentscommander_lib::cli::workgroup -> agentscommander_lib::commands::entity_creation
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::ac_root
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::coordinator_clocks
+agentscommander_lib::cli::workgroup -> agentscommander_lib::config::environment
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::projects
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::seed_manifest
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::settings
@@ -540,6 +544,7 @@ agentscommander_lib::cli::workgroup::activity -> agentscommander_lib::commands::
 agentscommander_lib::cli::workgroup::activity -> agentscommander_lib::config
 agentscommander_lib::cli::workgroup::activity -> agentscommander_lib::config::daemon_pid
 agentscommander_lib::cli::workgroup::activity -> agentscommander_lib::config::entity_prefix
+agentscommander_lib::cli::workgroup::activity -> agentscommander_lib::config::environment
 agentscommander_lib::cli::workgroup::activity -> agentscommander_lib::config::remote_activity_cache
 agentscommander_lib::cli::workgroup::activity -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::cli::workgroup::activity -> agentscommander_lib::config::settings
