@@ -429,6 +429,12 @@ const INVENTORY: &[Row] = &[
         0,
         &[(WindowsOnly, 1), (PosixBaseUtility, 1)],
     ),
+    (
+        "src-tauri/src/process/host/credentials/tests.rs",
+        2,
+        0,
+        &[(TestOnly, 2)],
+    ),
     ("src-tauri/src/process/tests.rs", 2, 0, &[(TestOnly, 2)]),
     (
         "src-tauri/src/pty/credentials/tests.rs",

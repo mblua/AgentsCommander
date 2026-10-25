@@ -1,3 +1,5 @@
+pub(crate) mod host;
+
 use std::process::{self, Command};
 
 #[cfg(windows)]
