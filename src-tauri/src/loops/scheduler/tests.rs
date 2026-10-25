@@ -49,8 +49,8 @@ fn project_with_loop(config: &LoopConfigToml) -> tempfile::TempDir {
 
 /// AC-17 fixture - the only app these writers need. They reach
 /// `append_loop_audit_once`, `write_loop_state_atomic` and
-/// `emit_transition`, and `emit_loop_change` only calls `app.emit`, which
-/// is infallible here, so no managed state is required.
+/// `emit_transition`, and `emit_loop_change` uses the loop event port. Its
+/// AppHandle adapter emits without managed state, so none is required here.
 fn audit_writer_app() -> tauri::App {
     crate::test_support::test_builder()
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
