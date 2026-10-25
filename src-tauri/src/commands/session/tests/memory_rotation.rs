@@ -231,16 +231,40 @@ async fn create_session_inner_rotates_the_fresh_target_and_not_the_resumed_one()
 
 #[test]
 fn create_session_inner_marks_spawning_until_spawn_returns() {
-    let source = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/commands/session.rs"
-    ))
-    .expect("read session.rs");
-    let production = source
-        .split("#[cfg(test)]\nmod tests")
-        .next()
-        .expect("production session source");
-    let normalized = production.split_whitespace().collect::<String>();
+    use super::support::{
+        source_archive, source_chain, source_effect, source_map_complete, source_mark,
+        source_pending,
+    };
+    let sources = super::support::session_sources();
+    assert!(
+        source_map_complete(&sources),
+        "complete creation stage inventory"
+    );
+    assert!(
+        source_chain(&sources),
+        "reachable context/backend/publication chain"
+    );
+    assert!(
+        source_pending(&sources),
+        "pending creation precedes the stage chain"
+    );
+    assert!(
+        source_mark(&sources),
+        "spawn precedes mark drop and error handling"
+    );
+    assert!(
+        source_effect(&sources),
+        "backend effect completes before mark drop"
+    );
+    assert!(
+        source_archive(&sources),
+        "two archive gates bracket mark and pending creation"
+    );
+    let normalized = sources
+        .get("session/create/core.rs")
+        .expect("creation core from the same source map")
+        .split_whitespace()
+        .collect::<String>();
     let first_gate = normalized
         .find(concat!(
             "enforce_owned_unarchived_for_spawn(app,&cwd,&session_label,&create_owner,",
@@ -250,38 +274,9 @@ fn create_session_inner_marks_spawning_until_spawn_returns() {
     let mark = normalized
         .find("letspawn_mark={")
         .expect("spawn mark immediately before pending-session creation");
-    let pending_create = normalized
-        .find("letpending_result=mgr.create_pending_session_with_binding_and_carrier_permit(")
-        .expect("pending-session creation");
-    let spawn = normalized
-        .find("letspawn_result=PtyManager::spawn(pty_mgr,session.backend_kind,spawn_spec).await;")
-        .expect("spawn call");
-    let drop_mark = normalized
-        .find("drop(spawn_mark);")
-        .expect("spawn mark drop");
-    let spawn_error = normalized
-        .find("ifletErr(e)=spawn_result{")
-        .expect("spawn error handling");
-
     assert!(
         first_gate < mark,
         "spawn mark must be created only after pre-create validation"
-    );
-    assert!(
-        mark < pending_create,
-        "spawn mark must precede pending-session creation"
-    );
-    assert!(
-        pending_create < spawn,
-        "pending-session creation must run before PTY spawn"
-    );
-    assert!(
-        spawn < drop_mark,
-        "spawn mark must stay live while spawn awaits"
-    );
-    assert!(
-        drop_mark < spawn_error,
-        "spawn mark must drop immediately after spawn returns"
     );
 }
 
