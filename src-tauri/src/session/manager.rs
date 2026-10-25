@@ -82,7 +82,7 @@ impl PendingCreateBinding {
 
 #[derive(Clone)]
 pub struct SessionManager {
-    response_close: crate::pty::manager::ResponseCloseState,
+    response_close: crate::pty::response_close::ResponseCloseState,
     state: Arc<RwLock<SessionManagerState>>,
     pub(crate) prompt_initialization: Arc<tokio::sync::OnceCell<()>>,
 }
@@ -326,14 +326,14 @@ impl SessionManager {
         authority_id: Uuid,
         expected_sender: &crate::config::teams::VerifiedPtyInputIdentity,
         authority_backend: SessionBackendKind,
-        authority_route: &'a crate::pty::manager::PtyAuthorityRouteProof,
-        permit: &'a crate::pty::manager::PtyInputPermit,
+        authority_route: &'a crate::pty::input_route::PtyAuthorityRouteProof,
+        permit: &'a crate::pty::input_route::PtyInputPermit,
         idle_detector: &crate::pty::idle_detector::IdleDetector,
         settings: &crate::config::settings::SettingsState,
         final_recipe_check: G,
         final_external_check: F,
     ) -> Result<
-        crate::pty::manager::PtyRouteWriteGuard<'a>,
+        crate::pty::input_route::PtyRouteWriteGuard<'a>,
         crate::pty::idle_detector::PtyInputBoundaryFailure,
     >
     where
@@ -443,7 +443,7 @@ impl SessionManager {
                 return Err(Failure::RouteUnavailable);
             }
             let prepared = idle_detector.prepare_pty_input_boundary(id, || {
-                let route = crate::pty::manager::PtyManager::lock_route_for_verified_write(
+                let route = crate::pty::input_route::lock_route_for_verified_write(
                     permit,
                     expected_backend,
                     &cwd_identity,

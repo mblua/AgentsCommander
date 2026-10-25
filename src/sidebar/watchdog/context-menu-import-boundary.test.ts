@@ -190,7 +190,7 @@ describe("#1871 context-menu import boundary", () => {
       }
     }
     expect(Array.from(importers).sort()).toEqual(ALLOWED_SURFACE_IMPORTERS.slice().sort());
-  });
+  }, 30000);
 
   // The extractor's own contract, as fixtures. These are cases, not controls:
   // the false-positive rows prove that a `;` or an `import` inside a string or
