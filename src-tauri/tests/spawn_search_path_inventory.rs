@@ -450,7 +450,12 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 1)],
     ),
-    ("src-tauri/src/pty/job/tests.rs", 2, 0, &[(TestOnly, 2)]),
+    (
+        "src-tauri/src/process/host/job/tests.rs",
+        2,
+        0,
+        &[(TestOnly, 2)],
+    ),
     (
         "src-tauri/src/pty/local_backend/git_guard.rs",
         1,

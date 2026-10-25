@@ -2208,6 +2208,9 @@ agentscommander_lib::phone::terminal_snapshot::scanner -> agentscommander_lib::p
 agentscommander_lib::phone::terminal_snapshot::scanner -> agentscommander_lib::pty::terminal_snapshot
 agentscommander_lib::phone::terminal_snapshot::shutdown -> agentscommander_lib::phone::terminal_snapshot::failure
 agentscommander_lib::phone::types -> agentscommander_lib::pty::input_limits
+agentscommander_lib::process::host::job::tests -> agentscommander_lib::process::host::job
+agentscommander_lib::process::host::job::tests -> agentscommander_lib::process::host::job::windows_impl
+agentscommander_lib::process::host::job::windows_impl -> agentscommander_lib::process::host::job
 agentscommander_lib::pty::agent_quota -> agentscommander_lib::pty::agent_quota::source
 agentscommander_lib::pty::agent_quota -> agentscommander_lib::pty::context_scrape
 agentscommander_lib::pty::agent_quota -> agentscommander_lib::shutdown
@@ -2330,9 +2333,7 @@ agentscommander_lib::pty::input_route -> agentscommander_lib::errors
 agentscommander_lib::pty::input_route -> agentscommander_lib::path_identity
 agentscommander_lib::pty::input_route -> agentscommander_lib::pty::backend_kind
 agentscommander_lib::pty::input_route -> agentscommander_lib::pty::response_close
-agentscommander_lib::pty::job::tests -> agentscommander_lib::pty::job
-agentscommander_lib::pty::job::tests -> agentscommander_lib::pty::job::windows_impl
-agentscommander_lib::pty::job::windows_impl -> agentscommander_lib::pty::job
+agentscommander_lib::pty::job -> agentscommander_lib::process::host::job
 agentscommander_lib::pty::local_backend -> agentscommander_lib::config::agent_path
 agentscommander_lib::pty::local_backend -> agentscommander_lib::config::environment
 agentscommander_lib::pty::local_backend -> agentscommander_lib::config::session_context
