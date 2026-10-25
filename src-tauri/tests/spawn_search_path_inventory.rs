@@ -162,12 +162,6 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 1)],
     ),
     (
-        "src-tauri/src/commands/ac_discovery/project_git.rs",
-        2,
-        2,
-        &[],
-    ),
-    (
         "src-tauri/src/commands/ac_discovery/tests/discovery.rs",
         10,
         0,
@@ -239,7 +233,6 @@ const INVENTORY: &[Row] = &[
         2,
         &[],
     ),
-    ("src-tauri/src/commands/repos.rs", 1, 1, &[]),
     (
         "src-tauri/src/commands/repos/tests.rs",
         1,
@@ -279,6 +272,13 @@ const INVENTORY: &[Row] = &[
     ),
     (
         "src-tauri/src/config/agent_memory/tests.rs",
+        2,
+        0,
+        &[(TestOnly, 2)],
+    ),
+    ("src-tauri/src/process/git/read.rs", 3, 3, &[]),
+    (
+        "src-tauri/src/process/git/read/tests.rs",
         2,
         0,
         &[(TestOnly, 2)],

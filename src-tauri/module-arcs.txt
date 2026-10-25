@@ -650,8 +650,7 @@ agentscommander_lib::commands::ac_discovery::project_discovery -> agentscommande
 agentscommander_lib::commands::ac_discovery::project_discovery -> agentscommander_lib::pty::git_watcher
 agentscommander_lib::commands::ac_discovery::project_discovery -> agentscommander_lib::session::manager
 agentscommander_lib::commands::ac_discovery::project_git -> agentscommander_lib::config::ac_root
-agentscommander_lib::commands::ac_discovery::project_git -> agentscommander_lib::config::agent_path
-agentscommander_lib::commands::ac_discovery::project_git -> agentscommander_lib::pty::credentials
+agentscommander_lib::commands::ac_discovery::project_git -> agentscommander_lib::process::git::read
 agentscommander_lib::commands::ac_discovery::project_registry -> agentscommander_lib::config
 agentscommander_lib::commands::ac_discovery::project_registry -> agentscommander_lib::config::coding_agents_catalog
 agentscommander_lib::commands::ac_discovery::project_registry -> agentscommander_lib::config::instance_artifacts
@@ -934,9 +933,8 @@ agentscommander_lib::commands::pty::watcher_reach -> agentscommander_lib::config
 agentscommander_lib::commands::pty::watcher_reach -> agentscommander_lib::config::settings
 agentscommander_lib::commands::pty::watcher_reach -> agentscommander_lib::pty::watchers
 agentscommander_lib::commands::quit_gate -> agentscommander_lib::quit_gate
-agentscommander_lib::commands::repos -> agentscommander_lib::config::agent_path
 agentscommander_lib::commands::repos -> agentscommander_lib::config::settings
-agentscommander_lib::commands::repos -> agentscommander_lib::pty::credentials
+agentscommander_lib::commands::repos -> agentscommander_lib::process::git::read
 agentscommander_lib::commands::repos -> agentscommander_lib::repos
 agentscommander_lib::commands::resource_monitor -> agentscommander_lib
 agentscommander_lib::commands::resource_monitor -> agentscommander_lib::config::settings
@@ -2209,6 +2207,8 @@ agentscommander_lib::phone::terminal_snapshot::scanner -> agentscommander_lib::p
 agentscommander_lib::phone::terminal_snapshot::scanner -> agentscommander_lib::pty::terminal_snapshot
 agentscommander_lib::phone::terminal_snapshot::shutdown -> agentscommander_lib::phone::terminal_snapshot::failure
 agentscommander_lib::phone::types -> agentscommander_lib::pty::input_limits
+agentscommander_lib::process::git::read -> agentscommander_lib::config::agent_path
+agentscommander_lib::process::git::read -> agentscommander_lib::process::host::credentials
 agentscommander_lib::process::host::job::tests -> agentscommander_lib::process::host::job
 agentscommander_lib::process::host::job::tests -> agentscommander_lib::process::host::job::windows_impl
 agentscommander_lib::process::host::job::windows_impl -> agentscommander_lib::process::host::job
