@@ -142,6 +142,7 @@ pub(crate) use lifecycle::LifecycleEntryAuthority;
 use restart::accept_restart_deferred_completion;
 use restart::accept_restart_teardown;
 pub(crate) use restart::carry_communication_for_restart;
+use restart::context::ensure_lifecycle_root_directory;
 use restart::effective_create_skip_auto_resume;
 use restart::effective_restart_requested_profile;
 #[cfg(test)]
@@ -172,7 +173,6 @@ pub(crate) use restart_resume::RestartResumeTarget;
 #[cfg(test)]
 use root_agent::classify_existing_root;
 pub(crate) use root_agent::create_root_agent_inner;
-use root_agent::ensure_lifecycle_root_directory;
 pub(crate) use root_agent::execute_root_transaction;
 #[cfg(test)]
 use root_agent::ExistingRootAction;
@@ -2563,29 +2563,6 @@ pub async fn close_coordinator(
         closed: true,
         working_count: 0,
     })
-}
-
-/// #1171 - this covers BOTH restart paths: `execute_restart_transaction`'s success path and
-/// `finalize_failed_restart`. A restart is a normal flow - it is in the invoke handler, the
-/// mailbox calls it, and a bulk settings save can restart sessions - so without the purge here
-/// every restart would orphan up to 500 ring entries under an id that is already gone from the
-/// session list, unreachable from the UI.
-fn publish_restart_destroyed<R: tauri::Runtime>(
-    transaction: &SelectionTransaction<R>,
-    session_id: Uuid,
-) {
-    transaction.publish_destroyed(session_id);
-    let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
-    if let Some(window) = transaction.app().get_webview_window(&label) {
-        if let Err(error) = window.destroy() {
-            log::warn!(
-                "[restart] detached window destroy failed session={}: {}",
-                session_id,
-                error
-            );
-        }
-    }
-    purge_session_side_state(transaction.app(), session_id);
 }
 
 async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
