@@ -1,4 +1,3 @@
-use crate::commands::session::create_session_inner_core;
 use crate::commands::session::lifecycle::LifecycleEntryAuthority;
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::pty::backend::PtyViewport;
@@ -10,6 +9,7 @@ use crate::session::selection::SelectionTransaction;
 use crate::session::session::SessionCommunication;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionRepo;
+use core::create_session_inner_core;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::AppHandle;
@@ -17,31 +17,29 @@ use tauri::Manager;
 mod admission;
 mod context_prep;
 mod contracts;
+mod core;
 mod effects;
 mod launch;
 mod publication;
 #[cfg(test)]
 pub(crate) use admission::acquire_create_publication_region;
-pub(crate) use admission::acquire_lifecycle_create_publication_region;
-pub(crate) use admission::enforce_owned_unarchived_for_spawn;
+#[cfg(test)]
 pub(crate) use admission::note_coordinator_create_on_app;
-pub(crate) use admission::release_resource_launch_permit;
-pub(crate) use admission::revalidate_owned_create_effect;
 #[cfg(test)]
 pub(crate) use admission::try_acquire_create_publication_region;
+#[cfg(test)]
 pub(crate) use admission::with_create_resource_region;
-pub(crate) use admission::CoordinatorCreateTicket;
-pub(crate) use admission::CreateCapacityContext;
+#[cfg(test)]
 pub(crate) use admission::CreateResourceAdmission;
+#[cfg(test)]
 pub(crate) use admission::OwnedCreateAdmission;
-pub(crate) use context_prep::notify_replica_context_failure;
-pub(crate) use effects::start_create_effect;
-pub(crate) use effects::CreateEffectStart;
 pub(crate) use launch::build_configured_agent_spawn_for_cwd;
 pub(crate) use launch::compute_profile_outdated;
 pub(crate) use launch::resolve_configured_agent_spawn_for_cwd;
 pub(crate) use launch::resolve_create_session_cwd;
+#[cfg(test)]
 pub(crate) use launch::resolve_launch_auto_self_clear;
+#[cfg(test)]
 pub(crate) use launch::resolve_launch_idle_tuning;
 
 pub(crate) async fn create_owned_response_replacement<R: tauri::Runtime>(
@@ -418,8 +416,6 @@ pub(crate) use contracts::{
     CreateCompletion, DeferredCreateOutput, InitialLastPrompt, OwnedReplacementCreateRequest,
     OwnedReplacementCreateStep,
 };
-pub(crate) use publication::{
-    acquire_create_target_lease, finish_create_core_result, purge_session_side_state,
-    register_session_samplers, reset_substantive_input, resolve_create_destination,
-    rollback_pre_created_session,
-};
+#[cfg(test)]
+pub(crate) use publication::register_session_samplers;
+pub(crate) use publication::{purge_session_side_state, reset_substantive_input};

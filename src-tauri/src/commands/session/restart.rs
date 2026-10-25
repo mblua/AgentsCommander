@@ -13,6 +13,7 @@ pub(crate) use super::agent_command::effective_restart_requested_profile;
 #[cfg(test)]
 pub(crate) use super::agent_command::effective_restart_skip_auto_resume;
 pub(crate) use super::agent_command::matched_selection;
+#[cfg(test)]
 pub(crate) use super::agent_command::mirror_forces_fresh;
 pub(crate) use super::agent_command::resolve_restart_selected_agent_id;
 pub(crate) use super::agent_command::restart_skip_auto_resume_with_intent;
