@@ -323,7 +323,8 @@ fn ui_query_large_missing_selector_response_is_bounded_stdout() {
             "action": "query",
             "selector": "does.not.exist",
             "error": "missing_selector",
-            "message": "No automation target matched data-ac-testid=\"does.not.exist\" in window \"main\".",
+            "message": "No automation target matched \
+                data-ac-testid=\"does.not.exist\" in window \"main\".",
             "available": available,
             "diagnostics": {
                 "devicePixelRatio": 1,
@@ -567,7 +568,8 @@ fn reap_on_drop_kills_the_child_when_the_caller_panics() {
     );
     assert!(
         request_file.exists(),
-        "a child that leaves the loop on its own removes its request file (ui_automation.rs:1458); the file survives only because the child was terminated: {}",
+        "a child that leaves the loop on its own removes its request file \
+        (ui_automation.rs:1458); the file survives only because the child was terminated: {}",
         request_file.display()
     );
 }
