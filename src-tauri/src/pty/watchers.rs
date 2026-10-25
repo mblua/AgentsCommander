@@ -43,8 +43,10 @@ pub(crate) mod frame;
 pub(crate) mod history;
 pub(crate) mod pattern;
 mod resolution;
-mod screen_frame;
 
+#[cfg(test)]
+pub(crate) use crate::pty::backend::screen_frame::frame_from_screen_rows_read;
+pub use crate::pty::backend::screen_frame::{FrameStamp, ScreenFrame, ScreenRowsSince};
 pub(crate) use activity::{ActivityConsumer, ActivityFactory, ActivityObservation};
 use activity::{ActivityDelivery, CODEX_WORKING_PATTERN};
 use evaluation::{evaluate_occurrence, evaluate_state, status_of};
@@ -52,8 +54,6 @@ pub use resolution::{
     resolve_watchers, AgentResolution, ResolutionLog, ResolutionNotice, ResolvedWatcher,
     WatcherAgent,
 };
-pub(crate) use screen_frame::frame_from_screen_rows_read;
-pub use screen_frame::{FrameStamp, ScreenFrame, ScreenRowsSince};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
