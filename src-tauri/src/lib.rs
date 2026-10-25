@@ -15,6 +15,7 @@ pub(crate) mod path_utils;
 pub mod phone;
 pub(crate) mod process;
 pub mod pty;
+pub(crate) mod repos;
 pub mod resource_monitor;
 pub mod screenshot;
 pub mod session;

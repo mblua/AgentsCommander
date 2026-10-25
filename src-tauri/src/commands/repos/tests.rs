@@ -14,40 +14,6 @@ fn git_in(dir: &Path, args: &[&str]) -> bool {
 
 const ORIGIN: &str = "https://github.com/mblua/AgentsCommander.git";
 
-#[test]
-fn strip_userinfo_removes_credentials_from_scheme_urls() {
-    assert_eq!(
-        strip_userinfo("https://u:tok@github.com/o/r.git"),
-        "https://github.com/o/r.git"
-    );
-    assert_eq!(
-        strip_userinfo("ssh://git@github.com/o/r.git"),
-        "ssh://github.com/o/r.git"
-    );
-}
-
-#[test]
-fn strip_userinfo_leaves_everything_else_alone() {
-    // No userinfo.
-    assert_eq!(
-        strip_userinfo("https://github.com/o/r.git"),
-        "https://github.com/o/r.git"
-    );
-    // scp-like: no `://`, and the `git@` is an ssh user name, not a secret.
-    assert_eq!(
-        strip_userinfo("git@github.com:o/r.git"),
-        "git@github.com:o/r.git"
-    );
-    // `@` in the path, none in the authority: must not be treated as userinfo.
-    assert_eq!(
-        strip_userinfo("https://github.com/o/r@2.git"),
-        "https://github.com/o/r@2.git"
-    );
-    // Degenerate inputs must not panic.
-    assert_eq!(strip_userinfo(""), "");
-    assert_eq!(strip_userinfo("https://"), "https://");
-}
-
 /// T1 - a path that does not exist yields None, and never spawns git: the
 /// `.git` stat fails first.
 #[tokio::test]

@@ -199,7 +199,7 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
 
     fn write(
         &self,
-        authority: &crate::pty::manager::BackendWriteAuthority,
+        authority: &crate::pty::input_route::BackendWriteAuthority,
         id: Uuid,
         data: &[u8],
     ) -> Result<(), AppError>;
@@ -313,5 +313,24 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
 
     fn kill_all_jobs(&self) -> (usize, usize);
 }
+struct BackendRawWriter {
+    backend: Arc<dyn PtyBackend>,
+}
+impl crate::pty::input_route::RawPtyWriter for BackendRawWriter {
+    fn write(
+        &self,
+        authority: &crate::pty::input_route::BackendWriteAuthority,
+        id: Uuid,
+        data: &[u8],
+    ) -> Result<(), AppError> {
+        self.backend.write(authority, id, data)
+    }
+}
+pub(crate) fn raw_writer(
+    backend: Arc<dyn PtyBackend>,
+) -> Arc<dyn crate::pty::input_route::RawPtyWriter> {
+    Arc::new(BackendRawWriter { backend })
+}
+
 #[cfg(test)]
 mod tests;

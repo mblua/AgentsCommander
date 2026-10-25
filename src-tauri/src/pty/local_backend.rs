@@ -559,7 +559,7 @@ impl PtyBackend for LocalProcessBackend {
 
     fn write(
         &self,
-        _authority: &crate::pty::manager::BackendWriteAuthority,
+        _authority: &crate::pty::input_route::BackendWriteAuthority,
         id: Uuid,
         data: &[u8],
     ) -> Result<(), AppError> {

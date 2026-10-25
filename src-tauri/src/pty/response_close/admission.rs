@@ -1,16 +1,16 @@
-use crate::pty::manager::response_close::CreateAdmission;
-use crate::pty::manager::response_close::CreateClassification;
-use crate::pty::manager::response_close::CreateOwnerReservation;
-use crate::pty::manager::response_close::ResponseCloseError;
-use crate::pty::manager::response_close::ResponseCloseState;
-use crate::pty::manager::response_close::WorkAdmission;
-use crate::pty::manager::response_close::WorkDeliveryReservation;
-use crate::pty::manager::response_close::WriterAdmission;
-use crate::pty::manager::response_close::DIAG_TARGET;
+use crate::pty::response_close::CreateAdmission;
+use crate::pty::response_close::CreateClassification;
+use crate::pty::response_close::CreateOwnerReservation;
+use crate::pty::response_close::ResponseCloseError;
+use crate::pty::response_close::ResponseCloseState;
+use crate::pty::response_close::WorkAdmission;
+use crate::pty::response_close::WorkDeliveryReservation;
+use crate::pty::response_close::WriterAdmission;
+use crate::pty::response_close::DIAG_TARGET;
 use uuid::Uuid;
 
 impl ResponseCloseState {
-    pub(in crate::pty::manager) fn reserve_writer_inner(
+    pub(in crate::pty) fn reserve_writer_inner(
         &self,
         id: Uuid,
         generation: u64,
@@ -430,6 +430,12 @@ impl Drop for WorkDeliveryReservation {
         });
     }
 }
+impl WriterAdmission {
+    pub(in crate::pty) fn is_closing(&self) -> Result<bool, ResponseCloseError> {
+        self.state.is_closing(self.session_id, self.generation)
+    }
+}
+
 impl Drop for WriterAdmission {
     fn drop(&mut self) {
         if !self.counted {
