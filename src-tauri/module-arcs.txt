@@ -2880,14 +2880,13 @@ agentscommander_lib::testability::reset -> agentscommander_lib::testability::mut
 agentscommander_lib::testability::reset -> agentscommander_lib::testability::window_placement
 agentscommander_lib::testability::ui_automation -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::testability::ui_automation -> agentscommander_lib::shutdown
-agentscommander_lib::testability::ui_automation -> agentscommander_lib::testability::ui_automation::cli
+agentscommander_lib::testability::ui_automation -> agentscommander_lib::testability::ui_automation::protocol
 agentscommander_lib::testability::ui_automation::args -> agentscommander_lib::testability::ui_automation
 agentscommander_lib::testability::ui_automation::backend_watchdog -> agentscommander_lib::config::settings
 agentscommander_lib::testability::ui_automation::backend_watchdog -> agentscommander_lib::resource_monitor
 agentscommander_lib::testability::ui_automation::backend_watchdog -> agentscommander_lib::resource_monitor::watchdog
 agentscommander_lib::testability::ui_automation::backend_watchdog -> agentscommander_lib::session::selection
 agentscommander_lib::testability::ui_automation::backend_watchdog -> agentscommander_lib::testability::ui_automation
-agentscommander_lib::testability::ui_automation::cli -> agentscommander_lib::testability::ui_automation
 agentscommander_lib::testability::ui_automation::cli_run -> agentscommander_lib
 agentscommander_lib::testability::ui_automation::cli_run -> agentscommander_lib::config
 agentscommander_lib::testability::ui_automation::cli_run -> agentscommander_lib::config::daemon_pid
