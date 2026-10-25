@@ -341,9 +341,9 @@ agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib::config::in
 agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib::config::projects
 agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib::config::settings
 agentscommander_lib::cli::harness -> agentscommander_lib::config
-agentscommander_lib::cli::harness -> agentscommander_lib::config::agent_path
 agentscommander_lib::cli::harness -> agentscommander_lib::config::environment
 agentscommander_lib::cli::harness -> agentscommander_lib::config::instance_artifacts
+agentscommander_lib::cli::harness -> agentscommander_lib::process::harness
 agentscommander_lib::cli::injected_messages -> agentscommander_lib
 agentscommander_lib::cli::injected_messages -> agentscommander_lib::config
 agentscommander_lib::cli::injected_messages -> agentscommander_lib::config::injected_messages
@@ -2211,6 +2211,7 @@ agentscommander_lib::process::git::mutation -> agentscommander_lib::config::agen
 agentscommander_lib::process::git::mutation -> agentscommander_lib::process::host::credentials
 agentscommander_lib::process::git::read -> agentscommander_lib::config::agent_path
 agentscommander_lib::process::git::read -> agentscommander_lib::process::host::credentials
+agentscommander_lib::process::harness -> agentscommander_lib::config::agent_path
 agentscommander_lib::process::host::job::tests -> agentscommander_lib::process::host::job
 agentscommander_lib::process::host::job::tests -> agentscommander_lib::process::host::job::windows_impl
 agentscommander_lib::process::host::job::windows_impl -> agentscommander_lib::process::host::job

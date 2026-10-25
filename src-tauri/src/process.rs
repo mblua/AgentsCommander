@@ -1,4 +1,5 @@
 pub(crate) mod git;
+pub(crate) mod harness;
 pub(crate) mod host;
 
 use std::process::{self, Command};

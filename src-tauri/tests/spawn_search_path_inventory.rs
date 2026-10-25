@@ -148,7 +148,12 @@ const INVENTORY: &[Row] = &[
         0,
         &[(CoveredBy2589, 1)],
     ),
-    ("src-tauri/src/cli/harness.rs", 3, 2, &[(WindowsOnly, 1)]),
+    (
+        "src-tauri/src/process/harness.rs",
+        3,
+        2,
+        &[(WindowsOnly, 1)],
+    ),
     (
         "src-tauri/src/cli/tests/startup_message_tests.rs",
         1,
@@ -423,6 +428,12 @@ const INVENTORY: &[Row] = &[
         2,
         0,
         &[(TestOnly, 2)],
+    ),
+    (
+        "src-tauri/src/process/harness/tests.rs",
+        3,
+        0,
+        &[(TestOnly, 3)],
     ),
     ("src-tauri/src/process/tests.rs", 2, 0, &[(TestOnly, 2)]),
     (
