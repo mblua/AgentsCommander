@@ -127,6 +127,7 @@ async fn clone_timeout_and_spawn_errors_preserve_text() {
 #[tokio::test]
 async fn missing_directory_and_non_repository_preserve_reset_and_probe_failures() {
     let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".git"), "gitdir: missing-gitdir\n").unwrap();
     let missing = dir.path().join("missing");
     assert!(matches!(
         reset_clone_index(&missing).await,
