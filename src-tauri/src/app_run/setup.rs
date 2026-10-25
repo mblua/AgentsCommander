@@ -132,7 +132,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     // OUTSIDE the env_logger format closure (see §3.7 / B1). Entries
     // logged before this point stay buffered; the frontend's first
     // `drain_error_logs` call collects them.
-    crate::logging::spawn_error_emit_task(app.handle().clone());
+    tauri::async_runtime::spawn(crate::logging::spawn_error_emit_task(app.handle().clone()));
 
     // #271 — seed `<config_dir>/agent-templates/` + README on startup.
     crate::commands::role_templates::ensure_default_templates_dir_at_config();
