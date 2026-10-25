@@ -342,6 +342,7 @@ agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib::config::pr
 agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib::config::settings
 agentscommander_lib::cli::harness -> agentscommander_lib::config
 agentscommander_lib::cli::harness -> agentscommander_lib::config::agent_path
+agentscommander_lib::cli::harness -> agentscommander_lib::config::environment
 agentscommander_lib::cli::harness -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::cli::injected_messages -> agentscommander_lib
 agentscommander_lib::cli::injected_messages -> agentscommander_lib::config
@@ -412,6 +413,7 @@ agentscommander_lib::cli::role_experiment::commands -> agentscommander_lib::cli:
 agentscommander_lib::cli::role_experiment::commands -> agentscommander_lib::cli::role_experiment::validation
 agentscommander_lib::cli::role_experiment::commands -> agentscommander_lib::cli::workgroup
 agentscommander_lib::cli::role_experiment::commands -> agentscommander_lib::commands::entity_creation
+agentscommander_lib::cli::role_experiment::commands -> agentscommander_lib::config::environment
 agentscommander_lib::cli::role_experiment::fake_run -> agentscommander_lib::cli::role_experiment
 agentscommander_lib::cli::role_experiment::fake_run -> agentscommander_lib::cli::role_experiment::prompt_suite
 agentscommander_lib::cli::role_experiment::fake_run -> agentscommander_lib::cli::role_experiment::report
@@ -520,6 +522,7 @@ agentscommander_lib::cli::telegram_send_image -> agentscommander_lib::config::se
 agentscommander_lib::cli::telegram_send_image -> agentscommander_lib::network
 agentscommander_lib::cli::telegram_send_image -> agentscommander_lib::telegram::types
 agentscommander_lib::cli::terminal_snapshot -> agentscommander_lib::config
+agentscommander_lib::cli::terminal_snapshot -> agentscommander_lib::config::environment
 agentscommander_lib::cli::terminal_snapshot -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::cli::terminal_snapshot -> agentscommander_lib::config::root_agent
 agentscommander_lib::cli::terminal_snapshot -> agentscommander_lib::config::teams
@@ -2277,6 +2280,7 @@ agentscommander_lib::pty::container_backend::transport -> agentscommander_lib::a
 agentscommander_lib::pty::container_backend::transport -> agentscommander_lib::errors
 agentscommander_lib::pty::container_backend::transport -> agentscommander_lib::pty::container_backend
 agentscommander_lib::pty::container_backend::transport -> agentscommander_lib::pty::container_credentials
+agentscommander_lib::pty::container_credentials -> agentscommander_lib::config::environment
 agentscommander_lib::pty::container_credentials -> agentscommander_lib::session::profile
 agentscommander_lib::pty::container_paths -> agentscommander_lib::config::ac_root
 agentscommander_lib::pty::container_paths -> agentscommander_lib::config::entity_prefix
@@ -2284,6 +2288,7 @@ agentscommander_lib::pty::container_repos -> agentscommander_lib::config::ac_roo
 agentscommander_lib::pty::container_repos -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::pty::container_repos -> agentscommander_lib::path_utils
 agentscommander_lib::pty::container_repos -> agentscommander_lib::pty::container_paths
+agentscommander_lib::pty::container_runtime -> agentscommander_lib::config::environment
 agentscommander_lib::pty::container_runtime -> agentscommander_lib::errors
 agentscommander_lib::pty::container_runtime -> agentscommander_lib::pty::container_repos
 agentscommander_lib::pty::container_tokens -> agentscommander_lib::api::auth
@@ -2898,6 +2903,7 @@ agentscommander_lib::testability::ui_automation::backend_watchdog -> agentscomma
 agentscommander_lib::testability::ui_automation::cli_run -> agentscommander_lib
 agentscommander_lib::testability::ui_automation::cli_run -> agentscommander_lib::config
 agentscommander_lib::testability::ui_automation::cli_run -> agentscommander_lib::config::daemon_pid
+agentscommander_lib::testability::ui_automation::cli_run -> agentscommander_lib::config::environment
 agentscommander_lib::testability::ui_automation::cli_run -> agentscommander_lib::testability::ui_automation
 agentscommander_lib::testability::ui_automation::cli_run -> agentscommander_lib::testability::window_placement
 agentscommander_lib::testability::ui_automation::files -> agentscommander_lib::testability::ui_automation

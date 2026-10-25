@@ -525,7 +525,7 @@ fn decision_parts(decision: &PolicyDecision) -> (&'static str, Vec<String>) {
 }
 
 fn derive_identity() -> String {
-    let root = std::env::var("AGENTSCOMMANDER_ROOT").unwrap_or_default();
+    let root = crate::config::environment::harness_root().unwrap_or_default();
     if root.is_empty() {
         return "unidentified_agent".to_string();
     }

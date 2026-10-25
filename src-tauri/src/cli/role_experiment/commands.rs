@@ -664,7 +664,7 @@ fn validate_run_mode(args: &RunArgs) -> Result<(), Vec<CliError>> {
 
 fn fake_executor_available() -> bool {
     cfg!(test)
-        || std::env::var("AGENTSCOMMANDER_ROLE_EXPERIMENT_TEST_FAKE_EXECUTOR")
+        || crate::config::environment::role_experiment_fake_executor()
             .is_ok_and(|value| value == "1")
 }
 
