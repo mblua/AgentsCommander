@@ -2601,7 +2601,8 @@ agentscommander_lib::session::manager -> agentscommander_lib::errors
 agentscommander_lib::session::manager -> agentscommander_lib::path_identity
 agentscommander_lib::session::manager -> agentscommander_lib::pty::backend_kind
 agentscommander_lib::session::manager -> agentscommander_lib::pty::idle_detector
-agentscommander_lib::session::manager -> agentscommander_lib::pty::manager
+agentscommander_lib::session::manager -> agentscommander_lib::pty::input_route
+agentscommander_lib::session::manager -> agentscommander_lib::pty::response_close
 agentscommander_lib::session::manager -> agentscommander_lib::session::selection
 agentscommander_lib::session::manager -> agentscommander_lib::session::session
 agentscommander_lib::session::manager::binding -> agentscommander_lib::session::manager
@@ -2609,7 +2610,7 @@ agentscommander_lib::session::manager::binding -> agentscommander_lib::session::
 agentscommander_lib::session::manager::carrier -> agentscommander_lib::errors
 agentscommander_lib::session::manager::carrier -> agentscommander_lib::path_identity
 agentscommander_lib::session::manager::carrier -> agentscommander_lib::pty::backend
-agentscommander_lib::session::manager::carrier -> agentscommander_lib::pty::manager
+agentscommander_lib::session::manager::carrier -> agentscommander_lib::pty::response_close
 agentscommander_lib::session::manager::carrier -> agentscommander_lib::session::manager
 agentscommander_lib::session::manager::carrier -> agentscommander_lib::session::selection
 agentscommander_lib::session::manager::carrier -> agentscommander_lib::session::session
@@ -2624,7 +2625,7 @@ agentscommander_lib::session::manager::communication -> agentscommander_lib::ses
 agentscommander_lib::session::manager::communication -> agentscommander_lib::session::session
 agentscommander_lib::session::manager::create -> agentscommander_lib::errors
 agentscommander_lib::session::manager::create -> agentscommander_lib::pty::backend
-agentscommander_lib::session::manager::create -> agentscommander_lib::pty::manager
+agentscommander_lib::session::manager::create -> agentscommander_lib::pty::response_close
 agentscommander_lib::session::manager::create -> agentscommander_lib::session
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::manager
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::manager::binding
@@ -2658,7 +2659,7 @@ agentscommander_lib::session::manager::turn -> agentscommander_lib::config::sett
 agentscommander_lib::session::manager::turn -> agentscommander_lib::config::teams
 agentscommander_lib::session::manager::turn -> agentscommander_lib::pty::backend
 agentscommander_lib::session::manager::turn -> agentscommander_lib::pty::idle_detector
-agentscommander_lib::session::manager::turn -> agentscommander_lib::pty::manager
+agentscommander_lib::session::manager::turn -> agentscommander_lib::pty::input_route
 agentscommander_lib::session::manager::turn -> agentscommander_lib::session::manager
 agentscommander_lib::session::manager::turn -> agentscommander_lib::session::manager::carrier
 agentscommander_lib::session::manager::turn -> agentscommander_lib::session::session

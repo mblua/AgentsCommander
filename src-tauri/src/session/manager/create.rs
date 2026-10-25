@@ -17,7 +17,7 @@ impl SessionManager {
     pub fn new() -> Self {
         let epoch = Uuid::new_v4();
         Self {
-            response_close: crate::pty::manager::ResponseCloseState::default(),
+            response_close: crate::pty::response_close::ResponseCloseState::default(),
             prompt_initialization: Arc::new(tokio::sync::OnceCell::new()),
             state: Arc::new(RwLock::new(SessionManagerState {
                 retained_prompts: HashMap::new(),

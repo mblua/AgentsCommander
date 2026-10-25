@@ -570,6 +570,12 @@ async fn e2992_p44_retained_settings_permit() {
         .await
         .unwrap()
         .unwrap();
+    assert!(matches!(
+        pty.lock()
+            .unwrap()
+            .try_remove_route_if_kind(sender, SessionBackendKind::LocalProcess),
+        Err(crate::pty::input_route::PtyRouteRemovalError::Busy)
+    ));
     let (builder_tx, builder_rx) = std::sync::mpsc::channel();
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let operation = {
@@ -615,6 +621,101 @@ async fn e2992_p44_retained_settings_permit() {
     no_entry.recv_timeout(Duration::from_secs(1)).unwrap();
     assert_eq!(*backend.bytes.lock().unwrap(), b"p44 exact bytes");
 
+    pty.lock()
+        .unwrap()
+        .try_remove_route_if_kind(sender, SessionBackendKind::LocalProcess)
+        .unwrap();
+    assert!(PtyManager::authority_route_proof(&pty, sender).is_err());
+    let sender_identity = crate::path_identity::verify_directory(&paths[0]).unwrap();
+    pty.lock()
+        .unwrap()
+        .record_route_with_identities(
+            sender,
+            SessionBackendKind::LocalProcess,
+            Some(sender_identity.clone()),
+            Some(sender_identity),
+        )
+        .unwrap();
+    let authority = PtyManager::authority_route_proof(&pty, sender).unwrap();
+    let stale_permit = PtyManager::acquire_input_writer(&pty, target)
+        .await
+        .unwrap();
+    pty.lock()
+        .unwrap()
+        .try_remove_route_if_kind(target, SessionBackendKind::LocalProcess)
+        .unwrap();
+    let target_identity = crate::path_identity::verify_directory(&paths[1]).unwrap();
+    pty.lock()
+        .unwrap()
+        .record_route_with_identities(
+            target,
+            SessionBackendKind::LocalProcess,
+            Some(target_identity.clone()),
+            Some(target_identity),
+        )
+        .unwrap();
+    manager.mark_idle(target).await;
+    idle.set_pty_input_ready_for_test(target);
+    let armed_before = manager.get_session(target).await.unwrap().agent_turn_armed;
+    let denied = boundary!(&authority, &stale_permit).await;
+    assert!(matches!(
+        denied,
+        Err(PtyInputBoundaryFailure::RouteUnavailable)
+    ));
+    drop(denied);
+    let after_denial = manager.get_session(target).await.unwrap();
+    assert!(after_denial.waiting_for_input);
+    assert_eq!(after_denial.agent_turn_armed, armed_before);
+    assert_eq!(*backend.bytes.lock().unwrap(), b"p44 exact bytes");
+    drop(stale_permit);
+    let permit = PtyManager::acquire_input_writer(&pty, target)
+        .await
+        .unwrap();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    *backend.entered.lock().unwrap() = Some(entered_tx);
+    *backend.release.lock().unwrap() = release_rx;
+    let worker = {
+        let manager = manager.clone();
+        let idle = idle.clone();
+        let owner = owner.clone();
+        let route = route.clone();
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            let guard = handle
+                .block_on(manager.prepare_pty_input_boundary(
+                    target,
+                    &route.target,
+                    SessionBackendKind::LocalProcess,
+                    sender,
+                    &route.sender,
+                    SessionBackendKind::LocalProcess,
+                    &authority,
+                    &permit,
+                    &idle,
+                    &owner,
+                    |_, _| true,
+                    || true,
+                ))
+                .unwrap();
+            guard.write(b"p44 replacement bytes").unwrap();
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(5), entered_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(*backend.bytes.lock().unwrap(), b"p44 exact bytes");
+    release_tx.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), worker)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        *backend.bytes.lock().unwrap(),
+        b"p44 exact bytesp44 replacement bytes"
+    );
+
     let report = owner
         .with_operation("p44-permit-invalid", |_, guard| {
             guard.publish(SettingsPublisher::SettingsSave, |path| {
@@ -647,7 +748,10 @@ async fn e2992_p44_retained_settings_permit() {
         Err(PtyInputBoundaryFailure::RouteUnavailable)
     ));
     drop(denied);
-    assert_eq!(*backend.bytes.lock().unwrap(), b"p44 exact bytes");
+    assert_eq!(
+        *backend.bytes.lock().unwrap(),
+        b"p44 exact bytesp44 replacement bytes"
+    );
     drop(permit);
     drop(authority);
     tokio::task::spawn_blocking(move || {

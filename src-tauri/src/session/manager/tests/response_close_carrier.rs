@@ -346,3 +346,42 @@ async fn response_close_prepared_create_binding_and_borrowed_pending_aliases_kee
         .unwrap();
     assert!(!manager.contains_public_or_pending(session.id).await);
 }
+
+struct RetiredRouteDropProbe(std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>);
+
+impl Drop for RetiredRouteDropProbe {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().push("drop");
+    }
+}
+
+#[test]
+fn retired_route_classifier_preserves_outcomes_and_drop() {
+    use super::super::carrier::RetiredCarrierRouteObservation as Observation;
+
+    let converted = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let result = Observation::from(Ok(RetiredRouteDropProbe(converted.clone())));
+    converted.lock().unwrap().push("returned");
+    assert!(matches!(result, Observation::Present));
+    assert_eq!(*converted.lock().unwrap(), vec!["drop", "returned"]);
+
+    let former = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let specialized = |value: Result<RetiredRouteDropProbe, AppError>| match value {
+        Err(AppError::SessionNotFound(_)) => Observation::Absent,
+        Ok(_) => Observation::Present,
+        Err(_) => Observation::Unknown,
+    };
+    let result = specialized(Ok(RetiredRouteDropProbe(former.clone())));
+    former.lock().unwrap().push("returned");
+    assert!(matches!(result, Observation::Present));
+    assert_eq!(*converted.lock().unwrap(), *former.lock().unwrap());
+    assert!(matches!(
+        Observation::from(Ok(42_u32)),
+        Observation::Present
+    ));
+    let absent: Result<RetiredRouteDropProbe, AppError> =
+        Err(AppError::SessionNotFound("retired".into()));
+    assert!(matches!(Observation::from(absent), Observation::Absent));
+    let unknown: Result<RetiredRouteDropProbe, AppError> = Err(AppError::NoActiveSession);
+    assert!(matches!(Observation::from(unknown), Observation::Unknown));
+}

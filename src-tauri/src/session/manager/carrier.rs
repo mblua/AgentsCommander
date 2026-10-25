@@ -105,10 +105,8 @@ pub(crate) enum RetiredCarrierRouteObservation {
     Unknown,
 }
 
-impl From<Result<crate::pty::manager::PtySnapshotRouteProof, AppError>>
-    for RetiredCarrierRouteObservation
-{
-    fn from(value: Result<crate::pty::manager::PtySnapshotRouteProof, AppError>) -> Self {
+impl<T> From<Result<T, AppError>> for RetiredCarrierRouteObservation {
+    fn from(value: Result<T, AppError>) -> Self {
         match value {
             Err(AppError::SessionNotFound(_)) => Self::Absent,
             Ok(_) => Self::Present,
@@ -164,7 +162,7 @@ pub(super) struct CarrierStateWrite<'a> {
     before: HashMap<Uuid, Session>,
     pending_before: HashSet<Uuid>,
     selection_before: SessionSelection,
-    tracker: &'a crate::pty::manager::ResponseCloseState,
+    tracker: &'a crate::pty::response_close::ResponseCloseState,
 }
 
 impl std::ops::Deref for CarrierStateWrite<'_> {
@@ -367,15 +365,17 @@ impl Drop for CarrierStateWrite<'_> {
 }
 
 impl SessionManager {
-    pub(crate) fn with_response_close(state: crate::pty::manager::ResponseCloseState) -> Self {
-        state.bind_publisher(crate::pty::manager::ResponseClosePublisher::Manager);
+    pub(crate) fn with_response_close(
+        state: crate::pty::response_close::ResponseCloseState,
+    ) -> Self {
+        state.bind_publisher(crate::pty::response_close::ResponseClosePublisher::Manager);
         Self {
             response_close: state,
             ..Self::new()
         }
     }
 
-    pub(crate) fn response_close_state(&self) -> crate::pty::manager::ResponseCloseState {
+    pub(crate) fn response_close_state(&self) -> crate::pty::response_close::ResponseCloseState {
         self.response_close.clone()
     }
 
