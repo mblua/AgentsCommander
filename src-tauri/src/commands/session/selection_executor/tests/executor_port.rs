@@ -719,7 +719,10 @@ async fn port_native_protected_unknown_body() {
 
 #[tokio::test]
 async fn response_close_missing_tracker() {
-    let name = concat!(module_path!(), "::response_close_missing_tracker");
+    let name = concat!(
+        "commands::session::selection_executor::tests::executor_port::",
+        "response_close_missing_tracker"
+    );
     super::protected_carrier::run_isolated(name, async {
         super::protected_carrier::response_close_case(0).await;
         super::protected_carrier::complete_isolated(name);
@@ -730,8 +733,8 @@ async fn response_close_missing_tracker() {
 #[tokio::test]
 async fn response_close_unbound_without_coordinator() {
     let name = concat!(
-        module_path!(),
-        "::response_close_unbound_without_coordinator"
+        "commands::session::selection_executor::tests::executor_port::",
+        "response_close_unbound_without_coordinator"
     );
     super::protected_carrier::run_isolated(name, async {
         super::protected_carrier::response_close_case(1).await;
@@ -742,7 +745,10 @@ async fn response_close_unbound_without_coordinator() {
 
 #[tokio::test]
 async fn response_close_unbound_with_coordinator() {
-    let name = concat!(module_path!(), "::response_close_unbound_with_coordinator");
+    let name = concat!(
+        "commands::session::selection_executor::tests::executor_port::",
+        "response_close_unbound_with_coordinator"
+    );
     super::protected_carrier::run_isolated(name, async {
         super::protected_carrier::response_close_case(2).await;
         super::protected_carrier::complete_isolated(name);
@@ -752,7 +758,10 @@ async fn response_close_unbound_with_coordinator() {
 
 #[tokio::test]
 async fn response_close_bound_without_coordinator() {
-    let name = concat!(module_path!(), "::response_close_bound_without_coordinator");
+    let name = concat!(
+        "commands::session::selection_executor::tests::executor_port::",
+        "response_close_bound_without_coordinator"
+    );
     super::protected_carrier::run_isolated(name, async {
         super::protected_carrier::response_close_case(3).await;
         super::protected_carrier::complete_isolated(name);
@@ -762,7 +771,10 @@ async fn response_close_bound_without_coordinator() {
 
 #[tokio::test]
 async fn response_close_bound_with_coordinator() {
-    let name = concat!(module_path!(), "::response_close_bound_with_coordinator");
+    let name = concat!(
+        "commands::session::selection_executor::tests::executor_port::",
+        "response_close_bound_with_coordinator"
+    );
     super::protected_carrier::run_isolated(name, async {
         super::protected_carrier::response_close_case(4).await;
         super::protected_carrier::complete_isolated(name);
@@ -772,7 +784,10 @@ async fn response_close_bound_with_coordinator() {
 
 #[tokio::test]
 async fn response_close_cancel_before_tick() {
-    let name = concat!(module_path!(), "::response_close_cancel_before_tick");
+    let name = concat!(
+        "commands::session::selection_executor::tests::executor_port::",
+        "response_close_cancel_before_tick"
+    );
     super::protected_carrier::run_isolated(name, async {
         super::protected_carrier::response_close_case(5).await;
         super::protected_carrier::complete_isolated(name);
