@@ -561,3 +561,53 @@ fn writer_closing_query_preserves_policy() {
         }
     }
 }
+
+#[tokio::test]
+async fn session_and_pty_share_response_close_tracker() {
+    use crate::session::manager::SessionManager;
+
+    let state = ResponseCloseState::default();
+    let sessions = SessionManager::with_response_close(state.clone());
+    let mut pty = PtyManager::new_for_test(Arc::new(RecordingBackend::default()));
+    pty.bind_response_close(state.clone());
+    let session_tracker = sessions.response_close_state();
+    let pty_tracker = pty.response_close_state();
+    assert!(Arc::ptr_eq(&state.inner, &session_tracker.inner));
+    assert!(Arc::ptr_eq(&state.inner, &pty_tracker.inner));
+    let session = sessions
+        .create_session(
+            "shell".into(),
+            Vec::new(),
+            "shared-tracker".into(),
+            None,
+            None,
+            Vec::new(),
+            false,
+            SessionBackendKind::LocalProcess,
+        )
+        .await
+        .unwrap();
+    pty.try_record_route(session.id, SessionBackendKind::LocalProcess)
+        .unwrap();
+    let generation = pty_tracker.generation(session.id).unwrap();
+    assert_eq!(session_tracker.generation(session.id), Some(generation));
+    sessions
+        .rename_session(session.id, "published-carrier".into())
+        .await
+        .unwrap();
+    let version = {
+        let inner = pty_tracker.inner.lock().unwrap();
+        let row = &inner.routes[&session.id];
+        assert_eq!(row.generation, generation);
+        assert_eq!(row.manager_token, Some(session.token));
+        assert!(row.manager_version > 0);
+        row.manager_version
+    };
+    sessions.set_is_coordinator(session.id, true).await;
+    let inner = pty_tracker.inner.lock().unwrap();
+    let row = &inner.routes[&session.id];
+    assert_eq!(row.manager_token, Some(session.token));
+    assert_eq!(row.manager_version, version + 1);
+    assert_eq!(row.generation, generation);
+    assert!(!inner.failed);
+}

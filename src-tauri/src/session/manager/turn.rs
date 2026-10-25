@@ -121,14 +121,14 @@ impl SessionManager {
         authority_id: Uuid,
         expected_sender: &crate::config::teams::VerifiedPtyInputIdentity,
         authority_backend: SessionBackendKind,
-        authority_route: &'a crate::pty::manager::PtyAuthorityRouteProof,
-        permit: &'a crate::pty::manager::PtyInputPermit,
+        authority_route: &'a crate::pty::input_route::PtyAuthorityRouteProof,
+        permit: &'a crate::pty::input_route::PtyInputPermit,
         idle_detector: &crate::pty::idle_detector::IdleDetector,
         settings: &crate::config::settings::SettingsState,
         final_recipe_check: G,
         final_external_check: F,
     ) -> Result<
-        crate::pty::manager::PtyRouteWriteGuard<'a>,
+        crate::pty::input_route::PtyRouteWriteGuard<'a>,
         crate::pty::idle_detector::PtyInputBoundaryFailure,
     >
     where
