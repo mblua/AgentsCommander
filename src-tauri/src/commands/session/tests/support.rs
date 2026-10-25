@@ -985,7 +985,7 @@ fn source_guards_round4_controls() {
             let mut probe = original.clone();
             let core = probe.get_mut(CORE_SOURCE).unwrap();
             let pending = source_range(core, PENDING, 0).unwrap().start;
-            let tail = ".map_err(|error| error.to_string());";
+            let tail = ".map_err(|error|error.to_string());";
             let range = source_range(&core[pending..], tail, 0).unwrap();
             let end = pending + range.end;
             let statement = core[pending..end].to_string();
