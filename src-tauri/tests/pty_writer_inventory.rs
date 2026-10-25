@@ -53,6 +53,66 @@ fn relative_of(path: &Path) -> String {
         .replace('\\', "/")
 }
 
+#[derive(Default)]
+struct BinaryWriterCalls {
+    acquire: usize,
+    write: usize,
+}
+
+impl<'ast> Visit<'ast> for BinaryWriterCalls {
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = &*node.func {
+            let mut segments = path.path.segments.iter().rev();
+            let call = segments.next().expect("call path segment");
+            if segments
+                .next()
+                .is_some_and(|owner| owner.ident == "PtyManager")
+            {
+                self.acquire += usize::from(call.ident == "acquire_input_writer");
+                self.write += usize::from(call.ident == "write_with_permit");
+            }
+        }
+        visit::visit_expr_call(self, node);
+    }
+}
+
+fn binary_handler_before_move() -> bool {
+    let mut handlers = Vec::new();
+    for relative in ["src/web.rs", "src/web/commands.rs"] {
+        let parsed = syn::parse_file(&source(relative)).expect("binary handler source parses");
+        for item in parsed.items {
+            if let syn::Item::Fn(function) = item {
+                if function.sig.ident == "handle_binary_message" {
+                    handlers.push((relative, function));
+                }
+            }
+        }
+    }
+    assert_eq!(
+        handlers.len(),
+        1,
+        "binary handler must have exactly one location"
+    );
+    let (relative, handler) = handlers.pop().expect("one binary handler");
+    let mut calls = BinaryWriterCalls::default();
+    calls.visit_block(&handler.block);
+    assert_eq!(
+        calls.acquire, 1,
+        "binary handler must call acquire_input_writer exactly once"
+    );
+    assert_eq!(
+        calls.write, 1,
+        "binary handler must call write_with_permit exactly once"
+    );
+    let before_move = relative == "src/web.rs";
+    if !before_move {
+        let web = normalized(&source("src/web.rs"));
+        assert!(!web.contains("write_with_permit("));
+        assert!(!web.contains("acquire_input_writer("));
+    }
+    before_move
+}
+
 /// A test-owned, whitespace-normalized inventory proving that every production
 /// PTY writer reaches the single permit-guarded chokepoint and that no code
 /// outside `pty::manager` can issue a raw `PtyBackend::write`.
@@ -65,14 +125,16 @@ fn relative_of(path: &Path) -> String {
 /// cannot hide a new raw-write site the way it defeated the previous guard.
 #[test]
 fn every_production_pty_writer_is_in_the_explicit_permit_inventory() {
+    let before_move = binary_handler_before_move();
     // 1. Every interactive/automated writer surface routes through the permit.
-    let expected_surfaces = [
+    let mut expected_surfaces = vec![
         "src/commands/pty.rs",
         "src/web.rs",
         "src/web/commands.rs",
         "src/pty/inject.rs",
         "src/phone/mailbox/self_switch.rs",
     ];
+    expected_surfaces.retain(|relative| before_move || *relative != "src/web.rs");
     for relative in expected_surfaces {
         let body = source(relative);
         assert!(
@@ -112,24 +174,25 @@ fn every_production_pty_writer_is_in_the_explicit_permit_inventory() {
     route_guard_write_paths.sort();
     route_guard_capability_paths.sort();
 
+    let mut expected_permit_paths = vec![
+        "src/commands/pty.rs",
+        "src/phone/mailbox/self_switch.rs",
+        "src/pty/inject.rs",
+        // Moved out of pty::inject: its permit-write tests.
+        "src/pty/inject/tests/submit.rs",
+        "src/pty/input_route.rs",
+        "src/pty/input_route/tests.rs",
+        "src/pty/manager.rs",
+        // Moved out of pty::manager: the write_with_permit body and its tests.
+        "src/pty/manager/route_proof.rs",
+        "src/pty/manager/tests.rs",
+        "src/pty/manager/tests/response_close_writer.rs",
+        "src/web.rs",
+        "src/web/commands.rs",
+    ];
+    expected_permit_paths.retain(|relative| before_move || *relative != "src/web.rs");
     assert_eq!(
-        permit_paths,
-        vec![
-            "src/commands/pty.rs",
-            "src/phone/mailbox/self_switch.rs",
-            "src/pty/inject.rs",
-            // Moved out of pty::inject: its permit-write tests.
-            "src/pty/inject/tests/submit.rs",
-            "src/pty/input_route.rs",
-            "src/pty/input_route/tests.rs",
-            "src/pty/manager.rs",
-            // Moved out of pty::manager: the write_with_permit body and its tests.
-            "src/pty/manager/route_proof.rs",
-            "src/pty/manager/tests.rs",
-            "src/pty/manager/tests/response_close_writer.rs",
-            "src/web.rs",
-            "src/web/commands.rs",
-        ],
+        permit_paths, expected_permit_paths,
         "a new PTY writer must be deliberately added to this complete permit inventory"
     );
 
