@@ -58,9 +58,16 @@ pub(crate) fn agents_unreadable_session_error(path: &Path) -> String {
 /// #2716 (B3, option C) - the directories whose agents file could not be read,
 /// keyed by the settings file's parent. `save_sessions_to_dir` reads it with the
 /// directory it already receives, so a test in its own tempdir is isolated.
-pub(crate) fn agents_unreadable_dirs() -> &'static std::sync::Mutex<HashSet<PathBuf>> {
+fn agents_unreadable_dirs() -> &'static std::sync::Mutex<HashSet<PathBuf>> {
     static DIRS: OnceLock<std::sync::Mutex<HashSet<PathBuf>>> = OnceLock::new();
     DIRS.get_or_init(Default::default)
+}
+
+#[cfg(test)]
+pub(crate) fn hold_agents_layer_state_for_test() -> impl Sized {
+    agents_unreadable_dirs()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 // Dormant until the P05 carrier publication consumer is wired.
