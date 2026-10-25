@@ -763,7 +763,6 @@ agentscommander_lib::commands::config::web_server -> agentscommander_lib
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::api
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::api::audit
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::api::auth
-agentscommander_lib::commands::config::web_server -> agentscommander_lib::commands::config
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::config
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::config::coding_agent_profiles
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::config::root_agent

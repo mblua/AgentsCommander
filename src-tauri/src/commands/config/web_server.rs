@@ -19,10 +19,27 @@ use crate::{
     WebServerLifecycleSnapshot, WebServerStartWaiter, WEB_SERVER_START_CANCELLED,
 };
 
-use super::{
-    MintApiClientResponse, API_SERVER_STOP_TIMEOUT_MS, MINT_API_CLIENT_DEFAULT_TTL_HOURS,
-    MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE, WEB_STATUS_CONNECT_TIMEOUT_MS,
-};
+const WEB_STATUS_CONNECT_TIMEOUT_MS: u64 = 500;
+const API_SERVER_STOP_TIMEOUT_MS: u64 = 5_000;
+// Default mirrors container API token TTL; manual GUI mints get a longer cap.
+pub(crate) const MINT_API_CLIENT_DEFAULT_TTL_HOURS: i64 = 24;
+pub(crate) const MINT_API_CLIENT_MAX_TTL_DAYS: i64 = 30;
+pub(crate) const MINT_API_CLIENT_NOTE: &str =
+    "Store this token now; it is shown only once. The registry keeps only a hash. A manually \
+        requested pty-input scope does not grant actuation without an automatically bound live \
+        container session.";
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MintApiClientResponse {
+    pub client_id: String,
+    pub token: String,
+    pub bound_fqn: String,
+    pub bound_root: String,
+    pub scopes: Vec<String>,
+    pub expires_at: Option<String>,
+    pub note: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
