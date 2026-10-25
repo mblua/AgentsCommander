@@ -1,4 +1,3 @@
-#[path = "cli_ui_automation/pointer_and_query.rs"]
 mod pointer_and_query;
 
 use serde_json::{json, Value};
@@ -72,7 +71,8 @@ fn default_capability_allows_resource_monitor_window() {
 
     assert!(
         windows.iter().any(|window| window == "resource-monitor"),
-        "resource-monitor must be in default capability windows so its frontend can mark UI automation ready"
+        "resource-monitor must be in default capability windows \
+        so its frontend can mark UI automation ready"
     );
 }
 
