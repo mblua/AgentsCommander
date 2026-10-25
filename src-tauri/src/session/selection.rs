@@ -75,7 +75,6 @@ pub(crate) trait LifecycleExecutor<T>: Send + Sync {
         transaction: &'a T,
         ticket: crate::pty::manager::ResponseCloseTicket,
     ) -> LifecycleFuture<'a, Result<(), String>>;
-    #[expect(dead_code, reason = "P05 routes reconcile through the execution port")]
     fn reconcile<'a>(&'a self, transaction: &'a T) -> LifecycleFuture<'a, ()>;
     fn complete_retirement<'a>(&'a self, transaction: &'a T, id: Uuid) -> LifecycleFuture<'a, ()>;
     #[cfg(test)]
@@ -336,7 +335,10 @@ pub(crate) fn forget_response_close_registration(id: Uuid) {
     }
 }
 
-pub(crate) async fn poll_response_close<R: Runtime>(app: &AppHandle<R>) {
+pub(crate) async fn poll_response_close<R: Runtime>(
+    app: &AppHandle<R>,
+    executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
+) {
     let Some(tracker) = app.try_state::<crate::pty::manager::ResponseCloseState>() else {
         log::debug!(
             target: "agentscommander_lib::response_close_diag",
@@ -347,7 +349,16 @@ pub(crate) async fn poll_response_close<R: Runtime>(app: &AppHandle<R>) {
         return;
     };
     let diagnostic_status = tracker.diagnostic_poll_health();
-    crate::commands::session::reconcile_response_closes(app).await;
+    if let Some(executor) = executor {
+        let transaction = SelectionTransaction::new(app.clone(), Weak::new())
+            .with_lifecycle_executor(Arc::clone(&executor));
+        executor.reconcile(&transaction).await;
+    } else {
+        log::debug!(
+            target: "agentscommander_lib::response_close_diag",
+            "response_close_diag stage=poll_reconcile outcome=executor_missing"
+        );
+    }
     let Some(coordinator) = app.try_state::<SelectionCoordinator>() else {
         if diagnostic_status {
             log::debug!(

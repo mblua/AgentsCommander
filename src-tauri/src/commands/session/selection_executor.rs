@@ -27,6 +27,27 @@ fn executor<R: Runtime>(
         .map(|state| Arc::clone(state.get()))
 }
 
+pub(crate) async fn poll_response_close<R: Runtime>(app: &AppHandle<R>) {
+    crate::session::selection::poll_response_close(app, executor(app)).await;
+}
+
+pub(crate) fn start_response_close_polling<R: Runtime>(
+    app: AppHandle<R>,
+    shutdown: crate::shutdown::ShutdownSignal,
+) -> tauri::async_runtime::JoinHandle<()> {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.token().cancelled() => break,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                    poll_response_close(&app).await;
+                }
+            }
+        }
+    })
+}
+
 impl SelectionCoordinator {
     pub fn start<R: Runtime>(&self, app: AppHandle<R>) -> Result<(), SelectionCoordinatorError> {
         let executor = executor(&app);

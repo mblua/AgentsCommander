@@ -1119,6 +1119,7 @@ agentscommander_lib::commands::session::selection_executor -> agentscommander_li
 agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::commands::session::root_agent
 agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::pty::manager
 agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::session::selection
+agentscommander_lib::commands::session::selection_executor -> agentscommander_lib::shutdown
 agentscommander_lib::commands::session::telegram -> agentscommander_lib::commands::telegram
 agentscommander_lib::commands::session::telegram -> agentscommander_lib::config
 agentscommander_lib::commands::session::telegram -> agentscommander_lib::config::agent_config
@@ -2545,6 +2546,7 @@ agentscommander_lib::restore::native -> agentscommander_lib::app_state
 agentscommander_lib::restore::native -> agentscommander_lib::commands
 agentscommander_lib::restore::native -> agentscommander_lib::commands::ac_discovery
 agentscommander_lib::restore::native -> agentscommander_lib::commands::session
+agentscommander_lib::restore::native -> agentscommander_lib::commands::session::selection_executor
 agentscommander_lib::restore::native -> agentscommander_lib::config
 agentscommander_lib::restore::native -> agentscommander_lib::config::root_agent
 agentscommander_lib::restore::native -> agentscommander_lib::config::sessions_persistence
@@ -2676,7 +2678,6 @@ agentscommander_lib::session::remote_alerts -> agentscommander_lib::config::sett
 agentscommander_lib::session::remote_alerts -> agentscommander_lib::config::teams
 agentscommander_lib::session::remote_alerts -> agentscommander_lib::phone::mailbox
 agentscommander_lib::session::remote_alerts -> agentscommander_lib::pty::remote_watcher
-agentscommander_lib::session::selection -> agentscommander_lib::commands::session
 agentscommander_lib::session::selection -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::session::selection -> agentscommander_lib::config::settings
 agentscommander_lib::session::selection -> agentscommander_lib::pty::backend

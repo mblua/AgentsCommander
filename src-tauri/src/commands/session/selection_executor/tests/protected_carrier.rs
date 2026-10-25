@@ -262,7 +262,8 @@ impl ProtectedFixture {
                 },
             )
         );
-        crate::session::selection::poll_response_close(self.native.app.handle()).await;
+        crate::commands::session::selection_executor::poll_response_close(self.native.app.handle())
+            .await;
         self.native.coordinator.snapshot().await.unwrap();
     }
 }
@@ -400,4 +401,430 @@ pub(crate) async fn run_isolated(name: &str, body: impl std::future::Future<Outp
         owner.child.id(),
         started.elapsed()
     );
+}
+
+use crate::session::selection::{
+    DestroyOutcome, DestroyRequest, LifecycleAdmission, LifecycleEffectGuard,
+    LifecycleEntryOutcome, LifecycleExecutor, LifecycleExecutorState, LifecycleFuture,
+    LifecycleLease, OpaqueFixtureInput, OpaqueFixtureOutput, RestartJobRequest, RootJobRequest,
+    SelectionCoordinator, SelectionTransaction,
+};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use tauri::test::MockRuntime;
+use tokio::sync::{oneshot, Notify};
+
+type PollTransaction = SelectionTransaction<MockRuntime>;
+type PollPort = Arc<dyn LifecycleExecutor<PollTransaction>>;
+type PollLog = Arc<Mutex<Vec<String>>>;
+
+struct PollLogger(PollLog);
+impl log::Log for PollLogger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.target() == "agentscommander_lib::response_close_diag"
+            && metadata.level() <= log::Level::Debug
+    }
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            self.0.lock().unwrap().push(record.args().to_string());
+        }
+    }
+    fn flush(&self) {}
+}
+
+struct PollExecutor {
+    original: PollPort,
+    log: PollLog,
+    entered: Notify,
+    resume: Mutex<Option<oneshot::Receiver<()>>>,
+    started: Mutex<Option<Instant>>,
+    coordinator: bool,
+}
+impl LifecycleExecutor<PollTransaction> for PollExecutor {
+    fn prepare<'a>(
+        &'a self,
+        t: &'a PollTransaction,
+        operation: Uuid,
+        source: Option<Uuid>,
+        root: bool,
+        directory: Option<&'a str>,
+    ) -> LifecycleFuture<'a, Result<LifecycleAdmission, String>> {
+        self.original.prepare(t, operation, source, root, directory)
+    }
+    fn validate<'a>(
+        &'a self,
+        t: &'a PollTransaction,
+        lease: &'a mut LifecycleLease,
+    ) -> LifecycleFuture<'a, bool> {
+        self.original.validate(t, lease)
+    }
+    fn has_claim(&self, lease: &LifecycleLease) -> bool {
+        self.original.has_claim(lease)
+    }
+    fn release(&self, lease: LifecycleLease) -> bool {
+        self.original.release(lease)
+    }
+    fn ensure_root_directory(&self, effect: LifecycleEffectGuard) -> Result<String, String> {
+        self.original.ensure_root_directory(effect)
+    }
+    fn destroy<'a>(
+        &'a self,
+        t: &'a PollTransaction,
+        request: DestroyRequest,
+    ) -> LifecycleFuture<'a, Result<DestroyOutcome, String>> {
+        self.original.destroy(t, request)
+    }
+    fn restart<'a>(
+        &'a self,
+        t: &'a PollTransaction,
+        request: RestartJobRequest,
+        lease: &'a LifecycleLease,
+    ) -> LifecycleFuture<'a, LifecycleEntryOutcome> {
+        self.original.restart(t, request, lease)
+    }
+    fn root<'a>(
+        &'a self,
+        t: &'a PollTransaction,
+        request: RootJobRequest,
+        lease: &'a LifecycleLease,
+    ) -> LifecycleFuture<'a, LifecycleEntryOutcome> {
+        self.original.root(t, request, lease)
+    }
+    fn conditional_close<'a>(
+        &'a self,
+        t: &'a PollTransaction,
+        ticket: crate::pty::manager::ResponseCloseTicket,
+    ) -> LifecycleFuture<'a, Result<(), String>> {
+        self.original.conditional_close(t, ticket)
+    }
+    fn complete_retirement<'a>(
+        &'a self,
+        t: &'a PollTransaction,
+        id: Uuid,
+    ) -> LifecycleFuture<'a, ()> {
+        self.original.complete_retirement(t, id)
+    }
+    fn execute_fixture<'a>(
+        &'a self,
+        t: &'a PollTransaction,
+        input: OpaqueFixtureInput,
+    ) -> LifecycleFuture<'a, OpaqueFixtureOutput> {
+        self.original.execute_fixture(t, input)
+    }
+    fn reconcile<'a>(&'a self, t: &'a PollTransaction) -> LifecycleFuture<'a, ()> {
+        Box::pin(async move {
+            assert_eq!(
+                t.app().try_state::<SelectionCoordinator>().is_some(),
+                self.coordinator
+            );
+            assert_eq!(t.port_test_binding_presence(), (false, false));
+            let managed = t.app().state::<LifecycleExecutorState<PollTransaction>>();
+            assert!(Arc::ptr_eq(&t.port_test_executor().unwrap(), managed.get()));
+            if let Some(started) = *self.started.lock().unwrap() {
+                assert!(
+                    started.elapsed() >= Duration::from_secs(1),
+                    "first poll elapsed < 1s"
+                );
+            }
+            self.log.lock().unwrap().push("entry".into());
+            self.entered.notify_one();
+            let resume = self.resume.lock().unwrap().take();
+            if let Some(resume) = resume {
+                resume.await.unwrap();
+            }
+            self.original.reconcile(t).await;
+            self.log.lock().unwrap().push("completed".into());
+        })
+    }
+}
+
+struct PollView {
+    app: tauri::App<MockRuntime>,
+    observer: Arc<PollExecutor>,
+    outcome: Arc<AtomicU64>,
+    sentinel: Uuid,
+    log: PollLog,
+}
+impl PollView {
+    fn new(f: &ProtectedFixture, log: PollLog, tracker: bool, bound: bool, coord: bool) -> Self {
+        use crate::pty::manager::{PtyManager, ResponseRouteIdentity};
+        let primary = PtyManager::new_for_test(f.native.backend.clone()).response_close_state();
+        let native = f.native.pty.lock().unwrap().response_close_state();
+        assert!(!primary.same_state(&native));
+        let observer = Arc::new(PollExecutor {
+            original: f.native.executor(),
+            log: log.clone(),
+            entered: Notify::new(),
+            resume: Mutex::new(None),
+            started: Mutex::new(None),
+            coordinator: coord,
+        });
+        let app = tauri::test::mock_builder()
+            .manage(f.native.manager.clone())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        if tracker {
+            assert!(app.manage(primary.clone()));
+        }
+        if coord {
+            assert!(app.manage(f.native.coordinator.clone()));
+        }
+        if bound {
+            let port: PollPort = observer.clone();
+            assert!(app.manage(LifecycleExecutorState::new(port)));
+        }
+        assert_eq!(
+            app.try_state::<crate::pty::manager::ResponseCloseState>()
+                .is_some(),
+            tracker
+        );
+        assert_eq!(app.try_state::<SelectionCoordinator>().is_some(), coord);
+        assert_eq!(
+            app.try_state::<LifecycleExecutorState<PollTransaction>>()
+                .is_some(),
+            bound
+        );
+        let identity = |target| ResponseRouteIdentity {
+            target,
+            session_id: Uuid::new_v4(),
+            token: Uuid::new_v4(),
+            generation: 1,
+            carrier_version: f.carrier.version,
+            backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+        };
+        let member = identity(f.route.target.canonical_fqn.clone());
+        let sentinel = member.session_id;
+        let outcome = Arc::new(AtomicU64::new(0));
+        assert!(
+            crate::session::selection::remember_response_close_registration(
+                crate::session::selection::ResponseCloseRegistration {
+                    tracker: native.clone(),
+                    member,
+                    coordinator: identity(f.route.sender.canonical_fqn.clone()),
+                    carrier: f.carrier.clone(),
+                    diagnostic_last_poll_outcome: outcome.clone(),
+                }
+            )
+        );
+        let registration =
+            crate::session::selection::response_close_registration(sentinel).unwrap();
+        assert!(registration.tracker.same_state(&native));
+        assert!(!registration.tracker.same_state(&primary));
+        assert!(Arc::ptr_eq(
+            &registration.diagnostic_last_poll_outcome,
+            &outcome
+        ));
+        assert_eq!(outcome.load(Ordering::Acquire), 0);
+        log.lock().unwrap().clear();
+        Self {
+            app,
+            observer,
+            outcome,
+            sentinel,
+            log,
+        }
+    }
+    async fn poll(&self, direct: bool) {
+        if direct {
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                crate::session::selection::poll_response_close(self.app.handle(), None),
+            )
+            .await
+            .unwrap();
+        } else {
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                crate::commands::session::selection_executor::poll_response_close(
+                    self.app.handle(),
+                ),
+            )
+            .await
+            .unwrap();
+        }
+    }
+    fn gate(&self) -> oneshot::Sender<()> {
+        let (send, recv) = oneshot::channel();
+        assert!(self.observer.resume.lock().unwrap().replace(recv).is_none());
+        send
+    }
+    fn check(&self, tracker: bool, coord: bool, entries: usize, completed: usize) {
+        let logs = self.log.lock().unwrap();
+        let count = |text: &str| logs.iter().filter(|line| line.contains(text)).count();
+        assert_eq!(count("entry"), entries, "{logs:?}");
+        assert_eq!(count("completed"), completed, "{logs:?}");
+        assert_eq!(count("stage=poll_health"), 1, "{logs:?}");
+        if tracker {
+            assert!(logs.iter().any(|l| l.contains("stage=poll_health")
+                && l.contains("scope=pre_reconcile_pre_selection")
+                && l.contains("outcome=observed")));
+        } else {
+            assert_eq!(count("outcome=tracker_missing"), 1);
+        }
+        assert_eq!(
+            self.outcome.load(Ordering::Acquire),
+            u64::from(tracker && coord)
+        );
+        if entries > 0 {
+            let health = logs
+                .iter()
+                .position(|l| l.contains("stage=poll_health"))
+                .unwrap();
+            let entry = logs.iter().position(|l| l == "entry").unwrap();
+            assert!(health < entry);
+        }
+        if tracker && !coord {
+            let missing = logs
+                .iter()
+                .position(|l| l.contains("outcome=coordinator_missing"))
+                .unwrap();
+            if completed > 0 {
+                assert!(logs.iter().position(|l| l == "completed").unwrap() < missing);
+            }
+        }
+        if tracker && coord {
+            assert_eq!(count("registration_count="), 1);
+        }
+    }
+}
+impl Drop for PollView {
+    fn drop(&mut self) {
+        crate::session::selection::forget_response_close_registration(self.sentinel);
+    }
+}
+
+pub(crate) async fn response_close_case(case: u8) {
+    let f = ProtectedFixture::new(false).await;
+    let log: PollLog = Arc::new(Mutex::new(Vec::new()));
+    log::set_logger(Box::leak(Box::new(PollLogger(log.clone())))).unwrap();
+    log::set_max_level(log::LevelFilter::Debug);
+    assert!(
+        log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
+    );
+    let (tracker, bound, coord) = match case {
+        0 => (false, true, true),
+        1 => (true, false, false),
+        2 => (true, false, true),
+        3 | 5 => (true, true, false),
+        4 => (true, true, true),
+        _ => unreachable!(),
+    };
+    let view = PollView::new(&f, log.clone(), tracker, bound, coord);
+    if case == 3 {
+        let release = view.gate();
+        let app = view.app.handle().clone();
+        let task = tokio::spawn(async move {
+            crate::commands::session::selection_executor::poll_response_close(&app).await;
+        });
+        tokio::time::timeout(Duration::from_secs(5), view.observer.entered.notified())
+            .await
+            .unwrap();
+        assert!(!task.is_finished());
+        let logs = log.lock().unwrap().clone();
+        assert_eq!(logs.iter().filter(|l| *l == "completed").count(), 0);
+        assert!(!logs
+            .iter()
+            .any(|l| l.contains("outcome=coordinator_missing")));
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        view.check(true, false, 1, 1);
+    } else if case == 5 {
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        shutdown.trigger();
+        let task = crate::commands::session::selection_executor::start_response_close_polling(
+            view.app.handle().clone(),
+            shutdown,
+        );
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(log.lock().unwrap().is_empty());
+        assert_eq!(view.outcome.load(Ordering::Acquire), 0);
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        let release = view.gate();
+        *view.observer.started.lock().unwrap() = Some(Instant::now());
+        let task = crate::commands::session::selection_executor::start_response_close_polling(
+            view.app.handle().clone(),
+            shutdown.clone(),
+        );
+        tokio::time::timeout(Duration::from_secs(5), view.observer.entered.notified())
+            .await
+            .unwrap();
+        shutdown.trigger();
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        view.check(true, false, 1, 1);
+    } else {
+        view.poll(false).await;
+        view.check(
+            tracker,
+            coord,
+            usize::from(bound && tracker),
+            usize::from(bound && tracker),
+        );
+    }
+    if case == 1 || case == 2 {
+        assert!(log
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("outcome=executor_missing")));
+        drop(view);
+        let direct = PollView::new(&f, log.clone(), true, false, coord);
+        direct.poll(true).await;
+        direct.check(true, coord, 0, 0);
+        assert!(log
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("outcome=executor_missing")));
+    } else {
+        drop(view);
+    }
+    if case == 4 {
+        tokio::time::timeout(Duration::from_secs(20), f.retire())
+            .await
+            .unwrap();
+        let n = &f.native;
+        let status = n
+            .manager
+            .read()
+            .await
+            .get_session(n.source)
+            .await
+            .unwrap()
+            .status;
+        assert_eq!(status, crate::session::session::SessionStatus::Exited(0));
+        assert_eq!(n.backend.kill_count(n.source), 1);
+        assert!(crate::session::selection::response_close_registration(n.source).is_none());
+        crate::commands::session::selection_executor::poll_response_close(n.app.handle()).await;
+        n.coordinator.snapshot().await.unwrap();
+        assert_eq!(n.backend.kill_count(n.source), 1);
+        let t = n.transaction();
+        let port = n.executor();
+        let LifecycleAdmission::Ready(lease) = port
+            .prepare(&t, Uuid::new_v4(), Some(f.sender), false, None)
+            .await
+            .unwrap()
+        else {
+            panic!("sender lease required")
+        };
+        assert!(port.has_claim(&lease));
+        let receipt = lease
+            .downcast_ref::<super::super::NativeLifecycleLease>()
+            .unwrap()
+            .release_receipt
+            .clone();
+        assert!(port.release(lease));
+        assert_eq!(receipt.load(Ordering::Acquire), 1);
+    }
+    f.native.coordinator.close_and_join().await;
 }

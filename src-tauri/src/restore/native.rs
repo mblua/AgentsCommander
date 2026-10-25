@@ -880,6 +880,10 @@ pub(crate) fn start_native_restore_startup(
             loop_scheduler
                 .clone()
                 .start(app.app_handle().clone(), shutdown.clone());
+            crate::commands::session::selection_executor::start_response_close_polling(
+                app.app_handle().clone(),
+                shutdown.clone(),
+            );
             crate::session::auto_close::start(app.app_handle().clone(), shutdown.clone());
             crate::loops::non_stop_watchdog::start(
                 app.app_handle().clone(),
