@@ -1,19 +1,18 @@
 mod args;
 mod backend_watchdog;
-mod cli;
 mod cli_run;
 mod files;
 mod liveness;
+mod protocol;
 
-use self::cli::CliRequest;
-pub use self::cli::{
-    execute_backend, execute_click, execute_context_click, execute_hover, execute_key,
-    execute_pointer, execute_query, execute_set, execute_terminal, execute_type, execute_wait,
-};
 #[cfg(test)]
-use self::cli::{
-    key_cli_request, parse_terminal_operation, pointer_cli_request, terminal_cli_request,
-    valid_key_chord, valid_pointer_operation, valid_terminal_session_id, UiTerminalOperation,
+use self::protocol::UiTerminalOperation;
+use self::protocol::{
+    parse_terminal_operation, valid_key_chord, valid_pointer_operation, valid_terminal_session_id,
+    CliRequest,
+};
+pub use self::protocol::{
+    UiAutomationAction, UiAutomationRequest, UiAutomationResponse, UiAutomationSession,
 };
 use crate::shutdown::ShutdownSignal;
 pub use args::{
@@ -46,13 +45,12 @@ use liveness::{
     available_window_labels, current_exe_path_string, now_unix_ms, paths_equal_for_compare,
     sorted_labels,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{fs, io};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
@@ -73,110 +71,6 @@ const SESSION_READ_RETRY_COUNT: usize = 8;
 const SESSION_READ_RETRY_DELAY_MS: u64 = 25;
 const CLI_MAX_AVAILABLE_TARGETS: usize = 8;
 const CLI_MAX_TARGET_TEXT_CHARS: usize = 80;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UiAutomationSession {
-    pub pid: u32,
-    pub token: String,
-    pub exe_path: String,
-    pub config_dir: String,
-    pub window_labels: Vec<String>,
-    pub ready_window_labels: Vec<String>,
-    pub started_at_unix_ms: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UiAutomationRequest {
-    pub request_id: String,
-    pub token: String,
-    pub window: String,
-    pub action: UiAutomationAction,
-    pub selector: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_at_unix_ms: Option<i64>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum UiAutomationAction {
-    Query,
-    Click,
-    ContextClick,
-    Hover,
-    SetValue,
-    TypeText,
-    Backend,
-    Terminal,
-    Pointer,
-    Key,
-}
-
-impl UiAutomationAction {
-    /// #944 - exhaustive on purpose. A new variant is a COMPILE error here, and the
-    /// `None` terminator bounds the walk, so a variant cannot be silently left out of
-    /// the iteration the way a hand-written `[UiAutomationAction; N]` array lets it be
-    /// (name the variant in the forced match arm, forget the array, and the parity test
-    /// still passes).
-    #[cfg(test)]
-    fn next_variant(self) -> Option<Self> {
-        Some(match self {
-            Self::Query => Self::Click,
-            Self::Click => Self::ContextClick,
-            Self::ContextClick => Self::Hover,
-            Self::Hover => Self::SetValue,
-            Self::SetValue => Self::TypeText,
-            Self::TypeText => Self::Backend,
-            Self::Backend => Self::Terminal,
-            Self::Terminal => Self::Pointer,
-            Self::Pointer => Self::Key,
-            Self::Key => return None,
-        })
-    }
-
-    /// Residual hole, stated so nobody trusts this further than it goes: the walk is
-    /// SEEDED by hand at `Self::Query`. A variant inserted at the HEAD (before `Query`,
-    /// wired `New => Query`) is compile-forced into `next_variant` and into
-    /// `action_wire_name`, and yet is never yielded here, so the parity test below would
-    /// not see it. It only bites a Rust-ONLY head-insertion: add the same member to the
-    /// types.ts union and the set comparison goes red at once. Appending a variant (the
-    /// normal case, and what #944 itself did) is fully covered. Closing the hole outright
-    /// needs a derive macro (strum) or a hand-written length, and a hand-written length is
-    /// the exact weakness this walk replaced.
-    #[cfg(test)]
-    fn all() -> impl Iterator<Item = Self> {
-        std::iter::successors(Some(Self::Query), |action| action.next_variant())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UiAutomationResponse {
-    pub ok: bool,
-    pub request_id: String,
-    pub window: String,
-    pub action: UiAutomationAction,
-    pub selector: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub available: Option<Vec<Value>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub diagnostics: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub available_windows: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timeout_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub phase: Option<String>,
-}
 
 #[derive(Debug, Clone)]
 struct PendingRequest {
@@ -716,44 +610,6 @@ impl UiAutomationState {
     }
 }
 
-impl UiAutomationResponse {
-    fn minimal_error(
-        request_id: &str,
-        window: &str,
-        action: UiAutomationAction,
-        selector: &str,
-        error: &str,
-        message: &str,
-    ) -> Self {
-        Self {
-            ok: false,
-            request_id: request_id.to_string(),
-            window: window.to_string(),
-            action,
-            selector: selector.to_string(),
-            target: None,
-            error: Some(error.to_string()),
-            message: Some(message.to_string()),
-            available: None,
-            diagnostics: None,
-            available_windows: None,
-            timeout_ms: None,
-            phase: None,
-        }
-    }
-
-    fn error_for_request(request: &UiAutomationRequest, error: &str, message: &str) -> Self {
-        Self::minimal_error(
-            &request.request_id,
-            &request.window,
-            request.action,
-            &request.selector,
-            error,
-            message,
-        )
-    }
-}
-
 #[derive(Debug)]
 struct RequestFile {
     path: PathBuf,
@@ -789,6 +645,270 @@ impl RequestFile {
             request_id: request_id.to_string(),
             kind,
         })
+    }
+}
+
+pub fn execute_query(args: UiQueryArgs) -> i32 {
+    execute_cli(CliRequest {
+        window: args.window,
+        selector: args.selector,
+        action: UiAutomationAction::Query,
+        value: None,
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+fn terminal_cli_request(args: UiTerminalArgs) -> Result<CliRequest, Value> {
+    if !valid_terminal_session_id(&args.session_id) {
+        return Err(preflight_error(
+            "invalid_terminal_session_id",
+            "Terminal session id must contain 1 to 256 UTF-8 bytes and no control characters.",
+            None,
+        ));
+    }
+    if parse_terminal_operation(&args.operation).is_none() {
+        return Err(preflight_error(
+            "invalid_terminal_operation",
+            "Terminal operation must be query, top, bottom, line:N, lines:N, or pages:N in the \
+                signed 32-bit range.",
+            None,
+        ));
+    }
+
+    Ok(CliRequest {
+        window: args.window,
+        selector: format!("terminal.session.{}", args.session_id),
+        action: UiAutomationAction::Terminal,
+        value: Some(args.operation),
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+pub fn execute_terminal(args: UiTerminalArgs) -> i32 {
+    match terminal_cli_request(args) {
+        Ok(request) => execute_cli(request),
+        Err(error) => {
+            print_stdout_json(&error);
+            1
+        }
+    }
+}
+
+fn pointer_cli_request(args: UiPointerArgs) -> Result<CliRequest, Value> {
+    if !valid_pointer_operation(&args.operation) {
+        return Err(preflight_error(
+            "invalid_pointer_operation",
+            "Pointer operation must be down, move, move:top, move:bottom, up, or cancel.",
+            None,
+        ));
+    }
+    let target_free = matches!(args.operation.as_str(), "up" | "cancel");
+    let selector = match (target_free, args.selector) {
+        (false, Some(selector)) => selector,
+        (false, None) => {
+            return Err(preflight_error(
+                "pointer_selector_required",
+                "Pointer down and move operations require --selector.",
+                None,
+            ))
+        }
+        // Empty like `ui-hover --leave`; the frontend echoes it, so `complete()` still matches.
+        (true, None) => String::new(),
+        (true, Some(_)) => {
+            return Err(preflight_error(
+                "pointer_selector_not_allowed",
+                "Pointer up and cancel operations do not accept --selector.",
+                None,
+            ))
+        }
+    };
+
+    Ok(CliRequest {
+        window: args.window,
+        selector,
+        action: UiAutomationAction::Pointer,
+        value: Some(args.operation),
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+fn key_cli_request(args: UiKeyArgs) -> Result<CliRequest, Value> {
+    if !valid_key_chord(&args.chord) {
+        return Err(preflight_error(
+            "invalid_key_chord",
+            "Key chord must be optional Ctrl+, Alt+, Shift+, Meta+ in that order, then Escape, \
+                Enter, Space, Tab, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, or End.",
+            None,
+        ));
+    }
+
+    Ok(CliRequest {
+        window: args.window,
+        selector: args.selector,
+        action: UiAutomationAction::Key,
+        value: Some(args.chord),
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+pub fn execute_pointer(args: UiPointerArgs) -> i32 {
+    match pointer_cli_request(args) {
+        Ok(request) => execute_cli(request),
+        Err(error) => {
+            print_stdout_json(&error);
+            1
+        }
+    }
+}
+
+pub fn execute_key(args: UiKeyArgs) -> i32 {
+    match key_cli_request(args) {
+        Ok(request) => execute_cli(request),
+        Err(error) => {
+            print_stdout_json(&error);
+            1
+        }
+    }
+}
+
+pub fn execute_click(args: UiClickArgs) -> i32 {
+    execute_cli(CliRequest {
+        window: args.window,
+        selector: args.selector,
+        action: UiAutomationAction::Click,
+        value: None,
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+pub fn execute_context_click(args: UiContextClickArgs) -> i32 {
+    execute_cli(CliRequest {
+        window: args.window,
+        selector: args.selector,
+        action: UiAutomationAction::ContextClick,
+        value: None,
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+pub fn execute_hover(args: UiHoverArgs) -> i32 {
+    execute_cli(CliRequest {
+        window: args.window,
+        // Empty for the target-free leave form. The bridge intercepts `value == "leave"`
+        // before it resolves any selector, and the frontend echoes the request's selector
+        // back, so the window/action/selector equality check in `complete()` still matches.
+        // No line number on purpose: that pointer read :317-321, then :361-364, and rotted
+        // both times inside the very commit that wrote it (this file grew above it each
+        // time). `fn complete` is the stable anchor; a number here is a comment that lies
+        // on a schedule.
+        selector: args.selector.unwrap_or_default(),
+        action: UiAutomationAction::Hover,
+        value: args.leave.then(|| "leave".to_string()),
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+pub fn execute_set(args: UiSetArgs) -> i32 {
+    execute_cli(CliRequest {
+        window: args.window,
+        selector: args.selector,
+        action: UiAutomationAction::SetValue,
+        value: Some(args.value),
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+pub fn execute_type(args: UiTypeArgs) -> i32 {
+    execute_cli(CliRequest {
+        window: args.window,
+        selector: args.selector,
+        action: UiAutomationAction::TypeText,
+        value: Some(args.value),
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+pub fn execute_backend(args: UiBackendArgs) -> i32 {
+    execute_cli(CliRequest {
+        window: BACKEND_AUTOMATION_WINDOW.to_string(),
+        selector: args.selector,
+        action: UiAutomationAction::Backend,
+        value: args.value,
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+pub fn execute_wait(args: UiWaitArgs) -> i32 {
+    let deadline = Instant::now() + Duration::from_millis(args.timeout_ms);
+    let mut last_response: Option<UiAutomationResponse> = None;
+
+    loop {
+        let remaining_ms = deadline
+            .checked_duration_since(Instant::now())
+            .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+            .unwrap_or(0);
+        if remaining_ms == 0 {
+            let timeout = last_response.unwrap_or_else(|| {
+                UiAutomationResponse::minimal_error(
+                    &Uuid::new_v4().to_string(),
+                    &args.window,
+                    UiAutomationAction::Query,
+                    &args.selector,
+                    "timeout",
+                    "Automation wait timed out before the selector became available.",
+                )
+            });
+            let mut timeout = timeout;
+            timeout.ok = false;
+            timeout.error = Some("timeout".to_string());
+            timeout.message =
+                Some("Automation wait timed out before the selector became available.".to_string());
+            timeout.timeout_ms = Some(args.timeout_ms);
+            timeout.phase = Some("wait_condition_not_met".to_string());
+            print_stdout_json(&timeout);
+            return 1;
+        }
+
+        let input = CliRequest {
+            window: args.window.clone(),
+            selector: args.selector.clone(),
+            action: UiAutomationAction::Query,
+            value: None,
+            timeout_ms: remaining_ms.min(500),
+        };
+
+        match run_cli_request(&input) {
+            Ok(response) if response.ok => {
+                print_stdout_json(&response);
+                return 0;
+            }
+            Ok(response) => {
+                last_response = Some(response);
+            }
+            Err(error) => {
+                print_stdout_json(&error);
+                return 1;
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(POLL_MS));
+    }
+}
+
+fn execute_cli(input: CliRequest) -> i32 {
+    match run_cli_request(&input) {
+        Ok(response) if response.ok => {
+            print_stdout_json(&response);
+            0
+        }
+        Ok(response) => {
+            print_stdout_json(&response);
+            1
+        }
+        Err(error) => {
+            print_stdout_json(&error);
+            1
+        }
     }
 }
 
