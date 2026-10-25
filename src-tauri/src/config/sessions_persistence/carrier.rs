@@ -674,7 +674,20 @@ pub(crate) fn unconfirmed_replacement_work_waits(target: &str, id: Uuid) -> bool
 /// Pure ALL-scopes startup precondition. None is unreadable ownership, never
 /// evidence that no publication protection exists.
 pub(crate) fn restore_carrier_scopes_are_empty(_permit: &CarrierMutationPermit) -> Option<bool> {
-    Some(all_carrier_protections()?.is_empty())
+    let protections = all_carrier_protections()?;
+    if !protections.is_empty() {
+        log::debug!(
+            target: "agentscommander_lib::selection_bootstrap",
+            "restore bootstrap busy: cause=carrier_protections scope=all count={}",
+            protections.len()
+        );
+        #[cfg(test)]
+        eprintln!(
+            "restore bootstrap busy: cause=carrier_protections scope=all count={}",
+            protections.len()
+        );
+    }
+    Some(protections.is_empty())
 }
 
 pub(super) fn same_written_projection(
@@ -826,3 +839,44 @@ impl PreparedCarrierRelation {
         CarrierDisposition::Foreign
     }
 }
+
+// Production always uses the ALL-scopes precondition above. Tests run several
+// independent mock apps inside one process; only their own publication slots
+// belong to the bootstrap being checked. Poisoned ownership still fails closed.
+#[cfg(test)]
+pub(crate) fn restore_test_carrier_scopes_are_empty(
+    _permit: &CarrierMutationPermit,
+    scope: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Option<bool> {
+    let slots = publication_slots()
+        .lock()
+        .ok()?
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut seen = std::collections::HashSet::new();
+    for slot in slots {
+        if !seen.insert(std::sync::Arc::as_ptr(&slot) as usize) {
+            continue;
+        }
+        let state = slot.lock().ok()?;
+        let same_scope = state.restore_test_scopes.iter().any(|known| {
+            known
+                .upgrade()
+                .is_some_and(|known| std::sync::Arc::ptr_eq(&known, scope))
+        });
+        if same_scope
+            && state
+                .protections
+                .iter()
+                .any(|protection| protection.lifetime.strong_count() != 0)
+        {
+            eprintln!("restore bootstrap busy: cause=carrier_protections scope=test_app");
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
+#[cfg(test)]
+mod tests;
