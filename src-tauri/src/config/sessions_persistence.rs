@@ -1,4 +1,6 @@
 mod carrier;
+#[cfg(test)]
+pub(crate) use carrier::restore_test_carrier_scopes_are_empty;
 mod live_update;
 mod orphan;
 mod persist;
