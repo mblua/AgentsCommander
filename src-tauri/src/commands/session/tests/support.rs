@@ -824,7 +824,7 @@ fn split_source_map(original: &SessionSources) -> SessionSources {
         .find("\n    };\n    // This accepted core owns every launched effect")
         .unwrap();
     let core = format!(
-        "{}context::prepare(ctx, input).await{}",
+        "{}context::prepare(&ctx, input).await{}",
         &whole[..context],
         &whole[finish..]
     );
@@ -990,9 +990,12 @@ fn source_guards_round4_controls() {
             let end = pending + range.end;
             let statement = core[pending..end].to_string();
             core.replace_range(pending..end, "");
-            let after = source_range(core, "context::prepare(ctx,input).await", 0)
-                .unwrap()
-                .end;
+            let after = core
+                .rfind(
+                    "
+    };",
+                )
+                .unwrap();
             core.insert_str(after, &statement);
             rejected(mode, "late pending insertion", source_pending(&probe));
         }
