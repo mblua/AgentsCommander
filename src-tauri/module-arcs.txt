@@ -68,10 +68,8 @@ agentscommander_lib::agent_update::updater -> agentscommander_lib::agent_update:
 agentscommander_lib::agent_update::updater -> agentscommander_lib::agent_version
 agentscommander_lib::agent_update::updater -> agentscommander_lib::config::agent_path
 agentscommander_lib::agent_update::updater -> agentscommander_lib::pty::job
-agentscommander_lib::agent_version -> agentscommander_lib::config::agent_path
-agentscommander_lib::agent_version -> agentscommander_lib::pty::job
-agentscommander_lib::agent_version::process_owner -> agentscommander_lib::agent_version
-agentscommander_lib::agent_version::process_owner -> agentscommander_lib::pty::job
+agentscommander_lib::agent_version -> agentscommander_lib::process::agent
+agentscommander_lib::agent_version::process_owner -> agentscommander_lib::process::agent
 agentscommander_lib::api -> agentscommander_lib::config::settings
 agentscommander_lib::api -> agentscommander_lib::phone::types
 agentscommander_lib::api -> agentscommander_lib::pty::manager
@@ -2203,6 +2201,8 @@ agentscommander_lib::phone::terminal_snapshot::scanner -> agentscommander_lib::p
 agentscommander_lib::phone::terminal_snapshot::scanner -> agentscommander_lib::pty::terminal_snapshot
 agentscommander_lib::phone::terminal_snapshot::shutdown -> agentscommander_lib::phone::terminal_snapshot::failure
 agentscommander_lib::phone::types -> agentscommander_lib::pty::input_limits
+agentscommander_lib::process::agent::owner -> agentscommander_lib::config::agent_path
+agentscommander_lib::process::agent::owner -> agentscommander_lib::process::host::job
 agentscommander_lib::process::git::cache -> agentscommander_lib::config::agent_path
 agentscommander_lib::process::git::cache -> agentscommander_lib::process::host::credentials
 agentscommander_lib::process::git::context -> agentscommander_lib::config::agent_path

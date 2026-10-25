@@ -143,7 +143,7 @@ const INVENTORY: &[Row] = &[
         &[(CoveredBy2589, 2)],
     ),
     (
-        "src-tauri/src/agent_version.rs",
+        "src-tauri/src/process/agent/owner.rs",
         1,
         0,
         &[(CoveredBy2589, 1)],
