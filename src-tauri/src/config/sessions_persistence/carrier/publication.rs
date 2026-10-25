@@ -63,6 +63,10 @@ pub(in super::super) struct CarrierProtection {
 
 #[derive(Clone, Default)]
 pub(in super::super) struct PublicationState {
+    // Independent mock apps share this process registry in parallel unit tests.
+    // Keep alias/replacement protections together in their publication slot.
+    #[cfg(test)]
+    pub(in super::super) restore_test_scopes: Vec<std::sync::Weak<std::sync::atomic::AtomicBool>>,
     pub(in super::super) canonical_directory: Option<PathBuf>,
     pub(in super::super) epoch: u64,
     pub(in super::super) checkpoint: Option<PublicationCheckpoint>,
@@ -352,6 +356,19 @@ pub(in super::super) fn prepare_protected_publication(
     };
     if !initial.matches(captured, rows) {
         return false;
+    }
+    #[cfg(test)]
+    if let Some(scope) = &initial.restore_exclusion {
+        next.restore_test_scopes
+            .retain(|scope| scope.strong_count() != 0);
+        if !next.restore_test_scopes.iter().any(|known| {
+            known
+                .upgrade()
+                .is_some_and(|known| std::sync::Arc::ptr_eq(&known, scope))
+        }) {
+            next.restore_test_scopes
+                .push(std::sync::Arc::downgrade(scope));
+        }
     }
     let Some(all) = all_carrier_protections() else {
         return false;
