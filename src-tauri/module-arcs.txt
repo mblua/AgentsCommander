@@ -1511,7 +1511,6 @@ agentscommander_lib::config::sessions_persistence::record -> agentscommander_lib
 agentscommander_lib::config::sessions_persistence::record -> agentscommander_lib::config::root_agent
 agentscommander_lib::config::sessions_persistence::record -> agentscommander_lib::config::settings
 agentscommander_lib::config::sessions_persistence::record -> agentscommander_lib::path_utils
-agentscommander_lib::config::sessions_persistence::record -> agentscommander_lib::session::manager
 agentscommander_lib::config::sessions_persistence::record -> agentscommander_lib::session::session
 agentscommander_lib::config::sessions_persistence::replacement -> agentscommander_lib::config::sessions_persistence::carrier
 agentscommander_lib::config::sessions_persistence::replacement -> agentscommander_lib::config::sessions_persistence::orphan
