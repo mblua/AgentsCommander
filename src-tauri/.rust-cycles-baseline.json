@@ -34,13 +34,6 @@
         "agentscommander_lib::web",
         "agentscommander_lib::web::commands"
       ]
-    },
-    {
-      "id": "bba33347ff93cb97",
-      "members": [
-        "agentscommander_lib::testability::ui_automation",
-        "agentscommander_lib::testability::ui_automation::cli"
-      ]
     }
   ],
   "functionCycles": []
