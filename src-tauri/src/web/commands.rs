@@ -36,6 +36,34 @@ pub struct WsState {
     pub app_handle: tauri::AppHandle,
 }
 
+pub(crate) struct WebCommandsDispatcher {
+    state: WsState,
+}
+
+impl WebCommandsDispatcher {
+    pub(crate) fn new(state: WsState) -> Self {
+        Self { state }
+    }
+}
+
+impl super::command_port::WebCommandDispatcher for WebCommandsDispatcher {
+    fn dispatch<'a>(
+        &'a self,
+        id: u64,
+        cmd: &'a str,
+        args: &'a Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Value> + Send + 'a>> {
+        Box::pin(dispatch(&self.state, id, cmd, args))
+    }
+
+    fn binary<'a>(
+        &'a self,
+        data: &'a [u8],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(handle_binary_message(&self.state, data))
+    }
+}
+
 /// Dispatch a WebSocket JSON command and return the result as JSON.
 /// Format: { "id": N, "cmd": "command_name", "args": { ... } }
 /// Returns: { "id": N, "result": ... } or { "id": N, "error": "..." }
@@ -872,6 +900,78 @@ async fn project_file_difference_value(args: &Value) -> Result<Value, String> {
     let path = require_str(args, "path")?;
     let result = crate::commands::ac_discovery::get_project_file_difference_inner(&path).await;
     serde_json::to_value(result).map_err(|e| e.to_string())
+}
+
+/// Handle a binary PTY write from a WS client.
+/// Format: [36 bytes UUID ASCII][raw PTY input bytes]
+async fn handle_binary_message(state: &WsState, data: &[u8]) {
+    if data.len() < 36 {
+        return;
+    }
+
+    let session_id_str = match std::str::from_utf8(&data[..36]) {
+        Ok(s) => s.trim(),
+        Err(_) => return,
+    };
+
+    let uuid = match uuid::Uuid::parse_str(session_id_str) {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+
+    let pty_data = &data[36..];
+    let write_result =
+        match crate::pty::manager::PtyManager::acquire_input_writer(&state.pty_mgr, uuid).await {
+            Ok(permit) => {
+                if state
+                    .app_handle
+                    .try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>()
+                    .is_some_and(|guard| guard.blocks_session(uuid))
+                {
+                    return;
+                }
+                let result = crate::pty::manager::PtyManager::write_with_permit(&permit, pty_data);
+                if result.is_ok() {
+                    crate::commands::pty::mark_successful_pty_write_busy(
+                        &state.app_handle,
+                        uuid,
+                        pty_data.len(),
+                    )
+                    .await;
+                }
+                result
+            }
+            Err(error) => Err(error),
+        };
+    if !binary_pty_write_succeeded(write_result, uuid) {
+        return;
+    }
+
+    // #552 web UI keystrokes (binary frame) are the real web input path and a
+    // genuine user message: reset the badge clock + auto-close silence.
+    crate::commands::pty::note_user_message_to_session(
+        &state.app_handle,
+        uuid,
+        crate::commands::pty::UserInputSource::Web(pty_data),
+    )
+    .await;
+}
+
+pub(crate) fn binary_pty_write_succeeded(
+    result: Result<(), crate::errors::AppError>,
+    uuid: uuid::Uuid,
+) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(err) => {
+            log::warn!(
+                "[web-server] PTY binary write failed for session {}: {}",
+                uuid,
+                err
+            );
+            false
+        }
+    }
 }
 
 #[cfg(test)]

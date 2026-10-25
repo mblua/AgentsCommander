@@ -136,25 +136,21 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
 
     // #271 — seed `<config_dir>/agent-templates/` + README on startup.
     crate::commands::role_templates::ensure_default_templates_dir_at_config();
-
     // (#621) GC the context-cache: unlink generated *-context-*.md files
     // older than the retention window. Cleans orphans from removed
     // workgroups AND caps the unbounded-growth secondary finding. Robust +
     // self-healing: live agents re-write their cache every launch.
     crate::config::session_context::sweep_context_cache_at_startup();
-
     // Git branch watcher: polls git branch for each session every 5s
     let git_watcher = GitWatcher::new(session_mgr_for_git, app.handle().clone());
     // Register for Tauri commands that take `State<'_, Arc<GitWatcher>>`
     // (e.g. `update_team`). Must happen BEFORE the
     // `PtyManager::new(..., git_watcher, ...)` move below.
     app.manage(Arc::clone(&git_watcher));
-
     // Discovery branch watcher: polls git branch for discovered replicas every 15s
     let discovery_branch_watcher =
         DiscoveryBranchWatcher::new(app.handle().clone(), session_mgr_for_discovery);
     app.manage(Arc::clone(&discovery_branch_watcher));
-
     // #1298 - the single global POLLING producer of per-repo git state. Both
     // watchers read its published snapshot instead of spawning `git` themselves.
     //
@@ -171,7 +167,6 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         app.state::<SettingsState>().inner().clone(),
     );
     git_sweeper.start(shutdown_for_setup.clone());
-
     // #2064 - the remote activity producer: asks GitHub, through `gh`,
     // whether CI runs on each room repo's exact HEAD and whether the
     // default branch is ahead. Beside `GitSweeper` for the same reason it
@@ -204,7 +199,6 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         remote_transitions,
         shutdown_for_setup.token().child_token(),
     ));
-
     // PtyManager needs GitWatcher for cleanup on session kill
     let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
         output_senders_for_pty,
@@ -223,7 +217,6 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         .unwrap()
         .cleanup_container_orphans_on_startup();
     app.manage(pty_mgr.clone());
-
     // #1327 - startup coding-agent update flow. Spawned BEFORE the
     // restore task is submitted so every session open (restore, GUI,
     // web, phone) blocks inside `create_session_inner_impl` until the
@@ -235,7 +228,6 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
             crate::agent_update::run_startup_updates(app_for_agent_updates, gate_for_setup).await;
         });
     }
-
     selection_coordinator_for_setup
         .start(app.handle().clone())
         .map_err(|error| error.to_string())?;
@@ -247,7 +239,6 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     app.state::<Arc<RestoreInProgress>>()
         .0
         .store(true, std::sync::atomic::Ordering::SeqCst);
-
     // #1056 context-alert actor. Start it before the scraper so the bounded sender
     // exists before the first sample; manage it for final joined shutdown.
     let context_alert_monitor = crate::session::context_alerts::ContextAlertMonitor::start(
@@ -255,7 +246,6 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         shutdown_for_setup.token().child_token(),
     );
     app.manage(Arc::clone(&context_alert_monitor));
-
     // #1032 context scrape. Must be after `.manage(settings)` above, since the
     // pattern adapter reads settings back out of managed state. Mirrors GitWatcher.
     let context_scraper = ContextScraper::new(
@@ -281,7 +271,6 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     );
     context_scraper.start(shutdown_for_setup.clone());
     app.manage(Arc::clone(&context_scraper));
-
     // #2482 agent quota engine. A sibling of the scraper, same construction shape, and
     // like it must come after `.manage(settings)`.
     let agent_quota_engine = AgentQuotaEngine::new(
@@ -298,7 +287,6 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     );
     agent_quota_engine.start(shutdown_for_setup.clone());
     app.manage(Arc::clone(&agent_quota_engine));
-
     // #1171 watcher engine. A SIBLING of the scraper above, not an extension of it:
     // different interval, different modes, its own history. Same construction shape,
     // and for the same reason it must come after `.manage(settings)`.
@@ -376,7 +364,19 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     // before every emit and the window pulls it after subscribing, so a re-scope that
     // races the window's own load is recovered instead of dropped in silence.
     app.manage(commands::window::WatchersScopeState::default());
-
+    let dispatcher =
+        crate::web::commands::WebCommandsDispatcher::new(crate::web::commands::WsState {
+            session_mgr: Arc::clone(&session_mgr_for_web),
+            pty_mgr: Arc::clone(&pty_mgr),
+            settings: Arc::clone(&settings_for_web),
+            broadcaster: broadcaster_for_web.clone(),
+            app_handle: app.handle().clone(),
+        });
+    if !app.manage(crate::web::command_port::ManagedWebCommandDispatcher(
+        Arc::new(dispatcher),
+    )) {
+        return Err("Web command dispatcher is already registered".into());
+    }
     // Start web server if enabled in settings
     {
         let web_settings = config::settings::load_settings();

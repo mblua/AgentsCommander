@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::State;
+use tauri::{Manager, State};
 use uuid::Uuid;
 
 use crate::api::auth;
@@ -14,6 +14,7 @@ use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::web::auth::WebAccessToken;
 use crate::web::broadcast::WsBroadcaster;
+use crate::web::command_port::ManagedWebCommandDispatcher;
 use crate::{
     ApiServerHandle, ApiServerTask, WebServerHandle, WebServerLifecycle,
     WebServerLifecycleSnapshot, WebServerStartWaiter, WEB_SERVER_START_CANCELLED,
@@ -455,7 +456,7 @@ pub(crate) fn begin_web_server_start(
     settings: SettingsState,
     web_token: Arc<WebAccessToken>,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
-    pty_mgr: Arc<std::sync::Mutex<PtyManager>>,
+    _pty_mgr: Arc<std::sync::Mutex<PtyManager>>,
     broadcaster: WsBroadcaster,
     app_handle: tauri::AppHandle,
     shutdown: crate::shutdown::ShutdownSignal,
@@ -465,6 +466,10 @@ pub(crate) fn begin_web_server_start(
     ws_handle.begin_start(
         shutdown,
         move |generation, admission, generation_token| async move {
+            let dispatcher = app_handle
+                .try_state::<ManagedWebCommandDispatcher>()
+                .map(|managed| Arc::clone(&managed.0))
+                .ok_or("Web command dispatcher is not registered")?;
             let s = settings.read().await;
             let bind = s.web_server_bind.clone();
             let port = s.web_server_port;
@@ -496,8 +501,7 @@ pub(crate) fn begin_web_server_start(
                 port,
                 web_token,
                 session_mgr,
-                pty_mgr,
-                settings,
+                dispatcher,
                 broadcaster,
                 app_handle,
                 admission,

@@ -25,15 +25,6 @@
         "agentscommander_lib::telegram::bridge",
         "agentscommander_lib::telegram::manager"
       ]
-    },
-    {
-      "id": "ffa526a35c677d6b",
-      "members": [
-        "agentscommander_lib::commands::config",
-        "agentscommander_lib::commands::config::web_server",
-        "agentscommander_lib::web",
-        "agentscommander_lib::web::commands"
-      ]
     }
   ],
   "functionCycles": []
