@@ -671,7 +671,7 @@ fn should_capture(record: &log::Record) -> bool {
 /// Oldest entries are dropped on overflow.
 const ERROR_BUFFER_CAP: usize = 200;
 
-/// Process-wide sink that tees ERROR-level log entries to the Tauri UI layer.
+/// Process-wide sink that tees ERROR-level log entries to the UI layer.
 ///
 /// `pending` is the source of truth — every captured entry lands there.
 /// `notify` wakes the emit task (`spawn_error_emit_task`). The `env_logger`
@@ -792,23 +792,22 @@ pub fn error_sink() -> &'static ErrorEventSink {
 pub(crate) static ERROR_SINK_TEST_DRAIN_LOCK: tokio::sync::Mutex<()> =
     tokio::sync::Mutex::const_new(());
 
-/// Spawn the background task that emits the `error_log_event` ping to the UI.
-/// Called once from `lib::run()`'s `setup()` hook (§5.3.a).
-///
-/// The task waits on the sink's `Notify` and emits a content-free ping each
-/// time `capture()` signals. Running the emit HERE — outside the `env_logger`
-/// format closure — keeps the logging hot path minimal and isolates any panic
-/// inside `emit()` from the arbitrary `log::error!` call site. See §3.7.
-pub fn spawn_error_emit_task(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        loop {
-            error_sink().wait_for_capture().await;
-            // emit() is sync + thread-safe (idle-detector precedent, lib.rs:207);
-            // a failed emit is swallowed. Running outside the logger means emit()'s
-            // transitive log calls (if any) cannot re-enter the format closure.
-            let _ = tauri::Emitter::emit(&app, "error_log_event", ());
-        }
-    });
+/// Delivery port for the content-free error-log ping.
+pub(crate) trait ErrorLogEvents {
+    fn error_log_event(&self);
+}
+
+/// Wait for captures and deliver pings outside the logger's format closure.
+/// The setup hook spawns this future on the existing application runtime.
+pub(crate) async fn spawn_error_emit_task<E: ErrorLogEvents>(events: E) {
+    error_emit_loop(error_sink(), &events).await;
+}
+
+async fn error_emit_loop<E: ErrorLogEvents + ?Sized>(sink: &ErrorEventSink, events: &E) {
+    loop {
+        sink.wait_for_capture().await;
+        events.error_log_event();
+    }
 }
 
 #[cfg(test)]

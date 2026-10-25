@@ -836,3 +836,72 @@ fn error_record_survives_gate_at_strictest_level_and_reaches_264_sink() {
         "ERROR did not reach the #264 sink through the gate at Error; captured={captured:?}"
     );
 }
+
+struct DrainingErrorEvents<'a> {
+    sink: &'a ErrorEventSink,
+    deliveries: std::cell::RefCell<Vec<Vec<String>>>,
+}
+
+impl ErrorLogEvents for DrainingErrorEvents<'_> {
+    fn error_log_event(&self) {
+        self.deliveries
+            .borrow_mut()
+            .push(messages(self.sink.drain()));
+    }
+}
+
+#[derive(Default)]
+struct CaptureWake(std::sync::atomic::AtomicUsize);
+
+impl std::task::Wake for CaptureWake {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn error_emit_loop_coalesces_orders_drains_and_wakes() {
+    use std::future::Future;
+    use std::task::{Context, Waker};
+
+    let sink = ErrorEventSink::new();
+    let events = DrainingErrorEvents {
+        sink: &sink,
+        deliveries: std::cell::RefCell::new(Vec::new()),
+    };
+    let wake = Arc::new(CaptureWake::default());
+    let waker = Waker::from(Arc::clone(&wake));
+    let mut context = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(error_emit_loop(&sink, &events));
+    for message in ["first", "second", "third"] {
+        sink.capture(entry(message));
+    }
+    assert!(events.deliveries.borrow().is_empty());
+    assert_eq!(sink.lock_state().pending.len(), 3);
+    assert!(future.as_mut().poll(&mut context).is_pending());
+    assert_eq!(
+        *events.deliveries.borrow(),
+        vec![vec!["first", "second", "third"]]
+    );
+    assert!(
+        sink.drain().is_empty(),
+        "callback drained without a held sink lock"
+    );
+    assert!(future.as_mut().poll(&mut context).is_pending());
+    assert_eq!(events.deliveries.borrow().len(), 1);
+    let wakes = wake.0.load(Ordering::SeqCst);
+    sink.capture(entry("fourth"));
+    assert!(
+        wake.0.load(Ordering::SeqCst) > wakes,
+        "capture wakes the pending loop"
+    );
+    assert_eq!(events.deliveries.borrow().len(), 1);
+    assert!(future.as_mut().poll(&mut context).is_pending());
+    assert_eq!(
+        *events.deliveries.borrow(),
+        vec![vec!["first", "second", "third"], vec!["fourth"]]
+    );
+    assert!(sink.drain().is_empty(), "entries drain only once");
+    assert!(future.as_mut().poll(&mut context).is_pending());
+    assert_eq!(events.deliveries.borrow().len(), 2);
+}
