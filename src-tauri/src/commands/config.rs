@@ -109,8 +109,8 @@ pub use self::web_server::{
     __tauri_command_name_start_web_server, __tauri_command_name_stop_api_server,
     __tauri_command_name_stop_web_server, api_server_status, get_web_server_owned_status,
     get_web_server_status, list_web_server_interfaces, mint_api_client, open_web_remote,
-    start_api_server, start_web_server, stop_api_server, stop_web_server, WebServerBindFailure,
-    WebServerInterfaceInfo, WebServerOwnedStatus, WebServerOwnershipState,
+    start_api_server, start_web_server, stop_api_server, stop_web_server, MintApiClientResponse,
+    WebServerBindFailure, WebServerInterfaceInfo, WebServerOwnedStatus, WebServerOwnershipState,
 };
 
 mod preferences;
@@ -151,6 +151,7 @@ use self::web_server::{
     ensure_web_remote_open_allowed, is_tcp_listening, is_tcp_socket_listening,
     map_web_server_interfaces, mint_api_client_with_path, resolve_web_server_owned_status,
     select_current_bind_failure, stop_web_server_handle, web_remote_url, web_server_probe_addr,
+    MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
 };
 #[cfg(test)]
 use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
@@ -229,16 +230,6 @@ const HOME_MARKDOWN_URL: &str =
 
 const HOME_MARKDOWN_MAX_BYTES: usize = 256 * 1024; // 256 KB
 const HOME_MARKDOWN_TIMEOUT_SECS: u64 = 5;
-const WEB_STATUS_CONNECT_TIMEOUT_MS: u64 = 500;
-const API_SERVER_STOP_TIMEOUT_MS: u64 = 5_000;
-// Default mirrors container API token TTL; manual GUI mints get a longer cap.
-const MINT_API_CLIENT_DEFAULT_TTL_HOURS: i64 = 24;
-const MINT_API_CLIENT_MAX_TTL_DAYS: i64 = 30;
-const MINT_API_CLIENT_NOTE: &str =
-    "Store this token now; it is shown only once. The registry keeps only a hash. A manually \
-        requested pty-input scope does not grant actuation without an automatically bound live \
-        container session.";
-
 /// #2133 - the agent-help overlays the frontend layers over its embedded copy. The embedded
 /// layer never travels over IPC (epic D6). `remote` stays `None` until P6 fills it.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -292,18 +283,6 @@ pub struct CodingAgentProfileResolutionResult {
     pub origin_default_profile: Option<String>,
     pub agent_default_profile: Option<String>,
     pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MintApiClientResponse {
-    pub client_id: String,
-    pub token: String,
-    pub bound_fqn: String,
-    pub bound_root: String,
-    pub scopes: Vec<String>,
-    pub expires_at: Option<String>,
-    pub note: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

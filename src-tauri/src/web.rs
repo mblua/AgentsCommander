@@ -1,12 +1,13 @@
 pub mod auth;
 pub mod broadcast;
+pub(crate) mod command_port;
 pub(crate) mod commands;
 mod embedded;
 pub(crate) mod event_broadcast;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Query, State, WebSocketUpgrade};
@@ -21,26 +22,27 @@ use tower_http::services::ServeDir;
 pub use crate::web_server::StartServerError;
 pub(super) use crate::web_server::{WebSocketAdmission, WebSocketAdmissionGuard};
 
-use crate::config::settings::SettingsState;
-use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 
 use self::auth::WebAccessToken;
 use self::broadcast::WsBroadcaster;
-use self::commands::WsState;
+use self::command_port::WebCommandDispatcher;
 
 /// Shared state for the axum server.
 #[derive(Clone)]
 struct AppState {
     web_token: Arc<WebAccessToken>,
-    ws_state: WsState,
+    session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+    broadcaster: WsBroadcaster,
+    dispatcher: Arc<dyn WebCommandDispatcher>,
     admission: Arc<WebSocketAdmission>,
     generation_token: CancellationToken,
 }
 
 #[derive(Clone)]
 struct WebSocketConnectionContext {
-    ws_state: WsState,
+    broadcaster: WsBroadcaster,
+    dispatcher: Arc<dyn WebCommandDispatcher>,
     admission: Arc<WebSocketAdmission>,
     generation_token: CancellationToken,
 }
@@ -63,24 +65,21 @@ pub(super) async fn start_server(
     port: u16,
     web_token: Arc<WebAccessToken>,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
-    pty_mgr: Arc<Mutex<PtyManager>>,
-    settings: SettingsState,
+    dispatcher: Arc<dyn WebCommandDispatcher>,
     broadcaster: WsBroadcaster,
     app_handle: tauri::AppHandle,
     admission: Arc<WebSocketAdmission>,
     generation_token: CancellationToken,
     shutdown: crate::shutdown::ShutdownSignal,
 ) -> Result<tauri::async_runtime::JoinHandle<()>, StartServerError> {
-    // Resolve dist path BEFORE moving app_handle into WsState
+    // Resolve the static file location before constructing the router.
     let dist_path = resolve_dist_path(&app_handle);
 
     let app = build_router(
         web_token,
         session_mgr,
-        pty_mgr,
-        settings,
+        dispatcher,
         broadcaster,
-        app_handle,
         admission,
         generation_token.clone(),
         dist_path,
@@ -121,24 +120,17 @@ pub(super) async fn start_server(
 pub(super) fn build_router(
     web_token: Arc<WebAccessToken>,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
-    pty_mgr: Arc<Mutex<PtyManager>>,
-    settings: SettingsState,
+    dispatcher: Arc<dyn WebCommandDispatcher>,
     broadcaster: WsBroadcaster,
-    app_handle: tauri::AppHandle,
     admission: Arc<WebSocketAdmission>,
     generation_token: CancellationToken,
     dist_path: Option<std::path::PathBuf>,
 ) -> Router {
-    let ws_state = WsState {
-        session_mgr,
-        pty_mgr,
-        settings,
-        broadcaster,
-        app_handle,
-    };
     let state = AppState {
         web_token,
-        ws_state,
+        session_mgr,
+        broadcaster,
+        dispatcher,
         admission,
         generation_token,
     };
@@ -220,7 +212,8 @@ async fn ws_handler(
         Err(status) => return (status, "Web server is stopping").into_response(),
     };
     let context = WebSocketConnectionContext {
-        ws_state: state.ws_state,
+        broadcaster: state.broadcaster,
+        dispatcher: state.dispatcher,
         admission: state.admission,
         generation_token: state.generation_token,
     };
@@ -256,7 +249,7 @@ async fn api_sessions_handler(
         }
     }
 
-    let mgr = state.ws_state.session_mgr.read().await;
+    let mgr = state.session_mgr.read().await;
     let sessions = mgr.list_sessions().await;
 
     // Project to public view (no token) and apply optional status filter
@@ -318,7 +311,7 @@ async fn handle_ws_connection(
     let connection_token = context.generation_token.child_token();
 
     // Subscribe to broadcasts
-    let mut broadcast_rx = context.ws_state.broadcaster.subscribe();
+    let mut broadcast_rx = context.broadcaster.subscribe();
 
     // Forward broadcasts to this client
     let send_token = connection_token.clone();
@@ -360,32 +353,28 @@ async fn handle_ws_connection(
             let Some(Ok(msg)) = next else {
                 break;
             };
-            match msg {
-                Message::Text(text) => {
-                    if !run_admitted_websocket_frame(&recv_context.admission, || {
-                        handle_text_message(&recv_context.ws_state, &text)
-                    })
-                    .await
-                    {
-                        break;
-                    }
-                }
-                Message::Binary(data) => {
-                    if !run_admitted_websocket_frame(&recv_context.admission, || {
-                        handle_binary_message(&recv_context.ws_state, &data)
-                    })
-                    .await
-                    {
-                        break;
-                    }
-                }
-                Message::Close(_) => break,
-                _ => {}
+            if !handle_ws_frame(&recv_context, msg).await {
+                break;
             }
         }
     });
 
     reap_websocket_halves(send_task, recv_task, connection_token, connection_guard).await;
+}
+
+async fn handle_ws_frame(context: &WebSocketConnectionContext, msg: Message) -> bool {
+    match msg {
+        Message::Text(text) => {
+            run_admitted_websocket_frame(&context.admission, || handle_text_message(context, &text))
+                .await
+        }
+        Message::Binary(data) => {
+            run_admitted_websocket_frame(&context.admission, || context.dispatcher.binary(&data))
+                .await
+        }
+        Message::Close(_) => false,
+        _ => true,
+    }
 }
 
 async fn reap_websocket_halves(
@@ -425,7 +414,7 @@ where
 }
 
 /// Handle a JSON text command from a WS client.
-async fn handle_text_message(state: &WsState, text: &str) {
+async fn handle_text_message(state: &WebSocketConnectionContext, text: &str) {
     let parsed: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(_) => return,
@@ -438,7 +427,7 @@ async fn handle_text_message(state: &WsState, text: &str) {
     };
     let args = parsed.get("args").cloned().unwrap_or(serde_json::json!({}));
 
-    let response = commands::dispatch(state, id, cmd, &args).await;
+    let response = state.dispatcher.dispatch(id, cmd, &args).await;
 
     // Send response back to this specific client via broadcast
     // (We use the broadcaster's text broadcast, which goes to all clients.
@@ -456,78 +445,6 @@ async fn handle_text_message(state: &WsState, text: &str) {
     // Since we don't have a per-client sender here, we broadcast with the id.
     // The client filters by id. This is acceptable for low client counts.
     let _ = response_text; // suppress warning
-}
-
-/// Handle a binary PTY write from a WS client.
-/// Format: [36 bytes UUID ASCII][raw PTY input bytes]
-async fn handle_binary_message(state: &WsState, data: &[u8]) {
-    if data.len() < 36 {
-        return;
-    }
-
-    let session_id_str = match std::str::from_utf8(&data[..36]) {
-        Ok(s) => s.trim(),
-        Err(_) => return,
-    };
-
-    let uuid = match uuid::Uuid::parse_str(session_id_str) {
-        Ok(u) => u,
-        Err(_) => return,
-    };
-
-    let pty_data = &data[36..];
-    let write_result =
-        match crate::pty::manager::PtyManager::acquire_input_writer(&state.pty_mgr, uuid).await {
-            Ok(permit) => {
-                if state
-                    .app_handle
-                    .try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>()
-                    .is_some_and(|guard| guard.blocks_session(uuid))
-                {
-                    return;
-                }
-                let result = crate::pty::manager::PtyManager::write_with_permit(&permit, pty_data);
-                if result.is_ok() {
-                    crate::commands::pty::mark_successful_pty_write_busy(
-                        &state.app_handle,
-                        uuid,
-                        pty_data.len(),
-                    )
-                    .await;
-                }
-                result
-            }
-            Err(error) => Err(error),
-        };
-    if !binary_pty_write_succeeded(write_result, uuid) {
-        return;
-    }
-
-    // #552 web UI keystrokes (binary frame) are the real web input path and a
-    // genuine user message: reset the badge clock + auto-close silence.
-    crate::commands::pty::note_user_message_to_session(
-        &state.app_handle,
-        uuid,
-        crate::commands::pty::UserInputSource::Web(pty_data),
-    )
-    .await;
-}
-
-fn binary_pty_write_succeeded(
-    result: Result<(), crate::errors::AppError>,
-    uuid: uuid::Uuid,
-) -> bool {
-    match result {
-        Ok(()) => true,
-        Err(err) => {
-            log::warn!(
-                "[web-server] PTY binary write failed for session {}: {}",
-                uuid,
-                err
-            );
-            false
-        }
-    }
 }
 
 #[cfg(has_embedded_dist)]

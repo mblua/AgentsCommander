@@ -286,6 +286,8 @@ agentscommander_lib::app_run::setup -> agentscommander_lib::session::selection
 agentscommander_lib::app_run::setup -> agentscommander_lib::testability::ui_automation
 agentscommander_lib::app_run::setup -> agentscommander_lib::testability::window_placement
 agentscommander_lib::app_run::setup -> agentscommander_lib::update_check
+agentscommander_lib::app_run::setup -> agentscommander_lib::web::command_port
+agentscommander_lib::app_run::setup -> agentscommander_lib::web::commands
 agentscommander_lib::capture::catalog -> agentscommander_lib::filesystem
 agentscommander_lib::capture::jev -> agentscommander_lib::capture::catalog
 agentscommander_lib::capture::jev -> agentscommander_lib::network
@@ -763,7 +765,6 @@ agentscommander_lib::commands::config::web_server -> agentscommander_lib
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::api
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::api::audit
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::api::auth
-agentscommander_lib::commands::config::web_server -> agentscommander_lib::commands::config
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::config
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::config::coding_agent_profiles
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::config::root_agent
@@ -776,6 +777,7 @@ agentscommander_lib::commands::config::web_server -> agentscommander_lib::shutdo
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::web
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::web::auth
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::web::broadcast
+agentscommander_lib::commands::config::web_server -> agentscommander_lib::web::command_port
 agentscommander_lib::commands::entity_creation::agent_delete_plan -> agentscommander_lib::commands::entity_creation::delete_guard
 agentscommander_lib::commands::entity_creation::agent_delete_plan -> agentscommander_lib::commands::entity_creation::matrix_layout
 agentscommander_lib::commands::entity_creation::agent_delete_plan -> agentscommander_lib::commands::entity_creation::team_config
@@ -2903,18 +2905,13 @@ agentscommander_lib::testability::window_placement -> agentscommander_lib::confi
 agentscommander_lib::update_check -> agentscommander_lib::config
 agentscommander_lib::update_check -> agentscommander_lib::config::settings
 agentscommander_lib::update_check -> agentscommander_lib::network
-agentscommander_lib::web -> agentscommander_lib::commands::pty
 agentscommander_lib::web -> agentscommander_lib::config::profile
-agentscommander_lib::web -> agentscommander_lib::config::settings
-agentscommander_lib::web -> agentscommander_lib::errors
-agentscommander_lib::web -> agentscommander_lib::pty::manager
 agentscommander_lib::web -> agentscommander_lib::session::manager
-agentscommander_lib::web -> agentscommander_lib::session::purge_guard
 agentscommander_lib::web -> agentscommander_lib::session::session
 agentscommander_lib::web -> agentscommander_lib::shutdown
 agentscommander_lib::web -> agentscommander_lib::web::auth
 agentscommander_lib::web -> agentscommander_lib::web::broadcast
-agentscommander_lib::web -> agentscommander_lib::web::commands
+agentscommander_lib::web -> agentscommander_lib::web::command_port
 agentscommander_lib::web -> agentscommander_lib::web_server
 agentscommander_lib::web::commands -> agentscommander_lib::app_state
 agentscommander_lib::web::commands -> agentscommander_lib::cli::agency_templates
@@ -2930,6 +2927,7 @@ agentscommander_lib::web::commands -> agentscommander_lib::config::coordinator_c
 agentscommander_lib::web::commands -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::web::commands -> agentscommander_lib::config::project_settings
 agentscommander_lib::web::commands -> agentscommander_lib::config::settings
+agentscommander_lib::web::commands -> agentscommander_lib::errors
 agentscommander_lib::web::commands -> agentscommander_lib::path_utils
 agentscommander_lib::web::commands -> agentscommander_lib::pty::backend
 agentscommander_lib::web::commands -> agentscommander_lib::pty::manager
@@ -2938,6 +2936,7 @@ agentscommander_lib::web::commands -> agentscommander_lib::session::purge_guard
 agentscommander_lib::web::commands -> agentscommander_lib::session::selection
 agentscommander_lib::web::commands -> agentscommander_lib::session::warnings
 agentscommander_lib::web::commands -> agentscommander_lib::web::broadcast
+agentscommander_lib::web::commands -> agentscommander_lib::web::command_port
 agentscommander_lib::web::commands -> agentscommander_lib::web::event_broadcast
 agentscommander_lib::web::commands::agent_update_dispatch -> agentscommander_lib::commands::config
 agentscommander_lib::web::commands::agent_update_dispatch -> agentscommander_lib::web::commands
