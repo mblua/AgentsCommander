@@ -367,12 +367,16 @@ async fn port_native_release_paths_body() {
         assert!(f.executor().has_claim(&lease));
         let receipt = native_receipt(&lease);
         entry.attach_lease(lease);
+        let returned = matches!(
+            exit,
+            crate::session::selection::SelectionPortTestExit::ReceiverLoss
+        );
         let owner = f
             .coordinator
             .port_test_drive(&f.transaction(), entry, f.request(), exit)
             .await;
         assert_eq!(receipt.load(Ordering::Acquire), 1);
-        assert!(owner.sidecar_released());
+        assert_eq!(owner.sidecar_released(), returned);
         let next = f.prepare(Uuid::new_v4()).await;
         assert!(f.executor().has_claim(&next));
         drop(next);
