@@ -126,10 +126,17 @@ async fn public_native_case(root: bool, interrupted: bool) {
             .await;
             assert!(teardown.is_ok());
             f.manager.read().await.mark_exited(f.source, 0).await;
+            let row = f.manager.read().await.get_session(f.source).await.unwrap();
+            assert!(matches!(
+                row.status,
+                crate::session::session::SessionStatus::Exited(_)
+            ));
+            assert!(PtyManager::snapshot_route_proof(&f.pty, f.source).is_none());
             assert!(!f.backend.has_session(f.source));
         }
     }
     let initial = crate::path_identity::verify_directory(f.cwd.path()).unwrap();
+    let spawns = f.backend.spawn_count();
     let (at_a, resume_a) = f.schedule.gate(false);
     let (at_b, resume_b) = f.schedule.gate(true);
     let coordinator = f.coordinator.clone();
@@ -245,6 +252,9 @@ async fn public_native_case(root: bool, interrupted: bool) {
         .iter()
         .all(|(op, nonce, _)| *op == operation && *nonce == events[0].1));
     assert_ne!(events[0].1, Uuid::nil());
+    if root || interrupted {
+        assert_eq!(f.backend.spawn_count(), spawns);
+    }
     if interrupted {
         let caller = caller.take().unwrap();
         assert!(!caller.is_finished());
@@ -265,7 +275,15 @@ async fn public_native_case(root: bool, interrupted: bool) {
         let id = Uuid::parse_str(&row.id).unwrap();
         assert_eq!(id == f.source, root);
         assert!(f.backend.has_session(id));
-        if !root {
+        if root {
+            assert_eq!(f.backend.kill_count(f.source), 0);
+            assert_eq!(
+                initial.object_id,
+                crate::path_identity::verify_directory(f.cwd.path())
+                    .unwrap()
+                    .object_id
+            );
+        } else {
             assert!(f.manager.read().await.get_session(f.source).await.is_none());
             assert_ordinary_target_released(&f, id).await;
         }

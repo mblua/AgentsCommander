@@ -11,7 +11,7 @@ use crate::session::selection::{
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::test::MockRuntime;
 use tauri::Manager;
@@ -26,6 +26,7 @@ pub(crate) struct PortTestBackend {
             tokio::sync::oneshot::Receiver<()>,
         )>,
     >,
+    spawns: AtomicUsize,
     live: Mutex<HashSet<Uuid>>,
     kills: Mutex<std::collections::HashMap<Uuid, usize>>,
 }
@@ -56,6 +57,10 @@ impl PortTestBackend {
         }
     }
 
+    pub(crate) fn spawn_count(&self) -> usize {
+        self.spawns.load(Ordering::Acquire)
+    }
+
     pub(crate) fn kill_count(&self, session_id: Uuid) -> usize {
         self.kills
             .lock()
@@ -76,6 +81,7 @@ impl crate::pty::backend::PtyBackend for PortTestBackend {
         spec: crate::pty::backend::BackendSpawnSpec,
     ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
         Box::pin(async move {
+            self.spawns.fetch_add(1, Ordering::AcqRel);
             let gate = self.spawn_pause.lock().unwrap().take();
             if let Some((reached, resume)) = gate {
                 let _ = reached.send(spec.id);
