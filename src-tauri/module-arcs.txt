@@ -2721,7 +2721,6 @@ agentscommander_lib::session::selection::coordinator_lifecycle -> agentscommande
 agentscommander_lib::session::selection::coordinator_lifecycle -> agentscommander_lib::session::selection::payload
 agentscommander_lib::session::selection::coordinator_lifecycle -> agentscommander_lib::session::selection::replacement
 agentscommander_lib::session::selection::coordinator_lifecycle -> agentscommander_lib::session::session
-agentscommander_lib::session::selection::coordinator_requests -> agentscommander_lib::commands::session
 agentscommander_lib::session::selection::coordinator_requests -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::session::selection::coordinator_requests -> agentscommander_lib::config::settings
 agentscommander_lib::session::selection::coordinator_requests -> agentscommander_lib::resource_monitor
@@ -2805,7 +2804,6 @@ agentscommander_lib::session::selection::transaction -> agentscommander_lib::ses
 agentscommander_lib::session::selection::transaction -> agentscommander_lib::session::session
 agentscommander_lib::session::selection::turn -> agentscommander_lib::session::selection::payload
 agentscommander_lib::session::selection::worker -> agentscommander_lib::commands::resource_monitor
-agentscommander_lib::session::selection::worker -> agentscommander_lib::commands::session
 agentscommander_lib::session::selection::worker -> agentscommander_lib::commands::window
 agentscommander_lib::session::selection::worker -> agentscommander_lib::session::selection
 agentscommander_lib::session::selection::worker -> agentscommander_lib::session::selection::envelope
