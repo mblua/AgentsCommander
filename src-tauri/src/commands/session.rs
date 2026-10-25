@@ -28,8 +28,7 @@ use crate::session::warnings::{emit_session_warning, SessionWarning};
 use crate::telegram::manager::TelegramBridgeState;
 pub(crate) use resume_args::trusted_muse_auto_resume_spawn;
 use resume_args::{
-    antigravity_tokens_have_resume, codex_has_explicit_subcommand, codex_tokens_have_resume,
-    expand_env_var_refs, inject_antigravity_resume, inject_codex_resume, maybe_inject_muse_resume,
+    inject_antigravity_resume, inject_codex_resume, maybe_inject_muse_resume,
     maybe_inject_pi_resume, pi_has_explicit_session_control,
 };
 #[cfg(test)]
@@ -116,7 +115,6 @@ use create::DeferredCreateOutput;
 use create::InitialLastPrompt;
 use create::OwnedCreateAdmission;
 pub(crate) use create::PtyTargetCreateStep;
-use create::CLOSE_MARKER_EVENT_ORDER;
 pub(crate) use destroy::background_destroy_session_inner;
 use destroy::count_working_members;
 pub use destroy::destroy_session_inner;

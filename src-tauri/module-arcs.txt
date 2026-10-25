@@ -982,7 +982,9 @@ agentscommander_lib::commands::session -> agentscommander_lib::telegram
 agentscommander_lib::commands::session -> agentscommander_lib::telegram::manager
 agentscommander_lib::commands::session::agent_command -> agentscommander_lib::config::agent_command
 agentscommander_lib::commands::session::agent_command -> agentscommander_lib::config::agent_config
+agentscommander_lib::commands::session::agent_command -> agentscommander_lib::config::coding_agent_profiles
 agentscommander_lib::commands::session::agent_command -> agentscommander_lib::config::settings
+agentscommander_lib::commands::session::agent_command -> agentscommander_lib::session::session
 agentscommander_lib::commands::session::co_managed -> agentscommander_lib::commands::telegram
 agentscommander_lib::commands::session::co_managed -> agentscommander_lib::config::co_managed
 agentscommander_lib::commands::session::co_managed -> agentscommander_lib::config::settings
@@ -994,7 +996,6 @@ agentscommander_lib::commands::session::co_managed -> agentscommander_lib::teleg
 agentscommander_lib::commands::session::create -> agentscommander_lib::api::message_store
 agentscommander_lib::commands::session::create -> agentscommander_lib::commands::session
 agentscommander_lib::commands::session::create -> agentscommander_lib::config::agent_command
-agentscommander_lib::commands::session::create -> agentscommander_lib::config::coordinator_clocks
 agentscommander_lib::commands::session::create -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::commands::session::create -> agentscommander_lib::config::teams
 agentscommander_lib::commands::session::create -> agentscommander_lib::path_identity
@@ -1005,13 +1006,12 @@ agentscommander_lib::commands::session::create -> agentscommander_lib::pty::inpu
 agentscommander_lib::commands::session::create -> agentscommander_lib::pty::manager
 agentscommander_lib::commands::session::create -> agentscommander_lib::pty::watchers
 agentscommander_lib::commands::session::create -> agentscommander_lib::pty::watchers::history
-agentscommander_lib::commands::session::create -> agentscommander_lib::resource_monitor
 agentscommander_lib::commands::session::create -> agentscommander_lib::session::manager
 agentscommander_lib::commands::session::create -> agentscommander_lib::session::selection
 agentscommander_lib::commands::session::create -> agentscommander_lib::session::session
 agentscommander_lib::commands::session::create -> agentscommander_lib::session::warnings
 agentscommander_lib::commands::session::create::admission -> agentscommander_lib::api::message_store
-agentscommander_lib::commands::session::create::admission -> agentscommander_lib::commands::session
+agentscommander_lib::commands::session::create::admission -> agentscommander_lib::commands::session::lifecycle
 agentscommander_lib::commands::session::create::admission -> agentscommander_lib::config::archive_gate
 agentscommander_lib::commands::session::create::admission -> agentscommander_lib::config::coordinator_clocks
 agentscommander_lib::commands::session::create::admission -> agentscommander_lib::config::sessions_persistence
@@ -1024,7 +1024,7 @@ agentscommander_lib::commands::session::create::admission -> agentscommander_lib
 agentscommander_lib::commands::session::create::admission -> agentscommander_lib::session::selection
 agentscommander_lib::commands::session::create::context_prep -> agentscommander_lib::session::selection
 agentscommander_lib::commands::session::create::effects -> agentscommander_lib::session::selection
-agentscommander_lib::commands::session::create::launch -> agentscommander_lib::commands::session
+agentscommander_lib::commands::session::create::launch -> agentscommander_lib::commands::session::agent_command
 agentscommander_lib::commands::session::create::launch -> agentscommander_lib::config::agent_command
 agentscommander_lib::commands::session::create::launch -> agentscommander_lib::config::coding_agent_profiles
 agentscommander_lib::commands::session::create::launch -> agentscommander_lib::config::coding_agents_catalog
@@ -1070,9 +1070,7 @@ agentscommander_lib::commands::session::lifecycle -> agentscommander_lib::sessio
 agentscommander_lib::commands::session::restart -> agentscommander_lib::app_state
 agentscommander_lib::commands::session::restart -> agentscommander_lib::commands::pty
 agentscommander_lib::commands::session::restart -> agentscommander_lib::commands::session
-agentscommander_lib::commands::session::restart -> agentscommander_lib::config::agent_command
-agentscommander_lib::commands::session::restart -> agentscommander_lib::config::agent_config
-agentscommander_lib::commands::session::restart -> agentscommander_lib::config::coding_agent_profiles
+agentscommander_lib::commands::session::restart -> agentscommander_lib::commands::session::agent_command
 agentscommander_lib::commands::session::restart -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::commands::session::restart -> agentscommander_lib::config::settings
 agentscommander_lib::commands::session::restart -> agentscommander_lib::pty::manager
@@ -1089,11 +1087,12 @@ agentscommander_lib::commands::session::restart_resume -> agentscommander_lib::p
 agentscommander_lib::commands::session::restart_resume -> agentscommander_lib::session::manager
 agentscommander_lib::commands::session::restart_resume -> agentscommander_lib::session::session
 agentscommander_lib::commands::session::restart_resume -> agentscommander_lib::web::commands
-agentscommander_lib::commands::session::resume_args -> agentscommander_lib::commands::session
+agentscommander_lib::commands::session::resume_args -> agentscommander_lib::commands::session::agent_command
 agentscommander_lib::commands::session::resume_args -> agentscommander_lib::config::agent_command
 agentscommander_lib::commands::session::resume_args -> agentscommander_lib::pty::backend
 agentscommander_lib::commands::session::resume_args -> agentscommander_lib::session::profile
-agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::commands::session
+agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::commands::session::agent_command
+agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::commands::session::resume_args
 agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::config::agent_command
 agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::config::agent_path
 agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::path_utils
