@@ -8,15 +8,6 @@
   },
   "moduleCycles": [
     {
-      "id": "ffa526a35c677d6b",
-      "members": [
-        "agentscommander_lib::commands::config",
-        "agentscommander_lib::commands::config::web_server",
-        "agentscommander_lib::web",
-        "agentscommander_lib::web::commands"
-      ]
-    },
-    {
       "id": "38cac35c68baf95e",
       "members": [
         "agentscommander_lib::pty::container_backend",

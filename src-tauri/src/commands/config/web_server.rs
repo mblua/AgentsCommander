@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::State;
+use tauri::{Manager, State};
 use uuid::Uuid;
 
 use crate::api::auth;
@@ -14,15 +14,33 @@ use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::web::auth::WebAccessToken;
 use crate::web::broadcast::WsBroadcaster;
+use crate::web::command_port::ManagedWebCommandDispatcher;
 use crate::{
     ApiServerHandle, ApiServerTask, WebServerHandle, WebServerLifecycle,
     WebServerLifecycleSnapshot, WebServerStartWaiter, WEB_SERVER_START_CANCELLED,
 };
 
-use super::{
-    MintApiClientResponse, API_SERVER_STOP_TIMEOUT_MS, MINT_API_CLIENT_DEFAULT_TTL_HOURS,
-    MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE, WEB_STATUS_CONNECT_TIMEOUT_MS,
-};
+const WEB_STATUS_CONNECT_TIMEOUT_MS: u64 = 500;
+const API_SERVER_STOP_TIMEOUT_MS: u64 = 5_000;
+// Default mirrors container API token TTL; manual GUI mints get a longer cap.
+pub(crate) const MINT_API_CLIENT_DEFAULT_TTL_HOURS: i64 = 24;
+pub(crate) const MINT_API_CLIENT_MAX_TTL_DAYS: i64 = 30;
+pub(crate) const MINT_API_CLIENT_NOTE: &str =
+    "Store this token now; it is shown only once. The registry keeps only a hash. A manually \
+        requested pty-input scope does not grant actuation without an automatically bound live \
+        container session.";
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MintApiClientResponse {
+    pub client_id: String,
+    pub token: String,
+    pub bound_fqn: String,
+    pub bound_root: String,
+    pub scopes: Vec<String>,
+    pub expires_at: Option<String>,
+    pub note: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -438,7 +456,7 @@ pub(crate) fn begin_web_server_start(
     settings: SettingsState,
     web_token: Arc<WebAccessToken>,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
-    pty_mgr: Arc<std::sync::Mutex<PtyManager>>,
+    _pty_mgr: Arc<std::sync::Mutex<PtyManager>>,
     broadcaster: WsBroadcaster,
     app_handle: tauri::AppHandle,
     shutdown: crate::shutdown::ShutdownSignal,
@@ -448,6 +466,10 @@ pub(crate) fn begin_web_server_start(
     ws_handle.begin_start(
         shutdown,
         move |generation, admission, generation_token| async move {
+            let dispatcher = app_handle
+                .try_state::<ManagedWebCommandDispatcher>()
+                .map(|managed| Arc::clone(&managed.0))
+                .ok_or("Web command dispatcher is not registered")?;
             let s = settings.read().await;
             let bind = s.web_server_bind.clone();
             let port = s.web_server_port;
@@ -479,8 +501,7 @@ pub(crate) fn begin_web_server_start(
                 port,
                 web_token,
                 session_mgr,
-                pty_mgr,
-                settings,
+                dispatcher,
                 broadcaster,
                 app_handle,
                 admission,

@@ -328,15 +328,22 @@ async fn real_loopback_websocket_is_closed_and_reaped_by_generation_stop() {
         generation_token.clone(),
     ));
     assert!(admission.open(&shutdown));
+    let broadcaster = crate::web::broadcast::WsBroadcaster::new();
+    let dispatcher =
+        crate::web::commands::WebCommandsDispatcher::new(crate::web::commands::WsState {
+            session_mgr: Arc::clone(&session_mgr),
+            pty_mgr,
+            settings,
+            broadcaster: broadcaster.clone(),
+            app_handle: app.handle().clone(),
+        });
     let router = crate::web::build_router(
         Arc::new(crate::web::auth::WebAccessToken::new(
             "loopback-test-token".to_string(),
         )),
         session_mgr,
-        pty_mgr,
-        settings,
-        crate::web::broadcast::WsBroadcaster::new(),
-        app.handle().clone(),
+        Arc::new(dispatcher),
+        broadcaster,
         Arc::clone(&admission),
         generation_token.clone(),
         None,
