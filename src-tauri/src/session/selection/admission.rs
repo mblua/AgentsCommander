@@ -54,11 +54,7 @@ pub(super) struct CriticalAdmissionReservation {
     pub(super) guard: CriticalAdmissionGuard,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CriticalAdmissionOutcome<T> {
-    Completed(T),
-    AlreadyPending,
-}
+pub use crate::pty::container_lifecycle::CriticalAdmissionOutcome;
 
 /// #1151 - `watchdog_resource_kill` must distinguish two conditions that the shared
 /// `CriticalAdmissionOutcome::AlreadyPending` conflates: a genuinely in-flight critical

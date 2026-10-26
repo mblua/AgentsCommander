@@ -1,9 +1,13 @@
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Weak;
 
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit};
 use uuid::Uuid;
 
+use crate::pty::container_lifecycle::ContainerLifecycle;
+pub use crate::pty::container_lifecycle::ContainerLifecycleSender;
 use crate::session::manager::PendingCreateBinding;
 use crate::session::session::SessionInfo;
 use crate::session::warnings::SessionWarning;
@@ -289,23 +293,28 @@ impl Drop for CreateFinalizationTicket {
     }
 }
 
-#[derive(Clone)]
-pub struct ContainerLifecycleSender {
-    pub(super) inner: Weak<CoordinatorInner>,
+pub(crate) struct WeakContainerLifecycle {
+    pub(crate) inner: Weak<CoordinatorInner>,
 }
 
-impl ContainerLifecycleSender {
-    pub async fn route_lost(
+impl ContainerLifecycle for WeakContainerLifecycle {
+    fn route_lost(
         &self,
         session_id: Uuid,
         exit_code: i32,
-    ) -> Result<CriticalAdmissionOutcome<()>, String> {
-        let inner = self
-            .inner
-            .upgrade()
-            .ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
-        SelectionCoordinator { inner }
-            .submit_route_loss(session_id, exit_code)
-            .await
+    ) -> Pin<Box<dyn Future<Output = Result<CriticalAdmissionOutcome<()>, String>> + Send + '_>>
+    {
+        Box::pin(async move {
+            let inner = self
+                .inner
+                .upgrade()
+                .ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
+            SelectionCoordinator { inner }
+                .submit_route_loss(session_id, exit_code)
+                .await
+        })
     }
 }
+
+#[cfg(test)]
+mod tests;

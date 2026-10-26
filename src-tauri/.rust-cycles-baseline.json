@@ -6,15 +6,6 @@
     "functionScope": "cross-module",
     "includeTests": false
   },
-  "moduleCycles": [
-    {
-      "id": "f897f28f056d9b45",
-      "members": [
-        "agentscommander_lib::pty::container_backend",
-        "agentscommander_lib::pty::manager",
-        "agentscommander_lib::session::selection"
-      ]
-    }
-  ],
+  "moduleCycles": [],
   "functionCycles": []
 }

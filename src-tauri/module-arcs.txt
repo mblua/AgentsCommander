@@ -2403,6 +2403,7 @@ agentscommander_lib::pty::container_backend -> agentscommander_lib::config::sett
 agentscommander_lib::pty::container_backend -> agentscommander_lib::errors
 agentscommander_lib::pty::container_backend -> agentscommander_lib::path_identity
 agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::backend
+agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::container_lifecycle
 agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::container_paths
 agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::container_runtime
 agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::container_tokens
@@ -2414,7 +2415,6 @@ agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::output_
 agentscommander_lib::pty::container_backend -> agentscommander_lib::pty::watchers
 agentscommander_lib::pty::container_backend -> agentscommander_lib::resource_monitor
 agentscommander_lib::pty::container_backend -> agentscommander_lib::session::profile
-agentscommander_lib::pty::container_backend -> agentscommander_lib::session::selection
 agentscommander_lib::pty::container_backend -> agentscommander_lib::shutdown
 agentscommander_lib::pty::container_backend -> agentscommander_lib::web::broadcast
 agentscommander_lib::pty::container_backend::cleanup -> agentscommander_lib::pty::container_backend
@@ -2541,6 +2541,7 @@ agentscommander_lib::pty::manager -> agentscommander_lib::errors
 agentscommander_lib::pty::manager -> agentscommander_lib::path_identity
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::backend
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::container_backend
+agentscommander_lib::pty::manager -> agentscommander_lib::pty::container_lifecycle
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::container_tokens
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::context_scrape
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::docker_runtime
@@ -2552,7 +2553,6 @@ agentscommander_lib::pty::manager -> agentscommander_lib::pty::output
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::output_senders
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::response_close
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::watchers
-agentscommander_lib::pty::manager -> agentscommander_lib::session::selection
 agentscommander_lib::pty::manager -> agentscommander_lib::shutdown
 agentscommander_lib::pty::manager -> agentscommander_lib::web::broadcast
 agentscommander_lib::pty::manager::route_proof -> agentscommander_lib::errors
@@ -2871,6 +2871,7 @@ agentscommander_lib::session::selection -> agentscommander_lib::session::manager
 agentscommander_lib::session::selection -> agentscommander_lib::session::session
 agentscommander_lib::session::selection -> agentscommander_lib::session::warnings
 agentscommander_lib::session::selection -> agentscommander_lib::web::broadcast
+agentscommander_lib::session::selection::admission -> agentscommander_lib::pty::container_lifecycle
 agentscommander_lib::session::selection::admission -> agentscommander_lib::resource_monitor
 agentscommander_lib::session::selection::admission -> agentscommander_lib::session
 agentscommander_lib::session::selection::admission -> agentscommander_lib::session::selection
@@ -2917,6 +2918,7 @@ agentscommander_lib::session::selection::coordinator_requests -> agentscommander
 agentscommander_lib::session::selection::coordinator_requests -> agentscommander_lib::session::selection::envelope
 agentscommander_lib::session::selection::coordinator_requests -> agentscommander_lib::session::selection::payload
 agentscommander_lib::session::selection::coordinator_requests -> agentscommander_lib::session::selection::replacement
+agentscommander_lib::session::selection::coordinator_requests -> agentscommander_lib::session::selection::tickets
 agentscommander_lib::session::selection::coordinator_runtime -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::session::selection::coordinator_runtime -> agentscommander_lib::config::settings
 agentscommander_lib::session::selection::coordinator_runtime -> agentscommander_lib::pty::backend
@@ -2970,6 +2972,7 @@ agentscommander_lib::session::selection::shutdown_cleanup -> agentscommander_lib
 agentscommander_lib::session::selection::shutdown_cleanup -> agentscommander_lib::session::selection
 agentscommander_lib::session::selection::shutdown_cleanup -> agentscommander_lib::session::selection::admission
 agentscommander_lib::session::selection::shutdown_cleanup -> agentscommander_lib::session::selection::replacement
+agentscommander_lib::session::selection::tickets -> agentscommander_lib::pty::container_lifecycle
 agentscommander_lib::session::selection::tickets -> agentscommander_lib::session
 agentscommander_lib::session::selection::tickets -> agentscommander_lib::session::manager
 agentscommander_lib::session::selection::tickets -> agentscommander_lib::session::selection
