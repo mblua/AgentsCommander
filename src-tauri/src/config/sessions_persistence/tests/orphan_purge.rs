@@ -835,7 +835,11 @@ async fn characterize_3254_p05_rotation() {
     );
     let retention = vec![temp.path().join("kept").to_string_lossy().into_owned()];
     crate::config::sessions_persistence::reset_orphan_archived();
-    crate::config::sessions_persistence::save_sessions_to_dir(temp.path(), &[row.clone()]).unwrap();
+    crate::config::sessions_persistence::save_sessions_to_dir(
+        temp.path(),
+        std::slice::from_ref(&row),
+    )
+    .unwrap();
     crate::config::sessions_persistence::set_test_orphan_archive_cap(Some(1));
     let start = crate::logging::test_tee_snapshot().len();
     let result = crate::config::sessions_persistence::purge_sessions_outside_project_paths_in_dir(
