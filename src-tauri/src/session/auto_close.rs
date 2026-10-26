@@ -27,19 +27,6 @@ const WAKE_GRACE: Duration = Duration::from_secs(30);
 /// Spawn the auto-close watcher. Mirrors MailboxPoller/LoopScheduler::start
 /// (lib.rs): a tokio task with a `select!` on the shutdown token.
 pub fn start(app: AppHandle, shutdown: crate::shutdown::ShutdownSignal) {
-    let response_app = app.clone();
-    let response_shutdown = shutdown.clone();
-    tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::select! {
-                biased;
-                _ = response_shutdown.token().cancelled() => break,
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                    crate::session::selection::poll_response_close(&response_app).await;
-                }
-            }
-        }
-    });
     tauri::async_runtime::spawn(async move {
         // (#580) per-team last-emitted anchor (seconds) for the badge dedup;
         // task-local, self-bounded via `retain` in `tick`.

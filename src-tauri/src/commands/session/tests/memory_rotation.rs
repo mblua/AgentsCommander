@@ -1,132 +1,16 @@
 use super::*;
 
-// T16 (#1172 D5), rescoped by #1175. READ THIS BEFORE TRUSTING IT.
-//
-// This is a SOURCE-LEVEL INVENTORY over `session.rs` alone. It does NOT prove
-// that a resume never rotates, and it does not close the class of changes that
-// retarget the rotation. Three measured facts bound it:
-//
-//   - A cross-file alias (`pub(crate) use ... as <alias>;` in `config/mod.rs`
-//     plus an ungated call to the alias here) keeps assertions 1 to 3 intact
-//     while a resume rotates. Recorded in the issue.
-//   - A cross-file CALL added in `lib.rs` before the restore at `:2350` is
-//     invisible to every assertion here and to both behavioral tests below.
-//   - `skip_auto_resume |= is_coordinator;` inserted immediately above the
-//     binding leaves ALL FIVE assertions and BOTH behavioral tests green while
-//     a coordinator resume rotates. Measured; plan 2.8.
-//
-// What it DOES enforce, and what nothing else in this suite can:
-//   - assertions 1 to 3: `rotate_origin_memory_at_spawn` is REFERENCED exactly
-//     twice in this file, once in the comment and once in the gated call. A
-//     third occurrence is an UNBUDGETED REFERENCE; it need not be a call. This
-//     is what catches an ungated second call added on a launch branch the
-//     behavioral tests do not drive (`execute_restart_transaction` at `:3897`,
-//     the Root Agent launch at `:4703`).
-//   - assertions 4 and 5: the name `start_fresh` is bound exactly once, and its
-//     right-hand side is exactly the resume flag. That is a complete statement
-//     about ONE LINE. It says nothing about the value flowing into that line,
-//     which is the residual named above and in plan D5.
-//
-// The normative property is guarded behaviorally by
-// `a_production_shaped_startup_restore_never_rotates_while_a_fresh_launch_does`
-// and `create_session_inner_rotates_the_fresh_target_and_not_the_resumed_one`,
-// for the entry points and argument shapes those tests drive and no further.
-// Plan section 4.5 enumerates what neither side covers.
-//
-// One invisible dependency, already satisfied: the split needle below uses
-// `\n`. This repository sets `core.autocrlf=true` on Windows checkouts, and
-// `.gitattributes` `*.rs text eol=lf` is what keeps `session.rs` LF on disk
-// (measured: 0 CRLF, 9344 LF). If that attribute were ever dropped, this test
-// fails LOUD rather than silent: assertion 1 would count 2, because the needle
-// also appears as this test's own `let gated_call = "..."` literal.
+// Source inventory covers the collected production session/create/restart files.
+// It pins the fresh flag, gated rotation, comment and reference budgets. Cross-file
+// aliases and callers outside this map still require behavioral coverage.
+// The production-shaped resume negative and fresh positive controls below remain
+// independent of this inventory.
 #[test]
 fn rotate_origin_memory_at_spawn_has_one_gated_call_in_session_rs() {
-    let source = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/commands/session.rs"
-    ))
-    .expect("read session.rs");
-    let production = source
-        .split("#[cfg(test)]\nmod tests")
-        .next()
-        .expect("production session source");
-    let normalized = production.split_whitespace().collect::<String>();
-    let gated_call = concat!(
-        "ifstart_fresh&&context_result.is_ok(){",
-        "crate::config::agent_memory::rotate_origin_memory_at_spawn(&cwd);}"
-    );
-
-    assert_eq!(
-        normalized.matches(gated_call).count(),
-        1,
-        "#1172 D5: the memory rotation must stay behind `start_fresh && context_result.is_ok()`. \
-             This pins the gate's exact spelling at the single call site in this file; it does not \
-             prove the resume property, and the behavioral tests named above prove it only for the \
-             entry points they drive."
-    );
-    // What assertions 2 and 3 add to assertion 1, stated as the bounded
-    // property they actually enforce.
-    //
-    // Assertion 1 pins one exact spelling of the gated call, so a second
-    // call spelled differently would not match its needle: a different
-    // argument, the path wrapped in parens so it reads `..._at_spawn)(`, or
-    // a block comment between the identifier and the paren. Assertions 2
-    // and 3 reach those by counting the BARE identifier rather than an
-    // invocation shape, and by pinning the one legitimate occurrence that
-    // is not a call, the comment 5.4 requires above the gate.
-    //
-    // The property they enforce, and nothing broader: within `session.rs`
-    // the exact identifier `rotate_origin_memory_at_spawn` occurs exactly
-    // twice, once in that comment and once in the call assertion 1 already
-    // pinned. A third occurrence is unbudgeted.
-    //
-    // That is a count of one identifier in one file. It does NOT establish
-    // that every route to the rotation is accounted for. A call reached
-    // through a cross-file alias, and a call added in another file, both
-    // leave this count at two; both are recorded in the header above, and
-    // the second is plan 9.2's M9, measured green against all five
-    // assertions here and both behavioral tests below.
-    let comment_mention = "`rotate_origin_memory_at_spawn`returns`()`";
-    assert_eq!(
-        normalized.matches(comment_mention).count(),
-        1,
-        "#1172 D5: the comment above the gate must keep naming the rotation exactly once; \
-             it is the one non-call mention the reference budget below accounts for."
-    );
-    assert_eq!(
-        normalized.matches("rotate_origin_memory_at_spawn").count(),
-        2,
-        "#1172 D5: within THIS FILE the rotation entry point must be REFERENCED exactly twice - \
-             once in the comment above the gate, once in the gated call itself. A third occurrence \
-             is unbudgeted: it may be a second call site, an import, or any other reference, and \
-             each of those is a change this inventory deliberately refuses to absorb silently. A \
-             cross-file alias evades this count entirely; see the header comment."
-    );
-    // #1175 D2 part 4. The gate's INPUT, not just its shape. Bounded claim: this
-    // pins ONE LINE. It cannot see how `skip_auto_resume` got its value; see the
-    // header and plan D5 residual 3.
-    assert_eq!(
-        normalized
-            .matches("letstart_fresh=skip_auto_resume;")
-            .count(),
-        1,
-        "#1175: `start_fresh` must be bound to the resume flag ALONE. Appending `|| <extra>` \
-             here makes a RESUME rotate on the production launches that supply the extra input. \
-             Measured (plan 2.7): `|| pending_start_fresh.is_some()` reds this assertion AND the \
-             production-shaped restore test; the `|| is_coordinator` variant reds only this one, \
-             because no cwd in this test binary can be a coordinator."
-    );
-    // #1175 round 2. Assertion 4 alone is defeated by ordinary shadowing:
-    // `let start_fresh = skip_auto_resume; let start_fresh = start_fresh || X;`
-    // preserves its needle exactly. MEASURED (plan 2.8): this assertion is the
-    // only thing in the suite that reds on that form.
-    assert_eq!(
-        normalized.matches("letstart_fresh=").count(),
-        1,
-        "#1175: `start_fresh` must be bound EXACTLY ONCE. A second binding shadows the first \
-             and can compose any additional input into the rotation decision while assertion 4's \
-             needle stays intact."
-    );
+    let sources = super::support::session_sources();
+    use super::support::{source_budgets, source_fresh, source_rotation};
+    assert!(super::support::source_map_complete(&sources));
+    assert!(source_rotation(&sources) && source_fresh(&sources) && source_budgets(&sources));
 }
 
 /// #1175 B1. The behavioral guard on #1172 D5's normative property, within the
@@ -347,16 +231,40 @@ async fn create_session_inner_rotates_the_fresh_target_and_not_the_resumed_one()
 
 #[test]
 fn create_session_inner_marks_spawning_until_spawn_returns() {
-    let source = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/commands/session.rs"
-    ))
-    .expect("read session.rs");
-    let production = source
-        .split("#[cfg(test)]\nmod tests")
-        .next()
-        .expect("production session source");
-    let normalized = production.split_whitespace().collect::<String>();
+    use super::support::{
+        source_archive, source_chain, source_effect, source_map_complete, source_mark,
+        source_pending,
+    };
+    let sources = super::support::session_sources();
+    assert!(
+        source_map_complete(&sources),
+        "complete creation stage inventory"
+    );
+    assert!(
+        source_chain(&sources),
+        "reachable context/backend/publication chain"
+    );
+    assert!(
+        source_pending(&sources),
+        "pending creation precedes the stage chain"
+    );
+    assert!(
+        source_mark(&sources),
+        "spawn precedes mark drop and error handling"
+    );
+    assert!(
+        source_effect(&sources),
+        "backend effect completes before mark drop"
+    );
+    assert!(
+        source_archive(&sources),
+        "two archive gates bracket mark and pending creation"
+    );
+    let normalized = sources
+        .get("session/create/core.rs")
+        .expect("creation core from the same source map")
+        .split_whitespace()
+        .collect::<String>();
     let first_gate = normalized
         .find(concat!(
             "enforce_owned_unarchived_for_spawn(app,&cwd,&session_label,&create_owner,",
@@ -366,38 +274,9 @@ fn create_session_inner_marks_spawning_until_spawn_returns() {
     let mark = normalized
         .find("letspawn_mark={")
         .expect("spawn mark immediately before pending-session creation");
-    let pending_create = normalized
-        .find("letpending_result=mgr.create_pending_session_with_binding_and_carrier_permit(")
-        .expect("pending-session creation");
-    let spawn = normalized
-        .find("letspawn_result=PtyManager::spawn(pty_mgr,session.backend_kind,spawn_spec).await;")
-        .expect("spawn call");
-    let drop_mark = normalized
-        .find("drop(spawn_mark);")
-        .expect("spawn mark drop");
-    let spawn_error = normalized
-        .find("ifletErr(e)=spawn_result{")
-        .expect("spawn error handling");
-
     assert!(
         first_gate < mark,
         "spawn mark must be created only after pre-create validation"
-    );
-    assert!(
-        mark < pending_create,
-        "spawn mark must precede pending-session creation"
-    );
-    assert!(
-        pending_create < spawn,
-        "pending-session creation must run before PTY spawn"
-    );
-    assert!(
-        spawn < drop_mark,
-        "spawn mark must stay live while spawn awaits"
-    );
-    assert!(
-        drop_mark < spawn_error,
-        "spawn mark must drop immediately after spawn returns"
     );
 }
 
@@ -572,11 +451,12 @@ async fn create_session_inner_retires_the_spawn_mark_on_spawn_failure() {
 
 #[test]
 fn restart_session_inner_probes_archive_before_destroying_session() {
-    let source = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/commands/session.rs"
-    ))
-    .expect("read session.rs");
+    let sources = super::support::session_sources();
+    assert!(super::support::source_map_complete(&sources));
+    let source = sources
+        .get("session/restart/execution.rs")
+        .or_else(|| sources.get("session.rs"))
+        .expect("restart execution source");
     let probe = source
         .find("crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;")
         .expect("restart probe call");

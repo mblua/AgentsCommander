@@ -1,6 +1,7 @@
-use super::{
+use super::agent_command::executable_basename;
+use super::resume_args::{
     antigravity_tokens_have_resume, codex_has_explicit_subcommand, codex_tokens_have_resume,
-    executable_basename, expand_env_var_refs, pi_has_explicit_session_control,
+    expand_env_var_refs, pi_has_explicit_session_control,
 };
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::pty::backend::SessionBackendKind;

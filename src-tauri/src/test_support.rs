@@ -17,12 +17,12 @@
 #[cfg(any(windows, target_os = "linux"))]
 #[doc(hidden)]
 pub fn test_builder() -> tauri::Builder<tauri::Wry> {
-    tauri::Builder::default().any_thread()
+    crate::commands::session::selection_executor::install(tauri::Builder::default().any_thread())
 }
 
 /// macOS counterpart. See the note above.
 #[cfg(not(any(windows, target_os = "linux")))]
 #[doc(hidden)]
 pub fn test_builder() -> tauri::Builder<tauri::Wry> {
-    tauri::Builder::default()
+    crate::commands::session::selection_executor::install(tauri::Builder::default())
 }

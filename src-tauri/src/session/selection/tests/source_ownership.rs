@@ -263,6 +263,10 @@ fn coordinator_jobs_are_typed_data_without_managed_handles_or_futures() {
         coordinator_job_handle_violations(source)
     );
     let commands = include_str!("../../../commands/session.rs");
+    let opaque = &source[source.find("pub(crate) struct OpaqueFixtureInput").unwrap()
+        ..source
+            .find("impl fmt::Debug for OpaqueFixtureInput")
+            .unwrap()];
     let payload = &commands[commands
         .find("pub(crate) struct FixturePtyCutLease")
         .unwrap()
@@ -281,6 +285,10 @@ fn coordinator_jobs_are_typed_data_without_managed_handles_or_futures() {
         assert!(
             !payload.contains(forbidden),
             "fixture payload hides forbidden {forbidden}"
+        );
+        assert!(
+            !opaque.contains(forbidden),
+            "opaque fixture records hide forbidden {forbidden}"
         );
         let mutated = format!("enum CoordinatorJob {{ Rogue {{ value: {forbidden} }} }}");
         assert_eq!(

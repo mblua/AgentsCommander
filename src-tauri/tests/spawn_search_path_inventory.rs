@@ -253,6 +253,12 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 1)],
     ),
     (
+        "src-tauri/src/commands/session/selection_executor/tests/protected_carrier.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
         "src-tauri/src/commands/session/tests/launch_and_probe.rs",
         1,
         0,

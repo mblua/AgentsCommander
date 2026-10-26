@@ -60,6 +60,9 @@ async fn restore_is_fifo_first_and_queues_external_work_until_release() {
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(manager)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build restore coordinator test app");
@@ -183,6 +186,9 @@ async fn restore_held_route_loss_waits_then_reconciles_the_public_row() {
         .record_route(session.id, SessionBackendKind::LocalProcess);
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(DetachedSessionsState::default())
@@ -243,6 +249,9 @@ async fn derived_agent_id_binding_deferred_and_root_restore_install_before_publi
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let coordinator = SelectionCoordinator::new(manager.clone(), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(manager.clone())
         .manage(DetachedSessionsState::default())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -316,6 +325,9 @@ async fn restore_transaction_publishes_rows_before_one_final_selection() {
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let broadcaster = WsBroadcaster::new();
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(DetachedSessionsState::default())
         .manage(broadcaster.clone())
@@ -407,6 +419,9 @@ async fn restored_dormant_session_has_no_match_tier() {
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(DetachedSessionsState::default())
         .manage(WsBroadcaster::new())
