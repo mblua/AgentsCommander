@@ -830,7 +830,7 @@ pub(crate) async fn create_session_inner_core<R: tauri::Runtime>(
     // This accepted core owns every launched effect and its real result.
     // Coordinator shutdown may reject finalization, but cannot drop a pending
     // backend/native effect and manufacture completion for the caller.
-    let result = create_body.await;
+    let result = Box::pin(create_body).await;
     let marker = marker_ticket
         .lock()
         .unwrap_or_else(|e| e.into_inner())
