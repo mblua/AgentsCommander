@@ -1728,6 +1728,8 @@ agentscommander_lib::config::teams::routes -> agentscommander_lib::path_identity
 agentscommander_lib::events::logging -> agentscommander_lib::logging
 agentscommander_lib::events::loops -> agentscommander_lib::filesystem
 agentscommander_lib::events::loops -> agentscommander_lib::loops::events
+agentscommander_lib::events::phone -> agentscommander_lib::phone::events
+agentscommander_lib::events::phone -> agentscommander_lib::phone::types
 agentscommander_lib::events::session -> agentscommander_lib::session::warnings
 agentscommander_lib::logging -> agentscommander_lib::config
 agentscommander_lib::logging -> agentscommander_lib::config::instance_gitignore
@@ -1779,6 +1781,7 @@ agentscommander_lib::path_identity::retained -> agentscommander_lib::path_identi
 agentscommander_lib::path_identity::retained -> agentscommander_lib::path_identity::regular
 agentscommander_lib::path_identity::terminal_output -> agentscommander_lib::path_identity
 agentscommander_lib::path_identity::terminal_output -> agentscommander_lib::path_identity::regular
+agentscommander_lib::phone::events -> agentscommander_lib::phone::types
 agentscommander_lib::phone::mailbox::handoff -> agentscommander_lib::config::agent_command
 agentscommander_lib::phone::mailbox::handoff -> agentscommander_lib::config::coding_agent_profiles
 agentscommander_lib::phone::mailbox::handoff -> agentscommander_lib::config::settings
@@ -1935,6 +1938,7 @@ agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::api::a
 agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::api::message_store
 agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::config::settings
 agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::path_identity
+agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::phone::events
 agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::phone::mailbox::poller
 agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::phone::mailbox::pty_claim
 agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::phone::mailbox::settle
