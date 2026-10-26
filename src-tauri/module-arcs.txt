@@ -3061,6 +3061,7 @@ agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::commands::c
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::network
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::telegram::jsonl_kernel
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::telegram::output
+agentscommander_lib::telegram::jsonl_kernel -> agentscommander_lib::filesystem::transcripts
 agentscommander_lib::telegram::manager -> agentscommander_lib::capture::key
 agentscommander_lib::telegram::manager -> agentscommander_lib::capture::registry
 agentscommander_lib::telegram::manager -> agentscommander_lib::errors

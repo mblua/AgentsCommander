@@ -393,3 +393,61 @@ fn local_template_visitor_preserves_open_error_and_full_traversal() {
     assert_eq!(result, ControlFlow::Continue(()));
     assert_eq!(names.len(), 2);
 }
+
+#[test]
+fn transcript_truncation_preserves_warning_and_state() {
+    const TEST: &str = "filesystem::tests::transcript_truncation_preserves_warning_and_state";
+    const MARKER: &str = "AC_TRANSCRIPT_TRUNCATION_LOG_CHILD";
+    if std::env::var_os(MARKER).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env(MARKER, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("truncation warning captured"));
+        return;
+    }
+
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<(log::Level, String, String)>>>);
+    impl log::Log for Capture {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            self.0.lock().unwrap().push((
+                record.level(),
+                record.target().to_owned(),
+                record.args().to_string(),
+            ));
+        }
+        fn flush(&self) {}
+    }
+    let records = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    log::set_boxed_logger(Box::new(Capture(records.clone()))).unwrap();
+    log::set_max_level(log::LevelFilter::Warn);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("transcript.jsonl");
+    std::fs::write(&path, "x\n").unwrap();
+    let mut offset = 100;
+    let mut remainder = "partial".to_owned();
+    let lines =
+        transcripts::read_new_lines_with_starts(&path, &mut offset, &mut remainder).unwrap();
+    assert!(lines.is_empty());
+    assert_eq!(offset, 2);
+    assert!(remainder.is_empty());
+    assert_eq!(
+        *records.lock().unwrap(),
+        vec![(
+            log::Level::Warn,
+            "agentscommander_lib::telegram::jsonl_kernel".to_owned(),
+            "[JSONL_TRUNCATE] File shrunk from 100 to 2, skipping past replay".to_owned(),
+        )]
+    );
+    println!("truncation warning captured");
+}
