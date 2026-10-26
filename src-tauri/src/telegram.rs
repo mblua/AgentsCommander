@@ -1,4 +1,5 @@
 pub(crate) mod api;
+pub(crate) mod attachments;
 pub(crate) mod bridge;
 mod claude_watcher;
 mod codex_watcher;

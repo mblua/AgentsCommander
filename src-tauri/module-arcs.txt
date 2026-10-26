@@ -1290,6 +1290,7 @@ agentscommander_lib::commands::telegram -> agentscommander_lib::pty::manager
 agentscommander_lib::commands::telegram -> agentscommander_lib::session::manager
 agentscommander_lib::commands::telegram -> agentscommander_lib::session::profile
 agentscommander_lib::commands::telegram -> agentscommander_lib::telegram::api
+agentscommander_lib::commands::telegram -> agentscommander_lib::telegram::attachments
 agentscommander_lib::commands::telegram -> agentscommander_lib::telegram::bridge
 agentscommander_lib::commands::telegram -> agentscommander_lib::telegram::manager
 agentscommander_lib::commands::telegram -> agentscommander_lib::telegram::types
@@ -3025,6 +3026,7 @@ agentscommander_lib::telegram -> agentscommander_lib::filesystem::directories
 agentscommander_lib::telegram::api -> agentscommander_lib::errors
 agentscommander_lib::telegram::api -> agentscommander_lib::network
 agentscommander_lib::telegram::api -> agentscommander_lib::telegram::redact
+agentscommander_lib::telegram::attachments -> agentscommander_lib::filesystem::attachments
 agentscommander_lib::telegram::bridge -> agentscommander_lib::capture::key
 agentscommander_lib::telegram::bridge -> agentscommander_lib::capture::record
 agentscommander_lib::telegram::bridge -> agentscommander_lib::capture::sink
