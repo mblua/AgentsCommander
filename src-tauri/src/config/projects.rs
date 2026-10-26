@@ -29,6 +29,14 @@ pub(crate) fn configured_project_is_dir(path: &Path) -> bool {
     project_fs::project_path_is_dir(path)
 }
 
+pub(crate) fn canonical_source_project(path: &Path) -> std::io::Result<PathBuf> {
+    project_fs::canonical_project_path(path)
+}
+
+pub(crate) fn canonical_repo_source(path: &Path) -> std::io::Result<PathBuf> {
+    project_fs::canonical_project_path(path)
+}
+
 pub(crate) fn canonical_watch_project(path: &Path) -> Option<PathBuf> {
     project_fs::canonical_project_path(path).ok()
 }

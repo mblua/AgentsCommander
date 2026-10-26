@@ -815,6 +815,7 @@ agentscommander_lib::commands::entity_creation::matrix_copy -> agentscommander_l
 agentscommander_lib::commands::entity_creation::matrix_copy -> agentscommander_lib::commands::entity_creation::delete_guard
 agentscommander_lib::commands::entity_creation::matrix_copy -> agentscommander_lib::commands::entity_creation::matrix_layout
 agentscommander_lib::commands::entity_creation::matrix_copy -> agentscommander_lib::commands::entity_creation::team_config
+agentscommander_lib::commands::entity_creation::matrix_copy -> agentscommander_lib::config::projects
 agentscommander_lib::commands::entity_creation::matrix_copy -> agentscommander_lib::path_utils
 agentscommander_lib::commands::entity_creation::matrix_layout -> agentscommander_lib::commands::entity_creation
 agentscommander_lib::commands::entity_creation::matrix_layout -> agentscommander_lib::commands::role_templates
@@ -846,6 +847,7 @@ agentscommander_lib::commands::entity_creation::team_create -> agentscommander_l
 agentscommander_lib::commands::entity_creation::team_create -> agentscommander_lib::commands::entity_creation::team_update
 agentscommander_lib::commands::entity_creation::team_create -> agentscommander_lib::commands::entity_creation::workgroup
 agentscommander_lib::commands::entity_creation::team_create -> agentscommander_lib::config::ac_root
+agentscommander_lib::commands::entity_creation::team_create -> agentscommander_lib::config::projects
 agentscommander_lib::commands::entity_creation::team_create -> agentscommander_lib::path_utils
 agentscommander_lib::commands::entity_creation::team_create -> agentscommander_lib::phone::messaging
 agentscommander_lib::commands::entity_creation::team_create -> agentscommander_lib::session::manager
@@ -864,6 +866,7 @@ agentscommander_lib::commands::entity_creation::team_update -> agentscommander_l
 agentscommander_lib::commands::entity_creation::team_update -> agentscommander_lib::commands::entity_creation::team_config
 agentscommander_lib::commands::entity_creation::team_update -> agentscommander_lib::config::agent_config
 agentscommander_lib::commands::entity_creation::team_update -> agentscommander_lib::config::entity_prefix
+agentscommander_lib::commands::entity_creation::team_update -> agentscommander_lib::config::projects
 agentscommander_lib::commands::entity_creation::team_update -> agentscommander_lib::config::replica_identity
 agentscommander_lib::commands::entity_creation::team_update -> agentscommander_lib::config::teams
 agentscommander_lib::commands::entity_creation::team_update -> agentscommander_lib::path_utils
