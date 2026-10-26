@@ -5,10 +5,10 @@ use super::carrier::{
 };
 use super::orphan::prepare_persist_snapshot;
 use super::persist::{same_protection_set, snapshot_aggregate};
+use super::store::PreparedSessionsWrite;
 use super::write::{
     confirm_publication_readback, current_capture_matches, rename_and_publish,
-    settle_rename_attempt, PreparedSessionsWrite, RenamePublicationAttempt, SettledRenameAttempt,
-    SAVE_SESSIONS_LOCK,
+    settle_rename_attempt, snapshot_store, RenamePublicationAttempt, SettledRenameAttempt,
 };
 #[cfg(test)]
 use super::write::{FixturePublicationAction, FixturePublicationActionKind};
@@ -301,7 +301,7 @@ where
     {
         return Ok(None);
     }
-    let write = PreparedSessionsWrite::prepare(&source.directory, &prep.kept)?;
+    let write = snapshot_store().prepare(&source.directory, &prep.kept)?;
     drop(permit);
     Ok(Some(PreparedOwnedReplacementPublication {
         #[cfg(test)]
@@ -434,7 +434,7 @@ pub(crate) fn reconcile_owned_replacement_readback(
         }
         (checkpoint.nonce, checkpoint.epoch)
     };
-    let leaf = SAVE_SESSIONS_LOCK.try_lock().ok()?;
+    let leaf = snapshot_store().try_lock_snapshot()?;
     confirm_publication_readback(
         &carrier.slot,
         &super::store::snapshot_path(&carrier.directory),

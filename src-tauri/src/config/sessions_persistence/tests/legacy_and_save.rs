@@ -521,3 +521,53 @@ fn characterize_3254_p03_order() {
     );
     assert!(raw[3].git_repos.is_empty());
 }
+
+#[test]
+fn characterize_3254_p04_snapshot_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    crate::config::sessions_persistence::save_sessions_to_dir(temp.path(), &[]).unwrap();
+    let path = temp.path().join("sessions.json");
+    assert_eq!(std::fs::read(&path).unwrap(), b"[]");
+    let rows = [PersistedSession {
+        name: "p04-fixed".into(),
+        shell: "cmd".into(),
+        shell_args: vec!["/Q".into()],
+        working_directory: "C:/p04".into(),
+        ..Default::default()
+    }];
+    crate::config::sessions_persistence::save_sessions_to_dir(temp.path(), &rows).unwrap();
+    let expected = br#"[
+  {
+    "name": "p04-fixed",
+    "shell": "cmd",
+    "shellArgs": [
+      "/Q"
+    ],
+    "workingDirectory": "C:/p04",
+    "wasActive": false,
+    "gitRepos": [],
+    "isCoordinator": false,
+    "isRootAgent": false,
+    "wasDetached": false,
+    "startFreshOnRestore": false
+  }
+]"#;
+    let actual = std::fs::read(&path).unwrap();
+    assert_eq!(actual, expected);
+    assert!(!actual.ends_with(b"\n"));
+}
+
+#[test]
+fn characterize_3254_p04_save_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    let occupied = temp.path().join("occupied");
+    std::fs::write(&occupied, b"p04 untouched").unwrap();
+    let suffix = std::fs::create_dir_all(&occupied).unwrap_err().to_string();
+    let error =
+        crate::config::sessions_persistence::save_sessions_to_dir(&occupied, &[]).unwrap_err();
+    assert_eq!(
+        error,
+        format!("Failed to create config directory: {suffix}")
+    );
+    assert_eq!(std::fs::read(&occupied).unwrap(), b"p04 untouched");
+}

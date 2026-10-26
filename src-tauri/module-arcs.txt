@@ -1531,11 +1531,12 @@ agentscommander_lib::config::sessions_persistence::store -> agentscommander_lib:
 agentscommander_lib::config::sessions_persistence::store -> agentscommander_lib::config::settings
 agentscommander_lib::config::sessions_persistence::store -> agentscommander_lib::filesystem
 agentscommander_lib::config::sessions_persistence::store -> agentscommander_lib::session::session
-agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::config
 agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::config::sessions_persistence::carrier
 agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::config::sessions_persistence::project_scope
 agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::config::sessions_persistence::record
+agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::config::sessions_persistence::store
 agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::config::settings
+agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::filesystem
 agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::session::manager
 agentscommander_lib::config::settings -> agentscommander_lib::config::local_config_io
 agentscommander_lib::config::settings -> agentscommander_lib::config::local_overlay

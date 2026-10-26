@@ -105,14 +105,15 @@ use retained_prompt::{
     RETAINED_PROMPTS,
 };
 #[cfg(test)]
+use store::RENAME_ATTEMPTS;
+#[cfg(test)]
 use store::{
     load_sessions_from_path, load_sessions_from_path_with_settings, load_sessions_raw_from_path,
 };
 #[cfg(test)]
 use write::{
     confirm_publication_readback, rename_and_publish, sessions_save_lock, settle_rename_attempt,
-    PersistMode, PreparedSessionsWrite, RenamePublicationAttempt, SettledRenameAttempt,
-    RENAME_ATTEMPTS,
+    PersistMode, RenamePublicationAttempt, SettledRenameAttempt,
 };
 
 #[cfg(test)]

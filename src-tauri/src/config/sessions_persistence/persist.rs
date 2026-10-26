@@ -19,7 +19,7 @@ use super::store::{load_sessions_from_path_with_settings, snapshot_path};
 use super::write::{
     confirm_publication_readback, current_capture_matches, file_preparation_survives,
     run_owned_persist_core, save_current_snapshot_guarded, save_file_snapshot_guarded,
-    GuardedSaveAttempt, PersistMode, PersistPreparation, SAVE_SESSIONS_LOCK,
+    snapshot_store, GuardedSaveAttempt, PersistMode, PersistPreparation,
 };
 use crate::session::manager::{
     acquire_carrier_mutation_permit, CarrierDisposition, CarrierMutationPermit, SessionManager,
@@ -503,7 +503,7 @@ pub(super) async fn wait_initial_publication(
             }
             (checkpoint.nonce, checkpoint.epoch)
         };
-        if let Ok(leaf) = SAVE_SESSIONS_LOCK.try_lock() {
+        if let Some(leaf) = snapshot_store().try_lock_snapshot() {
             confirm_publication_readback(&slot, &snapshot_path(dir), checkpoint.0, checkpoint.1);
             drop(leaf);
         }

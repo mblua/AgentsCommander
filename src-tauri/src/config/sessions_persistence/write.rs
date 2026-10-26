@@ -6,10 +6,14 @@ use super::carrier::{
 };
 use super::project_scope::OrphanDrop;
 use super::record::PersistedSession;
+use super::store::{
+    PreparedSessionsWrite, RenameDiagnostics, SnapshotLeafGuard, RENAME_ATTEMPTS,
+    RENAME_BACKOFFS_MS,
+};
 use crate::session::manager::{CarrierDisposition, CarrierMutationPermit, SessionManager};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::Mutex;
 use uuid::Uuid;
 
@@ -36,7 +40,7 @@ use uuid::Uuid;
 /// Poisoning is tolerated via `into_inner()`: a poisoned lock means a prior
 /// holder panicked mid-write, but the persisted file is atomic (tmp+rename),
 /// so picking up the lock cleanly is safe.
-pub(super) static SAVE_SESSIONS_LOCK: Mutex<()> = Mutex::new(());
+static SAVE_SESSIONS_LOCK: Mutex<()> = Mutex::new(());
 
 /// The accepted core owns completion independently of its caller. A lost task
 /// outcome is ambiguous; it never becomes a successful save or a retry request.
@@ -129,178 +133,16 @@ where
 /// or cross-process save, and from any leftover temp file written by a
 /// prior crashed run. Kept separate from `rename_with_retry`'s `OP_ID` so
 /// the two counters can be reasoned about independently in diagnostics.
-pub(super) static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
+static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
 
-/// #280 §3.1 — diagnostic context captured when an atomic rename exhausts
-/// its retry budget. Surfaced in the caller's error string so a single
-/// ERROR line carries enough state to investigate the AV / Indexer / second
-/// instance contention pattern.
-#[derive(Debug)]
-pub(crate) struct RenameDiagnostics {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
-        )
-    )]
-    pub(super) op_id: u64,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
-        )
-    )]
-    pub(super) pid: u32,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
-        )
-    )]
-    pub(super) instance_id: String,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
-        )
-    )]
-    pub(super) tmp_exists_before: bool,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
-        )
-    )]
-    pub(super) final_exists_before: bool,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
-        )
-    )]
-    pub(super) attempts: u32,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
-        )
-    )]
-    pub(super) last_os_error: Option<i32>,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
-        )
-    )]
-    pub(super) duration: std::time::Duration,
+static OP_ID: AtomicU64 = AtomicU64::new(0);
+
+pub(super) fn snapshot_store() -> super::store::SnapshotStore<'static> {
+    super::store::SnapshotStore::new(&SAVE_SESSIONS_LOCK, &SAVE_OP_ID, &OP_ID)
 }
 
-/// #280 §3.1 — number of `std::fs::rename` attempts. With the
-/// `BACKOFFS_MS = [10, 50, 200]` schedule below, this gives a worst-case
-/// 260 ms blocking window before surfacing the error. G-MED-2 fix:
-/// 4 attempts so all three backoff entries are actually used (with
-/// `ATTEMPTS = 3` the 200 ms entry would be dead code).
-pub(super) const RENAME_ATTEMPTS: u32 = 4;
-
-/// #280 §3.1 — backoff schedule between rename attempts in milliseconds.
-/// Tuned for Windows AV / Indexer holds which typically clear within
-/// ~50 ms but occasionally take >100 ms on cold caches. The terminal
-/// attempt has no backoff (we already failed `RENAME_ATTEMPTS - 1` times).
-pub(super) const RENAME_BACKOFFS_MS: [u64; 3] = [10, 50, 200];
-
-/// Atomic rename with bounded retries. Returns the diagnostic context so
-/// the caller can fold it into a single ERROR line. Successful retries are
-/// logged at INFO (low-frequency, useful signal that the race is
-/// happening). Intermediate failures log at DEBUG.
-///
-/// This retry loop targets *cross-process* contention on the destination
-/// (`sessions.json`): AV scanners, the Windows Indexer, or a second AC
-/// instance briefly holding the file. It is NOT the mitigation for #291,
-/// which was an in-process race on a shared *temp* filename — that one is
-/// solved upstream in `save_sessions_to_dir` by a per-call unique temp
-/// name plus `SAVE_SESSIONS_LOCK`, so by the time we get here the source
-/// path is guaranteed unique to this save.
-///
-/// Risk note (deliberately accepted for #280 scope): this uses
-/// `std::thread::sleep`, which blocks the calling tokio worker thread for
-/// up to `sum(RENAME_BACKOFFS_MS)` = 260 ms during a contended rename.
-/// `save_sessions` is invoked from async Tauri command handlers, but the
-/// surrounding code (`std::fs::write`, `std::fs::rename`) is already sync,
-/// so this does not introduce a new class of blocking — only enlarges an
-/// existing one. The clean fix (`tokio::task::spawn_blocking` for the
-/// whole persistence block) is a wider signature/caller refactor and is
-/// out of scope for #280 (observability hardening, not concurrency
-/// rework). File a follow-up if the 260 ms tail latency becomes
-/// user-perceptible.
 pub(crate) fn rename_with_retry(tmp: &Path, dst: &Path) -> Result<(), (String, RenameDiagnostics)> {
-    static OP_ID: AtomicU64 = AtomicU64::new(0);
-    let op_id = OP_ID.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let instance_id = crate::config::agent_local_dir_name();
-    let start = std::time::Instant::now();
-    let tmp_exists_before = tmp.exists();
-    let final_exists_before = dst.exists();
-
-    let mut last_err: Option<std::io::Error> = None;
-    for attempt in 0..RENAME_ATTEMPTS {
-        match std::fs::rename(tmp, dst) {
-            Ok(()) => {
-                if attempt > 0 {
-                    log::info!(
-                        "[sessions] rename succeeded after retry — op_id={} pid={} instance={} \
-                         attempt={}/{} duration={:?}",
-                        op_id,
-                        pid,
-                        instance_id,
-                        attempt + 1,
-                        RENAME_ATTEMPTS,
-                        start.elapsed()
-                    );
-                }
-                return Ok(());
-            }
-            Err(e) => {
-                log::debug!(
-                    "[sessions] rename attempt {}/{} failed — op_id={} pid={} os_error={:?} \
-                     kind={:?}",
-                    attempt + 1,
-                    RENAME_ATTEMPTS,
-                    op_id,
-                    pid,
-                    e.raw_os_error(),
-                    e.kind()
-                );
-                last_err = Some(e);
-                let backoff_idx = attempt as usize;
-                if backoff_idx < RENAME_BACKOFFS_MS.len() {
-                    std::thread::sleep(std::time::Duration::from_millis(
-                        RENAME_BACKOFFS_MS[backoff_idx],
-                    ));
-                }
-            }
-        }
-    }
-
-    let e = last_err.expect("RENAME_ATTEMPTS >= 1, so the loop runs at least once");
-    let diag = RenameDiagnostics {
-        op_id,
-        pid,
-        instance_id,
-        tmp_exists_before,
-        final_exists_before,
-        attempts: RENAME_ATTEMPTS,
-        last_os_error: e.raw_os_error(),
-        duration: start.elapsed(),
-    };
-    Err((e.to_string(), diag))
+    snapshot_store().rename_with_retry(tmp, dst)
 }
 
 /// §1295 S2/B — one `spawn_blocking` chunk that (a) partitions the snapshot and
@@ -382,10 +224,8 @@ pub(super) fn save_sessions_to_dir(
     if super::super::settings::agents_layer_unreadable_for_dir(dir) {
         return Ok(());
     }
-    let _guard = SAVE_SESSIONS_LOCK
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let write = PreparedSessionsWrite::prepare(dir, sessions)?;
+    let _guard = snapshot_store().lock_snapshot();
+    let write = snapshot_store().prepare(dir, sessions)?;
     if let Err((error, diagnostics)) = rename_with_retry(&write.tmp_path, &write.path) {
         return Err(format!(
             "Failed to rename sessions file: {} [op_id={} pid={} instance={} attempts={} \
@@ -422,7 +262,7 @@ pub(super) enum GuardedSaveAttempt {
 
 pub(super) enum RenamePublicationAttempt {
     Renamed {
-        leaf: std::sync::MutexGuard<'static, ()>,
+        leaf: SnapshotLeafGuard<'static>,
         retired: PublicationState,
     },
     Suppressed,
@@ -444,66 +284,6 @@ pub(super) fn current_capture_matches(
         && current.selection.revision() == captured.selection.revision()
 }
 
-pub(super) struct PreparedSessionsWrite {
-    pub(super) path: PathBuf,
-    pub(super) tmp_path: PathBuf,
-    pub(super) op_id: u64,
-    pub(super) pid: u32,
-    pub(super) instance: String,
-    pub(super) started: std::time::Instant,
-    pub(super) final_existed: bool,
-}
-
-impl PreparedSessionsWrite {
-    pub(super) fn prepare(dir: &Path, sessions: &[PersistedSession]) -> Result<Self, String> {
-        std::fs::create_dir_all(dir)
-            .map_err(|error| format!("Failed to create config directory: {}", error))?;
-        let json = serde_json::to_string_pretty(sessions)
-            .map_err(|error| format!("Failed to serialize sessions: {}", error))?;
-        let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
-        let pid = std::process::id();
-        let tmp_path = dir.join(format!("sessions.json.{}.{}.tmp", pid, op_id));
-        if let Err(error) = std::fs::write(&tmp_path, json) {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(format!("Failed to write temp sessions file: {}", error));
-        }
-        let path = dir.join("sessions.json");
-        Ok(Self {
-            final_existed: path.exists(),
-            path,
-            tmp_path,
-            op_id,
-            pid,
-            instance: crate::config::agent_local_dir_name().to_owned(),
-            started: std::time::Instant::now(),
-        })
-    }
-
-    pub(super) fn terminal_error(&self, error: &std::io::Error) -> String {
-        format!(
-            "Failed to rename sessions file: {} [op_id={} pid={} instance={} attempts={} \
-             tmp_existed_before={} final_existed_before={} os_error={:?} duration={:?}]",
-            error,
-            self.op_id,
-            self.pid,
-            self.instance,
-            RENAME_ATTEMPTS,
-            true,
-            self.final_existed,
-            error.raw_os_error(),
-            self.started.elapsed(),
-        )
-    }
-}
-
-impl Drop for PreparedSessionsWrite {
-    fn drop(&mut self) {
-        // The unique temporary name belongs to this operation only. After
-        // rename it is absent; cleanup never removes the published file.
-        let _ = std::fs::remove_file(&self.tmp_path);
-    }
-}
-
 pub(super) fn rename_and_publish(
     dir: &Path,
     slot: &PublicationSlot,
@@ -516,9 +296,9 @@ pub(super) fn rename_and_publish(
             if suppressed {
                 return RenamePublicationAttempt::Suppressed;
             }
-            let leaf = match SAVE_SESSIONS_LOCK.try_lock() {
-                Ok(leaf) => leaf,
-                Err(_) => return RenamePublicationAttempt::Retry,
+            let leaf = match snapshot_store().try_lock_snapshot() {
+                Some(leaf) => leaf,
+                None => return RenamePublicationAttempt::Retry,
             };
             let mut state = match slot.try_lock() {
                 Ok(state) => state,
@@ -530,7 +310,7 @@ pub(super) fn rename_and_publish(
             let Some(pending) = next.take() else {
                 return RenamePublicationAttempt::Stale;
             };
-            match std::fs::rename(&write.tmp_path, &write.path) {
+            match snapshot_store().replace_prepared_once(write) {
                 Ok(()) => {
                     // The slot and payload are resolved BEFORE the syscall. Keep
                     // the displaced payload alive beyond this critical transition.
@@ -552,9 +332,7 @@ pub(super) fn confirm_publication_readback(
     nonce: Uuid,
     epoch: u64,
 ) {
-    let actual = std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Vec<PersistedSession>>(&bytes).ok());
+    let actual = super::store::readback_snapshot(path);
     let Some(actual) = actual else {
         return;
     };
@@ -648,7 +426,7 @@ pub(super) async fn save_file_snapshot_guarded(
     if super::super::settings::agents_layer_unreadable_for_dir(dir) {
         return GuardedSaveAttempt::Completed(Ok(false));
     }
-    let write = match PreparedSessionsWrite::prepare(dir, rows) {
+    let write = match snapshot_store().prepare(dir, rows) {
         Ok(write) => write,
         Err(error) => return GuardedSaveAttempt::Completed(Err(error)),
     };
@@ -727,7 +505,7 @@ pub(super) fn settle_rename_attempt(
                 assert!(!fixture.operation.is_nil(), "fixture actual operation");
                 match fixture.kind {
                     FixturePublicationActionKind::CorruptFixtureLeafOnce => {
-                        std::fs::write(path, b"{invalid fixture publication")
+                        crate::filesystem::corrupt_session_container_for_test(path)
                             .expect("corrupt exact fixture leaf after actual rename");
                     }
                     FixturePublicationActionKind::PanicOnce => {
@@ -796,7 +574,7 @@ pub(super) async fn save_current_snapshot_guarded(
     if !current {
         return GuardedSaveAttempt::Recapture;
     }
-    let write = match PreparedSessionsWrite::prepare(dir, rows) {
+    let write = match snapshot_store().prepare(dir, rows) {
         Ok(write) => write,
         Err(error) => return GuardedSaveAttempt::Completed(Err(error)),
     };
