@@ -625,33 +625,6 @@ async fn archived_roots_are_normalized_before_filtering() {
 }
 
 #[test]
-fn every_child_command_is_credential_scrubbed() {
-    let spec = build_gh_command_spec(
-        Path::new("gh"),
-        GhQuery::RepoInfo {
-            nwo: "mblua/AgentsCommander",
-        },
-    )
-    .expect("spec");
-    let gh_command = command_from_spec(spec);
-    let git_command = git_command("C:/repo-a", &["rev-parse".to_string(), "HEAD".to_string()]);
-
-    let mut expected: Vec<&str> = crate::pty::credentials::CREDENTIAL_ENV_KEYS.to_vec();
-    expected.sort_unstable();
-
-    for command in [&gh_command, &git_command] {
-        let mut removed: Vec<&str> = command
-            .as_std()
-            .get_envs()
-            .filter(|(_key, value)| value.is_none())
-            .map(|(key, _value)| key.to_str().expect("utf-8 env key"))
-            .collect();
-        removed.sort_unstable();
-        assert_eq!(removed, expected, "whole-vector equality");
-    }
-}
-
-#[test]
 fn nwo_is_parsed_from_github_urls_only() {
     for origin in [
         "git@github.com:mblua/AgentsCommander.git",

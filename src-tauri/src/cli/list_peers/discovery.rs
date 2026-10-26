@@ -142,7 +142,7 @@ pub(super) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> 
     let i_am_coordinator = coordinator.as_deref() == Some(wg.my_agent_name.as_str());
 
     if coordinator.is_none() {
-        if std::env::var("AC_MACHINE_OUTPUT").is_err() {
+        if crate::config::environment::machine_output_string().is_err() {
             eprintln!(
                 "Warning: no orchestrator found for Room '{}', showing all replicas",
                 wg.my_wg_name

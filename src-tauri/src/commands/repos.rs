@@ -156,9 +156,6 @@ pub async fn git_remote_url_inner(path: &str) -> Option<String> {
 }
 
 async fn run_git_remote_get_url(working_dir: &str) -> Option<String> {
-    #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
     // #943 - require a work tree ROOT, do not let git discover a repo by walking
     // up. `git remote get-url` climbs to the nearest ancestor `.git`, so a
     // sourcePath that exists but is not a repo (failed clone, deleted `.git`, a
@@ -183,17 +180,7 @@ async fn run_git_remote_get_url(working_dir: &str) -> Option<String> {
         return None;
     }
 
-    let mut cmd = tokio::process::Command::new("git");
-    crate::pty::credentials::scrub_credentials_from_tokio_command(&mut cmd);
-    crate::config::agent_path::apply_search_path_to_tokio_command(&mut cmd);
-    cmd.args(["remote", "get-url", "origin"])
-        .current_dir(working_dir)
-        .kill_on_drop(true);
-
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-
-    match cmd.output().await {
+    match crate::process::git::read::remote_origin_output(working_dir).await {
         Ok(out) if out.status.success() => {
             let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if url.is_empty() {

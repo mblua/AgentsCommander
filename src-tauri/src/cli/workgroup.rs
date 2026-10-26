@@ -417,7 +417,7 @@ fn remove_hooked(
         }
     }
     write_refresh(&project_path, &wg_dir, &args.workgroup, "workgroupRemoved");
-    if std::env::var_os("AC_MACHINE_OUTPUT").is_some() {
+    if crate::config::environment::machine_output_os().is_some() {
         print_json(&serde_json::json!({
             "workgroup": args.workgroup,
             "path": wg_dir.to_string_lossy(),

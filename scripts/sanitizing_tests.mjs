@@ -558,8 +558,9 @@ test('09 independent counters, absolute write, exact ownership and aliases/shado
   control(processGate,'launch_files','x.rs','fn f() {}','use tokio::process::Command as C; fn f() { C::new("x"); }');
   control(processGate,'env_read_files','x.rs','fn f() {}','use std::env::var as read; fn f() { read("x"); }');
   control(processGate,'env_write','x.rs','fn f() {}','use std::env as e; fn f() { e::set_var("x","y"); }');
-  for(const p of ['process.rs','process/a.rs','pty/mod.rs','pty/a.rs']) {
+  for(const p of ['process.rs','process/a.rs'])
     assert.equal(processGate(trees({}, {[rustRoot+p]:'fn f() { Command::new("x").env("x","y"); }'})).exit,0);
+  for(const p of ['process.rs','process/a.rs','pty/mod.rs','pty/a.rs']) {
     control(processGate,'env_read_files',p,'','fn f() { std::env::var_os("x"); }');
     control(processGate,'env_write',p,'','fn f() { std::env::remove_var("x"); }');
   }
@@ -572,6 +573,38 @@ test('09 independent counters, absolute write, exact ownership and aliases/shado
   assert.equal(processGate(trees(bad)).exit,1);
   const shadow='use std::env::var as read; fn f(read: F) { read("x"); }';
   assert.equal(processGate(trees({}, {[rustRoot+'x.rs']:shadow})).exit,0);
+});
+test('09 process aliases and real portable PTY session form stay owned', () => {
+  for (const name of ['process/host/login.rs', 'process/docker/execution.rs'])
+    for (const code of [
+      'use std::process::Command as C; fn f() { C::new("x"); }',
+      'use tokio::process as p; fn f() { p::Command::new("x"); }',
+    ]) assert.equal(processGate(trees({}, {[rustRoot + name]: code})).exit, 0);
+  const session = 'use portable_pty::CommandBuilder; fn f() { CommandBuilder::new("sh"); }';
+  const result = processGate(trees({}, {[rustRoot + 'pty/local_backend/launch.rs']: session}));
+  assert.equal(result.exit, 0, JSON.stringify(result));
+  assert.equal(result.totals[1].launch_files, 0);
+});
+test('09 every former PTY auxiliary and unknown PTY command is measured on both sides', () => {
+  for (const [name, fn, constructor] of [
+    ['pty/git_watcher.rs', 'detect_git_status', 'tokio::process::Command::new'],
+    ['pty/local_backend/git_guard.rs', 'resolve_real_git_path', 'std::process::Command::new'],
+    ['pty/remote_watcher/gh_command.rs', 'command_from_spec', 'tokio::process::Command::new'],
+    ['pty/remote_watcher/gh_command.rs', 'git_command', 'tokio::process::Command::new'],
+    ['pty/docker_runtime/execution.rs', 'run_command_output_with_context',
+      'std::process::Command::new'],
+    ['pty/mod.rs', 'unknown', 'Command::new'],
+    ['pty/a.rs', 'unknown', 'Command::new'],
+    ['pty/unknown.rs', 'unknown', 'Command::new'],
+  ]) {
+    const path = rustRoot + name, code = 'fn ' + fn + '() { ' + constructor + '("x"); }';
+    const bad = {[path]: code};
+    const equal = processGate(trees(bad));
+    assert.equal(equal.exit, 0, JSON.stringify(equal));
+    assert.deepEqual(equal.totals.map(t => t.launch_files), [1, 1], name);
+    assert.equal(processGate(trees({}, bad)).exit, 1, name);
+    assert.equal(processGate(trees(bad, {})).exit, 0, name);
+  }
 });
 test('P02 production predicates preserve following code; comments/strings and tests add no production debt', () => {
   const assertTestOnly = (gate, rule, path, code) => {
@@ -604,8 +637,14 @@ test('P02 production predicates preserve following code; comments/strings and te
   }
 });
 test('09 moved occurrences pass; compensated new code and copies fail', () => {
-  for(const [rule,code] of [['launch_files','Command::new("x");'],['env_read_files','env::var("x");']]) {
-    const p=rustRoot+'old.rs',q=rustRoot+'new.rs',before=`fn f() { ${code} }`;
+  for (const prefix of ['', 'pty/'])
+  for (const [rule, code] of [
+    ['launch_files', 'Command::new("x");'],
+    ['launch_files', 'use std::process::Command as C; C::new("x");'],
+    ['launch_files', 'use tokio::process as p; p::Command::new("x");'],
+    ['env_read_files', 'env::var("x");'],
+  ]) {
+    const p=rustRoot+prefix+'old.rs',q=rustRoot+prefix+'new.rs',before=`fn f() { ${code} }`;
     assert.equal(processGate(trees({[p]:before},{[p]:''})).exit,0);
     const r=processGate(trees({[p]:before},{[q]:before}));
     assert.equal(r.exit,0,JSON.stringify(r));

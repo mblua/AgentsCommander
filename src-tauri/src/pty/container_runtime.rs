@@ -411,7 +411,7 @@ pub trait ContainerRuntime: Send + Sync {
 }
 
 pub fn container_image_from_env() -> Option<String> {
-    std::env::var("AGENTSCOMMANDER_CONTAINER_IMAGE")
+    crate::config::environment::container_image()
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
