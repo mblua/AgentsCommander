@@ -451,3 +451,43 @@ fn transcript_truncation_preserves_warning_and_state() {
     );
     println!("truncation warning captured");
 }
+
+#[test]
+fn transcript_header_keeps_single_read_bound_and_lossy_first_line() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("rollout-header.jsonl");
+    assert_eq!(transcripts::read_transcript_header(&path), None);
+    std::fs::write(&path, b"first\xff\r\nsecond\n").unwrap();
+    assert_eq!(
+        transcripts::read_transcript_header(&path).as_deref(),
+        Some("first\u{fffd}\r")
+    );
+    let mut bytes = vec![b'x'; 70 * 1024];
+    bytes.push(b'\n');
+    std::fs::write(&path, &bytes).unwrap();
+    assert_eq!(
+        transcripts::read_transcript_header(&path).unwrap().len(),
+        64 * 1024
+    );
+}
+
+#[test]
+fn live_transcript_window_returns_raw_bytes_and_caller_bound() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("live.jsonl");
+    let missing = transcripts::read_live_preamble_window(&path, 5).unwrap_err();
+    assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+    std::fs::write(&path, b"a\n\xc3\xa9\r\nb").unwrap();
+    assert_eq!(
+        transcripts::read_live_preamble_window(&path, 4).unwrap(),
+        (b"\xa9\r\nb".to_vec(), 3)
+    );
+    assert_eq!(
+        transcripts::read_live_preamble_window(&path, 100).unwrap(),
+        (b"a\n\xc3\xa9\r\nb".to_vec(), 0)
+    );
+    assert_eq!(
+        transcripts::read_live_preamble_window(&path, 0).unwrap(),
+        (Vec::new(), 7)
+    );
+}

@@ -28,6 +28,36 @@ pub(crate) fn find_latest_jsonl(project_dir: &Path) -> Option<PathBuf> {
     crate::filesystem::transcripts::find_latest_jsonl(project_dir)
 }
 
+pub(crate) fn transcript_is_dir(path: &Path) -> bool {
+    crate::filesystem::transcripts::transcript_is_dir(path)
+}
+
+pub(crate) fn transcript_exists(path: &Path) -> bool {
+    crate::filesystem::transcripts::transcript_exists(path)
+}
+
+pub(crate) fn transcript_metadata(path: &Path) -> std::io::Result<std::fs::Metadata> {
+    crate::filesystem::transcripts::transcript_metadata(path)
+}
+
+pub(crate) fn read_transcript_header(path: &Path) -> Option<String> {
+    crate::filesystem::transcripts::read_transcript_header(path)
+}
+
+pub(crate) fn read_live_preamble_window(
+    path: &Path,
+    max_bytes: u64,
+) -> std::io::Result<(Vec<u8>, u64)> {
+    crate::filesystem::transcripts::read_live_preamble_window(path, max_bytes)
+}
+
+pub(crate) fn visit_codex_rollout_candidates(
+    day: &Path,
+    visit: impl FnMut(PathBuf, std::time::SystemTime),
+) {
+    crate::filesystem::transcripts::visit_codex_rollout_candidates(day, visit)
+}
+
 /// How long the Claude reader waits for the transcript AC minted to appear
 /// before it falls back to the newest file by mtime (#2454).
 pub(crate) const PINNED_ATTACH_WAIT_SECS: u64 = 30;

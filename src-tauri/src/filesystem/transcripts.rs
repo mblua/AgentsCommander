@@ -202,3 +202,74 @@ pub(crate) fn read_preamble_for_race(
     }
     Ok((bodies, ids, new_offset))
 }
+
+/// Probe a transcript directory at the caller's original observation point.
+pub(crate) fn transcript_is_dir(path: &Path) -> bool {
+    path.is_dir()
+}
+
+pub(crate) fn transcript_exists(path: &Path) -> bool {
+    path.exists()
+}
+
+pub(crate) fn transcript_metadata(path: &Path) -> std::io::Result<std::fs::Metadata> {
+    std::fs::metadata(path)
+}
+
+/// Read once, up to 64 KiB, and decode the first header line lossily.
+pub(crate) fn read_transcript_header(path: &Path) -> Option<String> {
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; 64 * 1024];
+    let n = f.read(&mut buf).ok()?;
+    let bytes = &buf[..n];
+    let end = bytes
+        .iter()
+        .position(|&b| b == b'\n')
+        .unwrap_or(bytes.len());
+    let line = String::from_utf8_lossy(&bytes[..end]).into_owned();
+    Some(line)
+}
+
+/// Read the live window without decoding or resynchronizing record boundaries.
+pub(crate) fn read_live_preamble_window(
+    path: &Path,
+    max_bytes: u64,
+) -> std::io::Result<(Vec<u8>, u64)> {
+    let initial_len = std::fs::metadata(path)?.len();
+    let window_start = initial_len.saturating_sub(max_bytes);
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(window_start))?;
+    let mut buf: Vec<u8> = Vec::new();
+    file.read_to_end(&mut buf)?;
+    Ok((buf, window_start))
+}
+
+/// Visit eligible names and mtimes serially, before advancing to the next entry.
+pub(crate) fn visit_codex_rollout_candidates(
+    day: &Path,
+    mut visit: impl FnMut(PathBuf, SystemTime),
+) {
+    let read = match std::fs::read_dir(day) {
+        Ok(r) => r,
+        Err(_) => return, // partition missing — normal for days with no codex usage
+    };
+    for entry in read.flatten() {
+        let path = entry.path();
+        let fname = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        if !fname.starts_with("rollout-") || !fname.ends_with(".jsonl") {
+            continue;
+        }
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let mtime = match meta.modified() {
+            Ok(m) => m,
+            Err(_) => continue, // can't compare without mtime
+        };
+        visit(path, mtime);
+    }
+}
