@@ -641,7 +641,6 @@ mod envelope;
 use admission::{BlockingSeedWorkTracker, CriticalAdmissionKey};
 #[cfg(test)]
 use admission::{CoordinatorPhase, CriticalAdmissionGuard};
-pub(super) use envelope::{FinalizedOwnedCarryCapability, FinalizedOwnedCarryOutcome};
 pub(crate) use payload::SelectionCause;
 pub use payload::{
     RuntimeSelectionSnapshot, SelectionCoordinatorError, SelectionMode, SelectionSource,

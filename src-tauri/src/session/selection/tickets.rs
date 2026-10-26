@@ -148,13 +148,6 @@ impl CreateFinalizationTicket {
         Ok(())
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
-        )
-    )]
     pub(in crate::session) fn bind(
         &mut self,
         session_id: Uuid,
@@ -249,6 +242,14 @@ impl CreateFinalizationTicket {
             Err(_) if owned => None,
             Err(_) => Some(Err(SelectionCoordinatorError::Unavailable.to_string())),
         }
+    }
+}
+
+impl super::seal::Sealed for CreateFinalizationTicket {}
+
+impl super::authority::CreateBindingTicket<PendingCreateBinding> for CreateFinalizationTicket {
+    fn bind(&mut self, session_id: Uuid) -> Result<PendingCreateBinding, String> {
+        CreateFinalizationTicket::bind(self, session_id)
     }
 }
 

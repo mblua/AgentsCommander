@@ -2815,7 +2815,6 @@ agentscommander_lib::session::manager::create -> agentscommander_lib::session
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::manager
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::manager::binding
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::manager::carrier
-agentscommander_lib::session::manager::create -> agentscommander_lib::session::selection
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::selection::authority
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::selection::payload
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::session
@@ -2835,7 +2834,7 @@ agentscommander_lib::session::manager::metadata -> agentscommander_lib::session
 agentscommander_lib::session::manager::metadata -> agentscommander_lib::session::manager
 agentscommander_lib::session::manager::metadata -> agentscommander_lib::session::manager::carrier
 agentscommander_lib::session::manager::metadata -> agentscommander_lib::session::profile
-agentscommander_lib::session::manager::metadata -> agentscommander_lib::session::selection
+agentscommander_lib::session::manager::metadata -> agentscommander_lib::session::selection::authority
 agentscommander_lib::session::manager::metadata -> agentscommander_lib::session::session
 agentscommander_lib::session::manager::prompt -> agentscommander_lib::session::manager
 agentscommander_lib::session::manager::prompt -> agentscommander_lib::session::manager::binding
@@ -2869,6 +2868,7 @@ agentscommander_lib::session::selection::admission -> agentscommander_lib::resou
 agentscommander_lib::session::selection::admission -> agentscommander_lib::session
 agentscommander_lib::session::selection::admission -> agentscommander_lib::session::selection
 agentscommander_lib::session::selection::authority -> agentscommander_lib::session::selection::seal
+agentscommander_lib::session::selection::authority -> agentscommander_lib::session::session
 agentscommander_lib::session::selection::continuation_cleanup -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::session::selection::continuation_cleanup -> agentscommander_lib::pty::manager
 agentscommander_lib::session::selection::continuation_cleanup -> agentscommander_lib::session::manager
@@ -2929,7 +2929,9 @@ agentscommander_lib::session::selection::envelope -> agentscommander_lib::sessio
 agentscommander_lib::session::selection::envelope -> agentscommander_lib::session::manager
 agentscommander_lib::session::selection::envelope -> agentscommander_lib::session::selection
 agentscommander_lib::session::selection::envelope -> agentscommander_lib::session::selection::admission
+agentscommander_lib::session::selection::envelope -> agentscommander_lib::session::selection::authority
 agentscommander_lib::session::selection::envelope -> agentscommander_lib::session::selection::replacement
+agentscommander_lib::session::selection::envelope -> agentscommander_lib::session::selection::seal
 agentscommander_lib::session::selection::envelope -> agentscommander_lib::session::session
 agentscommander_lib::session::selection::execute -> agentscommander_lib
 agentscommander_lib::session::selection::execute -> agentscommander_lib::config::sessions_persistence
@@ -2965,9 +2967,11 @@ agentscommander_lib::session::selection::tickets -> agentscommander_lib::session
 agentscommander_lib::session::selection::tickets -> agentscommander_lib::session::manager
 agentscommander_lib::session::selection::tickets -> agentscommander_lib::session::selection
 agentscommander_lib::session::selection::tickets -> agentscommander_lib::session::selection::admission
+agentscommander_lib::session::selection::tickets -> agentscommander_lib::session::selection::authority
 agentscommander_lib::session::selection::tickets -> agentscommander_lib::session::selection::envelope
 agentscommander_lib::session::selection::tickets -> agentscommander_lib::session::selection::payload
 agentscommander_lib::session::selection::tickets -> agentscommander_lib::session::selection::replacement
+agentscommander_lib::session::selection::tickets -> agentscommander_lib::session::selection::seal
 agentscommander_lib::session::selection::tickets -> agentscommander_lib::session::session
 agentscommander_lib::session::selection::tickets -> agentscommander_lib::session::warnings
 agentscommander_lib::session::selection::transaction -> agentscommander_lib
