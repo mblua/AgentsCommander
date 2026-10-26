@@ -365,7 +365,7 @@ fn p22_cleanup_rejection_retains_diagnostic_stage_and_observed_drift() {
         }
     };
     let guard = PairTargetGuard::new(&validate);
-    let mut next = || next_staging_sequence(&STAGING_SEQUENCE);
+    let mut next = next_shared_staging_sequence;
     let write = |file: &mut std::fs::File, bytes: &[u8]| {
         file.write_all(bytes).unwrap();
         std::fs::write(&target, b"{\"value\":2}").unwrap();
@@ -467,7 +467,7 @@ fn p22_primary_io_diagnostic_and_cleanup_refusal_both_retained() {
     let guard = PairTargetGuard::new(&validate);
     let diagnostics = std::cell::RefCell::new(Vec::new());
     let owned = std::cell::RefCell::new(None);
-    let mut next = || next_staging_sequence(&STAGING_SEQUENCE);
+    let mut next = next_shared_staging_sequence;
     let write = |_: &mut std::fs::File, _: &[u8]| {
         let stages = p22_stages(root.path());
         assert_eq!(stages.len(), 1);

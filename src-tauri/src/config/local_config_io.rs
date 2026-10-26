@@ -85,11 +85,11 @@ use staging::publish_pair_side;
 #[cfg(test)]
 pub(super) use staging::temp_config_path;
 use staging::{
-    acquire_fresh_config_stage, acquire_fresh_config_stage_with_sequence, next_staging_sequence,
-    ordinary_staging_error, publish_pair_sides, read_pair_side, STAGING_SEQUENCE,
+    acquire_fresh_config_stage, acquire_fresh_config_stage_with_sequence,
+    next_shared_staging_sequence, ordinary_staging_error, publish_pair_sides, read_pair_side,
 };
 #[cfg(test)]
-use staging::{fresh_config_stage_path, MAX_STAGING_ATTEMPTS};
+use staging::{fresh_config_stage_path, next_staging_sequence, MAX_STAGING_ATTEMPTS};
 use std::cell::Cell;
 #[cfg(test)]
 use std::io::Write;

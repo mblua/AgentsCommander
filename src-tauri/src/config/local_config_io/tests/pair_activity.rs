@@ -610,7 +610,7 @@ fn p22_observed_directory_witness_change_after_acquisition_preserves_stage() {
         }
     };
     let guard = PairTargetGuard::new(&validate);
-    let mut next = || next_staging_sequence(&STAGING_SEQUENCE);
+    let mut next = next_shared_staging_sequence;
     let write = |file: &mut std::fs::File, bytes: &[u8]| {
         file.write_all(bytes).unwrap();
         // A fixture marker models an observed directory witness. It is
@@ -643,6 +643,45 @@ use serde_json::json;
 const T1: &str = "2026-10-08T01:00:00Z";
 const T2: &str = "2026-10-08T02:00:00Z";
 const T3: &str = "2026-10-08T03:00:00Z";
+
+#[test]
+fn shared_staging_sequence_is_unique_across_ordinary_prepared_and_source_apis() {
+    let fixture = Fixture::new(false);
+    let target = fixture.d();
+    let stages = std::cell::RefCell::new(HashSet::new());
+    write_file_atomic_with_publish(&target, b"{}", |stage, path| {
+        assert!(stages.borrow_mut().insert(stage.to_path_buf()));
+        publish_temp_config(stage, path)
+    })
+    .unwrap();
+    let observe = || {
+        for (stage, _) in p22_stages(fixture.root.path()) {
+            stages.borrow_mut().insert(stage);
+        }
+        Ok(())
+    };
+    let before = read_config_pair_physical(&target).unwrap();
+    publish_prepared_pair_image_guarded(
+        &target,
+        &before,
+        &PhysicalState::from_bytes(b"{\"value\":1}".to_vec()),
+        &PairTargetGuard::new(&observe),
+    )
+    .unwrap();
+    assert_eq!(stages.borrow().len(), 2);
+    let parent = crate::path_identity::retain_directory(fixture.root.path()).unwrap();
+    let before = read_config_pair_physical(&target).unwrap();
+    let published = publish_source_coordination_bytes_with_validation(
+        &target,
+        &before,
+        b"{\"value\":2}",
+        &parent,
+        &observe,
+    );
+    assert_eq!(published.result, Ok(()));
+    assert_eq!(stages.borrow().len(), 3);
+    assert!(p22_stages(fixture.root.path()).is_empty());
+}
 
 struct Fixture {
     root: tempfile::TempDir,
