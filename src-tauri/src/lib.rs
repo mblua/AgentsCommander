@@ -574,5 +574,24 @@ impl<R: tauri::Runtime> loops::ipc_observer::IpcObserverHost for tauri::AppHandl
     }
 }
 
+impl<R: tauri::Runtime> loops::non_stop_watchdog::WatchdogHost for tauri::AppHandle<R> {
+    fn settings_owner(&self) -> &SettingsState {
+        use tauri::Manager;
+        self.state::<SettingsState>().inner()
+    }
+
+    fn outbound_network(&self) -> &network::OutboundNetwork {
+        use tauri::Manager;
+        self.state::<network::OutboundNetwork>().inner()
+    }
+
+    fn spawn_background(
+        &self,
+        future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>,
+    ) {
+        drop(tauri::async_runtime::spawn(future));
+    }
+}
+
 #[cfg(test)]
 mod tests;
