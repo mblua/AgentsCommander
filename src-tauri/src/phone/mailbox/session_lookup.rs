@@ -1,15 +1,14 @@
 use super::handoff::{is_viable_root_recipient, is_viable_wake_candidate};
 use super::poller::MailboxPoller;
+use super::pty_observation::PtyAuthorityState;
 use super::settle::filter_sessions_by_fqn;
 use crate::config::settings::SettingsState;
 use crate::config::teams;
 use crate::phone::types::OutboxMessage;
-use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionStatus;
 use crate::MasterToken;
 use std::sync::Arc;
-use std::sync::Mutex;
 use tauri::Manager;
 use uuid::Uuid;
 
@@ -19,12 +18,12 @@ impl MailboxPoller {
     ///
     /// Used ONLY by stale-token logging (mailbox.rs:456, 501). Routing now uses
     /// `find_live_candidates` — do not add new callers. (grinch G.L5.)
-    pub(crate) async fn find_active_session<R: tauri::Runtime>(
+    pub(crate) async fn find_active_session<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         agent_name: &str,
     ) -> Option<Uuid> {
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let session_mgr = app.pty_sessions();
         let mgr = session_mgr.read().await;
         let sessions = mgr.list_sessions().await;
 
@@ -103,12 +102,12 @@ impl MailboxPoller {
     ///   the predicate filter — the caller uses this to distinguish "no record
     ///   at all" (cold spawn) from "phantoms only" (warm spawn with auto-resume,
     ///   preserves on-disk Claude/Codex/Antigravity transcript). (grinch G.H2.)
-    pub(crate) async fn find_live_candidates<R: tauri::Runtime>(
+    pub(crate) async fn find_live_candidates<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         agent_name: &str,
     ) -> (Vec<(Uuid, SessionStatus)>, bool /* had_any_match */) {
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let session_mgr = app.pty_sessions();
 
         let mgr = session_mgr.read().await;
         let sessions = mgr.list_sessions().await;
@@ -190,12 +189,12 @@ impl MailboxPoller {
     /// `is_viable_wake_candidate`) — Exited records are returned as `None` so
     /// the caller's no-spawn guard sees `(empty, false)` instead of triggering
     /// the destroy-and-respawn path on a user-launched session.
-    pub(crate) async fn find_root_session_candidate<R: tauri::Runtime>(
+    pub(crate) async fn find_root_session_candidate<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
     ) -> Option<(Uuid, SessionStatus)> {
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+        let session_mgr = app.pty_sessions();
+        let pty_mgr = app.pty_routes();
 
         let mgr = session_mgr.read().await;
         let sessions = mgr.list_sessions().await;
@@ -244,12 +243,12 @@ impl MailboxPoller {
     /// Returns all matching session UUIDs, not just the "best" one.
     ///
     /// §AR2-G2: exact-FQN filter (same simplification as `find_active_session`).
-    async fn find_all_sessions<R: tauri::Runtime>(
+    async fn find_all_sessions<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         agent_name: &str,
     ) -> Vec<Uuid> {
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let session_mgr = app.pty_sessions();
         let mgr = session_mgr.read().await;
         let sessions = mgr.list_sessions().await;
         filter_sessions_by_fqn(&sessions, agent_name)
@@ -589,3 +588,6 @@ impl MailboxPoller {
         self.move_to_delivered(app, path, msg).await
     }
 }
+
+#[cfg(test)]
+mod tests;

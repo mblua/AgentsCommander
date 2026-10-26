@@ -1819,12 +1819,12 @@ agentscommander_lib::phone::mailbox::internal_delivery -> agentscommander_lib::p
 agentscommander_lib::phone::mailbox::internal_delivery -> agentscommander_lib::phone::mailbox::notice
 agentscommander_lib::phone::mailbox::internal_delivery -> agentscommander_lib::phone::mailbox::poller
 agentscommander_lib::phone::mailbox::internal_delivery -> agentscommander_lib::phone::mailbox::pty_claim
+agentscommander_lib::phone::mailbox::internal_delivery -> agentscommander_lib::phone::mailbox::pty_observation
 agentscommander_lib::phone::mailbox::internal_delivery -> agentscommander_lib::phone::mailbox::settle
 agentscommander_lib::phone::mailbox::internal_delivery -> agentscommander_lib::phone::types
 agentscommander_lib::phone::mailbox::internal_delivery -> agentscommander_lib::pty::backend
 agentscommander_lib::phone::mailbox::internal_delivery -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::phone::mailbox::internal_delivery -> agentscommander_lib::pty::inject
-agentscommander_lib::phone::mailbox::internal_delivery -> agentscommander_lib::pty::manager
 agentscommander_lib::phone::mailbox::internal_delivery -> agentscommander_lib::session::manager
 agentscommander_lib::phone::mailbox::internal_delivery -> agentscommander_lib::session::purge_guard
 agentscommander_lib::phone::mailbox::internal_delivery -> agentscommander_lib::session::selection
@@ -2086,9 +2086,9 @@ agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::conf
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::config::teams
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::phone::mailbox::handoff
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::phone::mailbox::poller
+agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::phone::mailbox::pty_observation
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::phone::mailbox::settle
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::phone::types
-agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::pty::manager
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::session::manager
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::session::session
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib
