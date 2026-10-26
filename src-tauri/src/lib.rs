@@ -39,7 +39,7 @@ mod startup;
 mod web_server;
 mod window;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use commands::ac_discovery::DiscoveryBranchWatcher;
@@ -295,17 +295,7 @@ impl MasterToken {
     }
 }
 
-/// (#617/#668) Sessions with a self context operation awaiting their sustained-idle
-/// window. Insert on queue; remove when the deferred task completes, the session
-/// dies, or the safety cap expires. A session_id already present means a repeat
-/// self operation is a no-op ("already_queued") - requests never stack.
-/// In-memory only: a daemon restart drops pending requests (accepted, best-effort).
-///
-/// Newtype is mandatory: `DetachedSessionsState` (lib.rs:38) is already a managed
-/// bare `Arc<Mutex<HashSet<Uuid>>>`, and Tauri keys managed state by Rust type, so
-/// a second bare alias would collide. Mirrors `RestoreInProgress`.
-#[derive(Default)]
-pub struct PendingSelfClear(pub Mutex<HashSet<uuid::Uuid>>);
+pub use session::maintenance::PendingSelfClear;
 
 /// (#1652) Pins the type of the closure `generate_handler!` produces. The
 /// macro's closure parameter is UNANNOTATED and rustc type-checks the body at

@@ -21,6 +21,7 @@ agentscommander_lib -> agentscommander_lib::pty_wiring
 agentscommander_lib -> agentscommander_lib::quit_gate
 agentscommander_lib -> agentscommander_lib::restore
 agentscommander_lib -> agentscommander_lib::restore::native
+agentscommander_lib -> agentscommander_lib::session::maintenance
 agentscommander_lib -> agentscommander_lib::session::manager
 agentscommander_lib -> agentscommander_lib::shutdown
 agentscommander_lib -> agentscommander_lib::startup
