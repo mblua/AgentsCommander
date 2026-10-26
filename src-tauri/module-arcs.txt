@@ -1515,6 +1515,8 @@ agentscommander_lib::config::role_templates -> agentscommander_lib::config
 agentscommander_lib::config::role_templates -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::role_templates -> agentscommander_lib::config::session_context
 agentscommander_lib::config::role_templates -> agentscommander_lib::config::settings
+agentscommander_lib::config::role_templates -> agentscommander_lib::filesystem::directories
+agentscommander_lib::config::role_templates -> agentscommander_lib::filesystem::documents
 agentscommander_lib::config::root_agent -> agentscommander_lib::config
 agentscommander_lib::config::root_agent::context_snapshots -> agentscommander_lib::config::root_agent
 agentscommander_lib::config::root_agent::file_io -> agentscommander_lib::config::agent_config
@@ -1581,6 +1583,8 @@ agentscommander_lib::config::session_context::builders -> agentscommander_lib::c
 agentscommander_lib::config::session_context::builders -> agentscommander_lib::config::root_agent
 agentscommander_lib::config::session_context::builders -> agentscommander_lib::config::seed_manifest
 agentscommander_lib::config::session_context::builders -> agentscommander_lib::config::session_context
+agentscommander_lib::config::session_context::builders -> agentscommander_lib::filesystem::directories
+agentscommander_lib::config::session_context::builders -> agentscommander_lib::filesystem::documents
 agentscommander_lib::config::session_context::builders -> agentscommander_lib::phone::messaging
 agentscommander_lib::config::session_context::builders -> agentscommander_lib::pty::container_repos
 agentscommander_lib::config::session_context::default_context -> agentscommander_lib::config::seeded_context_templates
@@ -1603,6 +1607,8 @@ agentscommander_lib::config::session_context::repos -> agentscommander_lib::conf
 agentscommander_lib::config::session_context::repos -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::session_context::repos -> agentscommander_lib::config::root_agent
 agentscommander_lib::config::session_context::repos -> agentscommander_lib::config::session_context
+agentscommander_lib::config::session_context::repos -> agentscommander_lib::filesystem::directories
+agentscommander_lib::config::session_context::repos -> agentscommander_lib::filesystem::documents
 agentscommander_lib::config::session_context::repos -> agentscommander_lib::pty::container_repos
 agentscommander_lib::config::session_context::skill_index -> agentscommander_lib::config::root_agent
 agentscommander_lib::config::session_context::skill_index -> agentscommander_lib::config::session_context

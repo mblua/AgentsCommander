@@ -54,3 +54,15 @@ pub(crate) fn codex_sessions_root_is_dir(path: &Path) -> bool {
 pub(crate) fn agent_parent_exists(path: &Path) -> bool {
     path.exists()
 }
+
+pub(crate) fn local_template_is_dir(path: &Path) -> bool {
+    path.is_dir()
+}
+
+pub(crate) fn canonical_context_repo(path: &Path) -> io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+pub(crate) fn context_repo_exists(path: &Path) -> bool {
+    path.exists()
+}

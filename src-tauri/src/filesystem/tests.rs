@@ -316,3 +316,80 @@ fn source_inventory_cuts_precede_file_types_and_partial_callbacks() {
         vec!["readDir", "entry", "fileType", "visit", "entry", "fileType", "visit"]
     );
 }
+
+#[test]
+fn local_template_visitor_stops_on_success_and_each_selected_error() {
+    use std::ops::ControlFlow;
+
+    for outcome in ["success", "missing", "non-file", "read-error", "empty"] {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["one", "two", "three"] {
+            std::fs::create_dir(root.path().join(name)).unwrap();
+        }
+        let mut visits = 0;
+        let result = documents::visit_local_template_entries(root.path(), |entry| {
+            visits += 1;
+            assert_eq!(visits, 1, "advanced after selected {outcome}");
+            let (path, _, metadata) = entry.unwrap();
+            assert!(metadata.unwrap().is_dir());
+            let role = path.join("Role.md");
+            match outcome {
+                "success" => std::fs::write(&role, "role body").unwrap(),
+                "non-file" => std::fs::create_dir(&role).unwrap(),
+                "read-error" => std::fs::write(&role, [0xff]).unwrap(),
+                "empty" => std::fs::write(&role, "").unwrap(),
+                "missing" => {}
+                _ => unreachable!(),
+            }
+            let selected = (|| {
+                let meta = documents::local_template_metadata(&role).map_err(|_| "missing")?;
+                if !meta.is_file() {
+                    return Err("non-file");
+                }
+                let body = documents::read_local_role_template(&role).map_err(|_| "read-error")?;
+                if body.is_empty() {
+                    return Err("empty");
+                }
+                Ok(body)
+            })();
+            ControlFlow::Break(selected)
+        })
+        .unwrap();
+        assert_eq!(visits, 1);
+        let ControlFlow::Break(selected) = result else {
+            panic!("selected outcome lost");
+        };
+        if outcome == "success" {
+            assert_eq!(selected.unwrap(), "role body");
+        } else {
+            assert_eq!(selected.unwrap_err(), outcome);
+        }
+    }
+}
+
+#[test]
+fn local_template_visitor_preserves_open_error_and_full_traversal() {
+    use std::ops::ControlFlow;
+
+    let root = tempfile::tempdir().unwrap();
+    let missing = root.path().join("missing");
+    let error = documents::visit_local_template_entries::<()>(&missing, |_| {
+        panic!("callback after failed open")
+    })
+    .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    for name in ["one", "two"] {
+        std::fs::write(root.path().join(name), name).unwrap();
+    }
+    let mut names = Vec::new();
+    let result = documents::visit_local_template_entries::<()>(root.path(), |entry| {
+        let (path, name, metadata) = entry.unwrap();
+        assert_eq!(path.file_name(), Some(name.as_os_str()));
+        assert!(metadata.unwrap().is_file());
+        names.push(name);
+        ControlFlow::Continue(())
+    })
+    .unwrap();
+    assert_eq!(result, ControlFlow::Continue(()));
+    assert_eq!(names.len(), 2);
+}

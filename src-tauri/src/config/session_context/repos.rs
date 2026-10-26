@@ -5,6 +5,7 @@ use super::{
     strip_yaml_frontmatter, ROLE_MD_FILENAME,
 };
 use crate::config::instance_artifacts::CONTEXT_CACHE_DIR_NAME;
+use crate::filesystem::{directories, documents};
 use std::ffi::OsStr;
 use std::path::Path;
 
@@ -20,7 +21,7 @@ pub(crate) fn write_combined_context_file(
         // #1737 (D2): the base read still runs and still surfaces its error even when
         // an override exists, so an unreadable, non-UTF-8 or directory-shaped base is
         // reported exactly as it is today.
-        let base_content = std::fs::read_to_string(path)
+        let base_content = documents::read_configured_context(path)
             .map_err(|e| format!("Failed to read context file {}: {}", path.display(), e))?;
         let content = managed_template_local_override(path).unwrap_or(base_content);
         let content: &str = if path.file_name() == Some(OsStr::new(ROLE_MD_FILENAME)) {
@@ -236,13 +237,13 @@ pub(crate) fn render_agent_repos_string(
 
         let resolved = cwd_path.join(rel);
         // Canonicalize to get a clean absolute path (strip \\?\ on Windows)
-        let abs_path = std::fs::canonicalize(&resolved)
+        let abs_path = directories::canonical_context_repo(&resolved)
             .map(|p| display_path(&p))
             .unwrap_or_else(|_| resolved.to_string_lossy().to_string());
 
         let repo_name = resolved.file_name().and_then(|n| n.to_str()).unwrap_or(rel);
 
-        if !resolved.exists() {
+        if !directories::context_repo_exists(&resolved) {
             md.push_str(&format!(
                 "- **{}** — Path: `{}` — **(NOT FOUND)**\n",
                 repo_name, abs_path
