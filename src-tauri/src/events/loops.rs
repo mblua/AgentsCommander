@@ -5,6 +5,7 @@ use tauri::Emitter;
 use crate::filesystem::canonical_loop_event_path;
 use crate::loops::delivery::LoopPromptEvents;
 use crate::loops::events::{LoopChange, LoopEventPayload, LoopEvents};
+use crate::loops::ipc_observer::IpcProbeEvents;
 
 impl<R: tauri::Runtime> LoopEvents for tauri::AppHandle<R> {
     fn loop_changed(&self, change: LoopChange<'_>) {
@@ -58,6 +59,15 @@ fn emit_last_prompt(
         "last_prompt",
         serde_json::json!({ "sessionId": session_id.to_string(), "text": text }),
     );
+}
+
+impl<R: tauri::Runtime> IpcProbeEvents for tauri::AppHandle<R> {
+    fn probe(&self, seq: u32, backend_now_ms: u64) {
+        let _ = self.emit(
+            "ipc_silence_probe",
+            serde_json::json!({ "seq": seq, "backendNowMs": backend_now_ms }),
+        );
+    }
 }
 
 fn capitalize_reason(kind: &str) -> String {

@@ -187,3 +187,27 @@ fn issue_3260_delivery_prompt_event_ignores_transport_error() {
     });
     assert_eq!(calls, 1);
 }
+
+#[test]
+fn issue_3260_ipc_probe_event_payload_and_best_effort_delivery() {
+    use crate::loops::ipc_observer::IpcProbeEvents;
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&events);
+    let listener = app.listen_any("ipc_silence_probe", move |event| {
+        captured
+            .lock()
+            .unwrap()
+            .push(serde_json::from_str::<Value>(event.payload()).unwrap());
+    });
+    app.handle().probe(2, 1_700_000_090_000);
+    assert_eq!(
+        *events.lock().unwrap(),
+        [json!({"seq": 2, "backendNowMs": 1_700_000_090_000_u64})]
+    );
+    app.unlisten(listener);
+    app.handle().probe(3, 1_700_000_100_000);
+    assert_eq!(events.lock().unwrap().len(), 1);
+}

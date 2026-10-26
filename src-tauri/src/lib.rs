@@ -565,5 +565,14 @@ impl loops::scheduler::SchedulerHost for tauri::AppHandle {
     }
 }
 
+impl<R: tauri::Runtime> loops::ipc_observer::IpcObserverHost for tauri::AppHandle<R> {
+    fn spawn_background(
+        &self,
+        future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>,
+    ) {
+        drop(tauri::async_runtime::spawn(future));
+    }
+}
+
 #[cfg(test)]
 mod tests;

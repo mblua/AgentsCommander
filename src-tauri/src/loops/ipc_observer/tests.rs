@@ -4,7 +4,7 @@ use super::*;
 /// invoke the backend saw.
 const L: u64 = 1_700_000_000_000;
 
-/// EVERY test in this file calls `ingest_with_marker`, never
+/// Every intake test calls `ingest_with_marker`, never
 /// `ingest_records`: in a cargo test binary `config_dir()` resolves under
 /// `target/debug/deps`, so `ingest_records` would read, and could delete, a
 /// real marker file there.
@@ -434,4 +434,121 @@ fn classify_reports_bystander_when_a_probe_arrived_and_the_window_never_sent() {
     late.written_at_ms = s + 60_000;
     late.last_raf_at_ms = s + 60_000;
     assert_eq!(classify(&late, Some(&m)), Verdict::Bystander);
+}
+
+#[test]
+fn issue_3260_marker_probe_shutdown_order() {
+    struct MarkerRestore {
+        path: std::path::PathBuf,
+        original: Option<Vec<u8>>,
+    }
+    impl Drop for MarkerRestore {
+        fn drop(&mut self) {
+            let result = match &self.original {
+                Some(bytes) => std::fs::write(&self.path, bytes),
+                None => match std::fs::remove_file(&self.path) {
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    result => result,
+                },
+            };
+            if let Err(err) = result {
+                eprintln!("failed to restore test marker: {err}");
+                if !std::thread::panicking() {
+                    panic!("failed to restore test marker: {err}");
+                }
+            }
+        }
+    }
+    struct ProbeRecording {
+        observer: Arc<IpcObserver>,
+        observations: Mutex<Vec<(u32, u64, FreezeMarker, Option<FreezeMarker>)>>,
+    }
+    impl IpcProbeEvents for ProbeRecording {
+        fn probe(&self, seq: u32, backend_now_ms: u64) {
+            let disk = read_marker().expect("marker exists at probe time");
+            let open = self.observer.snapshot_for_tick(backend_now_ms).open_episode;
+            self.observations
+                .lock()
+                .unwrap()
+                .push((seq, backend_now_ms, disk, open));
+        }
+    }
+
+    let executable = std::env::current_exe().unwrap();
+    let executable_tree = executable.parent().unwrap().canonicalize().unwrap();
+    assert_eq!(executable_tree.file_name().unwrap(), "deps");
+    assert!(executable_tree
+        .ancestors()
+        .any(|dir| dir.file_name().is_some_and(|name| name == "target")));
+    let path = marker_path().expect("isolated test marker path");
+    assert!(path.starts_with(executable.parent().unwrap()));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    assert!(path
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .unwrap()
+        .starts_with(&executable_tree));
+    let original = match std::fs::read(&path) {
+        Ok(bytes) => Some(bytes),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => panic!("cannot save pre-existing marker: {err}"),
+    };
+    let restore = MarkerRestore { path, original };
+    match std::fs::remove_file(&restore.path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => panic!("cannot clear isolated marker: {err}"),
+    }
+    let observer = IpcObserver::new();
+    observer.total_invokes.store(1, Ordering::Relaxed);
+    observer.last_invoke_at_ms.store(1, Ordering::Relaxed);
+    let recording = ProbeRecording {
+        observer: Arc::clone(&observer),
+        observations: Mutex::new(Vec::new()),
+    };
+    let mut warned = false;
+    tick(&recording, &observer, &mut warned);
+    assert!(!warned);
+    let first = recording.observations.lock().unwrap()[0].clone();
+    assert_eq!(first.0, 1);
+    assert_eq!(first.2.probes_emitted, 1);
+    assert_eq!(first.2.silence_started_at_ms, first.1);
+    assert!(first.3.is_none(), "Open must follow the first probe");
+    assert_eq!(
+        observer.snapshot_for_tick(first.1).open_episode,
+        Some(first.2.clone())
+    );
+    assert_eq!(read_marker(), Some(first.2.clone()));
+
+    observer.inner.lock().unwrap().next_probe_at_ms = 0;
+    tick(&recording, &observer, &mut warned);
+    assert!(!warned);
+    let second = recording.observations.lock().unwrap()[1].clone();
+    assert_eq!(second.0, 2);
+    assert_eq!(
+        second.2, first.2,
+        "repeat marker write must follow the probe"
+    );
+    assert_eq!(
+        second.3,
+        Some(first.2),
+        "Probe mutation must follow the probe"
+    );
+    let open = observer.snapshot_for_tick(second.1).open_episode.unwrap();
+    assert_eq!(open.probes_emitted, 2);
+    assert_eq!(read_marker(), Some(open.clone()));
+
+    on_shutdown(&observer, &mut warned);
+    assert!(!warned);
+    let closed = read_marker().unwrap();
+    assert_eq!(closed.probes_emitted, 2);
+    assert_eq!(closed.ended_by.as_deref(), Some("shutdown"));
+    assert!(closed.silence_ended_at_ms.is_some());
+    let mut expected = open;
+    expected.ended_by = Some("shutdown".into());
+    expected.silence_ended_at_ms = closed.silence_ended_at_ms;
+    assert_eq!(closed, expected);
+    assert!(observer.snapshot_for_tick(now_ms()).open_episode.is_none());
+    assert_eq!(recording.observations.lock().unwrap().len(), 2);
 }

@@ -1745,6 +1745,7 @@ agentscommander_lib::events::logging -> agentscommander_lib::logging
 agentscommander_lib::events::loops -> agentscommander_lib::filesystem
 agentscommander_lib::events::loops -> agentscommander_lib::loops::delivery
 agentscommander_lib::events::loops -> agentscommander_lib::loops::events
+agentscommander_lib::events::loops -> agentscommander_lib::loops::ipc_observer
 agentscommander_lib::events::session -> agentscommander_lib::session::warnings
 agentscommander_lib::logging -> agentscommander_lib::config
 agentscommander_lib::logging -> agentscommander_lib::config::instance_gitignore
