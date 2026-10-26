@@ -16,6 +16,17 @@ use std::sync::{Arc, Mutex};
 /// Build a minimal `WsState` backed by `settings`, plus a broadcast receiver
 /// for asserting web events emitted during dispatch.
 fn ws_state_for(settings: AppSettings) -> (WsState, tokio::sync::mpsc::Receiver<WsOutMsg>) {
+    let (state, receiver, _app_handle) = ws_state_for_with_handle(settings);
+    (state, receiver)
+}
+
+fn ws_state_for_with_handle(
+    settings: AppSettings,
+) -> (
+    WsState,
+    tokio::sync::mpsc::Receiver<WsOutMsg>,
+    tauri::AppHandle,
+) {
     let app = crate::test_support::test_builder()
         .manage(crate::session::warnings::new_session_warning_state())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -34,14 +45,14 @@ fn ws_state_for(settings: AppSettings) -> (WsState, tokio::sync::mpsc::Receiver<
         None,
     )));
     let settings = crate::config::settings::new_settings_state(settings);
-    let state = WsState {
+    let state = WsState::new(
         session_mgr,
         pty_mgr,
         settings,
         broadcaster,
-        app_handle,
-    };
-    (state, receiver)
+        app_handle.clone(),
+    );
+    (state, receiver, app_handle)
 }
 
 fn test_agent(id: &str) -> crate::config::settings::AgentConfig {

@@ -627,13 +627,7 @@ fn ws_state_for_1271(settings: AppSettings) -> WsState {
     .expect("join selection bootstrap");
     std::mem::forget(full_app);
 
-    WsState {
-        session_mgr,
-        pty_mgr,
-        settings,
-        broadcaster,
-        app_handle: full_handle,
-    }
+    WsState::new(session_mgr, pty_mgr, settings, broadcaster, full_handle)
 }
 
 // #1271 - the adapter's deterministic rejections are Windows-only (the
