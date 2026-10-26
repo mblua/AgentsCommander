@@ -1,7 +1,12 @@
+use super::creation_trace::{Outcome, Reason, Stage, StageGuard};
 use std::path::{Path, PathBuf};
 
 /// Async git clone with CREATE_NO_WINDOW on Windows.
-pub(super) async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
+pub(super) async fn git_clone_async(
+    url: &str,
+    target: &Path,
+    parent: Option<&StageGuard<'_>>,
+) -> Result<(), String> {
     #[cfg(windows)]
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     const GIT_CLONE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
@@ -20,17 +25,29 @@ pub(super) async fn git_clone_async(url: &str, target: &Path) -> Result<(), Stri
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
+    let mut clone_stage = parent.map(|p| p.child(Stage::CloneProcess));
     let output = tokio::time::timeout(GIT_CLONE_TIMEOUT, cmd.output())
         .await
         .map_err(|_| {
+            if let Some(stage) = &mut clone_stage {
+                stage.finish(Outcome::Timeout, Some(Reason::CloneTimeout));
+            }
             format!(
                 "git clone timed out after {} seconds",
                 GIT_CLONE_TIMEOUT.as_secs()
             )
         })?
-        .map_err(|e| format!("Failed to spawn git clone: {}", e))?;
+        .map_err(|e| {
+            if let Some(stage) = &mut clone_stage {
+                stage.finish(Outcome::Error, Some(Reason::Failed));
+            }
+            format!("Failed to spawn git clone: {}", e)
+        })?;
 
     if !output.status.success() {
+        if let Some(stage) = &mut clone_stage {
+            stage.finish(Outcome::Error, Some(Reason::Failed));
+        }
         let stderr = String::from_utf8_lossy(&output.stderr);
         let trimmed = stderr.trim();
         // Cap error message length to avoid sending huge progress output to frontend
@@ -40,6 +57,10 @@ pub(super) async fn git_clone_async(url: &str, target: &Path) -> Result<(), Stri
             trimmed
         };
         return Err(format!("git clone failed: {}", capped));
+    }
+
+    if let Some(stage) = &mut clone_stage {
+        stage.finish(Outcome::Ok, None);
     }
 
     if !target.join(".git").join("index").exists() {
@@ -56,9 +77,17 @@ pub(super) async fn git_clone_async(url: &str, target: &Path) -> Result<(), Stri
         {
             reset_cmd.creation_flags(CREATE_NO_WINDOW);
         }
+        let mut reset_stage = parent.map(|p| p.child(Stage::ResetProcess));
         match tokio::time::timeout(GIT_RESET_TIMEOUT, reset_cmd.output()).await {
-            Ok(Ok(output)) if output.status.success() => {}
+            Ok(Ok(output)) if output.status.success() => {
+                if let Some(stage) = &mut reset_stage {
+                    stage.finish(Outcome::Ok, None);
+                }
+            }
             Ok(Ok(output)) => {
+                if let Some(stage) = &mut reset_stage {
+                    stage.finish(Outcome::Error, Some(Reason::ResetFailed));
+                }
                 log::warn!(
                     "[entity_creation] fallback git reset failed for {}: {}",
                     url,
@@ -66,6 +95,9 @@ pub(super) async fn git_clone_async(url: &str, target: &Path) -> Result<(), Stri
                 );
             }
             Ok(Err(e)) => {
+                if let Some(stage) = &mut reset_stage {
+                    stage.finish(Outcome::Error, Some(Reason::ResetFailed));
+                }
                 log::warn!(
                     "[entity_creation] failed to spawn fallback git reset for {}: {}",
                     url,
@@ -73,6 +105,9 @@ pub(super) async fn git_clone_async(url: &str, target: &Path) -> Result<(), Stri
                 );
             }
             Err(_) => {
+                if let Some(stage) = &mut reset_stage {
+                    stage.finish(Outcome::Timeout, Some(Reason::ResetTimeout));
+                }
                 log::warn!(
                     "[entity_creation] fallback git reset timed out after {} seconds for {}",
                     GIT_RESET_TIMEOUT.as_secs(),

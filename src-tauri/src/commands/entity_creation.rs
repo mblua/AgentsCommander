@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 mod agent_delete_plan;
 mod agent_matrix;
+mod creation_trace;
 mod delete_guard;
 mod matrix_copy;
 mod matrix_layout;
@@ -21,6 +22,7 @@ pub use agent_matrix::{
     __tauri_command_name_create_agent_matrix, __tauri_command_name_delete_agent_matrix,
     create_agent_matrix, delete_agent_matrix,
 };
+pub(crate) use creation_trace::{CreationTrace, Origin, Outcome, Reason, Stage, StageGuard};
 #[cfg(test)]
 pub(crate) use delete_guard::is_file_in_use_error;
 pub(crate) use delete_guard::{
@@ -50,9 +52,12 @@ pub use team_update::{
     __cmd__get_team_config, __cmd__update_team, __tauri_command_name_get_team_config,
     __tauri_command_name_update_team, get_team_config, update_team,
 };
+// Preserve the standalone on-disk entry point for internal consumers.
+#[allow(unused_imports)]
+pub(crate) use workgroup::create_workgroup_on_disk;
 pub(crate) use workgroup::{
     acquire_lifecycle_project_gate, agent_ref_bare_name, clone_missing_repos_for_workgroup,
-    create_or_update_replica_on_disk, create_workgroup_on_disk, list_workgroup_dirs,
+    create_or_update_replica_on_disk, create_workgroup_on_disk_traced, list_workgroup_dirs,
     parse_team_from_workgroup_name, prune_replica_config_scope, prune_workgroup_config_scope,
     remove_replica_dir, ReplicaRemovalOutcome,
 };
