@@ -66,3 +66,27 @@ pub(crate) fn canonical_context_repo(path: &Path) -> io::Result<PathBuf> {
 pub(crate) fn context_repo_exists(path: &Path) -> bool {
     path.exists()
 }
+
+pub(crate) fn persisted_session_cwd_exists(path: &Path) -> bool {
+    path.exists()
+}
+
+pub(crate) fn canonical_session_project_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+pub(crate) fn retained_prompt_cwd(path: &Path) -> Option<PathBuf> {
+    let canonical = std::fs::canonicalize(path).ok()?;
+    if !canonical.is_dir() {
+        return None;
+    }
+    Some(canonical)
+}
+
+pub(crate) fn canonical_carrier_cwd(path: &Path) -> io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+pub(crate) fn restore_cwd_exists(path: &Path) -> bool {
+    path.exists()
+}

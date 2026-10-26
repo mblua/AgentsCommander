@@ -1629,6 +1629,7 @@ agentscommander_lib::config::session_context::templates -> agentscommander_lib::
 agentscommander_lib::config::session_context::templates -> agentscommander_lib::config::session_context
 agentscommander_lib::config::sessions_persistence::carrier -> agentscommander_lib::config::sessions_persistence::carrier::publication
 agentscommander_lib::config::sessions_persistence::carrier -> agentscommander_lib::config::sessions_persistence::record
+agentscommander_lib::config::sessions_persistence::carrier -> agentscommander_lib::filesystem::directories
 agentscommander_lib::config::sessions_persistence::carrier -> agentscommander_lib::session::manager
 agentscommander_lib::config::sessions_persistence::carrier -> agentscommander_lib::session::session
 agentscommander_lib::config::sessions_persistence::carrier::publication -> agentscommander_lib::config::sessions_persistence
@@ -1647,6 +1648,7 @@ agentscommander_lib::config::sessions_persistence::orphan -> agentscommander_lib
 agentscommander_lib::config::sessions_persistence::orphan -> agentscommander_lib::config::sessions_persistence::project_scope
 agentscommander_lib::config::sessions_persistence::orphan -> agentscommander_lib::config::sessions_persistence::record
 agentscommander_lib::config::sessions_persistence::orphan -> agentscommander_lib::config::sessions_persistence::write
+agentscommander_lib::config::sessions_persistence::orphan -> agentscommander_lib::filesystem::directories
 agentscommander_lib::config::sessions_persistence::orphan -> agentscommander_lib::session::manager
 agentscommander_lib::config::sessions_persistence::orphan -> agentscommander_lib::session::session
 agentscommander_lib::config::sessions_persistence::persist -> agentscommander_lib::config
@@ -1670,6 +1672,7 @@ agentscommander_lib::config::sessions_persistence::persist::snapshot -> agentsco
 agentscommander_lib::config::sessions_persistence::project_scope -> agentscommander_lib::config::root_agent
 agentscommander_lib::config::sessions_persistence::project_scope -> agentscommander_lib::config::sessions_persistence::record
 agentscommander_lib::config::sessions_persistence::project_scope -> agentscommander_lib::config::settings
+agentscommander_lib::config::sessions_persistence::project_scope -> agentscommander_lib::filesystem::directories
 agentscommander_lib::config::sessions_persistence::project_scope -> agentscommander_lib::path_utils
 agentscommander_lib::config::sessions_persistence::record -> agentscommander_lib::config::root_agent
 agentscommander_lib::config::sessions_persistence::record -> agentscommander_lib::config::settings
@@ -1688,6 +1691,7 @@ agentscommander_lib::config::sessions_persistence::retained_prompt -> agentscomm
 agentscommander_lib::config::sessions_persistence::retained_prompt -> agentscommander_lib::config::sessions_persistence::project_scope
 agentscommander_lib::config::sessions_persistence::retained_prompt -> agentscommander_lib::config::sessions_persistence::record
 agentscommander_lib::config::sessions_persistence::retained_prompt -> agentscommander_lib::config::sessions_persistence::write
+agentscommander_lib::config::sessions_persistence::retained_prompt -> agentscommander_lib::filesystem::directories
 agentscommander_lib::config::sessions_persistence::retained_prompt -> agentscommander_lib::session::manager
 agentscommander_lib::config::sessions_persistence::store -> agentscommander_lib::config
 agentscommander_lib::config::sessions_persistence::store -> agentscommander_lib::config::sessions_persistence::record
@@ -2759,6 +2763,7 @@ agentscommander_lib::restore::native -> agentscommander_lib::config::root_agent
 agentscommander_lib::restore::native -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::restore::native -> agentscommander_lib::config::settings
 agentscommander_lib::restore::native -> agentscommander_lib::config::teams
+agentscommander_lib::restore::native -> agentscommander_lib::filesystem::directories
 agentscommander_lib::restore::native -> agentscommander_lib::loops
 agentscommander_lib::restore::native -> agentscommander_lib::loops::non_stop_watchdog
 agentscommander_lib::restore::native -> agentscommander_lib::phone

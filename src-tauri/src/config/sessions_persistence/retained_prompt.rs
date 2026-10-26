@@ -42,10 +42,7 @@ pub(crate) fn prompt_key(
 ) -> Option<PromptKey> {
     let agent_id = agent_id.filter(|value| !value.is_empty())?;
     let effective_profile = effective_profile.filter(|value| !value.is_empty())?;
-    let canonical = std::fs::canonicalize(cwd).ok()?;
-    if !canonical.is_dir() {
-        return None;
-    }
+    let canonical = crate::filesystem::directories::retained_prompt_cwd(Path::new(cwd))?;
     let mut canonical_cwd = strip_long_prefix_str(canonical.to_str()?).to_string();
     if cfg!(windows) {
         canonical_cwd.make_ascii_lowercase();

@@ -491,3 +491,38 @@ fn live_transcript_window_returns_raw_bytes_and_caller_bound() {
         (Vec::new(), 7)
     );
 }
+
+#[test]
+fn persisted_session_cwd_probes_preserve_native_results() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("file");
+    std::fs::write(&file, b"cwd probe").unwrap();
+    let missing = root.path().join("missing");
+    for path in [root.path(), file.as_path(), missing.as_path()] {
+        assert_eq!(
+            directories::persisted_session_cwd_exists(path),
+            path.exists()
+        );
+        assert_eq!(directories::restore_cwd_exists(path), path.exists());
+        assert_eq!(
+            directories::canonical_session_project_path(path),
+            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        );
+        let expected = std::fs::canonicalize(path);
+        match (directories::canonical_carrier_cwd(path), expected) {
+            (Ok(actual), Ok(expected)) => assert_eq!(actual, expected),
+            (Err(actual), Err(expected)) => {
+                assert_eq!(actual.kind(), expected.kind());
+                assert_eq!(actual.raw_os_error(), expected.raw_os_error());
+                assert_eq!(actual.to_string(), expected.to_string());
+            }
+            _ => panic!("carrier canonicalization changed the native result"),
+        }
+    }
+    assert_eq!(
+        directories::retained_prompt_cwd(root.path()),
+        Some(std::fs::canonicalize(root.path()).unwrap())
+    );
+    assert_eq!(directories::retained_prompt_cwd(&file), None);
+    assert_eq!(directories::retained_prompt_cwd(&missing), None);
+}
