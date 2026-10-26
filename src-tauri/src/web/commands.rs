@@ -10,7 +10,7 @@ use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 // #1265: keep private. A `pub use` here would re-expose the emitter under the
 // dispatcher's own path and let the deleted arc come back as an import.
-use crate::web::event_broadcast::broadcast_all;
+use crate::web::event_broadcast::{broadcast_all, ManagedBroadcastEvents};
 
 use super::broadcast::WsBroadcaster;
 
@@ -874,22 +874,16 @@ async fn dispatch_browser_project_command(
     }
 }
 
-fn broadcast_all_to_managed<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+fn broadcast_all_to_managed<E: ManagedBroadcastEvents + ?Sized>(
+    app: &E,
     event: &str,
     payload: &Value,
 ) -> bool {
-    let _ = tauri::Emitter::emit(app, event, payload.clone());
-    if let Some(bc) = app.try_state::<WsBroadcaster>() {
-        bc.broadcast_event(event, payload);
-        true
-    } else {
-        false
-    }
+    app.managed_event(event, payload)
 }
 
 /// Emit event to both Tauri windows and managed WebSocket clients.
-pub fn broadcast_all_r<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: &str, payload: &Value) {
+pub fn broadcast_all_r<E: ManagedBroadcastEvents + ?Sized>(app: &E, event: &str, payload: &Value) {
     let _ = broadcast_all_to_managed(app, event, payload);
 }
 
