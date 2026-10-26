@@ -643,8 +643,11 @@ fn issue_1867_isolation_source_contract() {
             &[("Command::new(\"git\")", 2), ("Command::new(\"cmd\")", 1)],
         ),
         (
-            "cli_ui_automation.rs",
-            include_str!("cli_ui_automation.rs"),
+            "cli_ui_automation/main.rs",
+            concat!(
+                include_str!("cli_ui_automation/main.rs"),
+                include_str!("cli_ui_automation/pointer_and_query.rs"),
+            ),
             4,
             &[
                 ("run", 1),
@@ -741,7 +744,7 @@ fn issue_1867_isolation_source_contract() {
                 bin.parent().expect("bin parent").join(format!(".{}", stem))
             }"#
             }
-            "cli_ui_automation.rs" => {
+            "cli_ui_automation/main.rs" => {
                 r#"fn config_dir_for(bin: &Path) -> PathBuf {
                 let stem = bin.file_stem().unwrap().to_string_lossy();
                 bin.parent().unwrap().join(format!(".{stem}"))

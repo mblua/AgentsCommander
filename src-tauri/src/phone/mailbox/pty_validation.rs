@@ -1,23 +1,19 @@
 use super::poller::MailboxPoller;
 #[cfg(test)]
 use super::pty_claim::MailboxTestHooks;
+use super::pty_observation::{PtyAuthorityState, PtyTargetState};
 use super::settle::{reason_code_from_name, session_has_current_pty_submission_provenance};
-use crate::config::settings::SettingsState;
 use crate::pty::backend::SessionBackendKind;
-use crate::pty::manager::PtyManager;
-use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::Mutex;
-use tauri::Manager;
 use uuid::Uuid;
 
 impl MailboxPoller {
-    pub(crate) async fn validate_and_enqueue_host_pty_input<R: tauri::Runtime>(
+    pub(crate) async fn validate_and_enqueue_host_pty_input<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         is_app_outbox: bool,
         source_identity: &crate::path_identity::VerifiedPathIdentity,
@@ -90,7 +86,7 @@ impl MailboxPoller {
             }
         }
         let token = parse_canonical_uuid_v4(&envelope.token).map_err(|_| C::InvalidSessionToken)?;
-        let session_manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let session_manager = app.pty_sessions();
         let session = {
             let manager = session_manager.read().await;
             manager
@@ -109,7 +105,7 @@ impl MailboxPoller {
             return Err(C::SenderBackendNotLocal);
         }
         let session_id = Uuid::parse_str(&session.id).map_err(|_| C::SenderSessionNotLive)?;
-        let pty = app.state::<Arc<Mutex<PtyManager>>>();
+        let pty = app.pty_routes();
         if pty
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -119,7 +115,7 @@ impl MailboxPoller {
             return Err(C::SenderSessionNotLive);
         }
         let in_memory_project_paths = {
-            let settings = app.state::<SettingsState>();
+            let settings = app.pty_settings();
             let paths = settings.read().await.project_paths.clone();
             paths
         };
@@ -229,15 +225,15 @@ impl MailboxPoller {
         Ok(enqueue.result.injection_id)
     }
 
-    pub(crate) async fn validate_claimed_host_authority<R: tauri::Runtime>(
+    pub(crate) async fn validate_claimed_host_authority<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         claimed: &crate::api::message_store::ClaimedPtyInputOperation,
     ) -> Option<crate::config::teams::VerifiedPtyInputRoute> {
         let authority_id =
             crate::phone::types::parse_canonical_uuid_v4(&claimed.authority_session_id).ok()?;
         let authority = {
-            let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let manager = app.pty_sessions();
             let guard = manager.read().await;
             guard.get_session(authority_id).await
         }?;
@@ -247,7 +243,7 @@ impl MailboxPoller {
             return None;
         }
         let in_memory_paths = {
-            let settings = app.state::<SettingsState>();
+            let settings = app.pty_settings();
             let paths = settings.read().await.project_paths.clone();
             paths
         };
@@ -283,7 +279,7 @@ impl MailboxPoller {
         }
         let current_cwd =
             crate::path_identity::verify_directory(Path::new(&authority.working_directory)).ok()?;
-        let pty = app.state::<Arc<Mutex<PtyManager>>>();
+        let pty = app.pty_routes();
         let manager = pty.lock().unwrap_or_else(|error| error.into_inner());
         if !manager.has_session(authority_id)
             || manager.backend_kind(authority_id) != Some(SessionBackendKind::LocalProcess)
@@ -315,9 +311,9 @@ impl MailboxPoller {
         Some(route)
     }
 
-    pub(crate) async fn validate_selected_pty_target<R: tauri::Runtime>(
+    pub(crate) async fn validate_selected_pty_target<S: PtyTargetState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         claimed: &crate::api::message_store::ClaimedPtyInputOperation,
         verified_target: &crate::config::teams::VerifiedPtyInputIdentity,
         session_id: Uuid,
@@ -327,20 +323,20 @@ impl MailboxPoller {
             crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at).ok()?;
         if expires <= chrono::Utc::now()
             || app
-                .try_state::<Arc<crate::RestoreInProgress>>()
+                .pty_restore()
                 .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
             || app
-                .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+                .pty_purge()
                 .is_some_and(|guard| guard.blocks_agent(&claimed.target_fqn))
         {
             return None;
         }
         let session = {
-            let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let manager = app.pty_sessions();
             let guard = manager.read().await;
             guard.get_session(session_id).await
         }?;
-        let settings = app.state::<SettingsState>().read().await.clone();
+        let settings = app.pty_settings().read().await.clone();
         if matches!(session.status, SessionStatus::Exited(_))
             || !session.waiting_for_input
             || session.backend_kind != expected_backend
@@ -367,7 +363,7 @@ impl MailboxPoller {
         let current_cwd =
             crate::path_identity::verify_directory(Path::new(&session.working_directory)).ok()?;
         let route_valid = {
-            let manager = app.state::<Arc<Mutex<PtyManager>>>();
+            let manager = app.pty_routes();
             let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
             manager.has_session(session_id)
                 && manager.backend_kind(session_id) == Some(expected_backend)
@@ -388,7 +384,7 @@ impl MailboxPoller {
             return None;
         }
         let readiness = app
-            .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+            .pty_readiness()
             .purge_readiness(&[session_id])
             .into_iter()
             .next()?;

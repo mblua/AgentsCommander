@@ -69,8 +69,9 @@ pub use help::{
 };
 #[cfg(test)]
 pub(crate) use instance::{
-    absent_main_overlay_comparison, agents_unreadable_dirs, agents_unreadable_startup_notice,
-    try_with_agents_layer_publication_state_in, AgentsPublicationLockError,
+    absent_main_overlay_comparison, agents_unreadable_startup_notice,
+    hold_agents_layer_state_for_test, try_with_agents_layer_publication_state_in,
+    AgentsPublicationLockError,
 };
 pub(crate) use instance::{
     agents_instance_groups, agents_instance_path, agents_layer_state_at,

@@ -20,8 +20,8 @@ use crate::pty::backend::SessionBackendKind;
 use crate::telegram::types::TelegramBotConfig;
 #[cfg(test)]
 use agent::{
-    absent_main_overlay_comparison, agents_unreadable_dirs, classify_registered_profile_inputs,
-    codex_hooks_review_menu, comparable_agent, is_profile_gap, known_agent_field,
+    absent_main_overlay_comparison, classify_registered_profile_inputs, codex_hooks_review_menu,
+    comparable_agent, hold_agents_layer_state_for_test, is_profile_gap, known_agent_field,
     normalized_profile_cells, refresh_shipped_agent_help_file_with_publish,
     try_with_agents_layer_publication_state_in, validate_profile_orphans, AGENT_FILE_CHECKPOINT,
     EMBEDDED_AGENT_HELP_JSON, EMBEDDED_BLOCKING_MENUS_JSON,

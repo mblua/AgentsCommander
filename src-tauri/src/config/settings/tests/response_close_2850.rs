@@ -25,9 +25,7 @@ fn publication_state_reports_bool_and_holds_lock_through_callback() {
 
 #[test]
 fn publication_state_try_uses_existing_registry_without_calling_on_contention() {
-    let _guard = agents_unreadable_dirs()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = hold_agents_layer_state_for_test();
     let called = std::cell::Cell::new(false);
     let result =
         try_with_agents_layer_publication_state(Path::new("publication-contention-test"), |_| {

@@ -10,6 +10,7 @@ mod pty_artifact;
 mod pty_authority;
 mod pty_claim;
 mod pty_dispatch;
+pub(crate) mod pty_observation;
 mod pty_validation;
 mod request_polling;
 mod response_source;

@@ -24,7 +24,8 @@ pub(crate) use layer::{
 };
 #[cfg(test)]
 pub(crate) use layer::{
-    agents_unreadable_dirs, try_with_agents_layer_publication_state_in, AgentsPublicationLockError,
+    hold_agents_layer_state_for_test, try_with_agents_layer_publication_state_in,
+    AgentsPublicationLockError,
 };
 #[cfg(test)]
 pub(crate) use overlay::absent_main_overlay_comparison;
