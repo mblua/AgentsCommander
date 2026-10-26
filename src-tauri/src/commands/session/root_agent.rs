@@ -1,19 +1,21 @@
+pub(crate) use super::restart::context::ensure_owned_root_directory;
+use super::restart::context::{ensure_lifecycle_root_directory, LifecycleExecutionContext};
 use crate::commands::session::attach_local_config_telegram_if_any;
 use crate::commands::session::build_configured_agent_spawn_for_cwd;
 use crate::commands::session::create_session_inner_impl;
-use crate::commands::session::execute_restart_transaction_in_context;
 use crate::commands::session::prepare_restore_lifecycle_authority;
 use crate::commands::session::resolve_root_agent_command;
+use crate::commands::session::restart::execution::execute_restart_transaction_in_context;
 use crate::commands::session::CreateSelectionIntent;
 use crate::commands::session::LifecycleEntryAuthority;
 use crate::commands::session::LifecycleEntryOutcome;
-use crate::commands::session::LifecycleExecutionContext;
 use crate::commands::session::RestartJobRequest;
 use crate::config::settings::SettingsState;
 use crate::pty::backend::ResolvedAgentHostShell;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::LifecycleMutations;
 use crate::session::manager::SessionManager;
+use crate::session::selection::LifecycleExecutorState;
 use crate::session::selection::SelectionCause;
 use crate::session::selection::SelectionCoordinator;
 use crate::session::selection::SelectionSource;
@@ -46,14 +48,7 @@ pub(crate) fn classify_existing_root(status: &SessionStatus, has_pty: bool) -> E
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct RootJobRequest {
-    pub requested_agent_id: Option<String>,
-    pub requested_profile: Option<String>,
-    pub skip_auto_resume_for_new_session: bool,
-    pub intent: TrustedCreateIntent,
-    pub select_after: bool,
-}
+pub(crate) use crate::session::selection::RootJobRequest;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_root_agent_inner(
@@ -106,42 +101,6 @@ pub(crate) async fn create_root_agent_inner_with_intent(
             },
         )
         .await
-}
-
-pub(crate) fn ensure_owned_root_directory(
-    effect: crate::session::selection::LifecycleEffectGuard,
-) -> Result<String, String> {
-    let result = crate::config::root_agent::ensure_root_agent_dir();
-    effect.complete(result.clone().map(Some));
-    result
-}
-
-pub(crate) async fn ensure_lifecycle_root_directory<R: tauri::Runtime>(
-    transaction: &SelectionTransaction<R>,
-    context: &LifecycleExecutionContext<'_>,
-) -> Result<String, String> {
-    if let LifecycleExecutionContext::RestoreEntry { root_directory, .. } = context {
-        if !transaction.has_active_restore_capability() {
-            return Err(
-                crate::session::selection::SelectionCoordinatorError::Unavailable.to_string(),
-            );
-        }
-        return root_directory.map(str::to_owned).ok_or_else(|| {
-            crate::session::selection::SelectionCoordinatorError::Unavailable.to_string()
-        });
-    }
-    if !transaction.has_accepted_lifecycle_core() {
-        return std::future::pending().await;
-    }
-    if let Some(outcome) = transaction.lifecycle_root_directory_outcome() {
-        return outcome;
-    }
-    let Some(effect) = transaction
-        .start_lifecycle_effect(crate::session::selection::LifecycleEffectSlot::RootDirectory)
-    else {
-        return std::future::pending().await;
-    };
-    ensure_owned_root_directory(effect)
 }
 
 pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
@@ -410,4 +369,18 @@ pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
     }
     attach_local_config_telegram_if_any(app, session_id, &root_agent_path).await;
     Ok(info)
+}
+
+impl SelectionCoordinator {
+    pub(crate) async fn root_lifecycle<R: tauri::Runtime>(
+        &self,
+        app: AppHandle<R>,
+        request: RootJobRequest,
+    ) -> Result<SessionInfo, String> {
+        let executor = app
+            .try_state::<LifecycleExecutorState<SelectionTransaction<R>>>()
+            .map(|state| Arc::clone(state.get()));
+        self.root_lifecycle_with_executor(app, request, executor)
+            .await
+    }
 }

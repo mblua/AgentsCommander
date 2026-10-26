@@ -37,6 +37,9 @@ async fn response_close_prepared_ticket_rejects_both_duplicate_bind_orders() {
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let coordinator = SelectionCoordinator::new(manager.clone(), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(manager)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();

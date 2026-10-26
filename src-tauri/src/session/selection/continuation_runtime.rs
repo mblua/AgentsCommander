@@ -295,11 +295,11 @@ impl OwnedReplacementContinuation {
             .activity
             .clone();
         crate::config::activity_log::append_batch(&activity);
-        crate::commands::session::complete_owned_replacement_retirement(
-            transaction,
-            descriptor.previous.id,
-        )
-        .await;
+        transaction
+            .lifecycle_executor()
+            .expect("selection start contract violated: lifecycle executor binding missing")
+            .complete_retirement(transaction, descriptor.previous.id)
+            .await;
         {
             let mut state = self.owner.state.lock().ok()?;
             let progress = state.replacement.as_mut()?;

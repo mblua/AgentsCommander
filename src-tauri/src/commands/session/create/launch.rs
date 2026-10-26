@@ -1,6 +1,6 @@
-use crate::commands::session::effective_restart_requested_profile;
-use crate::commands::session::matched_selection;
-use crate::commands::session::MatchedSelection;
+use crate::commands::session::agent_command::effective_restart_requested_profile;
+use crate::commands::session::agent_command::matched_selection;
+use crate::commands::session::agent_command::MatchedSelection;
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::config::coding_agents_catalog::command_executable_basename;
 use crate::config::coding_agents_catalog::CodingAgentDefinition;

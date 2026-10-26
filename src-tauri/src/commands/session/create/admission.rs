@@ -1,8 +1,7 @@
-use crate::commands::session::release_resource_launch_permit;
+use crate::commands::session::lifecycle::LifecycleEntryAuthority;
 #[cfg(test)]
 use crate::commands::session::restore_emit_seam;
-use crate::commands::session::LifecycleEntryAuthority;
-use crate::commands::session::CLOSE_MARKER_EVENT_ORDER;
+use crate::config::coordinator_clocks::ClearedCloseMarkers;
 use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
 use crate::resource_monitor::AgentLaunchPermit;
@@ -850,3 +849,86 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
     })
     .await
 }
+
+pub(crate) fn release_resource_launch_permit(
+    monitor: &Arc<ResourceMonitorState>,
+    permit: &mut Option<AgentLaunchPermit>,
+) {
+    if let Some(permit) = permit.take() {
+        monitor.release_unregistered_permit(permit);
+    }
+}
+
+/// #552 Coordinator create/reopen: seed the badge clock and clear both close markers.
+/// #552 seed the badge clock for a coordinator's first spawn so it shows 0m
+/// immediately, and clear any "auto-closed" marker. An auto-closed coordinator
+/// is DESTROYED, so its reopen flows through this create path (the "create
+/// in-place" branch of handleReplicaClick), NOT restart_session_inner.
+/// seed_if_absent never overwrites, so a respawn does NOT reset the badge.
+/// (#2413) Returns the create's marker ticket (`None` = no clocks state); the
+/// caller ends it with `succeeded()` or `failed()` so a failed create puts the
+/// cleared markers back.
+pub(crate) fn note_coordinator_create_on_app<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    cwd: &str,
+) -> Option<CoordinatorCreateTicket<R>> {
+    let clocks = app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()?;
+    {
+        // agent_fqn_from_path returns String (teams.rs:80), not Option.
+        let fqn = crate::config::teams::agent_fqn_from_path(cwd);
+        let now = chrono::Utc::now();
+        // Held through the emits below: a restore can never emit its timestamp
+        // after this create's clear has emitted null.
+        let _order = CLOSE_MARKER_EVENT_ORDER
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (seeded, cleared_auto, cleared_manual) = {
+            let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+            let seeded = g.seed_if_absent(&fqn, now);
+            let auto_before = g.auto_closed_at(&fqn);
+            let manual_before = g.manually_closed_at(&fqn);
+            let cleared_auto = g.clear_auto_closed(&fqn);
+            let cleared_manual = g.clear_manually_closed(&fqn);
+            g.begin_coordinator_create(
+                &fqn,
+                ClearedCloseMarkers {
+                    auto_closed_at: auto_before.filter(|_| cleared_auto),
+                    manually_closed_at: manual_before.filter(|_| cleared_manual),
+                },
+            );
+            (seeded, cleared_auto, cleared_manual)
+        };
+        if seeded {
+            let _ = app.emit(
+                "coordinator_clock_updated",
+                serde_json::json!({ "replicaPath": cwd, "lastUserMessageAt": now.to_rfc3339() }),
+            );
+        }
+        if cleared_auto {
+            let _ = app.emit(
+                "coordinator_auto_close_changed",
+                serde_json::json!({ "replicaPath": cwd, "autoClosedAt": null }),
+            );
+        }
+        if cleared_manual {
+            let _ = app.emit(
+                "coordinator_manual_close_changed",
+                serde_json::json!({ "replicaPath": cwd, "manuallyClosedAt": null }),
+            );
+        }
+        Some(CoordinatorCreateTicket {
+            app: app.clone(),
+            cwd: cwd.to_string(),
+            fqn,
+            done: false,
+            session_may_exist: false,
+        })
+    }
+}
+
+/// (#2413) Orders close-marker changes made by coordinator creates with their
+/// events. The create's clear and a failed create's restore each hold it from
+/// the clocks change through their emits, so the UI receives their events in
+/// the same order as the clock changes. Taken before the clocks lock, never
+/// held across an `.await`.
+static CLOSE_MARKER_EVENT_ORDER: Mutex<()> = Mutex::new(());

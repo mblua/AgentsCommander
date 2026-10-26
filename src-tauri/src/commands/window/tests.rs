@@ -177,6 +177,9 @@ async fn detach_pty_loss_after_window_creation_compensates_and_reconciles_livene
     let detached = DetachedSessionsState::default();
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(detached)
@@ -277,6 +280,9 @@ async fn attach_post_destroy_pty_loss_clears_intent_preserves_geometry_and_publi
         .record_route(session.id, SessionBackendKind::LocalProcess);
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(DetachedSessionsState::default())
@@ -360,6 +366,9 @@ async fn attach_post_destroy_pty_loss_clears_intent_preserves_geometry_and_publi
 /// An app that manages the scope state, which every `open_watchers_window` call needs.
 fn watchers_app(label: &str) -> tauri::App<tauri::test::MockRuntime> {
     tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(WatchersScopeState::default())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap_or_else(|_| panic!("build {label} app"))

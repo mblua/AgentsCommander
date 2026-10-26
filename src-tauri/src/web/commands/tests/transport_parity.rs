@@ -279,6 +279,9 @@ async fn issue_1937_transport_parity_tauri_registration_presence() {
         crate::config::settings::new_settings_state(settings);
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .invoke_handler(tauri::generate_handler![
             crate::commands::config::preview_selection_lock_removal,
             crate::commands::config::apply_selection_lock_removal,
