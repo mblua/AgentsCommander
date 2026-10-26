@@ -124,32 +124,14 @@ fn check_pairs(records: &[Value], expected: &str) {
         assert!(record["operation_ms"].as_u64().unwrap() <= last["operation_ms"].as_u64().unwrap());
         assert!(record["elapsed_ms"].as_u64().unwrap() <= last["elapsed_ms"].as_u64().unwrap());
         let id = record["stage_id"].as_u64().unwrap();
-        if let Some(parent) = record["parent_stage_id"].as_u64() {
-            assert!(
-                starts.contains_key(&parent),
-                "parent must start before child"
-            );
-            assert!(
-                !ends.contains_key(&parent),
-                "parent must remain open for child"
-            );
-        }
+        check_parent_open(record, &starts, &ends);
         if record["event"] == "start" {
             assert_eq!(record["elapsed_ms"], 0);
             assert!(starts.insert(id, record).is_none(), "duplicate start");
         } else {
             assert_eq!(record["event"], "end");
             assert!(ends.insert(id, record).is_none(), "duplicate end");
-            if record["outcome"] == "skip" {
-                assert!(!starts.contains_key(&id));
-                assert_eq!(record["elapsed_ms"], 0);
-            } else {
-                let start = starts.get(&id).expect("end without start");
-                assert_eq!(record["stage"], start["stage"]);
-                assert_eq!(record["parent_stage_id"], start["parent_stage_id"]);
-                assert_eq!(record["agent_index"], start["agent_index"]);
-                assert_eq!(record["repo_index"], start["repo_index"]);
-            }
+            check_end_pair(record, id, &starts);
         }
     }
     for id in starts.keys() {
@@ -162,6 +144,32 @@ fn check_pairs(records: &[Value], expected: &str) {
                     <= ends[&parent]["elapsed_ms"].as_u64().unwrap()
             );
         }
+    }
+}
+
+fn check_parent_open(record: &Value, starts: &HashMap<u64, &Value>, ends: &HashMap<u64, &Value>) {
+    if let Some(parent) = record["parent_stage_id"].as_u64() {
+        assert!(
+            starts.contains_key(&parent),
+            "parent must start before child"
+        );
+        assert!(
+            !ends.contains_key(&parent),
+            "parent must remain open for child"
+        );
+    }
+}
+
+fn check_end_pair(record: &Value, id: u64, starts: &HashMap<u64, &Value>) {
+    if record["outcome"] == "skip" {
+        assert!(!starts.contains_key(&id));
+        assert_eq!(record["elapsed_ms"], 0);
+    } else {
+        let start = starts.get(&id).expect("end without start");
+        assert_eq!(record["stage"], start["stage"]);
+        assert_eq!(record["parent_stage_id"], start["parent_stage_id"]);
+        assert_eq!(record["agent_index"], start["agent_index"]);
+        assert_eq!(record["repo_index"], start["repo_index"]);
     }
 }
 
@@ -235,10 +243,16 @@ async fn real_creation_scenarios() {
         .join(SECRET)
         .to_string_lossy()
         .replace(char::from(92), "/");
-    let project = project_fixture(tmp.path(), "success");
+    successful_creation(tmp.path(), &url, &alias).await;
+    partial_creation(tmp.path()).await;
+    invalid_creation(tmp.path()).await;
+}
+
+async fn successful_creation(root: &Path, url: &str, alias: &str) {
+    let project = project_fixture(root, "success");
     let created = create_workgroup_on_disk(args(
         &project,
-        vec![assignment(&url), assignment(&url), assignment(&alias)],
+        vec![assignment(url), assignment(url), assignment(alias)],
     ))
     .await
     .expect("real creation with local clone");
@@ -293,13 +307,14 @@ async fn real_creation_scenarios() {
         event(&records, "operation", "end")["project_key"],
         physical["project_key"]
     );
+}
 
-    let missing = tmp
-        .path()
+async fn partial_creation(root: &Path) {
+    let missing = root
         .join(format!("missing-{SECRET}"))
         .to_string_lossy()
         .replace(char::from(92), "/");
-    let project = project_fixture(tmp.path(), "partial");
+    let project = project_fixture(root, "partial");
     let created = create_workgroup_on_disk(args(&project, vec![assignment(&missing)]))
         .await
         .expect("clone failure must preserve Ok result");
@@ -313,8 +328,10 @@ async fn real_creation_scenarios() {
     assert_eq!(event(&records, "operation", "end")["clone_error_count"], 1);
     assert_eq!(event(&records, "clone_process", "end")["outcome"], "error");
     assert_eq!(event(&records, "clone_process", "end")["reason"], "failed");
+}
 
-    let project = project_fixture(tmp.path(), "invalid");
+async fn invalid_creation(root: &Path) {
+    let project = project_fixture(root, "invalid");
     let mut invalid = args(&project, Vec::new());
     invalid.coordinator = None;
     invalid.agents.clear();
