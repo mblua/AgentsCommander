@@ -689,6 +689,7 @@ agentscommander_lib::commands::co_managed -> agentscommander_lib::network
 agentscommander_lib::commands::co_managed -> agentscommander_lib::path_identity
 agentscommander_lib::commands::co_managed -> agentscommander_lib::session::manager
 agentscommander_lib::commands::codex_resolver -> agentscommander_lib::path_utils
+agentscommander_lib::commands::codex_resolver -> agentscommander_lib::telegram
 agentscommander_lib::commands::config -> agentscommander_lib::agent_update
 agentscommander_lib::commands::config -> agentscommander_lib::commands::config::web_server
 agentscommander_lib::commands::config -> agentscommander_lib::config::settings
@@ -1171,6 +1172,7 @@ agentscommander_lib::commands::window -> agentscommander_lib::config::settings
 agentscommander_lib::commands::window -> agentscommander_lib::session::manager
 agentscommander_lib::commands::window -> agentscommander_lib::session::selection
 agentscommander_lib::commands::window -> agentscommander_lib::session::session
+agentscommander_lib::commands::window -> agentscommander_lib::window
 agentscommander_lib::config::ac_root -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::config::activity_log -> agentscommander_lib::config::daemon_pid
 agentscommander_lib::config::activity_log -> agentscommander_lib::config::instance_artifacts
@@ -1207,6 +1209,7 @@ agentscommander_lib::config::agent_config -> agentscommander_lib::config
 agentscommander_lib::config::agent_config -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::agent_config -> agentscommander_lib::config::local_config_io
 agentscommander_lib::config::agent_config -> agentscommander_lib::config::naming_migration
+agentscommander_lib::config::agent_creation -> agentscommander_lib::filesystem::directories
 agentscommander_lib::config::agent_memory -> agentscommander_lib::commands::entity_creation
 agentscommander_lib::config::agent_memory -> agentscommander_lib::config::replica_identity
 agentscommander_lib::config::agent_memory -> agentscommander_lib::config::session_context
@@ -2846,6 +2849,7 @@ agentscommander_lib::session::session -> agentscommander_lib::session::profile
 agentscommander_lib::startup -> agentscommander_lib::config
 agentscommander_lib::startup -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::startup -> agentscommander_lib::config::naming_migration
+agentscommander_lib::telegram -> agentscommander_lib::filesystem::directories
 agentscommander_lib::telegram::api -> agentscommander_lib::errors
 agentscommander_lib::telegram::api -> agentscommander_lib::network
 agentscommander_lib::telegram::api -> agentscommander_lib::telegram::redact
@@ -2977,6 +2981,7 @@ agentscommander_lib::web::commands::coding_agent_dispatch -> agentscommander_lib
 agentscommander_lib::web::event_broadcast -> agentscommander_lib::web::broadcast
 agentscommander_lib::web_server -> agentscommander_lib::shutdown
 agentscommander_lib::window -> agentscommander_lib::config
+agentscommander_lib::window -> agentscommander_lib::filesystem::directories
 agentscommander_lib::window -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::window -> agentscommander_lib::pty::manager
 agentscommander_lib::window -> agentscommander_lib::pty::menu_guard
