@@ -35,7 +35,10 @@ pub(crate) fn clone_repository(
     target: &Path,
 ) -> impl std::future::Future<Output = Result<Output, CloneRepositoryError>> + Send {
     let mut cmd = clone_command(url, target);
-    async move { classify_clone_result(tokio::time::timeout(GIT_CLONE_TIMEOUT, cmd.output()).await) }
+    async move {
+        let result = tokio::time::timeout(GIT_CLONE_TIMEOUT, cmd.output()).await;
+        classify_clone_result(result)
+    }
 }
 
 fn classify_clone_result(
