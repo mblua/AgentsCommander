@@ -16,10 +16,10 @@ use crate::session::manager::SessionManager;
 #[cfg(test)]
 use crate::session::profile::CodingAgentKind;
 #[cfg(test)]
+use crate::session::selection::SelectionCause;
+#[cfg(test)]
 use crate::session::selection::TrustedRestartIntent;
-use crate::session::selection::{
-    SelectionCause, SelectionCoordinator, SelectionRequest, SelectionTransaction,
-};
+use crate::session::selection::{SelectionCoordinator, SelectionRequest, SelectionTransaction};
 use crate::session::session::{SessionInfo, SessionRepo};
 use crate::telegram::manager::TelegramBridgeState;
 pub(crate) use resume_args::trusted_muse_auto_resume_spawn;
