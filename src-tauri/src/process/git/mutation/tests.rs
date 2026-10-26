@@ -108,6 +108,30 @@ fn reset_nonzero_exit_returns_output() {
     assert_eq!(actual.stderr, output.stderr);
 }
 
+#[test]
+fn clone_nonzero_exit_returns_output() {
+    #[cfg(windows)]
+    let status = {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(7)
+    };
+    #[cfg(unix)]
+    let status = {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(7 << 8)
+    };
+    assert!(!status.success());
+    let output = Output {
+        status,
+        stdout: b"clone stdout".to_vec(),
+        stderr: b"clone stderr".to_vec(),
+    };
+    let actual = classify_clone_result(Ok(Ok(output.clone()))).unwrap();
+    assert_eq!(actual.status, output.status);
+    assert_eq!(actual.stdout, output.stdout);
+    assert_eq!(actual.stderr, output.stderr);
+}
+
 #[tokio::test]
 async fn clone_timeout_and_spawn_errors_preserve_text() {
     let elapsed = tokio::time::timeout(
@@ -115,13 +139,23 @@ async fn clone_timeout_and_spawn_errors_preserve_text() {
         std::future::pending::<std::io::Result<Output>>(),
     )
     .await;
-    assert_eq!(
-        classify_clone_result(elapsed).unwrap_err(),
-        "git clone timed out after 600 seconds"
-    );
+    let error = classify_clone_result(elapsed).unwrap_err();
+    assert!(matches!(
+        error,
+        CloneRepositoryError::TimedOut { seconds: 600 }
+    ));
+    assert_eq!(error.to_string(), "git clone timed out after 600 seconds");
     let error = std::io::Error::from_raw_os_error(2);
     let expected = format!("Failed to spawn git clone: {error}");
-    assert_eq!(classify_clone_result(Ok(Err(error))).unwrap_err(), expected);
+    let (kind, raw, display) = (error.kind(), error.raw_os_error(), error.to_string());
+    let actual = classify_clone_result(Ok(Err(error))).unwrap_err();
+    assert_eq!(actual.to_string(), expected);
+    let CloneRepositoryError::Spawn(error) = actual else {
+        panic!("expected spawn error: {actual:?}");
+    };
+    assert_eq!(error.kind(), kind);
+    assert_eq!(error.raw_os_error(), raw);
+    assert_eq!(error.to_string(), display);
 }
 
 #[tokio::test]

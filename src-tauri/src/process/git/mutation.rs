@@ -13,30 +13,53 @@ pub(crate) enum ResetCloneError {
     TimedOut { seconds: u64 },
 }
 
-pub(crate) async fn clone_repository(url: &str, target: &Path) -> Result<Output, String> {
+#[derive(Debug)]
+pub(crate) enum CloneRepositoryError {
+    Spawn(std::io::Error),
+    TimedOut { seconds: u64 },
+}
+
+impl std::fmt::Display for CloneRepositoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Spawn(error) => write!(f, "Failed to spawn git clone: {error}"),
+            Self::TimedOut { seconds } => {
+                write!(f, "git clone timed out after {seconds} seconds")
+            }
+        }
+    }
+}
+
+pub(crate) fn clone_repository(
+    url: &str,
+    target: &Path,
+) -> impl std::future::Future<Output = Result<Output, CloneRepositoryError>> + Send {
     let mut cmd = clone_command(url, target);
-    classify_clone_result(tokio::time::timeout(GIT_CLONE_TIMEOUT, cmd.output()).await)
+    async move { classify_clone_result(tokio::time::timeout(GIT_CLONE_TIMEOUT, cmd.output()).await) }
 }
 
 fn classify_clone_result(
     result: Result<std::io::Result<Output>, tokio::time::error::Elapsed>,
-) -> Result<Output, String> {
-    result
-        .map_err(|_| {
-            format!(
-                "git clone timed out after {} seconds",
-                GIT_CLONE_TIMEOUT.as_secs()
-            )
-        })?
-        .map_err(|e| format!("Failed to spawn git clone: {}", e))
+) -> Result<Output, CloneRepositoryError> {
+    match result {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(error)) => Err(CloneRepositoryError::Spawn(error)),
+        Err(_) => Err(CloneRepositoryError::TimedOut {
+            seconds: GIT_CLONE_TIMEOUT.as_secs(),
+        }),
+    }
 }
 
-pub(crate) async fn reset_clone_index(target: &Path) -> Result<Output, ResetCloneError> {
+pub(crate) fn reset_clone_index(
+    target: &Path,
+) -> impl std::future::Future<Output = Result<Output, ResetCloneError>> + Send {
     let mut cmd = reset_command(target);
-    classify_reset_result(
-        tokio::time::timeout(GIT_RESET_TIMEOUT, cmd.output()).await,
-        GIT_RESET_TIMEOUT,
-    )
+    async move {
+        classify_reset_result(
+            tokio::time::timeout(GIT_RESET_TIMEOUT, cmd.output()).await,
+            GIT_RESET_TIMEOUT,
+        )
+    }
 }
 
 fn classify_reset_result(

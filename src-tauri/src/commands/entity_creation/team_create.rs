@@ -1,3 +1,4 @@
+use super::creation_trace::{CreationTrace, Origin, Outcome, Reason, Stage};
 use super::matrix_copy::{
     cleanup_owned_copy_artifacts, copy_agent_matrix_strict_with_hooks, validate_copy_provenance,
     write_owned_team_file, MatrixCopyHooks, MatrixCopyIdentity, MatrixCopyKind, MatrixCopyStage,
@@ -17,7 +18,7 @@ use super::team_config::{
     ContextAlertWriteMode, TeamConfigMutationGuard,
 };
 use super::team_update::emit_coordinator_refresh;
-use super::workgroup::initialize_workgroup_replicas_on_disk;
+use super::workgroup::initialize_workgroup_replicas_on_disk_traced;
 use super::{
     AgentInfo, CloneError, CreatedEntityResult, RepoAssignment, TeamAgentSource, TeamConfigResult,
     WorkgroupCloneResult,
@@ -385,82 +386,138 @@ pub async fn create_workgroup(
     team_name: String,
     task_title: String,
 ) -> Result<WorkgroupCloneResult, String> {
-    let safe_team = sanitize_name(&team_name)?;
-    let task_content = prepare_new_room_task_content(&task_title)?;
-    let base = selected_ac_root(Path::new(&project_path))?;
+    let trace = CreationTrace::new(Origin::Gui);
+    let mut operation = trace.operation();
+    let mut physical = operation.child(Stage::Physical);
+    let result = async {
+        let prepare = physical.child(Stage::Prepare);
+        let (safe_team, task_content, base, team_config) = prepare.run(|| {
+            let safe_team = sanitize_name(&team_name)?;
+            let task_content = prepare_new_room_task_content(&task_title)?;
+            let base = selected_ac_root(Path::new(&project_path))?;
+            physical.project(&base);
+            operation.project(&base);
 
-    // Ensure gitignore protects workgroup clones from parent repo operations
-    if let Err(e) = crate::commands::ac_discovery::ensure_ac_root_gitignore(&base) {
-        log::warn!(
-            "[create_workgroup] Failed to ensure Project AC Root .gitignore: {}",
-            e
+            // Ensure gitignore protects workgroup clones from parent repo operations
+            if let Err(e) = crate::commands::ac_discovery::ensure_ac_root_gitignore(&base) {
+                log::warn!(
+                    "[create_workgroup] Failed to ensure Project AC Root .gitignore: {}",
+                    e
+                );
+            }
+
+            let team_config = read_team_config(&base, &safe_team)?;
+
+            Ok::<_, String>((safe_team, task_content, base, team_config))
+        })?;
+
+        let allocate = physical.child(Stage::Allocate);
+        let (wg_dir, wg_number) = allocate.run(|| {
+            // Determine next WG number
+            let wg_number = determine_next_wg_number(&base);
+
+            let wg_name = room_dir_name(wg_number, &safe_team, room_number_pad_width());
+            let wg_dir = base.join(&wg_name);
+            if wg_dir.exists() {
+                return Err(format!("Room directory already exists: {}", wg_name));
+            }
+            std::fs::create_dir_all(&wg_dir)
+                .map_err(|e| format!("Failed to create room directory: {}", e))?;
+            std::fs::create_dir_all(wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME))
+                .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
+
+            // Write the prepared Clean or user-owned task before replicas and clones.
+            std::fs::write(wg_dir.join("TASK.md"), &task_content)
+                .map_err(|e| format!("Failed to write TASK.md: {}", e))?;
+
+            Ok::<_, String>((wg_dir, wg_number))
+        })?;
+        physical.room(wg_number);
+        operation.room(wg_number);
+
+        let team_agents = team_config.agents;
+        let team_repos = team_config.repos;
+
+        // Collect unique repo URLs and their directory names
+        let mut unique_repos: Vec<(usize, String, String)> = Vec::new(); // (index, url, dir_name)
+        let mut duplicate_indices = Vec::new();
+        let mut seen_urls: HashSet<String> = HashSet::new();
+        for (index, repo) in team_repos.iter().enumerate() {
+            if seen_urls.insert(repo.url.clone()) {
+                let dir_name = format!("repo-{}", repo_dir_name_from_url(&repo.url));
+                unique_repos.push((index + 1, repo.url.clone(), dir_name));
+            } else {
+                duplicate_indices.push(index + 1);
+            }
+        }
+
+        // Create __agent_*/ replica dirs through the same guarded, lossless
+        // initialization the CLI/on-disk path uses (#1939): a replica's tooling,
+        // custom context and unknown keys survive re-creation.
+        initialize_workgroup_replicas_on_disk_traced(
+            &base,
+            &wg_dir,
+            &team_agents,
+            &team_repos,
+            Some(&physical),
+        )?;
+
+        // Clone repos (async, partial failures logged but don't rollback)
+        let mut clone_errors: Vec<CloneError> = Vec::new();
+        let mut repos_stage = physical.child(Stage::Repos);
+        repos_stage.count(team_repos.len());
+        for index in duplicate_indices {
+            repos_stage.skip_repo(index, Reason::DuplicateUrl);
+        }
+        for (index, url, dir_name) in &unique_repos {
+            let target = wg_dir.join(dir_name);
+            let mut repo_stage = repos_stage.indexed_child(Stage::Repo, *index);
+            let result = git_clone_async(url, &target, Some(&repo_stage)).await;
+            if result.is_ok() {
+                repo_stage.finish(Outcome::Ok, None);
+            } else {
+                repo_stage.finish(Outcome::Error, Some(Reason::Failed));
+            }
+            match result {
+                Ok(_) => {
+                    log::info!("[entity_creation] Cloned {} → {}", url, target.display());
+                }
+                Err(e) => {
+                    log::error!("[entity_creation] Failed to clone {}: {}", url, e);
+                    clone_errors.push(CloneError {
+                        url: url.clone(),
+                        error: e,
+                    });
+                }
+            }
+        }
+
+        repos_stage.clone_errors(clone_errors.len());
+        repos_stage.finish(Outcome::clones(clone_errors.len()), None);
+        let result_path =
+            crate::path_utils::path_to_string_without_windows_verbatim_prefix(&wg_dir);
+        log::info!(
+            "[entity_creation] Created workgroup: {} ({} clone errors)",
+            result_path,
+            clone_errors.len()
         );
+        physical.clone_errors(clone_errors.len());
+        physical.finish(Outcome::clones(clone_errors.len()), None);
+        let mut refresh = operation.child(Stage::RefreshBackend);
+        emit_coordinator_refresh(&app, session_mgr.inner()).await;
+        refresh.finish(Outcome::Ok, None);
+        Ok(WorkgroupCloneResult {
+            path: result_path,
+            clone_errors,
+        })
     }
-
-    let team_config = read_team_config(&base, &safe_team)?;
-
-    // Determine next WG number
-    let wg_number = determine_next_wg_number(&base);
-
-    let wg_name = room_dir_name(wg_number, &safe_team, room_number_pad_width());
-    let wg_dir = base.join(&wg_name);
-    if wg_dir.exists() {
-        return Err(format!("Room directory already exists: {}", wg_name));
+    .await;
+    if result.is_err() {
+        physical.finish(Outcome::Error, Some(Reason::Failed));
     }
-    std::fs::create_dir_all(&wg_dir)
-        .map_err(|e| format!("Failed to create room directory: {}", e))?;
-    std::fs::create_dir_all(wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME))
-        .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
-
-    // Write the prepared Clean or user-owned task before replicas and clones.
-    std::fs::write(wg_dir.join("TASK.md"), &task_content)
-        .map_err(|e| format!("Failed to write TASK.md: {}", e))?;
-
-    let team_agents = team_config.agents;
-    let team_repos = team_config.repos;
-
-    // Collect unique repo URLs and their directory names
-    let mut unique_repos: Vec<(String, String)> = Vec::new(); // (url, dir_name)
-    let mut seen_urls: HashSet<String> = HashSet::new();
-    for repo in &team_repos {
-        if seen_urls.insert(repo.url.clone()) {
-            let dir_name = format!("repo-{}", repo_dir_name_from_url(&repo.url));
-            unique_repos.push((repo.url.clone(), dir_name));
-        }
+    if let Ok(created) = &result {
+        operation.clone_errors(created.clone_errors.len());
+        operation.finish(Outcome::clones(created.clone_errors.len()), None);
     }
-
-    // Create __agent_*/ replica dirs through the same guarded, lossless
-    // initialization the CLI/on-disk path uses (#1939): a replica's tooling,
-    // custom context and unknown keys survive re-creation.
-    initialize_workgroup_replicas_on_disk(&base, &wg_dir, &team_agents, &team_repos)?;
-
-    // Clone repos (async, partial failures logged but don't rollback)
-    let mut clone_errors: Vec<CloneError> = Vec::new();
-    for (url, dir_name) in &unique_repos {
-        let target = wg_dir.join(dir_name);
-        match git_clone_async(url, &target).await {
-            Ok(_) => {
-                log::info!("[entity_creation] Cloned {} → {}", url, target.display());
-            }
-            Err(e) => {
-                log::error!("[entity_creation] Failed to clone {}: {}", url, e);
-                clone_errors.push(CloneError {
-                    url: url.clone(),
-                    error: e,
-                });
-            }
-        }
-    }
-
-    let result_path = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&wg_dir);
-    log::info!(
-        "[entity_creation] Created workgroup: {} ({} clone errors)",
-        result_path,
-        clone_errors.len()
-    );
-    emit_coordinator_refresh(&app, session_mgr.inner()).await;
-    Ok(WorkgroupCloneResult {
-        path: result_path,
-        clone_errors,
-    })
+    operation.result(result)
 }
