@@ -351,6 +351,7 @@ agentscommander_lib::cli::list_peers -> agentscommander_lib
 agentscommander_lib::cli::list_peers -> agentscommander_lib::api::schema
 agentscommander_lib::cli::list_peers -> agentscommander_lib::cli
 agentscommander_lib::cli::list_peers -> agentscommander_lib::config::agent_config
+agentscommander_lib::cli::list_peers -> agentscommander_lib::filesystem::documents
 agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::cli::list_peers
 agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::cli::list_peers::status
 agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::config
@@ -421,6 +422,7 @@ agentscommander_lib::cli::role_experiment::fake_run -> agentscommander_lib::cli:
 agentscommander_lib::cli::role_experiment::prompt_suite -> agentscommander_lib::cli::role_experiment
 agentscommander_lib::cli::role_experiment::prompt_suite -> agentscommander_lib::cli::role_experiment::support
 agentscommander_lib::cli::role_experiment::prompt_suite -> agentscommander_lib::cli::role_experiment::validation
+agentscommander_lib::cli::role_experiment::prompt_suite -> agentscommander_lib::filesystem::documents
 agentscommander_lib::cli::role_experiment::report -> agentscommander_lib::cli::role_experiment
 agentscommander_lib::cli::role_experiment::report -> agentscommander_lib::cli::role_experiment::support
 agentscommander_lib::cli::role_experiment::report -> agentscommander_lib::cli::role_experiment::validation
@@ -1213,6 +1215,8 @@ agentscommander_lib::config::archive_gate -> agentscommander_lib::config::projec
 agentscommander_lib::config::archive_gate -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::config::archive_gate -> agentscommander_lib::config::settings
 agentscommander_lib::config::co_managed -> agentscommander_lib::config::entity_prefix
+agentscommander_lib::config::co_managed -> agentscommander_lib::filesystem
+agentscommander_lib::config::co_managed -> agentscommander_lib::filesystem::documents
 agentscommander_lib::config::coding_agent_mutations::agent_op -> agentscommander_lib::config::settings
 agentscommander_lib::config::coding_agent_mutations::agent_op -> agentscommander_lib::pty::backend
 agentscommander_lib::config::coding_agent_mutations::identity_transition -> agentscommander_lib::config::coding_agent_profiles

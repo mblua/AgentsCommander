@@ -409,7 +409,7 @@ fn extract_role_section(content: &str, fallback_lines: usize, default_msg: &str)
 /// Read role from CLAUDE.md: extract ## Role section, or first 5 lines.
 fn read_role(repo_path: &str) -> String {
     let claude_md = Path::new(repo_path).join("CLAUDE.md");
-    match std::fs::read_to_string(&claude_md) {
+    match crate::filesystem::documents::read_repository_role(&claude_md) {
         Ok(content) => extract_role_section(&content, 5, "No role description available."),
         Err(_) => "No role description available.".to_string(),
     }
