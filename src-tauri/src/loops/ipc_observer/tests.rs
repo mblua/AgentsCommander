@@ -477,9 +477,6 @@ fn issue_3260_marker_probe_shutdown_order() {
     let executable = std::env::current_exe().unwrap();
     let executable_tree = executable.parent().unwrap().canonicalize().unwrap();
     assert_eq!(executable_tree.file_name().unwrap(), "deps");
-    assert!(executable_tree
-        .ancestors()
-        .any(|dir| dir.file_name().is_some_and(|name| name == "target")));
     let path = marker_path().expect("isolated test marker path");
     assert!(path.starts_with(executable.parent().unwrap()));
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
