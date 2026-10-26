@@ -3,6 +3,7 @@
 use tauri::Emitter;
 
 use crate::filesystem::canonical_loop_event_path;
+use crate::loops::delivery::LoopPromptEvents;
 use crate::loops::events::{LoopChange, LoopEventPayload, LoopEvents};
 
 impl<R: tauri::Runtime> LoopEvents for tauri::AppHandle<R> {
@@ -40,6 +41,23 @@ impl<R: tauri::Runtime> LoopEvents for tauri::AppHandle<R> {
             }),
         );
     }
+}
+
+impl<R: tauri::Runtime> LoopPromptEvents for tauri::AppHandle<R> {
+    fn last_prompt(&self, session_id: uuid::Uuid, text: &str) {
+        emit_last_prompt(session_id, text, |event, payload| self.emit(event, payload));
+    }
+}
+
+fn emit_last_prompt(
+    session_id: uuid::Uuid,
+    text: &str,
+    emit: impl FnOnce(&str, serde_json::Value) -> tauri::Result<()>,
+) {
+    let _ = emit(
+        "last_prompt",
+        serde_json::json!({ "sessionId": session_id.to_string(), "text": text }),
+    );
 }
 
 fn capitalize_reason(kind: &str) -> String {

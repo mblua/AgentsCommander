@@ -143,3 +143,47 @@ fn both_missing_paths_preserve_spelling_and_unicode_reason() {
         None,
     );
 }
+
+#[test]
+fn issue_3260_delivery_prompt_event_payload_and_best_effort_delivery() {
+    use crate::loops::delivery::LoopPromptEvents;
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&events);
+    let listener = app.listen_any("last_prompt", move |event| {
+        captured
+            .lock()
+            .unwrap()
+            .push(serde_json::from_str::<Value>(event.payload()).unwrap());
+    });
+    let id = uuid::Uuid::new_v4();
+    app.handle().last_prompt(id, "status\nñ");
+    assert_eq!(
+        *events.lock().unwrap(),
+        [json!({"sessionId": id.to_string(), "text": "status\nñ"})]
+    );
+    app.unlisten(listener);
+    // No managed broadcaster, no window and no listener are required; the port returns unit.
+    app.handle().last_prompt(id, "unobserved");
+    assert_eq!(events.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn issue_3260_delivery_prompt_event_ignores_transport_error() {
+    let id = uuid::Uuid::new_v4();
+    let mut calls = 0;
+    super::emit_last_prompt(id, "report", |name, payload| {
+        calls += 1;
+        assert_eq!(name, "last_prompt");
+        assert_eq!(
+            payload,
+            json!({"sessionId": id.to_string(), "text": "report"})
+        );
+        Err(tauri::Error::AssetNotFound(
+            "recording transport failure".into(),
+        ))
+    });
+    assert_eq!(calls, 1);
+}

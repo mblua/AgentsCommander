@@ -61,11 +61,9 @@ use std::path::{Path, PathBuf};
 /// Every `(file, child)` reference under `src/loops/` that is allowed to name a
 /// child of `crate::commands`, sorted.
 ///
-/// `loops::delivery` has referenced `commands::pty` and `commands::session` since
-/// before #1252; neither is in a cycle. Every other child of `commands`, and
-/// `loops` above all, is refused, and so is either of these two named from any
-/// other file. Adding a row here is a deliberate decision to accept a new upward
-/// arc from the domain into the IPC surface.
+/// #3260 retains only pure provider/selection predicates in `commands::session`.
+/// PTY and lifecycle delegation now live at the edge. Other command children
+/// remain forbidden, as does `session` named from another core file.
 ///
 /// The pair is the contract, not the child on its own. Keying on the child alone
 /// made the observed set a union over every file, so
@@ -86,10 +84,7 @@ use std::path::{Path, PathBuf};
 /// `delivery.rs` are production code, and it is written here because the
 /// membership check is the thing somebody will be trusting on the day it stops
 /// being true.
-const ALLOWED_COMMAND_REFERENCES: [(&str, &str); 2] = [
-    ("src/loops/delivery.rs", "pty"),
-    ("src/loops/delivery.rs", "session"),
-];
+const ALLOWED_COMMAND_REFERENCES: [(&str, &str); 1] = [("src/loops/delivery.rs", "session")];
 
 /// The child #1252 removed, called out separately so its failure carries the
 /// explanation of the cycle rather than the generic allowlist message.
@@ -545,9 +540,9 @@ fn no_loops_source_reaches_into_the_command_surface() {
          FILES NAMING SOMETHING UNLISTED: {}\n\
          \n\
          Each entry is a (file, child) pair, because the file is half of the \
-         rule. The two that are allowed, `commands::pty` and `commands::session` \
-         in loops/delivery.rs, predate #1252 and are in no cycle. Naming either \
-         of them from a different file under src/loops is a new arc from the \
+         rule. Only pure `commands::session` predicates remain allowed \
+         in loops/delivery.rs after #3260. Naming that module \
+         from another file under src/loops is a new arc from the \
          domain into the IPC surface, so it fails here even though the set of \
          children on its own would not have moved.\n\
          \n\
