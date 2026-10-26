@@ -121,7 +121,7 @@ pub(super) async fn purge_sessions_outside_project_paths_in_dir_locked(
         let mut foreign_done = HashSet::new();
         loop {
             let before =
-                load_sessions_from_path_with_settings(&snapshot_path(dir), Some(&settings));
+                load_sessions_from_path_with_settings(&snapshot_path(&dir), Some(&settings));
             let before_len = before.len();
             let prep = prepare_persist_snapshot(before, &roots).await?;
             let protections = all_carrier_protections();
