@@ -12,14 +12,15 @@ use crate::pty::container_runtime::{
     DEFAULT_BRIDGE_ENTRYPOINT, SESSION_LABEL,
 };
 
+use crate::process::docker::DockerProcessState;
 #[cfg(test)]
 use crate::process::docker::{
     read_capped_to_end, redact_command_bytes, ActiveDockerReaderGuard, CappedCommandStream,
     DockerCommandOwner, ScriptedDockerCommandResult, DOCKER_COMMAND_OUTPUT_BYTE_LIMIT,
 };
 use crate::process::docker::{
-    DockerCommandOutput, DockerCommandShutdownBehavior, DockerProcessState,
-    DOCKER_COMMAND_FINALIZATION_RESERVE, DOCKER_COMMAND_TIMEOUT,
+    DockerCommandOutput, DockerCommandShutdownBehavior, DOCKER_COMMAND_FINALIZATION_RESERVE,
+    DOCKER_COMMAND_TIMEOUT,
 };
 use command::{
     normalized_app_error_text, RetainedDockerStartCleanup, RetainedDockerStartCleanupRegistry,

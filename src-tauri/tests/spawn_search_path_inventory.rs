@@ -442,7 +442,7 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 4)],
     ),
-    ("src-tauri/src/pty/docker_runtime/execution.rs", 1, 1, &[]),
+    ("src-tauri/src/process/docker/execution.rs", 1, 1, &[]),
     (
         "src-tauri/src/process/git/watcher.rs",
         2,

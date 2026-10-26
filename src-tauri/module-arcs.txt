@@ -2223,6 +2223,9 @@ agentscommander_lib::phone::types -> agentscommander_lib::pty::input_limits
 agentscommander_lib::process::agent::owner -> agentscommander_lib::config::agent_path
 agentscommander_lib::process::agent::owner -> agentscommander_lib::process::host::job
 agentscommander_lib::process::agent::update -> agentscommander_lib::process::host::job
+agentscommander_lib::process::docker::execution -> agentscommander_lib::config::agent_path
+agentscommander_lib::process::docker::execution -> agentscommander_lib::errors
+agentscommander_lib::process::docker::execution -> agentscommander_lib::process::docker::ownership
 agentscommander_lib::process::docker::ownership -> agentscommander_lib::errors
 agentscommander_lib::process::git::cache -> agentscommander_lib::config::agent_path
 agentscommander_lib::process::git::cache -> agentscommander_lib::process::host::credentials
@@ -2338,7 +2341,6 @@ agentscommander_lib::pty::docker_runtime -> agentscommander_lib::process::docker
 agentscommander_lib::pty::docker_runtime -> agentscommander_lib::pty::container_runtime
 agentscommander_lib::pty::docker_runtime::command -> agentscommander_lib::errors
 agentscommander_lib::pty::docker_runtime::command -> agentscommander_lib::pty::container_runtime
-agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::config::agent_path
 agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::errors
 agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::process::docker
 agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::pty::container_runtime
