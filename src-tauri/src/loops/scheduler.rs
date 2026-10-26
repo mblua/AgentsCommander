@@ -1,11 +1,12 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 use crate::config::ac_root::existing_ac_root;
@@ -16,7 +17,8 @@ use crate::config::loops::{
 };
 use crate::config::projects::ProjectResolution;
 use crate::config::settings::SettingsState;
-use crate::loops::delivery::{deliver_loop_prompt, LoopDeliveryReport};
+use crate::loops::delivery::{deliver_loop_prompt, LoopDeliveryHost, LoopDeliveryReport};
+use crate::loops::events::LoopEvents;
 use crate::shutdown::ShutdownSignal;
 
 mod record;
@@ -26,6 +28,10 @@ use state::{
     active_project_candidates_for_owner, generation_key, loop_dirs, loop_is_current_for_delivery,
     read_state_snapshot, unresolved_targets_in_project,
 };
+
+pub(crate) trait SchedulerHost: LoopDeliveryHost + LoopEvents + Send + Sync {
+    fn spawn_background(&self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>);
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,7 +84,7 @@ struct UnrecordedDelivery {
 
 #[derive(Clone)]
 enum SchedulerContext {
-    Native(AppHandle),
+    Native(Arc<dyn SchedulerHost>),
     #[cfg(test)]
     Headless {
         owner: SettingsState,
@@ -102,7 +108,7 @@ enum SchedulerContext {
 impl SchedulerContext {
     fn settings_owner(&self) -> SettingsState {
         match self {
-            Self::Native(app) => Arc::clone(app.state::<SettingsState>().inner()),
+            Self::Native(app) => Arc::clone(app.settings_owner()),
             #[cfg(test)]
             Self::Headless { owner, .. } => Arc::clone(owner),
         }
@@ -177,12 +183,21 @@ impl LoopScheduler {
             .or_insert(0) += 1;
     }
 
-    pub fn start(self: Arc<Self>, app: AppHandle, shutdown: ShutdownSignal) {
-        self.start_with_context(SchedulerContext::Native(app), shutdown);
+    pub fn start<H: SchedulerHost + 'static>(self: Arc<Self>, app: H, shutdown: ShutdownSignal) {
+        let host = Arc::new(app);
+        let spawner = Arc::clone(&host);
+        self.start_with_context(SchedulerContext::Native(host), shutdown, move |future| {
+            spawner.spawn_background(future);
+        });
     }
 
-    fn start_with_context(self: Arc<Self>, context: SchedulerContext, shutdown: ShutdownSignal) {
-        tauri::async_runtime::spawn(async move {
+    fn start_with_context(
+        self: Arc<Self>,
+        context: SchedulerContext,
+        shutdown: ShutdownSignal,
+        spawn: impl FnOnce(Pin<Box<dyn Future<Output = ()> + Send + 'static>>),
+    ) {
+        spawn(Box::pin(async move {
             self.scan_once(&context, true, false).await;
             let mut interval = tokio::time::interval(Duration::from_secs(30));
             loop {
@@ -192,21 +207,21 @@ impl LoopScheduler {
                     _ = self.notify.notified() => self.scan_once(&context, false, false).await,
                 }
             }
-        });
+        }));
     }
 
-    pub async fn on_session_idle(&self, app: AppHandle, _session_id: Uuid) {
-        let context = SchedulerContext::Native(app);
+    pub async fn on_session_idle<H: SchedulerHost + 'static>(&self, app: H, _session_id: Uuid) {
+        let context = SchedulerContext::Native(Arc::new(app));
         self.scan_once(&context, false, true).await;
     }
 
-    pub async fn run_loop_now(
+    pub async fn run_loop_now<H: SchedulerHost + 'static>(
         &self,
-        app: AppHandle,
+        app: H,
         project_dir: PathBuf,
         loop_id: String,
     ) -> Result<LoopConfigDetails, String> {
-        let context = SchedulerContext::Native(app);
+        let context = SchedulerContext::Native(Arc::new(app));
         let _guard = self.scan_lock.lock().await;
         let ac_root = existing_ac_root(&project_dir).ok_or_else(|| {
             format!(
@@ -257,9 +272,12 @@ impl LoopScheduler {
         Ok(details_from_parts(&dir, &config, &state))
     }
 
-    pub async fn unresolved_loop_targets(&self, app: &AppHandle) -> Vec<UnresolvedLoopTarget> {
+    pub async fn unresolved_loop_targets<H: SchedulerHost + ?Sized>(
+        &self,
+        app: &H,
+    ) -> Vec<UnresolvedLoopTarget> {
         let mut alerts = Vec::new();
-        for project in active_project_candidates(app).await {
+        for project in active_project_candidates(app.settings_owner()).await {
             alerts.extend(unresolved_targets_in_project(&project.path));
         }
         alerts
@@ -289,12 +307,12 @@ impl LoopScheduler {
     /// `scan_once` for one known project, minus project enumeration (which
     /// needs `SettingsState`), so tests can drive a real scan.
     #[cfg(test)]
-    pub(crate) async fn scan_project_under_scan_lock(
+    pub(crate) async fn scan_project_under_scan_lock<H: SchedulerHost + 'static>(
         &self,
-        app: AppHandle,
+        app: H,
         dir: PathBuf,
     ) -> Result<(), String> {
-        let context = SchedulerContext::Native(app);
+        let context = SchedulerContext::Native(Arc::new(app));
         let _guard = self.scan_lock.lock().await;
         self.scan_project(&context, &dir, false, false).await
     }
@@ -331,7 +349,7 @@ impl LoopScheduler {
         }
         match context {
             SchedulerContext::Native(app) => {
-                deliver_loop_prompt(app, project_dir, config, run_id, due_at).await
+                deliver_loop_prompt(app.as_ref(), project_dir, config, run_id, due_at).await
             }
             #[cfg(test)]
             SchedulerContext::Headless { .. } => {
@@ -534,9 +552,8 @@ impl Default for LoopScheduler {
     }
 }
 
-async fn active_project_candidates(app: &AppHandle) -> Vec<ProjectResolution> {
-    let owner = Arc::clone(app.state::<SettingsState>().inner());
-    active_project_candidates_for_owner(&owner).await
+async fn active_project_candidates(owner: &SettingsState) -> Vec<ProjectResolution> {
+    active_project_candidates_for_owner(owner).await
 }
 
 #[cfg(test)]
