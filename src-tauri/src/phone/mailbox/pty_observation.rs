@@ -20,5 +20,10 @@ pub(crate) trait PtyTargetState: PtyAuthorityState {
     fn pty_purge(&self) -> Option<&Arc<PurgeGuard>>;
 }
 
+/// Borrowed readiness observations; menu registration remains optional.
+pub(crate) trait PtyReadinessState: PtyTargetState {
+    fn pty_menu(&self) -> Option<&Arc<crate::pty::menu_guard::MenuGuard>>;
+}
+
 #[cfg(test)]
 mod tests;

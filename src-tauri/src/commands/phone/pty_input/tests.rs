@@ -67,6 +67,7 @@ fn empty_registry_preserves_optional_absence_and_required_panics() {
     let handle = app.handle();
     assert!(handle.pty_restore().is_none());
     assert!(handle.pty_purge().is_none());
+    assert!(handle.pty_menu().is_none());
     for getter in [
         (|h: &tauri::AppHandle<tauri::test::MockRuntime>| {
             let _ = h.pty_sessions();
@@ -93,18 +94,21 @@ async fn managed_getters_borrow_live_objects_without_cloning_arcs() {
     let handle = app.handle();
     assert!(handle.pty_restore().is_none());
     assert!(handle.pty_purge().is_none());
+    assert!(handle.pty_menu().is_none());
     let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let routes = Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(NoopBackend))));
     let settings = crate::config::settings::new_settings_state(Default::default());
     let readiness = IdleDetector::new(|_| {}, |_| {});
     let restore = Arc::new(RestoreInProgress(AtomicBool::new(false)));
     let purge = Arc::new(PurgeGuard::default());
+    let menu = Arc::new(crate::pty::menu_guard::MenuGuard::new());
     assert!(handle.manage(Arc::clone(&sessions)));
     assert!(handle.manage(Arc::clone(&routes)));
     assert!(handle.manage(settings.clone()));
     assert!(handle.manage(Arc::clone(&readiness)));
     assert!(handle.manage(Arc::clone(&restore)));
     assert!(handle.manage(Arc::clone(&purge)));
+    assert!(handle.manage(Arc::clone(&menu)));
     let counts = [
         Arc::strong_count(&sessions),
         Arc::strong_count(&routes),
@@ -112,6 +116,7 @@ async fn managed_getters_borrow_live_objects_without_cloning_arcs() {
         Arc::strong_count(&readiness),
         Arc::strong_count(&restore),
         Arc::strong_count(&purge),
+        Arc::strong_count(&menu),
     ];
     for _ in 0..2 {
         assert!(Arc::ptr_eq(handle.pty_sessions(), &sessions));
@@ -120,6 +125,11 @@ async fn managed_getters_borrow_live_objects_without_cloning_arcs() {
         assert!(Arc::ptr_eq(handle.pty_readiness(), &readiness));
         assert!(Arc::ptr_eq(handle.pty_restore().unwrap(), &restore));
         assert!(Arc::ptr_eq(handle.pty_purge().unwrap(), &purge));
+        assert!(Arc::ptr_eq(handle.pty_menu().unwrap(), &menu));
+        assert!(std::ptr::eq(
+            handle.pty_menu().unwrap(),
+            handle.pty_menu().unwrap()
+        ));
         assert!(std::ptr::eq(handle.pty_sessions(), handle.pty_sessions()));
         assert!(std::ptr::eq(handle.pty_routes(), handle.pty_routes()));
         assert!(std::ptr::eq(handle.pty_settings(), handle.pty_settings()));
@@ -142,6 +152,7 @@ async fn managed_getters_borrow_live_objects_without_cloning_arcs() {
             Arc::strong_count(&readiness),
             Arc::strong_count(&restore),
             Arc::strong_count(&purge),
+            Arc::strong_count(&menu),
         ]
     );
     restore.0.store(true, std::sync::atomic::Ordering::SeqCst);

@@ -896,6 +896,7 @@ agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::config::
 agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::phone::mailbox::pty_observation
 agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::pty::manager
+agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::pty::menu_guard
 agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::session::manager
 agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::session::purge_guard
 agentscommander_lib::commands::project_settings -> agentscommander_lib::config::project_settings
@@ -1849,13 +1850,10 @@ agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::path_id
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox::handoff
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox::notice
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox::poller
+agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox::pty_observation
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox::settle
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::types
-agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::pty::idle_detector
-agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::pty::manager
-agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::pty::menu_guard
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::session::manager
-agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::session::purge_guard
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::session::session
 agentscommander_lib::phone::mailbox::peer_fallback -> agentscommander_lib
 agentscommander_lib::phone::mailbox::peer_fallback -> agentscommander_lib::commands::session
@@ -1917,6 +1915,7 @@ agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::path_
 agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::path_utils
 agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::phone::mailbox::poller
 agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::phone::mailbox::pty_claim
+agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::phone::mailbox::pty_observation
 agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::phone::mailbox::settle
 agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::phone::types
 agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::pty::backend
@@ -1984,6 +1983,7 @@ agentscommander_lib::phone::mailbox::pty_observation -> agentscommander_lib::app
 agentscommander_lib::phone::mailbox::pty_observation -> agentscommander_lib::config::settings
 agentscommander_lib::phone::mailbox::pty_observation -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::phone::mailbox::pty_observation -> agentscommander_lib::pty::manager
+agentscommander_lib::phone::mailbox::pty_observation -> agentscommander_lib::pty::menu_guard
 agentscommander_lib::phone::mailbox::pty_observation -> agentscommander_lib::session::manager
 agentscommander_lib::phone::mailbox::pty_observation -> agentscommander_lib::session::purge_guard
 agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::api::auth

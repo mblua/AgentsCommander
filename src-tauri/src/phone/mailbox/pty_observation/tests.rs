@@ -13,6 +13,7 @@ use uuid::Uuid;
 #[derive(Default)]
 struct Observations {
     accesses: AtomicUsize,
+    readiness_flow: bool,
     sessions: Option<Arc<tokio::sync::RwLock<SessionManager>>>,
     restore: Option<Arc<RestoreInProgress>>,
 }
@@ -31,7 +32,7 @@ impl Observations {
 
 impl PtyAuthorityState for Observations {
     fn pty_sessions(&self) -> &Arc<tokio::sync::RwLock<SessionManager>> {
-        self.record(2, "sessions");
+        self.record(if self.readiness_flow { 3 } else { 2 }, "sessions");
         self.sessions.as_ref().expect("unexpected sessions getter")
     }
 
@@ -241,4 +242,144 @@ async fn blocked_restore_skips_later_getters() {
         .await
         .is_none());
     assert_eq!(observations.accesses.load(Ordering::SeqCst), 1);
+}
+
+impl PtyReadinessState for Observations {
+    fn pty_menu(&self) -> Option<&Arc<crate::pty::menu_guard::MenuGuard>> {
+        self.record(2, "menu");
+        None
+    }
+}
+
+#[tokio::test]
+async fn api_missing_store_or_credentials_observes_no_getters() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = MessageStore::open(temp.path().join("api.sqlite3")).unwrap();
+    let mut claimed = claim(&store);
+    let clients = Arc::new(crate::api::auth::ApiClientStore::new(
+        temp.path().join("clients"),
+    ));
+    let observations = Observations::default();
+    let poller = MailboxPoller::delivery_only();
+    assert!(poller
+        .validate_claimed_api_authority(&observations, &claimed, None)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(poller
+        .validate_claimed_api_authority(&observations, &claimed, Some(&clients))
+        .await
+        .unwrap()
+        .is_none());
+    claimed.authority_client_id = Some(Uuid::new_v4().to_string());
+    assert!(poller
+        .validate_claimed_api_authority(&observations, &claimed, Some(&clients))
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(observations.accesses.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn readiness_expiry_and_failed_heartbeat_observe_no_getters() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Arc::new(MessageStore::open(temp.path().join("expiry.sqlite3")).unwrap());
+    let mut claimed = claim(&store);
+    let observations = Observations::default();
+    let past = chrono::Utc::now() - chrono::Duration::seconds(1);
+    let mut heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
+        Arc::clone(&store),
+        claimed.injection_id.clone(),
+        claimed.lease_owner.clone(),
+        past,
+    );
+    claimed.expires_at = canonical_pty_timestamp(past);
+    let poller = MailboxPoller::delivery_only();
+    assert_eq!(
+        poller
+            .wait_for_pty_input_ready(
+                &observations,
+                &claimed,
+                &target(temp.path()),
+                Uuid::new_v4(),
+                false,
+                PtyInputSourcePlane::HostCli,
+                None,
+                &heartbeat,
+            )
+            .await,
+        Err(PtyInputReasonCode::Expired)
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !heartbeat.failed() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    claimed.expires_at = canonical_pty_timestamp(chrono::Utc::now() + chrono::Duration::minutes(1));
+    assert_eq!(
+        poller
+            .wait_for_pty_input_ready(
+                &observations,
+                &claimed,
+                &target(temp.path()),
+                Uuid::new_v4(),
+                false,
+                PtyInputSourcePlane::HostCli,
+                None,
+                &heartbeat,
+            )
+            .await,
+        Err(PtyInputReasonCode::LeaseLost)
+    );
+    assert_eq!(observations.accesses.load(Ordering::SeqCst), 0);
+    assert!(!heartbeat.finish().await);
+}
+
+#[tokio::test]
+async fn readiness_restore_blocks_later_getters_and_absence_reaches_authority() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Arc::new(MessageStore::open(temp.path().join("readiness.sqlite3")).unwrap());
+    let claimed = claim(&store);
+    let mut heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
+        Arc::clone(&store),
+        claimed.injection_id.clone(),
+        claimed.lease_owner.clone(),
+        crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at).unwrap(),
+    );
+    let poller = MailboxPoller::delivery_only();
+    for blocked in [true, false] {
+        let observations = Observations {
+            readiness_flow: true,
+            sessions: Some(Arc::new(tokio::sync::RwLock::new(SessionManager::new()))),
+            restore: blocked
+                .then(|| Arc::new(RestoreInProgress(std::sync::atomic::AtomicBool::new(true)))),
+            ..Default::default()
+        };
+        assert_eq!(
+            poller
+                .wait_for_pty_input_ready(
+                    &observations,
+                    &claimed,
+                    &target(temp.path()),
+                    Uuid::new_v4(),
+                    false,
+                    PtyInputSourcePlane::HostCli,
+                    None,
+                    &heartbeat,
+                )
+                .await,
+            Err(if blocked {
+                PtyInputReasonCode::RestoreInProgress
+            } else {
+                PtyInputReasonCode::AuthorityChanged
+            })
+        );
+        assert_eq!(
+            observations.accesses.load(Ordering::SeqCst),
+            if blocked { 1 } else { 4 }
+        );
+    }
+    assert!(heartbeat.finish().await);
 }

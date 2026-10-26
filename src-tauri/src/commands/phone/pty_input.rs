@@ -1,6 +1,8 @@
 use crate::app_state::RestoreInProgress;
 use crate::config::settings::SettingsState;
-use crate::phone::mailbox::pty_observation::{PtyAuthorityState, PtyTargetState};
+use crate::phone::mailbox::pty_observation::{
+    PtyAuthorityState, PtyReadinessState, PtyTargetState,
+};
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
@@ -35,6 +37,13 @@ impl<R: tauri::Runtime> PtyTargetState for tauri::AppHandle<R> {
 
     fn pty_purge(&self) -> Option<&Arc<PurgeGuard>> {
         self.try_state::<Arc<PurgeGuard>>()
+            .map(|state| state.inner())
+    }
+}
+
+impl<R: tauri::Runtime> PtyReadinessState for tauri::AppHandle<R> {
+    fn pty_menu(&self) -> Option<&Arc<crate::pty::menu_guard::MenuGuard>> {
+        self.try_state::<Arc<crate::pty::menu_guard::MenuGuard>>()
             .map(|state| state.inner())
     }
 }
