@@ -210,6 +210,12 @@ const INVENTORY: &[Row] = &[
         &[(DesktopOpener, 1)],
     ),
     (
+        "src-tauri/src/commands/entity_creation/creation_trace/tests.rs",
+        2,
+        0,
+        &[(TestOnly, 2)],
+    ),
+    (
         "src-tauri/src/commands/entity_creation/repo_clone.rs",
         2,
         2,
