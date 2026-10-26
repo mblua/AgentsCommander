@@ -487,6 +487,9 @@ pub(super) fn make_session_request_fixture() -> SessionRequestFixture {
     );
     let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(MasterToken::new(MAILBOX_MASTER_TOKEN.into()))
         .manage(AppOutbox::new(
             temp.path()

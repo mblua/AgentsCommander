@@ -148,41 +148,63 @@ async fn purging_a_destroyed_session_retires_it_first_and_the_entry_never_return
 #[test]
 fn both_post_commit_cleanups_purge_the_per_session_side_state() {
     const SOURCE: &str = include_str!("../../../../commands/session.rs");
-
-    let restart = SOURCE
-        .split("fn publish_restart_destroyed")
-        .nth(1)
-        .expect("publish_restart_destroyed must exist");
-    // Delimited by the closing brace at column 0, which is where a top-level function ends
-    // whatever comes after it. Splitting on the NEXT declaration would let an unrelated
-    // function inserted in between extend this "body" downwards, and the guard would then
-    // pass with the purge living somewhere else entirely.
-    let restart_body = restart
-        .split("\n}")
-        .next()
-        .expect("its body must end somewhere");
-    assert!(
-        restart_body.contains("purge_session_side_state("),
-        "the restart cleanup must purge; both restart paths publish through it"
+    const RESTART: &str = include_str!("../../../../commands/session/restart/settlement.rs");
+    let predicates = |source: &str, restart: &str| {
+        let definitions = restart.matches("fn publish_restart_destroyed").count();
+        let restart_body = restart
+            .split("fn publish_restart_destroyed")
+            .nth(1)
+            .and_then(|body| {
+                body.split(
+                    "
+}",
+                )
+                .next()
+            })
+            .unwrap_or_default();
+        let loop_body = source
+            .split("for session_id in outcome.destroyed_ids.iter().copied()")
+            .nth(1)
+            .and_then(|body| {
+                body.split(
+                    "
+    }",
+                )
+                .next()
+            })
+            .unwrap_or_default();
+        [
+            definitions == 1 && restart_body.contains("purge_session_side_state("),
+            loop_body.contains("purge_session_side_state("),
+            !loop_body.contains("retained_exited_ids"),
+        ]
+    };
+    assert_eq!(
+        predicates(SOURCE, RESTART),
+        [true; 3],
+        "both cleanup owners must purge"
     );
-
-    let destroy = SOURCE
-        .split("for session_id in outcome.destroyed_ids.iter().copied()")
-        .nth(1)
-        .expect("the destroy transaction must purge over destroyed_ids ONLY");
-    let loop_body = destroy
-        .split("\n    }")
-        .next()
-        .expect("its body must end somewhere");
-    assert!(
-        loop_body.contains("purge_session_side_state("),
-        "the destroyed-only loop must be the one that purges"
+    let restart = RESTART.replace("purge_session_side_state(", "removed_purge(");
+    assert_eq!(predicates(SOURCE, &restart), [false, true, true]);
+    let loop_start = SOURCE
+        .find("for session_id in outcome.destroyed_ids.iter().copied()")
+        .expect("destroyed-only loop");
+    let purge = SOURCE[loop_start..]
+        .find("purge_session_side_state(")
+        .unwrap()
+        + loop_start;
+    let mut removed = SOURCE.to_string();
+    removed.replace_range(
+        purge..purge + "purge_session_side_state".len(),
+        "removed_purge",
     );
-    // 9.5.71 - and it must stay destroyed-ONLY. A root-agent session retained as `Exited`
-    // stays in the manager and its row is still in the list, so its post-mortem view still
-    // has a place to be shown and its buffer must survive.
-    assert!(
-        !loop_body.contains("retained_exited_ids"),
-        "retained-exited sessions keep their buffer; the purge loop must not reach them"
+    assert_eq!(predicates(&removed, RESTART), [true, false, true]);
+    let mut retained = SOURCE.to_string();
+    retained.insert_str(purge, "retained_exited_ids ");
+    assert_eq!(predicates(&retained, RESTART), [true, true, false]);
+    let duplicate = format!(
+        "{RESTART}
+fn publish_restart_destroyed() {{}}"
     );
+    assert_eq!(predicates(SOURCE, &duplicate), [false, true, true]);
 }

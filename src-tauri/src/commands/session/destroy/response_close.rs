@@ -1,3 +1,4 @@
+use crate::app_state::DetachedSessionsState;
 use crate::commands::session::execute_destroy_transaction_common;
 use crate::commands::session::reset_substantive_input;
 use crate::commands::session::DestroyOutcome;
@@ -14,7 +15,6 @@ use crate::session::selection::SelectionTransaction;
 use crate::session::session::SessionCommunicationKind;
 use crate::session::session::SessionStatus;
 use crate::telegram::manager::TelegramBridgeState;
-use crate::DetachedSessionsState;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;

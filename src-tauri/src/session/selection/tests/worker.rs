@@ -280,6 +280,9 @@ async fn issue_1937_operation_turn_restart_failure() {
     }
 
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
     // (a) Coordinator closing: the phase gate rejects before any admission.
@@ -391,6 +394,9 @@ async fn issue_1937_operation_turn_restart_failure() {
     let second_manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let second_probe = SelectionCoordinator::new(second_manager.clone(), CancellationToken::new());
     let second_app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(second_manager)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
