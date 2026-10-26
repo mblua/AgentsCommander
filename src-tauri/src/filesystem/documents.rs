@@ -65,3 +65,15 @@ pub(crate) fn loop_prompt_metadata(path: &Path) -> io::Result<std::fs::Metadata>
 pub(crate) fn read_loop_prompt(path: &Path) -> io::Result<Vec<u8>> {
     std::fs::read(path)
 }
+
+pub(crate) fn canonical_experiment_role(path: &Path) -> io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+pub(crate) fn experiment_role_metadata(path: &Path) -> io::Result<std::fs::Metadata> {
+    std::fs::metadata(path)
+}
+
+pub(crate) fn read_experiment_role(path: &Path) -> io::Result<Vec<u8>> {
+    std::fs::read(path)
+}

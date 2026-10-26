@@ -420,6 +420,7 @@ agentscommander_lib::cli::role_experiment::commands -> agentscommander_lib::cli:
 agentscommander_lib::cli::role_experiment::commands -> agentscommander_lib::cli::workgroup
 agentscommander_lib::cli::role_experiment::commands -> agentscommander_lib::commands::entity_creation
 agentscommander_lib::cli::role_experiment::commands -> agentscommander_lib::config::environment
+agentscommander_lib::cli::role_experiment::commands -> agentscommander_lib::filesystem::documents
 agentscommander_lib::cli::role_experiment::fake_run -> agentscommander_lib::cli::role_experiment
 agentscommander_lib::cli::role_experiment::fake_run -> agentscommander_lib::cli::role_experiment::prompt_suite
 agentscommander_lib::cli::role_experiment::fake_run -> agentscommander_lib::cli::role_experiment::report
