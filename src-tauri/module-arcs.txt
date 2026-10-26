@@ -292,6 +292,7 @@ agentscommander_lib::capture::catalog -> agentscommander_lib::filesystem
 agentscommander_lib::capture::jev -> agentscommander_lib::capture::catalog
 agentscommander_lib::capture::jev -> agentscommander_lib::network
 agentscommander_lib::capture::key -> agentscommander_lib::capture::record
+agentscommander_lib::capture::key -> agentscommander_lib::filesystem::directories
 agentscommander_lib::capture::registry -> agentscommander_lib::capture::record
 agentscommander_lib::capture::registry -> agentscommander_lib::capture::sink
 agentscommander_lib::capture::sink -> agentscommander_lib::capture::key
@@ -368,6 +369,7 @@ agentscommander_lib::cli::list_peers::snapshot -> agentscommander_lib::config::s
 agentscommander_lib::cli::list_peers::snapshot -> agentscommander_lib::config::teams
 agentscommander_lib::cli::list_peers::snapshot -> agentscommander_lib::path_identity
 agentscommander_lib::cli::list_peers::status -> agentscommander_lib::config::sessions_persistence
+agentscommander_lib::cli::list_peers::status -> agentscommander_lib::filesystem::directories
 agentscommander_lib::cli::list_peers::status -> agentscommander_lib::session::session
 agentscommander_lib::cli::list_sessions -> agentscommander_lib
 agentscommander_lib::cli::list_sessions -> agentscommander_lib::config::daemon_pid
@@ -1182,6 +1184,7 @@ agentscommander_lib::config::agent_command -> agentscommander_lib::config::confi
 agentscommander_lib::config::agent_command -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::agent_command -> agentscommander_lib::config::placeholders
 agentscommander_lib::config::agent_command -> agentscommander_lib::config::settings
+agentscommander_lib::config::agent_command -> agentscommander_lib::filesystem::directories
 agentscommander_lib::config::agent_command -> agentscommander_lib::path_utils
 agentscommander_lib::config::agent_command -> agentscommander_lib::session::profile
 agentscommander_lib::config::agent_command::instructions -> agentscommander_lib::config::agent_command
@@ -1260,6 +1263,7 @@ agentscommander_lib::config::coding_agents_catalog::initialization -> agentscomm
 agentscommander_lib::config::coding_agents_catalog::initialization -> agentscommander_lib::config::coding_agents_catalog
 agentscommander_lib::config::coding_agents_catalog::initialization -> agentscommander_lib::config::naming_migration
 agentscommander_lib::config::coding_agents_catalog::initialization -> agentscommander_lib::config::seed_manifest
+agentscommander_lib::config::coding_agents_catalog::initialization -> agentscommander_lib::filesystem::directories
 agentscommander_lib::config::coding_agents_catalog::layer_local -> agentscommander_lib::config::coding_agents_catalog
 agentscommander_lib::config::coding_agents_catalog::layer_local -> agentscommander_lib::config::settings
 agentscommander_lib::config::coding_agents_catalog::layer_managed -> agentscommander_lib::config::coding_agents_catalog

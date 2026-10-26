@@ -54,3 +54,21 @@ fn follows_a_symlink_to_the_document() {
 
     assert_eq!(read_capture_catalog(&link).unwrap(), "catalog contents");
 }
+
+#[test]
+fn transcript_path_preserves_canonical_and_removed_non_ascii_spellings() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join(".").join("transcripción-ñ.jsonl");
+    std::fs::write(&path, "transcript").unwrap();
+
+    assert_eq!(
+        directories::canonical_transcript_path(&path),
+        std::fs::canonicalize(&path).unwrap()
+    );
+
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(
+        directories::canonical_transcript_path(&path).as_os_str(),
+        path.as_os_str()
+    );
+}

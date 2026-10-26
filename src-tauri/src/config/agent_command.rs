@@ -63,7 +63,7 @@ pub fn resolve_program(token: &str) -> Option<PathBuf> {
 pub fn resolve_program_in(token: &str, search_path: &OsStr) -> Option<PathBuf> {
     let p = Path::new(token);
     if !is_bare_program_token(token) {
-        return if p.is_file() {
+        return if crate::filesystem::directories::agent_program_is_file(p) {
             Some(p.to_path_buf())
         } else {
             None
