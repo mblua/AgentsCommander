@@ -12,7 +12,9 @@ use super::store::{
 };
 use crate::session::manager::{CarrierDisposition, CarrierMutationPermit, SessionManager};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Mutex;
 use uuid::Uuid;
