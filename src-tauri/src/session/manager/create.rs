@@ -7,7 +7,8 @@ use super::{
 };
 use crate::errors::AppError;
 use crate::pty::backend::SessionBackendKind;
-use crate::session::selection::{CommitCapability, SelectionCause, SessionSelection};
+use crate::session::selection::authority::{CommitCapability, CreateBindingTicket};
+use crate::session::selection::payload::{SelectionCause, SessionSelection};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -53,9 +54,9 @@ impl SessionManager {
             reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
         )
     )]
-    pub(crate) async fn create_pending_session(
+    pub(crate) async fn create_pending_session<T: CreateBindingTicket<PendingCreateBinding>>(
         &self,
-        ticket: &mut crate::session::selection::CreateFinalizationTicket,
+        ticket: &mut T,
         shell: String,
         shell_args: Vec<String>,
         working_directory: String,

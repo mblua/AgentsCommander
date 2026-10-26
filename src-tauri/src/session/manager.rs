@@ -1,8 +1,8 @@
 use super::session::{Session, SessionCommunicationKind, SessionInfo, SessionStatus};
 use crate::pty::backend_kind::SessionBackendKind;
-use crate::session::selection::{
-    CommitCapability, DormantRuntimeWitness, LiveRuntimeWitness, SelectionCause, SelectionMode,
-    SessionSelection,
+use crate::session::selection::authority::CommitCapability;
+use crate::session::selection::payload::{
+    DormantRuntimeWitness, LiveRuntimeWitness, SelectionCause, SelectionMode, SessionSelection,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

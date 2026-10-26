@@ -4,7 +4,7 @@ use super::{
     FinalizeMutation, LifecycleMutations, PendingCreateBinding, PendingPrompt, PromptKey,
     RetainedPrompt, SessionManager, SessionManagerState,
 };
-use crate::session::selection::SelectionCause;
+use crate::session::selection::payload::SelectionCause;
 use std::collections::HashMap;
 use uuid::Uuid;
 

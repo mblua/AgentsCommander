@@ -6,18 +6,6 @@
     "functionScope": "cross-module",
     "includeTests": false
   },
-  "moduleCycles": [
-    {
-      "id": "38cac35c68baf95e",
-      "members": [
-        "agentscommander_lib::pty::container_backend",
-        "agentscommander_lib::pty::git_watcher",
-        "agentscommander_lib::pty::local_backend",
-        "agentscommander_lib::pty::manager",
-        "agentscommander_lib::session::manager",
-        "agentscommander_lib::session::selection"
-      ]
-    }
-  ],
+  "moduleCycles": [],
   "functionCycles": []
 }

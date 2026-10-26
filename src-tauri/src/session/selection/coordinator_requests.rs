@@ -575,9 +575,9 @@ impl SelectionCoordinator {
     }
 
     pub fn container_lifecycle_sender(&self) -> ContainerLifecycleSender {
-        ContainerLifecycleSender {
+        ContainerLifecycleSender::new(Arc::new(super::tickets::WeakContainerLifecycle {
             inner: Arc::downgrade(&self.inner),
-        }
+        }))
     }
 
     pub async fn close_and_join(&self) -> SelectionShutdownReport {

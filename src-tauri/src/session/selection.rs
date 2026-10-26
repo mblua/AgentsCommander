@@ -612,12 +612,14 @@ pub(crate) fn publish_session_communication<R: Runtime>(
 }
 
 mod admission;
+pub(crate) mod authority;
 mod response_close;
+mod seal;
 #[cfg(test)]
 pub(crate) use admission::BlockingSeedTaskError;
 pub(crate) use admission::WatchdogKillOutcome;
 pub use admission::{CriticalAdmissionKind, CriticalAdmissionOutcome};
-mod payload;
+pub(crate) mod payload;
 mod replacement;
 #[cfg(test)]
 pub(crate) use replacement::FixtureRootReservation;
@@ -639,8 +641,7 @@ mod envelope;
 use admission::{BlockingSeedWorkTracker, CriticalAdmissionKey};
 #[cfg(test)]
 use admission::{CoordinatorPhase, CriticalAdmissionGuard};
-pub(super) use envelope::{FinalizedOwnedCarryCapability, FinalizedOwnedCarryOutcome};
-pub(crate) use payload::{DormantRuntimeWitness, LiveRuntimeWitness, SelectionCause};
+pub(crate) use payload::SelectionCause;
 pub use payload::{
     RuntimeSelectionSnapshot, SelectionCoordinatorError, SelectionMode, SelectionSource,
     SessionSelection, TrustedCreateIntent, TrustedResourceIntent, TrustedRestartIntent,
@@ -665,7 +666,6 @@ mod shutdown_cleanup;
 mod worker;
 
 mod transaction;
-pub(super) use transaction::CommitCapability;
 pub(crate) use transaction::SelectionTransaction;
 mod coordinator_runtime;
 pub use coordinator_runtime::RestoreBarrierGuard;
