@@ -812,6 +812,7 @@ agentscommander_lib::commands::entity_creation::matrix_layout -> agentscommander
 agentscommander_lib::commands::entity_creation::matrix_layout -> agentscommander_lib::config::ac_root
 agentscommander_lib::commands::entity_creation::matrix_layout -> agentscommander_lib::config::agent_config
 agentscommander_lib::commands::entity_creation::matrix_layout -> agentscommander_lib::config::settings
+agentscommander_lib::commands::entity_creation::repo_clone -> agentscommander_lib::commands::entity_creation::creation_trace
 agentscommander_lib::commands::entity_creation::repo_clone -> agentscommander_lib::config::agent_path
 agentscommander_lib::commands::entity_creation::repo_clone -> agentscommander_lib::path_utils
 agentscommander_lib::commands::entity_creation::repo_clone -> agentscommander_lib::pty::credentials
@@ -826,6 +827,7 @@ agentscommander_lib::commands::entity_creation::team_config -> agentscommander_l
 agentscommander_lib::commands::entity_creation::team_config -> agentscommander_lib::path_utils
 agentscommander_lib::commands::entity_creation::team_create -> agentscommander_lib::commands::ac_discovery
 agentscommander_lib::commands::entity_creation::team_create -> agentscommander_lib::commands::entity_creation
+agentscommander_lib::commands::entity_creation::team_create -> agentscommander_lib::commands::entity_creation::creation_trace
 agentscommander_lib::commands::entity_creation::team_create -> agentscommander_lib::commands::entity_creation::matrix_copy
 agentscommander_lib::commands::entity_creation::team_create -> agentscommander_lib::commands::entity_creation::matrix_layout
 agentscommander_lib::commands::entity_creation::team_create -> agentscommander_lib::commands::entity_creation::repo_clone
@@ -861,6 +863,7 @@ agentscommander_lib::commands::entity_creation::team_update -> agentscommander_l
 agentscommander_lib::commands::entity_creation::team_update -> agentscommander_lib::session::session
 agentscommander_lib::commands::entity_creation::workgroup -> agentscommander_lib::commands::ac_discovery
 agentscommander_lib::commands::entity_creation::workgroup -> agentscommander_lib::commands::entity_creation
+agentscommander_lib::commands::entity_creation::workgroup -> agentscommander_lib::commands::entity_creation::creation_trace
 agentscommander_lib::commands::entity_creation::workgroup -> agentscommander_lib::commands::entity_creation::matrix_layout
 agentscommander_lib::commands::entity_creation::workgroup -> agentscommander_lib::commands::entity_creation::repo_clone
 agentscommander_lib::commands::entity_creation::workgroup -> agentscommander_lib::commands::entity_creation::room_number
@@ -891,6 +894,14 @@ agentscommander_lib::commands::loops -> agentscommander_lib::config::loops
 agentscommander_lib::commands::loops -> agentscommander_lib::loops::events
 agentscommander_lib::commands::loops -> agentscommander_lib::loops::scheduler
 agentscommander_lib::commands::non_stop -> agentscommander_lib::loops::non_stop_watchdog
+agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::app_state
+agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::config::settings
+agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::phone::mailbox::pty_observation
+agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::pty::idle_detector
+agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::pty::manager
+agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::pty::menu_guard
+agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::session::manager
+agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::session::purge_guard
 agentscommander_lib::commands::project_settings -> agentscommander_lib::config::project_settings
 agentscommander_lib::commands::project_settings -> agentscommander_lib::web::broadcast
 agentscommander_lib::commands::project_settings -> agentscommander_lib::web::event_broadcast
@@ -1734,6 +1745,8 @@ agentscommander_lib::config::teams::routes -> agentscommander_lib::path_identity
 agentscommander_lib::events::logging -> agentscommander_lib::logging
 agentscommander_lib::events::loops -> agentscommander_lib::filesystem
 agentscommander_lib::events::loops -> agentscommander_lib::loops::events
+agentscommander_lib::events::phone -> agentscommander_lib::phone::events
+agentscommander_lib::events::phone -> agentscommander_lib::phone::types
 agentscommander_lib::events::session -> agentscommander_lib::session::warnings
 agentscommander_lib::logging -> agentscommander_lib::config
 agentscommander_lib::logging -> agentscommander_lib::config::instance_gitignore
@@ -1785,6 +1798,7 @@ agentscommander_lib::path_identity::retained -> agentscommander_lib::path_identi
 agentscommander_lib::path_identity::retained -> agentscommander_lib::path_identity::regular
 agentscommander_lib::path_identity::terminal_output -> agentscommander_lib::path_identity
 agentscommander_lib::path_identity::terminal_output -> agentscommander_lib::path_identity::regular
+agentscommander_lib::phone::events -> agentscommander_lib::phone::types
 agentscommander_lib::phone::mailbox::handoff -> agentscommander_lib::config::agent_command
 agentscommander_lib::phone::mailbox::handoff -> agentscommander_lib::config::coding_agent_profiles
 agentscommander_lib::phone::mailbox::handoff -> agentscommander_lib::config::settings
@@ -1845,13 +1859,10 @@ agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::path_id
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox::handoff
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox::notice
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox::poller
+agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox::pty_observation
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox::settle
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::types
-agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::pty::idle_detector
-agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::pty::manager
-agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::pty::menu_guard
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::session::manager
-agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::session::purge_guard
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::session::session
 agentscommander_lib::phone::mailbox::peer_fallback -> agentscommander_lib
 agentscommander_lib::phone::mailbox::peer_fallback -> agentscommander_lib::commands::session
@@ -1913,6 +1924,7 @@ agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::path_
 agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::path_utils
 agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::phone::mailbox::poller
 agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::phone::mailbox::pty_claim
+agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::phone::mailbox::pty_observation
 agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::phone::mailbox::settle
 agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::phone::types
 agentscommander_lib::phone::mailbox::pty_authority -> agentscommander_lib::pty::backend
@@ -1941,6 +1953,7 @@ agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::api::a
 agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::api::message_store
 agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::config::settings
 agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::path_identity
+agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::phone::events
 agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::phone::mailbox::poller
 agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::phone::mailbox::pty_claim
 agentscommander_lib::phone::mailbox::pty_dispatch -> agentscommander_lib::phone::mailbox::settle
@@ -1975,7 +1988,13 @@ agentscommander_lib::phone::mailbox::pty_dispatch::select -> agentscommander_lib
 agentscommander_lib::phone::mailbox::pty_dispatch::select -> agentscommander_lib::session::purge_guard
 agentscommander_lib::phone::mailbox::pty_dispatch::select -> agentscommander_lib::session::selection
 agentscommander_lib::phone::mailbox::pty_dispatch::select -> agentscommander_lib::session::session
-agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib
+agentscommander_lib::phone::mailbox::pty_observation -> agentscommander_lib::app_state
+agentscommander_lib::phone::mailbox::pty_observation -> agentscommander_lib::config::settings
+agentscommander_lib::phone::mailbox::pty_observation -> agentscommander_lib::pty::idle_detector
+agentscommander_lib::phone::mailbox::pty_observation -> agentscommander_lib::pty::manager
+agentscommander_lib::phone::mailbox::pty_observation -> agentscommander_lib::pty::menu_guard
+agentscommander_lib::phone::mailbox::pty_observation -> agentscommander_lib::session::manager
+agentscommander_lib::phone::mailbox::pty_observation -> agentscommander_lib::session::purge_guard
 agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::api::auth
 agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::api::message_store
 agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::config
@@ -1986,14 +2005,12 @@ agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::conf
 agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::path_identity
 agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::path_utils
 agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::phone::mailbox::poller
+agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::phone::mailbox::pty_observation
 agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::phone::mailbox::settle
 agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::phone::types
 agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::pty::backend
-agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::pty::inject
-agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::pty::manager
 agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::session::manager
-agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::session::purge_guard
 agentscommander_lib::phone::mailbox::pty_validation -> agentscommander_lib::session::session
 agentscommander_lib::phone::mailbox::request_polling -> agentscommander_lib::cli::create_agent
 agentscommander_lib::phone::mailbox::request_polling -> agentscommander_lib::commands::session

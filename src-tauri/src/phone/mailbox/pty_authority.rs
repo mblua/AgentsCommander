@@ -2,6 +2,7 @@ use super::poller::{owned_replacement_launch_recipe, read_guarded_agent_state, M
 #[cfg(test)]
 use super::pty_claim::MailboxTestHooks;
 use super::pty_claim::{refresh_pty_claim_for_resume, PtyClaimRefresh};
+use super::pty_observation::PtyAuthorityState;
 use super::settle::{
     observe_pty_spawn_scope, select_persistent_exited_pty_candidate,
     session_has_current_pty_submission_provenance, PtySpawnStep,
@@ -19,9 +20,9 @@ use tauri::Manager;
 use uuid::Uuid;
 
 impl MailboxPoller {
-    pub(crate) async fn validate_claimed_api_authority<R: tauri::Runtime>(
+    pub(crate) async fn validate_claimed_api_authority<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         claimed: &crate::api::message_store::ClaimedPtyInputOperation,
         client_store: Option<&Arc<crate::api::auth::ApiClientStore>>,
     ) -> Result<
@@ -52,9 +53,9 @@ impl MailboxPoller {
             .await)
     }
 
-    pub(crate) async fn validate_claimed_api_authority_with_fresh<R: tauri::Runtime>(
+    pub(crate) async fn validate_claimed_api_authority_with_fresh<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         claimed: &crate::api::message_store::ClaimedPtyInputOperation,
         fresh: &crate::api::auth::ApiClientFreshGuard,
     ) -> Option<crate::config::teams::VerifiedPtyInputRoute> {
@@ -71,7 +72,7 @@ impl MailboxPoller {
             return None;
         }
         let session = {
-            let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let manager = app.pty_sessions();
             let guard = manager.read().await;
             guard.get_session(session_id).await
         }?;
@@ -88,7 +89,7 @@ impl MailboxPoller {
             return None;
         }
         let (binding, route_backend, route_identities, live) = {
-            let manager = app.state::<Arc<Mutex<PtyManager>>>();
+            let manager = app.pty_routes();
             let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
             (
                 manager.container_backend().credential_binding(session_id),
@@ -112,7 +113,7 @@ impl MailboxPoller {
             return None;
         }
         let in_memory_paths = {
-            let settings = app.state::<SettingsState>();
+            let settings = app.pty_settings();
             let paths = settings.read().await.project_paths.clone();
             paths
         };
@@ -157,9 +158,9 @@ impl MailboxPoller {
         Some(route)
     }
 
-    async fn pty_spawn_authority_is_current<R: tauri::Runtime>(
+    async fn pty_spawn_authority_is_current<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         claimed: &crate::api::message_store::ClaimedPtyInputOperation,
         expected_sender: &crate::config::teams::VerifiedPtyInputIdentity,
         expected_target: &crate::config::teams::VerifiedPtyInputIdentity,
