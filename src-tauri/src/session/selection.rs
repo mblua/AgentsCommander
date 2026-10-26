@@ -612,7 +612,9 @@ pub(crate) fn publish_session_communication<R: Runtime>(
 }
 
 mod admission;
+pub(crate) mod authority;
 mod response_close;
+mod seal;
 #[cfg(test)]
 pub(crate) use admission::BlockingSeedTaskError;
 pub(crate) use admission::WatchdogKillOutcome;
@@ -665,7 +667,6 @@ mod shutdown_cleanup;
 mod worker;
 
 mod transaction;
-pub(super) use transaction::CommitCapability;
 pub(crate) use transaction::SelectionTransaction;
 mod coordinator_runtime;
 pub use coordinator_runtime::RestoreBarrierGuard;

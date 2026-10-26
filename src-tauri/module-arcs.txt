@@ -2787,7 +2787,7 @@ agentscommander_lib::session::manager -> agentscommander_lib::pty::backend_kind
 agentscommander_lib::session::manager -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::session::manager -> agentscommander_lib::pty::input_route
 agentscommander_lib::session::manager -> agentscommander_lib::pty::response_close
-agentscommander_lib::session::manager -> agentscommander_lib::session::selection
+agentscommander_lib::session::manager -> agentscommander_lib::session::selection::authority
 agentscommander_lib::session::manager -> agentscommander_lib::session::selection::payload
 agentscommander_lib::session::manager -> agentscommander_lib::session::session
 agentscommander_lib::session::manager::binding -> agentscommander_lib::session::manager
@@ -2816,6 +2816,7 @@ agentscommander_lib::session::manager::create -> agentscommander_lib::session::m
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::manager::binding
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::manager::carrier
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::selection
+agentscommander_lib::session::manager::create -> agentscommander_lib::session::selection::authority
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::selection::payload
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::session
 agentscommander_lib::session::manager::lookup -> agentscommander_lib::config::teams
@@ -2867,6 +2868,7 @@ agentscommander_lib::session::selection -> agentscommander_lib::web::broadcast
 agentscommander_lib::session::selection::admission -> agentscommander_lib::resource_monitor
 agentscommander_lib::session::selection::admission -> agentscommander_lib::session
 agentscommander_lib::session::selection::admission -> agentscommander_lib::session::selection
+agentscommander_lib::session::selection::authority -> agentscommander_lib::session::selection::seal
 agentscommander_lib::session::selection::continuation_cleanup -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::session::selection::continuation_cleanup -> agentscommander_lib::pty::manager
 agentscommander_lib::session::selection::continuation_cleanup -> agentscommander_lib::session::manager
@@ -2973,12 +2975,13 @@ agentscommander_lib::session::selection::transaction -> agentscommander_lib::con
 agentscommander_lib::session::selection::transaction -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::session::selection::transaction -> agentscommander_lib::pty::backend
 agentscommander_lib::session::selection::transaction -> agentscommander_lib::pty::manager
-agentscommander_lib::session::selection::transaction -> agentscommander_lib::session
 agentscommander_lib::session::selection::transaction -> agentscommander_lib::session::manager
 agentscommander_lib::session::selection::transaction -> agentscommander_lib::session::selection
 agentscommander_lib::session::selection::transaction -> agentscommander_lib::session::selection::admission
+agentscommander_lib::session::selection::transaction -> agentscommander_lib::session::selection::authority
 agentscommander_lib::session::selection::transaction -> agentscommander_lib::session::selection::payload
 agentscommander_lib::session::selection::transaction -> agentscommander_lib::session::selection::replacement
+agentscommander_lib::session::selection::transaction -> agentscommander_lib::session::selection::seal
 agentscommander_lib::session::selection::transaction -> agentscommander_lib::session::session
 agentscommander_lib::session::selection::turn -> agentscommander_lib::session::selection::payload
 agentscommander_lib::session::selection::worker -> agentscommander_lib::commands::resource_monitor

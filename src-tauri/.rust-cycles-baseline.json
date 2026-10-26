@@ -8,13 +8,10 @@
   },
   "moduleCycles": [
     {
-      "id": "38cac35c68baf95e",
+      "id": "f897f28f056d9b45",
       "members": [
         "agentscommander_lib::pty::container_backend",
-        "agentscommander_lib::pty::git_watcher",
-        "agentscommander_lib::pty::local_backend",
         "agentscommander_lib::pty::manager",
-        "agentscommander_lib::session::manager",
         "agentscommander_lib::session::selection"
       ]
     }
