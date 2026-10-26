@@ -365,13 +365,13 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     // races the window's own load is recovered instead of dropped in silence.
     app.manage(commands::window::WatchersScopeState::default());
     let dispatcher =
-        crate::web::commands::WebCommandsDispatcher::new(crate::web::commands::WsState {
-            session_mgr: Arc::clone(&session_mgr_for_web),
-            pty_mgr: Arc::clone(&pty_mgr),
-            settings: Arc::clone(&settings_for_web),
-            broadcaster: broadcaster_for_web.clone(),
-            app_handle: app.handle().clone(),
-        });
+        crate::web::commands::WebCommandsDispatcher::new(crate::web::commands::WsState::new(
+            Arc::clone(&session_mgr_for_web),
+            Arc::clone(&pty_mgr),
+            Arc::clone(&settings_for_web),
+            broadcaster_for_web.clone(),
+            app.handle().clone(),
+        ));
     if !app.manage(crate::web::command_port::ManagedWebCommandDispatcher(
         Arc::new(dispatcher),
     )) {

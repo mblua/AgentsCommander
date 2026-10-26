@@ -1151,6 +1151,11 @@ agentscommander_lib::commands::voice -> agentscommander_lib::config::settings
 agentscommander_lib::commands::voice -> agentscommander_lib::network
 agentscommander_lib::commands::voice -> agentscommander_lib::telegram::redact
 agentscommander_lib::commands::voice -> agentscommander_lib::voice::tracker
+agentscommander_lib::commands::web -> agentscommander_lib::config::settings
+agentscommander_lib::commands::web -> agentscommander_lib::pty::manager
+agentscommander_lib::commands::web -> agentscommander_lib::session::manager
+agentscommander_lib::commands::web -> agentscommander_lib::web::broadcast
+agentscommander_lib::commands::web -> agentscommander_lib::web::commands
 agentscommander_lib::commands::wg_delete_diagnostic -> agentscommander_lib::config::teams
 agentscommander_lib::commands::wg_delete_diagnostic -> agentscommander_lib::session::manager
 agentscommander_lib::commands::wg_delete_diagnostic -> agentscommander_lib::session::session
