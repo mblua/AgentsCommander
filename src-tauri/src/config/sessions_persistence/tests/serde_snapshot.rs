@@ -602,3 +602,53 @@ async fn persist_current_state_result_succeeds_for_simple_manager() {
         .await
         .expect("persist_current_state_result should succeed");
 }
+
+#[test]
+fn characterize_3254_p03_loader_errors() {
+    crate::logging::test_install_logger();
+    let temp = tempfile::tempdir().unwrap();
+    let tag = uuid::Uuid::new_v4().to_string();
+    let missing = temp.path().join(format!("missing-{tag}.json"));
+    let malformed = temp.path().join(format!("malformed-{tag}.json"));
+    let directory = temp.path().join(format!("directory-{tag}"));
+    let input = format!(
+        r#"[{{"name":"{tag}","shell":"cmd","shellArgs":[],"workingDirectory":"C:/x",
+        "communication":{{"kind":"malformed-{tag}","visible":true,"updatedAt":"x"}}}}]"#
+    );
+    std::fs::write(&malformed, &input).unwrap();
+    std::fs::create_dir(&directory).unwrap();
+    let parse_error = serde_json::from_str::<Vec<PersistedSession>>(&input).unwrap_err();
+    let read_error = std::fs::read_to_string(&directory).unwrap_err();
+    let parse_message = format!("Failed to parse sessions file: {parse_error}");
+    let read_message = format!("Failed to read sessions file: {read_error}");
+    for (path, expected) in [
+        (&missing, None),
+        (&malformed, Some(parse_message.as_str())),
+        (&directory, Some(read_message.as_str())),
+    ] {
+        let before = crate::logging::test_tee_snapshot().len();
+        assert!(super::super::load_sessions_from_path_with_settings(path, None).is_empty());
+        let logs = crate::logging::test_tee_snapshot();
+        let entries: Vec<_> = logs[before..]
+            .iter()
+            .map(|line| {
+                let mut parts = line.splitn(3, ' ');
+                let level = parts.next().unwrap();
+                let _target = parts.next().unwrap();
+                (level, parts.next().unwrap())
+            })
+            .collect();
+        if let Some(message) = expected {
+            assert!(
+                entries.contains(&("ERROR", message)),
+                "missing exact error: {message}"
+            );
+        } else {
+            assert!(!entries.iter().any(|(_, message)| message.contains(&tag)));
+        }
+        let before = crate::logging::test_tee_snapshot().len();
+        assert!(super::super::load_sessions_raw_from_path(path).is_empty());
+        let logs = crate::logging::test_tee_snapshot();
+        assert!(!logs[before..].iter().any(|line| line.contains(&tag)));
+    }
+}

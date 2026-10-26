@@ -1,8 +1,8 @@
 use super::{
-    acquire_fresh_config_stage, log_unverified_cleanup_refusal, next_staging_sequence,
+    acquire_fresh_config_stage, log_unverified_cleanup_refusal, next_shared_staging_sequence,
     publish_prepared_pair_image_guarded, publish_prepared_pair_image_with_source_parent,
     read_config_pair_physical, PairTargetGuard, PhysicalState, PreparedPairError,
-    SourceNativePublication, STAGING_SEQUENCE,
+    SourceNativePublication,
 };
 #[cfg(test)]
 use std::cell::Cell;
@@ -369,13 +369,10 @@ pub(crate) fn publish_source_coordination_bytes_with_validation(
             &after,
             &guard,
             &log_unverified_cleanup_refusal,
-            (
-                &mut || next_staging_sequence(&STAGING_SEQUENCE),
-                &|file, bytes| {
-                    file.write_all(bytes)
-                        .map_err(|e| PreparedPairError::Io(e.to_string()))
-                },
-            ),
+            (&mut next_shared_staging_sequence, &|file, bytes| {
+                file.write_all(bytes)
+                    .map_err(|e| PreparedPairError::Io(e.to_string()))
+            }),
             Some(&source),
         )
     })();

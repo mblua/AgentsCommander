@@ -623,3 +623,246 @@ async fn archive_appends_and_rotates_best_effort() {
     assert!(base.exists());
     set_test_orphan_archive_cap(None);
 }
+
+// Only the RFC3339 string span varies; every other byte is an independent oracle.
+fn p05_normalize_dropped_at(bytes: &[u8]) -> String {
+    let mut text = String::from_utf8(bytes.to_vec()).expect("UTF-8 NDJSON");
+    let needle = "\"droppedAt\":\"";
+    let mut offset = 0;
+    while let Some(start) = text[offset..].find(needle) {
+        let start = offset + start + needle.len();
+        let end = start + text[start..].find('"').expect("timestamp end");
+        chrono::DateTime::parse_from_rfc3339(&text[start..end]).expect("RFC3339 droppedAt");
+        text.replace_range(start..end, "DROPPED_AT");
+        offset = start + "DROPPED_AT".len();
+    }
+    assert!(offset > 0, "at least one droppedAt");
+    text
+}
+
+fn p05_expected(row: &PersistedSession, reason: &str, disposition: &str) -> String {
+    // Encode only the dynamic fixture path; never serialize the record/session oracle.
+    let cwd = serde_json::to_string(&row.working_directory).unwrap();
+    format!(
+        "{{\"schemaVersion\":1,\"droppedAt\":\"DROPPED_AT\",\"reason\":\"{reason}\",\
+         \"disposition\":\"{disposition}\",\"session\":{{\"name\":\"{}\",\"shell\":\"\",\
+         \"shellArgs\":[],\"workingDirectory\":{cwd},\"wasActive\":false,\"gitRepos\":[],\
+         \"isCoordinator\":false,\"isRootAgent\":false,\"wasDetached\":false,\
+         \"startFreshOnRestore\":false,\"id\":\"{}\"}}}}\n",
+        row.name,
+        row.id.as_deref().unwrap()
+    )
+}
+
+fn p05_assert_error_since(start: usize, expected: &str) {
+    let records = crate::logging::test_tee_snapshot();
+    assert!(
+        records[start..].iter().any(|record| {
+            let mut parts = record.splitn(3, ' ');
+            let level = parts.next();
+            let _target = parts.next();
+            level == Some("ERROR") && parts.next() == Some(expected)
+        }),
+        "missing ERROR message: {expected}"
+    );
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn characterize_3254_p05_ndjson_bytes() {
+    let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    crate::logging::test_install_logger();
+    crate::config::sessions_persistence::reset_orphan_archived();
+    crate::config::sessions_persistence::reset_orphan_warned();
+    crate::config::sessions_persistence::set_test_orphan_archive_cap(None);
+    let temp = tempfile::tempdir().unwrap();
+    let row = PersistedSession {
+        name: "p05-byte-one".into(),
+        id: Some(uuid::Uuid::new_v4().to_string()),
+        working_directory: temp.path().join("missing-one").to_string_lossy().into(),
+        ..Default::default()
+    };
+    let second = PersistedSession {
+        name: "p05-byte-two".into(),
+        id: Some(uuid::Uuid::new_v4().to_string()),
+        working_directory: temp.path().join("missing-two").to_string_lossy().into(),
+        ..Default::default()
+    };
+    let retention = vec![temp.path().join("kept").to_string_lossy().into_owned()];
+    let archive = temp.path().join(ORPHAN_ARCHIVE_FILENAME);
+    for rows in [vec![row.clone()], vec![row.clone(), second.clone()]] {
+        crate::config::sessions_persistence::save_sessions_to_dir(temp.path(), &rows).unwrap();
+        assert!(
+            crate::config::sessions_persistence::purge_sessions_outside_project_paths_in_dir(
+                temp.path(),
+                &retention
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        let mut expected = p05_expected(&row, "outsideRetainedRootsMissing", "reaped");
+        if rows.len() == 2 {
+            expected.push_str(&p05_expected(
+                &second,
+                "outsideRetainedRootsMissing",
+                "reaped",
+            ));
+        }
+        assert_eq!(
+            p05_normalize_dropped_at(&std::fs::read(&archive).unwrap()),
+            expected
+        );
+    }
+    let before = std::fs::read(&archive).unwrap();
+    crate::config::sessions_persistence::save_sessions_to_dir(temp.path(), &[row]).unwrap();
+    crate::config::sessions_persistence::purge_sessions_outside_project_paths_in_dir(
+        temp.path(),
+        &retention,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read(&archive).unwrap(),
+        before,
+        "repeated UUID suppressed"
+    );
+
+    // An archive directory blocks append while the snapshot purge still succeeds.
+    std::fs::remove_file(&archive).unwrap();
+    std::fs::create_dir(&archive).unwrap();
+    let error = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&archive)
+        .unwrap_err();
+    let expected =
+        format!("[sessions] Failed to append orphan archive record to {archive:?}: {error}");
+    let failed = PersistedSession {
+        id: Some(uuid::Uuid::new_v4().to_string()),
+        ..second
+    };
+    crate::config::sessions_persistence::save_sessions_to_dir(temp.path(), &[failed]).unwrap();
+    let start = crate::logging::test_tee_snapshot().len();
+    assert!(
+        crate::config::sessions_persistence::purge_sessions_outside_project_paths_in_dir(
+            temp.path(),
+            &retention
+        )
+        .await
+        .unwrap()
+        .is_empty()
+    );
+    p05_assert_error_since(start, &expected);
+    assert!(
+        crate::config::sessions_persistence::load_sessions_raw_from_dir_for_test(temp.path())
+            .is_empty()
+    );
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn characterize_3254_p05_rotation() {
+    let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    crate::logging::test_install_logger();
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join(ORPHAN_ARCHIVE_FILENAME);
+    let numbered = |i| temp.path().join(format!("{ORPHAN_ARCHIVE_FILENAME}.{i}"));
+    std::fs::write(&archive, b"active-generation\n").unwrap();
+    for (i, bytes) in [
+        (1, b"first-generation\n"),
+        (2, b"other-generation\n"),
+        (3, b"third-generation\n"),
+    ] {
+        std::fs::write(numbered(i), bytes).unwrap();
+    }
+    let row = PersistedSession {
+        name: "p05-rotation".into(),
+        id: Some(uuid::Uuid::new_v4().to_string()),
+        working_directory: temp.path().join("missing").to_string_lossy().into(),
+        ..Default::default()
+    };
+    crate::config::sessions_persistence::set_test_orphan_archive_cap(Some(1));
+    crate::config::sessions_persistence::append_orphan_archive_record(
+        temp.path(),
+        "restoreCwdMissing",
+        "reaped",
+        &row,
+    )
+    .await;
+    crate::config::sessions_persistence::set_test_orphan_archive_cap(None);
+    assert_eq!(std::fs::read(&archive).unwrap(), b"");
+    let rotated = std::fs::read(numbered(1)).unwrap();
+    assert_eq!(&rotated[..18], b"active-generation\n");
+    assert_eq!(
+        p05_normalize_dropped_at(&rotated[18..]),
+        p05_expected(&row, "restoreCwdMissing", "reaped")
+    );
+    let older: Vec<_> = (2..=3).map(|i| std::fs::read(numbered(i)).ok()).collect();
+    assert_eq!(
+        older,
+        [
+            Some(b"first-generation\n".to_vec()),
+            Some(b"other-generation\n".to_vec())
+        ]
+    );
+    assert!(!numbered(4).exists());
+    crate::config::sessions_persistence::append_orphan_archive_record(
+        temp.path(),
+        "restoreCwdMissing",
+        "reaped",
+        &row,
+    )
+    .await;
+    assert_eq!(
+        p05_normalize_dropped_at(&std::fs::read(&archive).unwrap()),
+        p05_expected(&row, "restoreCwdMissing", "reaped")
+    );
+
+    // Nonempty directories block every generation rename, including the active file.
+    for i in 1..=3 {
+        std::fs::remove_file(numbered(i)).unwrap();
+        std::fs::create_dir(numbered(i)).unwrap();
+        std::fs::write(numbered(i).join("occupied"), b"keep").unwrap();
+    }
+    let error = std::fs::rename(&archive, numbered(1)).unwrap_err();
+    let expected = format!(
+        "[sessions] orphan archive rotation: failed to rename {} to {}: {} \
+         (active file stays in place)",
+        archive.display(),
+        numbered(1).display(),
+        error
+    );
+    let retention = vec![temp.path().join("kept").to_string_lossy().into_owned()];
+    crate::config::sessions_persistence::reset_orphan_archived();
+    crate::config::sessions_persistence::save_sessions_to_dir(
+        temp.path(),
+        std::slice::from_ref(&row),
+    )
+    .unwrap();
+    crate::config::sessions_persistence::set_test_orphan_archive_cap(Some(1));
+    let start = crate::logging::test_tee_snapshot().len();
+    let result = crate::config::sessions_persistence::purge_sessions_outside_project_paths_in_dir(
+        temp.path(),
+        &retention,
+    )
+    .await;
+    crate::config::sessions_persistence::set_test_orphan_archive_cap(None);
+    assert!(
+        result.unwrap().is_empty(),
+        "rotation failure is best effort"
+    );
+    p05_assert_error_since(start, &expected);
+    let expected = p05_expected(&row, "restoreCwdMissing", "reaped")
+        + &p05_expected(&row, "outsideRetainedRootsMissing", "reaped");
+    assert_eq!(
+        p05_normalize_dropped_at(&std::fs::read(&archive).unwrap()),
+        expected
+    );
+    for i in 1..=3 {
+        assert_eq!(
+            std::fs::read(numbered(i).join("occupied")).unwrap(),
+            b"keep"
+        );
+    }
+}
