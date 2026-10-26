@@ -606,3 +606,148 @@ fn create_ledger_handoff() {
     assert!(!json.contains("creates"), "{json}");
     assert!(!json.contains("escrow"), "{json}");
 }
+
+#[test]
+fn issue_3278_clocks_publish_complete_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("clocks.json");
+    for seconds in [0, 10] {
+        let map = HashMap::from([(
+            "project:room/coordinator".to_owned(),
+            ClockEntry {
+                last_user_message_at: Some(ts(seconds)),
+                ..ClockEntry::default()
+            },
+        )]);
+        save_map_to(&path, &map).unwrap();
+        let actual = std::fs::read(&path).unwrap();
+        assert_eq!(actual, serde_json::to_vec_pretty(&map).unwrap());
+        let loaded: HashMap<String, ClockEntry> = serde_json::from_slice(&actual).unwrap();
+        assert_eq!(loaded, map);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn issue_3278_clocks_rename_failure_preserves_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let dst = dir.path().join("clocks.json");
+    std::fs::create_dir(&dst).unwrap();
+    let sentinel = dst.join("previous");
+    std::fs::write(&sentinel, b"previous").unwrap();
+    let map = HashMap::from([("project:room/coordinator".to_owned(), ClockEntry::default())]);
+    assert!(save_map_to(&dst, &map).is_err());
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"previous");
+    let stages: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_file())
+        .collect();
+    assert_eq!(stages.len(), 1);
+    assert_eq!(
+        std::fs::read(&stages[0]).unwrap(),
+        serde_json::to_vec_pretty(&map).unwrap()
+    );
+}
+
+#[cfg(windows)]
+struct Issue3278SyncProbe {
+    directory: std::path::PathBuf,
+    expected: Vec<u8>,
+    observed: Option<std::path::PathBuf>,
+}
+
+#[cfg(windows)]
+thread_local! {
+    static ISSUE_3278_SYNC_PROBE: std::cell::RefCell<Option<Issue3278SyncProbe>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(windows)]
+struct Issue3278SyncGuard;
+
+#[cfg(windows)]
+impl Issue3278SyncGuard {
+    fn arm(directory: &std::path::Path, expected: Vec<u8>) -> Self {
+        ISSUE_3278_SYNC_PROBE.with_borrow_mut(|slot| {
+            assert!(slot.is_none());
+            *slot = Some(Issue3278SyncProbe {
+                directory: directory.to_owned(),
+                expected,
+                observed: None,
+            });
+        });
+        Self
+    }
+
+    fn assert_observed(&self) {
+        ISSUE_3278_SYNC_PROBE.with_borrow(|slot| {
+            assert!(slot.as_ref().unwrap().observed.is_some());
+        });
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Issue3278SyncGuard {
+    fn drop(&mut self) {
+        ISSUE_3278_SYNC_PROBE.with_borrow_mut(|slot| *slot = None);
+    }
+}
+
+#[cfg(windows)]
+pub(super) fn issue_3278_sync_handle(
+    path: &std::path::Path,
+    file: std::fs::File,
+) -> std::io::Result<std::fs::File> {
+    ISSUE_3278_SYNC_PROBE.with_borrow_mut(|slot| {
+        let Some(probe) = slot.as_mut() else {
+            return Ok(file);
+        };
+        if path.parent() != Some(probe.directory.as_path()) {
+            return Ok(file);
+        }
+        assert!(probe.observed.is_none());
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let prefix = format!("clocks.json.{}.", std::process::id());
+        assert!(name.starts_with(&prefix));
+        let sequence = name
+            .strip_prefix(&prefix)
+            .unwrap()
+            .strip_suffix(".tmp")
+            .unwrap();
+        sequence.parse::<u64>().unwrap();
+        assert_eq!(std::fs::read(path)?, probe.expected);
+        drop(file);
+        let readonly = std::fs::File::open(path)?;
+        probe.observed = Some(path.to_owned());
+        Ok(readonly)
+    })
+}
+
+#[cfg(windows)]
+#[test]
+fn issue_3278_sync_clocks_failure_keeps_previous() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("clocks.json");
+    let previous = br#"{"previous":true}"#;
+    std::fs::write(&path, previous).unwrap();
+    // Positive control: a successful readonly open must fail at sync, not open/write.
+    let readonly = std::fs::File::open(&path).unwrap();
+    let control_error = readonly.sync_all().unwrap_err();
+    assert_eq!(control_error.raw_os_error(), Some(5));
+    drop(readonly);
+    let map = HashMap::from([(
+        "project:room/coordinator".to_owned(),
+        ClockEntry {
+            last_user_message_at: Some(ts(0)),
+            ..ClockEntry::default()
+        },
+    )]);
+    let expected = serde_json::to_vec_pretty(&map).unwrap();
+    let guard = Issue3278SyncGuard::arm(dir.path(), expected);
+    let error = save_map_to(&path, &map).unwrap_err();
+    assert_eq!(error, control_error.to_string());
+    guard.assert_observed();
+    assert_eq!(std::fs::read(&path).unwrap(), previous);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
