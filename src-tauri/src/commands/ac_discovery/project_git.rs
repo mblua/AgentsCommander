@@ -83,8 +83,8 @@ where
     if existing_ac_root(project).is_none() {
         return Err("not an AC project root".to_string());
     }
-    let project_canonical =
-        std::fs::canonicalize(project).map_err(|e| format!("canonicalize project: {e}"))?;
+    let project_canonical = crate::repos::canonical_git_project(project)
+        .map_err(|e| format!("canonicalize project: {e}"))?;
     let git = |args: &[&str]| run(project.to_path_buf(), project_git_args(args));
 
     // A Project nested inside another repository must not report the parent's count.

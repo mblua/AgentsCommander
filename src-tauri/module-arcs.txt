@@ -665,6 +665,7 @@ agentscommander_lib::commands::ac_discovery::project_discovery -> agentscommande
 agentscommander_lib::commands::ac_discovery::project_discovery -> agentscommander_lib::session::manager
 agentscommander_lib::commands::ac_discovery::project_git -> agentscommander_lib::config::ac_root
 agentscommander_lib::commands::ac_discovery::project_git -> agentscommander_lib::process::git::read
+agentscommander_lib::commands::ac_discovery::project_git -> agentscommander_lib::repos
 agentscommander_lib::commands::ac_discovery::project_registry -> agentscommander_lib::config
 agentscommander_lib::commands::ac_discovery::project_registry -> agentscommander_lib::config::coding_agents_catalog
 agentscommander_lib::commands::ac_discovery::project_registry -> agentscommander_lib::config::instance_artifacts
@@ -838,6 +839,7 @@ agentscommander_lib::commands::entity_creation::matrix_layout -> agentscommander
 agentscommander_lib::commands::entity_creation::repo_clone -> agentscommander_lib::commands::entity_creation::creation_trace
 agentscommander_lib::commands::entity_creation::repo_clone -> agentscommander_lib::path_utils
 agentscommander_lib::commands::entity_creation::repo_clone -> agentscommander_lib::process::git::mutation
+agentscommander_lib::commands::entity_creation::repo_clone -> agentscommander_lib::repos
 agentscommander_lib::commands::entity_creation::room_number -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::commands::entity_creation::room_number -> agentscommander_lib::config::settings
 agentscommander_lib::commands::entity_creation::room_task -> agentscommander_lib::cli::task_ops
@@ -909,6 +911,7 @@ agentscommander_lib::commands::entity_creation::workgroup_delete -> agentscomman
 agentscommander_lib::commands::entity_creation::workgroup_delete -> agentscommander_lib::config::coordinator_clocks
 agentscommander_lib::commands::entity_creation::workgroup_delete -> agentscommander_lib::config::seed_manifest
 agentscommander_lib::commands::entity_creation::workgroup_delete -> agentscommander_lib::process::git::mutation
+agentscommander_lib::commands::entity_creation::workgroup_delete -> agentscommander_lib::repos
 agentscommander_lib::commands::entity_creation::workgroup_delete -> agentscommander_lib::session::manager
 agentscommander_lib::commands::ipc_blackbox -> agentscommander_lib::loops::ipc_observer
 agentscommander_lib::commands::loops -> agentscommander_lib::commands::ac_discovery

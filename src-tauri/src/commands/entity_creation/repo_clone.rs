@@ -44,7 +44,7 @@ pub(super) async fn git_clone_async(
         stage.finish(Outcome::Ok, None);
     }
 
-    if !target.join(".git").join("index").exists() {
+    if !crate::repos::clone_index_exists(&target.join(".git").join("index")) {
         log::warn!(
             "[entity_creation] .git/index missing after clone for {}, running fallback git reset",
             url

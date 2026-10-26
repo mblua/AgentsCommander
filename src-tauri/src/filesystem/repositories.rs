@@ -75,3 +75,15 @@ impl SpecRepoChildren {
         }
     }
 }
+
+pub(crate) fn canonical_git_project(path: &Path) -> io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+pub(crate) fn clone_index_exists(path: &Path) -> bool {
+    path.exists()
+}
+
+pub(crate) fn working_tree_marker_exists(path: &Path) -> bool {
+    path.exists()
+}

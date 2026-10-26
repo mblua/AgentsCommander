@@ -252,5 +252,17 @@ fn spec_path_compare_key(path: &Path) -> String {
     }
 }
 
+pub(crate) fn canonical_git_project(path: &Path) -> std::io::Result<PathBuf> {
+    crate::filesystem::repositories::canonical_git_project(path)
+}
+
+pub(crate) fn clone_index_exists(path: &Path) -> bool {
+    crate::filesystem::repositories::clone_index_exists(path)
+}
+
+pub(crate) fn working_tree_marker_exists(path: &Path) -> bool {
+    crate::filesystem::repositories::working_tree_marker_exists(path)
+}
+
 #[cfg(test)]
 mod tests;
