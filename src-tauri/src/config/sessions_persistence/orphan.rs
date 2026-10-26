@@ -375,7 +375,14 @@ pub(crate) async fn prepare_persist_snapshot(
     project_paths: &[String],
 ) -> Result<PersistPreparation, String> {
     let project_paths = project_paths.to_vec();
-    tokio::task::spawn_blocking(move || {
+    let scope = super::operation::OperationScope::current();
+    let work = move || {
+        #[cfg(test)]
+        let scope = super::operation::OperationScope::current();
+        #[cfg(test)]
+        if let Some(scope) = &scope {
+            scope.point_blocking(super::operation::ProbeEvent::BlockingPrepareEntered);
+        }
         #[cfg(test)]
         record_filter_project_paths_thread_id();
         let roots = normalize_project_roots(&project_paths);
@@ -383,10 +390,24 @@ pub(crate) async fn prepare_persist_snapshot(
         for drop in &mut drops {
             drop.cwd_exists = Path::new(&drop.session.working_directory).exists();
         }
-        PersistPreparation { kept, drops }
-    })
-    .await
-    .map_err(|e| format!("session persistence prepare task failed: {}", e))
+        let prepared = PersistPreparation { kept, drops };
+        #[cfg(test)]
+        if let Some(scope) = &scope {
+            scope.point_blocking(super::operation::ProbeEvent::BlockingPrepareExited);
+        }
+        prepared
+    };
+    if let Some(scope) = scope {
+        return scope
+            .reserve("prepare_persist_snapshot")
+            .map_err(|error| format!("session persistence prepare registration failed: {error:?}"))?
+            .run_blocking_single(work)
+            .await
+            .map_err(|error| format!("session persistence prepare task failed: {error:?}"));
+    }
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| format!("session persistence prepare task failed: {}", e))
 }
 
 /// §1295 — the shared drop handler. The caller MUST already hold

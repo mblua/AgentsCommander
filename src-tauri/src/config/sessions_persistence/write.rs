@@ -99,6 +99,9 @@ where
     T: Send + 'static,
     F: std::future::Future<Output = T> + Send + 'static,
 {
+    if let Some(scope) = super::operation::OperationScope::current() {
+        return scope.run_owned(operation).await;
+    }
     let cell = std::sync::Arc::new(PersistOperationCell {
         state: Mutex::new(PersistOperationState::Running),
         changed: tokio::sync::Notify::new(),

@@ -2,6 +2,7 @@ mod carrier;
 #[cfg(test)]
 pub(crate) use carrier::restore_test_carrier_scopes_are_empty;
 mod live_update;
+mod operation;
 mod orphan;
 mod persist;
 mod project_scope;
@@ -27,6 +28,19 @@ pub use live_update::{
     set_blocked_menu_and_persist, set_start_fresh_and_persist_result, BlockedMenuPersistOutcome,
     ClearedUserInputTransitions, RaiseHandPersistOutcome,
 };
+#[expect(
+    unused_imports,
+    reason = "P01 additive observation API activates in later phases"
+)]
+pub(crate) use operation::{
+    run_observed_owned_core, OperationScope, OwnedTaskSet, OwnedTaskTicket, TaskExit,
+};
+#[cfg(test)]
+#[expect(
+    unused_imports,
+    reason = "lower producer probes are consumed in later phases"
+)]
+pub(crate) use operation::{OperationProbe, ProbeContext, ProbeEvent};
 pub(crate) use orphan::append_orphan_archive_record;
 #[cfg(test)]
 use orphan::persist_prepared_locked;

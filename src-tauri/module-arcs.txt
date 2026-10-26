@@ -1618,6 +1618,7 @@ agentscommander_lib::config::sessions_persistence::live_update -> agentscommande
 agentscommander_lib::config::sessions_persistence::live_update -> agentscommander_lib::session::session
 agentscommander_lib::config::sessions_persistence::orphan -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::sessions_persistence::orphan -> agentscommander_lib::config::sessions_persistence::carrier
+agentscommander_lib::config::sessions_persistence::orphan -> agentscommander_lib::config::sessions_persistence::operation
 agentscommander_lib::config::sessions_persistence::orphan -> agentscommander_lib::config::sessions_persistence::project_scope
 agentscommander_lib::config::sessions_persistence::orphan -> agentscommander_lib::config::sessions_persistence::record
 agentscommander_lib::config::sessions_persistence::orphan -> agentscommander_lib::config::sessions_persistence::write
@@ -1669,6 +1670,7 @@ agentscommander_lib::config::sessions_persistence::store -> agentscommander_lib:
 agentscommander_lib::config::sessions_persistence::store -> agentscommander_lib::filesystem
 agentscommander_lib::config::sessions_persistence::store -> agentscommander_lib::session::session
 agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::config::sessions_persistence::carrier
+agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::config::sessions_persistence::operation
 agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::config::sessions_persistence::project_scope
 agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::config::sessions_persistence::record
 agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::config::sessions_persistence::store
