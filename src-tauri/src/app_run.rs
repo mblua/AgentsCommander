@@ -147,7 +147,8 @@ pub(crate) fn run(
     // #2232 phase 7: the Co-managed supervisor. Created before the idle
     // detector so its callback can read the armed flag synchronously and hand
     // the edge over without touching settings, disk or a session lookup.
-    let (co_managed_supervisor, co_managed_triggers) = CoManagedSupervisorHandle::new();
+    let (co_managed_supervisor, co_managed_triggers) =
+        CoManagedSupervisorHandle::with_capture_state(owners.capture.clone());
     let co_managed_supervisor_for_idle = co_managed_supervisor.clone();
     let co_managed_supervisor_for_setup = co_managed_supervisor.clone();
 
