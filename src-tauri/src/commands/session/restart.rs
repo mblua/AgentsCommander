@@ -1,25 +1,28 @@
 pub(crate) mod context;
+pub(crate) mod execution;
 mod settlement;
 pub(crate) use context::LifecycleExecutionContext;
-pub(crate) use settlement::{
-    accept_restart_deferred_completion, accept_restart_teardown,
-    complete_owned_replacement_retirement, finalize_restart_deferred,
-    publish_restart_after_warnings, publish_restart_before_warnings, teardown_old_for_restart,
-};
+pub(crate) use settlement::complete_owned_replacement_retirement;
+#[cfg(test)]
+pub(crate) use settlement::teardown_old_for_restart;
 
 pub(crate) use super::agent_command::carry_communication_for_restart;
 pub(crate) use super::agent_command::effective_create_skip_auto_resume;
+#[cfg(test)]
 pub(crate) use super::agent_command::effective_restart_requested_profile;
 #[cfg(test)]
 pub(crate) use super::agent_command::effective_restart_skip_auto_resume;
+#[cfg(test)]
 pub(crate) use super::agent_command::matched_selection;
 #[cfg(test)]
 pub(crate) use super::agent_command::mirror_forces_fresh;
 pub(crate) use super::agent_command::resolve_restart_selected_agent_id;
+#[cfg(test)]
 pub(crate) use super::agent_command::restart_skip_auto_resume_with_intent;
+#[cfg(test)]
 pub(crate) use super::agent_command::MatchedSelection;
-use crate::commands::session::execute_restart_transaction_in_context;
 use crate::commands::session::prepare_restore_lifecycle_authority;
+use crate::commands::session::restart::execution::execute_restart_transaction_in_context;
 use crate::commands::session::LifecycleEntryAuthority;
 use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;

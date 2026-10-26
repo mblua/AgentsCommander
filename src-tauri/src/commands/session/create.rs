@@ -19,7 +19,7 @@ mod context_prep;
 mod contracts;
 mod core;
 mod effects;
-mod launch;
+pub(crate) mod launch;
 mod publication;
 #[cfg(test)]
 pub(crate) use admission::acquire_create_publication_region;

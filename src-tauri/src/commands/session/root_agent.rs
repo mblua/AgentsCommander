@@ -3,9 +3,9 @@ use super::restart::context::{ensure_lifecycle_root_directory, LifecycleExecutio
 use crate::commands::session::attach_local_config_telegram_if_any;
 use crate::commands::session::build_configured_agent_spawn_for_cwd;
 use crate::commands::session::create_session_inner_impl;
-use crate::commands::session::execute_restart_transaction_in_context;
 use crate::commands::session::prepare_restore_lifecycle_authority;
 use crate::commands::session::resolve_root_agent_command;
+use crate::commands::session::restart::execution::execute_restart_transaction_in_context;
 use crate::commands::session::CreateSelectionIntent;
 use crate::commands::session::LifecycleEntryAuthority;
 use crate::commands::session::LifecycleEntryOutcome;
