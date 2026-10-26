@@ -288,6 +288,7 @@ agentscommander_lib::app_run::setup -> agentscommander_lib::testability::window_
 agentscommander_lib::app_run::setup -> agentscommander_lib::update_check
 agentscommander_lib::app_run::setup -> agentscommander_lib::web::command_port
 agentscommander_lib::app_run::setup -> agentscommander_lib::web::commands
+agentscommander_lib::app_state -> agentscommander_lib::pty::local_backend
 agentscommander_lib::capture::catalog -> agentscommander_lib::filesystem
 agentscommander_lib::capture::jev -> agentscommander_lib::capture::catalog
 agentscommander_lib::capture::jev -> agentscommander_lib::network
@@ -3066,6 +3067,7 @@ agentscommander_lib::telegram::output -> agentscommander_lib::config::instance_a
 agentscommander_lib::telegram::output -> agentscommander_lib::network
 agentscommander_lib::telegram::output -> agentscommander_lib::telegram::api
 agentscommander_lib::telegram::output -> agentscommander_lib::telegram::redact
+agentscommander_lib::test_support -> agentscommander_lib::app_state
 agentscommander_lib::test_support -> agentscommander_lib::commands::session::selection_executor
 agentscommander_lib::testability -> agentscommander_lib::config::profile
 agentscommander_lib::testability::mutex_holders -> agentscommander_lib::config::profile

@@ -335,18 +335,21 @@ pub(crate) fn make_test_app(
         s.project_paths = vec![path_to_string(repo_root)];
         s
     });
+    let owners = agentscommander_lib::AppOwners::new();
     let git_app = Box::leak(Box::new(
-        agentscommander_lib::test_support::test_builder()
+        agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build git watcher handle app"),
     ));
     let git_watcher = GitWatcher::new(Arc::clone(&session_mgr), git_app.handle().clone());
-    let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
+    let pty_mgr = Arc::new(Mutex::new(PtyManager::with_owners(
         output_senders,
         idle_detector,
         Arc::clone(&git_watcher),
         None,
         None,
+        #[cfg(windows)]
+        owners.git_guard.clone(),
     )));
 
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
@@ -363,7 +366,7 @@ pub(crate) fn make_test_app(
     let captured_sequences = Arc::clone(captured_sequences);
     let captured_deliveries = Arc::clone(captured_deliveries);
     let listener_errors = Arc::clone(listener_errors);
-    let app = agentscommander_lib::test_support::test_builder()
+    let app = agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
         .manage(MasterToken::new("pty-lifecycle-master-token".into()))
         .manage(AppOutbox::new(
             repo_root.join(".app-outbox").to_string_lossy().to_string(),

@@ -57,16 +57,28 @@ use liveness::{
 };
 
 #[cfg(windows)]
-pub(super) static GIT_GUARD_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+pub struct GitGuardTempSequence(AtomicU64);
 
 #[cfg(windows)]
-fn build_git_guard_env() -> Result<Option<GitGuardEnv>, AppError> {
+#[allow(clippy::new_without_default)]
+impl GitGuardTempSequence {
+    pub fn new() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    fn next(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+#[cfg(windows)]
+fn build_git_guard_env(sequence: &GitGuardTempSequence) -> Result<Option<GitGuardEnv>, AppError> {
     let Some(real_git) = resolve_real_git_path() else {
         log::warn!("[pty] git.exe not found; skipping PATH git guard wrapper");
         return Ok(None);
     };
 
-    let guard_dir = ensure_git_guard_wrapper()?;
+    let guard_dir = ensure_git_guard_wrapper(sequence)?;
     let current_path = crate::config::environment::inherited_path().unwrap_or_default();
     let mut path_entries: Vec<std::path::PathBuf> = vec![guard_dir];
     path_entries.extend(std::env::split_paths(&current_path));
@@ -83,6 +95,8 @@ fn build_git_guard_env() -> Result<Option<GitGuardEnv>, AppError> {
 }
 
 pub struct LocalProcessBackend {
+    #[cfg(windows)]
+    git_guard: Arc<GitGuardTempSequence>,
     ptys: Arc<Mutex<HashMap<Uuid, PtyInstance>>>,
     fanout: SessionIoFanout,
     git_watcher: Arc<GitWatcher>,
@@ -131,6 +145,8 @@ fn remove_local_pty(ptys: &Mutex<HashMap<Uuid, PtyInstance>>, id: Uuid) -> Optio
 impl Clone for LocalProcessBackend {
     fn clone(&self) -> Self {
         Self {
+            #[cfg(windows)]
+            git_guard: Arc::clone(&self.git_guard),
             ptys: Arc::clone(&self.ptys),
             fanout: self.fanout.clone(),
             git_watcher: Arc::clone(&self.git_watcher),
@@ -143,13 +159,33 @@ impl Clone for LocalProcessBackend {
 }
 
 impl LocalProcessBackend {
+    #[cfg(test)]
     pub fn new(
         output_senders: OutputSenderMap,
         idle_detector: Arc<IdleDetector>,
         git_watcher: Arc<GitWatcher>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
     ) -> Self {
+        Self::with_owners(
+            output_senders,
+            idle_detector,
+            git_watcher,
+            ws_broadcaster,
+            #[cfg(windows)]
+            Arc::new(GitGuardTempSequence::new()),
+        )
+    }
+
+    pub fn with_owners(
+        output_senders: OutputSenderMap,
+        idle_detector: Arc<IdleDetector>,
+        git_watcher: Arc<GitWatcher>,
+        ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
+        #[cfg(windows)] git_guard: Arc<GitGuardTempSequence>,
+    ) -> Self {
         Self {
+            #[cfg(windows)]
+            git_guard,
             ptys: Arc::new(Mutex::new(HashMap::new())),
             fanout: SessionIoFanout::new(output_senders, idle_detector, ws_broadcaster),
             git_watcher,
@@ -291,7 +327,7 @@ impl LocalProcessBackend {
             );
 
             #[cfg(windows)]
-            if let Some(git_guard_env) = build_git_guard_env()? {
+            if let Some(git_guard_env) = build_git_guard_env(&self.git_guard)? {
                 command.env("PATH", &git_guard_env.path);
                 command.env("PATHEXT", &git_guard_env.pathext);
                 command.env("AC_REAL_GIT", &git_guard_env.real_git);

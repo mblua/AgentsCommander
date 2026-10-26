@@ -20,3 +20,20 @@ pub type ConfigSeedLockState = Arc<tokio::sync::Mutex<()>>;
 /// whether `session_ids.is_empty()` means "no live session for this FQN" or
 /// "restore loop hasn't reached this session yet — retry briefly."
 pub struct RestoreInProgress(pub AtomicBool);
+
+/// Process-lived owners shared by every runtime and explicit component constructor.
+#[derive(Clone)]
+pub struct AppOwners {
+    #[cfg(windows)]
+    pub git_guard: Arc<crate::pty::local_backend::GitGuardTempSequence>,
+}
+
+#[allow(clippy::new_without_default)]
+impl AppOwners {
+    pub fn new() -> Self {
+        Self {
+            #[cfg(windows)]
+            git_guard: Arc::new(crate::pty::local_backend::GitGuardTempSequence::new()),
+        }
+    }
+}

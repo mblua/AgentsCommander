@@ -21,8 +21,8 @@ use crate::{
     WEB_SERVER_START_CANCELLED,
 };
 
-/// Locals `run()` builds before the event loop and hands to the hook.
 pub(super) struct SetupCtx {
+    pub(super) owners: crate::AppOwners,
     pub(super) test_window_placement:
         Option<crate::testability::window_placement::TestWindowPlacement>,
     pub(super) app_handle_lock: Arc<OnceLock<tauri::AppHandle>>,
@@ -53,9 +53,9 @@ pub(super) struct SetupCtx {
     pub(super) resource_monitor_for_setup: Arc<resource_monitor::ResourceMonitorState>,
     pub(super) ui_automation_state_for_setup: crate::testability::ui_automation::UiAutomationState,
 }
-
 pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn std::error::Error>> {
     let SetupCtx {
+        owners: _owners,
         test_window_placement,
         app_handle_lock,
         co_managed_supervisor_for_setup,
@@ -87,7 +87,6 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     } = ctx;
     use tauri::WebviewUrl;
     use tauri::WebviewWindowBuilder;
-
     // Make AppHandle available to idle detector callbacks
     let _ = app_handle_lock.set(app.handle().clone());
 
@@ -199,13 +198,14 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         remote_transitions,
         shutdown_for_setup.token().child_token(),
     ));
-    // PtyManager needs GitWatcher for cleanup on session kill
-    let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
+    let pty_mgr = Arc::new(Mutex::new(PtyManager::with_owners(
         output_senders_for_pty,
         idle_detector_for_pty,
         Arc::clone(&git_watcher),
         Some(broadcaster_for_pty),
         Some(selection_coordinator_for_setup.container_lifecycle_sender()),
+        #[cfg(windows)]
+        _owners.git_guard.clone(),
     )));
     pty_mgr
         .lock()

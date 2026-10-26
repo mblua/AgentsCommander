@@ -208,18 +208,21 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
         s.project_paths = vec![repo_root.to_string_lossy().to_string()];
         s
     });
+    let owners = agentscommander_lib::AppOwners::new();
     let git_app = Box::leak(Box::new(
-        agentscommander_lib::test_support::test_builder()
+        agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("git handle app"),
     ));
     let git_watcher = GitWatcher::new(Arc::clone(&session_mgr), git_app.handle().clone());
-    let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
+    let pty_mgr = Arc::new(Mutex::new(PtyManager::with_owners(
         Arc::clone(&output_senders),
         Arc::clone(&idle),
         Arc::clone(&git_watcher),
         None,
         None,
+        #[cfg(windows)]
+        owners.git_guard.clone(),
     )));
 
     let detached: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
@@ -232,7 +235,7 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
     let selection_coordinator =
         SelectionCoordinator::new(Arc::clone(&session_mgr), shutdown.token().clone());
 
-    let app = agentscommander_lib::test_support::test_builder()
+    let app = agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
         .manage(MasterToken::new("wake-consume-master".into()))
         .manage(AppOutbox::new(
             repo_root.join(".app-outbox").to_string_lossy().to_string(),

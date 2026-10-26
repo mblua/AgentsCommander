@@ -263,18 +263,21 @@ pub(crate) fn make_fixture() -> Fixture {
         s.project_paths = vec![repo_root.to_string_lossy().to_string()];
         s
     });
+    let owners = agentscommander_lib::AppOwners::new();
     let git_app = Box::leak(Box::new(
-        agentscommander_lib::test_support::test_builder()
+        agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build git watcher handle app"),
     ));
     let git_watcher = GitWatcher::new(Arc::clone(&session_mgr), git_app.handle().clone());
-    let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
+    let pty_mgr = Arc::new(Mutex::new(PtyManager::with_owners(
         output_senders,
         idle_detector,
         Arc::clone(&git_watcher),
         None,
         None,
+        #[cfg(windows)]
+        owners.git_guard.clone(),
     )));
 
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
@@ -289,7 +292,7 @@ pub(crate) fn make_fixture() -> Fixture {
 
     let deliveries = Arc::clone(&captured_deliveries);
     let error_capture = Arc::clone(&listener_errors);
-    let app = agentscommander_lib::test_support::test_builder()
+    let app = agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
         .manage(MasterToken::new(
             "pty-powershell-native-master-token".into(),
         ))

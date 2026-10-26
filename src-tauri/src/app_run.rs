@@ -24,6 +24,7 @@ use crate::{
 pub(crate) fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
     ui_automation_enabled: bool,
+    owners: crate::AppOwners,
 ) -> Result<(), StartupError> {
     // #1842: FIRST STATEMENT OF run(), deliberately. GTK's Wayland backend
     // calls wl_display_connect(), which unsetenv()s WAYLAND_SOCKET, so a
@@ -387,6 +388,7 @@ pub(crate) fn run(
     let builder = crate::commands::session::selection_executor::install(builder);
 
     builder
+        .manage(owners.clone())
         .manage(master_token)
         .manage(app_outbox)
         .manage(session_mgr)
@@ -433,6 +435,7 @@ pub(crate) fn run(
             setup::setup(
                 app,
                 setup::SetupCtx {
+                    owners: owners.clone(),
                     test_window_placement,
                     app_handle_lock,
                     co_managed_supervisor_for_setup,
