@@ -198,6 +198,9 @@ async fn unsupported_backend_reports_disabled_and_never_kills() {
         backend.clone() as Arc<dyn ProcessTreeBackend>,
     ));
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(monitor)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build unsupported resource-watchdog automation app");
@@ -317,6 +320,9 @@ async fn watchdog_kill_results_preserve_already_pending_contract() {
 
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&monitor))
         .manage(coordinator.clone())
@@ -430,6 +436,9 @@ async fn automation_app_with_coordinator(
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(monitor)
         .manage(coordinator.clone())

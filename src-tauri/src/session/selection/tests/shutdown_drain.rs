@@ -13,6 +13,9 @@ async fn shutdown_drain_runs_common_resource_rollback_for_finalize_and_drop_jobs
     let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(DetachedSessionsState::default())
@@ -131,6 +134,9 @@ async fn cancelled_and_panicked_post_spawn_creates_roll_back_without_ghost_event
     let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(DetachedSessionsState::default())
@@ -264,6 +270,9 @@ async fn capped_shutdown_aborts_a_held_worker_then_cleans_pending_resources_and_
     let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(DetachedSessionsState::default())
@@ -456,6 +465,9 @@ async fn installed_handle_cleanup_worker_spawn_failure_falls_back_without_panic(
 
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(DetachedSessionsState::default())
@@ -552,6 +564,9 @@ async fn joined_worker_retains_no_coordinator_or_extra_pty_owner() {
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let weak_inner = Arc::downgrade(&coordinator.inner);
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(crate::config::settings::new_settings_state(

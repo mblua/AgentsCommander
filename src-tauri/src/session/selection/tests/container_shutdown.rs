@@ -33,6 +33,9 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
     )));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(DetachedSessionsState::default())
@@ -327,6 +330,9 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
     )));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(DetachedSessionsState::default())

@@ -347,6 +347,9 @@ pub(super) fn make_mailbox_app(projects_root: &Path) -> tauri::App<tauri::test::
     let (pty_mgr, _) = make_test_pty_manager();
 
     tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::new(AppLifetimeProbe))
         .manage(MasterToken::new(MAILBOX_MASTER_TOKEN.into()))
         .manage(AppOutbox::new(

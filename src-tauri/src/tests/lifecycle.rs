@@ -223,6 +223,9 @@ async fn e2992_p51_invalid_no_co_managed_budget() {
     // Deliberately omit network and manager state: denied settings must return
     // before touching either service, the detector, or any commit path.
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&denied))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
@@ -274,6 +277,9 @@ async fn e2992_p51_invalid_no_co_managed_budget() {
     assert!(holds_room_reader_demand(demand_harness.app.handle(), demand_id).await);
     let epoch = room_demand_epoch(demand_harness.app.handle(), demand_id).await;
     let demand_app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&denied))
         .manage(Arc::clone(
             demand_harness
@@ -393,6 +399,9 @@ async fn p51_restore_lifecycle_case(mode: &'static str) {
         tokio_util::sync::CancellationToken::new(),
     );
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();

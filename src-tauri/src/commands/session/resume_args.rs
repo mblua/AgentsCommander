@@ -1,4 +1,4 @@
-use super::executable_basename;
+use super::agent_command::executable_basename;
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::pty::backend::SessionBackendKind;
 use crate::session::profile::{locate_pi_command, CodingAgentKind, PiInsertionPoint};
