@@ -32,22 +32,7 @@ pub(super) const GIT_GUARD_PUBLISH_RETRY_DELAYS: &[Duration] = &[
 
 #[cfg(windows)]
 pub(super) fn resolve_real_git_path() -> Option<String> {
-    use std::os::windows::process::CommandExt;
-
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let mut cmd = std::process::Command::new("where.exe");
-    crate::pty::credentials::scrub_credentials_from_std_command(&mut cmd);
-    cmd.arg("git.exe").creation_flags(CREATE_NO_WINDOW);
-    let output = cmd.output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(|line| line.to_string())
+    crate::process::git::watcher::resolve_real_git_path()
 }
 
 #[cfg(windows)]

@@ -443,7 +443,18 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 4)],
     ),
     ("src-tauri/src/pty/docker_runtime/execution.rs", 1, 1, &[]),
-    ("src-tauri/src/pty/git_watcher.rs", 1, 1, &[]),
+    (
+        "src-tauri/src/process/git/watcher.rs",
+        2,
+        1,
+        &[(WindowsOnly, 1)],
+    ),
+    (
+        "src-tauri/src/process/git/watcher/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
     (
         "src-tauri/src/pty/git_watcher/tests.rs",
         1,
@@ -455,12 +466,6 @@ const INVENTORY: &[Row] = &[
         2,
         0,
         &[(TestOnly, 2)],
-    ),
-    (
-        "src-tauri/src/pty/local_backend/git_guard.rs",
-        1,
-        0,
-        &[(WindowsOnly, 1)],
     ),
     (
         "src-tauri/src/pty/local_backend/launch.rs",

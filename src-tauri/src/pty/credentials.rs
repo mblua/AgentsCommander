@@ -8,7 +8,7 @@
 
 use uuid::Uuid;
 
-#[cfg(any(test, windows))]
+#[cfg(test)]
 pub use crate::process::host::credentials::scrub_credentials_from_std_command;
 pub use crate::process::host::credentials::{
     scrub_credentials_from_tokio_command, CREDENTIAL_ENV_KEYS, ENV_AGENTSCOMMANDER_BINARY,

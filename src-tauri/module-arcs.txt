@@ -2213,6 +2213,8 @@ agentscommander_lib::process::git::mutation -> agentscommander_lib::config::agen
 agentscommander_lib::process::git::mutation -> agentscommander_lib::process::host::credentials
 agentscommander_lib::process::git::read -> agentscommander_lib::config::agent_path
 agentscommander_lib::process::git::read -> agentscommander_lib::process::host::credentials
+agentscommander_lib::process::git::watcher -> agentscommander_lib::config::agent_path
+agentscommander_lib::process::git::watcher -> agentscommander_lib::process::host::credentials
 agentscommander_lib::process::harness -> agentscommander_lib::config::agent_path
 agentscommander_lib::process::host::job::tests -> agentscommander_lib::process::host::job
 agentscommander_lib::process::host::job::tests -> agentscommander_lib::process::host::job::windows_impl
@@ -2317,10 +2319,9 @@ agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::erro
 agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::pty::container_runtime
 agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::pty::docker_runtime
 agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::pty::docker_runtime::command
-agentscommander_lib::pty::git_watcher -> agentscommander_lib::config::agent_path
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::config::settings
-agentscommander_lib::pty::git_watcher -> agentscommander_lib::pty::credentials
+agentscommander_lib::pty::git_watcher -> agentscommander_lib::process::git::watcher
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::session::manager
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::session::session
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::shutdown
@@ -2362,7 +2363,7 @@ agentscommander_lib::pty::local_backend::git_guard -> agentscommander_lib::confi
 agentscommander_lib::pty::local_backend::git_guard -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::pty::local_backend::git_guard -> agentscommander_lib::config::root_agent
 agentscommander_lib::pty::local_backend::git_guard -> agentscommander_lib::errors
-agentscommander_lib::pty::local_backend::git_guard -> agentscommander_lib::pty::credentials
+agentscommander_lib::pty::local_backend::git_guard -> agentscommander_lib::process::git::watcher
 agentscommander_lib::pty::local_backend::git_guard -> agentscommander_lib::pty::local_backend
 agentscommander_lib::pty::local_backend::instance -> agentscommander_lib::errors
 agentscommander_lib::pty::local_backend::instance -> agentscommander_lib::pty::job
