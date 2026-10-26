@@ -4,19 +4,17 @@ use super::poller::{MailboxPoller, PreparedResponseRequest};
 #[cfg(test)]
 use super::pty_claim::MailboxTestHooks;
 use super::pty_claim::{response_diag_debug_only, with_verified_response_pair, ResponseWakeWork};
-use crate::config::settings::SettingsState;
+use super::pty_observation::PtyAuthorityState;
+use super::response_observation::{ResponseAdmissionState, ResponseCompletionState};
 use crate::config::teams;
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
-use crate::pty::manager::PtyManager;
-use crate::session::manager::SessionManager;
 use crate::session::session::Session;
 use crate::session::session::SessionStatus;
 use crate::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::Manager;
 use uuid::Uuid;
 
 impl MailboxPoller {
@@ -38,9 +36,9 @@ impl MailboxPoller {
         }
     }
 
-    pub(crate) async fn prepare_response_request<R: tauri::Runtime>(
+    pub(crate) async fn prepare_response_request<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         session_id: Uuid,
         comanaged: bool,
@@ -80,23 +78,14 @@ impl MailboxPoller {
             "token_invalid",
             Uuid::parse_str(&msg.id).ok()
         )?;
-        let roots = app
-            .state::<SettingsState>()
-            .read()
-            .await
-            .project_paths
-            .clone();
+        let roots = app.pty_settings().read().await.project_paths.clone();
         response_diag_option_local!(
             teams::verified_wg_coordinator_target(&msg.from, &roots),
             "prepare",
             "configured_coordinator_rejected",
             Uuid::parse_str(&msg.id).ok()
         )?;
-        let manager = app
-            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .read()
-            .await
-            .clone();
+        let manager = app.pty_sessions().read().await.clone();
         let snapshot = manager.aggregate_snapshot().await;
         let member = response_diag_option_local!(
             snapshot.sessions.iter().find(|row| row.id == session_id),
@@ -193,8 +182,8 @@ impl MailboxPoller {
             .await
     }
 
-    async fn complete_response_request<R: tauri::Runtime>(
-        app: &tauri::AppHandle<R>,
+    async fn complete_response_request<S: ResponseCompletionState + ?Sized>(
+        app: &S,
         work: &ResponseWakeWork,
     ) {
         let attempt = {
@@ -248,7 +237,7 @@ impl MailboxPoller {
             return;
         };
         let roots = {
-            let settings = app.state::<SettingsState>();
+            let settings = app.pty_settings();
             let settings = settings.read().await;
             crate::config::sessions_persistence::session_retention_project_paths(&settings).ok()
         };
@@ -260,14 +249,8 @@ impl MailboxPoller {
             );
             return;
         };
-        let manager = app
-            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .read()
-            .await
-            .clone();
-        let initial = if let Some(coordinator) =
-            app.try_state::<crate::session::selection::SelectionCoordinator>()
-        {
+        let manager = app.pty_sessions().read().await.clone();
+        let initial = if let Some(coordinator) = app.response_selection() {
             let Some(exclusion) = coordinator.restore_mint_exclusion() else {
                 response_diag_local!(
                     "complete_request",
@@ -300,11 +283,11 @@ impl MailboxPoller {
             );
             return;
         };
-        let settings = app.state::<SettingsState>();
+        let settings = app.pty_settings();
         let settings = settings.read().await;
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         if app
-            .try_state::<crate::session::selection::SelectionCoordinator>()
+            .response_selection()
             .is_some_and(|coordinator| coordinator.restore_is_active())
         {
             response_diag_local!(
@@ -314,7 +297,7 @@ impl MailboxPoller {
             );
             return;
         }
-        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let pty = app.pty_routes().clone();
         manager
             .with_current_carrier_snapshot(&permit, |current| {
                 let diagnostic_pair = with_verified_response_pair(
@@ -457,11 +440,10 @@ impl MailboxPoller {
             .await;
     }
 
-    pub(crate) async fn complete_response_delivery<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        path: &Path,
-    ) {
+    pub(crate) async fn complete_response_delivery<S>(&self, app: &S, path: &Path)
+    where
+        S: ResponseCompletionState + Clone + Send + Sync + 'static,
+    {
         let origin = wake_claim_origin(path).unwrap_or_else(|| path.to_path_buf());
         let work = self
             .response_sources
@@ -472,7 +454,7 @@ impl MailboxPoller {
             response_diag!("complete_delivery", "source_work_absent", None::<Uuid>);
             return;
         };
-        let app = app.clone();
+        let app = S::clone(app);
         crate::config::sessions_persistence::run_owned_persist_core(async move {
             Self::complete_response_request(&app, &work).await;
             let now = std::time::Instant::now();
@@ -499,13 +481,9 @@ impl MailboxPoller {
                 );
                 return;
             };
-            let manager = app
-                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-                .read()
-                .await
-                .clone();
-            let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-            let settings = app.state::<SettingsState>();
+            let manager = app.pty_sessions().read().await.clone();
+            let pty = app.pty_routes().clone();
+            let settings = app.pty_settings();
             let settings = settings.read().await;
             work.state.apply_settings(
                 settings.response_close_enabled,
@@ -566,9 +544,9 @@ impl MailboxPoller {
         .await;
     }
 
-    pub(crate) async fn admit_response_source<R: tauri::Runtime>(
+    pub(crate) async fn admit_response_source<S: ResponseAdmissionState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: &OutboxMessage,
         authenticated: bool,
@@ -584,12 +562,11 @@ impl MailboxPoller {
             Uuid::parse_str(&msg.id).ok()
         );
         let state = response_diag_option_local!(
-            app.try_state::<crate::pty::manager::ResponseCloseState>(),
+            app.response_tracker(),
             "admit_source",
             "tracker_missing",
             Uuid::parse_str(&msg.id).ok()
         )?
-        .inner()
         .clone();
         let digest = crate::phone::types::sha256_hex(content.as_bytes());
         if let Some(previous) = self
@@ -681,7 +658,7 @@ impl MailboxPoller {
             Uuid::parse_str(&msg.id).ok()
         );
         if authenticated {
-            let settings = app.state::<SettingsState>();
+            let settings = app.pty_settings();
             let settings = settings.read().await;
             state.apply_settings(
                 settings.response_close_enabled,
@@ -710,7 +687,7 @@ impl MailboxPoller {
                 }
             });
             if coordinator.is_some() && same_room {
-                let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let managers = app.pty_sessions();
                 let manager = managers.read().await.clone();
                 let token = msg
                     .token
@@ -780,7 +757,7 @@ impl MailboxPoller {
                             );
                             return None;
                         }
-                        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+                        let pty = app.pty_routes().clone();
                         let diagnostic_pair = with_verified_response_pair(
                             snapshot,
                             &pty,
@@ -909,3 +886,6 @@ impl MailboxPoller {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
