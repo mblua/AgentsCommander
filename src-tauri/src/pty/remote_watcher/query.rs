@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use super::gh_command::git_command;
+use crate::process::github::{self, QueryError};
+
 use super::{
-    build_gh_command_spec, command_from_spec, corroborate_ci_run, failure_kind, git_command,
-    merge_ci_observations, parse_ci_response, parse_compare_response, CiCompletionDecision,
-    CiCompletionState, CiState, FailureKind, GhCallOutput, GhCommandSpec, GhQuery, GhSpawner,
-    KeyOutcome, KeyPlan, QueryKey, CALL_TIMEOUT,
+    build_gh_command_spec, corroborate_ci_run, failure_kind, merge_ci_observations,
+    parse_ci_response, parse_compare_response, CiCompletionDecision, CiCompletionState, CiState,
+    FailureKind, GhCallOutput, GhCommandSpec, GhQuery, GhSpawner, KeyOutcome, KeyPlan, QueryKey,
+    CALL_TIMEOUT,
 };
 
 pub(crate) fn room_map() -> HashMap<String, Vec<String>> {
@@ -197,15 +200,17 @@ where
 /// The production spawner. `CALL_TIMEOUT` plus `kill_on_drop(true)` is the same
 /// mechanism as INV-1: the timeout drops `output()`, and the drop kills `gh.exe`.
 pub(crate) async fn spawn_gh(spec: GhCommandSpec) -> Result<GhCallOutput, FailureKind> {
-    let mut command = command_from_spec(spec);
-    match tokio::time::timeout(CALL_TIMEOUT, command.output()).await {
-        Ok(Ok(output)) => Ok(GhCallOutput {
+    match github::query(spec, CALL_TIMEOUT).await {
+        Ok(output) => Ok(GhCallOutput {
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             success: output.status.success(),
         }),
-        Ok(Err(_)) => Err(FailureKind::Other),
-        Err(_) => Err(FailureKind::Timeout),
+        Err(QueryError::Spawn(error)) => {
+            let _ = error;
+            Err(FailureKind::Other)
+        }
+        Err(QueryError::Timeout) => Err(FailureKind::Timeout),
     }
 }
 

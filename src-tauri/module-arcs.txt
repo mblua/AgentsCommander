@@ -2215,6 +2215,8 @@ agentscommander_lib::process::git::read -> agentscommander_lib::config::agent_pa
 agentscommander_lib::process::git::read -> agentscommander_lib::process::host::credentials
 agentscommander_lib::process::git::watcher -> agentscommander_lib::config::agent_path
 agentscommander_lib::process::git::watcher -> agentscommander_lib::process::host::credentials
+agentscommander_lib::process::github -> agentscommander_lib::config::agent_path
+agentscommander_lib::process::github -> agentscommander_lib::process::host::credentials
 agentscommander_lib::process::harness -> agentscommander_lib::config::agent_path
 agentscommander_lib::process::host::job::tests -> agentscommander_lib::process::host::job
 agentscommander_lib::process::host::job::tests -> agentscommander_lib::process::host::job::windows_impl
@@ -2424,12 +2426,15 @@ agentscommander_lib::pty::output::screen -> agentscommander_lib::pty::output
 agentscommander_lib::pty::output::screen -> agentscommander_lib::pty::watchers
 agentscommander_lib::pty::remote_watcher::ci_parse -> agentscommander_lib::pty::remote_watcher
 agentscommander_lib::pty::remote_watcher::gh_command -> agentscommander_lib::config::agent_path
+agentscommander_lib::pty::remote_watcher::gh_command -> agentscommander_lib::process::github
 agentscommander_lib::pty::remote_watcher::gh_command -> agentscommander_lib::pty::credentials
 agentscommander_lib::pty::remote_watcher::gh_command -> agentscommander_lib::pty::remote_watcher
 agentscommander_lib::pty::remote_watcher::outcome -> agentscommander_lib::config::remote_activity_cache
 agentscommander_lib::pty::remote_watcher::outcome -> agentscommander_lib::pty::remote_watcher
+agentscommander_lib::pty::remote_watcher::query -> agentscommander_lib::process::github
 agentscommander_lib::pty::remote_watcher::query -> agentscommander_lib::pty::git_watcher
 agentscommander_lib::pty::remote_watcher::query -> agentscommander_lib::pty::remote_watcher
+agentscommander_lib::pty::remote_watcher::query -> agentscommander_lib::pty::remote_watcher::gh_command
 agentscommander_lib::pty::remote_watcher::schedule -> agentscommander_lib::pty::remote_watcher
 agentscommander_lib::pty::remote_watcher::seams -> agentscommander_lib::pty::remote_watcher
 agentscommander_lib::pty::remote_watcher::sweeper -> agentscommander_lib::config::remote_activity_cache

@@ -1,20 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[cfg(windows)]
 use super::CREATE_NO_WINDOW;
 
-/// A `gh` invocation, fully described before any process exists.
-///
-/// Fields carry NO visibility modifier, so they are private to this module; the
-/// in-file `#[cfg(test)] mod tests` reads them as a child module. The builder
-/// validates its inputs by construction, which is what makes an abbreviated SHA
-/// impossible to send rather than detectable afterwards.
-pub(crate) struct GhCommandSpec {
-    pub(crate) program: PathBuf,
-    pub(crate) args: Vec<String>,
-    pub(crate) envs: Vec<(String, String)>,
-    pub(crate) creation_flags: u32,
-}
+pub(crate) use crate::process::github::GhCommandSpec;
 
 pub(crate) enum GhQuery<'a> {
     Ci {
@@ -148,34 +137,8 @@ pub(crate) fn is_sha40(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-/// The only place a `gh` `Command` is constructed. Pure: it spawns nothing, so a
-/// test can inspect the environment and flags it would apply.
-pub(crate) fn command_from_spec(spec: GhCommandSpec) -> tokio::process::Command {
-    let GhCommandSpec {
-        program,
-        args,
-        envs,
-        creation_flags,
-    } = spec;
-    let mut command = tokio::process::Command::new(program);
-    command.args(&args);
-    for (key, value) in &envs {
-        command.env(key, value);
-    }
-    command.kill_on_drop(true);
-    crate::pty::credentials::scrub_credentials_from_tokio_command(&mut command);
-    crate::config::agent_path::apply_search_path_to_tokio_command(&mut command);
-    #[cfg(windows)]
-    std::os::windows::process::CommandExt::creation_flags(command.as_std_mut(), creation_flags);
-    // On non-Windows there is no API to apply creation flags; the read keeps the
-    // field part of the spec's contract rather than dead on those targets.
-    #[cfg(not(windows))]
-    let _ = creation_flags;
-    command
-}
-
 /// The only place a `git` `Command` is constructed. Pure, like
-/// `command_from_spec`. Gate 2 of `detect_git_status` (`GIT_CEILING_DIRECTORIES`)
+/// the GitHub owner constructor. Gate 2 of `detect_git_status` (`GIT_CEILING_DIRECTORIES`)
 /// lives here so a repo whose `.git` exists but is corrupt cannot walk up and
 /// answer with an unrelated ancestor's data. Gate 1 (the async `.git` metadata
 /// check) runs once per path in the caller, before any command is built.

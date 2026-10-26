@@ -491,7 +491,8 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 1)],
     ),
-    ("src-tauri/src/pty/remote_watcher/gh_command.rs", 2, 2, &[]),
+    ("src-tauri/src/pty/remote_watcher/gh_command.rs", 1, 1, &[]),
+    ("src-tauri/src/process/github.rs", 1, 1, &[]),
     (
         "src-tauri/src/pty/terminal_snapshot/tests/acceptance/api_cancellation.rs",
         1,
