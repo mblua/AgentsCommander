@@ -832,8 +832,6 @@ fn ensure_client_deadline(deadline: Instant) -> Result<(), String> {
 // This is the only instrument that has located a wrong failure code on this
 // path. Without it a `response_unavailable` that should have been
 // `output_failed` is indistinguishable from a genuine server-response problem.
-const STAGE_FILE_ENV: &str = "AC_TERMINAL_SNAPSHOT_STAGE_FILE";
-
 static CURRENT_STAGE: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
 
 fn enter_stage(stage: &'static str) {
@@ -843,7 +841,7 @@ fn enter_stage(stage: &'static str) {
 }
 
 fn record_stage_side_channel(code: &str) {
-    let Ok(path) = std::env::var(STAGE_FILE_ENV) else {
+    let Ok(path) = crate::config::environment::terminal_snapshot_stage_file() else {
         return;
     };
     let stage = CURRENT_STAGE

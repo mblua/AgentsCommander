@@ -276,7 +276,7 @@ pub(super) fn daemon_state_is_live(state: &DaemonState) -> bool {
 /// One runtime warning. When `AC_MACHINE_OUTPUT` is set the caller asked for
 /// log-only warnings; otherwise stderr is the channel. stdout is never used.
 pub(super) fn warn_activity(message: &str) {
-    if std::env::var_os("AC_MACHINE_OUTPUT").is_some() {
+    if crate::config::environment::machine_output_os().is_some() {
         log::warn!("{message}");
     } else {
         eprintln!("{message}");

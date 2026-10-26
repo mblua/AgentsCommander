@@ -934,7 +934,7 @@ impl Thresholds {
 }
 
 fn env_u64(key: &str, default: u64, max: u64) -> u64 {
-    let Ok(raw) = std::env::var(key) else {
+    let Ok(raw) = crate::config::environment::spawn_diagnostic_value(key) else {
         return default;
     };
     match raw.trim().parse::<u64>() {

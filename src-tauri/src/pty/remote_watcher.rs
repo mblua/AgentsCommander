@@ -57,9 +57,7 @@ use ci_parse::{
 };
 #[cfg(test)]
 use ci_parse::{parse_ci_jobs_response, parse_ci_run_response, CiAnswer, CiRunObservation};
-use gh_command::{
-    build_gh_command_spec, command_from_spec, git_command, is_sha40, GhCommandSpec, GhQuery,
-};
+use gh_command::{build_gh_command_spec, is_sha40, GhCommandSpec, GhQuery};
 #[cfg(test)]
 use outcome::persisted_failure_reason;
 use outcome::{activity_for, persisted_repo_ci};
