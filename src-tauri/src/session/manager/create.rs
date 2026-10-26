@@ -7,7 +7,8 @@ use super::{
 };
 use crate::errors::AppError;
 use crate::pty::backend::SessionBackendKind;
-use crate::session::selection::{CommitCapability, SelectionCause, SessionSelection};
+use crate::session::selection::payload::{SelectionCause, SessionSelection};
+use crate::session::selection::CommitCapability;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;

@@ -2788,6 +2788,7 @@ agentscommander_lib::session::manager -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::session::manager -> agentscommander_lib::pty::input_route
 agentscommander_lib::session::manager -> agentscommander_lib::pty::response_close
 agentscommander_lib::session::manager -> agentscommander_lib::session::selection
+agentscommander_lib::session::manager -> agentscommander_lib::session::selection::payload
 agentscommander_lib::session::manager -> agentscommander_lib::session::session
 agentscommander_lib::session::manager::binding -> agentscommander_lib::session::manager
 agentscommander_lib::session::manager::binding -> agentscommander_lib::session::manager::carrier
@@ -2796,12 +2797,12 @@ agentscommander_lib::session::manager::carrier -> agentscommander_lib::path_iden
 agentscommander_lib::session::manager::carrier -> agentscommander_lib::pty::backend
 agentscommander_lib::session::manager::carrier -> agentscommander_lib::pty::response_close
 agentscommander_lib::session::manager::carrier -> agentscommander_lib::session::manager
-agentscommander_lib::session::manager::carrier -> agentscommander_lib::session::selection
+agentscommander_lib::session::manager::carrier -> agentscommander_lib::session::selection::payload
 agentscommander_lib::session::manager::carrier -> agentscommander_lib::session::session
 agentscommander_lib::session::manager::commit -> agentscommander_lib::config::activity_log
 agentscommander_lib::session::manager::commit -> agentscommander_lib::session::manager
 agentscommander_lib::session::manager::commit -> agentscommander_lib::session::manager::binding
-agentscommander_lib::session::manager::commit -> agentscommander_lib::session::selection
+agentscommander_lib::session::manager::commit -> agentscommander_lib::session::selection::payload
 agentscommander_lib::session::manager::commit -> agentscommander_lib::session::session
 agentscommander_lib::session::manager::communication -> agentscommander_lib::errors
 agentscommander_lib::session::manager::communication -> agentscommander_lib::session::manager
@@ -2815,6 +2816,7 @@ agentscommander_lib::session::manager::create -> agentscommander_lib::session::m
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::manager::binding
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::manager::carrier
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::selection
+agentscommander_lib::session::manager::create -> agentscommander_lib::session::selection::payload
 agentscommander_lib::session::manager::create -> agentscommander_lib::session::session
 agentscommander_lib::session::manager::lookup -> agentscommander_lib::config::teams
 agentscommander_lib::session::manager::lookup -> agentscommander_lib::errors
@@ -2823,7 +2825,7 @@ agentscommander_lib::session::manager::lookup -> agentscommander_lib::session
 agentscommander_lib::session::manager::lookup -> agentscommander_lib::session::manager
 agentscommander_lib::session::manager::lookup -> agentscommander_lib::session::manager::binding
 agentscommander_lib::session::manager::lookup -> agentscommander_lib::session::manager::carrier
-agentscommander_lib::session::manager::lookup -> agentscommander_lib::session::selection
+agentscommander_lib::session::manager::lookup -> agentscommander_lib::session::selection::payload
 agentscommander_lib::session::manager::lookup -> agentscommander_lib::session::session
 agentscommander_lib::session::manager::metadata -> agentscommander_lib::config::settings
 agentscommander_lib::session::manager::metadata -> agentscommander_lib::config::teams
@@ -2837,7 +2839,7 @@ agentscommander_lib::session::manager::metadata -> agentscommander_lib::session:
 agentscommander_lib::session::manager::prompt -> agentscommander_lib::session::manager
 agentscommander_lib::session::manager::prompt -> agentscommander_lib::session::manager::binding
 agentscommander_lib::session::manager::prompt -> agentscommander_lib::session::manager::carrier
-agentscommander_lib::session::manager::prompt -> agentscommander_lib::session::selection
+agentscommander_lib::session::manager::prompt -> agentscommander_lib::session::selection::payload
 agentscommander_lib::session::manager::turn -> agentscommander_lib::config::activity_log
 agentscommander_lib::session::manager::turn -> agentscommander_lib::config::settings
 agentscommander_lib::session::manager::turn -> agentscommander_lib::config::teams

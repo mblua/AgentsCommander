@@ -617,7 +617,7 @@ mod response_close;
 pub(crate) use admission::BlockingSeedTaskError;
 pub(crate) use admission::WatchdogKillOutcome;
 pub use admission::{CriticalAdmissionKind, CriticalAdmissionOutcome};
-mod payload;
+pub(crate) mod payload;
 mod replacement;
 #[cfg(test)]
 pub(crate) use replacement::FixtureRootReservation;
@@ -640,7 +640,7 @@ use admission::{BlockingSeedWorkTracker, CriticalAdmissionKey};
 #[cfg(test)]
 use admission::{CoordinatorPhase, CriticalAdmissionGuard};
 pub(super) use envelope::{FinalizedOwnedCarryCapability, FinalizedOwnedCarryOutcome};
-pub(crate) use payload::{DormantRuntimeWitness, LiveRuntimeWitness, SelectionCause};
+pub(crate) use payload::SelectionCause;
 pub use payload::{
     RuntimeSelectionSnapshot, SelectionCoordinatorError, SelectionMode, SelectionSource,
     SessionSelection, TrustedCreateIntent, TrustedResourceIntent, TrustedRestartIntent,

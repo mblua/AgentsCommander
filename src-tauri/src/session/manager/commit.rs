@@ -3,7 +3,7 @@ use super::binding::binding_matches;
 use super::{
     CommitDecision, CommitResult, FinalizeMutation, LifecycleMutations, SessionManagerState,
 };
-use crate::session::selection::{SelectionMode, SessionSelection};
+use crate::session::selection::payload::{SelectionMode, SessionSelection};
 use std::collections::HashSet;
 use uuid::Uuid;
 

@@ -2,7 +2,7 @@ use super::super::session::{Session, SessionCommunication, SessionStatus};
 use super::{PendingCreateBinding, RetainedPrompt, SessionManager, SessionManagerState};
 use crate::errors::AppError;
 use crate::pty::backend::SessionBackendKind;
-use crate::session::selection::SessionSelection;
+use crate::session::selection::payload::SessionSelection;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
