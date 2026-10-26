@@ -11,6 +11,28 @@
         "files": 2,
         "sites": 4
       }
+    },
+    {
+      "id": "Sessions/Snapshot",
+      "name": "sessions.json",
+      "scope": "src-tauri/src/config/sessions_persistence/",
+      "owner": "src-tauri/src/config/sessions_persistence/store.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 1,
+        "sites": 2
+      }
+    },
+    {
+      "id": "Sessions/OrphanArchive",
+      "name": "orphaned-sessions.archive.json",
+      "scope": "src-tauri/src/config/sessions_persistence/",
+      "owner": "src-tauri/src/config/sessions_persistence/orphan.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 1,
+        "sites": 2
+      }
     }
   ]
 }
