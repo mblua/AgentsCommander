@@ -432,8 +432,8 @@ impl fmt::Debug for OwnedReplacementContinuation {
 #[derive(Debug, Clone)]
 pub(super) enum OwnedReplacementDescriptor {
     Replacement(Box<ResolvedReplacement>),
-    EntryRestart(crate::commands::session::RestartJobRequest),
-    EntryRoot(crate::commands::session::RootJobRequest),
+    EntryRestart(super::RestartJobRequest),
+    EntryRoot(super::RootJobRequest),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -791,18 +791,18 @@ impl fmt::Debug for ReplacementOwner {
 pub(super) struct OwnedLifecycleEntry {
     pub(super) owner: Arc<ReplacementOwner>,
     pub(super) executor_nonce: Uuid,
-    pub(super) authority: Option<crate::commands::session::LifecycleEntryAuthority>,
+    pub(super) authority: Option<super::LifecycleLease>,
 }
 
 impl OwnedLifecycleEntry {
-    pub(super) async fn release_lease(&mut self) {
+    pub(super) async fn release_lease<T>(&mut self, executor: &dyn super::LifecycleExecutor<T>) {
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         let current = self.owner.state.lock().ok().is_some_and(|state| {
             state.executor_nonce == self.executor_nonce && state.stage == ReplacementStage::Returned
         });
         let authority = self.authority.take();
         drop(permit);
-        let released = authority.is_some_and(|authority| authority.release());
+        let released = authority.is_some_and(|authority| executor.release(authority));
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         if let Ok(mut state) = self.owner.state.lock() {
             if current

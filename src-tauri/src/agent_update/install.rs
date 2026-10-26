@@ -1,6 +1,5 @@
 use super::updater::{
-    build_update_step_command, output_tail, TargetProcessOwner, TargetSettlement, TargetWait,
-    UpdaterStepOutcome,
+    output_tail, TargetProcessOwner, TargetSettlement, TargetWait, UpdaterStepOutcome,
 };
 #[cfg(test)]
 use super::updater::{with_target_settlement_hook, TARGET_SETTLEMENT_HOOK};
@@ -128,8 +127,7 @@ pub(crate) async fn run_agent_install(
     cwd: &Path,
     timeout: Duration,
 ) -> AgentInstallRun {
-    let mut cmd = build_update_step_command(command, cwd, &effective_search_path());
-    let run = match TargetProcessOwner::spawn(&mut cmd).await {
+    let run = match TargetProcessOwner::spawn_step(command, cwd, &effective_search_path()).await {
         Ok(mut owner) => {
             // This feature has no cancel verb: the sender is never set.
             let (_cancel_tx, mut cancel) = tokio::sync::watch::channel(false);

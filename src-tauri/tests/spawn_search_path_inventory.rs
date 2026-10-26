@@ -87,8 +87,8 @@ fn workspace_members() -> Vec<String> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Reason {
-    /// `config/agent_path.rs`: defines the adapters and runs the login-shell
-    /// probe that is the source of the search path.
+    /// `process/host/login.rs`: runs the login-shell probe that is the source
+    /// of the search path.
     Owner,
     /// Already resolves and executes with `effective_search_path()`.
     CoveredBy2589,
@@ -137,18 +137,23 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 4)],
     ),
     (
-        "src-tauri/src/agent_update/updater.rs",
+        "src-tauri/src/process/agent/update.rs",
         2,
         0,
         &[(CoveredBy2589, 2)],
     ),
     (
-        "src-tauri/src/agent_version.rs",
+        "src-tauri/src/process/agent/owner.rs",
         1,
         0,
         &[(CoveredBy2589, 1)],
     ),
-    ("src-tauri/src/cli/harness.rs", 3, 2, &[(WindowsOnly, 1)]),
+    (
+        "src-tauri/src/process/harness.rs",
+        3,
+        2,
+        &[(WindowsOnly, 1)],
+    ),
     (
         "src-tauri/src/cli/tests/startup_message_tests.rs",
         1,
@@ -160,12 +165,6 @@ const INVENTORY: &[Row] = &[
         1,
         0,
         &[(TestOnly, 1)],
-    ),
-    (
-        "src-tauri/src/commands/ac_discovery/project_git.rs",
-        2,
-        2,
-        &[],
     ),
     (
         "src-tauri/src/commands/ac_discovery/tests/discovery.rs",
@@ -216,12 +215,6 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 2)],
     ),
     (
-        "src-tauri/src/commands/entity_creation/repo_clone.rs",
-        2,
-        2,
-        &[],
-    ),
-    (
         "src-tauri/src/commands/entity_creation/tests/stage_e_cross_process.rs",
         1,
         0,
@@ -240,14 +233,13 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 1)],
     ),
     (
-        "src-tauri/src/commands/entity_creation/workgroup_delete.rs",
-        2,
-        2,
-        &[],
-    ),
-    ("src-tauri/src/commands/repos.rs", 1, 1, &[]),
-    (
         "src-tauri/src/commands/repos/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/commands/session/selection_executor/tests/protected_carrier.rs",
         1,
         0,
         &[(TestOnly, 1)],
@@ -270,7 +262,7 @@ const INVENTORY: &[Row] = &[
         0,
         &[(DesktopOpener, 2)],
     ),
-    ("src-tauri/src/config/agency_cache/git.rs", 1, 1, &[]),
+    ("src-tauri/src/process/git/cache.rs", 1, 1, &[]),
     (
         "src-tauri/src/config/agent_config/load_probe_harness.rs",
         3,
@@ -289,7 +281,15 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 2)],
     ),
-    ("src-tauri/src/config/agent_path.rs", 1, 0, &[(Owner, 1)]),
+    ("src-tauri/src/process/git/mutation.rs", 4, 4, &[]),
+    ("src-tauri/src/process/git/read.rs", 3, 3, &[]),
+    (
+        "src-tauri/src/process/git/read/tests.rs",
+        2,
+        0,
+        &[(TestOnly, 2)],
+    ),
+    ("src-tauri/src/process/host/login.rs", 1, 0, &[(Owner, 1)]),
     (
         "src-tauri/src/config/coding_agents_catalog/tests.rs",
         1,
@@ -322,6 +322,12 @@ const INVENTORY: &[Row] = &[
     ),
     (
         "src-tauri/src/config/daemon_pid/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/config/environment/tests.rs",
         1,
         0,
         &[(TestOnly, 1)],
@@ -374,7 +380,7 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 2)],
     ),
-    ("src-tauri/src/config/session_context.rs", 1, 1, &[]),
+    ("src-tauri/src/process/git/context.rs", 1, 1, &[]),
     (
         "src-tauri/src/config/sessions_persistence/tests.rs",
         1,
@@ -429,6 +435,18 @@ const INVENTORY: &[Row] = &[
         0,
         &[(WindowsOnly, 1), (PosixBaseUtility, 1)],
     ),
+    (
+        "src-tauri/src/process/host/credentials/tests.rs",
+        2,
+        0,
+        &[(TestOnly, 2)],
+    ),
+    (
+        "src-tauri/src/process/harness/tests.rs",
+        3,
+        0,
+        &[(TestOnly, 3)],
+    ),
     ("src-tauri/src/process/tests.rs", 2, 0, &[(TestOnly, 2)]),
     (
         "src-tauri/src/pty/credentials/tests.rs",
@@ -436,20 +454,30 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 4)],
     ),
-    ("src-tauri/src/pty/docker_runtime/execution.rs", 1, 1, &[]),
-    ("src-tauri/src/pty/git_watcher.rs", 1, 1, &[]),
+    ("src-tauri/src/process/docker/execution.rs", 1, 1, &[]),
+    (
+        "src-tauri/src/process/git/watcher.rs",
+        2,
+        1,
+        &[(WindowsOnly, 1)],
+    ),
+    (
+        "src-tauri/src/process/git/watcher/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
     (
         "src-tauri/src/pty/git_watcher/tests.rs",
         1,
         0,
         &[(TestOnly, 1)],
     ),
-    ("src-tauri/src/pty/job/tests.rs", 2, 0, &[(TestOnly, 2)]),
     (
-        "src-tauri/src/pty/local_backend/git_guard.rs",
-        1,
+        "src-tauri/src/process/host/job/tests.rs",
+        2,
         0,
-        &[(WindowsOnly, 1)],
+        &[(TestOnly, 2)],
     ),
     (
         "src-tauri/src/pty/local_backend/launch.rs",
@@ -475,7 +503,8 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 1)],
     ),
-    ("src-tauri/src/pty/remote_watcher/gh_command.rs", 2, 2, &[]),
+    ("src-tauri/src/process/git/remote.rs", 1, 1, &[]),
+    ("src-tauri/src/process/github.rs", 1, 1, &[]),
     (
         "src-tauri/src/pty/terminal_snapshot/tests/acceptance/api_cancellation.rs",
         1,

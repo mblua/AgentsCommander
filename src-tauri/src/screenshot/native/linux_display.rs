@@ -61,7 +61,7 @@ pub struct DisplayEnvSnapshot {
 /// that exists but is a regular file or directory is not a socket.
 #[cfg(target_os = "linux")]
 pub fn display_env_snapshot() -> DisplayEnvSnapshot {
-    let default_socket_present = std::env::var_os("XDG_RUNTIME_DIR")
+    let default_socket_present = crate::config::environment::xdg_runtime_dir()
         .map(std::path::PathBuf::from)
         .and_then(|dir| std::fs::metadata(dir.join("wayland-0")).ok())
         .map(|meta| {
@@ -70,9 +70,9 @@ pub fn display_env_snapshot() -> DisplayEnvSnapshot {
         })
         .unwrap_or(false);
     DisplayEnvSnapshot {
-        xdg_session_type: std::env::var("XDG_SESSION_TYPE").ok(),
-        wayland_display: std::env::var("WAYLAND_DISPLAY").ok(),
-        wayland_socket: std::env::var("WAYLAND_SOCKET").ok(),
+        xdg_session_type: crate::config::environment::xdg_session_type().ok(),
+        wayland_display: crate::config::environment::wayland_display().ok(),
+        wayland_socket: crate::config::environment::wayland_socket().ok(),
         default_socket_present,
     }
 }

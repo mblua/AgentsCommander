@@ -276,7 +276,9 @@ async fn native_publication_readback_fault_retains_pending_then_confirms_same_ep
             confirmed: false,
         });
         let mut next = Some(pending);
-        let write = super::super::PreparedSessionsWrite::prepare(temp.path(), &rows).unwrap();
+        let write = super::super::write::snapshot_store()
+            .prepare(temp.path(), &rows)
+            .unwrap();
         let renamed = manager
             .with_current_carrier_snapshot(&permit, |_| {
                 super::super::rename_and_publish(
@@ -351,14 +353,14 @@ async fn native_rename_failure_keeps_epoch_checkpoint_and_own_pending_payload() 
         confirmed: false,
     });
     let mut next = Some(pending);
-    let write = super::super::PreparedSessionsWrite::prepare(temp.path(), &[]).unwrap();
+    let write = super::super::write::snapshot_store()
+        .prepare(temp.path(), &[])
+        .unwrap();
     let attempt = manager
         .with_current_carrier_snapshot(&permit, |_| {
             // Process-wide contention prevents rename even for a private fixture.
             {
-                let leaf = super::super::write::SAVE_SESSIONS_LOCK
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
+                let leaf = super::super::write::snapshot_store().lock_snapshot();
                 let contended = super::super::rename_and_publish(
                     temp.path(),
                     &slot,

@@ -361,6 +361,9 @@ async fn running_coordinator(
 ) -> (tauri::App<tauri::test::MockRuntime>, SelectionCoordinator) {
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(monitor)
         .manage(coordinator.clone())

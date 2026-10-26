@@ -172,6 +172,9 @@ async fn live_public_session_still_uses_coordinator() {
     assert_eq!(monitor.active_agent_groups(), 1);
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(Arc::clone(&monitor))
@@ -262,6 +265,9 @@ async fn exited_row_still_uses_coordinator() {
     register_running(monitor.as_ref(), session.id, root);
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(Arc::clone(&monitor))
@@ -347,6 +353,9 @@ async fn orphan_retry_runs_off_the_async_runtime() {
     ))));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(pty)
         .manage(Arc::clone(&monitor))

@@ -1,9 +1,9 @@
 use super::{
     acquire_config_file_write_lock, acquire_fresh_config_stage_with_sequence,
-    lock_local_config_writes, log_unverified_cleanup_refusal, next_staging_sequence,
+    lock_local_config_writes, log_unverified_cleanup_refusal, next_shared_staging_sequence,
     publish_temp_config_guarded, read_pair_reservation, validate_pair_paths,
     validate_source_publication_children, ConfigPairCleanup, ConfigWriterActive, PairTargetGuard,
-    CONFIG_LOCK_TIMEOUT, STAGING_SEQUENCE,
+    CONFIG_LOCK_TIMEOUT,
 };
 use serde_json::Map;
 use serde_json::Value;
@@ -353,7 +353,7 @@ pub(super) fn publish_prepared_pair_image_with_report(
         after,
         guard,
         report_cleanup_refusal,
-        &mut || next_staging_sequence(&STAGING_SEQUENCE),
+        &mut next_shared_staging_sequence,
         &|file, bytes| {
             file.write_all(bytes)
                 .map_err(|e| PreparedPairError::Io(e.to_string()))

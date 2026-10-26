@@ -137,7 +137,7 @@ pub(super) fn run_cli_request(input: &CliRequest) -> Result<UiAutomationResponse
 }
 
 pub fn resolve_enabled_from_cli_or_env(ui_automation: bool) -> Result<bool, String> {
-    let env_enabled = std::env::var(ENV_ENABLE)
+    let env_enabled = crate::config::environment::ui_automation_enable(ENV_ENABLE)
         .ok()
         .is_some_and(|value| value == "1");
     let requested = ui_automation || env_enabled;

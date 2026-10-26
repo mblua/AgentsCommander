@@ -30,6 +30,9 @@ pub(super) async fn assert_cancelled_critical_waiter_releases_key(
         .expect("create critical-cancellation fixture");
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(manager)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build critical-cancellation app");
@@ -144,6 +147,9 @@ async fn assert_critical_completion_observed_after_release(shutdown_first: bool)
     let token = CancellationToken::new();
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), token.clone());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(manager)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build critical-release-order app");
@@ -289,6 +295,9 @@ async fn restore_barrier_start_acknowledgement_keeps_admission_until_release() {
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(manager)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build restore admission test app");

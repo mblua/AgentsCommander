@@ -834,9 +834,10 @@ fn monitor_writes_the_startup_verdict_for_a_silent_child_and_keeps_watching() {
 
     let handle = watch_child(Arc::clone(&record), probe.probe());
     assert!(
-        wait_until(Duration::from_secs(2), || record
-            .startup_reported
-            .load(Ordering::Relaxed)),
+        wait_until(Duration::from_secs(2), || {
+            record.startup_reported.load(Ordering::Relaxed)
+                && record.stall_reported.load(Ordering::Relaxed)
+        }),
         "the startup verdict must land at the deadline"
     );
     assert!(record.stall_reported.load(Ordering::Relaxed));

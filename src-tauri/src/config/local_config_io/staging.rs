@@ -83,8 +83,11 @@ pub(super) fn publish_pair_side_with_publish(
 }
 
 pub(super) const MAX_STAGING_ATTEMPTS: usize = 64;
-pub(super) static STAGING_SEQUENCE: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static STAGING_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(super) fn next_shared_staging_sequence() -> Result<u64, PreparedPairError> {
+    next_staging_sequence(&STAGING_SEQUENCE)
+}
 
 pub(super) fn next_staging_sequence(
     sequence: &std::sync::atomic::AtomicU64,
@@ -110,9 +113,7 @@ pub(super) fn acquire_fresh_config_stage(
     path: &Path,
     guard: &PairTargetGuard<'_>,
 ) -> Result<(PathBuf, std::fs::File), PreparedPairError> {
-    acquire_fresh_config_stage_with_sequence(path, guard, &mut || {
-        next_staging_sequence(&STAGING_SEQUENCE)
-    })
+    acquire_fresh_config_stage_with_sequence(path, guard, &mut next_shared_staging_sequence)
 }
 
 // The private seam selects only a sequence; it cannot supply another path or

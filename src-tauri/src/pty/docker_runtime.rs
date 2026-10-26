@@ -12,58 +12,33 @@ use crate::pty::container_runtime::{
     DEFAULT_BRIDGE_ENTRYPOINT, SESSION_LABEL,
 };
 
-use command::{
-    normalized_app_error_text, DockerCommandOutput, DockerCommandOwnership,
-    DockerCommandShutdownBehavior, RetainedDockerStartCleanup, RetainedDockerStartCleanupRegistry,
-    RetainedDockerStartCleanupState, DOCKER_COMMAND_FINALIZATION_RESERVE, DOCKER_COMMAND_TIMEOUT,
-};
+use crate::process::docker::DockerProcessState;
 #[cfg(test)]
-use command::{
+use crate::process::docker::{
     read_capped_to_end, redact_command_bytes, ActiveDockerReaderGuard, CappedCommandStream,
     DockerCommandOwner, ScriptedDockerCommandResult, DOCKER_COMMAND_OUTPUT_BYTE_LIMIT,
+};
+use crate::process::docker::{
+    DockerCommandOutput, DockerCommandShutdownBehavior, DOCKER_COMMAND_FINALIZATION_RESERVE,
+    DOCKER_COMMAND_TIMEOUT,
+};
+use command::{
+    normalized_app_error_text, RetainedDockerStartCleanup, RetainedDockerStartCleanupRegistry,
+    RetainedDockerStartCleanupState,
 };
 
 mod command;
 mod execution;
 
-pub use command::DockerCommandSpec;
+#[cfg(test)]
+pub(crate) use crate::process::docker::DockerCommandReaderReleaseForTest;
+pub use crate::process::docker::DockerCommandSpec;
 
 #[derive(Clone)]
 pub struct DockerRuntime {
     program: String,
-    command_ownership: Arc<DockerCommandOwnership>,
+    process_state: DockerProcessState,
     retained_start_cleanups: Arc<RetainedDockerStartCleanupRegistry>,
-    #[cfg(test)]
-    recorded_commands: Option<std::sync::Arc<std::sync::Mutex<Vec<DockerCommandSpec>>>>,
-    #[cfg(test)]
-    scripted_results: Option<Arc<Mutex<std::collections::VecDeque<ScriptedDockerCommandResult>>>>,
-    #[cfg(test)]
-    hang_readers: Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(test)]
-    active_children: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    #[cfg(test)]
-    active_readers: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-}
-
-#[cfg(test)]
-pub(crate) struct DockerCommandReaderReleaseForTest {
-    gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
-}
-
-#[cfg(test)]
-impl DockerCommandReaderReleaseForTest {
-    pub(crate) fn release(&self) {
-        let (released, changed) = &*self.gate;
-        *released.lock().unwrap_or_else(|error| error.into_inner()) = true;
-        changed.notify_all();
-    }
-}
-
-#[cfg(test)]
-impl Drop for DockerCommandReaderReleaseForTest {
-    fn drop(&mut self) {
-        self.release();
-    }
 }
 
 impl Default for DockerRuntime {
@@ -76,18 +51,8 @@ impl DockerRuntime {
     pub fn new() -> Self {
         Self {
             program: "docker".to_string(),
-            command_ownership: Arc::new(DockerCommandOwnership::default()),
+            process_state: DockerProcessState::default(),
             retained_start_cleanups: Arc::new(RetainedDockerStartCleanupRegistry::default()),
-            #[cfg(test)]
-            recorded_commands: None,
-            #[cfg(test)]
-            scripted_results: None,
-            #[cfg(test)]
-            hang_readers: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            #[cfg(test)]
-            active_children: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            #[cfg(test)]
-            active_readers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -95,13 +60,8 @@ impl DockerRuntime {
     pub(crate) fn with_program(program: impl Into<String>) -> Self {
         Self {
             program: program.into(),
-            command_ownership: Arc::new(DockerCommandOwnership::default()),
+            process_state: DockerProcessState::default(),
             retained_start_cleanups: Arc::new(RetainedDockerStartCleanupRegistry::default()),
-            recorded_commands: None,
-            scripted_results: None,
-            hang_readers: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            active_children: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            active_readers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -112,13 +72,8 @@ impl DockerRuntime {
     ) -> Self {
         Self {
             program: program.into(),
-            command_ownership: Arc::new(DockerCommandOwnership::default()),
+            process_state: DockerProcessState::with_recorded_commands(recorded_commands),
             retained_start_cleanups: Arc::new(RetainedDockerStartCleanupRegistry::default()),
-            recorded_commands: Some(recorded_commands),
-            scripted_results: None,
-            hang_readers: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            active_children: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            active_readers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -130,26 +85,19 @@ impl DockerRuntime {
     ) -> Self {
         Self {
             program: program.into(),
-            command_ownership: Arc::new(DockerCommandOwnership::default()),
+            process_state: DockerProcessState::with_scripted_commands(recorded_commands, results),
             retained_start_cleanups: Arc::new(RetainedDockerStartCleanupRegistry::default()),
-            recorded_commands: Some(recorded_commands),
-            scripted_results: Some(Arc::new(Mutex::new(results.into()))),
-            hang_readers: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            active_children: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            active_readers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
     #[cfg(test)]
     fn active_child_count(&self) -> usize {
-        self.active_children
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.process_state.active_child_count()
     }
 
     #[cfg(test)]
     pub(crate) fn active_reader_count(&self) -> usize {
-        self.active_readers
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.process_state.active_reader_count()
     }
 
     #[cfg(test)]
@@ -159,48 +107,15 @@ impl DockerRuntime {
         program: impl Into<String>,
         last_error: impl Into<String>,
     ) -> DockerCommandReaderReleaseForTest {
-        let ready = Arc::new(std::sync::Barrier::new(3));
-        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
-        let spawn_reader = |name: &'static str| {
-            let ready = Arc::clone(&ready);
-            let gate = Arc::clone(&gate);
-            let active = Arc::clone(&self.active_readers);
-            std::thread::Builder::new()
-                .name(name.to_string())
-                .spawn(move || {
-                    let _active = ActiveDockerReaderGuard::new(active);
-                    ready.wait();
-                    let (released, changed) = &*gate;
-                    let mut released = released.lock().unwrap_or_else(|error| error.into_inner());
-                    while !*released {
-                        released = changed
-                            .wait(released)
-                            .unwrap_or_else(|error| error.into_inner());
-                    }
-                    Ok(CappedCommandStream::default())
-                })
-                .expect("spawn deterministic blocked Docker reader")
-        };
-        let owner = DockerCommandOwner {
-            child: None,
-            stdout: Some(spawn_reader("blocked-docker-stdout")),
-            stderr: Some(spawn_reader("blocked-docker-stderr")),
-            session_id: None,
-            reason,
-            program: program.into(),
-            active_child: None,
-        };
-        ready.wait();
-        self.command_ownership
-            .retain(owner, Some(last_error.into()));
-        DockerCommandReaderReleaseForTest { gate }
+        self.process_state
+            .retain_blocked_command_readers_for_test(reason, program, last_error)
     }
 
     #[cfg(test)]
     pub(crate) fn install_command_retry_gate_for_test(
         &self,
     ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
-        self.command_ownership.install_retry_gate_for_test()
+        self.process_state.install_command_retry_gate_for_test()
     }
 
     pub fn build_run_command(
@@ -803,7 +718,7 @@ impl ContainerRuntime for DockerRuntime {
             self.attempt_retained_start_cleanup(entry, control);
         }
         if Instant::now() < deadline {
-            self.command_ownership.retry_until(deadline);
+            self.process_state.retry_until(deadline);
         }
     }
 
@@ -835,7 +750,21 @@ impl ContainerRuntime for DockerRuntime {
                 }
             })
             .collect::<Vec<_>>();
-        contexts.extend(self.command_ownership.retained_contexts());
+        contexts.extend(
+            self.process_state
+                .retained_contexts()
+                .into_iter()
+                .map(|context| RetainedContainerOwnerContext {
+                    owner: "dockerCommand",
+                    session_id: context.session_id,
+                    reason: context.reason,
+                    program: Some(context.program),
+                    runtime_handle: None,
+                    state: context.state,
+                    in_flight: context.in_flight,
+                    last_error: context.last_error,
+                }),
+        );
         contexts.sort_by_key(RetainedContainerOwnerContext::diagnostic);
         contexts
     }

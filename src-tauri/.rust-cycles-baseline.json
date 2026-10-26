@@ -8,22 +8,14 @@
   },
   "moduleCycles": [
     {
-      "id": "2bb61502cb40f4a6",
+      "id": "38cac35c68baf95e",
       "members": [
-        "agentscommander_lib::api::message_store",
-        "agentscommander_lib::co_managed",
-        "agentscommander_lib::commands::pty",
-        "agentscommander_lib::commands::session",
         "agentscommander_lib::pty::container_backend",
         "agentscommander_lib::pty::git_watcher",
-        "agentscommander_lib::pty::inject",
         "agentscommander_lib::pty::local_backend",
         "agentscommander_lib::pty::manager",
-        "agentscommander_lib::pty::menu_guard",
         "agentscommander_lib::session::manager",
-        "agentscommander_lib::session::selection",
-        "agentscommander_lib::telegram::bridge",
-        "agentscommander_lib::telegram::manager"
+        "agentscommander_lib::session::selection"
       ]
     }
   ],

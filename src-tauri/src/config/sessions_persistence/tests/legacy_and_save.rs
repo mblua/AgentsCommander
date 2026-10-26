@@ -413,3 +413,161 @@ async fn aggregate_persistence_snapshot_never_observes_half_of_removal_and_selec
     }
     writer.await.unwrap();
 }
+
+#[test]
+fn characterize_3254_p03_order() {
+    use sha2::{Digest, Sha256};
+    crate::logging::test_install_logger();
+    let temp = tempfile::tempdir().unwrap();
+    let tag = uuid::Uuid::new_v4().to_string();
+    let duplicate = format!("p03-duplicate-{tag}");
+    let retained = format!("p03-retained-{tag}");
+    let temporary = format!("[temp] p03-{tag}");
+    let source = format!(r"\\?\C:\p03\{tag}\retained");
+    let loser_source = format!("C:/p03/{tag}/loser-source");
+    let loser_prefix = format!("loser-prefix-{tag}");
+    let input = serde_json::json!([
+        {"name": temporary, "shell": "cmd", "shellArgs": [],
+         "workingDirectory": format!("C:/p03/{tag}/temp")},
+        {"name": duplicate, "shell": "winner-shell", "shellArgs": ["winner-arg"],
+         "workingDirectory": format!("C:/p03/{tag}/winner"), "wasActive": true,
+         "codingAgentBindingId": "11111111-1111-4111-8111-111111111111",
+         "gitRepos": [{"label": "winner-label", "sourcePath": "C:/winner-source"}]},
+        {"name": duplicate, "shell": "loser-shell", "shellArgs": [],
+         "workingDirectory": format!("C:/p03/{tag}/loser"),
+         "gitBranchSource": loser_source, "gitBranchPrefix": loser_prefix},
+        {"name": retained, "shell": "cmd", "shellArgs": [],
+         "workingDirectory": source, "gitBranchSource": source,
+         "gitBranchPrefix": format!("retained-prefix-{tag}"),
+         "codingAgentBindingId": "22222222-2222-4222-8222-222222222222"}
+    ]);
+    let bytes = serde_json::to_vec_pretty(&input).unwrap();
+    let path = temp.path().join(format!("p03-{tag}.json"));
+    std::fs::write(&path, &bytes).unwrap();
+    let before = crate::logging::test_tee_snapshot().len();
+    let rows = super::super::load_sessions_from_path_with_settings(&path, None);
+    let logs = crate::logging::test_tee_snapshot();
+    let messages: Vec<_> = logs[before..]
+        .iter()
+        .map(|line| {
+            let mut parts = line.splitn(3, ' ');
+            let level = parts.next().unwrap();
+            let _target = parts.next().unwrap();
+            (level, parts.next().unwrap())
+        })
+        .collect();
+    let filtered = format!("[sessions] Filtering out temp session '{temporary}' from persistence");
+    let dropped = format!("[sessions] Dropping duplicate session by name '{duplicate}'");
+    let upgraded = format!(
+        "[sessions] Upgrading legacy single-repo session '{retained}' → \
+         git_repos[1]={{label:retained-prefix-{tag}, source:{source}}}"
+    );
+    assert_eq!(rows.len(), 2);
+    let position = |level, message: &str| {
+        messages
+            .iter()
+            .position(|entry| *entry == (level, message))
+            .unwrap()
+    };
+    assert!(position("WARN", &filtered) < position("WARN", &dropped));
+    assert!(position("WARN", &dropped) < position("INFO", &upgraded));
+    assert!(messages.contains(&("INFO", "[sessions] Deduplicated: 3 → 2 sessions")));
+    assert!(!messages.iter().any(|(_, message)| {
+        message.contains("Upgrading legacy")
+            && (message.contains(&loser_source) || message.contains(&loser_prefix))
+    }));
+    assert_eq!(rows[0].name, duplicate);
+    assert_eq!(rows[0].shell, "winner-shell");
+    assert_eq!(rows[0].shell_args, ["winner-arg"]);
+    assert!(rows[0].was_active);
+    assert_eq!(rows[0].git_repos[0].label, "winner-label");
+    assert_eq!(rows[0].git_repos[0].source_path, "C:/winner-source");
+    assert_eq!(rows[1].name, retained);
+    let expected_path = if cfg!(windows) {
+        format!(r"C:\p03\{tag}\retained")
+    } else {
+        source.clone()
+    };
+    assert_eq!(rows[1].working_directory, expected_path);
+    assert_eq!(rows[1].git_repos[0].source_path, rows[1].working_directory);
+    assert_eq!(rows[1].git_repos[0].label, format!("retained-prefix-{tag}"));
+    for (row, ordinal) in rows.iter().zip([1, 3]) {
+        assert!(row.git_branch_source.is_none());
+        assert!(row.git_branch_prefix.is_none());
+        let origin = row.coding_agent_binding_origin.as_ref().unwrap();
+        assert_eq!(
+            origin["rawFileSHA256"],
+            format!("{:x}", Sha256::digest(&bytes))
+        );
+        assert_eq!(origin["sessionsPath"], path.to_string_lossy().as_ref());
+        assert_eq!(origin["originalOrdinal"], ordinal);
+    }
+    let raw = super::super::load_sessions_raw_from_path(&path);
+    assert_eq!(raw.len(), 4);
+    assert_eq!(raw[0].name, temporary);
+    assert_eq!(
+        raw[2].git_branch_source.as_deref(),
+        Some(loser_source.as_str())
+    );
+    assert_eq!(
+        raw[2].git_branch_prefix.as_deref(),
+        Some(loser_prefix.as_str())
+    );
+    assert_eq!(raw[3].working_directory, source);
+    assert_eq!(raw[3].git_branch_source.as_deref(), Some(source.as_str()));
+    assert_eq!(
+        raw[3].git_branch_prefix,
+        Some(format!("retained-prefix-{tag}"))
+    );
+    assert!(raw[3].git_repos.is_empty());
+}
+
+#[test]
+fn characterize_3254_p04_snapshot_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    crate::config::sessions_persistence::save_sessions_to_dir(temp.path(), &[]).unwrap();
+    let path = temp.path().join("sessions.json");
+    assert_eq!(std::fs::read(&path).unwrap(), b"[]");
+    let rows = [PersistedSession {
+        name: "p04-fixed".into(),
+        shell: "cmd".into(),
+        shell_args: vec!["/Q".into()],
+        working_directory: "C:/p04".into(),
+        ..Default::default()
+    }];
+    crate::config::sessions_persistence::save_sessions_to_dir(temp.path(), &rows).unwrap();
+    let expected = br#"[
+  {
+    "name": "p04-fixed",
+    "shell": "cmd",
+    "shellArgs": [
+      "/Q"
+    ],
+    "workingDirectory": "C:/p04",
+    "wasActive": false,
+    "gitRepos": [],
+    "isCoordinator": false,
+    "isRootAgent": false,
+    "wasDetached": false,
+    "startFreshOnRestore": false
+  }
+]"#;
+    let actual = std::fs::read(&path).unwrap();
+    assert_eq!(actual, expected);
+    assert!(!actual.ends_with(b"\n"));
+}
+
+#[test]
+fn characterize_3254_p04_save_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    let occupied = temp.path().join("occupied");
+    std::fs::write(&occupied, b"p04 untouched").unwrap();
+    let suffix = std::fs::create_dir_all(&occupied).unwrap_err().to_string();
+    let error =
+        crate::config::sessions_persistence::save_sessions_to_dir(&occupied, &[]).unwrap_err();
+    assert_eq!(
+        error,
+        format!("Failed to create config directory: {suffix}")
+    );
+    assert_eq!(std::fs::read(&occupied).unwrap(), b"p04 untouched");
+}

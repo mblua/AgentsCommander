@@ -46,6 +46,9 @@ async fn user_switch_to_already_selected_session_publishes_view_requested() {
         .record_route(session.id, SessionBackendKind::LocalProcess);
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(DetachedSessionsState::default())
@@ -153,6 +156,9 @@ async fn user_switch_to_detached_target_publishes_no_view_requested() {
     let detached = DetachedSessionsState::default();
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(Arc::clone(&detached))
@@ -254,6 +260,9 @@ async fn user_switch_to_session_without_live_pty_publishes_no_view_requested() {
         .record_route(live_session.id, SessionBackendKind::LocalProcess);
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(DetachedSessionsState::default())
@@ -350,6 +359,9 @@ async fn route_loss_publishes_destroyed_exited_row_and_one_dormant_selection() {
     let broadcaster = WsBroadcaster::new();
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .manage(Arc::clone(&pty))
         .manage(DetachedSessionsState::default())
