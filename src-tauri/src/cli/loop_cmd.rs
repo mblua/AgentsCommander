@@ -336,7 +336,7 @@ fn resolve_prompt(prompt: Option<&str>, prompt_file: Option<&Path>) -> Result<St
 }
 
 fn read_prompt_file(path: &Path) -> Result<String, String> {
-    let metadata = std::fs::metadata(path)
+    let metadata = crate::filesystem::documents::loop_prompt_metadata(path)
         .map_err(|e| format!("Failed to read prompt file '{}': {}", path.display(), e))?;
     if metadata.len() > MAX_LOOP_PROMPT_FILE_BYTES {
         return Err(format!(
@@ -345,7 +345,7 @@ fn read_prompt_file(path: &Path) -> Result<String, String> {
             MAX_LOOP_PROMPT_FILE_BYTES
         ));
     }
-    let bytes = std::fs::read(path)
+    let bytes = crate::filesystem::documents::read_loop_prompt(path)
         .map_err(|e| format!("Failed to read prompt file '{}': {}", path.display(), e))?;
     let text = String::from_utf8(bytes)
         .map_err(|_| format!("Prompt file '{}' is not valid UTF-8", path.display()))?;

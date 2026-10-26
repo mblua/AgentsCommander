@@ -151,3 +151,7 @@ pub(crate) fn visit_source_inventory_children(
     }
     Ok(())
 }
+
+pub(crate) fn canonical_refresh_project(path: &Path) -> io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}

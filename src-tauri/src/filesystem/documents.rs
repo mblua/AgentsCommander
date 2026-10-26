@@ -57,3 +57,11 @@ pub(crate) fn visit_local_template_entries<B>(
     }
     Ok(std::ops::ControlFlow::Continue(()))
 }
+
+pub(crate) fn loop_prompt_metadata(path: &Path) -> io::Result<std::fs::Metadata> {
+    std::fs::metadata(path)
+}
+
+pub(crate) fn read_loop_prompt(path: &Path) -> io::Result<Vec<u8>> {
+    std::fs::read(path)
+}

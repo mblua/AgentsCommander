@@ -341,6 +341,7 @@ agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib::config
 agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib::config::projects
 agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib::config::settings
+agentscommander_lib::cli::create_agent_matrix -> agentscommander_lib::filesystem::projects
 agentscommander_lib::cli::harness -> agentscommander_lib::config
 agentscommander_lib::cli::harness -> agentscommander_lib::config::environment
 agentscommander_lib::cli::harness -> agentscommander_lib::config::instance_artifacts
@@ -364,6 +365,7 @@ agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::config::
 agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::config::root_agent
 agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::config::settings
 agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::config::teams
+agentscommander_lib::cli::list_peers::discovery -> agentscommander_lib::filesystem::projects
 agentscommander_lib::cli::list_peers::snapshot -> agentscommander_lib
 agentscommander_lib::cli::list_peers::snapshot -> agentscommander_lib::cli::list_peers
 agentscommander_lib::cli::list_peers::snapshot -> agentscommander_lib::cli::list_peers::discovery
@@ -383,6 +385,7 @@ agentscommander_lib::cli::loop_cmd -> agentscommander_lib
 agentscommander_lib::cli::loop_cmd -> agentscommander_lib::cli::workgroup
 agentscommander_lib::cli::loop_cmd -> agentscommander_lib::config::environment
 agentscommander_lib::cli::loop_cmd -> agentscommander_lib::config::loops
+agentscommander_lib::cli::loop_cmd -> agentscommander_lib::filesystem::documents
 agentscommander_lib::cli::new_project -> agentscommander_lib
 agentscommander_lib::cli::new_project -> agentscommander_lib::cli::workgroup
 agentscommander_lib::cli::new_project -> agentscommander_lib::config::coding_agents_catalog
@@ -546,6 +549,7 @@ agentscommander_lib::cli::workgroup -> agentscommander_lib::config::environment
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::projects
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::seed_manifest
 agentscommander_lib::cli::workgroup -> agentscommander_lib::config::settings
+agentscommander_lib::cli::workgroup -> agentscommander_lib::filesystem::projects
 agentscommander_lib::cli::workgroup -> agentscommander_lib::phone::messaging
 agentscommander_lib::cli::workgroup::activity -> agentscommander_lib::cli::workgroup
 agentscommander_lib::cli::workgroup::activity -> agentscommander_lib::commands::entity_creation
@@ -572,6 +576,7 @@ agentscommander_lib::co_managed::route -> agentscommander_lib::config::co_manage
 agentscommander_lib::co_managed::route -> agentscommander_lib::config::root_agent
 agentscommander_lib::co_managed::route -> agentscommander_lib::config::settings
 agentscommander_lib::co_managed::route -> agentscommander_lib::config::teams
+agentscommander_lib::co_managed::route -> agentscommander_lib::filesystem::projects
 agentscommander_lib::co_managed::route -> agentscommander_lib::network
 agentscommander_lib::co_managed::route -> agentscommander_lib::pty::input_activity
 agentscommander_lib::co_managed::route -> agentscommander_lib::reader_demand
