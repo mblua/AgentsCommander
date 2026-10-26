@@ -451,11 +451,12 @@ async fn create_session_inner_retires_the_spawn_mark_on_spawn_failure() {
 
 #[test]
 fn restart_session_inner_probes_archive_before_destroying_session() {
-    let source = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/commands/session.rs"
-    ))
-    .expect("read session.rs");
+    let sources = super::support::session_sources();
+    assert!(super::support::source_map_complete(&sources));
+    let source = sources
+        .get("session/restart/execution.rs")
+        .or_else(|| sources.get("session.rs"))
+        .expect("restart execution source");
     let probe = source
         .find("crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;")
         .expect("restart probe call");
