@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::gh_command::git_command;
 use crate::process::github::{self, QueryError};
 
 use super::{
@@ -215,13 +214,5 @@ pub(crate) async fn spawn_gh(spec: GhCommandSpec) -> Result<GhCallOutput, Failur
 }
 
 pub(crate) async fn run_local_git(path: String, args: Vec<String>) -> Result<String, String> {
-    let mut command = git_command(&path, &args);
-    match tokio::time::timeout(CALL_TIMEOUT, command.output()).await {
-        Ok(Ok(output)) if output.status.success() => {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        }
-        Ok(Ok(output)) => Err(String::from_utf8_lossy(&output.stderr).to_string()),
-        Ok(Err(error)) => Err(error.to_string()),
-        Err(_) => Err("timeout".to_string()),
-    }
+    crate::process::git::remote::run_local_git(path, args, CALL_TIMEOUT).await
 }

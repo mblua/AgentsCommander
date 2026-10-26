@@ -136,30 +136,3 @@ pub(crate) fn is_sha40(value: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
-
-/// The only place a `git` `Command` is constructed. Pure, like
-/// the GitHub owner constructor. Gate 2 of `detect_git_status` (`GIT_CEILING_DIRECTORIES`)
-/// lives here so a repo whose `.git` exists but is corrupt cannot walk up and
-/// answer with an unrelated ancestor's data. Gate 1 (the async `.git` metadata
-/// check) runs once per path in the caller, before any command is built.
-pub(crate) fn git_command(path: &str, args: &[String]) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new("git");
-    command
-        .arg("-C")
-        .arg(path)
-        .arg("--no-optional-locks")
-        .args(args)
-        .kill_on_drop(true);
-    crate::pty::credentials::scrub_credentials_from_tokio_command(&mut command);
-    crate::config::agent_path::apply_search_path_to_tokio_command(&mut command);
-
-    if let Some(parent) = Path::new(path).parent() {
-        if let Ok(ceiling) = std::env::join_paths(std::iter::once(parent)) {
-            command.env("GIT_CEILING_DIRECTORIES", ceiling);
-        }
-    }
-
-    #[cfg(windows)]
-    std::os::windows::process::CommandExt::creation_flags(command.as_std_mut(), CREATE_NO_WINDOW);
-    command
-}

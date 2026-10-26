@@ -10,10 +10,11 @@ use uuid::Uuid;
 
 #[cfg(test)]
 pub use crate::process::host::credentials::scrub_credentials_from_std_command;
+#[cfg(test)]
+pub use crate::process::host::credentials::scrub_credentials_from_tokio_command;
 pub use crate::process::host::credentials::{
-    scrub_credentials_from_tokio_command, CREDENTIAL_ENV_KEYS, ENV_AGENTSCOMMANDER_BINARY,
-    ENV_AGENTSCOMMANDER_BINARY_PATH, ENV_AGENTSCOMMANDER_LOCAL_DIR, ENV_AGENTSCOMMANDER_ROOT,
-    ENV_AGENTSCOMMANDER_TOKEN,
+    CREDENTIAL_ENV_KEYS, ENV_AGENTSCOMMANDER_BINARY, ENV_AGENTSCOMMANDER_BINARY_PATH,
+    ENV_AGENTSCOMMANDER_LOCAL_DIR, ENV_AGENTSCOMMANDER_ROOT, ENV_AGENTSCOMMANDER_TOKEN,
 };
 
 #[derive(Clone, PartialEq, Eq)]
