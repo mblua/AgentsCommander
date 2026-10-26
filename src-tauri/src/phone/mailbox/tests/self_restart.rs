@@ -178,7 +178,7 @@ async fn self_restart_driver_restarts_uses_new_id_and_cleans_pending() {
     let original_id = Uuid::new_v4();
     let new_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(original_id);
+    pending.seed_legacy(original_id);
     let temp = tempfile::TempDir::new().unwrap();
     std::fs::write(temp.path().join("SELF-HANDOFF.md"), "restart resume notes").unwrap();
 
@@ -270,7 +270,7 @@ async fn self_restart_driver_restarts_uses_new_id_and_cleans_pending() {
         *boundary_events.lock().unwrap(),
         vec![(new_id, SelfClearBoundary::ContentInjected)]
     );
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 /// #1940 - the self-switch driver takes the shared selection operation turn only
@@ -289,7 +289,7 @@ async fn issue_1937_self_switch_turn() {
     let source_id = Uuid::new_v4();
     let new_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(source_id);
+    pending.seed_legacy(source_id);
     let temp = tempfile::TempDir::new().unwrap();
     std::fs::write(temp.path().join("SELF-HANDOFF.md"), "switch resume notes").unwrap();
 
@@ -437,16 +437,12 @@ async fn issue_1937_self_switch_turn() {
         acquired_index < inject_index,
         "the turn must be released before the phase-2 inject: {log:?}"
     );
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 
     // Persist failure: no restart is attempted and the pending alias is cleaned.
     let source_persist_failure = Uuid::new_v4();
     let pending_persist_failure = Arc::new(crate::PendingSelfClear::default());
-    pending_persist_failure
-        .0
-        .lock()
-        .unwrap()
-        .insert(source_persist_failure);
+    pending_persist_failure.seed_legacy(source_persist_failure);
     let restart_calls_persist_failure = Arc::new(Mutex::new(0usize));
     let restart_seen = Arc::clone(&restart_calls_persist_failure);
     let persist_failure = move |_cwd: PathBuf, _agent: String, _profile: String| async move {
@@ -483,16 +479,12 @@ async fn issue_1937_self_switch_turn() {
         0,
         "a failed persist must never restart"
     );
-    assert!(pending_persist_failure.0.lock().unwrap().is_empty());
+    assert!(pending_persist_failure.is_empty());
 
     // Restart failure: the persisted pair survives and the pending alias is cleaned.
     let source_restart_failure = Uuid::new_v4();
     let pending_restart_failure = Arc::new(crate::PendingSelfClear::default());
-    pending_restart_failure
-        .0
-        .lock()
-        .unwrap()
-        .insert(source_restart_failure);
+    pending_restart_failure.seed_legacy(source_restart_failure);
     let persisted_restart_failure = Arc::new(Mutex::new(None::<(String, String)>));
     let persisted_for_restart_failure = Arc::clone(&persisted_restart_failure);
     let persist_ok = move |_cwd: PathBuf, agent: String, profile: String| {
@@ -539,7 +531,7 @@ async fn issue_1937_self_switch_turn() {
         Some(("codex".into(), "B".into())),
         "a failed restart must preserve the persisted pair"
     );
-    assert!(pending_restart_failure.0.lock().unwrap().is_empty());
+    assert!(pending_restart_failure.is_empty());
 }
 
 /// T22 - the full absent-profile chain at the seam: recipe `None` encodes to `""`, the
@@ -550,7 +542,7 @@ async fn self_restart_driver_passes_empty_sentinel_when_profile_absent() {
     let original_id = Uuid::new_v4();
     let new_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(original_id);
+    pending.seed_legacy(original_id);
     let temp = tempfile::TempDir::new().unwrap();
     std::fs::write(temp.path().join("SELF-HANDOFF.md"), "restart resume notes").unwrap();
 
@@ -600,7 +592,7 @@ async fn self_restart_driver_passes_empty_sentinel_when_profile_absent() {
         None,
         "and the runner's decode turns the sentinel back into requested_profile: None"
     );
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 /// T12 - a failed respawn skips the injection entirely: nothing is archived and
@@ -609,7 +601,7 @@ async fn self_restart_driver_passes_empty_sentinel_when_profile_absent() {
 async fn self_restart_driver_restart_failure_skips_inject_and_cleans_pending() {
     let original_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(original_id);
+    pending.seed_legacy(original_id);
     let temp = tempfile::TempDir::new().unwrap();
     std::fs::write(temp.path().join("SELF-HANDOFF.md"), "restart resume notes").unwrap();
     let inject_calls = Arc::new(Mutex::new(0usize));
@@ -656,7 +648,7 @@ async fn self_restart_driver_restart_failure_skips_inject_and_cleans_pending() {
         !temp.path().join("self-clear").exists(),
         "phase 2 never ran, so nothing was archived"
     );
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 /// T13 - restart variant of the rename-back contract: a failed phase-2 inject returns the
@@ -666,7 +658,7 @@ async fn self_restart_driver_inject_failure_renames_handoff_back() {
     let original_id = Uuid::new_v4();
     let new_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(original_id);
+    pending.seed_legacy(original_id);
     let temp = tempfile::TempDir::new().unwrap();
     std::fs::write(temp.path().join("SELF-HANDOFF.md"), "restart resume notes").unwrap();
 
@@ -730,7 +722,7 @@ async fn self_restart_driver_inject_failure_renames_handoff_back() {
         boundary_events.lock().unwrap().is_empty(),
         "a failed restart handoff must not drop the fresh intent"
     );
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 /// T14 - the regression net for the section 6.3d flavor refactor. Driving with
@@ -741,7 +733,7 @@ async fn self_switch_driver_flavor_preserves_switch_prompt() {
     let original_id = Uuid::new_v4();
     let new_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(original_id);
+    pending.seed_legacy(original_id);
     let temp = tempfile::TempDir::new().unwrap();
     std::fs::write(temp.path().join("SELF-HANDOFF.md"), "switch resume notes").unwrap();
     let injected = Arc::new(Mutex::new(Vec::<String>::new()));

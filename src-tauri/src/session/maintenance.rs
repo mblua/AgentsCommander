@@ -12,3 +12,32 @@ use std::sync::Mutex;
 /// a second bare alias would collide. Mirrors `RestoreInProgress`.
 #[derive(Default)]
 pub struct PendingSelfClear(pub Mutex<HashSet<uuid::Uuid>>);
+
+#[cfg(test)]
+impl PendingSelfClear {
+    pub(crate) fn seed_legacy(&self, sid: uuid::Uuid) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).insert(sid)
+    }
+
+    pub(crate) fn contains(&self, sid: uuid::Uuid) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&sid)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+    }
+
+    pub(crate) fn remove_legacy_fixture(&self, sid: uuid::Uuid) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&sid)
+    }
+}

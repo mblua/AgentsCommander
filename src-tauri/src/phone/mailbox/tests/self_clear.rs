@@ -55,7 +55,7 @@ async fn handle_self_switch_unknown_coding_agent_lists_configured_ids() {
 async fn self_clear_driver_pi_injects_new_then_handoff_in_boundary_order() {
     let session_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(session_id);
+    pending.seed_legacy(session_id);
     let temp = tempfile::TempDir::new().unwrap();
     std::fs::write(temp.path().join("SELF-HANDOFF.md"), "Pi resume notes").unwrap();
     let injected = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -101,14 +101,14 @@ async fn self_clear_driver_pi_injects_new_then_handoff_in_boundary_order() {
             SelfClearBoundary::ContentInjected
         ]
     );
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 #[tokio::test]
 async fn self_clear_driver_waits_for_phase1_injector_before_boundary_or_phase2() {
     let session_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(session_id);
+    pending.seed_legacy(session_id);
     let temp = tempfile::TempDir::new().unwrap();
     std::fs::write(temp.path().join("SELF-HANDOFF.md"), "barrier notes").unwrap();
     let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
@@ -205,7 +205,7 @@ async fn self_clear_driver_waits_for_phase1_injector_before_boundary_or_phase2()
             < cleared
     );
     assert!(events.iter().position(|event| *event == "handoff").unwrap() > phase2_poll);
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 #[test]
@@ -264,7 +264,7 @@ fn self_clear_handoff_busy_after_pi_new_restarts_fresh_idle() {
 async fn self_clear_driver_pi_phase1_failure_has_no_boundary_or_handoff() {
     let session_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(session_id);
+    pending.seed_legacy(session_id);
     let temp = tempfile::TempDir::new().unwrap();
     std::fs::write(temp.path().join("SELF-HANDOFF.md"), "Pi resume notes").unwrap();
     let attempted = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -301,14 +301,14 @@ async fn self_clear_driver_pi_phase1_failure_has_no_boundary_or_handoff() {
     assert_eq!(*attempted.lock().unwrap(), vec!["/new"]);
     assert!(boundaries.lock().unwrap().is_empty());
     assert!(temp.path().join("SELF-HANDOFF.md").exists());
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 #[tokio::test]
 async fn self_clear_driver_injects_first_captured_summary_not_later_file() {
     let session_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(session_id);
+    pending.seed_legacy(session_id);
 
     let temp = tempfile::TempDir::new().unwrap();
     std::fs::write(temp.path().join("SELF-HANDOFF.md"), "resume notes").unwrap();
@@ -380,7 +380,7 @@ async fn self_clear_driver_injects_first_captured_summary_not_later_file() {
     assert!(injected[1].contains("self-clear/"), "{}", injected[1]);
     assert!(injected[1].contains("_SELF-HANDOFF.md"), "{}", injected[1]);
     assert!(!temp.path().join("SELF-HANDOFF.md").exists());
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 /// #749 - the Phase-2 archive happens BEFORE the prompt inject, the prompt names the exact
@@ -389,7 +389,7 @@ async fn self_clear_driver_injects_first_captured_summary_not_later_file() {
 async fn self_clear_driver_archives_before_inject_and_prompt_names_exact_path() {
     let session_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(session_id);
+    pending.seed_legacy(session_id);
 
     let temp = tempfile::TempDir::new().unwrap();
     std::fs::write(temp.path().join("SELF-HANDOFF.md"), "resume notes").unwrap();
@@ -450,7 +450,7 @@ async fn self_clear_driver_archives_before_inject_and_prompt_names_exact_path() 
         "resume notes",
         "the exact path named in the prompt must exist with the handoff content"
     );
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 /// #749 - inject failure after a successful pre-inject archive renames the handoff back to the
@@ -459,7 +459,7 @@ async fn self_clear_driver_archives_before_inject_and_prompt_names_exact_path() 
 async fn self_clear_driver_inject_failure_renames_handoff_back() {
     let session_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(session_id);
+    pending.seed_legacy(session_id);
 
     let temp = tempfile::TempDir::new().unwrap();
     std::fs::write(temp.path().join("SELF-HANDOFF.md"), "resume notes").unwrap();
@@ -536,7 +536,7 @@ async fn self_clear_driver_inject_failure_renames_handoff_back() {
         })
         .unwrap_or(0);
     assert_eq!(leftover_archives, 0, "no orphaned handoff archive remains");
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 /// (#756) F8: a failed phase-1 /clear inject abandons the flow and fires NO
@@ -545,7 +545,7 @@ async fn self_clear_driver_inject_failure_renames_handoff_back() {
 async fn self_clear_driver_phase1_inject_failure_fires_no_boundary_events() {
     let session_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(session_id);
+    pending.seed_legacy(session_id);
 
     let temp = tempfile::TempDir::new().unwrap();
     std::fs::write(temp.path().join("SELF-HANDOFF.md"), "resume notes").unwrap();
@@ -590,7 +590,7 @@ async fn self_clear_driver_phase1_inject_failure_fires_no_boundary_events() {
         boundary_events.lock().unwrap().is_empty(),
         "an un-injected /clear must not stamp the fresh intent"
     );
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 /// #749 - with no root handoff at Phase 2 (the agent moved its own notes), the prompt falls
@@ -599,7 +599,7 @@ async fn self_clear_driver_phase1_inject_failure_fires_no_boundary_events() {
 async fn self_clear_driver_without_root_handoff_prompts_root_name() {
     let session_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(session_id);
+    pending.seed_legacy(session_id);
 
     let temp = tempfile::TempDir::new().unwrap();
 
@@ -637,7 +637,7 @@ async fn self_clear_driver_without_root_handoff_prompts_root_name() {
         injected[1]
     );
     assert!(!injected[1].contains("self-clear/"), "{}", injected[1]);
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 #[tokio::test]
@@ -645,7 +645,7 @@ async fn self_switch_driver_restarts_uses_new_id_and_cleans_pending() {
     let original_id = Uuid::new_v4();
     let new_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(original_id);
+    pending.seed_legacy(original_id);
     let seen_states = Arc::new(Mutex::new(Vec::<Uuid>::new()));
     let persist_calls = Arc::new(Mutex::new(Vec::<(PathBuf, String, String)>::new()));
     let restart_calls = Arc::new(Mutex::new(Vec::<Uuid>::new()));
@@ -705,11 +705,8 @@ async fn self_switch_driver_restarts_uses_new_id_and_cleans_pending() {
             assert!(prompt.contains("self-clear/"), "{prompt}");
             assert!(prompt.contains("_SELF-HANDOFF.md"), "{prompt}");
             inject_seen.lock().unwrap().push(session_id);
-            let set = pending_for_inject
-                .0
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            *alias_seen.lock().unwrap() = set.contains(&original_id) && set.contains(&session_id);
+            *alias_seen.lock().unwrap() =
+                pending_for_inject.contains(original_id) && pending_for_inject.contains(session_id);
             Ok(())
         }
     };
@@ -765,5 +762,5 @@ async fn self_switch_driver_restarts_uses_new_id_and_cleans_pending() {
         *alias_seen_at_inject.lock().unwrap(),
         "the new session id must be marked pending during Phase 2 injection"
     );
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }

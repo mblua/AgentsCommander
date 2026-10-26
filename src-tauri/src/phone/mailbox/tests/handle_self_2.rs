@@ -7,7 +7,7 @@ async fn self_switch_driver_inject_failure_renames_handoff_back() {
     let original_id = Uuid::new_v4();
     let new_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(original_id);
+    pending.seed_legacy(original_id);
     let temp = tempfile::TempDir::new().unwrap();
     std::fs::write(temp.path().join("SELF-HANDOFF.md"), "switch resume notes").unwrap();
 
@@ -59,14 +59,14 @@ async fn self_switch_driver_inject_failure_renames_handoff_back() {
         "switch resume notes",
         "a failed prompt inject must rename the archived handoff back to the root"
     );
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 #[tokio::test]
 async fn self_switch_driver_restart_failure_skips_inject_and_cleans_pending() {
     let original_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(original_id);
+    pending.seed_legacy(original_id);
     let persist_calls = Arc::new(Mutex::new(0usize));
     let restart_calls = Arc::new(Mutex::new(0usize));
     let inject_calls = Arc::new(Mutex::new(0usize));
@@ -119,14 +119,14 @@ async fn self_switch_driver_restart_failure_skips_inject_and_cleans_pending() {
     assert_eq!(*persist_calls.lock().unwrap(), 1);
     assert_eq!(*restart_calls.lock().unwrap(), 1);
     assert_eq!(*inject_calls.lock().unwrap(), 0);
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 #[tokio::test]
 async fn self_switch_driver_persist_failure_skips_restart_and_cleans_pending() {
     let original_id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(original_id);
+    pending.seed_legacy(original_id);
     let restart_calls = Arc::new(Mutex::new(0usize));
     let inject_calls = Arc::new(Mutex::new(0usize));
 
@@ -172,7 +172,7 @@ async fn self_switch_driver_persist_failure_skips_restart_and_cleans_pending() {
 
     assert_eq!(*restart_calls.lock().unwrap(), 0);
     assert_eq!(*inject_calls.lock().unwrap(), 0);
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 // ────────────────────────── #1632 self-handoff-and-restart ──────────────────────────
