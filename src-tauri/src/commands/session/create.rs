@@ -27,9 +27,9 @@ pub(crate) use admission::acquire_create_publication_region;
 pub(crate) use admission::note_coordinator_create_on_app;
 #[cfg(test)]
 pub(crate) use admission::try_acquire_create_publication_region;
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows"))]
 pub(crate) use admission::with_create_resource_region;
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows"))]
 pub(crate) use admission::CreateResourceAdmission;
 #[cfg(test)]
 pub(crate) use admission::OwnedCreateAdmission;
