@@ -151,7 +151,7 @@ pub(crate) struct LifecycleFixture {
     config_dir: PathBuf,
     session_cwd: PathBuf,
     script_path: PathBuf,
-    pub(crate) pid_files: Vec<PathBuf>,
+    pid_files: Vec<PathBuf>,
     pub(crate) captured_output: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     pub(crate) captured_sequences: Arc<Mutex<HashMap<String, Vec<u64>>>>,
     /// Per-session count of tagged `pty_output` deliveries (data or resync marker).
