@@ -13,13 +13,13 @@ use super::settle::{
     finish_owned_pty_work, session_has_current_pty_submission_provenance, OwnedPtyWorkTransfer,
 };
 use crate::config::settings::SettingsState;
+use crate::phone::events::PtyInputEvents;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use crate::session::session::SessionInfo;
 use select::{PtyDispatchContext, PtyDispatchGuards};
 use std::path::Path;
 use std::sync::Arc;
-use tauri::Emitter;
 use tauri::Manager;
 use uuid::Uuid;
 
@@ -976,7 +976,7 @@ impl MailboxPoller {
             drop(target_stripe.take());
             drop(permit);
             finish_owned_pty_work(app, &mut owned_work, result.terminal).await;
-            if app.emit("pty_input_status", &result).is_err() {
+            if !app.pty_input_status(&result) {
                 log::warn!(
                     "[pty-input] status event failed id={} code=boundary_metadata_failed",
                     injection_id
