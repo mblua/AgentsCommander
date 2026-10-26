@@ -437,7 +437,7 @@ pub(crate) fn reconcile_owned_replacement_readback(
     let leaf = SAVE_SESSIONS_LOCK.try_lock().ok()?;
     confirm_publication_readback(
         &carrier.slot,
-        &carrier.directory.join("sessions.json"),
+        &super::store::snapshot_path(&carrier.directory),
         nonce,
         epoch,
     );

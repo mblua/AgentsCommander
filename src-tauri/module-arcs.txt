@@ -1493,6 +1493,7 @@ agentscommander_lib::config::sessions_persistence::persist -> agentscommander_li
 agentscommander_lib::config::sessions_persistence::persist -> agentscommander_lib::config::sessions_persistence::project_scope
 agentscommander_lib::config::sessions_persistence::persist -> agentscommander_lib::config::sessions_persistence::record
 agentscommander_lib::config::sessions_persistence::persist -> agentscommander_lib::config::sessions_persistence::retained_prompt
+agentscommander_lib::config::sessions_persistence::persist -> agentscommander_lib::config::sessions_persistence::store
 agentscommander_lib::config::sessions_persistence::persist -> agentscommander_lib::config::sessions_persistence::write
 agentscommander_lib::config::sessions_persistence::persist -> agentscommander_lib::config::settings
 agentscommander_lib::config::sessions_persistence::persist -> agentscommander_lib::session::manager
@@ -1507,7 +1508,6 @@ agentscommander_lib::config::sessions_persistence::project_scope -> agentscomman
 agentscommander_lib::config::sessions_persistence::project_scope -> agentscommander_lib::config::sessions_persistence::record
 agentscommander_lib::config::sessions_persistence::project_scope -> agentscommander_lib::config::settings
 agentscommander_lib::config::sessions_persistence::project_scope -> agentscommander_lib::path_utils
-agentscommander_lib::config::sessions_persistence::record -> agentscommander_lib::config
 agentscommander_lib::config::sessions_persistence::record -> agentscommander_lib::config::root_agent
 agentscommander_lib::config::sessions_persistence::record -> agentscommander_lib::config::settings
 agentscommander_lib::config::sessions_persistence::record -> agentscommander_lib::path_utils
@@ -1515,6 +1515,7 @@ agentscommander_lib::config::sessions_persistence::record -> agentscommander_lib
 agentscommander_lib::config::sessions_persistence::replacement -> agentscommander_lib::config::sessions_persistence::carrier
 agentscommander_lib::config::sessions_persistence::replacement -> agentscommander_lib::config::sessions_persistence::orphan
 agentscommander_lib::config::sessions_persistence::replacement -> agentscommander_lib::config::sessions_persistence::persist
+agentscommander_lib::config::sessions_persistence::replacement -> agentscommander_lib::config::sessions_persistence::store
 agentscommander_lib::config::sessions_persistence::replacement -> agentscommander_lib::config::sessions_persistence::write
 agentscommander_lib::config::sessions_persistence::replacement -> agentscommander_lib::config::settings
 agentscommander_lib::config::sessions_persistence::replacement -> agentscommander_lib::session::manager
@@ -1525,6 +1526,11 @@ agentscommander_lib::config::sessions_persistence::retained_prompt -> agentscomm
 agentscommander_lib::config::sessions_persistence::retained_prompt -> agentscommander_lib::config::sessions_persistence::record
 agentscommander_lib::config::sessions_persistence::retained_prompt -> agentscommander_lib::config::sessions_persistence::write
 agentscommander_lib::config::sessions_persistence::retained_prompt -> agentscommander_lib::session::manager
+agentscommander_lib::config::sessions_persistence::store -> agentscommander_lib::config
+agentscommander_lib::config::sessions_persistence::store -> agentscommander_lib::config::sessions_persistence::record
+agentscommander_lib::config::sessions_persistence::store -> agentscommander_lib::config::settings
+agentscommander_lib::config::sessions_persistence::store -> agentscommander_lib::filesystem
+agentscommander_lib::config::sessions_persistence::store -> agentscommander_lib::session::session
 agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::config
 agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::config::sessions_persistence::carrier
 agentscommander_lib::config::sessions_persistence::write -> agentscommander_lib::config::sessions_persistence::project_scope

@@ -8,6 +8,7 @@ mod project_scope;
 mod record;
 mod replacement;
 mod retained_prompt;
+mod store;
 mod write;
 
 #[cfg(test)]
@@ -53,11 +54,7 @@ pub(crate) use project_scope::{
 pub(crate) use project_scope::{normalize_call_count, reset_normalize_call_count};
 #[cfg(test)]
 use project_scope::{FILTER_PROJECT_PATHS_THREAD_IDS, NORMALIZE_CALLS};
-#[cfg(test)]
-pub(crate) use record::load_sessions_from_dir;
-#[cfg(any(test, debug_assertions))]
-pub use record::load_sessions_raw_from_dir_for_test;
-pub use record::{load_sessions, load_sessions_raw, CodingAgentBindingSeed, PersistedSession};
+pub use record::{CodingAgentBindingSeed, PersistedSession};
 pub(crate) use replacement::{
     prepare_owned_replacement_publication, publish_owned_replacement,
     reconcile_owned_replacement_readback, OwnedReplacementPublicationOutcome,
@@ -65,6 +62,11 @@ pub(crate) use replacement::{
 pub(crate) use retained_prompt::{
     block_duplicate_restore_prompt_domains, initialize_prompt_retention, prompt_key,
 };
+#[cfg(test)]
+pub(crate) use store::load_sessions_from_dir;
+#[cfg(any(test, debug_assertions))]
+pub use store::load_sessions_raw_from_dir_for_test;
+pub use store::{load_sessions, load_sessions_raw};
 #[cfg(test)]
 pub use write::save_sessions;
 #[cfg(test)]
@@ -98,13 +100,13 @@ use project_scope::{
 #[cfg(all(test, windows))]
 use record::deduplicate;
 #[cfg(test)]
-use record::{
-    load_sessions_from_path, load_sessions_from_path_with_settings, load_sessions_raw_from_path,
-};
-#[cfg(test)]
 use retained_prompt::{
     flush_retained_prompts_locked, flush_retained_prompts_locked_with_probe, load_retained_prompts,
     RETAINED_PROMPTS,
+};
+#[cfg(test)]
+use store::{
+    load_sessions_from_path, load_sessions_from_path_with_settings, load_sessions_raw_from_path,
 };
 #[cfg(test)]
 use write::{

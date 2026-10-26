@@ -13,8 +13,9 @@ use super::orphan::{handle_orphan_drops, prepare_persist_snapshot};
 use super::project_scope::{
     filter_sessions_for_project_paths_blocking, session_retention_project_paths, OrphanDrop,
 };
-use super::record::{load_sessions_from_path_with_settings, PersistedSession};
+use super::record::PersistedSession;
 use super::retained_prompt::flush_retained_prompts_locked;
+use super::store::{load_sessions_from_path_with_settings, snapshot_path};
 use super::write::{
     confirm_publication_readback, current_capture_matches, file_preparation_survives,
     run_owned_persist_core, save_current_snapshot_guarded, save_file_snapshot_guarded,
@@ -58,7 +59,7 @@ pub(super) async fn load_sessions_purging_outside_project_paths_in_dir(
             // atomicity contract because nothing is written back. Restore
             // reconciles on the next persist.
             match filter_sessions_for_project_paths_blocking(
-                load_sessions_from_path_with_settings(&dir.join("sessions.json"), settings),
+                load_sessions_from_path_with_settings(&snapshot_path(dir), settings),
                 project_paths,
             )
             .await
@@ -66,7 +67,7 @@ pub(super) async fn load_sessions_purging_outside_project_paths_in_dir(
                 Ok(filtered) => filtered,
                 Err(e) => {
                     log::error!("Failed to filter sessions after purge failure: {}", e);
-                    load_sessions_from_path_with_settings(&dir.join("sessions.json"), settings)
+                    load_sessions_from_path_with_settings(&snapshot_path(dir), settings)
                 }
             }
         }
@@ -120,7 +121,7 @@ pub(super) async fn purge_sessions_outside_project_paths_in_dir_locked(
         let mut foreign_done = HashSet::new();
         loop {
             let before =
-                load_sessions_from_path_with_settings(&dir.join("sessions.json"), Some(&settings));
+                load_sessions_from_path_with_settings(&snapshot_path(dir), Some(&settings));
             let before_len = before.len();
             let prep = prepare_persist_snapshot(before, &roots).await?;
             let protections = all_carrier_protections();
@@ -503,12 +504,7 @@ pub(super) async fn wait_initial_publication(
             (checkpoint.nonce, checkpoint.epoch)
         };
         if let Ok(leaf) = SAVE_SESSIONS_LOCK.try_lock() {
-            confirm_publication_readback(
-                &slot,
-                &dir.join("sessions.json"),
-                checkpoint.0,
-                checkpoint.1,
-            );
+            confirm_publication_readback(&slot, &snapshot_path(dir), checkpoint.0, checkpoint.1);
             drop(leaf);
         }
         if let Some(carrier) = published_initial_carrier(&slot, initial, dir) {

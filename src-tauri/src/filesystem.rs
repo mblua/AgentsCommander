@@ -12,5 +12,10 @@ pub(crate) fn canonical_loop_event_path(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.into())
 }
 
+/// Read persisted session text with unchanged platform errors.
+pub(crate) fn read_session_container_text(path: &Path) -> std::io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
 #[cfg(test)]
 mod tests;
