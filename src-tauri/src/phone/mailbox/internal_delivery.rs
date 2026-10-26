@@ -14,13 +14,11 @@ use crate::phone::consumption::verdict_to_result;
 use crate::phone::consumption::ConsumptionVerdict;
 use crate::phone::types::OutboxMessage;
 use crate::pty::inject::SettleReadiness;
-use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::session::Session;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
 use std::sync::Arc;
-use std::sync::Mutex;
 use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -718,9 +716,11 @@ impl MailboxPoller {
         Ok(())
     }
 
-    pub(crate) async fn has_pty_session_for_wake<R: tauri::Runtime>(
+    pub(crate) async fn has_pty_session_for_wake<
+        S: super::pty_observation::PtyAuthorityState + ?Sized,
+    >(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         id: Uuid,
     ) -> bool {
         #[cfg(test)]
@@ -734,7 +734,7 @@ impl MailboxPoller {
             }
         }
 
-        let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+        let pty_mgr = app.pty_routes();
         let pty = pty_mgr.lock().unwrap();
         pty.has_session(id)
     }

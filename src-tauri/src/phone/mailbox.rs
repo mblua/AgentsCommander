@@ -13,6 +13,7 @@ mod pty_dispatch;
 pub(crate) mod pty_observation;
 mod pty_validation;
 mod request_polling;
+pub(crate) mod response_observation;
 mod response_source;
 mod self_handoff;
 mod self_switch;
