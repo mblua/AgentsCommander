@@ -1,5 +1,7 @@
 use super::*;
-use crate::pty::manager::ResponseCloseState;
+use crate::config::settings::SettingsState;
+use crate::pty::manager::{PtyManager, ResponseCloseState};
+use crate::session::manager::SessionManager;
 use futures::FutureExt;
 
 #[derive(Default)]
@@ -184,4 +186,110 @@ async fn conflicting_replays_fail_closed_before_other_observations() {
         assert_eq!(sources[path].digest, original.digest);
         assert!(Arc::ptr_eq(&sources[path].attempt, &original.attempt));
     }
+}
+
+#[derive(Default)]
+struct CompletionState {
+    clones: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Clone for CompletionState {
+    fn clone(&self) -> Self {
+        self.clones
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self {
+            clones: Arc::clone(&self.clones),
+        }
+    }
+}
+
+impl PtyAuthorityState for CompletionState {
+    fn pty_settings(&self) -> &SettingsState {
+        panic!("unexpected completion settings lookup");
+    }
+
+    fn pty_sessions(&self) -> &Arc<tokio::sync::RwLock<SessionManager>> {
+        panic!("unexpected completion sessions lookup");
+    }
+
+    fn pty_routes(&self) -> &Arc<Mutex<PtyManager>> {
+        panic!("unexpected completion routes lookup");
+    }
+}
+
+impl ResponseCompletionState for CompletionState {
+    fn response_selection(&self) -> Option<&crate::session::selection::SelectionCoordinator> {
+        panic!("unexpected completion selection lookup");
+    }
+}
+
+#[tokio::test]
+async fn missing_completion_entry_does_not_clone_or_observe_state() {
+    let state = CompletionState::default();
+    MailboxPoller::delivery_only()
+        .complete_response_delivery(&state, Path::new("missing.json"))
+        .await;
+    assert_eq!(state.clones.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn missing_completion_attempt_returns_before_observations() {
+    let state = CompletionState::default();
+    let poller = MailboxPoller::delivery_only();
+    let admission = AdmissionState {
+        tracker: Some(ResponseCloseState::default()),
+        ..Default::default()
+    };
+    let work = admitted(&poller, &admission).await;
+    assert!(work.attempt.lock().unwrap().is_none());
+    MailboxPoller::complete_response_request(&state, &work).await;
+    assert_eq!(state.clones.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn missing_completion_candidate_returns_before_observations() {
+    let state = CompletionState::default();
+    let poller = MailboxPoller::delivery_only();
+    let admission = AdmissionState {
+        tracker: Some(ResponseCloseState::default()),
+        ..Default::default()
+    };
+    let work = admitted(&poller, &admission).await;
+    *work.attempt.lock().unwrap() = Some(Arc::new(
+        super::super::pty_claim::ResponseCandidateAttempt {
+            state: work.state.clone(),
+            candidate: Mutex::new(None),
+            armed: std::sync::atomic::AtomicBool::new(true),
+        },
+    ));
+    MailboxPoller::complete_response_request(&state, &work).await;
+    assert_eq!(state.clones.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn ordinary_completion_clones_once_settles_and_removes_only_its_origin() {
+    let state = CompletionState::default();
+    let tracker = ResponseCloseState::default();
+    let admission = AdmissionState {
+        tracker: Some(tracker.clone()),
+        ..Default::default()
+    };
+    let poller = MailboxPoller::delivery_only();
+    let work = admitted(&poller, &admission).await;
+    let other_path = Path::new("other.json");
+    let other = poller
+        .admit_response_source(&admission, other_path, &message(), false, "other")
+        .await
+        .unwrap();
+    poller
+        .complete_response_delivery(&state, Path::new("source.json"))
+        .await;
+    assert_eq!(state.clones.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let sources = poller.response_sources.lock().unwrap();
+    assert_eq!(sources.len(), 1);
+    assert!(Arc::ptr_eq(&sources[other_path].attempt, &other.attempt));
+    drop(sources);
+    let mut reservation = tracker.reserve_work(&work.target, &work.key).unwrap();
+    assert!(!reservation.accept_durable(&work.digest).unwrap());
+    assert!(tracker.is_healthy());
 }

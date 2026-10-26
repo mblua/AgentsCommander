@@ -904,6 +904,7 @@ agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::session:
 agentscommander_lib::commands::phone::pty_input -> agentscommander_lib::session::purge_guard
 agentscommander_lib::commands::phone::response -> agentscommander_lib::phone::mailbox::response_observation
 agentscommander_lib::commands::phone::response -> agentscommander_lib::pty::manager
+agentscommander_lib::commands::phone::response -> agentscommander_lib::session::selection
 agentscommander_lib::commands::project_settings -> agentscommander_lib::config::project_settings
 agentscommander_lib::commands::project_settings -> agentscommander_lib::web::broadcast
 agentscommander_lib::commands::project_settings -> agentscommander_lib::web::event_broadcast
@@ -2022,10 +2023,10 @@ agentscommander_lib::phone::mailbox::request_polling -> agentscommander_lib::pty
 agentscommander_lib::phone::mailbox::request_polling -> agentscommander_lib::session::manager
 agentscommander_lib::phone::mailbox::response_observation -> agentscommander_lib::phone::mailbox::pty_observation
 agentscommander_lib::phone::mailbox::response_observation -> agentscommander_lib::pty::manager
+agentscommander_lib::phone::mailbox::response_observation -> agentscommander_lib::session::selection
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::config
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::config::sessions_persistence
-agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::config::settings
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::config::teams
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::phone::mailbox::handoff
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::phone::mailbox::notice
