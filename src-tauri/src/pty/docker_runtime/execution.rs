@@ -8,18 +8,18 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::pty::container_runtime::ContainerRuntimeControl;
 
-use super::command::{
+use super::DockerRuntime;
+use crate::process::docker::{
     read_capped_to_end, redact_command_bytes, redact_command_values, DockerCommandError,
     DockerCommandOutput, DockerCommandOwner, DockerCommandShutdownBehavior, DockerCommandSpec,
     DOCKER_COMMAND_FINALIZATION_RESERVE, DOCKER_COMMAND_OUTPUT_BYTE_LIMIT, DOCKER_COMMAND_POLL,
     DOCKER_COMMAND_TIMEOUT,
 };
 #[cfg(test)]
-use super::command::{
+use crate::process::docker::{
     ActiveDockerChildGuard, ActiveDockerReaderGuard, CappedCommandStream,
     ScriptedDockerCommandResult,
 };
-use super::DockerRuntime;
 
 impl DockerRuntime {
     pub(super) fn run_command_output(
@@ -66,11 +66,11 @@ impl DockerRuntime {
         reason: &'static str,
         hard_deadline: Instant,
     ) -> Result<DockerCommandOutput, DockerCommandError> {
-        self.command_ownership.reap_finished();
+        self.process_state.reap_finished();
         #[cfg(test)]
-        if let Some(recorded_commands) = &self.recorded_commands {
+        if let Some(recorded_commands) = &self.process_state.recorded_commands {
             recorded_commands.lock().unwrap().push(spec.clone());
-            if let Some(results) = &self.scripted_results {
+            if let Some(results) = &self.process_state.scripted_results {
                 if let Some(result) = results.lock().unwrap().pop_front() {
                     return match result {
                         ScriptedDockerCommandResult::Output { stdout, stderr } => {
@@ -164,11 +164,12 @@ impl DockerRuntime {
             program: spec.program.clone(),
             #[cfg(test)]
             active_child: Some(ActiveDockerChildGuard::new(Arc::clone(
-                &self.active_children,
+                &self.process_state.active_children,
             ))),
         };
         let Some(mut stdout) = owner.child.as_mut().and_then(|child| child.stdout.take()) else {
-            self.terminate_or_retain_command(owner, hard_deadline, false);
+            self.process_state
+                .terminate_or_retain_command(owner, hard_deadline, false);
             return Err(DockerCommandError {
                 source: AppError::PtyError(
                     "container runtime command did not expose stdout".to_string(),
@@ -177,7 +178,8 @@ impl DockerRuntime {
             });
         };
         let Some(mut stderr) = owner.child.as_mut().and_then(|child| child.stderr.take()) else {
-            self.terminate_or_retain_command(owner, hard_deadline, false);
+            self.process_state
+                .terminate_or_retain_command(owner, hard_deadline, false);
             return Err(DockerCommandError {
                 source: AppError::PtyError(
                     "container runtime command did not expose stderr".to_string(),
@@ -186,9 +188,9 @@ impl DockerRuntime {
             });
         };
         #[cfg(test)]
-        let stdout_readers = Arc::clone(&self.active_readers);
+        let stdout_readers = Arc::clone(&self.process_state.active_readers);
         #[cfg(test)]
-        let stdout_hang = Arc::clone(&self.hang_readers);
+        let stdout_hang = Arc::clone(&self.process_state.hang_readers);
         let stdout_reader = match std::thread::Builder::new()
             .name("ac-docker-stdout".to_string())
             .spawn(move || {
@@ -205,7 +207,8 @@ impl DockerRuntime {
             }) {
             Ok(reader) => reader,
             Err(error) => {
-                self.terminate_or_retain_command(owner, hard_deadline, false);
+                self.process_state
+                    .terminate_or_retain_command(owner, hard_deadline, false);
                 return Err(DockerCommandError {
                     source: AppError::PtyError(format!(
                         "container runtime stdout reader spawn failed: {error}"
@@ -216,9 +219,9 @@ impl DockerRuntime {
         };
         owner.stdout = Some(stdout_reader);
         #[cfg(test)]
-        let stderr_readers = Arc::clone(&self.active_readers);
+        let stderr_readers = Arc::clone(&self.process_state.active_readers);
         #[cfg(test)]
-        let stderr_hang = Arc::clone(&self.hang_readers);
+        let stderr_hang = Arc::clone(&self.process_state.hang_readers);
         let stderr_reader = match std::thread::Builder::new()
             .name("ac-docker-stderr".to_string())
             .spawn(move || {
@@ -235,7 +238,8 @@ impl DockerRuntime {
             }) {
             Ok(reader) => reader,
             Err(error) => {
-                self.terminate_or_retain_command(owner, hard_deadline, false);
+                self.process_state
+                    .terminate_or_retain_command(owner, hard_deadline, false);
                 return Err(DockerCommandError {
                     source: AppError::PtyError(format!(
                         "container runtime stderr reader spawn failed: {error}"
@@ -263,7 +267,7 @@ impl DockerRuntime {
             let Some(child) = owner.child.as_mut() else {
                 let message =
                     "container runtime command child ownership became unavailable".to_string();
-                self.command_ownership.retain(owner, Some(message.clone()));
+                self.process_state.retain(owner, Some(message.clone()));
                 return Err(DockerCommandError {
                     source: AppError::PtyError(message),
                     spawned: true,
@@ -283,7 +287,11 @@ impl DockerRuntime {
                         == DockerCommandShutdownBehavior::CancelOnShutdown
                         && control.shutdown_requested();
                     if canceled || now >= effective_deadline {
-                        self.terminate_or_retain_command(owner, dynamic_hard_deadline, canceled);
+                        self.process_state.terminate_or_retain_command(
+                            owner,
+                            dynamic_hard_deadline,
+                            canceled,
+                        );
                         let reason = if canceled {
                             "canceled by shutdown"
                         } else if control.shutdown_requested() {
@@ -304,7 +312,11 @@ impl DockerRuntime {
                     );
                 }
                 Err(error) => {
-                    self.terminate_or_retain_command(owner, dynamic_hard_deadline, false);
+                    self.process_state.terminate_or_retain_command(
+                        owner,
+                        dynamic_hard_deadline,
+                        false,
+                    );
                     return Err(DockerCommandError {
                         source: AppError::PtyError(format!(
                             "container runtime command wait failed: {error}"
@@ -328,7 +340,7 @@ impl DockerRuntime {
                 });
             }
             None => {
-                return Err(self.retain_reader_owner_at_deadline(owner));
+                return Err(self.process_state.retain_reader_owner_at_deadline(owner));
             }
         };
         redact_command_bytes(&mut output.stdout.bytes, &spec);
@@ -352,36 +364,6 @@ impl DockerRuntime {
             });
         }
         Ok(DockerCommandOutput { stdout, stderr })
-    }
-
-    pub(super) fn terminate_or_retain_command(
-        &self,
-        mut owner: DockerCommandOwner,
-        deadline: Instant,
-        canceled: bool,
-    ) {
-        if !owner.terminate_until(deadline, canceled) {
-            let last_error = if canceled {
-                "Docker command termination remained unresolved after shutdown cancellation"
-            } else {
-                "Docker command termination remained unresolved at the absolute deadline"
-            };
-            self.command_ownership
-                .retain(owner, Some(last_error.to_string()));
-        }
-    }
-
-    pub(super) fn retain_reader_owner_at_deadline(
-        &self,
-        owner: DockerCommandOwner,
-    ) -> DockerCommandError {
-        let program = owner.program.clone();
-        let message = format!("readers exceeded the absolute deadline program={program}");
-        self.command_ownership.retain(owner, Some(message.clone()));
-        DockerCommandError {
-            source: AppError::PtyError(message),
-            spawned: true,
-        }
     }
 
     pub(super) fn run_command(&self, spec: DockerCommandSpec) -> Result<String, AppError> {

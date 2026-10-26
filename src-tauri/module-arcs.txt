@@ -2205,6 +2205,7 @@ agentscommander_lib::phone::types -> agentscommander_lib::pty::input_limits
 agentscommander_lib::process::agent::owner -> agentscommander_lib::config::agent_path
 agentscommander_lib::process::agent::owner -> agentscommander_lib::process::host::job
 agentscommander_lib::process::agent::update -> agentscommander_lib::process::host::job
+agentscommander_lib::process::docker::ownership -> agentscommander_lib::errors
 agentscommander_lib::process::git::cache -> agentscommander_lib::config::agent_path
 agentscommander_lib::process::git::cache -> agentscommander_lib::process::host::credentials
 agentscommander_lib::process::git::context -> agentscommander_lib::config::agent_path
@@ -2315,14 +2316,15 @@ agentscommander_lib::pty::context_scrape -> agentscommander_lib::shutdown
 agentscommander_lib::pty::context_scrape::rows -> agentscommander_lib::pty::context_scrape::pattern
 agentscommander_lib::pty::credentials -> agentscommander_lib::process::host::credentials
 agentscommander_lib::pty::docker_runtime -> agentscommander_lib::errors
+agentscommander_lib::pty::docker_runtime -> agentscommander_lib::process::docker
 agentscommander_lib::pty::docker_runtime -> agentscommander_lib::pty::container_runtime
 agentscommander_lib::pty::docker_runtime::command -> agentscommander_lib::errors
 agentscommander_lib::pty::docker_runtime::command -> agentscommander_lib::pty::container_runtime
 agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::config::agent_path
 agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::errors
+agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::process::docker
 agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::pty::container_runtime
 agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::pty::docker_runtime
-agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::pty::docker_runtime::command
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::config::settings
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::process::git::watcher

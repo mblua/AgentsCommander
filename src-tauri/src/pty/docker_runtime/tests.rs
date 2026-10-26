@@ -432,7 +432,7 @@ fn permanently_blocked_command_readers_are_retained_at_the_deadline() {
     let spawn_reader = |name: &'static str| {
         let ready = Arc::clone(&ready);
         let release = Arc::clone(&release);
-        let active = Arc::clone(&runtime.active_readers);
+        let active = Arc::clone(&runtime.process_state.active_readers);
         std::thread::Builder::new()
             .name(name.to_string())
             .spawn(move || {
@@ -464,7 +464,10 @@ fn permanently_blocked_command_readers_are_retained_at_the_deadline() {
     let budget = Duration::from_millis(300);
     let started_at = Instant::now();
     assert!(owner.collect_output_until(started_at + budget).is_none());
-    let error = runtime.retain_reader_owner_at_deadline(owner).to_string();
+    let error = runtime
+        .process_state
+        .retain_reader_owner_at_deadline(owner)
+        .to_string();
     let elapsed = started_at.elapsed();
 
     assert!(
@@ -505,7 +508,7 @@ fn permanently_blocked_command_readers_are_retained_at_the_deadline() {
     *released.lock().unwrap_or_else(|error| error.into_inner()) = true;
     changed.notify_all();
     runtime
-        .command_ownership
+        .process_state
         .retry_until(Instant::now() + Duration::from_secs(1));
     assert_eq!(runtime.active_reader_count(), 0);
     assert!(runtime.retained_cleanup_contexts().is_empty());

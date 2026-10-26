@@ -1,4 +1,5 @@
 pub(crate) mod agent;
+pub(crate) mod docker;
 pub(crate) mod git;
 pub(crate) mod github;
 pub(crate) mod harness;
