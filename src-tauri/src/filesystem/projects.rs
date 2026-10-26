@@ -111,6 +111,17 @@ pub(crate) fn visit_team_project_children_strict(
     Ok(())
 }
 
+pub(crate) fn visit_discovery_project_children(base: &Path, mut visit: impl FnMut(PathBuf)) {
+    if let Ok(entries) = std::fs::read_dir(base) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit(path);
+            }
+        }
+    }
+}
+
 pub(crate) fn visit_profile_project_children(base: &Path, mut visit: impl FnMut(PathBuf)) {
     let Ok(entries) = std::fs::read_dir(base) else {
         return;

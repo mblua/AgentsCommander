@@ -25,6 +25,18 @@ pub(crate) use super::settings::project_path::{
     ProjectSource, RawJsonField, RawStringField, ResolvedPair, SideStatus, StructuralIssue,
 };
 
+pub(crate) fn configured_project_is_dir(path: &Path) -> bool {
+    project_fs::project_path_is_dir(path)
+}
+
+pub(crate) fn canonical_watch_project(path: &Path) -> Option<PathBuf> {
+    project_fs::canonical_project_path(path).ok()
+}
+
+pub(crate) fn visit_discovery_project_children(base: &Path, visit: impl FnMut(PathBuf)) {
+    project_fs::visit_discovery_project_children(base, visit);
+}
+
 /// Outcome of a register call. Callers translate this into the verb-specific
 /// stdout / IPC payload (CLI prints the lines from §2; Tauri command returns
 /// the struct verbatim — `#[serde(rename_all = "camelCase")]`).
