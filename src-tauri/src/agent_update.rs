@@ -40,6 +40,7 @@ use crate::config::agent_path::warm_login_shell_path;
 use crate::config::coding_agents_catalog::load_catalog_for_settings;
 #[cfg(test)]
 use crate::config::settings::SettingsState;
+use crate::process::agent::update::OUTPUT_TAIL_BYTES;
 use crate::web::broadcast::WsBroadcaster;
 use crate::web::event_broadcast::broadcast_all;
 use serde::ser::SerializeStruct;
@@ -105,10 +106,6 @@ const PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Per-update-command-step cap. On expiry the whole tree is killed and the step
 /// is reported failed; startup continues.
 const UPDATE_STEP_TIMEOUT: Duration = Duration::from_secs(300);
-/// Captured output tail kept for logging (log-only, never sent to the UI).
-const OUTPUT_TAIL_BYTES: usize = 8 * 1024;
-const PROCESS_SETTLEMENT_WINDOW: Duration = Duration::from_secs(10);
-const PROCESS_SETTLEMENT_POLL: Duration = Duration::from_millis(25);
 const CANCELLATION_CLEANUP_ERROR: &str = "Cancellation cleanup did not complete.";
 
 /// One command's update outcome, shown in the sidebar as a red toast on failure.

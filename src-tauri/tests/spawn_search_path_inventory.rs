@@ -137,7 +137,7 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 4)],
     ),
     (
-        "src-tauri/src/agent_update/updater.rs",
+        "src-tauri/src/process/agent/update.rs",
         2,
         0,
         &[(CoveredBy2589, 2)],

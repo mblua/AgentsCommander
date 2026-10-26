@@ -1,12 +1,7 @@
 //! Compatibility exports for native process-tree ownership.
 
-pub(crate) use crate::process::host::job::SettlementAttempt;
-
 #[cfg(windows)]
 pub use crate::process::host::job::JobObject;
-
-#[cfg(windows)]
-pub(crate) use crate::process::host::job::{spawn_suspended_contained, ContainedSpawnError};
 
 #[cfg(all(test, windows))]
 pub(crate) use crate::process::host::job::{

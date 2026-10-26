@@ -1,6 +1,7 @@
 //! Version-probe processes; install cache and scheduling policy live in agent_version.
 
 mod owner;
+pub(crate) mod update;
 
 pub use owner::{
     first_text_line, parse_version_token, probe_version, probe_version_cancellable,
