@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::session::manager::PendingCreateBinding;
 
 use super::admission::{CoordinatorPhase, CriticalAdmissionGuard};
+pub(crate) use super::authority::FinalizedOwnedCarryOutcome;
 use super::replacement::ReplacementOwner;
 use super::CoordinatorJob;
 
@@ -125,8 +126,28 @@ impl FinalizedOwnedCarryCapability {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(in crate::session) enum FinalizedOwnedCarryOutcome {
-    Applied,
-    Recapture,
+impl super::seal::Sealed for FinalizedOwnedCarryCapability {}
+
+impl super::authority::FinalizedOwnedCarry for FinalizedOwnedCarryCapability {
+    fn bound_operation(&self) -> bool {
+        FinalizedOwnedCarryCapability::bound_operation(self)
+    }
+    fn session_id(&self) -> Uuid {
+        FinalizedOwnedCarryCapability::session_id(self)
+    }
+    fn token(&self) -> Uuid {
+        FinalizedOwnedCarryCapability::token(self)
+    }
+    fn expected_version(&self) -> u64 {
+        FinalizedOwnedCarryCapability::expected_version(self)
+    }
+    fn telegram_bot_id(&self) -> &Option<String> {
+        FinalizedOwnedCarryCapability::telegram_bot_id(self)
+    }
+    fn communication(&self) -> &Option<crate::session::session::SessionCommunication> {
+        FinalizedOwnedCarryCapability::communication(self)
+    }
+    fn start_fresh_on_restore(&self) -> bool {
+        FinalizedOwnedCarryCapability::start_fresh_on_restore(self)
+    }
 }

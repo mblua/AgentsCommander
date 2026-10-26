@@ -1,5 +1,6 @@
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
+use crate::pty::container_lifecycle::ContainerLifecycleSender;
 use crate::pty::container_runtime::{ContainerRuntime, ContainerRuntimeHandle};
 use crate::pty::container_tokens::ContainerApiTokenManager;
 use crate::pty::context_scrape::ScreenRowsRead;
@@ -8,7 +9,6 @@ use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot, SessionIoFanout};
 use crate::pty::output_senders::OutputSenderMap;
 use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 use crate::resource_monitor::ResourceLogicalAgentSlot;
-use crate::session::selection::ContainerLifecycleSender;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

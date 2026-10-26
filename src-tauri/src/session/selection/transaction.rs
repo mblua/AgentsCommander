@@ -15,6 +15,7 @@ use crate::session::session::SessionInfo;
 use crate::DetachedSessionsState;
 
 use super::admission::CoordinatorPhase;
+use super::authority::CommitCapability;
 use super::payload::{
     DormantRuntimeWitness, LiveRuntimeWitness, RuntimeSelectionSnapshot, SelectionCause,
     SelectionCoordinatorError, SelectionSource,
@@ -48,23 +49,13 @@ impl<R: Runtime> Clone for SelectionTransaction<R> {
     }
 }
 
-#[derive(Clone)]
-pub(in crate::session) struct CommitCapability {
-    pub(super) _private: (),
-}
-
-#[cfg(test)]
-impl CommitCapability {
-    pub(in crate::session) fn for_test() -> Self {
-        Self { _private: () }
-    }
-}
-
 impl<R: Runtime> SelectionTransaction<R> {
     pub(super) fn new(app: AppHandle<R>, coordinator: Weak<CoordinatorInner>) -> Self {
         Self {
             app,
-            capability: CommitCapability { _private: () },
+            capability: CommitCapability {
+                _private: super::seal::Token,
+            },
             lifecycle_entry: None,
             coordinator,
             restore_nonce: None,

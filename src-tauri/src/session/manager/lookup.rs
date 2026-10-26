@@ -7,7 +7,7 @@ use super::{
 };
 use crate::errors::AppError;
 use crate::pty::backend::SessionBackendKind;
-use crate::session::selection::SessionSelection;
+use crate::session::selection::payload::SessionSelection;
 use uuid::Uuid;
 
 #[derive(Clone, PartialEq)]

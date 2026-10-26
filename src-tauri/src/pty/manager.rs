@@ -94,7 +94,7 @@ impl PtyManager {
         idle_detector: Arc<IdleDetector>,
         git_watcher: Arc<GitWatcher>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
-        lifecycle_sender: Option<crate::session::selection::ContainerLifecycleSender>,
+        lifecycle_sender: Option<crate::pty::container_lifecycle::ContainerLifecycleSender>,
     ) -> Self {
         let local_backend: Arc<dyn PtyBackend> = Arc::new(LocalProcessBackend::new(
             output_senders.clone(),
