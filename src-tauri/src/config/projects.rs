@@ -7,7 +7,9 @@
 //! mutable `&mut AppSettings` borrow plus a `&Path`. Callers own the
 //! lock-acquire and the `save_settings` call.
 
+use crate::filesystem::projects as project_fs;
 use std::collections::HashSet;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use super::ac_root::{ac_root_for_project, existing_ac_root, has_ac_root};
@@ -114,10 +116,10 @@ pub fn register_existing_project(
     raw_path: &str,
 ) -> Result<ProjectRegistration, ProjectError> {
     let abs = absolutise(raw_path)?;
-    if !abs.exists() {
+    if !project_fs::project_path_exists(&abs) {
         return Err(ProjectError::PathMissing(abs));
     }
-    if !abs.is_dir() {
+    if !project_fs::project_path_is_dir(&abs) {
         return Err(ProjectError::NotADirectory(abs));
     }
     if existing_ac_root(&abs).is_none() {
@@ -345,7 +347,7 @@ where
     let abs = absolutise(raw_path)?;
     // Allow PATH to not yet exist as a directory. Reject if PATH exists and
     // is a regular file (caller almost certainly fat-fingered).
-    if abs.exists() && !abs.is_dir() {
+    if project_fs::project_path_exists(&abs) && !project_fs::project_path_is_dir(&abs) {
         return Err(ProjectError::NotADirectory(abs));
     }
     // Ensure the parent (PATH itself) exists so the non-recursive
@@ -637,22 +639,23 @@ pub fn enumerate_registered_project_candidates(project_paths: &[String]) -> Vec<
 
         push_project_candidate(base, true, &mut out, &mut seen);
 
-        if let Ok(entries) = std::fs::read_dir(base) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !is_real_directory(&path) {
-                    continue;
-                }
-                let name = match path.file_name().and_then(|n| n.to_str()) {
-                    Some(name) => name,
-                    None => continue,
-                };
-                if name.starts_with('.') {
-                    continue;
-                }
-                push_project_candidate(&path, true, &mut out, &mut seen);
+        let _ = project_fs::visit_project_kind_children(base, |entry| {
+            let Ok(path) = entry else {
+                return ControlFlow::Continue(());
+            };
+            if !is_real_directory(&path) {
+                return ControlFlow::Continue(());
             }
-        }
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name,
+                None => return ControlFlow::Continue(()),
+            };
+            if name.starts_with('.') {
+                return ControlFlow::Continue(());
+            }
+            push_project_candidate(&path, true, &mut out, &mut seen);
+            ControlFlow::Continue(())
+        });
     }
 
     out
@@ -688,7 +691,7 @@ fn push_project_candidate(
 }
 
 fn is_real_directory(path: &Path) -> bool {
-    let md = match std::fs::symlink_metadata(path) {
+    let md = match project_fs::project_path_symlink_metadata(path) {
         Ok(m) => m,
         Err(_) => return false,
     };
@@ -707,7 +710,7 @@ fn is_real_directory(path: &Path) -> bool {
 }
 
 fn canonical_key(path: &Path) -> Option<String> {
-    let canonical = std::fs::canonicalize(path).ok()?;
+    let canonical = project_fs::canonical_project_path(path).ok()?;
     Some(path_compare_key(&canonical.to_string_lossy()))
 }
 

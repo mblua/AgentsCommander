@@ -72,3 +72,68 @@ fn transcript_path_preserves_canonical_and_removed_non_ascii_spellings() {
         path.as_os_str()
     );
 }
+
+#[test]
+fn project_children_visit_immediately_and_stop_before_another_callback() {
+    use std::ops::ControlFlow;
+
+    let directory = tempfile::tempdir().unwrap();
+    for name in ["first", "second", "third"] {
+        std::fs::write(directory.path().join(name), "before").unwrap();
+    }
+    let mut visited = Vec::new();
+    let outcome = projects::visit_project_kind_children(directory.path(), |entry| {
+        let path = entry.unwrap();
+        assert!(visited.is_empty());
+        std::fs::write(&path, "during callback").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "during callback");
+        visited.push(path);
+        ControlFlow::Break(())
+    })
+    .unwrap();
+
+    assert_eq!(outcome, ControlFlow::Break(()));
+    assert_eq!(visited.len(), 1);
+    let changed = std::fs::read_dir(directory.path())
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .filter(|contents| contents == "during callback")
+        .count();
+    assert_eq!(changed, 1);
+}
+
+#[test]
+fn project_children_continue_after_a_child_metadata_error() {
+    use std::ops::ControlFlow;
+
+    let directory = tempfile::tempdir().unwrap();
+    for name in ["one", "two", "three"] {
+        std::fs::write(directory.path().join(name), "child").unwrap();
+    }
+    let mut failures = Vec::new();
+    let outcome = projects::visit_project_kind_children(directory.path(), |entry| {
+        let path = entry.unwrap();
+        std::fs::remove_file(&path).unwrap();
+        failures.push(projects::project_path_metadata(&path).unwrap_err().kind());
+        ControlFlow::Continue(())
+    })
+    .unwrap();
+
+    assert_eq!(outcome, ControlFlow::Continue(()));
+    assert_eq!(failures, vec![std::io::ErrorKind::NotFound; 3]);
+}
+
+#[test]
+fn project_children_preserve_open_errors_without_calling_the_visitor() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("missing");
+    let expected = std::fs::read_dir(&path).unwrap_err();
+    let actual = projects::visit_project_kind_children(&path, |_| {
+        panic!("an open error must not reach the callback")
+    })
+    .unwrap_err();
+
+    assert_eq!(actual.kind(), expected.kind());
+    assert_eq!(actual.raw_os_error(), expected.raw_os_error());
+    assert_eq!(actual.to_string(), expected.to_string());
+}

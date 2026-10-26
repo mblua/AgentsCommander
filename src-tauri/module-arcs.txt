@@ -1360,6 +1360,7 @@ agentscommander_lib::config::projects -> agentscommander_lib::config::seeded_con
 agentscommander_lib::config::projects -> agentscommander_lib::config::session_context
 agentscommander_lib::config::projects -> agentscommander_lib::config::settings
 agentscommander_lib::config::projects -> agentscommander_lib::config::settings::project_path
+agentscommander_lib::config::projects -> agentscommander_lib::filesystem::projects
 agentscommander_lib::config::remote_activity_cache -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::remote_activity_cache -> agentscommander_lib::config::local_config_io
 agentscommander_lib::config::replica_identity -> agentscommander_lib::config::ac_root
@@ -1632,8 +1633,10 @@ agentscommander_lib::config::settings::owner::lease -> agentscommander_lib::path
 agentscommander_lib::config::settings::project_path -> agentscommander_lib::config
 agentscommander_lib::config::settings::project_path -> agentscommander_lib::config::local_overlay
 agentscommander_lib::config::settings::project_path -> agentscommander_lib::config::settings
+agentscommander_lib::config::settings::project_path -> agentscommander_lib::filesystem::projects
 agentscommander_lib::config::settings::project_path -> agentscommander_lib::path_utils
 agentscommander_lib::config::settings::project_path::identity -> agentscommander_lib::config
+agentscommander_lib::config::settings::project_path::identity -> agentscommander_lib::filesystem::projects
 agentscommander_lib::config::settings::project_path::migration -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::settings::project_path::migration -> agentscommander_lib::config::settings
 agentscommander_lib::config::settings::project_path::migration -> agentscommander_lib::config::settings::project_path
