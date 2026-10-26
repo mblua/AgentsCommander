@@ -90,3 +90,7 @@ pub(crate) fn canonical_carrier_cwd(path: &Path) -> io::Result<PathBuf> {
 pub(crate) fn restore_cwd_exists(path: &Path) -> bool {
     path.exists()
 }
+
+pub(crate) fn agent_search_directory_exists(path: &Path) -> bool {
+    path.is_dir()
+}

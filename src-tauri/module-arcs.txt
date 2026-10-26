@@ -1352,6 +1352,7 @@ agentscommander_lib::config::agent_memory -> agentscommander_lib::commands::enti
 agentscommander_lib::config::agent_memory -> agentscommander_lib::config::replica_identity
 agentscommander_lib::config::agent_memory -> agentscommander_lib::config::session_context
 agentscommander_lib::config::agent_memory -> agentscommander_lib::path_utils
+agentscommander_lib::config::agent_path -> agentscommander_lib::filesystem::directories
 agentscommander_lib::config::agent_path -> agentscommander_lib::process::host::login
 agentscommander_lib::config::archive_gate -> agentscommander_lib::commands::ac_discovery
 agentscommander_lib::config::archive_gate -> agentscommander_lib::config
@@ -2787,6 +2788,7 @@ agentscommander_lib::screenshot::native -> agentscommander_lib::session::session
 agentscommander_lib::screenshot::native::confirm -> agentscommander_lib::path_utils
 agentscommander_lib::screenshot::native::confirm -> agentscommander_lib::screenshot::native
 agentscommander_lib::screenshot::native::linux_display -> agentscommander_lib::config::environment
+agentscommander_lib::screenshot::native::linux_display -> agentscommander_lib::filesystem::processes
 agentscommander_lib::screenshot::native::overlay -> agentscommander_lib::path_utils
 agentscommander_lib::screenshot::native::overlay -> agentscommander_lib::screenshot::native
 agentscommander_lib::screenshot::native::replica_root -> agentscommander_lib::config::entity_prefix
