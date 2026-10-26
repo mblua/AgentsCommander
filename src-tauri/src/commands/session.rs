@@ -9,7 +9,8 @@ use crate::config::settings::SettingsState;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::backend::{PtyViewport, ResolvedAgentHostShell};
 use crate::pty::manager::PtyManager;
-#[cfg(all(test, target_os = "windows"))]
+#[cfg(test)]
+#[cfg(target_os = "windows")]
 use crate::resource_monitor::ResourceLimits;
 use crate::session::manager::SessionManager;
 #[cfg(test)]
@@ -99,9 +100,11 @@ use create::resolve_launch_auto_self_clear;
 use create::resolve_launch_idle_tuning;
 #[cfg(test)]
 use create::try_acquire_create_publication_region;
-#[cfg(all(test, target_os = "windows"))]
+#[cfg(test)]
+#[cfg(target_os = "windows")]
 use create::with_create_resource_region;
-#[cfg(all(test, target_os = "windows"))]
+#[cfg(test)]
+#[cfg(target_os = "windows")]
 use create::CreateResourceAdmission;
 pub use create::CreateSelectionIntent;
 use create::InitialLastPrompt;
