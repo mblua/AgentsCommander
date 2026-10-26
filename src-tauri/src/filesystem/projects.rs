@@ -1,6 +1,6 @@
 //! Filesystem probes for registered project directories.
 
-use std::fs::Metadata;
+use std::fs::{FileType, Metadata};
 use std::io;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
@@ -80,4 +80,63 @@ pub(crate) fn project_directory_identity(_path: &Path) -> std::io::Result<(u64, 
         std::io::ErrorKind::Unsupported,
         "handle identity unavailable on this platform; canonical path equality is the fallback",
     ))
+}
+
+pub(crate) fn visit_team_project_children_strict(
+    base: &Path,
+    scanned: &mut usize,
+    mut visit: impl FnMut(String, PathBuf) -> Result<(), String>,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(base).map_err(|_| "unsafe_path".to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|_| "unsafe_path".to_string())?;
+        *scanned = scanned.saturating_add(1);
+        if *scanned > 1_024 {
+            return Err("invalid_target".to_string());
+        }
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| "unsafe_path".to_string())?;
+        if name.starts_with('.') {
+            continue;
+        }
+        let metadata = entry.metadata().map_err(|_| "unsafe_path".to_string())?;
+        if !metadata.is_dir() {
+            continue;
+        }
+
+        visit(name, entry.path())?;
+    }
+    Ok(())
+}
+
+pub(crate) fn visit_profile_project_children(base: &Path, mut visit: impl FnMut(PathBuf)) {
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            visit(entry.path());
+        }
+    }
+}
+
+pub(crate) fn visit_source_inventory_children(
+    base: &Path,
+    mut cut: impl FnMut(&'static str) -> io::Result<()>,
+    mut visit: impl FnMut(PathBuf, FileType),
+) -> io::Result<()> {
+    cut("readDir")?;
+    for item in std::fs::read_dir(base)? {
+        cut("entry")?;
+        let item = item?;
+        cut("fileType")?;
+        let kind = item.file_type()?;
+        visit(item.path(), kind);
+    }
+    Ok(())
 }

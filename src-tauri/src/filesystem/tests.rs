@@ -137,3 +137,182 @@ fn project_children_preserve_open_errors_without_calling_the_visitor() {
     assert_eq!(actual.raw_os_error(), expected.raw_os_error());
     assert_eq!(actual.to_string(), expected.to_string());
 }
+
+#[test]
+fn strict_project_children_count_filtered_entries_and_stop_on_the_first_error() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join(".hidden")).unwrap();
+    std::fs::write(directory.path().join("file"), "").unwrap();
+    let mut scanned = 0;
+    projects::visit_team_project_children_strict(directory.path(), &mut scanned, |_, _| {
+        panic!("hidden directories and files must not reach the callback")
+    })
+    .unwrap();
+    assert_eq!(scanned, 2);
+
+    scanned = 1_024;
+    let error =
+        projects::visit_team_project_children_strict(directory.path(), &mut scanned, |_, _| {
+            panic!("the entry limit must precede filtering")
+        })
+        .unwrap_err();
+    assert_eq!(error, "invalid_target");
+    assert_eq!(scanned, 1_025);
+
+    let missing = directory.path().join("missing");
+    let error = projects::visit_team_project_children_strict(&missing, &mut scanned, |_, _| {
+        panic!("opening must precede any callback")
+    })
+    .unwrap_err();
+    assert_eq!(error, "unsafe_path");
+    assert_eq!(scanned, 1_025);
+}
+
+#[test]
+fn strict_project_children_propagate_callback_errors_before_the_next_entry() {
+    let directory = tempfile::tempdir().unwrap();
+    for name in ["one", "two", "three"] {
+        std::fs::create_dir(directory.path().join(name)).unwrap();
+    }
+    let mut scanned = 0;
+    let mut callbacks = 0;
+    let error = projects::visit_team_project_children_strict(
+        directory.path(),
+        &mut scanned,
+        |name, path| {
+            callbacks += 1;
+            assert_eq!(path.file_name().unwrap(), name.as_str());
+            Err("callback error".to_string())
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error, "callback error");
+    assert_eq!(scanned, 1);
+    assert_eq!(callbacks, 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn strict_project_children_reject_non_utf8_names_before_hidden_filtering() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let name = std::ffi::OsString::from_vec(vec![b'.', 0xff]);
+    std::fs::create_dir(directory.path().join(name)).unwrap();
+    let mut scanned = 0;
+    let error =
+        projects::visit_team_project_children_strict(directory.path(), &mut scanned, |_, _| {
+            panic!("invalid names must not reach the callback")
+        })
+        .unwrap_err();
+    assert_eq!(error, "unsafe_path");
+    assert_eq!(scanned, 1);
+}
+
+#[test]
+fn profile_project_children_skip_open_errors_and_only_visit_directories() {
+    let directory = tempfile::tempdir().unwrap();
+    let child = directory.path().join("child");
+    std::fs::create_dir(&child).unwrap();
+    std::fs::write(directory.path().join("file"), "").unwrap();
+    let mut visited = Vec::new();
+    projects::visit_profile_project_children(&directory.path().join("missing"), |_| {
+        panic!("an open error must be skipped")
+    });
+    projects::visit_profile_project_children(directory.path(), |path| visited.push(path));
+    assert_eq!(visited, vec![child]);
+}
+
+#[test]
+fn source_inventory_open_error_follows_the_read_dir_cut() {
+    let directory = tempfile::tempdir().unwrap();
+    let missing = directory.path().join("missing");
+    let mut stages = Vec::new();
+    let expected = std::fs::read_dir(&missing).unwrap_err();
+    let actual = projects::visit_source_inventory_children(
+        &missing,
+        |stage| {
+            stages.push(stage);
+            Ok(())
+        },
+        |_, _| panic!("opening failure must not visit"),
+    )
+    .unwrap_err();
+    assert_eq!(stages, vec!["readDir"]);
+    assert_eq!(actual.kind(), expected.kind());
+    assert_eq!(actual.raw_os_error(), expected.raw_os_error());
+    assert_eq!(actual.to_string(), expected.to_string());
+}
+
+#[test]
+fn source_inventory_cuts_precede_file_types_and_partial_callbacks() {
+    use std::cell::RefCell;
+
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("child")).unwrap();
+    std::fs::write(directory.path().join("file"), "").unwrap();
+    for (failed_stage, ordinal, expected) in [
+        ("readDir", 1, vec!["readDir"]),
+        ("entry", 1, vec!["readDir", "entry"]),
+        ("fileType", 1, vec!["readDir", "entry", "fileType"]),
+        (
+            "entry",
+            2,
+            vec!["readDir", "entry", "fileType", "visit", "entry"],
+        ),
+        (
+            "fileType",
+            2,
+            vec!["readDir", "entry", "fileType", "visit", "entry", "fileType"],
+        ),
+    ] {
+        let events = RefCell::new(Vec::new());
+        let mut count = 0;
+        let error = projects::visit_source_inventory_children(
+            directory.path(),
+            |stage| {
+                events.borrow_mut().push(stage);
+                if stage == failed_stage {
+                    count += 1;
+                    if count == ordinal {
+                        return Err(std::io::Error::from_raw_os_error(123));
+                    }
+                }
+                Ok(())
+            },
+            |_, _| events.borrow_mut().push("visit"),
+        )
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(123));
+        assert_eq!(*events.borrow(), expected);
+    }
+
+    let events = RefCell::new(Vec::new());
+    let mut kinds = Vec::new();
+    projects::visit_source_inventory_children(
+        directory.path(),
+        |stage| {
+            events.borrow_mut().push(stage);
+            Ok(())
+        },
+        |path, kind| {
+            assert_eq!(events.borrow().last(), Some(&"fileType"));
+            events.borrow_mut().push("visit");
+            assert!(!kind.is_symlink());
+            kinds.push((
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                kind.is_dir(),
+            ));
+        },
+    )
+    .unwrap();
+    kinds.sort();
+    assert_eq!(
+        kinds,
+        vec![("child".to_string(), true), ("file".to_string(), false)]
+    );
+    assert_eq!(
+        *events.borrow(),
+        vec!["readDir", "entry", "fileType", "visit", "entry", "fileType", "visit"]
+    );
+}
