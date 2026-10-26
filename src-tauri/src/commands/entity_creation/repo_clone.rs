@@ -1,4 +1,5 @@
 use super::creation_trace::{Outcome, Reason, Stage, StageGuard};
+use crate::process::git::mutation::{self, CloneRepositoryError, ResetCloneError};
 use std::path::{Path, PathBuf};
 
 /// Async git clone with CREATE_NO_WINDOW on Windows.
@@ -7,42 +8,22 @@ pub(super) async fn git_clone_async(
     target: &Path,
     parent: Option<&StageGuard<'_>>,
 ) -> Result<(), String> {
-    #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    const GIT_CLONE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
-    const GIT_RESET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
     let git_target = git_cli_path(target);
-    let mut cmd = tokio::process::Command::new("git");
-    crate::pty::credentials::scrub_credentials_from_tokio_command(&mut cmd);
-    crate::config::agent_path::apply_search_path_to_tokio_command(&mut cmd);
-    cmd.args(["-c", "core.longpaths=true", "clone", "--depth", "1", url])
-        .arg(git_target.as_os_str());
-    cmd.kill_on_drop(true);
-
-    #[cfg(windows)]
-    {
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-
+    let clone_work = mutation::clone_repository(url, &git_target);
     let mut clone_stage = parent.map(|p| p.child(Stage::CloneProcess));
-    let output = tokio::time::timeout(GIT_CLONE_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| {
-            if let Some(stage) = &mut clone_stage {
-                stage.finish(Outcome::Timeout, Some(Reason::CloneTimeout));
+    let output = clone_work.await.map_err(|error| {
+        if let Some(stage) = &mut clone_stage {
+            match &error {
+                CloneRepositoryError::Spawn(_) => {
+                    stage.finish(Outcome::Error, Some(Reason::Failed));
+                }
+                CloneRepositoryError::TimedOut { .. } => {
+                    stage.finish(Outcome::Timeout, Some(Reason::CloneTimeout));
+                }
             }
-            format!(
-                "git clone timed out after {} seconds",
-                GIT_CLONE_TIMEOUT.as_secs()
-            )
-        })?
-        .map_err(|e| {
-            if let Some(stage) = &mut clone_stage {
-                stage.finish(Outcome::Error, Some(Reason::Failed));
-            }
-            format!("Failed to spawn git clone: {}", e)
-        })?;
+        }
+        error.to_string()
+    })?;
 
     if !output.status.success() {
         if let Some(stage) = &mut clone_stage {
@@ -68,23 +49,15 @@ pub(super) async fn git_clone_async(
             "[entity_creation] .git/index missing after clone for {}, running fallback git reset",
             url
         );
-        let mut reset_cmd = tokio::process::Command::new("git");
-        crate::pty::credentials::scrub_credentials_from_tokio_command(&mut reset_cmd);
-        crate::config::agent_path::apply_search_path_to_tokio_command(&mut reset_cmd);
-        reset_cmd.args(["reset"]).current_dir(&git_target);
-        reset_cmd.kill_on_drop(true);
-        #[cfg(windows)]
-        {
-            reset_cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        let reset_work = mutation::reset_clone_index(&git_target);
         let mut reset_stage = parent.map(|p| p.child(Stage::ResetProcess));
-        match tokio::time::timeout(GIT_RESET_TIMEOUT, reset_cmd.output()).await {
-            Ok(Ok(output)) if output.status.success() => {
+        match reset_work.await {
+            Ok(output) if output.status.success() => {
                 if let Some(stage) = &mut reset_stage {
                     stage.finish(Outcome::Ok, None);
                 }
             }
-            Ok(Ok(output)) => {
+            Ok(output) => {
                 if let Some(stage) = &mut reset_stage {
                     stage.finish(Outcome::Error, Some(Reason::ResetFailed));
                 }
@@ -94,7 +67,7 @@ pub(super) async fn git_clone_async(
                     String::from_utf8_lossy(&output.stderr).trim()
                 );
             }
-            Ok(Err(e)) => {
+            Err(ResetCloneError::Spawn(e)) => {
                 if let Some(stage) = &mut reset_stage {
                     stage.finish(Outcome::Error, Some(Reason::ResetFailed));
                 }
@@ -104,13 +77,13 @@ pub(super) async fn git_clone_async(
                     e
                 );
             }
-            Err(_) => {
+            Err(ResetCloneError::TimedOut { seconds }) => {
                 if let Some(stage) = &mut reset_stage {
                     stage.finish(Outcome::Timeout, Some(Reason::ResetTimeout));
                 }
                 log::warn!(
                     "[entity_creation] fallback git reset timed out after {} seconds for {}",
-                    GIT_RESET_TIMEOUT.as_secs(),
+                    seconds,
                     url
                 );
             }

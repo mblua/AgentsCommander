@@ -364,9 +364,6 @@ pub(crate) fn parse_status_porcelain_branch(stdout: &str) -> Option<GitStatus> {
 /// Returns `None` on every failure path, which the callers turn into "hold the last
 /// known dirty" via `remember_dirty` and "branch unknown" for `branch`.
 pub(crate) async fn detect_git_status(working_dir: &str) -> Option<GitStatus> {
-    #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
     // Gate 1: require a work tree ROOT; do not let git discover a repo by walking up.
     if tokio::fs::metadata(Path::new(working_dir).join(".git"))
         .await
@@ -375,44 +372,7 @@ pub(crate) async fn detect_git_status(working_dir: &str) -> Option<GitStatus> {
         return None;
     }
 
-    let mut cmd = tokio::process::Command::new("git");
-    crate::pty::credentials::scrub_credentials_from_tokio_command(&mut cmd);
-    crate::config::agent_path::apply_search_path_to_tokio_command(&mut cmd);
-    cmd.args([
-        "--no-optional-locks",
-        "status",
-        "--porcelain",
-        "--branch",
-        "--untracked-files=normal",
-        "--ahead-behind",
-    ])
-    .current_dir(working_dir)
-    .kill_on_drop(true);
-
-    // Gate 2: no ancestor ascent. `join_paths` emits the platform separator, matching
-    // the existing ceiling code. With no parent (a filesystem root), skip the env
-    // entirely rather than set an empty value.
-    if let Some(parent) = Path::new(working_dir).parent() {
-        match std::env::join_paths(std::iter::once(parent)) {
-            Ok(ceiling) => {
-                cmd.env("GIT_CEILING_DIRECTORIES", ceiling);
-            }
-            Err(e) => {
-                // Only reachable if the path contains the path separator itself.
-                // Gate 1 still stands; log rather than abort the detection.
-                log::debug!(
-                    "[git] Could not build GIT_CEILING_DIRECTORIES for {}: {}",
-                    working_dir,
-                    e
-                );
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-
-    match cmd.output().await {
+    match crate::process::git::watcher::watcher_status_output(working_dir).await {
         // Gate 3: retained from the two `detect_branch` copies. A failed git writes
         // `fatal:` to stderr and leaves stdout empty, so the parser would return `None`
         // anyway; dropping the gate would be a silent behaviour change, not a fix.

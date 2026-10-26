@@ -381,8 +381,10 @@ fn agent_install_2736_runner_uses_the_contained_silent_spawn() {
             .find("\n}\n")
             .expect("end of run_agent_install");
     let body = &src[start..end];
-    assert!(body.contains("build_update_step_command("));
-    assert!(body.contains("TargetProcessOwner::spawn("));
+    assert!(body.contains("TargetProcessOwner::spawn_step("));
+    assert!(body.contains("effective_search_path()"));
+    assert!(!body.contains("build_update_step_command("));
+    assert!(!body.contains("TargetProcessOwner::spawn("));
     assert!(!body.contains("Command::new"));
 }
 

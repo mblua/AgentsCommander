@@ -261,7 +261,7 @@ fn remove(args: LoopRemoveArgs) -> Result<(), String> {
     let ac_root = resolve_cli_ac_root(&project_path)?;
     let dir = remove_loop_files(&ac_root, &args.loop_id)?;
     write_refresh(&project_path, &dir, &args.loop_id, "loopRemoved");
-    if std::env::var_os("AC_MACHINE_OUTPUT").is_some() {
+    if crate::config::environment::machine_output_os().is_some() {
         print_json(&serde_json::json!({
             "id": args.loop_id,
             "removed": true
