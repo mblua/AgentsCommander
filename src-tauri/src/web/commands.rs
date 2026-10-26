@@ -703,36 +703,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let repo_paths = cfg.project_paths.clone();
             drop(cfg);
 
-            // Re-use the Tauri command via invoke on the app handle
-            // Since search_repos needs State<>, we call it through the repo scanning logic directly
-            let query_lower = query.to_lowercase();
-            let mut results: Vec<crate::commands::repos::RepoMatch> = Vec::new();
-            let mut seen = std::collections::HashSet::new();
-            for base_path in &repo_paths {
-                let base = std::path::Path::new(base_path);
-                if !base.is_dir() {
-                    continue;
-                }
-                crate::commands::repos::try_add_repo(base, &query_lower, &mut seen, &mut results);
-                if let Ok(entries) = std::fs::read_dir(base) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_dir() {
-                            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                                if !name.starts_with('.') {
-                                    crate::commands::repos::try_add_repo(
-                                        &path,
-                                        &query_lower,
-                                        &mut seen,
-                                        &mut results,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            results.sort_by_key(|a| a.name.to_lowercase());
+            let results = crate::repos::search_repositories(&repo_paths, &query);
             serde_json::to_value(results).map_err(|e| e.to_string())
         }
 

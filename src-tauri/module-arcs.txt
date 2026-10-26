@@ -1281,6 +1281,7 @@ agentscommander_lib::commands::session_warnings -> agentscommander_lib::session:
 agentscommander_lib::commands::spec_board -> agentscommander_lib
 agentscommander_lib::commands::spec_board -> agentscommander_lib::config::settings
 agentscommander_lib::commands::spec_board::paths -> agentscommander_lib::config::settings
+agentscommander_lib::commands::spec_board::paths -> agentscommander_lib::repos
 agentscommander_lib::commands::spec_board::snapshots -> agentscommander_lib
 agentscommander_lib::commands::spec_board::snapshots -> agentscommander_lib::commands::spec_board
 agentscommander_lib::commands::task -> agentscommander_lib::cli::task_ops
@@ -2741,6 +2742,7 @@ agentscommander_lib::reader_demand -> agentscommander_lib::commands::session
 agentscommander_lib::reader_demand -> agentscommander_lib::config::co_managed
 agentscommander_lib::reader_demand -> agentscommander_lib::config::settings
 agentscommander_lib::reader_demand -> agentscommander_lib::session::manager
+agentscommander_lib::repos -> agentscommander_lib::filesystem::repositories
 agentscommander_lib::resource_monitor::registry -> agentscommander_lib::resource_monitor::types
 agentscommander_lib::resource_monitor::registry::sampling -> agentscommander_lib::resource_monitor::registry
 agentscommander_lib::resource_monitor::registry::sampling -> agentscommander_lib::resource_monitor::types
@@ -3164,7 +3166,6 @@ agentscommander_lib::web::commands -> agentscommander_lib::commands::ac_discover
 agentscommander_lib::web::commands -> agentscommander_lib::commands::config
 agentscommander_lib::web::commands -> agentscommander_lib::commands::project_settings
 agentscommander_lib::web::commands -> agentscommander_lib::commands::pty
-agentscommander_lib::web::commands -> agentscommander_lib::commands::repos
 agentscommander_lib::web::commands -> agentscommander_lib::commands::role_templates
 agentscommander_lib::web::commands -> agentscommander_lib::commands::session
 agentscommander_lib::web::commands -> agentscommander_lib::config
@@ -3176,6 +3177,7 @@ agentscommander_lib::web::commands -> agentscommander_lib::errors
 agentscommander_lib::web::commands -> agentscommander_lib::path_utils
 agentscommander_lib::web::commands -> agentscommander_lib::pty::backend
 agentscommander_lib::web::commands -> agentscommander_lib::pty::manager
+agentscommander_lib::web::commands -> agentscommander_lib::repos
 agentscommander_lib::web::commands -> agentscommander_lib::session::manager
 agentscommander_lib::web::commands -> agentscommander_lib::session::purge_guard
 agentscommander_lib::web::commands -> agentscommander_lib::session::selection

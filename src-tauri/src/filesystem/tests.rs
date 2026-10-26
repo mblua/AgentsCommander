@@ -526,3 +526,30 @@ fn persisted_session_cwd_probes_preserve_native_results() {
     assert_eq!(directories::retained_prompt_cwd(&file), None);
     assert_eq!(directories::retained_prompt_cwd(&missing), None);
 }
+
+#[tokio::test]
+async fn p17_cursor_and_lstat_failures() {
+    let temp = tempfile::tempdir().unwrap();
+    let missing = temp.path().join("missing");
+    let file = temp.path().join("file");
+    std::fs::write(&file, "").unwrap();
+    assert!(repositories::open_spec_repo_children(&missing)
+        .await
+        .is_err());
+    assert!(repositories::open_spec_repo_children(&file).await.is_err());
+    let empty = temp.path().join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    let mut children = repositories::open_spec_repo_children(&empty).await.unwrap();
+    assert!(children.next_path().await.is_none());
+    let expected = format!(
+        "Failed to lstat {}: {}",
+        missing.display(),
+        std::fs::symlink_metadata(&missing).unwrap_err()
+    );
+    assert_eq!(
+        repositories::spec_repo_link_state(&missing)
+            .await
+            .unwrap_err(),
+        expected
+    );
+}

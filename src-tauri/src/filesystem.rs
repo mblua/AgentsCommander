@@ -7,6 +7,7 @@ pub(crate) mod directories;
 pub(crate) mod documents;
 pub(crate) mod processes;
 pub(crate) mod projects;
+pub(crate) mod repositories;
 pub(crate) mod transcripts;
 
 /// Read the capture catalog without changing the platform's file semantics.
