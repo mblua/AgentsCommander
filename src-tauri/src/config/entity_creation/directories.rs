@@ -1,4 +1,16 @@
-//! Entity directory discovery rules; excludes physical directory traversal.
+//! Entity directory rules; delegates physical traversal and deletion.
+#[cfg(test)]
+pub(crate) use crate::filesystem::projects::entities::deletion::is_file_in_use_error;
+#[cfg(test)]
+pub(crate) use crate::filesystem::projects::entities::deletion::FILE_ATTRIBUTE_REPARSE_POINT;
+pub(crate) use crate::filesystem::projects::entities::deletion::{
+    canonical_delete_path_or_original, inspect_team_for_delete, is_rename_blocked_by_handle,
+    metadata_is_link_or_reparse, metadata_parts_are_link_or_reparse, remove_replica_directory,
+    remove_room_orphan, remove_staged_agent_target, remove_team_directory, rename_room_for_delete,
+    restore_agent_target, stage_agent_target, validate_delete_root, ReplicaRemovalOutcome,
+    WgDeleteOutcome,
+};
+
 use super::names::validate_existing_name;
 use crate::filesystem::projects::entities::directories as disk;
 use std::collections::HashSet;

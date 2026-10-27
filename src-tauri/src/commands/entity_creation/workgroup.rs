@@ -344,40 +344,10 @@ pub(super) fn initialize_workgroup_replicas_on_disk_traced(
     }
 }
 
-/// Typed outcome of removing one replica directory (#1063, plan section 5.4).
-///
-/// Replaces the prior bare `Ok(())` so lifecycle callers can distinguish a real
-/// removal from a proven absence and prune manifest rows only for `Removed` or an
-/// explicit `AlreadyAbsent`. `AlreadyAbsent` is constructed only from an exact
-/// `symlink_metadata`/remove `ErrorKind::NotFound`; it never uses `Path::exists`,
-/// which collapses access and other inspection errors to false. A plain
-/// discovery `NotFound` observed elsewhere never reaches this typed path and
-/// therefore never prunes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ReplicaRemovalOutcome {
-    Removed,
-    AlreadyAbsent,
-    Failed(String),
-}
+pub(crate) use crate::config::entity_creation::directories::ReplicaRemovalOutcome;
 
 pub(crate) fn remove_replica_dir(replica_dir: &Path) -> ReplicaRemovalOutcome {
-    match std::fs::symlink_metadata(replica_dir) {
-        Ok(_) => match std::fs::remove_dir_all(replica_dir) {
-            Ok(()) => ReplicaRemovalOutcome::Removed,
-            // A concurrent removal between the no-follow probe and the delete is
-            // proven absent, not a failure.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                ReplicaRemovalOutcome::AlreadyAbsent
-            }
-            Err(e) => {
-                ReplicaRemovalOutcome::Failed(format!("Failed to delete replica directory: {}", e))
-            }
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => ReplicaRemovalOutcome::AlreadyAbsent,
-        Err(e) => {
-            ReplicaRemovalOutcome::Failed(format!("Failed to inspect replica directory: {}", e))
-        }
-    }
+    crate::config::entity_creation::directories::remove_replica_directory(replica_dir)
 }
 
 // ===========================================================================

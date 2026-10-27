@@ -13,6 +13,7 @@ use super::workgroup::{
     acquire_lifecycle_project_gate, prune_agent_component_scope, prune_replica_config_scope,
 };
 use super::CreatedEntityResult;
+use crate::config::entity_creation::directories;
 use crate::config::seed_manifest::{ManifestActivationToken, ProjectSeedManifestGuard};
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::session::manager::SessionManager;
@@ -246,7 +247,7 @@ pub(super) fn run_agent_delete_transaction(
     // staged set on failure, so no targets remain staged on Err.
     let staged = match stage_agent_delete_targets_with_rename(
         plan,
-        |from: &Path, to: &Path| std::fs::rename(from, to),
+        directories::stage_agent_target,
         session_mgr,
     ) {
         Ok(staged) => staged,
@@ -360,7 +361,9 @@ pub(super) fn rollback_staged_targets_reporting(
 ) -> Vec<StagedAgentDeleteTarget> {
     let mut still_staged = Vec::new();
     for target in staged.iter().rev() {
-        if let Err(e) = std::fs::rename(&target.staged_path, &target.original_path) {
+        if let Err(e) =
+            directories::restore_agent_target(&target.staged_path, &target.original_path)
+        {
             log::warn!(
                 "[entity_creation] agent-delete rollback left '{}' [{}] staged: {}",
                 target.label,
@@ -569,11 +572,8 @@ pub(super) async fn stage_agent_delete_targets(
     plan: &AgentDeletePlan,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
 ) -> Result<Vec<StagedAgentDeleteTarget>, String> {
-    match stage_agent_delete_targets_with_rename(
-        plan,
-        |from: &Path, to: &Path| std::fs::rename(from, to),
-        session_mgr,
-    ) {
+    match stage_agent_delete_targets_with_rename(plan, directories::stage_agent_target, session_mgr)
+    {
         Ok(staged) => Ok(staged),
         Err(AgentDeleteStageError::Blocked { target, raw_error }) => {
             log::info!(
@@ -672,7 +672,7 @@ pub(super) fn rollback_staged_agent_delete_targets(
     staged: &[StagedAgentDeleteTarget],
 ) -> Result<(), String> {
     rollback_staged_agent_delete_targets_with_rename(staged, |from: &Path, to: &Path| {
-        std::fs::rename(from, to)
+        directories::restore_agent_target(from, to)
     })
 }
 
@@ -712,7 +712,7 @@ pub(super) fn remove_staged_agent_delete_targets(
 ) -> Result<(), String> {
     let mut errors = Vec::new();
     for target in staged {
-        if let Err(e) = std::fs::remove_dir_all(&target.staged_path) {
+        if let Err(e) = directories::remove_staged_agent_target(&target.staged_path) {
             errors.push(format!(
                 "{} [{}] {}: {}",
                 target.label,
