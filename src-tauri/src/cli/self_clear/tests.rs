@@ -185,12 +185,11 @@ fn self_clear_help_documents_forgotten_summary_behavior() {
 /// NOT the path-derived FQN. This is the discriminating gate for the fix: on the
 /// pre-fix code (`agent_name_from_root` on the Root cwd) this returns a path-like
 /// FQN and the assertion fails; with `sender_for_root` it returns the reserved
-/// constant. `is_root_agent_path` recognizes the canonical `root_agent_dir()` by
-/// string-equality even when the directory is absent, so no filesystem setup is
-/// needed.
+/// constant. The canonical Root directory must exist so its identity can be verified.
 #[test]
 fn self_clear_sender_for_root_agent_uses_reserved_constant() {
     let root = crate::config::root_agent::root_agent_dir().expect("resolve root agent dir");
+    std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
     assert_eq!(
         resolve_self_clear_sender(&root),
         crate::config::root_agent::ROOT_AGENT_SENDER,
