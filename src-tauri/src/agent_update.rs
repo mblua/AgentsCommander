@@ -67,11 +67,14 @@ use tauri::{AppHandle, Emitter, Manager};
 pub use cancellation::{cancel_all_updates, cancel_update};
 pub use gate::{AgentUpdateGate, AnswerClaim, ClaimedPrompt, PromptState};
 pub(crate) use install::start_agent_install;
+pub use install::AgentInstallState;
 #[cfg(test)]
 use install::{
-    agent_install_log_lines, contains_install_command, install_finished_payload, run_agent_install,
-    start_agent_install_with_timeout, AgentInstallRun, InstallInFlight,
+    agent_install_log_lines, install_finished_payload, run_agent_install,
+    start_agent_install_with_timeout, AgentInstallRun,
 };
+#[cfg(test)]
+pub(crate) use install::{contains_install_command, InstallInFlight};
 pub use pass::pass_nodes;
 use pass::PassSupervisor;
 #[cfg(test)]

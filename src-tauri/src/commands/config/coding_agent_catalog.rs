@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::config::settings::{AppSettings, SettingsState};
 
@@ -132,7 +132,8 @@ pub(crate) async fn install_coding_agent_inner_with(
         .ok_or_else(|| format!("no install command is available for '{key}' on this platform"))?
         .to_string();
     let cwd = install_cwd_for(&snapshot);
-    crate::agent_update::start_agent_install(app, key, command, cwd)
+    let owner = app.state::<crate::app_state::AppOwners>().installs.clone();
+    crate::agent_update::start_agent_install(app, owner, key, command, cwd)
 }
 
 /// #2736 - the install cwd, same precedence the updater uses. Pure over the
