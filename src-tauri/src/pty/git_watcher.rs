@@ -365,7 +365,7 @@ pub(crate) fn parse_status_porcelain_branch(stdout: &str) -> Option<GitStatus> {
 /// known dirty" via `remember_dirty` and "branch unknown" for `branch`.
 pub(crate) async fn detect_git_status(working_dir: &str) -> Option<GitStatus> {
     // Gate 1: require a work tree ROOT; do not let git discover a repo by walking up.
-    if tokio::fs::metadata(Path::new(working_dir).join(".git"))
+    if crate::filesystem::repositories::git_root_metadata(&Path::new(working_dir).join(".git"))
         .await
         .is_err()
     {

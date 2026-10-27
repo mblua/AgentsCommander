@@ -327,7 +327,10 @@ pub fn container_mount_source_rejection(cwd: &Path) -> Option<String> {
 }
 
 fn same_path_or_string(a: &Path, b: &Path) -> bool {
-    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+    match (
+        crate::filesystem::directories::canonical_container_mount(a),
+        crate::filesystem::directories::canonical_container_mount(b),
+    ) {
         (Ok(a), Ok(b)) => a == b,
         _ => root_key(&a.to_string_lossy()) == root_key(&b.to_string_lossy()),
     }

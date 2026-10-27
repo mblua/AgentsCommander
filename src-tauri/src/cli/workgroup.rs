@@ -169,7 +169,8 @@ fn write_refresh_traced(
 ) {
     let mut stage = operation.as_ref().map(|p| p.child(Stage::RefreshPublish));
     let canonical_project_path =
-        std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
+        crate::filesystem::projects::canonical_refresh_project(project_path)
+            .unwrap_or_else(|_| project_path.to_path_buf());
     let canonical_changed_path =
         std::fs::canonicalize(changed_path).unwrap_or_else(|_| changed_path.to_path_buf());
     let request = ProjectRefreshRequest {

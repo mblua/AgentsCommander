@@ -2,6 +2,14 @@
 
 use std::path::{Path, PathBuf};
 
+pub(crate) mod attachments;
+pub(crate) mod directories;
+pub(crate) mod documents;
+pub(crate) mod processes;
+pub(crate) mod projects;
+pub(crate) mod repositories;
+pub(crate) mod transcripts;
+
 /// Read the capture catalog without changing the platform's file semantics.
 pub(crate) fn read_capture_catalog(path: &Path) -> std::io::Result<String> {
     std::fs::read_to_string(path)

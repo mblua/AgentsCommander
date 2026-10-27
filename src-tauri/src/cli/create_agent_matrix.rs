@@ -146,10 +146,11 @@ pub(crate) fn execute_matrix_project_create(
     let agent_path = created.agent_dir.to_string_lossy().to_string();
     let role_path = created.role_path.to_string_lossy().to_string();
 
-    let project_path_for_refresh = std::fs::canonicalize(&resolved_project.path)
-        .unwrap_or_else(|_| resolved_project.path.clone())
-        .to_string_lossy()
-        .to_string();
+    let project_path_for_refresh =
+        crate::filesystem::projects::canonical_refresh_project(&resolved_project.path)
+            .unwrap_or_else(|_| resolved_project.path.clone())
+            .to_string_lossy()
+            .to_string();
     let agent_path_for_refresh = std::fs::canonicalize(&created.agent_dir)
         .unwrap_or_else(|_| created.agent_dir.clone())
         .to_string_lossy()

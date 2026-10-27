@@ -273,7 +273,7 @@ fn enumerate_project_dirs(project_paths: &[String]) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
     for rp in project_paths {
         let base = Path::new(rp);
-        if !base.is_dir() {
+        if !crate::filesystem::projects::project_path_is_dir(base) {
             continue;
         }
 
@@ -285,21 +285,21 @@ fn enumerate_project_dirs(project_paths: &[String]) -> Vec<(String, PathBuf)> {
         }
 
         // Plus immediate non-dot children that contain a Project AC Root.
-        if let Ok(entries) = std::fs::read_dir(base) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if !p.is_dir() {
-                    continue;
+        let _ = crate::filesystem::projects::visit_project_kind_children(base, |entry| {
+            if let Ok(p) = entry {
+                if !crate::filesystem::projects::project_path_is_dir(&p) {
+                    return std::ops::ControlFlow::Continue(());
                 }
                 let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if name.starts_with('.') {
-                    continue;
+                    return std::ops::ControlFlow::Continue(());
                 }
                 if has_ac_root(&p) {
                     out.push((name.to_string(), p));
                 }
             }
-        }
+            std::ops::ControlFlow::Continue(())
+        });
     }
     out
 }
@@ -356,48 +356,37 @@ fn enumerate_project_dirs_strict(
                 .ok_or_else(|| "unsafe_path".to_string())?;
             out.push((name.to_string(), base.clone(), ProjectOrigin::Configured));
         }
-        let entries = std::fs::read_dir(&base).map_err(|_| "unsafe_path".to_string())?;
-        for entry in entries {
-            let entry = entry.map_err(|_| "unsafe_path".to_string())?;
-            scanned_entries = scanned_entries.saturating_add(1);
-            if scanned_entries > 1_024 {
-                return Err("invalid_target".to_string());
-            }
-            let name = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| "unsafe_path".to_string())?;
-            if name.starts_with('.') {
-                continue;
-            }
-            let metadata = entry.metadata().map_err(|_| "unsafe_path".to_string())?;
-            if !metadata.is_dir() {
-                continue;
-            }
-            // #2228: a scanned neighbour that fails identity verification is
-            // irrelevant to the caller's request and can never be emitted as a
-            // target, so it is skipped and counted instead of aborting the
-            // whole scan. The caller-supplied path at the top of this loop
-            // stays fail-closed.
-            let Ok(child_identity) = crate::path_identity::verify_directory(&entry.path()) else {
-                *skipped_children = skipped_children.saturating_add(1);
-                continue;
-            };
-            let Ok(child_ac_root) = strict_project_ac_root(&child_identity.canonical_path) else {
-                *skipped_children = skipped_children.saturating_add(1);
-                continue;
-            };
-            if child_ac_root.is_some() {
-                out.push((
-                    name,
-                    child_identity.canonical_path,
-                    ProjectOrigin::ScannedChild,
-                ));
-                if out.len() > 1_024 {
-                    return Err("invalid_target".to_string());
+        crate::filesystem::projects::visit_team_project_children_strict(
+            &base,
+            &mut scanned_entries,
+            |name, child| {
+                // #2228: a scanned neighbour that fails identity verification is
+                // irrelevant to the caller's request and can never be emitted as a
+                // target, so it is skipped and counted instead of aborting the
+                // whole scan. The caller-supplied path at the top of this loop
+                // stays fail-closed.
+                let Ok(child_identity) = crate::path_identity::verify_directory(&child) else {
+                    *skipped_children = skipped_children.saturating_add(1);
+                    return Ok(());
+                };
+                let Ok(child_ac_root) = strict_project_ac_root(&child_identity.canonical_path)
+                else {
+                    *skipped_children = skipped_children.saturating_add(1);
+                    return Ok(());
+                };
+                if child_ac_root.is_some() {
+                    out.push((
+                        name,
+                        child_identity.canonical_path,
+                        ProjectOrigin::ScannedChild,
+                    ));
+                    if out.len() > 1_024 {
+                        return Err("invalid_target".to_string());
+                    }
                 }
-            }
-        }
+                Ok(())
+            },
+        )?;
     }
     Ok(out)
 }

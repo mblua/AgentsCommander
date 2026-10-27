@@ -1,6 +1,7 @@
 //! Main-window geometry helpers.
 
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::manager::PtyManager;
@@ -110,4 +111,13 @@ pub(crate) fn response_close_wiring_matches(
         && menu
             .response_close_state()
             .is_some_and(|bound| state.same_state(bound))
+}
+
+pub(crate) fn validate_explorer_target(path: &str) -> Result<PathBuf, String> {
+    let canonical = crate::filesystem::directories::canonical_explorer_target(Path::new(path))
+        .map_err(|_| format!("Path does not exist or is inaccessible: {}", path))?;
+    if !crate::filesystem::directories::explorer_target_is_dir(&canonical) {
+        return Err(format!("Path is not a directory: {}", path));
+    }
+    Ok(canonical)
 }

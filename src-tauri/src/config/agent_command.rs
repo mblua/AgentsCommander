@@ -63,7 +63,7 @@ pub fn resolve_program(token: &str) -> Option<PathBuf> {
 pub fn resolve_program_in(token: &str, search_path: &OsStr) -> Option<PathBuf> {
     let p = Path::new(token);
     if !is_bare_program_token(token) {
-        return if p.is_file() {
+        return if crate::filesystem::directories::agent_program_is_file(p) {
             Some(p.to_path_buf())
         } else {
             None
@@ -902,6 +902,14 @@ pub fn build_agent_spawn_command(
         resolve_agent_spawn_command(settings, agent_id, launch_path, requested_profile, false)?;
     prepare_agent_spawn_command(&command)?;
     Ok(command)
+}
+
+pub(crate) fn read_claude_resume_wrapper(path: &Path) -> Option<Vec<u8>> {
+    crate::filesystem::documents::read_claude_resume_wrapper(path)
+}
+
+pub(crate) fn resume_host_directory_is_dir(path: &Path) -> bool {
+    crate::filesystem::directories::resume_host_directory_is_dir(path)
 }
 
 #[cfg(test)]

@@ -243,9 +243,15 @@ pub(super) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> 
     if let Some(project_dir) = wg.ac_root.parent() {
         if let Some(project_str) = project_dir.to_str() {
             let p = project_str.to_string();
-            let canon_p = std::fs::canonicalize(&p).ok();
+            let canon_p =
+                crate::filesystem::projects::canonical_refresh_project(Path::new(&p)).ok();
             let already_present = effective_paths.iter().any(|x| match &canon_p {
-                Some(c) => std::fs::canonicalize(x).ok().as_ref() == Some(c),
+                Some(c) => {
+                    crate::filesystem::projects::canonical_refresh_project(Path::new(x))
+                        .ok()
+                        .as_ref()
+                        == Some(c)
+                }
                 None => x == &p,
             });
             if !already_present {
@@ -371,22 +377,17 @@ pub(super) fn discover_origin_peers(root: &str, project_paths: &[String]) -> Vec
     // Scan project_paths for Project AC Root wg-*/__agent_* replicas
     for base_path in project_paths {
         let base = Path::new(base_path);
-        if !base.is_dir() {
+        if !crate::filesystem::projects::project_path_is_dir(base) {
             continue;
         }
         // Check base and its immediate children (same pattern as ac_discovery)
         let mut dirs_to_check = vec![base.to_path_buf()];
-        if let Ok(entries) = std::fs::read_dir(base) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    if !name.starts_with('.') {
-                        dirs_to_check.push(p);
-                    }
-                }
+        crate::filesystem::projects::visit_discovery_project_children(base, |p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !name.starts_with('.') {
+                dirs_to_check.push(p);
             }
-        }
+        });
         for repo_dir in dirs_to_check {
             let Some(ac_root) = existing_ac_root(&repo_dir) else {
                 continue;
@@ -476,23 +477,17 @@ pub(super) fn discover_root_coordinator_peers_from_project_paths(
 
     for base_path in project_paths {
         let base = Path::new(base_path);
-        if !base.is_dir() {
+        if !crate::filesystem::projects::project_path_is_dir(base) {
             continue;
         }
 
         let mut dirs_to_check = vec![base.to_path_buf()];
-        if let Ok(entries) = std::fs::read_dir(base) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if !p.is_dir() {
-                    continue;
-                }
-                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !name.starts_with('.') {
-                    dirs_to_check.push(p);
-                }
+        crate::filesystem::projects::visit_discovery_project_children(base, |p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !name.starts_with('.') {
+                dirs_to_check.push(p);
             }
-        }
+        });
 
         for repo_dir in dirs_to_check {
             let Some(ac_root) = existing_ac_root(&repo_dir) else {

@@ -181,7 +181,7 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
     let claude_project_exists = resume_probe
         .as_ref()
         .and_then(|probe| probe.host_probe_path.as_ref())
-        .is_some_and(|path| path.is_dir());
+        .is_some_and(|path| crate::config::agent_command::resume_host_directory_is_dir(path));
     let mut session_env_warnings: Vec<ContainerEnvWarning> = Vec::new();
     if let Some(warning) = resume_probe
         .as_ref()

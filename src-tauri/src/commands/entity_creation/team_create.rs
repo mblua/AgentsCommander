@@ -43,7 +43,8 @@ pub async fn list_all_agents(
 pub(super) fn project_directory_identity(
     project: &Path,
 ) -> Result<(PathBuf, MatrixCopyIdentity), String> {
-    let canonical = project.canonicalize().map_err(|e| e.to_string())?;
+    let canonical =
+        crate::config::projects::canonical_source_project(project).map_err(|e| e.to_string())?;
     selected_ac_root(&canonical)?;
     let handle = OwnedCopyArtifacts::open_existing(&canonical, MatrixCopyKind::Directory)?;
     Ok((canonical, OwnedCopyArtifacts::handle_identity(&handle)?))

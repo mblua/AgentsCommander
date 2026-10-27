@@ -1,3 +1,5 @@
+use crate::filesystem::projects;
+use std::ops::ControlFlow;
 use std::path::Path;
 
 // ── #1077 candidate validity and directory identity (§3.4) ─────────────────
@@ -133,7 +135,7 @@ pub(super) fn classify_probe_error(e: &std::io::Error) -> ProbeError {
 /// `is_real_directory`, which rejects links for child enumeration).
 pub(super) fn validate_fs_candidate(syntactic: &Path) -> SideOutcome {
     let syntactic_str = syntactic.to_str().map(str::to_string);
-    let canon = match std::fs::canonicalize(syntactic) {
+    let canon = match projects::canonical_project_path(syntactic) {
         Ok(c) => c,
         Err(e) => return SideOutcome::failed(classify_io_error(&e), syntactic_str),
     };
@@ -141,7 +143,7 @@ pub(super) fn validate_fs_candidate(syntactic: &Path) -> SideOutcome {
         Some(s) => s.to_string(),
         None => return SideOutcome::failed(SideStatus::NonUtf8, syntactic_str),
     };
-    match std::fs::metadata(&canon) {
+    match projects::project_path_metadata(&canon) {
         Ok(md) if md.is_dir() => {}
         Ok(_) => {
             return SideOutcome {
@@ -214,39 +216,42 @@ pub(super) fn probe_project_kind(target: &Path) -> Result<ProjectKind, ProbeErro
         },
     }
 
-    let entries = std::fs::read_dir(target).map_err(|e| classify_probe_error(&e))?;
     let mut probe_error: Option<ProbeError> = None;
-    for entry in entries {
+    let outcome = projects::visit_project_kind_children(target, |entry| {
         let entry = match entry {
             Ok(en) => en,
             Err(e) => {
                 probe_error.get_or_insert(classify_probe_error(&e));
-                continue;
+                return ControlFlow::Continue(());
             }
         };
-        let name = entry.file_name();
+        let name = entry.file_name().unwrap_or_default();
         if name.to_string_lossy().starts_with('.') {
-            continue;
+            return ControlFlow::Continue(());
         }
-        let child = entry.path();
-        match std::fs::metadata(&child) {
+        let child = entry;
+        match projects::project_path_metadata(&child) {
             Ok(md) if md.is_dir() => {}
-            Ok(_) => continue,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Ok(_) => return ControlFlow::Continue(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ControlFlow::Continue(()),
             Err(e) => {
                 probe_error.get_or_insert(classify_probe_error(&e));
-                continue;
+                return ControlFlow::Continue(());
             }
         }
         match std::fs::metadata(child.join(".ac")) {
-            Ok(md) if md.is_dir() => return Ok(ProjectKind::CollectionRoot),
-            Ok(_) => continue,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Ok(md) if md.is_dir() => ControlFlow::Break(()),
+            Ok(_) => ControlFlow::Continue(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => ControlFlow::Continue(()),
             Err(e) => {
                 probe_error.get_or_insert(classify_probe_error(&e));
-                continue;
+                ControlFlow::Continue(())
             }
         }
+    })
+    .map_err(|e| classify_probe_error(&e))?;
+    if outcome.is_break() {
+        return Ok(ProjectKind::CollectionRoot);
     }
     match probe_error {
         Some(err) => Err(err),
@@ -254,55 +259,9 @@ pub(super) fn probe_project_kind(target: &Path) -> Result<ProjectKind, ProbeErro
     }
 }
 
-/// Directory identity of a canonical directory via an open handle. Follows the
-/// (already-resolved) target; does not reuse `seed_manifest`'s reparse-detecting
-/// open. Mirrors the reviewed handle pattern without coupling to its types.
-#[cfg(windows)]
 pub(super) fn directory_identity(path: &Path) -> std::io::Result<DirectoryIdentity> {
-    use std::mem::MaybeUninit;
-    use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)?;
-    let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
-    let ok =
-        unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, info.as_mut_ptr()) };
-    if ok == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let info = unsafe { info.assume_init() };
-    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
-    Ok(DirectoryIdentity {
-        volume: u64::from(info.dwVolumeSerialNumber),
-        file: u128::from(index),
-    })
-}
-
-#[cfg(unix)]
-pub(super) fn directory_identity(path: &Path) -> std::io::Result<DirectoryIdentity> {
-    use std::os::unix::fs::MetadataExt;
-    let md = std::fs::metadata(path)?;
-    Ok(DirectoryIdentity {
-        volume: md.dev(),
-        file: u128::from(md.ino()),
-    })
-}
-
-#[cfg(not(any(unix, windows)))]
-pub(super) fn directory_identity(_path: &Path) -> std::io::Result<DirectoryIdentity> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "handle identity unavailable on this platform; canonical path equality is the fallback",
-    ))
+    projects::project_directory_identity(path)
+        .map(|(volume, file)| DirectoryIdentity { volume, file })
 }
 
 /// Whether two validated candidates name the same directory. Canonical string

@@ -118,24 +118,19 @@ pub async fn discover_ac_agents(
 
     for base_path in &cfg.project_paths {
         let base = Path::new(base_path);
-        if !base.is_dir() {
+        if !crate::config::projects::configured_project_is_dir(base) {
             continue;
         }
 
         // Also check children of the base path (same pattern as search_repos)
         let dirs_to_check: Vec<std::path::PathBuf> = {
             let mut dirs = vec![base.to_path_buf()];
-            if let Ok(entries) = std::fs::read_dir(base) {
-                for entry in entries.flatten() {
-                    let p = entry.path();
-                    if p.is_dir() {
-                        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                        if !name.starts_with('.') {
-                            dirs.push(p);
-                        }
-                    }
+            crate::config::projects::visit_discovery_project_children(base, |p| {
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !name.starts_with('.') {
+                    dirs.push(p);
                 }
-            }
+            });
             dirs
         };
 
