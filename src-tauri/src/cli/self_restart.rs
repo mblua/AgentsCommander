@@ -2,6 +2,7 @@ use clap::Args;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+use crate::filesystem::{directories, documents};
 use crate::phone::types::OutboxMessage;
 
 /// Pure: map the daemon's self-handoff-and-restart response body to a CLI exit code.
@@ -164,16 +165,16 @@ pub fn execute(args: SelfRestartArgs) -> i32 {
     let outbox_dir = if is_root {
         let app_outbox = crate::config::config_dir()
             .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .and_then(|p| documents::read_cli_outbox_text(&p).ok())
             .map(|s| PathBuf::from(s.trim()));
         match app_outbox {
-            Some(p) if p.is_dir() => p,
+            Some(p) if directories::cli_agent_root_is_dir(&p) => p,
             _ => ac_dir.join("outbox"),
         }
     } else {
         ac_dir.join("outbox")
     };
-    if let Err(e) = std::fs::create_dir_all(&outbox_dir) {
+    if let Err(e) = directories::ensure_cli_outbox(&outbox_dir) {
         eprintln!("Error: failed to create outbox directory: {}", e);
         return 1;
     }
@@ -185,7 +186,7 @@ pub fn execute(args: SelfRestartArgs) -> i32 {
             return 1;
         }
     };
-    if let Err(e) = std::fs::write(&outbox_path, json) {
+    if let Err(e) = documents::write_cli_outbox_message(&outbox_path, json.as_bytes()) {
         eprintln!("Error: failed to write outbox file: {}", e);
         return 1;
     }
@@ -201,11 +202,11 @@ pub fn execute(args: SelfRestartArgs) -> i32 {
     let confirm_poll = std::time::Duration::from_millis(250);
     let start = std::time::Instant::now();
     loop {
-        if delivered_path.exists() {
+        if directories::cli_outbox_artifact_exists(&delivered_path) {
             break;
         }
-        if rejected_reason_path.exists() {
-            let reason = std::fs::read_to_string(&rejected_reason_path)
+        if directories::cli_outbox_artifact_exists(&rejected_reason_path) {
+            let reason = documents::read_cli_outbox_text(&rejected_reason_path)
                 .unwrap_or_else(|_| "unknown reason".to_string());
             eprintln!(
                 "Error: self-handoff-and-restart rejected - {}",
@@ -231,8 +232,8 @@ pub fn execute(args: SelfRestartArgs) -> i32 {
     let resp_poll = std::time::Duration::from_millis(250);
     let resp_start = std::time::Instant::now();
     loop {
-        if response_path.exists() {
-            match std::fs::read_to_string(&response_path) {
+        if directories::cli_outbox_artifact_exists(&response_path) {
+            match documents::read_cli_outbox_text(&response_path) {
                 Ok(content) => {
                     crate::cli_println!("{}", content);
                     // Honest, conditional wording: the deferred respawn is best-effort, NOT a

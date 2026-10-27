@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::config::teams;
+use crate::filesystem::{directories, documents};
 use crate::phone::types::OutboxMessage;
 
 use super::send::agent_name_from_root;
@@ -203,7 +204,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         if let Some(ref token_str) = args.token {
             crate::config::config_dir()
                 .map(|d| d.join("master-token.txt"))
-                .and_then(|p| std::fs::read_to_string(&p).ok())
+                .and_then(|p| documents::read_cli_outbox_text(&p).ok())
                 .map(|m| m.trim() == token_str)
                 .unwrap_or(false)
         } else {
@@ -269,17 +270,17 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
     let outbox_dir = if is_root {
         let app_outbox = crate::config::config_dir()
             .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .and_then(|p| documents::read_cli_outbox_text(&p).ok())
             .map(|s| PathBuf::from(s.trim()));
         match app_outbox {
-            Some(p) if p.is_dir() => p,
+            Some(p) if directories::cli_agent_root_is_dir(&p) => p,
             _ => ac_dir.join("outbox"),
         }
     } else {
         ac_dir.join("outbox")
     };
 
-    if let Err(e) = std::fs::create_dir_all(&outbox_dir) {
+    if let Err(e) = directories::ensure_cli_outbox(&outbox_dir) {
         log::error!("failed to create outbox directory: {}", e);
         eprintln!("Error: failed to create outbox directory: {}", e);
         return 1;
@@ -295,7 +296,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         }
     };
 
-    if let Err(e) = std::fs::write(&outbox_path, json) {
+    if let Err(e) = documents::write_cli_outbox_message(&outbox_path, json.as_bytes()) {
         log::error!("failed to write outbox file: {}", e);
         eprintln!("Error: failed to write outbox file: {}", e);
         return 1;
@@ -323,7 +324,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
     let start = std::time::Instant::now();
 
     loop {
-        if response_path.exists() {
+        if directories::cli_outbox_artifact_exists(&response_path) {
             // §1440 F1: the daemon writes this file with std::fs::write (no
             // atomic rename) and, in the common case, TWICE (mailbox.rs
             // handle_close_session, §224 A.6 dual-write: the outbox-derived
@@ -334,7 +335,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
             // completed file. A genuinely malformed response (daemon bug)
             // or a persistent read failure therefore reports exit 2 at the
             // deadline instead of an immediate 2 (or a fabricated 1).
-            if let Ok(content) = std::fs::read_to_string(&response_path) {
+            if let Ok(content) = documents::read_cli_outbox_text(&response_path) {
                 if serde_json::from_str::<serde_json::Value>(&content).is_ok() {
                     crate::cli_println!("{}", content);
                     // §224 G7 — print a human-readable prose line for no_match
@@ -350,8 +351,8 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
                 }
             }
         }
-        if rejected_reason_path.exists() {
-            let reason = std::fs::read_to_string(&rejected_reason_path)
+        if directories::cli_outbox_artifact_exists(&rejected_reason_path) {
+            let reason = documents::read_cli_outbox_text(&rejected_reason_path)
                 .unwrap_or_else(|_| "unknown reason".to_string());
             let trimmed = reason.trim();
             log::error!("close-session rejected — {}", trimmed);
@@ -370,7 +371,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
                 budget.as_secs(),
                 &request_id,
                 &msg_id,
-                delivered_path.exists(),
+                directories::cli_outbox_artifact_exists(&delivered_path),
             );
             log::error!("{}", m);
             eprintln!("Error: {}", m);

@@ -743,3 +743,18 @@ fn scan_cwd_processes_windows_detects_child_process_current_dir() {
         last_error
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn room_lock_resources_small_budget_prefers_directories() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let room = tmp.path();
+    let repo = room.join("repo-test");
+    std::fs::create_dir(&repo).expect("repo");
+    std::fs::write(repo.join("index.lock"), "hot").expect("hot");
+    std::fs::write(room.join("TASK.md"), "cold").expect("cold");
+
+    let result = crate::filesystem::room_diagnostics::collect_room_lock_resources(room, 2);
+
+    assert_eq!(result, vec![room.to_path_buf(), repo]);
+}

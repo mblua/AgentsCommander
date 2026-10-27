@@ -698,3 +698,82 @@ fn issue_3171_shape_error_is_actionable_and_single_line() {
     ));
     assert!(!message.contains(['\n', '\r']));
 }
+
+#[test]
+fn p04_pty_publication_preserves_bytes_and_regular_collisions() {
+    let directory = tempfile::tempdir().unwrap();
+    let outbox = directory.path();
+    let publish = |temp, final_path| {
+        crate::filesystem::publish_cli_pty_request(
+            outbox,
+            temp,
+            final_path,
+            b"private payload",
+            crate::path_identity::verify_directory(outbox).unwrap(),
+            1024,
+        )
+    };
+    let destination = outbox.join("published.json");
+    assert_eq!(
+        publish(outbox.join("temporary"), destination.clone()).unwrap(),
+        destination
+    );
+    assert_eq!(std::fs::read(&destination).unwrap(), b"private payload");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&destination)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+    assert_eq!(
+        publish(outbox.join("unused"), destination.clone()).unwrap_err(),
+        "publish_ambiguous"
+    );
+    assert_eq!(std::fs::read(&destination).unwrap(), b"private payload");
+    assert!(!outbox.join("unused").exists());
+    let temporary = outbox.join("occupied");
+    std::fs::write(&temporary, b"keep temporary").unwrap();
+    let absent = outbox.join("absent.json");
+    assert_eq!(
+        publish(temporary.clone(), absent.clone()).unwrap_err(),
+        "publish_failed"
+    );
+    assert_eq!(std::fs::read(temporary).unwrap(), b"keep temporary");
+    assert!(!absent.exists());
+}
+
+#[test]
+fn p04_pty_publication_rejects_replaced_outbox_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let outbox = directory.path().join("outbox");
+    std::fs::create_dir(&outbox).unwrap();
+    std::fs::write(outbox.join("retained"), b"original").unwrap();
+    let identity = crate::path_identity::verify_directory(&outbox).unwrap();
+    let previous = directory.path().join("previous");
+    std::fs::rename(&outbox, &previous).unwrap();
+    std::fs::create_dir(&outbox).unwrap();
+    let final_path = outbox.join("request.json");
+    assert_eq!(
+        crate::filesystem::publish_cli_pty_request(
+            &outbox,
+            outbox.join("temporary"),
+            final_path.clone(),
+            b"payload",
+            identity,
+            1024,
+        )
+        .unwrap_err(),
+        "publish_ambiguous"
+    );
+    assert!(!final_path.exists());
+    assert_eq!(
+        std::fs::read(previous.join("retained")).unwrap(),
+        b"original"
+    );
+}
