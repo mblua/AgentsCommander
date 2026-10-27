@@ -151,9 +151,8 @@ pub(crate) struct ReplicaDiskCreateArgs {
 // Agent Matrices own canonical state (`memory/`, `plans/`, `skills/`) plus
 // mailboxes. Workgroup replicas own only mailboxes; their config points back
 // to the origin matrix for canonical state.
-pub(crate) const AGENT_MATRIX_DIRS: &[&str] = &["memory", "plans", "skills", "inbox", "outbox"];
-
-pub(crate) const AGENT_REPLICA_DIRS: &[&str] = &["inbox", "outbox"];
+#[allow(unused_imports)]
+pub(crate) use crate::config::entity_creation::matrices::{AGENT_MATRIX_DIRS, AGENT_REPLICA_DIRS};
 
 #[cfg(test)]
 mod tests;

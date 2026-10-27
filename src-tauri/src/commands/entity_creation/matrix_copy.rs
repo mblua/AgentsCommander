@@ -1,9 +1,10 @@
 #[cfg(windows)]
 use super::delete_guard::path_key_for_delete_without_canonicalize;
 use super::delete_guard::{metadata_is_link_or_reparse, metadata_parts_are_link_or_reparse};
-use super::matrix_layout::{default_agent_matrix_config, selected_ac_root, validate_existing_name};
+use super::matrix_layout::{selected_ac_root, validate_existing_name};
 use super::team_config::resolve_agent_ref;
 use super::AGENT_MATRIX_DIRS;
+use crate::config::entity_creation::matrices::write_copy_default_config;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
@@ -617,9 +618,7 @@ pub(super) fn copy_agent_matrix_strict_with_hooks(
                 owned.create_directory(Path::new(directory))?;
             }
         }
-        let config =
-            serde_json::to_vec_pretty(&default_agent_matrix_config()).map_err(|e| e.to_string())?;
-        write_owned_team_file(&mut owned, Path::new("config.json"), &config)?;
+        write_copy_default_config(|path, bytes| write_owned_team_file(&mut owned, path, bytes))?;
         hooks.run(MatrixCopyStage::ConfigWritten, &owned.root)?;
         let provenance = append_copy_provenance(provenance, &project, source_ref)?;
         let bytes = serde_json::to_vec_pretty(&provenance).map_err(|e| e.to_string())?;

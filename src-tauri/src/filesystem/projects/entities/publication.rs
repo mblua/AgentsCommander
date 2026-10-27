@@ -39,3 +39,7 @@ where
 {
     publish(path, bytes)
 }
+
+pub(crate) fn write_created_role(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    std::fs::write(path, bytes)
+}

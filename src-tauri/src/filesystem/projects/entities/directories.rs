@@ -54,3 +54,15 @@ pub(crate) fn replica_role_present(path: &Path) -> bool {
 pub(crate) fn clone_target_present(path: &Path) -> bool {
     path.exists()
 }
+
+pub(crate) fn ensure_matrix_directory(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+pub(crate) fn claim_matrix_directory(path: &Path) -> io::Result<()> {
+    std::fs::create_dir(path)
+}
+
+pub(crate) fn matrix_directory_present(path: &Path) -> bool {
+    path.exists()
+}
