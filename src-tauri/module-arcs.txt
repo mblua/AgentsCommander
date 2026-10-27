@@ -2032,6 +2032,7 @@ agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::config:
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::config::root_agent
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::config::settings
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::config::teams
+agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::filesystem::projects
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::path_identity
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox::handoff
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox::notice
@@ -2248,6 +2249,7 @@ agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::config:
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::config::settings
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::config::teams
+agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::filesystem::projects
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::mailbox::handoff
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::mailbox::notice
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::mailbox::poller
@@ -2278,6 +2280,7 @@ agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::con
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::config::settings
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::config::teams
+agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::filesystem::projects
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::phone::mailbox::handoff
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::phone::mailbox::notice
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::phone::mailbox::poller

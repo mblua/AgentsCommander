@@ -399,10 +399,15 @@ impl MailboxPoller {
                 c.project_paths.clone()
             };
             if let Some(root_project) = outbox_project.as_ref() {
-                let canon_root_project = std::fs::canonicalize(root_project).ok();
+                let canon_root_project =
+                    crate::filesystem::projects::canonical_refresh_project(Path::new(root_project))
+                        .ok();
                 let already_present = paths.iter().any(|p| match &canon_root_project {
                     Some(canon_target) => {
-                        std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
+                        crate::filesystem::projects::canonical_refresh_project(Path::new(p))
+                            .ok()
+                            .as_ref()
+                            == Some(canon_target)
                     }
                     None => p == root_project,
                 });

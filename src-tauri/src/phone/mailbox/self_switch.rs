@@ -671,7 +671,7 @@ impl MailboxPoller {
 
                 for rp in &project_paths {
                     let base = std::path::Path::new(rp);
-                    if !base.is_dir() {
+                    if !crate::filesystem::projects::project_path_is_dir(base) {
                         continue;
                     }
                     let base_name = base.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -680,22 +680,24 @@ impl MailboxPoller {
                     if project_matches(base_name) {
                         dirs_to_check.push(base.to_path_buf());
                     }
-                    if let Ok(entries) = std::fs::read_dir(base) {
-                        for entry in entries.flatten() {
-                            let p = entry.path();
-                            if !p.is_dir() {
-                                continue;
+                    let _ =
+                        crate::filesystem::projects::visit_project_kind_children(base, |item| {
+                            let Ok(p) = item else {
+                                return std::ops::ControlFlow::Continue(());
+                            };
+                            if !crate::filesystem::projects::project_path_is_dir(&p) {
+                                return std::ops::ControlFlow::Continue(());
                             }
                             let dir_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                             if dir_name.starts_with('.') {
-                                continue;
+                                return std::ops::ControlFlow::Continue(());
                             }
                             if !project_matches(dir_name) {
-                                continue;
+                                return std::ops::ControlFlow::Continue(());
                             }
                             dirs_to_check.push(p);
-                        }
-                    }
+                            std::ops::ControlFlow::Continue(())
+                        });
 
                     for dir in dirs_to_check {
                         let Some(ac_root) = crate::config::ac_root::existing_ac_root(&dir) else {
