@@ -190,21 +190,18 @@ pub(crate) fn create_backup(path: &Path, bytes: &[u8]) -> Result<PathBuf, String
             n => format!("{filename}.{timestamp}.{n}.bak"),
         };
         let backup_path = parent.join(backup_name);
-        let mut file = match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&backup_path)
-        {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => {
-                return Err(format!(
-                    "Failed to create backup context template {}: {}",
-                    backup_path.display(),
-                    e
-                ))
-            }
-        };
+        let mut file =
+            match crate::filesystem::context_templates::create_template_stage(&backup_path) {
+                Ok(file) => file,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    return Err(format!(
+                        "Failed to create backup context template {}: {}",
+                        backup_path.display(),
+                        e
+                    ))
+                }
+            };
         if let Err(e) = file.write_all(bytes) {
             return Err(format!(
                 "Failed to write backup context template {}: {}",
@@ -227,7 +224,7 @@ pub(crate) fn create_backup(path: &Path, bytes: &[u8]) -> Result<PathBuf, String
             ));
         }
         drop(file);
-        if let Ok(dir) = std::fs::File::open(parent) {
+        if let Ok(dir) = crate::filesystem::context_templates::open_template_directory(parent) {
             if let Err(e) = dir.sync_all() {
                 log::warn!(
                     "[context-templates] failed to sync backup directory {}: {}",
