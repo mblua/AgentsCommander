@@ -9,17 +9,13 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 use tokio::task::JoinHandle;
 
-#[cfg(windows)]
-use std::os::windows::ffi::OsStrExt;
-#[cfg(windows)]
-use windows_sys::Win32::Storage::FileSystem::{
-    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-};
-
 use crate::config::settings::{AppSettings, SettingsState};
-use crate::spec_board::internal_dirs;
 use crate::spec_board::types::SnapshotFile;
 pub use crate::spec_board::types::{SpecBoardFileKind, SpecBoardSnapshot, SpecBoardSnapshotSource};
+use crate::spec_board::{
+    initialize_document_dirs, metadata_fingerprint, prepare_default_spec_directory, read_open_spec,
+    read_saved_spec, read_watched_spec, save_spec_content, MAX_FILE_BYTES,
+};
 use crate::SpecBoardState;
 
 mod paths;
@@ -33,10 +29,7 @@ use snapshots::write_snapshot_atomic;
 use snapshots::{create_snapshot_for_doc, list_snapshots_from_dir, read_snapshot_files};
 
 const STARTER_CONTENT: &str = "flowchart TD\n  A[Start] --> B[Spec]\n";
-const MAX_FILE_BYTES: u64 = 1_048_576;
 const MAX_SNAPSHOT_CONTENT_BYTES: usize = 1_048_576;
-const MAX_SNAPSHOTS: usize = 100;
-const MAX_SNAPSHOT_TOTAL_BYTES: u64 = 25 * 1_048_576;
 const WATCH_POLL_MS: u64 = 400;
 const WATCH_FULL_HASH_MS: i64 = 2_000;
 
@@ -174,13 +167,7 @@ pub async fn spec_board_new(
         .map_err(|error| error.to_string())?;
     let repo = resolve_repo_root(repo_root.as_deref(), &settings_snapshot).await?;
     let doc_id = uuid::Uuid::new_v4().to_string();
-    let (snapshot_dir, draft_dir) = internal_dirs(&repo, &doc_id).await?;
-    tokio::fs::create_dir_all(&snapshot_dir)
-        .await
-        .map_err(|e| format!("Failed to create snapshot directory: {}", e))?;
-    tokio::fs::create_dir_all(&draft_dir)
-        .await
-        .map_err(|e| format!("Failed to create draft directory: {}", e))?;
+    let (snapshot_dir, draft_dir) = initialize_document_dirs(&repo, &doc_id).await?;
 
     let now = now_ms();
     let diagram_source = extract_diagram_source(STARTER_CONTENT, SpecBoardFileKind::Mermaid)?;
@@ -308,10 +295,7 @@ pub async fn spec_board_pick_save(
         .await
         .map_err(|error| error.to_string())?;
     let repo = resolve_repo_root(repo_root.as_deref(), &settings_snapshot).await?;
-    let default_dir = repo.join("specs").join("mermaids");
-    tokio::fs::create_dir_all(&default_dir)
-        .await
-        .map_err(|e| format!("Failed to create default spec directory: {}", e))?;
+    let default_dir = prepare_default_spec_directory(&repo).await?;
     let picked = rfd::AsyncFileDialog::new()
         .add_filter("Spec diagrams", &["mmd", "mermaid", "md"])
         .set_directory(&default_dir)
@@ -495,30 +479,11 @@ async fn spec_board_open_inner(
     input_path: PathBuf,
 ) -> Result<SpecBoardDocument, String> {
     let validated = validate_existing_user_path(&input_path, &settings).await?;
-    let metadata = tokio::fs::metadata(&validated.path)
-        .await
-        .map_err(|e| format!("Failed to inspect spec file: {}", e))?;
-    if metadata.len() > MAX_FILE_BYTES {
-        return Err(format!(
-            "Spec file is too large. Maximum size is {} bytes.",
-            MAX_FILE_BYTES
-        ));
-    }
-    let bytes = tokio::fs::read(&validated.path)
-        .await
-        .map_err(|e| format!("Failed to read spec file: {}", e))?;
-    let content =
-        String::from_utf8(bytes).map_err(|_| "Spec file must be valid UTF-8".to_string())?;
+    let content = read_open_spec(&validated.path).await?;
     let file_kind = file_kind_for_path(&validated.path)?;
     let diagram_source = extract_diagram_source(&content, file_kind)?;
     let doc_id = uuid::Uuid::new_v4().to_string();
-    let (snapshot_dir, draft_dir) = internal_dirs(&validated.repo_root, &doc_id).await?;
-    tokio::fs::create_dir_all(&snapshot_dir)
-        .await
-        .map_err(|e| format!("Failed to create snapshot directory: {}", e))?;
-    tokio::fs::create_dir_all(&draft_dir)
-        .await
-        .map_err(|e| format!("Failed to create draft directory: {}", e))?;
+    let (snapshot_dir, draft_dir) = initialize_document_dirs(&validated.repo_root, &doc_id).await?;
     let disk_hash = hash_str(&content);
     let document = SpecBoardDocument {
         doc_id: doc_id.clone(),
@@ -560,17 +525,8 @@ async fn save_to_path(
             MAX_FILE_BYTES
         ));
     }
-    if let Some(parent) = validated.path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| format!("Failed to create spec directory: {}", e))?;
-    }
-    atomic_write_utf8(&validated.path, &content).await?;
-    let final_bytes = tokio::fs::read(&validated.path)
-        .await
-        .map_err(|e| format!("Failed to read saved spec file: {}", e))?;
-    let final_content =
-        String::from_utf8(final_bytes).map_err(|_| "Saved spec file is not UTF-8".to_string())?;
+    save_spec_content(&validated.path, &content).await?;
+    let final_content = read_saved_spec(&validated.path).await?;
     let final_hash = hash_str(&final_content);
 
     {
@@ -627,7 +583,7 @@ async fn start_watch_task(state: SpecBoardState, app: AppHandle, doc_id: String)
             last_meta = meta;
             last_full_hash_at = now;
 
-            let bytes = match tokio::fs::read(&path).await {
+            let bytes = match read_watched_spec(&path).await {
                 Ok(bytes) => bytes,
                 Err(_) => {
                     let payload = SpecBoardFileMissingEvent {
@@ -850,62 +806,6 @@ fn extract_markdown_mermaid(content: &str) -> Result<String, String> {
 
 fn fence_len(s: &str, marker: char) -> usize {
     s.chars().take_while(|c| *c == marker).count()
-}
-
-async fn atomic_write_utf8(path: &Path, content: &str) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "Spec path has no parent directory".to_string())?;
-    let temp = parent.join(format!(
-        ".{}.{}.tmp",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("spec-board"),
-        uuid::Uuid::new_v4()
-    ));
-    tokio::fs::write(&temp, content)
-        .await
-        .map_err(|e| format!("Failed to write temporary spec file: {}", e))?;
-    commit_temp_file(&temp, path, "spec file").await?;
-    Ok(())
-}
-
-async fn commit_temp_file(temp: &Path, target: &Path, label: &str) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        replace_file_with_temp(temp, target)
-            .map_err(|e| format!("Failed to commit {}: {}", label, e))?;
-    }
-
-    #[cfg(not(windows))]
-    {
-        tokio::fs::rename(temp, target)
-            .await
-            .map_err(|e| format!("Failed to commit {}: {}", label, e))?;
-    }
-
-    Ok(())
-}
-
-#[cfg(windows)]
-fn replace_file_with_temp(temp: &Path, target: &Path) -> std::io::Result<()> {
-    let temp_wide: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
-    let target_wide: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
-
-    let replaced = unsafe { MoveFileExW(temp_wide.as_ptr(), target_wide.as_ptr(), flags) };
-    if replaced == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-async fn metadata_fingerprint(path: &Path) -> Result<(u64, Option<std::time::SystemTime>), String> {
-    let meta = tokio::fs::metadata(path)
-        .await
-        .map_err(|e| format!("Failed to inspect watched file: {}", e))?;
-    Ok((meta.len(), meta.modified().ok()))
 }
 
 fn abort_handle(handle: Option<JoinHandle<()>>) {
