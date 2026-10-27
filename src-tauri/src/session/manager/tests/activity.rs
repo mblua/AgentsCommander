@@ -215,6 +215,7 @@ async fn idle_record_carries_the_same_threshold_the_detector_registered() {
             session.id,
             &session,
             crate::config::activity_log::IdleReason::MarkIdle,
+            &manager.activity,
         ));
         let registered = crate::session::profile::idle_tuning_for(kind)
             .idle_threshold
@@ -654,4 +655,51 @@ async fn a_session_without_an_agent_id_never_yields_a_target() {
         mgr.agent_stamp_target(agent.id).await,
         Some((agent.working_directory.clone(), "codex".to_string()))
     );
+}
+
+#[tokio::test]
+async fn activity_owner_two_managers_share_idle_annotation() {
+    let owners = crate::app_state::AppOwners::new();
+    let first = SessionManager::with_activity_coalescer(owners.activity.clone());
+    let second = SessionManager::with_activity_coalescer(owners.activity.clone());
+    let separate = crate::app_state::AppOwners::new();
+    let isolated = SessionManager::with_activity_coalescer(separate.activity.clone());
+    let subject = working_session(&first, "C:/owner-shared").await;
+    first.mark_idle(subject.id).await;
+    let idle = first.get_session(subject.id).await.unwrap();
+    // Separate aggregate states deliberately reuse the same UUID and idle row.
+    second
+        .state
+        .write()
+        .await
+        .sessions
+        .insert(subject.id, idle.clone());
+    isolated
+        .state
+        .write()
+        .await
+        .sessions
+        .insert(subject.id, idle);
+    let _ = emitted();
+    second.mark_busy(subject.id).await;
+    let shared = emitted();
+    assert_eq!(shared.len(), 1);
+    assert_eq!(shared[0]["event"], "busy");
+    assert_eq!(shared[0]["continuesBlock"], true);
+    assert!(shared[0]["gapMs"].is_u64());
+    isolated.mark_busy(subject.id).await;
+    let independent = emitted();
+    assert_eq!(independent.len(), 1);
+    assert_eq!(independent[0]["event"], "busy");
+    assert_eq!(independent[0]["continuesBlock"], false);
+    assert!(independent[0].get("gapMs").is_none());
+    let cloned = second.clone();
+    assert!(Arc::ptr_eq(&cloned.state, &second.state));
+    assert!(Arc::ptr_eq(&cloned.activity, &second.activity));
+    cloned.mark_idle(subject.id).await;
+    let _ = emitted();
+    second.mark_busy(subject.id).await;
+    let after_clone = emitted();
+    assert_eq!(after_clone.len(), 1);
+    assert_eq!(after_clone[0]["continuesBlock"], true);
 }

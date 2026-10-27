@@ -132,7 +132,7 @@ pub(crate) fn run(
     let response_close = crate::pty::manager::ResponseCloseState::default();
     let response_close_for_setup = response_close.clone();
     let session_mgr = Arc::new(tokio::sync::RwLock::new(
-        SessionManager::with_response_close(response_close.clone()),
+        SessionManager::with_response_close(response_close.clone(), owners.activity.clone()),
     ));
     let shutdown_signal = ShutdownSignal::new();
     let terminal_snapshot_state =

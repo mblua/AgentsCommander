@@ -24,6 +24,7 @@ pub struct RestoreInProgress(pub AtomicBool);
 /// Process-lived owners shared by every runtime and explicit component constructor.
 #[derive(Clone)]
 pub struct AppOwners {
+    pub activity: Arc<crate::config::activity_log::ActivityCoalescer>,
     pub capture: Arc<crate::capture::state::CaptureState>,
     #[cfg(windows)]
     pub git_guard: Arc<crate::pty::local_backend::GitGuardTempSequence>,
@@ -33,6 +34,7 @@ pub struct AppOwners {
 impl AppOwners {
     pub fn new() -> Self {
         Self {
+            activity: Arc::new(crate::config::activity_log::ActivityCoalescer::new()),
             capture: Arc::new(crate::capture::state::CaptureState::new()),
             #[cfg(windows)]
             git_guard: Arc::new(crate::pty::local_backend::GitGuardTempSequence::new()),

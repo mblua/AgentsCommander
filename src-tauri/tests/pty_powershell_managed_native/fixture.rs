@@ -250,7 +250,10 @@ pub(crate) fn make_fixture() -> Fixture {
         Arc::new(Mutex::new(HashMap::new()));
     let listener_errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let owners = agentscommander_lib::AppOwners::new();
+    let session_mgr = Arc::new(tokio::sync::RwLock::new(
+        SessionManager::with_activity_coalescer(owners.activity.clone()),
+    ));
     let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
     let tg_mgr: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
         TelegramBridgeManager::new(Arc::clone(&output_senders)),
@@ -263,7 +266,6 @@ pub(crate) fn make_fixture() -> Fixture {
         s.project_paths = vec![repo_root.to_string_lossy().to_string()];
         s
     });
-    let owners = agentscommander_lib::AppOwners::new();
     let git_app = Box::leak(Box::new(
         agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))

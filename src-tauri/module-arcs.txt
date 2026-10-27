@@ -289,6 +289,7 @@ agentscommander_lib::app_run::setup -> agentscommander_lib::update_check
 agentscommander_lib::app_run::setup -> agentscommander_lib::web::command_port
 agentscommander_lib::app_run::setup -> agentscommander_lib::web::commands
 agentscommander_lib::app_state -> agentscommander_lib::capture::state
+agentscommander_lib::app_state -> agentscommander_lib::config::activity_log
 agentscommander_lib::app_state -> agentscommander_lib::pty::local_backend
 agentscommander_lib::capture::catalog -> agentscommander_lib::filesystem
 agentscommander_lib::capture::jev -> agentscommander_lib::capture::catalog
@@ -2818,6 +2819,7 @@ agentscommander_lib::session::manager::communication -> agentscommander_lib::err
 agentscommander_lib::session::manager::communication -> agentscommander_lib::session::manager
 agentscommander_lib::session::manager::communication -> agentscommander_lib::session::manager::carrier
 agentscommander_lib::session::manager::communication -> agentscommander_lib::session::session
+agentscommander_lib::session::manager::create -> agentscommander_lib::config::activity_log
 agentscommander_lib::session::manager::create -> agentscommander_lib::errors
 agentscommander_lib::session::manager::create -> agentscommander_lib::pty::backend
 agentscommander_lib::session::manager::create -> agentscommander_lib::pty::response_close

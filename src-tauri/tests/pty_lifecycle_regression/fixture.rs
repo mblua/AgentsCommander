@@ -286,6 +286,7 @@ pub(crate) fn make_lifecycle_fixture() -> LifecycleFixture {
         &listener_errors,
         &cleanup,
         None,
+        agentscommander_lib::AppOwners::new(),
     );
 
     LifecycleFixture {
@@ -308,6 +309,7 @@ pub(crate) fn make_lifecycle_fixture() -> LifecycleFixture {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn make_test_app(
     repo_root: &Path,
     captured_output: &Arc<Mutex<HashMap<String, Vec<u8>>>>,
@@ -316,13 +318,17 @@ pub(crate) fn make_test_app(
     listener_errors: &Arc<Mutex<Vec<String>>>,
     _cleanup: &LifecycleCleanup,
     session_mgr_override: Option<Arc<tokio::sync::RwLock<SessionManager>>>,
+    owners: agentscommander_lib::AppOwners,
 ) -> (
     tauri::App,
     Arc<tokio::sync::RwLock<SessionManager>>,
     Arc<Mutex<PtyManager>>,
 ) {
-    let session_mgr = session_mgr_override
-        .unwrap_or_else(|| Arc::new(tokio::sync::RwLock::new(SessionManager::new())));
+    let session_mgr = session_mgr_override.unwrap_or_else(|| {
+        Arc::new(tokio::sync::RwLock::new(
+            SessionManager::with_activity_coalescer(owners.activity.clone()),
+        ))
+    });
     let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
     let tg_mgr: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
         TelegramBridgeManager::new(Arc::clone(&output_senders)),
@@ -335,7 +341,6 @@ pub(crate) fn make_test_app(
         s.project_paths = vec![path_to_string(repo_root)];
         s
     });
-    let owners = agentscommander_lib::AppOwners::new();
     let git_app = Box::leak(Box::new(
         agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
