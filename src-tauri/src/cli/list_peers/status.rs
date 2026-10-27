@@ -64,7 +64,7 @@ pub(super) fn norm_path(path: &str) -> String {
 }
 
 pub(super) fn canon_or_norm(path: &str) -> String {
-    match std::fs::canonicalize(path) {
+    match crate::filesystem::directories::canonical_peer_cwd(std::path::Path::new(path)) {
         Ok(canon) => norm_path(&canon.to_string_lossy()),
         Err(_) => norm_path(path),
     }

@@ -1,5 +1,5 @@
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreatedAgentFolder {
@@ -17,7 +17,7 @@ pub fn create_agent_folder_on_disk(
     agent_name: &str,
 ) -> Result<CreatedAgentFolder, String> {
     let parent = PathBuf::from(parent_path);
-    if !parent.exists() {
+    if !crate::filesystem::directories::agent_parent_exists(&parent) {
         return Err(format!("Parent folder does not exist: {}", parent_path));
     }
 
@@ -58,6 +58,10 @@ pub fn create_agent_folder_on_disk(
         display_name,
         claude_md,
     })
+}
+
+pub(crate) fn existing_picker_default(path: &Path) -> bool {
+    crate::filesystem::directories::picker_default_exists(path)
 }
 
 #[cfg(test)]

@@ -71,17 +71,9 @@ pub(crate) fn configured_ac_roots(settings: &AppSettings) -> Vec<PathBuf> {
 
         collect_ac_root_candidate(&mut ac_roots, &base.join(CANONICAL_AC_ROOT_DIR));
 
-        let Ok(entries) = std::fs::read_dir(base) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() {
-                collect_ac_root_candidate(&mut ac_roots, &entry.path().join(CANONICAL_AC_ROOT_DIR));
-            }
-        }
+        crate::filesystem::projects::visit_profile_project_children(base, |path| {
+            collect_ac_root_candidate(&mut ac_roots, &path.join(CANONICAL_AC_ROOT_DIR));
+        });
     }
     ac_roots
 }

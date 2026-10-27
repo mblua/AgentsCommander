@@ -381,7 +381,9 @@ pub(crate) async fn prepare_persist_snapshot(
         let roots = normalize_project_roots(&project_paths);
         let (kept, mut drops) = partition_orphaned_sessions(snapshot, &roots);
         for drop in &mut drops {
-            drop.cwd_exists = Path::new(&drop.session.working_directory).exists();
+            drop.cwd_exists = crate::filesystem::directories::persisted_session_cwd_exists(
+                Path::new(&drop.session.working_directory),
+            );
         }
         PersistPreparation { kept, drops }
     })

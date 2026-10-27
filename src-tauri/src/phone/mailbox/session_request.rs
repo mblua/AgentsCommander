@@ -46,9 +46,19 @@ impl MailboxPoller {
             };
             match derive_project_from_outbox_path(path) {
                 Ok(Some(root_project)) => {
-                    let canon = std::fs::canonicalize(&root_project).ok();
+                    let canon = crate::filesystem::projects::canonical_refresh_project(
+                        std::path::Path::new(&root_project),
+                    )
+                    .ok();
                     let already = paths.iter().any(|p| match &canon {
-                        Some(ct) => std::fs::canonicalize(p).ok().as_ref() == Some(ct),
+                        Some(ct) => {
+                            crate::filesystem::projects::canonical_refresh_project(
+                                std::path::Path::new(p),
+                            )
+                            .ok()
+                            .as_ref()
+                                == Some(ct)
+                        }
                         None => p == &root_project,
                     });
                     if !already {

@@ -811,3 +811,82 @@ async fn handle_self_switch_rejects_fake_replica_before_handoff_gate() {
     assert!(!reason.contains("SELF-HANDOFF"), "{reason}");
     assert_eq!(pending_self_clear_len(&app).await, 0);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn p22_scan_order_first_hit() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().join("p22-first");
+    let replica = base.join(".ac").join("wg-22-p22").join("__agent_p22-agent");
+    std::fs::create_dir_all(&replica).unwrap();
+    for child in ["child-a", "child-z"] {
+        std::fs::create_dir(base.join(child)).unwrap();
+    }
+    let app_struct = make_mailbox_app(temp.path());
+    let app = app_handle(&app_struct);
+    app.state::<SettingsState>().write().await.project_paths =
+        vec![base.to_string_lossy().into_owned()];
+    let poller = MailboxPoller::new();
+    assert_eq!(
+        poller.resolve_repo_path("wg-22-p22/p22-agent", &app).await,
+        Some(replica.to_string_lossy().into_owned())
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn p22_qualified_project() {
+    let temp = tempfile::tempdir().unwrap();
+    let alpha = temp.path().join("p22-alpha");
+    let beta = temp.path().join("p22-beta");
+    let relative = PathBuf::from(".ac")
+        .join("wg-22-p22")
+        .join("__agent_p22-agent");
+    std::fs::create_dir_all(alpha.join(&relative)).unwrap();
+    std::fs::create_dir_all(beta.join(&relative)).unwrap();
+    let app_struct = make_mailbox_app(temp.path());
+    let app = app_handle(&app_struct);
+    app.state::<SettingsState>().write().await.project_paths = vec![
+        beta.to_string_lossy().into_owned(),
+        temp.path().to_string_lossy().into_owned(),
+    ];
+    let poller = MailboxPoller::new();
+    assert_eq!(
+        poller
+            .resolve_repo_path("p22-alpha:wg-22-p22/p22-agent", &app)
+            .await,
+        Some(alpha.join(&relative).to_string_lossy().into_owned())
+    );
+    assert_eq!(
+        poller
+            .resolve_repo_path("p22-beta:wg-22-p22/p22-agent", &app)
+            .await,
+        Some(beta.join(&relative).to_string_lossy().into_owned())
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn p22_cross_project_ambiguity() {
+    let temp = tempfile::tempdir().unwrap();
+    let alpha = temp.path().join("p22-alpha");
+    let beta = temp.path().join("p22-beta");
+    for project in [&alpha, &beta] {
+        std::fs::create_dir_all(
+            project
+                .join(".ac")
+                .join("wg-22-p22")
+                .join("__agent_p22-agent"),
+        )
+        .unwrap();
+    }
+    let app_struct = make_mailbox_app(temp.path());
+    let app = app_handle(&app_struct);
+    app.state::<SettingsState>().write().await.project_paths = vec![
+        alpha.to_string_lossy().into_owned(),
+        beta.to_string_lossy().into_owned(),
+    ];
+    assert_eq!(
+        MailboxPoller::new()
+            .resolve_repo_path("wg-22-p22/p22-agent", &app)
+            .await,
+        None
+    );
+}

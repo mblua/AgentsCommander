@@ -289,12 +289,12 @@ pub fn effective_state(
         };
     };
     let catalog_path = resolve_catalog_path(room_root, catalog);
-    if !catalog_path.is_file() {
+    if !crate::filesystem::documents::capture_catalog_is_file(&catalog_path) {
         return CoManagedState::Off {
             reason: OffReason::NoCatalogFile,
         };
     }
-    match std::fs::read_to_string(&catalog_path) {
+    match crate::filesystem::read_capture_catalog(&catalog_path) {
         Ok(raw) if serde_json::from_str::<Value>(&raw).is_ok() => CoManagedState::Ready,
         _ => CoManagedState::Off {
             reason: OffReason::CatalogUnreadable,
