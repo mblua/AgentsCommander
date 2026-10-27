@@ -1,12 +1,11 @@
-use super::delete_guard::metadata_is_link_or_reparse;
 use super::{RepoAssignment, TeamConfigResult};
 pub(crate) use crate::config::entity_creation::names::{
     normalize_context_alert_percentages, normalize_team_agent_refs, resolve_agent_ref,
     validate_existing_name,
 };
-use std::fs::{File, OpenOptions, TryLockError};
+use crate::filesystem::projects::entities::team_lock::{self, LockCause, LockFailure, LockStep};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub(super) const TEAM_CONFIG_MUTATION_LOCK_NAME: &str = ".team-config-write.lock";
 
@@ -29,9 +28,7 @@ impl TeamConfigLockTiming {
 
 #[derive(Debug)]
 pub(crate) struct TeamConfigMutationGuard {
-    pub(super) _file: File,
-    pub(super) canonical_ac_root: PathBuf,
-    pub(super) lock_path: PathBuf,
+    _lock: team_lock::LockedTeam,
 }
 
 impl TeamConfigMutationGuard {
@@ -43,187 +40,100 @@ impl TeamConfigMutationGuard {
         ac_root: &Path,
         timing: TeamConfigLockTiming,
     ) -> Result<Self, String> {
-        let requested_lock_path = ac_root.join(TEAM_CONFIG_MUTATION_LOCK_NAME);
-        let canonical_ac_root = std::fs::canonicalize(ac_root)
-            .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
-            .map_err(|e| {
-                format!(
-                    "Failed to resolve workspace for team config lock '{}': {}",
-                    requested_lock_path.display(),
-                    e
-                )
-            })?;
-        if !canonical_ac_root.is_dir() {
-            return Err(format!(
-                "Failed to open team config lock '{}': workspace is not a directory",
-                requested_lock_path.display()
-            ));
-        }
-        let lock_path = canonical_ac_root.join(TEAM_CONFIG_MUTATION_LOCK_NAME);
-
-        let open_existing = || -> Result<File, String> {
-            validate_team_config_lock_sentinel(&lock_path, &canonical_ac_root)?;
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&lock_path)
-                .map_err(|open_error| {
-                    format!(
-                        "Failed to open existing team config lock '{}': {}",
-                        lock_path.display(),
-                        open_error
-                    )
-                })
-        };
-        let file = match std::fs::symlink_metadata(&lock_path) {
-            Ok(_) => open_existing()?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                match OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create_new(true)
-                    .open(&lock_path)
-                {
-                    Ok(file) => file,
-                    Err(create_error)
-                        if create_error.kind() == std::io::ErrorKind::AlreadyExists =>
-                    {
-                        open_existing()?
-                    }
-                    Err(create_error) => {
-                        return Err(format!(
-                            "Failed to create team config lock '{}': {}",
-                            lock_path.display(),
-                            create_error
-                        ));
-                    }
-                }
-            }
-            Err(e) => {
-                return Err(format!(
-                    "Failed to inspect team config lock '{}': {}",
-                    lock_path.display(),
-                    e
-                ));
-            }
-        };
-        validate_team_config_lock_sentinel(&lock_path, &canonical_ac_root)?;
-        if !file
-            .metadata()
-            .map_err(|e| {
-                format!(
-                    "Failed to inspect opened team config lock '{}': {}",
-                    lock_path.display(),
-                    e
-                )
-            })?
-            .is_file()
-        {
-            return Err(format!(
-                "Team config lock '{}' must be a regular file",
-                lock_path.display()
-            ));
-        }
-
-        let started = Instant::now();
-        loop {
-            match file.try_lock() {
-                Ok(()) => break,
-                Err(TryLockError::WouldBlock) if started.elapsed() >= timing.timeout => {
-                    return Err(format!(
-                        "Timed out after {} ms waiting for team config lock '{}'",
-                        timing.timeout.as_millis(),
-                        lock_path.display()
-                    ));
-                }
-                Err(TryLockError::WouldBlock) => {
-                    let remaining = timing.timeout.saturating_sub(started.elapsed());
-                    let delay = timing.poll_interval.min(remaining);
-                    if delay.is_zero() {
-                        std::thread::yield_now();
-                    } else {
-                        std::thread::sleep(delay);
-                    }
-                }
-                Err(TryLockError::Error(e)) => {
-                    return Err(format!(
-                        "Failed to acquire team config lock '{}': {}",
-                        lock_path.display(),
-                        e
-                    ));
-                }
-            }
-        }
-
-        Ok(Self {
-            _file: file,
-            canonical_ac_root,
-            lock_path,
-        })
+        let lock = team_lock::acquire(
+            ac_root,
+            TEAM_CONFIG_MUTATION_LOCK_NAME,
+            timing.poll_interval,
+            timing.timeout,
+        )
+        .map_err(map_lock_failure)?;
+        Ok(Self { _lock: lock })
     }
-
     pub(super) fn require_ac_root(&self, ac_root: &Path) -> Result<(), String> {
-        let canonical = std::fs::canonicalize(ac_root)
-            .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
-            .map_err(|e| {
-                format!(
-                    "Failed to verify workspace for team config lock '{}': {}",
-                    self.lock_path.display(),
-                    e
-                )
-            })?;
-        if canonical != self.canonical_ac_root {
-            return Err(format!(
-                "Team config lock '{}' belongs to workspace '{}', not '{}'",
-                self.lock_path.display(),
-                self.canonical_ac_root.display(),
-                canonical.display()
-            ));
-        }
-        Ok(())
+        self._lock
+            .require_workspace(ac_root)
+            .map_err(map_lock_failure)
     }
 }
 
-pub(super) fn validate_team_config_lock_sentinel(
-    lock_path: &Path,
-    canonical_ac_root: &Path,
-) -> Result<(), String> {
-    let metadata = std::fs::symlink_metadata(lock_path).map_err(|e| {
-        format!(
-            "Failed to inspect team config lock '{}': {}",
-            lock_path.display(),
+fn map_lock_failure(failure: LockFailure) -> String {
+    let LockFailure { step, path, cause } = failure;
+    match (step, cause) {
+        (LockStep::ResolveWorkspace, LockCause::Io(e)) => format!(
+            "Failed to resolve workspace for team config lock '{}': {}",
+            path.display(),
             e
-        )
-    })?;
-    if metadata_is_link_or_reparse(&metadata) || !metadata.is_file() {
-        return Err(format!(
+        ),
+        (LockStep::ResolveWorkspace, LockCause::NotDirectory) => format!(
+            "Failed to open team config lock '{}': workspace is not a directory",
+            path.display()
+        ),
+        (LockStep::OpenExisting, LockCause::Io(open_error)) => format!(
+            "Failed to open existing team config lock '{}': {}",
+            path.display(),
+            open_error
+        ),
+        (LockStep::CreateSentinel, LockCause::Io(create_error)) => format!(
+            "Failed to create team config lock '{}': {}",
+            path.display(),
+            create_error
+        ),
+        (LockStep::InspectSentinel, LockCause::Io(e)) => format!(
+            "Failed to inspect team config lock '{}': {}",
+            path.display(),
+            e
+        ),
+        (LockStep::InspectOpened, LockCause::Io(e)) => format!(
+            "Failed to inspect opened team config lock '{}': {}",
+            path.display(),
+            e
+        ),
+        (LockStep::InspectOpened, LockCause::NonRegular) => format!(
+            "Team config lock '{}' must be a regular file",
+            path.display()
+        ),
+        (LockStep::Acquire, LockCause::Timeout { milliseconds }) => format!(
+            "Timed out after {} ms waiting for team config lock '{}'",
+            milliseconds,
+            path.display()
+        ),
+        (LockStep::Acquire, LockCause::Io(e)) => format!(
+            "Failed to acquire team config lock '{}': {}",
+            path.display(),
+            e
+        ),
+        (LockStep::VerifyWorkspace, LockCause::Io(e)) => format!(
+            "Failed to verify workspace for team config lock '{}': {}",
+            path.display(),
+            e
+        ),
+        (LockStep::VerifyWorkspace, LockCause::WrongWorkspace { expected, actual }) => format!(
+            "Team config lock '{}' belongs to workspace '{}', not '{}'",
+            path.display(),
+            expected.display(),
+            actual.display()
+        ),
+
+        (LockStep::InspectSentinel, LockCause::NonRegularOrLink) => format!(
             "Team config lock '{}' must be a regular non-link file",
-            lock_path.display()
-        ));
-    }
-    let canonical_lock = std::fs::canonicalize(lock_path)
-        .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
-        .map_err(|e| {
-            format!(
-                "Failed to resolve team config lock '{}': {}",
-                lock_path.display(),
-                e
-            )
-        })?;
-    let canonical_parent = canonical_lock.parent().ok_or_else(|| {
-        format!(
+            path.display()
+        ),
+        (LockStep::ResolveSentinel, LockCause::Io(e)) => format!(
+            "Failed to resolve team config lock '{}': {}",
+            path.display(),
+            e
+        ),
+        (LockStep::ResolveSentinel, LockCause::MissingParent) => format!(
             "Team config lock '{}' has no canonical parent",
-            lock_path.display()
-        )
-    })?;
-    if canonical_parent != canonical_ac_root {
-        return Err(format!(
+            path.display()
+        ),
+        (LockStep::ResolveSentinel, LockCause::EscapedParent { canonical_root }) => format!(
             "Team config lock '{}' escapes canonical workspace '{}'",
-            lock_path.display(),
-            canonical_ac_root.display()
-        ));
+            path.display(),
+            canonical_root.display()
+        ),
+        _ => unreachable!("lock failure step/cause contract"),
     }
-    Ok(())
 }
 
 pub(super) async fn acquire_team_config_mutation_guard_async(

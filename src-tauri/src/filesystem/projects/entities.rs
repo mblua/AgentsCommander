@@ -8,3 +8,5 @@ pub(crate) fn agent_matrix_directory_present(path: &Path) -> bool {
 
 #[cfg(test)]
 pub(crate) use deletion::{remove_replica_directory_with, validate_delete_root_parts};
+
+pub(crate) mod team_lock;

@@ -534,3 +534,40 @@ fn team_config_guard_rejects_symlink_sentinel_escape() {
     assert!(err.contains("regular non-link file"));
     assert_eq!(std::fs::read(&outside).expect("outside bytes"), b"");
 }
+
+#[test]
+fn issue_3294_team_lock_production_timeout_preserves_bytes() {
+    let tmp = create_test_ac_root();
+    let base = test_base(&tmp);
+    let team = create_new_team_config_on_disk(&base, "timeout-prod", &empty_team_config(vec![50]))
+        .expect("create team");
+    let conventions = team.join("conventions.md");
+    std::fs::write(&conventions, b"keep conventions\r\n").unwrap();
+    let before_config = std::fs::read(team.join("config.json")).unwrap();
+    let before_conventions = std::fs::read(&conventions).unwrap();
+    let before_inventory = issue_3068_inventory(&base);
+    let holder = TeamConfigMutationGuard::acquire(&base).expect("holder");
+    let started = std::time::Instant::now();
+    let error = TeamConfigMutationGuard::acquire(&base).expect_err("production timeout");
+    assert!(started.elapsed() >= Duration::from_millis(5000));
+    let canonical = crate::path_utils::normalize_windows_verbatim_path_buf(
+        &std::fs::canonicalize(&base).unwrap(),
+    );
+    assert_eq!(
+        error,
+        format!(
+            "Timed out after 5000 ms waiting for team config lock '{}'",
+            canonical.join(TEAM_CONFIG_MUTATION_LOCK_NAME).display()
+        )
+    );
+    assert_eq!(
+        std::fs::read(team.join("config.json")).unwrap(),
+        before_config
+    );
+    assert_eq!(std::fs::read(&conventions).unwrap(), before_conventions);
+    drop(holder);
+    assert_eq!(issue_3068_inventory(&base), before_inventory);
+    let guard = TeamConfigMutationGuard::acquire(&base).expect("reacquire");
+    drop(guard);
+    assert_eq!(issue_3068_inventory(&base), before_inventory);
+}
