@@ -569,7 +569,7 @@ pub(crate) fn render_host_platform_rules_block(
     // one extra stat per render — negligible per materialization.
     if let Some(context_dir) = resolve_ac_root_context_dir(Path::new(agent_root)) {
         let path = context_dir.join(filename);
-        let missing = match std::fs::symlink_metadata(&path) {
+        let missing = match crate::filesystem::session_context::inspect_context_source(&path) {
             Ok(_) => false,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
             Err(_) => false,
