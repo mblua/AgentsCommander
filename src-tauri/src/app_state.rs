@@ -24,6 +24,7 @@ pub struct RestoreInProgress(pub AtomicBool);
 /// Process-lived owners shared by every runtime and explicit component constructor.
 #[derive(Clone)]
 pub struct AppOwners {
+    pub response_effects: Arc<crate::session::selection::response_close::ResponseEffectRegistry>,
     pub coordinator_order: Arc<crate::config::coordinator_clocks::CoordinatorCreateOrder>,
     pub spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>,
     pub messages: Arc<crate::config::injected_messages::MessageWarnings>,
@@ -39,6 +40,9 @@ pub struct AppOwners {
 impl AppOwners {
     pub fn new() -> Self {
         Self {
+            response_effects: Arc::new(
+                crate::session::selection::response_close::ResponseEffectRegistry::new(),
+            ),
             coordinator_order: Arc::new(
                 crate::config::coordinator_clocks::CoordinatorCreateOrder::new(),
             ),

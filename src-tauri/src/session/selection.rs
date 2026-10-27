@@ -613,7 +613,7 @@ pub(crate) fn publish_session_communication<R: Runtime>(
 
 mod admission;
 pub(crate) mod authority;
-mod response_close;
+pub(crate) mod response_close;
 mod seal;
 #[cfg(test)]
 pub(crate) use admission::BlockingSeedTaskError;
