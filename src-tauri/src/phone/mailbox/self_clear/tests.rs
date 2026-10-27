@@ -100,7 +100,8 @@ async fn run(
                     verified = serde_json::to_vec_pretty(&receipt).unwrap();
                 }
                 if failure == "arm" {
-                    // Remove only the captured current owner, then install an unrelated Legacy owner.
+                    // Remove only the captured owner, then install
+                    // an unrelated Legacy owner.
                     assert!(pending.release(lease));
                     pending.reserve_legacy(sid).unwrap();
                 }
