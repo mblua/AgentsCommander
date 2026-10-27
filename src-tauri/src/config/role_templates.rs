@@ -99,6 +99,42 @@ pub fn agency_manifest_path(config_dir: &Path) -> PathBuf {
     agency_templates_dir(config_dir).join(AGENCY_MANIFEST_FILE)
 }
 
+pub(crate) fn read_staged_agency_manifest(root: &Path) -> Result<AgencyTemplatesManifest, String> {
+    let raw = std::fs::read_to_string(root.join(AGENCY_MANIFEST_FILE))
+        .map_err(|e| format!("Failed to read staged manifest: {}", e))?;
+    serde_json::from_str(&raw).map_err(|e| format!("Failed to parse staged manifest: {}", e))
+}
+
+pub(crate) fn read_cached_agency_manifest(root: &Path) -> Result<AgencyTemplatesManifest, String> {
+    let raw = std::fs::read_to_string(root.join(AGENCY_MANIFEST_FILE))
+        .map_err(|e| format!("Failed to read cached manifest: {}", e))?;
+    serde_json::from_str(&raw).map_err(|e| format!("Failed to parse cached manifest: {}", e))
+}
+
+pub(crate) fn write_staged_agency_manifest(
+    root: &Path,
+    manifest: &AgencyTemplatesManifest,
+) -> Result<(), String> {
+    std::fs::write(
+        root.join(AGENCY_MANIFEST_FILE),
+        serde_json::to_string_pretty(manifest)
+            .map_err(|e| format!("Failed to encode manifest: {}", e))?,
+    )
+    .map_err(|e| format!("Failed to write staged manifest: {}", e))
+}
+
+pub(crate) fn write_normalized_agency_manifest(
+    root: &Path,
+    manifest: &AgencyTemplatesManifest,
+) -> Result<(), String> {
+    std::fs::write(
+        root.join(AGENCY_MANIFEST_FILE),
+        serde_json::to_string_pretty(manifest)
+            .map_err(|e| format!("Failed to encode Agency manifest: {}", e))?,
+    )
+    .map_err(|e| format!("Failed to write Agency manifest: {}", e))
+}
+
 // ---------------------------------------------------------------------------
 // Resolved template (data `create_agent_matrix` needs)
 // ---------------------------------------------------------------------------

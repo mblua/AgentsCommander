@@ -335,3 +335,42 @@ async fn watcher_loaded_room_without_session_and_shared_session_root() {
         Some("after timeout")
     );
 }
+
+#[test]
+fn task_sentinels_preserve_presence_metadata_and_errors() {
+    use super::super::task_snapshot::task_sentinels;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("missing");
+    let absent = task_sentinels(&root).unwrap();
+    assert!(absent.task.is_none());
+    assert!(absent.status.is_none());
+    assert!(!absent.journal);
+
+    std::fs::create_dir(&root).unwrap();
+    let task_path = root.join("TASK.md");
+    std::fs::write(&task_path, "body 🦀").unwrap();
+    let metadata = std::fs::metadata(&task_path).unwrap();
+    let present = task_sentinels(&root).unwrap();
+    let task = present.task.unwrap();
+    assert_eq!(task.len, metadata.len());
+    assert_eq!(task.mtime, metadata.modified().ok());
+    assert!(present.status.is_none());
+    assert!(!present.journal);
+
+    let status_path = root.join("TASK-status.jsonl");
+    std::fs::write(&status_path, "status").unwrap();
+    assert!(task_sentinels(&root).unwrap().status.is_some());
+    std::fs::remove_file(&status_path).unwrap();
+    assert!(task_sentinels(&root).unwrap().status.is_none());
+    std::fs::write(root.join("TASK-clean.pending.json"), "{}").unwrap();
+    assert!(task_sentinels(&root).unwrap().journal);
+
+    let root = Path::new("a\0b");
+    let error = std::fs::metadata(root.join("TASK.md")).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(
+        task_sentinels(root).err(),
+        Some(format!("snapshot sentinel read failed: {}", error))
+    );
+}
