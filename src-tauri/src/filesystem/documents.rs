@@ -250,6 +250,7 @@ pub(crate) fn append_harness_audit(path: &Path, line: &str) -> io::Result<()> {
     writeln!(file, "{}", line)
 }
 
+#[cfg(target_os = "windows")]
 pub(crate) fn write_window_screenshot(path: &Path, bytes: &[u8]) -> io::Result<()> {
     std::fs::write(path, bytes)
 }
