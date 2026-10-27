@@ -404,7 +404,7 @@ fn p05_root_send_resolves_remote_registration_without_own_project_fallback() {
     let fixture = ReadonlyFixture::new();
     let root = fixture.config.join("ac-root-agent");
     std::fs::create_dir_all(root.join("messaging")).unwrap();
-    std::fs::write(root.join("messaging").join(P05_MESSAGE), "Remote P05").unwrap();
+    std::fs::write(root.join("messaging").join(P05_ROOT_MESSAGE), "Remote P05").unwrap();
     let before = fixture.managed_bytes();
     let out = run_failure(
         &fixture.bin,
@@ -417,7 +417,7 @@ fn p05_root_send_resolves_remote_registration_without_own_project_fallback() {
             "--to",
             "RegisteredRemote:room-01-devs/coord",
             "--send",
-            P05_MESSAGE,
+            P05_ROOT_MESSAGE,
             "--mode",
             "wake",
             "--confirm-timeout",
