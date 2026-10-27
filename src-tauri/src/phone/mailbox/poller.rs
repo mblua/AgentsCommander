@@ -487,6 +487,7 @@ pub(crate) fn owned_replacement_launch_recipe(
 }
 
 pub struct MailboxPoller {
+    pub(crate) messages: Arc<crate::config::injected_messages::MessageWarnings>,
     pub(crate) poll_interval: std::time::Duration,
     pub(crate) retry_tracker: HashMap<PathBuf, RetryState>,
     pub(crate) response_sources: Arc<Mutex<HashMap<PathBuf, ResponseWakeWork>>>,
@@ -662,9 +663,12 @@ pub(crate) fn evaluate_gate(peers: &[PurgeGatePeer], quiet: std::time::Duration)
     }
 }
 
+#[cfg(test)]
 impl Default for MailboxPoller {
     fn default() -> Self {
-        Self::new()
+        Self::new(Arc::new(
+            crate::config::injected_messages::MessageWarnings::new(),
+        ))
     }
 }
 

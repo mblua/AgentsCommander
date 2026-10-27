@@ -416,7 +416,7 @@ async fn quiet_period_is_clamped_to_floor() {
         0,    // below floor
         None,
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     let _ = poller
         .process_message(&app, &path, OutboxOrigin::Replica)
         .await;
@@ -479,7 +479,7 @@ async fn test_wake_settle_defers_and_does_not_burn_attempts() {
     let msg_path = temp.path().join("test_msg.json");
     std::fs::write(&msg_path, "{}").unwrap();
 
-    let mut poller = MailboxPoller::new();
+    let mut poller = MailboxPoller::default();
     let deferred_err = format!(
         "{}: session 123 is blocked by interactive menu",
         crate::pty::menu_guard::ERR_MENU_GUARD_DEFERRED
@@ -505,7 +505,7 @@ async fn test_typing_hold_defers_without_burning_attempts() {
     let msg_path = temp.path().join("test_msg.json");
     std::fs::write(&msg_path, "{}").unwrap();
 
-    let mut poller = MailboxPoller::new();
+    let mut poller = MailboxPoller::default();
     let deferred_err = format!(
         "{}: session 123 is holding peer wake injection while the user is typing",
         crate::pty::menu_guard::ERR_TYPING_HOLD_DEFERRED
@@ -578,7 +578,7 @@ async fn test_settle_live_holds_during_menu_guard_block() {
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
 
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     let res = poller
         .settle_until_ready(
             app_with_guard.handle(),
@@ -612,7 +612,7 @@ async fn test_settle_until_ready_reports_ready_before_the_cap() {
     let max_wait = Duration::from_millis(500);
     let started = std::time::Instant::now();
 
-    let res = MailboxPoller::new()
+    let res = MailboxPoller::default()
         .settle_until_ready(
             &app,
             sid,
@@ -644,7 +644,7 @@ async fn test_settle_until_ready_reports_timed_out_at_the_cap() {
     )
     .await;
 
-    let res = MailboxPoller::new()
+    let res = MailboxPoller::default()
         .settle_until_ready(
             &app,
             sid,
@@ -675,7 +675,7 @@ async fn test_wait_for_spawned_wake_idle_propagates_ready() {
         None,
     )
     .await;
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     assert!(poller.test_hooks.is_none());
 
     let res = poller.wait_for_spawned_wake_idle(&app, sid).await;

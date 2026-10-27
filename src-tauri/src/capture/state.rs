@@ -21,7 +21,7 @@
 use std::collections::HashSet;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -139,11 +139,16 @@ pub fn is_baseline(record: &CapturedRecord) -> bool {
 /// epoch lives here and survives restarts. A key built from the advisory value
 /// would miss the recent set after any restart, and a consumed record would be
 /// acted on a second time.
-pub fn consumption_key(room_root: &Path, record: &CapturedRecord) -> ConsumptionKey {
+pub fn consumption_key(
+    room_root: &Path,
+    record: &CapturedRecord,
+    capture: &CaptureState,
+) -> ConsumptionKey {
     let epoch = observe(
         room_root,
         &record.file,
         FileObservation::new(record.observed_len, record.observed_prefix.clone()),
+        capture,
     );
     ConsumptionKey::from_record(record, epoch)
 }
@@ -366,9 +371,22 @@ impl RoomState {
 
 type Rooms = HashMap<PathBuf, RoomState>;
 
-fn rooms() -> MutexGuard<'static, Rooms> {
-    static ROOMS: OnceLock<Mutex<Rooms>> = OnceLock::new();
-    ROOMS
+/// Lazy per-process capture state, explicitly shared by the composition root.
+pub struct CaptureState {
+    rooms: OnceLock<Mutex<Rooms>>,
+}
+#[allow(clippy::new_without_default)]
+impl CaptureState {
+    pub fn new() -> Self {
+        Self {
+            rooms: OnceLock::new(),
+        }
+    }
+}
+
+fn rooms(capture: &CaptureState) -> MutexGuard<'_, Rooms> {
+    capture
+        .rooms
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -393,15 +411,19 @@ fn read_persisted(room_root: &Path) -> PersistedRoomState {
 /// touch. Reading the file is deliberately **not** done under the advisory
 /// lock: a stale read is reconciled inside [`commit_effect`], and taking the
 /// lock here would put a file lock on the watcher's path.
-fn with_room<T>(room_root: &Path, f: impl FnOnce(&mut RoomState) -> T) -> T {
+fn with_room<T>(
+    capture: &CaptureState,
+    room_root: &Path,
+    f: impl FnOnce(&mut RoomState) -> T,
+) -> T {
     let key = room_key(room_root);
     let needs_load = {
-        let rooms = rooms();
+        let rooms = rooms(capture);
         !rooms.get(&key).is_some_and(|room| room.loaded)
     };
     let persisted = needs_load.then(|| read_persisted(room_root));
 
-    let mut rooms = rooms();
+    let mut rooms = rooms(capture);
     let room = rooms.entry(key).or_default();
     if let Some(persisted) = persisted {
         if !room.loaded {
@@ -425,9 +447,14 @@ fn with_room<T>(room_root: &Path, f: impl FnOnce(&mut RoomState) -> T) -> T {
 ///
 /// When the epoch advances, the cut is superseded: otherwise a later truncation
 /// would permanently hide new low-offset records.
-pub fn observe(room_root: &Path, path: &Path, observation: FileObservation) -> u64 {
+pub fn observe(
+    room_root: &Path,
+    path: &Path,
+    observation: FileObservation,
+    capture: &CaptureState,
+) -> u64 {
     let path = crate::capture::key::normalise_path(path);
-    with_room(room_root, |room| {
+    with_room(capture, room_root, |room| {
         match room.epochs.get_mut(&path) {
             Some(entry) => {
                 let verdict = classify_observation(&entry.observation, &observation);
@@ -467,9 +494,9 @@ pub fn observe(room_root: &Path, path: &Path, observation: FileObservation) -> u
 
 /// The current epoch for `path`, without recording an observation.
 #[cfg(test)]
-pub fn epoch_of(room_root: &Path, path: &Path) -> u64 {
+pub fn epoch_of(room_root: &Path, path: &Path, capture: &CaptureState) -> u64 {
     let path = crate::capture::key::normalise_path(path);
-    with_room(room_root, |room| {
+    with_room(capture, room_root, |room| {
         room.epochs.get(&path).map_or(0, |entry| entry.epoch)
     })
 }
@@ -477,9 +504,11 @@ pub fn epoch_of(room_root: &Path, path: &Path) -> u64 {
 /// `consumed_through` for `path`. `None` means "nothing consumed", so a record
 /// starting at offset 0 **is** acted on.
 #[cfg(test)]
-pub fn watermark(room_root: &Path, path: &Path) -> Option<u64> {
+pub fn watermark(room_root: &Path, path: &Path, capture: &CaptureState) -> Option<u64> {
     let path = crate::capture::key::normalise_path(path);
-    with_room(room_root, |room| room.watermarks.get(&path).copied())
+    with_room(capture, room_root, |room| {
+        room.watermarks.get(&path).copied()
+    })
 }
 
 /// Should a record at `record_start` on `path` be acted on?
@@ -493,8 +522,9 @@ pub fn is_actionable(
     session_id: &str,
     key: &ConsumptionKey,
     record_start: Option<u64>,
+    capture: &CaptureState,
 ) -> bool {
-    with_room(room_root, |room| {
+    with_room(capture, room_root, |room| {
         if room.was_consumed(session_id, key) {
             return false;
         }
@@ -508,8 +538,8 @@ pub fn is_actionable(
 
 /// Drop the state of paths that no longer exist. Only those are pruned.
 #[cfg(test)]
-pub fn prune_missing_paths(room_root: &Path) {
-    with_room(room_root, |room| {
+pub fn prune_missing_paths(room_root: &Path, capture: &CaptureState) {
+    with_room(capture, room_root, |room| {
         let gone: Vec<PathBuf> = room
             .epochs
             .keys()
@@ -530,8 +560,8 @@ pub fn prune_missing_paths(room_root: &Path) {
 /// Record the cut for a demand raised over an already-running reader, under the
 /// same critical section as the demand, and mirror it onto `slot`.
 #[cfg(test)]
-pub fn register_cut(room_root: &Path, slot: &CaptureSlot, cut: Cut) {
-    with_room(room_root, |room| {
+pub fn register_cut(room_root: &Path, slot: &CaptureSlot, cut: Cut, capture: &CaptureState) {
+    with_room(capture, room_root, |room| {
         room.cut = Some(cut.clone());
         room.dirty = true;
     });
@@ -539,8 +569,8 @@ pub fn register_cut(room_root: &Path, slot: &CaptureSlot, cut: Cut) {
 }
 
 #[cfg(test)]
-pub fn cut(room_root: &Path) -> Option<Cut> {
-    with_room(room_root, |room| room.cut.clone())
+pub fn cut(room_root: &Path, capture: &CaptureState) -> Option<Cut> {
+    with_room(capture, room_root, |room| room.cut.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -548,8 +578,8 @@ pub fn cut(room_root: &Path) -> Option<Cut> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-pub fn budget(room_root: &Path) -> u32 {
-    with_room(room_root, |room| room.budget())
+pub fn budget(room_root: &Path, capture: &CaptureState) -> u32 {
+    with_room(capture, room_root, |room| room.budget())
 }
 
 /// Recharge the room's budget back to the cap, in memory only.
@@ -558,8 +588,8 @@ pub fn budget(room_root: &Path) -> u32 {
 /// input. It takes no file lock: the debounce worker persists it, and a busy
 /// lock cannot lose it, because the dirty stamp survives until a successful
 /// flush and [`commit_effect`] reconciles the stamp under its own lock.
-pub fn recharge_in_memory(room_root: &Path) {
-    with_room(room_root, |room| {
+pub fn recharge_in_memory(room_root: &Path, capture: &CaptureState) {
+    with_room(capture, room_root, |room| {
         room.spends_since_recharge = 0;
         room.recharge_stamp += 1;
         room.dirty = true;
@@ -667,8 +697,8 @@ pub enum FlushOutcome {
 
 /// Persist the room, bounded by [`LOCK_WAIT_BUDGET`]. **Blocking**: only ever
 /// called on a blocking thread.
-pub fn flush_room(room_root: &Path) -> FlushOutcome {
-    let snapshot = with_room(room_root, |room| {
+pub fn flush_room(room_root: &Path, capture: &CaptureState) -> FlushOutcome {
+    let snapshot = with_room(capture, room_root, |room| {
         room.dirty
             .then(|| (room.to_persisted(), room.recharge_stamp))
     });
@@ -684,7 +714,7 @@ pub fn flush_room(room_root: &Path) -> FlushOutcome {
             drop(lock);
             match result {
                 Ok(()) => {
-                    with_room(room_root, |room| {
+                    with_room(capture, room_root, |room| {
                         // Only clear the dirty flag when nothing changed while
                         // the write was in flight.
                         if room.recharge_stamp == stamp {
@@ -696,7 +726,7 @@ pub fn flush_room(room_root: &Path) -> FlushOutcome {
                     FlushOutcome::Written
                 }
                 Err(e) => {
-                    with_room(room_root, |room| room.flush_scheduled = false);
+                    with_room(capture, room_root, |room| room.flush_scheduled = false);
                     FlushOutcome::Failed(e)
                 }
             }
@@ -709,8 +739,8 @@ pub fn flush_room(room_root: &Path) -> FlushOutcome {
 /// The job runs on `spawn_blocking`, so it never waits on a Tokio worker and
 /// never on the watcher thread. A busy lock leaves the room dirty for the next
 /// scheduled flush; so does a failed write.
-pub fn schedule_flush(room_root: &Path) {
-    let due_in = with_room(room_root, |room| {
+pub fn schedule_flush(room_root: &Path, capture: &Arc<CaptureState>) {
+    let due_in = with_room(capture, room_root, |room| {
         if !room.dirty || room.flush_scheduled {
             return None;
         }
@@ -724,15 +754,16 @@ pub fn schedule_flush(room_root: &Path) {
     if tokio::runtime::Handle::try_current().is_err() {
         // No runtime (a unit test, or a shutdown path): the room stays dirty and
         // the next scheduled flush picks it up.
-        with_room(room_root, |room| room.flush_scheduled = false);
+        with_room(capture, room_root, |room| room.flush_scheduled = false);
         return;
     }
     let room_root = room_root.to_path_buf();
+    let capture = Arc::clone(capture);
     tokio::spawn(async move {
         if !due_in.is_zero() {
             tokio::time::sleep(due_in).await;
         }
-        let _ = tokio::task::spawn_blocking(move || flush_room(&room_root)).await;
+        let _ = tokio::task::spawn_blocking(move || flush_room(&room_root, &capture)).await;
     });
 }
 
@@ -770,6 +801,7 @@ pub fn commit_effect(
     expected_seq: u64,
     expected_key: &ConsumptionKey,
     pre: &EffectPreconditions,
+    capture: &CaptureState,
 ) -> Result<CommittedEffect, AbstainReason> {
     // Step 2. Deliberately before the lock: test 19 asserts no lock file is
     // created, which is the executable proof of this ordering.
@@ -822,7 +854,7 @@ pub fn commit_effect(
     // Reconcile against a `state.json` another instance may have written since
     // this room was last touched, then apply step 5 in one section.
     let disk = read_persisted(room_root);
-    let outcome = with_room(room_root, |room| {
+    let outcome = with_room(capture, room_root, |room| {
         reconcile(room, disk);
 
         if room.was_consumed(&pre.session_id, expected_key) {
@@ -860,9 +892,9 @@ pub fn commit_effect(
     // the same lock that took it. The cost is one synchronous, already-bounded
     // write on the effect path; test 20 is what depends on it.
     if outcome.is_ok() {
-        let persisted = with_room(room_root, |room| room.to_persisted());
+        let persisted = with_room(capture, room_root, |room| room.to_persisted());
         if write_state_atomic(room_root, &persisted).is_ok() {
-            with_room(room_root, |room| {
+            with_room(capture, room_root, |room| {
                 room.dirty = false;
                 room.last_flush = Some(Instant::now());
             });
@@ -926,13 +958,13 @@ fn reconcile(room: &mut RoomState, disk: PersistedRoomState) {
 
 /// Drop one room from the in-memory map. Tests only.
 ///
-/// Scoped to a single room on purpose: the map is global and the test binary is
+/// Scoped to a single room on purpose: an owner can be shared and the test binary is
 /// multi-threaded, so clearing all of it would tear down rooms other tests are
 /// in the middle of using. It is also how a test simulates a restart, since the
 /// next touch reloads `state.json`.
 #[cfg(test)]
-pub(crate) fn forget_room_for_tests(room_root: &Path) {
-    rooms().remove(&room_key(room_root));
+pub(crate) fn forget_room_for_tests(room_root: &Path, capture: &CaptureState) {
+    rooms(capture).remove(&room_key(room_root));
 }
 
 /// Spend `units` of the room's budget without running a commit. Tests only:
@@ -940,8 +972,8 @@ pub(crate) fn forget_room_for_tests(room_root: &Path) {
 /// and
 /// driving three full commits through it would test the wrong thing.
 #[cfg(test)]
-pub(crate) fn spend_budget_for_tests(room_root: &Path, units: u32) {
-    with_room(room_root, |room| {
+pub(crate) fn spend_budget_for_tests(room_root: &Path, units: u32, capture: &CaptureState) {
+    with_room(capture, room_root, |room| {
         room.spends_since_recharge = room.spends_since_recharge.saturating_add(units);
         room.dirty = true;
     });

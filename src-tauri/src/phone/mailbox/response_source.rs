@@ -828,9 +828,10 @@ impl MailboxPoller {
         Some(work)
     }
 
-    pub fn new() -> Self {
+    pub fn new(messages: Arc<crate::config::injected_messages::MessageWarnings>) -> Self {
         let (wake_outcomes_tx, wake_outcomes_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
+            messages,
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
             response_sources: Arc::new(Mutex::new(HashMap::new())),
@@ -847,8 +848,10 @@ impl MailboxPoller {
 
     #[cfg(test)]
     pub(crate) fn new_with_test_hooks(test_hooks: MailboxTestHooks) -> Self {
+        let messages = Arc::new(crate::config::injected_messages::MessageWarnings::new());
         let (wake_outcomes_tx, wake_outcomes_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
+            messages,
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
             response_sources: Arc::new(Mutex::new(HashMap::new())),
@@ -868,9 +871,12 @@ impl MailboxPoller {
     /// into the process-global shutdown-owner slot and would leave the
     /// long-lived poller's scanner tasks unsealed and undrained at shutdown
     /// (#1403 tracks the pre-existing dispatcher case).
-    pub(crate) fn delivery_only() -> Self {
+    pub(crate) fn delivery_only(
+        messages: Arc<crate::config::injected_messages::MessageWarnings>,
+    ) -> Self {
         let (wake_outcomes_tx, wake_outcomes_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
+            messages,
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
             response_sources: Arc::new(Mutex::new(HashMap::new())),
@@ -884,6 +890,12 @@ impl MailboxPoller {
             #[cfg(test)]
             test_hooks: None,
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn delivery_only_for_tests() -> Self {
+        Self::delivery_only(Arc::new(
+            crate::config::injected_messages::MessageWarnings::new(),
+        ))
     }
 }
 

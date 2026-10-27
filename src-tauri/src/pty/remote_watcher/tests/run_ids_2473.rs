@@ -264,7 +264,7 @@ async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
     };
     let harness = Harness::with_snapshot_dir(settings, Some(dir.path().to_path_buf()));
     let repo = harness.repo("repo-a");
-    publish_branch(&repo, "feature-a");
+    publish_branch(&repo, "feature-a", harness.git_state.as_ref());
     harness
         .git
         .lock()
@@ -418,7 +418,7 @@ async fn p3_producer_publishes_runs_after_identity_compare_and_clears_them_when_
     let harness = Harness::with_snapshot_dir(settings, Some(dir.path().to_path_buf()));
     let feature = harness.repo("repo-a");
     let default = harness.repo("repo-b");
-    publish_branch(&feature, "feature-a");
+    publish_branch(&feature, "feature-a", harness.git_state.as_ref());
     {
         let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
         git.set_head_sha(&feature, 'a');

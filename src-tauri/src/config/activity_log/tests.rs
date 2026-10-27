@@ -40,16 +40,17 @@ fn seed_coalescer(
     id: Uuid,
     stamped: Instant,
     wall: DateTime<Utc>,
+    c: &ActivityCoalescer,
 ) -> Option<(Instant, DateTime<Utc>)> {
-    let mut guard = coalescer()
+    let mut guard = coalescer(c)
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     guard.insert(id, (stamped, wall));
     guard.get(&id).copied()
 }
 
-fn coalescer_entry(id: Uuid) -> Option<(Instant, DateTime<Utc>)> {
-    coalescer()
+fn coalescer_entry(id: Uuid, c: &ActivityCoalescer) -> Option<(Instant, DateTime<Utc>)> {
+    coalescer(c)
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
         .get(&id)
@@ -203,22 +204,18 @@ fn at_offset(millis: i64) -> String {
 
 #[test]
 fn append_at_writes_exactly_one_line_per_record() {
+    let c = ActivityCoalescer::new();
     let dir = TempDir::new().expect("temp dir");
     let path = dir.path().join(FILE_NAME);
-    let session = sample_session(Uuid::new_v4(), None);
-    append_at(
-        &path,
-        &[build_busy(session.id, &session, BusyReason::MarkBusy)],
-    );
-    append_at(
-        &path,
-        &[build_idle(session.id, &session, IdleReason::MarkIdle)],
-    );
+    let s = sample_session(Uuid::new_v4(), None);
+    append_at(&path, &[build_busy(s.id, &s, BusyReason::MarkBusy, &c)]);
+    append_at(&path, &[build_idle(s.id, &s, IdleReason::MarkIdle, &c)]);
     assert_eq!(lines_of(&path).len(), 2);
 }
 
 #[test]
 fn append_batch_writes_all_lines_in_one_open() {
+    let c = ActivityCoalescer::new();
     // `append_batch` delegates to `append_at`, which opens the file once
     // before its write loop; the observable property is that every record
     // of the batch lands, in order.
@@ -227,8 +224,8 @@ fn append_batch_writes_all_lines_in_one_open() {
     let first = sample_session(Uuid::new_v4(), None);
     let second = sample_session(Uuid::new_v4(), None);
     let batch = vec![
-        build_idle(first.id, &first, IdleReason::AppStop),
-        build_idle(second.id, &second, IdleReason::AppStop),
+        build_idle(first.id, &first, IdleReason::AppStop, &c),
+        build_idle(second.id, &second, IdleReason::AppStop, &c),
         build_app_stop(true, 2),
     ];
     append_at(&path, &batch);
@@ -241,15 +238,16 @@ fn append_batch_writes_all_lines_in_one_open() {
 
 #[test]
 fn every_written_line_parses_as_json_and_carries_v_at_run_id_event() {
+    let c = ActivityCoalescer::new();
     let dir = TempDir::new().expect("temp dir");
     let path = dir.path().join(FILE_NAME);
-    let session = sample_session(Uuid::new_v4(), Some(CodingAgentKind::Claude));
+    let s = sample_session(Uuid::new_v4(), Some(CodingAgentKind::Claude));
     append_at(
         &path,
         &[
-            build_busy(session.id, &session, BusyReason::SessionStart),
-            build_idle(session.id, &session, IdleReason::MarkIdle),
-            build_app_alive(vec![session.id]),
+            build_busy(s.id, &s, BusyReason::SessionStart, &c),
+            build_idle(s.id, &s, IdleReason::MarkIdle, &c),
+            build_app_alive(vec![s.id]),
             build_app_stop(false, 0),
         ],
     );
@@ -319,14 +317,12 @@ fn rotation_is_skipped_below_the_cap() {
 
 #[test]
 fn metrics_is_re_emitted_as_the_first_record_of_a_freshly_rotated_file() {
+    let c = ActivityCoalescer::new();
     let dir = TempDir::new().expect("temp dir");
     let path = dir.path().join(FILE_NAME);
     write_file_at_cap(&path, "previous-run");
-    let session = sample_session(Uuid::new_v4(), None);
-    append_at(
-        &path,
-        &[build_busy(session.id, &session, BusyReason::MarkBusy)],
-    );
+    let s = sample_session(Uuid::new_v4(), None);
+    append_at(&path, &[build_busy(s.id, &s, BusyReason::MarkBusy, &c)]);
 
     let records = parsed_lines(&path);
     assert_eq!(
@@ -349,8 +345,10 @@ fn metrics_is_re_emitted_as_the_first_record_of_a_freshly_rotated_file() {
 
 #[test]
 fn first_busy_for_a_session_has_continues_block_false_and_no_gap_ms() {
-    let session = sample_session(Uuid::new_v4(), None);
-    let record = json_of(&build_busy(session.id, &session, BusyReason::SessionStart));
+    let c = ActivityCoalescer::new();
+    assert!(c.last_idle_at.get().is_none());
+    let s = sample_session(Uuid::new_v4(), None);
+    let record = json_of(&build_busy(s.id, &s, BusyReason::SessionStart, &c));
     assert_eq!(record["continuesBlock"], json!(false));
     assert!(
         record.get("gapMs").is_none(),
@@ -360,13 +358,10 @@ fn first_busy_for_a_session_has_continues_block_false_and_no_gap_ms() {
 
 #[test]
 fn busy_within_the_window_has_continues_block_true_and_reports_gap_ms() {
-    let session = sample_session(Uuid::new_v4(), None);
-    seed_coalescer(
-        session.id,
-        ago(8),
-        Utc::now() - chrono::Duration::seconds(8),
-    );
-    let record = json_of(&build_busy(session.id, &session, BusyReason::MarkBusy));
+    let c = ActivityCoalescer::new();
+    let s = sample_session(Uuid::new_v4(), None);
+    seed_coalescer(s.id, ago(8), Utc::now() - chrono::Duration::seconds(8), &c);
+    let record = json_of(&build_busy(s.id, &s, BusyReason::MarkBusy, &c));
     assert_eq!(record["continuesBlock"], json!(true));
     let gap = record["gapMs"]
         .as_u64()
@@ -379,28 +374,32 @@ fn busy_within_the_window_has_continues_block_true_and_reports_gap_ms() {
 
 #[test]
 fn busy_after_the_window_has_continues_block_false_and_no_gap_ms() {
-    let session = sample_session(Uuid::new_v4(), None);
+    let c = ActivityCoalescer::new();
+    let s = sample_session(Uuid::new_v4(), None);
     seed_coalescer(
-        session.id,
+        s.id,
         ago(45),
         Utc::now() - chrono::Duration::seconds(45),
+        &c,
     );
-    let record = json_of(&build_busy(session.id, &session, BusyReason::MarkBusy));
+    let record = json_of(&build_busy(s.id, &s, BusyReason::MarkBusy, &c));
     assert_eq!(record["continuesBlock"], json!(false));
     assert!(record.get("gapMs").is_none());
 }
 
 #[test]
 fn a_backwards_utc_jump_suppresses_the_continuation_even_when_instant_is_under_the_window() {
-    let session = sample_session(Uuid::new_v4(), None);
+    let c = ActivityCoalescer::new();
+    let s = sample_session(Uuid::new_v4(), None);
     // The Instant delta is a few seconds, but the wall clock moved
     // backwards after the idle was stamped, so the Utc delta is negative.
     seed_coalescer(
-        session.id,
+        s.id,
         ago(5),
         Utc::now() + chrono::Duration::seconds(3_600),
+        &c,
     );
-    let record = json_of(&build_busy(session.id, &session, BusyReason::MarkBusy));
+    let record = json_of(&build_busy(s.id, &s, BusyReason::MarkBusy, &c));
     assert_eq!(
         record["continuesBlock"],
         json!(false),
@@ -411,9 +410,16 @@ fn a_backwards_utc_jump_suppresses_the_continuation_even_when_instant_is_under_t
 
 #[test]
 fn coalescer_state_prunes_entries_older_than_the_window() {
+    let c = ActivityCoalescer::new();
     let stale = Uuid::new_v4();
     assert!(
-        seed_coalescer(stale, ago(120), Utc::now() - chrono::Duration::seconds(120)).is_some(),
+        seed_coalescer(
+            stale,
+            ago(120),
+            Utc::now() - chrono::Duration::seconds(120),
+            &c
+        )
+        .is_some(),
         "seeded"
     );
     // Positive control: an in-window entry planted the same way must survive
@@ -421,19 +427,19 @@ fn coalescer_state_prunes_entries_older_than_the_window() {
     let fresh = Uuid::new_v4();
     let fresh_entry = (ago(1), Utc::now() - chrono::Duration::seconds(1));
     assert!(
-        seed_coalescer(fresh, fresh_entry.0, fresh_entry.1).is_some(),
+        seed_coalescer(fresh, fresh_entry.0, fresh_entry.1, &c).is_some(),
         "seeded"
     );
 
     let other = sample_session(Uuid::new_v4(), None);
-    let _ = build_idle(other.id, &other, IdleReason::MarkIdle);
+    let _ = build_idle(other.id, &other, IdleReason::MarkIdle, &c);
 
     assert!(
-        coalescer_entry(stale).is_none(),
+        coalescer_entry(stale, &c).is_none(),
         "an entry past the window is dropped on the next write"
     );
     assert_eq!(
-        coalescer_entry(fresh),
+        coalescer_entry(fresh, &c),
         Some(fresh_entry),
         "an entry inside the window survives the same write"
     );
@@ -441,10 +447,11 @@ fn coalescer_state_prunes_entries_older_than_the_window() {
 
 #[test]
 fn build_idle_from_snapshot_does_not_read_or_write_the_coalescer() {
+    let c = ActivityCoalescer::new();
     let id = Uuid::new_v4();
     let stamped = ago(3);
     let wall = Utc::now() - chrono::Duration::seconds(3);
-    seed_coalescer(id, stamped, wall);
+    seed_coalescer(id, stamped, wall, &c);
 
     let record = json_of(&build_idle_from_snapshot(
         &sample_snapshot(id),
@@ -452,7 +459,7 @@ fn build_idle_from_snapshot_does_not_read_or_write_the_coalescer() {
     ));
 
     assert_eq!(
-        coalescer_entry(id),
+        coalescer_entry(id, &c),
         Some((stamped, wall)),
         "the shutdown constructor must not write last_idle_at"
     );
@@ -479,12 +486,13 @@ fn build_idle_from_snapshot_omits_idle_threshold_ms() {
 
 #[test]
 fn append_with_no_sink_configured_is_a_no_op() {
+    let c = ActivityCoalescer::new();
     // No test ever calls `init_run`, so the sink is never configured in a
     // test process and this holds for every unit test in the crate.
     let dir = TempDir::new().expect("temp dir");
-    let session = sample_session(Uuid::new_v4(), None);
-    append(build_busy(session.id, &session, BusyReason::MarkBusy));
-    append_batch(&[build_idle(session.id, &session, IdleReason::MarkIdle)]);
+    let s = sample_session(Uuid::new_v4(), None);
+    append(build_busy(s.id, &s, BusyReason::MarkBusy, &c));
+    append_batch(&[build_idle(s.id, &s, IdleReason::MarkIdle, &c)]);
     assert!(
         !dir.path().join(FILE_NAME).exists(),
         "an unconfigured sink must write nothing"
@@ -509,18 +517,17 @@ fn init_run_disabled_stores_no_sink_and_writes_nothing() {
 
 #[test]
 fn append_at_an_unwritable_path_does_not_panic_and_returns() {
+    let c = ActivityCoalescer::new();
     let dir = TempDir::new().expect("temp dir");
     let path = dir.path().join("does-not-exist").join(FILE_NAME);
-    let session = sample_session(Uuid::new_v4(), None);
-    append_at(
-        &path,
-        &[build_busy(session.id, &session, BusyReason::MarkBusy)],
-    );
+    let s = sample_session(Uuid::new_v4(), None);
+    append_at(&path, &[build_busy(s.id, &s, BusyReason::MarkBusy, &c)]);
     assert!(!path.exists());
 }
 
 #[test]
 fn a_poisoned_writer_mutex_does_not_panic_a_later_append() {
+    let c = ActivityCoalescer::new();
     let handle = std::thread::spawn(|| {
         let _guard = writer_lock()
             .lock()
@@ -534,48 +541,46 @@ fn a_poisoned_writer_mutex_does_not_panic_a_later_append() {
 
     let dir = TempDir::new().expect("temp dir");
     let path = dir.path().join(FILE_NAME);
-    let session = sample_session(Uuid::new_v4(), None);
-    append_at(
-        &path,
-        &[build_busy(session.id, &session, BusyReason::MarkBusy)],
-    );
+    let s = sample_session(Uuid::new_v4(), None);
+    append_at(&path, &[build_busy(s.id, &s, BusyReason::MarkBusy, &c)]);
     assert_eq!(lines_of(&path).len(), 1);
 }
 
 #[test]
 fn a_poisoned_coalescer_mutex_does_not_panic_a_later_build() {
-    let handle = std::thread::spawn(|| {
-        let _guard = coalescer()
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        panic!("poison the coalescer mutex on purpose");
+    let c = ActivityCoalescer::new();
+    let handle = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let _guard = coalescer(&c)
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                panic!("poison the coalescer mutex on purpose");
+            })
+            .join()
     });
-    assert!(
-        handle.join().is_err(),
-        "the helper thread must have panicked"
-    );
+    assert!(handle.is_err(), "the helper thread must have panicked");
 
-    let session = sample_session(Uuid::new_v4(), None);
-    let idle = json_of(&build_idle(session.id, &session, IdleReason::MarkIdle));
+    let s = sample_session(Uuid::new_v4(), None);
+    let idle = json_of(&build_idle(s.id, &s, IdleReason::MarkIdle, &c));
     assert_eq!(idle["event"], "idle");
-    let busy = json_of(&build_busy(session.id, &session, BusyReason::MarkBusy));
+    let busy = json_of(&build_busy(s.id, &s, BusyReason::MarkBusy, &c));
     assert_eq!(busy["continuesBlock"], json!(true));
 }
 
 #[test]
 fn concurrent_appends_never_interleave_a_line() {
+    let c = ActivityCoalescer::new();
     let dir = TempDir::new().expect("temp dir");
     let path = dir.path().join(FILE_NAME);
     std::thread::scope(|scope| {
         for _ in 0..8 {
             let path = path.as_path();
+            let c = &c;
             scope.spawn(move || {
                 for _ in 0..100 {
-                    let session = sample_session(Uuid::new_v4(), None);
-                    append_at(
-                        path,
-                        &[build_busy(session.id, &session, BusyReason::MarkBusy)],
-                    );
+                    let s = sample_session(Uuid::new_v4(), None);
+                    append_at(path, &[build_busy(s.id, &s, BusyReason::MarkBusy, c)]);
                 }
             });
         }

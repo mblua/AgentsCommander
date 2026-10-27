@@ -66,8 +66,8 @@ async fn remote_activity_cache_producer_positive_wiring() {
     let harness = Harness::with_snapshot_dir(settings, Some(snapshot_dir.path().to_path_buf()));
     let repo_running = harness.repo("repo-a");
     let repo_idle = harness.repo("repo-b");
-    publish_branch(&repo_running, "feature-a");
-    publish_branch(&repo_idle, "feature-b");
+    publish_branch(&repo_running, "feature-a", harness.git_state.as_ref());
+    publish_branch(&repo_idle, "feature-b", harness.git_state.as_ref());
     {
         let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
         git.set_head_sha(&repo_running, 'a');
@@ -181,7 +181,7 @@ async fn remote_activity_cache_producer_forced_write_failure_keeps_round_effects
     };
     let harness = Harness::with_snapshot_dir(settings, Some(blocked_destination.clone()));
     let repo = harness.repo("repo-a");
-    publish_branch(&repo, "feature-a");
+    publish_branch(&repo, "feature-a", harness.git_state.as_ref());
     harness
         .git
         .lock()
@@ -260,7 +260,7 @@ async fn remote_activity_cache_producer_publication_time_is_not_the_round_start(
     };
     let harness = Harness::with_snapshot_dir(settings, Some(snapshot_dir.path().to_path_buf()));
     let repo = harness.repo("repo-a");
-    publish_branch(&repo, "feature-a");
+    publish_branch(&repo, "feature-a", harness.git_state.as_ref());
     harness.set_work(std::slice::from_ref(&repo));
 
     // Whole-second instant: the codec writes seconds precision.
@@ -316,7 +316,7 @@ async fn remote_activity_cache_producer_missing_directory_skips_persistence_only
         "construction records the one-time diagnostic state"
     );
     let repo = harness.repo("repo-a");
-    publish_branch(&repo, "feature-a");
+    publish_branch(&repo, "feature-a", harness.git_state.as_ref());
     harness
         .git
         .lock()

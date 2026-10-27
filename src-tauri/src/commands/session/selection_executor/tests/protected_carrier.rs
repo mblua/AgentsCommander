@@ -18,8 +18,13 @@ impl ProtectedFixture {
         isolated_identity(&name);
         let mut f = NativeFixture::build(false).await;
         let tracker = f.pty.lock().unwrap().response_close_state();
-        *f.manager.write().await =
-            crate::session::manager::SessionManager::with_response_close(tracker.clone());
+        *f.manager.write().await = crate::session::manager::SessionManager::with_response_close(
+            tracker.clone(),
+            f.app
+                .state::<crate::app_state::AppOwners>()
+                .activity
+                .clone(),
+        );
         assert!(f.app.manage(tracker));
         let project = f.cwd.path().join("proj-a");
         let ac = project.join(".ac");

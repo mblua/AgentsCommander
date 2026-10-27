@@ -270,8 +270,9 @@ async fn configured_default_shell_invalid_input_leaves_no_session_state_native()
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     // The real local backend: the invalid-input rejection lives inside its
     // spawn_sync, so a fake capturing backend would accept the spawn.
+    let owners = crate::AppOwners::new();
     let git_app = Box::leak(Box::new(
-        crate::test_support::test_builder()
+        crate::test_support::test_builder_with_owners(owners.clone())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build native invalid-input git watcher app"),
     ));
@@ -282,11 +283,14 @@ async fn configured_default_shell_invalid_input_leaves_no_session_state_native()
     let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
     let output_senders: crate::telegram::manager::OutputSenderMap =
         Arc::new(Mutex::new(HashMap::new()));
-    let backend = Arc::new(crate::pty::local_backend::LocalProcessBackend::new(
+    let backend = Arc::new(crate::pty::local_backend::LocalProcessBackend::with_owners(
         output_senders,
         idle_detector,
         git_watcher,
         None,
+        #[cfg(windows)]
+        owners.git_guard.clone(),
+        owners.spawn.clone(),
     ));
     let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
         backend,
@@ -337,7 +341,7 @@ async fn configured_default_shell_invalid_input_leaves_no_session_state_native()
         .pending_ids;
     for id in &pending_ids {
         assert!(
-            crate::pty::spawn_diagnostics::record_for(*id).is_none(),
+            crate::pty::spawn_diagnostics::record_for(*id, owners.spawn.as_ref()).is_none(),
             "no launch provenance may be recorded for the rejected session"
         );
         assert!(

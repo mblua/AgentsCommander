@@ -567,7 +567,8 @@ async fn session_and_pty_share_response_close_tracker() {
     use crate::session::manager::SessionManager;
 
     let state = ResponseCloseState::default();
-    let sessions = SessionManager::with_response_close(state.clone());
+    let owners = crate::app_state::AppOwners::new();
+    let sessions = SessionManager::with_response_close(state.clone(), owners.activity.clone());
     let mut pty = PtyManager::new_for_test(Arc::new(RecordingBackend::default()));
     pty.bind_response_close(state.clone());
     let session_tracker = sessions.response_close_state();

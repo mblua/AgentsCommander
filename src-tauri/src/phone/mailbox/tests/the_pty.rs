@@ -325,7 +325,7 @@ fn maximum_host_request_can_be_atomically_replaced_with_a_marker() {
     )
     .unwrap()
     .1;
-    MailboxPoller::new()
+    MailboxPoller::default()
         .replace_host_request_with_marker(&path, &source_identity, &injection_id, &injection_id)
         .unwrap();
     let (bytes, _) = crate::path_identity::read_bounded_regular(
@@ -396,7 +396,7 @@ async fn unavailable_store_rejects_a_valid_host_request_with_its_correlated_id()
     .unwrap()
     .1;
 
-    MailboxPoller::new()
+    MailboxPoller::default()
         .process_pty_input_file(fixture.app.handle(), &path, false, &bytes, &source_identity)
         .await;
 
@@ -495,7 +495,7 @@ async fn live_sender_token_host_request_authenticates_and_injects_end_to_end() {
     .unwrap()
     .1;
 
-    MailboxPoller::new()
+    MailboxPoller::default()
         .process_pty_input_file(fixture.app.handle(), &path, false, &bytes, &source_identity)
         .await;
 
@@ -607,7 +607,7 @@ async fn assert_host_terminal_artifact_repair(
         )
         .unwrap();
 
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     let marker_path = outbox.join(format!("{injection_id}.json"));
     let artifact_path = outbox.join("rejected").join(format!("{injection_id}.json"));
     #[cfg(windows)]
