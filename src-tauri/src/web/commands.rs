@@ -121,12 +121,9 @@ pub(crate) trait WebOperations: AgentUpdateOperations + Send + Sync {
         pty_mgr: &'a Arc<Mutex<PtyManager>>,
         settings: &'a SettingsState,
         request: ApplyCodingAgentProfileSelectionRequest,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<(ApplyCodingAgentProfileSelectionResult, Value), String>>
-                + Send
-                + 'a,
-        >,
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<(ApplyCodingAgentProfileSelectionResult, Value), String>,
     >;
     fn discover_project<'a>(
         &'a self,

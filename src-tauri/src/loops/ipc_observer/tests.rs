@@ -459,9 +459,11 @@ fn issue_3260_marker_probe_shutdown_order() {
             }
         }
     }
+    type ProbeObservation = (u32, u64, FreezeMarker, Option<FreezeMarker>);
+
     struct ProbeRecording {
         observer: Arc<IpcObserver>,
-        observations: Mutex<Vec<(u32, u64, FreezeMarker, Option<FreezeMarker>)>>,
+        observations: Mutex<Vec<ProbeObservation>>,
     }
     impl IpcProbeEvents for ProbeRecording {
         fn probe(&self, seq: u32, backend_now_ms: u64) {
