@@ -6,8 +6,10 @@ pub(crate) mod attachments;
 pub(crate) mod directories;
 pub(crate) mod documents;
 pub(crate) mod processes;
+pub(crate) mod profile_targets;
 pub(crate) mod projects;
 pub(crate) mod repositories;
+pub(crate) mod room_diagnostics;
 pub(crate) mod tasks;
 pub(crate) mod transcripts;
 
