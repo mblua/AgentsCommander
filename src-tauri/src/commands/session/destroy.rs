@@ -56,6 +56,7 @@ pub(crate) async fn destroy_one_legacy_session<R: tauri::Runtime>(
         let permit = acquire_carrier_mutation_permit().await;
         tracker.invalidate_manager_row(session_id, std::time::Instant::now());
         if !crate::config::sessions_persistence::retire_carrier_for_discard(&permit, session_id) {
+            response_close::log_discard_veto(transaction.app(), &permit, session_id);
             outcome
                 .failed
                 .push((session_id, "response_close_deferred".to_owned()));
