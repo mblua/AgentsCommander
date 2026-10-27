@@ -642,7 +642,7 @@ pub(crate) fn ensure_seeded_for_project_in(
         );
         return;
     }
-    if !project_root.is_dir() {
+    if !crate::filesystem::directories::registered_project_is_dir(project_root) {
         log::warn!(
             "[coding-agents] skipping seed for missing registered project root {}",
             project_root.display()

@@ -5,7 +5,6 @@
 // Shared scaffold (find_latest_jsonl, read_new_lines, polling/rotation
 // constants) lives in `jsonl_kernel.rs` — see commit 1 for the extraction.
 
-use std::io::{Read as IoRead, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -22,7 +21,7 @@ use crate::capture::record::{CaptureProvider, CapturedRecord, RecordOrigin};
 use crate::capture::state::head_from_lines;
 use crate::network::OutboundNetwork;
 use crate::telegram::jsonl_kernel::{
-    find_latest_jsonl, find_pinned_jsonl, read_new_lines_with_starts, read_preamble_for_race,
+    self, find_latest_jsonl, find_pinned_jsonl, read_new_lines_with_starts, read_preamble_for_race,
     PINNED_ATTACH_WAIT_SECS, POLL_INTERVAL_MS, PREAMBLE_MAX_BYTES, RACE_GRACE_SECS,
     ROTATION_STALE_SECS,
 };
@@ -163,12 +162,7 @@ fn read_preamble_with_starts(
     path: &Path,
     attach_time: DateTime<Utc>,
 ) -> std::io::Result<Vec<(u64, String)>> {
-    let initial_len = std::fs::metadata(path)?.len();
-    let window_start = initial_len.saturating_sub(PREAMBLE_MAX_BYTES);
-    let mut file = std::fs::File::open(path)?;
-    file.seek(SeekFrom::Start(window_start))?;
-    let mut buf: Vec<u8> = Vec::new();
-    file.read_to_end(&mut buf)?;
+    let (buf, window_start) = jsonl_kernel::read_live_preamble_window(path, PREAMBLE_MAX_BYTES)?;
 
     // Drop everything before the first `\n` unless the window starts at 0: the
     // seek point almost certainly lands mid-line. `base` is the absolute file
@@ -609,7 +603,7 @@ impl<R: tauri::Runtime> ClaudeReader<R> {
 
     /// Check if project directory exists yet
     fn project_dir_ready(&mut self) -> bool {
-        if !self.project_dir.is_dir() {
+        if !jsonl_kernel::transcript_is_dir(&self.project_dir) {
             if !self.dir_warned {
                 self.bridge_log("JSONL_WAIT", "project directory does not exist yet");
                 self.dir_warned = true;
@@ -719,7 +713,7 @@ impl<R: tauri::Runtime> ClaudeReader<R> {
         self.current_file_mtime = self
             .current_file
             .as_ref()
-            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|p| jsonl_kernel::transcript_metadata(p).ok())
             .and_then(|m| m.modified().ok());
         self.line_remainder.clear();
     }
@@ -785,7 +779,10 @@ impl<R: tauri::Runtime> ClaudeReader<R> {
             }
             Err(e) => {
                 self.bridge_log("JSONL_ERR", &format!("preamble scan failed: {}", e));
-                self.file_offset = std::fs::metadata(p).ok().map(|m| m.len()).unwrap_or(0);
+                self.file_offset = jsonl_kernel::transcript_metadata(p)
+                    .ok()
+                    .map(|m| m.len())
+                    .unwrap_or(0);
             }
         }
     }
@@ -824,7 +821,7 @@ impl<R: tauri::Runtime> ClaudeReader<R> {
                 }
 
                 // Update mtime for rotation flicker guard
-                self.current_file_mtime = std::fs::metadata(&path)
+                self.current_file_mtime = jsonl_kernel::transcript_metadata(&path)
                     .ok()
                     .and_then(|m| m.modified().ok());
             }

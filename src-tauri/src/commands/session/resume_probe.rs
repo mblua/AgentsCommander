@@ -76,15 +76,7 @@ pub(crate) fn resolve_claude_projects_dir_in(
     }
 
     fn parse_config_dir_from_wrapper(path: &Path) -> Option<PathBuf> {
-        // Cap read at 64 KiB; real wrappers are < 1 KiB. Refusing larger
-        // files protects against accidentally treating an exe-renamed-as-cmd
-        // as a wrapper.
-        const MAX: u64 = 64 * 1024;
-        let metadata = std::fs::metadata(path).ok()?;
-        if metadata.len() > MAX {
-            return None;
-        }
-        let bytes = std::fs::read(path).ok()?;
+        let bytes = crate::config::agent_command::read_claude_resume_wrapper(path)?;
         // Strip UTF-8 BOM if present; tolerate non-UTF-8 by lossy decode.
         let text_bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
         let text = String::from_utf8_lossy(text_bytes);
