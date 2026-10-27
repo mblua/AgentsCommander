@@ -611,3 +611,90 @@ fn host_artifact_validation_requires_every_correlation_field_and_directory() {
         Err("invalid_artifact")
     );
 }
+
+#[test]
+fn issue_3171_selector_uses_sender_identity() {
+    let incident = "20261022-091917-root-agent-to-room21-fixer-reinstalled.md";
+    assert!(validate_send_filename(incident, true).is_err());
+    assert!(validate_send_filename(incident, false).is_ok());
+    let root = "20261022-092418-root-to-room21-ac-tech-lead-v5-fixer-installation-confirmed.md";
+    assert!(validate_send_filename(root, true).is_ok());
+    assert!(crate::phone::messaging::validate_root_notification_filename(root).is_ok());
+    for name in [
+        "20261022-093000-room21-ac-dev-rust-v5-to-room21-ac-tech-lead-v5-status.1.md",
+        "20261022-093000-wg21-ac-dev-rust-v5-to-room21-ac-tech-lead-v5-status.md",
+    ] {
+        assert!(validate_send_filename(name, false).is_ok(), "{name}");
+        assert!(validate_send_filename(name, true).is_err(), "{name}");
+    }
+}
+
+#[test]
+fn issue_3171_long_help_documents_filename_and_receipts() {
+    use clap::CommandFactory;
+    let mut command = crate::cli::Cli::command();
+    let send = command.find_subcommand_mut("send").unwrap();
+    let help = send.render_long_help().to_string();
+    for rule in [
+        "YYYYMMDD-HHMMSS-<from>-to-<to>-<slug>[.N].md",
+        "8/6 ASCII digits",
+        "UTC convention",
+        "calendar dates and time ranges are not checked",
+        "non-empty [a-z0-9]+ segments",
+        "at least one segment before and two after",
+        "routing uses --to and the authenticated sender",
+        "lowercase .md",
+        "no /, backslash, colon, traversal",
+        ".1, .01 and .99 pass; .0, .00 and .100 fail",
+        "sanitize_slug generates up to 50 characters",
+        "no validator slug-length limit",
+        "root-agent-to is invalid for Root",
+        "legacy wg21-ac-dev-rust-v5",
+        "Queued confirms enqueue only",
+        "Delivered confirms system delivery",
+        "not reading or completed work",
+        "delivered/<id>.json",
+        "rejected/<id>.json",
+        "rejected/<id>.reason.txt",
+        "--outbox if supplied",
+        "master token uses the app outbox",
+        "Session tokens use <root>/<local-dir>/outbox",
+        "local-dir is configured per instance",
+        "on confirmation timeout the CLI exits 1",
+    ] {
+        assert!(help.contains(rule), "missing help rule: {rule}");
+    }
+    for (example, root) in [
+        (
+            "20261022-092418-root-to-room21-ac-tech-lead-v5-fixer-installation-confirmed.md",
+            true,
+        ),
+        (
+            "20261022-093000-room21-ac-dev-rust-v5-to-room21-ac-tech-lead-v5-status.1.md",
+            false,
+        ),
+    ] {
+        assert!(help.contains(example));
+        assert!(validate_send_filename(example, root).is_ok());
+    }
+}
+
+#[test]
+fn issue_3171_shape_error_is_actionable_and_single_line() {
+    let name = "20261022-091917-root-agent-to-room21-fixer-reinstalled.md";
+    let error = validate_send_filename(name, true).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::phone::messaging::MessagingError::InvalidShape(_)
+    ));
+    let message = error.to_string();
+    assert!(message.starts_with(&format!(
+        "filename '{name}' does not match the required shape"
+    )));
+    assert!(message.contains("YYYYMMDD-HHMMSS-<from>-to-<to>-<slug>[.N].md"));
+    assert!(message.contains("if the sender is Root:"));
+    assert!(message.contains(
+        "20261022-092418-root-to-room21-ac-tech-lead-v5-fixer-installation-confirmed.md"
+    ));
+    assert!(!message.contains(['\n', '\r']));
+}

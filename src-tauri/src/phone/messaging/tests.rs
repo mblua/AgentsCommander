@@ -734,3 +734,49 @@ fn pty_safe_max_clamp_accepts_typical() {
         PTY_SAFE_MAX,
     );
 }
+
+#[test]
+fn issue_3171_filename_grammar_matches_documented_edges() {
+    let cases = [
+        ("20261022-093000-root-to-room21-status.md", true),
+        ("20261022-093000-root-to-room21-status.MD", false),
+        ("20261022-093000-Root-to-room21-status.md", false),
+        ("20261022-093000-root-to-room21--status.md", false),
+        ("20261022-093000-root-room21-status.md", false),
+        ("20261022-093000-root-to-room21.md", false),
+        ("20261022-093000-root-to-room21-status.1.md", true),
+        ("20261022-093000-root-to-room21-status.01.md", true),
+        ("20261022-093000-root-to-room21-status.99.md", true),
+        ("20261022-093000-root-to-room21-status.0.md", false),
+        ("20261022-093000-root-to-room21-status.00.md", false),
+        ("20261022-093000-root-to-room21-status.100.md", false),
+        ("20261022-093000-root-to-room21-status.extra.md", false),
+        ("2026102-093000-root-to-room21-status.md", false),
+        ("202610222-093000-root-to-room21-status.md", false),
+        ("20261022-09300-root-to-room21-status.md", false),
+        ("20261022-0930000-root-to-room21-status.md", false),
+        ("2026102x-093000-root-to-room21-status.md", false),
+        ("２０２６１０２２-093000-root-to-room21-status.md", false),
+        ("99999999-999999-root-to-room21-status.md", true),
+        ("../20261022-093000-root-to-room21-status.md", false),
+        ("dir/20261022-093000-root-to-room21-status.md", false),
+        (r"dir\20261022-093000-root-to-room21-status.md", false),
+        ("C:20261022-093000-root-to-room21-status.md", false),
+        (r"C:\20261022-093000-root-to-room21-status.md", false),
+    ];
+    for (name, valid) in cases {
+        assert_eq!(
+            validate_filename_only(name).is_ok(),
+            valid,
+            "general: {name}"
+        );
+        assert_eq!(
+            validate_root_notification_filename(name).is_ok(),
+            valid,
+            "Root: {name}"
+        );
+    }
+    let long_slug = format!("20261022-093000-root-to-room21-{}.md", "a".repeat(51));
+    assert!(validate_filename_only(&long_slug).is_ok());
+    assert!(validate_root_notification_filename(&long_slug).is_ok());
+}
