@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::filesystem::config_locations;
+
 pub const CANONICAL_AC_ROOT_DIR: &str = ".ac";
 pub const AC_ROOT_DIR_NAMES: [&str; 1] = [CANONICAL_AC_ROOT_DIR];
 
@@ -13,7 +15,7 @@ pub fn ac_root_for_project(project: &Path) -> PathBuf {
 
 pub fn existing_ac_root(project: &Path) -> Option<PathBuf> {
     let canonical = ac_root_for_project(project);
-    if canonical.is_dir() {
+    if config_locations::ac_root_is_directory(&canonical) {
         return Some(canonical);
     }
 
@@ -47,7 +49,10 @@ pub fn find_ac_root_ancestor(path: &Path) -> Option<PathBuf> {
 }
 
 fn same_existing_path(a: &Path, b: &Path) -> bool {
-    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+    match (
+        config_locations::canonical_ac_root(a),
+        config_locations::canonical_ac_root(b),
+    ) {
         (Ok(a), Ok(b)) => a == b,
         _ => a == b,
     }

@@ -5,6 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::filesystem::agent_files;
+
 /// Mirrors the `"memory"` entry of
 /// `crate::commands::entity_creation::AGENT_MATRIX_DIRS` (`entity_creation.rs:128`).
 const MEMORY_DIR_NAME: &str = "memory";
@@ -32,7 +34,7 @@ fn display_path(path: &Path) -> String {
 /// same desired end state, so warning about it would report a failure where
 /// nothing failed (D9 sub-decision).
 fn ensure_dir(path: &Path) -> std::io::Result<()> {
-    match std::fs::create_dir(path) {
+    match agent_files::create_memory_directory(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(e),
@@ -100,7 +102,7 @@ fn resolve_rotatable_matrix_root(agent_root: &str) -> Option<PathBuf> {
     }
     // Canonical (verbatim on Windows) is what the filesystem calls below use;
     // logging normalizes it (11.3.2).
-    std::fs::canonicalize(&candidate).ok()
+    agent_files::canonical_memory_root(Path::new(&candidate)).ok()
 }
 
 /// The deterministic core, modeled on `phone::mailbox::archive_root_md`
@@ -112,7 +114,7 @@ fn resolve_rotatable_matrix_root(agent_root: &str) -> Option<PathBuf> {
 /// `Ok(Some(dst))` is the rotated directory.
 fn rotate_memory_dir(matrix_root: &Path, timestamp: &str) -> std::io::Result<Option<PathBuf>> {
     let src = matrix_root.join(MEMORY_DIR_NAME);
-    let Ok(metadata) = std::fs::symlink_metadata(&src) else {
+    let Ok(metadata) = agent_files::memory_directory_metadata(&src) else {
         // D9: absent is repaired, not merely skipped. Without this, a failed
         // recreate below would leave the matrix permanently without a write
         // target, because this branch is what every later launch takes.
@@ -143,7 +145,10 @@ fn rotate_memory_dir(matrix_root: &Path, timestamp: &str) -> std::io::Result<Opt
         ));
     }
     // D2: an empty `memory/` is not rotated.
-    if std::fs::read_dir(&src)?.next().is_none() {
+    if agent_files::memory_directory_entries(&src)?
+        .next()
+        .is_none()
+    {
         return Ok(None);
     }
     let parent = matrix_root.join("memory-archive");
@@ -151,7 +156,7 @@ fn rotate_memory_dir(matrix_root: &Path, timestamp: &str) -> std::io::Result<Opt
     // Revalidate even after AlreadyExists: the parent must never be a link.
     // This check then rename remains best effort on the trusted host; a
     // concurrent junction swap is not prevented atomically.
-    let metadata = std::fs::symlink_metadata(&parent)?;
+    let metadata = agent_files::memory_directory_metadata(&parent)?;
     if !metadata.is_dir()
         || crate::commands::entity_creation::metadata_is_link_or_reparse(&metadata)
     {
@@ -165,14 +170,14 @@ fn rotate_memory_dir(matrix_root: &Path, timestamp: &str) -> std::io::Result<Opt
     // than `exists()`, so a dangling link at the destination also blocks. This
     // is a best-effort fast path, NOT an atomic guarantee; see section 7 for
     // what actually makes data loss impossible in the residual race.
-    if std::fs::symlink_metadata(&dst).is_ok() {
+    if agent_files::memory_directory_metadata(&dst).is_ok() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
             "memory rotation target already exists",
         ));
     }
     // No retry loop, per `mailbox.rs:1615` and its rationale at `:1590-1593`.
-    std::fs::rename(&src, &dst)?;
+    agent_files::rename_memory_directory(&src, &dst)?;
     // Restore the write target so the layout contract of `entity_creation.rs:128`
     // stays complete. The rotation itself already succeeded, so this warns
     // rather than turning into `Err`; D9's self-repair above is what keeps a
