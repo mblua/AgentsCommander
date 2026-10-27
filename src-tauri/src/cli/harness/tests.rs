@@ -142,3 +142,17 @@ fn redacts_argv_secret_flag_value_before_display_join() {
     assert!(redacted.contains("--token\u{1f}[REDACTED]"));
     assert!(!redacted.contains("secret-leak-check"));
 }
+
+#[test]
+fn audit_append_preserves_two_records_with_one_newline_each() {
+    let dir = tempfile::tempdir().unwrap();
+    let logs = dir.path().join("logs").join("nested");
+    crate::filesystem::directories::ensure_harness_logs(&logs).unwrap();
+    let path = logs.join("harness.log");
+    crate::filesystem::documents::append_harness_audit(&path, "first record").unwrap();
+    crate::filesystem::documents::append_harness_audit(&path, "second record").unwrap();
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"first record\nsecond record\n"
+    );
+}
