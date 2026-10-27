@@ -32,12 +32,36 @@ pub(crate) fn ensure_session_container_directory(dir: &Path) -> std::io::Result<
 
 /// Write the operation's unique stage using the original filesystem semantics.
 pub(crate) fn write_session_container_stage(path: &Path, bytes: String) -> std::io::Result<()> {
-    std::fs::write(path, bytes)
+    use std::io::Write;
+
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(bytes.as_bytes())?;
+    #[cfg(all(test, windows))]
+    let file = tests::issue_3278_sync_handle(path, file)?;
+    file.sync_all()
 }
 
 /// Replace the snapshot using the existing native rename operation.
 pub(crate) fn replace_session_container_file(tmp: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::rename(tmp, dst)
+    std::fs::rename(tmp, dst)?;
+    #[cfg(unix)]
+    if let Err(error) = sync_session_container_parent(dst) {
+        log::warn!(
+            "[sessions] published {} but parent directory sync failed: {}",
+            dst.display(),
+            error
+        );
+    }
+    // Windows has no portable directory sync through File::open.
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_session_container_parent(dst: &Path) -> std::io::Result<()> {
+    let parent = dst.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "snapshot has no parent")
+    })?;
+    std::fs::File::open(parent)?.sync_all()
 }
 
 /// Remove only the supplied operation stage.
