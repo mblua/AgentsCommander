@@ -44,12 +44,7 @@ pub(crate) fn write_template_if_missing_with_clock(
     write_template_if_missing_with(
         path,
         content,
-        |path| {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
-        },
+        |path| crate::filesystem::context_templates::create_template_stage(path),
         clock,
     )
 }
@@ -64,7 +59,7 @@ where
     W: ContextTemplateWriter,
     F: FnOnce(&Path) -> std::io::Result<W>,
 {
-    match std::fs::symlink_metadata(path) {
+    match crate::filesystem::context_templates::inspect_template_source(path) {
         Ok(_) => return Ok(CreateOnlyPublication::AlreadyPresent),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
@@ -114,7 +109,7 @@ where
     }
     drop(file);
 
-    match std::fs::hard_link(&temp_path, path) {
+    match crate::filesystem::context_templates::publish_template_link(&temp_path, path) {
         Ok(()) => {
             let published_at = clock();
             cleanup_failed_context_template(&temp_path);
@@ -139,9 +134,9 @@ pub(crate) trait ContextTemplateWriter: Write {
     fn sync_all(&mut self) -> std::io::Result<()>;
 }
 
-impl ContextTemplateWriter for std::fs::File {
+impl ContextTemplateWriter for crate::filesystem::context_templates::TemplateFile {
     fn sync_all(&mut self) -> std::io::Result<()> {
-        std::fs::File::sync_all(self)
+        crate::filesystem::context_templates::TemplateFile::sync_all(self)
     }
 }
 
@@ -157,7 +152,7 @@ pub(crate) fn unique_context_template_temp_path(path: &Path) -> PathBuf {
 }
 
 pub(crate) fn cleanup_failed_context_template(path: &Path) {
-    if let Err(e) = std::fs::remove_file(path) {
+    if let Err(e) = crate::filesystem::context_templates::remove_template_entry(path) {
         if e.kind() != std::io::ErrorKind::NotFound {
             log::warn!(
                 "failed to remove incomplete context template {} after write failure: {}",
@@ -234,7 +229,7 @@ pub(crate) fn read_context_template(
         return Ok(None);
     };
     let path = context_dir.join(filename);
-    let metadata = match std::fs::symlink_metadata(&path) {
+    let metadata = match crate::filesystem::context_templates::inspect_template_source(&path) {
         Ok(metadata) => metadata,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
@@ -251,7 +246,7 @@ pub(crate) fn read_context_template(
             path.display()
         ));
     }
-    let bytes = std::fs::read(&path)
+    let bytes = crate::filesystem::context_templates::read_template_bytes(&path)
         .map_err(|e| format!("Failed to read context template {}: {}", path.display(), e))?;
     String::from_utf8(bytes).map(Some).map_err(|e| {
         format!(
@@ -426,7 +421,7 @@ pub(crate) fn read_or_create_context_template_skip_sync(
 
 pub(crate) fn migrate_legacy_agent_context_template(context_dir: &Path) -> Result<(), String> {
     migrate_legacy_agent_context_template_with(context_dir, |legacy_path, new_path| {
-        std::fs::hard_link(legacy_path, new_path)
+        crate::filesystem::context_templates::publish_template_link(legacy_path, new_path)
     })
 }
 
@@ -438,7 +433,7 @@ where
     F: FnOnce(&Path, &Path) -> std::io::Result<()>,
 {
     let new_path = context_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-    match std::fs::symlink_metadata(&new_path) {
+    match crate::filesystem::context_templates::inspect_template_source(&new_path) {
         Ok(_) => return Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
@@ -451,7 +446,7 @@ where
     }
 
     let legacy_path = context_dir.join(LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME);
-    match std::fs::symlink_metadata(&legacy_path) {
+    match crate::filesystem::context_templates::inspect_template_source(&legacy_path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
                 return Err(format!(
@@ -472,7 +467,9 @@ where
 
     match publish_no_overwrite(&legacy_path, &new_path) {
         Ok(()) => {
-            if let Err(e) = std::fs::remove_file(&legacy_path) {
+            if let Err(e) =
+                crate::filesystem::context_templates::remove_template_entry(&legacy_path)
+            {
                 log::warn!(
                     "Migrated legacy context template {} to {}, but failed to remove legacy file: \
                         {}",
@@ -714,11 +711,8 @@ where
     S: FnOnce(&Path),
 {
     let temp = unique_context_template_temp_path(path);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(|e| {
+    let mut file =
+        crate::filesystem::context_templates::create_template_stage(&temp).map_err(|e| {
             format!(
                 "Failed to create temporary context template {}: {}",
                 temp.display(),
@@ -775,7 +769,7 @@ where
 }
 
 pub(crate) fn sync_context_template_parent(parent: &Path) {
-    if let Ok(dir) = std::fs::File::open(parent) {
+    if let Ok(dir) = crate::filesystem::context_templates::open_template_directory(parent) {
         if let Err(e) = dir.sync_all() {
             log::warn!(
                 "#664 self-heal: failed to sync context template directory {}: {}",
@@ -922,5 +916,11 @@ pub(crate) fn coarse_section_dedup_safe(
         // heading, so no real-world duplication can occur.
         "{{HOST_PLATFORM_RULES}}" => false,
         _ => false,
+    }
+}
+
+impl ContextTemplateWriter for std::fs::File {
+    fn sync_all(&mut self) -> std::io::Result<()> {
+        crate::filesystem::context_templates::sync_template_test_writer(self)
     }
 }
