@@ -3,6 +3,7 @@ use super::handoff::{
     SELF_FORGET_SUMMARY_READ_LIMIT_BYTES, SELF_HANDOFF_ROOT_NAME,
 };
 use crate::config::settings::AppSettings;
+use crate::filesystem::phone_mailbox;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
@@ -286,12 +287,12 @@ pub(crate) fn archive_root_md(
     timestamp: &str,
 ) -> std::io::Result<Option<std::path::PathBuf>> {
     let src = root.join(format!("{}.md", stem));
-    if !src.is_file() {
+    if !phone_mailbox::mailbox_path_is_file(&src) {
         return Ok(None); // no-op when absent
     }
     let archive_dir = root.join("self-clear");
     let dst = archive_dir.join(format!("{}_{}.md", timestamp, stem));
-    if dst.exists() {
+    if phone_mailbox::mailbox_path_exists(&dst) {
         // Same-second collision (effectively impossible: archiving happens once per >=60s cycle).
         // Refuse to clobber an existing archive; leave the source in place.
         return Err(std::io::Error::new(
@@ -299,8 +300,8 @@ pub(crate) fn archive_root_md(
             "archive target already exists",
         ));
     }
-    std::fs::create_dir_all(&archive_dir)?;
-    std::fs::rename(&src, &dst)?;
+    phone_mailbox::ensure_mailbox_archive_directory(&archive_dir)?;
+    phone_mailbox::rename_mailbox_document(&src, &dst)?;
     Ok(Some(dst))
 }
 
@@ -378,7 +379,7 @@ pub(crate) fn restore_handoff_after_failed_inject(
     action: &str,
 ) {
     let src = root.join(SELF_HANDOFF_ROOT_NAME);
-    if src.exists() {
+    if phone_mailbox::mailbox_path_exists(&src) {
         log::warn!(
             "[mailbox] {}: not restoring {} after failed inject; a new SELF-HANDOFF.md already \
             exists at the root",
@@ -387,7 +388,7 @@ pub(crate) fn restore_handoff_after_failed_inject(
         );
         return;
     }
-    match std::fs::rename(archived, &src) {
+    match phone_mailbox::rename_mailbox_document(archived, &src) {
         Ok(()) => log::info!(
             "[mailbox] {}: restored {} -> {} after failed inject",
             action,
@@ -450,7 +451,7 @@ where
 
 pub(crate) fn capture_self_forget_summary(root: &std::path::Path) -> Option<ForgottenSummary> {
     let path = root.join("SELF-FORGET.md");
-    let file = match std::fs::File::open(&path) {
+    let file = match phone_mailbox::open_self_forget_summary(&path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => {
@@ -466,7 +467,7 @@ pub(crate) fn capture_self_forget_summary(root: &std::path::Path) -> Option<Forg
 
     let mut bytes = Vec::new();
     let mut bounded = file.take(SELF_FORGET_SUMMARY_READ_LIMIT_BYTES);
-    if let Err(e) = bounded.read_to_end(&mut bytes) {
+    if let Err(e) = phone_mailbox::read_self_forget_summary(&mut bounded, &mut bytes) {
         log::warn!(
             "[mailbox] self-handoff: failed to read SELF-FORGET.md summary from {} (non-fatal): {}",
             path.display(),
@@ -603,7 +604,7 @@ pub(crate) fn resolve_wg_path_from_session_dirs(
         if let Some(wg_pos) = normalized.rfind(&wg_marker) {
             let wg_dir = &normalized[..wg_pos + 1 + wg_name.len()];
             let candidate = format!("{}/__agent_{}", wg_dir, agent_short);
-            if !std::path::Path::new(&candidate).is_dir() {
+            if !phone_mailbox::mailbox_path_is_dir(std::path::Path::new(&candidate)) {
                 continue;
             }
 

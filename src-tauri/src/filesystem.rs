@@ -11,6 +11,8 @@ pub(crate) mod context_templates;
 pub(crate) mod debug_logs;
 pub(crate) mod directories;
 pub(crate) mod documents;
+pub(crate) mod phone_mailbox;
+pub(crate) mod phone_messaging;
 pub(crate) mod processes;
 pub(crate) mod profile_targets;
 pub(crate) mod projects;
@@ -19,6 +21,7 @@ pub(crate) mod room_diagnostics;
 pub(crate) mod session_context;
 pub(crate) mod spec_board;
 pub(crate) mod tasks;
+pub(crate) mod terminal_snapshots;
 pub(crate) mod transcripts;
 
 /// Read the capture catalog without changing the platform's file semantics.
