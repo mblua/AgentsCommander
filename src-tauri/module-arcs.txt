@@ -2255,12 +2255,12 @@ agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::mailbox::notice
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::mailbox::poller
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::mailbox::settle
+agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::mailbox::teardown
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::types
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::pty::backend
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::pty::manager
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::session::manager
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::session::selection
-agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::session::session
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::config
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::config::root_agent
@@ -2271,6 +2271,7 @@ agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::phon
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::phone::mailbox::poller
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::phone::mailbox::pty_observation
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::phone::mailbox::settle
+agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::phone::mailbox::teardown
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::phone::types
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::session::manager
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::session::session
@@ -2286,6 +2287,7 @@ agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::pho
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::phone::mailbox::notice
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::phone::mailbox::poller
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::phone::mailbox::settle
+agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::phone::mailbox::teardown
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::phone::types
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::pty::inject
@@ -2312,6 +2314,11 @@ agentscommander_lib::phone::mailbox::settle -> agentscommander_lib::session::man
 agentscommander_lib::phone::mailbox::settle -> agentscommander_lib::session::profile
 agentscommander_lib::phone::mailbox::settle -> agentscommander_lib::session::selection
 agentscommander_lib::phone::mailbox::settle -> agentscommander_lib::session::session
+agentscommander_lib::phone::mailbox::teardown -> agentscommander_lib::pty::manager
+agentscommander_lib::phone::mailbox::teardown -> agentscommander_lib::session::manager
+agentscommander_lib::phone::mailbox::teardown -> agentscommander_lib::session::purge_guard
+agentscommander_lib::phone::mailbox::teardown -> agentscommander_lib::session::selection
+agentscommander_lib::phone::mailbox::teardown -> agentscommander_lib::session::session
 agentscommander_lib::phone::mailbox::wake_delivery -> agentscommander_lib
 agentscommander_lib::phone::mailbox::wake_delivery -> agentscommander_lib::api::message_store
 agentscommander_lib::phone::mailbox::wake_delivery -> agentscommander_lib::commands::session

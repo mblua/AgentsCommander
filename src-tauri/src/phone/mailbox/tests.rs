@@ -31,6 +31,7 @@ mod support_retained_setup;
 mod support_retained_source;
 mod support_wake;
 mod sustained_idle;
+mod teardown;
 mod test_settle;
 mod the_pty;
 mod wake_dispatch;

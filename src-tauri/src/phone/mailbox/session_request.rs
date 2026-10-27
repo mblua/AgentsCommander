@@ -358,58 +358,87 @@ impl MailboxPoller {
             .state::<Arc<crate::session::purge_guard::PurgeGuard>>()
             .inner()
             .clone();
-        let lease = purge_guard.acquire(target_sids, target_fqns).await;
-
-        // 12. Destroy loop (past the commit point, §2.5; no re-check).
         let force = msg.force.unwrap_or(true);
         let timeout_secs = msg.timeout_secs.unwrap_or(5);
-        let mut closed_ids: Vec<String> = Vec::new();
-        let mut failed_ids: Vec<String> = Vec::new();
-        let mut already_closed_ids: Vec<String> = Vec::new();
-        let mut any_failed = false;
-
+        let budget = super::teardown::observation_budget(force, timeout_secs)
+            .ok_or_else(|| "purge observation budget overflow".to_string())?;
+        let mut ids = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for peer in &gate_peers {
-            for sid_str in &peer.all_session_ids {
-                let sid = match Uuid::parse_str(sid_str) {
-                    Ok(id) => id,
-                    Err(_) => continue,
-                };
-                let ok = if force {
-                    self.force_close_session(app, sid).await
-                } else {
-                    self.graceful_close_session(app, sid, timeout_secs).await
-                };
-                if ok {
-                    closed_ids.push(sid_str.clone());
-                } else {
-                    // (#885 E-4) Post-failure re-probe: if the record is gone,
-                    // the destroy failed because auto-close raced us and the
-                    // session is already destroyed. That is success, not
-                    // failure. Sound because `destroy_session_inner` returns
-                    // Err("Session not found") ONLY from its first statement;
-                    // every other failure (notably kill_group's ??) leaves
-                    // the record present, so a genuine failure is always
-                    // distinguishable by the record still being there.
-                    let gone = {
-                        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                        let mgr = session_mgr.read().await;
-                        mgr.get_session(sid).await.is_none()
-                    };
-                    if gone {
-                        already_closed_ids.push(sid_str.clone());
-                    } else {
-                        failed_ids.push(sid_str.clone());
-                        any_failed = true;
+            for id in &peer.all_session_ids {
+                if let Ok(sid) = Uuid::parse_str(id) {
+                    if seen.insert(sid) {
+                        ids.push(sid);
                     }
                 }
             }
         }
-
-        // 13. Drop the lease before writing the response.
-        drop(lease);
-
-        // 14. Response + move_to_delivered.
-        let status = if any_failed {
+        let progress = Arc::new(super::teardown::PurgeProgress::new(ids.clone()));
+        let targets = super::teardown::PurgeTargets {
+            ids,
+            session_ids: target_sids,
+            fqns: target_fqns,
+        };
+        let owned_app = app.clone();
+        let poller = self.delivery_poller();
+        let worker = tokio::spawn(super::teardown::run_purge_batch(
+            purge_guard,
+            targets,
+            progress.clone(),
+            budget,
+            move |sid| {
+                let app = owned_app.clone();
+                let poller = poller.delivery_poller();
+                async move {
+                    poller
+                        .close_session_attempt(
+                            &app,
+                            sid,
+                            force,
+                            timeout_secs,
+                            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                        )
+                        .await
+                }
+            },
+        ));
+        let snapshot = super::teardown::observe_purge(progress, worker).await?;
+        let mut closed_ids = Vec::new();
+        let mut already_closed_ids = Vec::new();
+        let mut failed_ids = Vec::new();
+        let mut reasons = Vec::new();
+        for (sid, outcome) in &snapshot.results {
+            match outcome {
+                super::teardown::TeardownOutcome::Closed => closed_ids.push(sid.to_string()),
+                super::teardown::TeardownOutcome::AlreadyGone => {
+                    already_closed_ids.push(sid.to_string());
+                }
+                _ => {
+                    failed_ids.push(sid.to_string());
+                    reasons
+                        .push(serde_json::json!({"session_id": sid, "reason": outcome.reason()}));
+                }
+            }
+        }
+        let current_id = match snapshot.phase {
+            super::teardown::PurgePhase::Started(sid)
+                if !snapshot.results.iter().any(|(id, _)| *id == sid) =>
+            {
+                Some(sid)
+            }
+            _ => None,
+        };
+        let unattempted_ids: Vec<String> = snapshot
+            .ids
+            .iter()
+            .filter(|sid| {
+                Some(**sid) != current_id && !snapshot.results.iter().any(|(done, _)| done == *sid)
+            })
+            .map(Uuid::to_string)
+            .collect();
+        let uncertain =
+            snapshot.phase != super::teardown::PurgePhase::Stopped || snapshot.reason.is_some();
+        let status = if uncertain || !failed_ids.is_empty() {
             "partial_failure"
         } else {
             "purged"
@@ -424,8 +453,21 @@ impl MailboxPoller {
             "purged": closed_ids.len(),
             "already_closed": already_closed_ids.len(),
             "failed": failed_ids.len(),
+            "session_ids": closed_ids,
+            "already_closed_ids": already_closed_ids,
+            "failed_ids": failed_ids,
+            "current_uncertain_id": current_id,
+            "unattempted_ids": unattempted_ids,
+            "reason": snapshot.reason,
+            "failure_reasons": reasons,
+            "outcome_unknown": uncertain,
+            "may_complete_later": uncertain && snapshot.started
+                && snapshot.phase != super::teardown::PurgePhase::Stopped,
             "peers": decision.peers.iter().map(|p| {
-                let outcome = if failed_ids.iter().any(|f| p.session_ids.contains(f)) {
+                let current = current_id.is_some_and(|id| p.session_ids.contains(&id.to_string()));
+                let outcome = if current {
+                    "uncertain"
+                } else if failed_ids.iter().any(|f| p.session_ids.contains(f)) {
                     "failed"
                 } else if already_closed_ids.iter().any(|c| p.session_ids.contains(c))
                     && !closed_ids.iter().any(|c| p.session_ids.contains(c))
