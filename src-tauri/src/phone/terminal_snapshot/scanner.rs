@@ -14,6 +14,7 @@ use super::MAX_PER_POLL;
 use super::REQUEST_DIRECTORY;
 use super::RESPONSE_DIRECTORY;
 use super::RESPONSE_TTL;
+use crate::filesystem::terminal_snapshots;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -111,7 +112,7 @@ impl SnapshotMailboxScanner {
             {
                 continue;
             }
-            let Ok(entries) = std::fs::read_dir(&directory) else {
+            let Ok(entries) = terminal_snapshots::snapshot_entries(&directory) else {
                 continue;
             };
             for (index, entry) in entries.enumerate() {
@@ -119,10 +120,9 @@ impl SnapshotMailboxScanner {
                     log::warn!("[terminal-snapshot] stage=cleanup code=directory_capacity");
                     break;
                 }
-                let Ok(entry) = entry else {
+                let Ok((path, _)) = entry else {
                     break;
                 };
-                let path = entry.path();
                 let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
                     continue;
                 };
@@ -131,12 +131,7 @@ impl SnapshotMailboxScanner {
                 {
                     continue;
                 }
-                let Some(age) = std::fs::symlink_metadata(&path)
-                    .ok()
-                    .filter(|metadata| metadata.is_file())
-                    .and_then(|metadata| metadata.modified().ok())
-                    .and_then(|modified| modified.elapsed().ok())
-                else {
+                let Some(age) = terminal_snapshots::snapshot_regular_file_age(&path) else {
                     continue;
                 };
                 let Ok(identity) = crate::path_identity::verify_regular_file(&path) else {
@@ -189,7 +184,9 @@ impl SnapshotMailboxScanner {
         let outbox = local.join("outbox");
         let request_directory = outbox.join(REQUEST_DIRECTORY);
         let response_directory = local.join(RESPONSE_DIRECTORY);
-        if !request_directory.is_dir() || !response_directory.is_dir() {
+        if !terminal_snapshots::snapshot_is_dir(&request_directory)
+            || !terminal_snapshots::snapshot_is_dir(&response_directory)
+        {
             return;
         }
         let (
@@ -238,7 +235,7 @@ impl SnapshotMailboxScanner {
             .unwrap_or_default();
         let mut next = std::collections::BTreeSet::new();
         let mut wrapped = std::collections::BTreeSet::new();
-        let Ok(entries) = std::fs::read_dir(&request_directory) else {
+        let Ok(entries) = terminal_snapshots::snapshot_entries(&request_directory) else {
             return;
         };
         for (index, entry) in entries.enumerate() {
@@ -246,10 +243,10 @@ impl SnapshotMailboxScanner {
                 log::warn!("[terminal-snapshot] stage=publish code=directory_capacity");
                 return;
             }
-            let Ok(entry) = entry else {
+            let Ok((_, name)) = entry else {
                 return;
             };
-            let Ok(name) = entry.file_name().into_string() else {
+            let Ok(name) = name.into_string() else {
                 continue;
             };
             if protocol_request_name(&name).is_none() {
@@ -394,31 +391,9 @@ impl SnapshotMailboxScanner {
 }
 
 fn private_directory_mode(path: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::symlink_metadata(path)
-            .ok()
-            .is_some_and(|metadata| metadata.permissions().mode() & 0o777 == 0o700)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        true
-    }
+    terminal_snapshots::private_snapshot_directory_mode(path)
 }
 
 fn private_regular_file_mode(path: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::symlink_metadata(path)
-            .ok()
-            .is_some_and(|metadata| metadata.permissions().mode() & 0o777 == 0o600)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        true
-    }
+    terminal_snapshots::private_snapshot_file_mode(path)
 }
