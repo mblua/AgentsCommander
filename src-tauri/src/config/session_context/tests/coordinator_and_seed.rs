@@ -307,6 +307,7 @@ fn materialized_context_gates_self_maintenance_directive_by_flag() {
             .expect("materialize ON")
             .expect("context path");
     let on_content = std::fs::read_to_string(&on).expect("read ON context");
+    assert_eq!(on_content.matches("## Manual context clear").count(), 1);
     assert!(on_content.contains("## Self-Maintenance (auto self-handoff-and-clear)"));
     assert!(on_content.contains("reaches 3 such lines"));
     assert!(on_content.contains("max 240 char forgotten summary"));
@@ -317,6 +318,7 @@ fn materialized_context_gates_self_maintenance_directive_by_flag() {
             .expect("materialize OFF")
             .expect("context path");
     let off_content = std::fs::read_to_string(&off).expect("read OFF context");
+    assert_eq!(off_content.matches("## Manual context clear").count(), 1);
     assert!(!off_content.contains("## Self-Maintenance"));
     assert!(!off_content.contains("max 240 char forgotten summary"));
 }
@@ -410,10 +412,12 @@ fn root_materialized_context_gates_self_maintenance_by_flag() {
     .unwrap();
     std::fs::write(root.join("Role.md"), "ROOT BASE CONTEXT").unwrap();
     let on = issue_2832_combined(&root, temp.path(), true);
+    assert_eq!(on.matches("## Manual context clear").count(), 1);
     assert!(on.contains("max 240 char forgotten summary"));
     assert!(on.contains("closed background"));
     assert!(on.contains("ROOT BASE CONTEXT"));
     let off = issue_2832_combined(&root, temp.path(), false);
+    assert_eq!(off.matches("## Manual context clear").count(), 1);
     assert!(!off.contains("## Self-Maintenance"));
     assert!(off.contains("ROOT BASE CONTEXT"));
 }
