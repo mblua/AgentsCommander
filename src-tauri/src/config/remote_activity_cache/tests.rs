@@ -215,3 +215,58 @@ fn freshness_window_is_closed_at_the_boundary_on_both_sides() {
         "31 s in the future is not authority"
     );
 }
+
+#[test]
+fn directory_apis_preserve_path_codec_bytes_data_and_published_basename() {
+    let (_old_dir, old_path) = temp_path();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let generated_at = instant("2026-09-22T11:41:41Z");
+    let entries = vec![
+        (
+            "z:/repo".to_string(),
+            PersistedRepoCi {
+                state: PersistedCiState::Running,
+                run_ids: vec![30, 10, 30],
+                pull_requests: vec![7, 2, 7],
+                unknown_reason: None,
+            },
+        ),
+        (
+            "a:/repo".to_string(),
+            PersistedRepoCi {
+                state: PersistedCiState::Unknown,
+                run_ids: Vec::new(),
+                pull_requests: Vec::new(),
+                unknown_reason: Some("ci-query-timeout".to_string()),
+            },
+        ),
+    ];
+    write_snapshot(&old_path, generated_at, &entries).expect("path write");
+    write_snapshot_to_dir(dir.path(), generated_at, &entries).expect("directory write");
+    let path = dir.path().join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        std::fs::read(&old_path).unwrap()
+    );
+    let expected = read_snapshot(&old_path).expect("path read");
+    assert_eq!(read_snapshot_from_dir(dir.path()).unwrap(), expected);
+    assert_eq!(read_snapshot(&path).unwrap(), expected);
+    let names: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        names,
+        vec![std::ffi::OsString::from(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME)]
+    );
+}
+
+#[test]
+fn directory_reader_preserves_missing_and_malformed_path_errors() {
+    let (dir, path) = temp_path();
+    assert_eq!(read_snapshot_from_dir(dir.path()), read_snapshot(&path));
+    assert!(read_snapshot_from_dir(dir.path()).is_err());
+    std::fs::write(&path, b"{not json").unwrap();
+    assert_eq!(read_snapshot_from_dir(dir.path()), read_snapshot(&path));
+    assert!(read_snapshot_from_dir(dir.path()).is_err());
+}
