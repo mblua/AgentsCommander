@@ -78,7 +78,7 @@ pub(super) async fn dispatch_coding_agent_command(
             )
             .await?;
             broadcast_all(
-                &state.app_handle,
+                state.desktop_events.as_ref(),
                 &state.broadcaster,
                 "coding_agent_profile_selection_updated",
                 &payload,
@@ -105,7 +105,7 @@ pub(super) async fn dispatch_coding_agent_command(
                 )
                 .await?;
                 broadcast_all(
-                    &state.app_handle,
+                    state.desktop_events.as_ref(),
                     &state.broadcaster,
                     "coding_agent_profile_selection_updated",
                     &payload,
@@ -147,9 +147,9 @@ pub(super) async fn dispatch_coding_agent_command(
             // turn, and its broadcast happens before that turn is released.
             let state = state.clone();
             crate::session::selection::run_owned_selection_operation(move || async move {
-                let (result, payload) =
-                    crate::commands::config::apply_coding_agent_profile_selection_inner(
-                        &state.app_handle,
+                let (result, payload) = state
+                    .operations
+                    .apply_coding_agent_profile_selection(
                         &state.session_mgr,
                         &state.pty_mgr,
                         &state.settings,
@@ -157,7 +157,7 @@ pub(super) async fn dispatch_coding_agent_command(
                     )
                     .await?;
                 broadcast_all(
-                    &state.app_handle,
+                    state.desktop_events.as_ref(),
                     &state.broadcaster,
                     "coding_agent_profile_selection_updated",
                     &payload,
@@ -202,7 +202,7 @@ pub(super) async fn dispatch_coding_agent_command(
                     )
                     .await?;
                 broadcast_all(
-                    &state.app_handle,
+                    state.desktop_events.as_ref(),
                     &state.broadcaster,
                     "coding_agent_profile_selection_updated",
                     &payload,
@@ -242,7 +242,7 @@ pub(super) async fn dispatch_coding_agent_command(
                     )
                     .await?;
                 broadcast_all(
-                    &state.app_handle,
+                    state.desktop_events.as_ref(),
                     &state.broadcaster,
                     "coding_agent_profile_selection_updated",
                     &payload,
@@ -278,7 +278,7 @@ pub(super) async fn move_coding_agent_route_with_saver(
     )
     .await?;
     broadcast_all(
-        &state.app_handle,
+        state.desktop_events.as_ref(),
         &state.broadcaster,
         "coding_agent_settings_updated",
         &crate::commands::config::move_coding_agent_event_payload(id),
@@ -307,7 +307,7 @@ pub(super) async fn reorder_coding_agent_route_with_saver(
     )
     .await?;
     broadcast_all(
-        &state.app_handle,
+        state.desktop_events.as_ref(),
         &state.broadcaster,
         "coding_agent_settings_updated",
         &crate::commands::config::move_coding_agent_event_payload(id),

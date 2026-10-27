@@ -1,16 +1,29 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
+#[cfg(test)]
 use tauri::Manager;
 use uuid::Uuid;
 
+use crate::agent_update::{
+    AgentUpdateCancelAllResponse, AgentUpdateCancelResponse, AgentUpdateOverviewRow,
+    AgentUpdateStatus,
+};
+use crate::commands::ac_discovery::AcDiscoveryResult;
+use crate::commands::config::{
+    ApplyCodingAgentProfileSelectionRequest, ApplyCodingAgentProfileSelectionResult,
+};
 use crate::config::instance_artifacts::DEBUG_LOGS_FILE_NAME;
+use crate::config::projects::ProjectRegistration;
 use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
+use crate::session::session::SessionInfo;
 // #1265: keep private. A `pub use` here would re-expose the emitter under the
 // dispatcher's own path and let the deleted arc come back as an import.
-use crate::web::event_broadcast::{broadcast_all, ManagedBroadcastEvents};
+use crate::web::event_broadcast::{broadcast_all, DesktopBroadcastEvents, ManagedBroadcastEvents};
 
 use super::broadcast::WsBroadcaster;
 
@@ -33,7 +46,122 @@ pub struct WsState {
     pub pty_mgr: Arc<Mutex<PtyManager>>,
     pub settings: SettingsState,
     pub broadcaster: WsBroadcaster,
-    pub app_handle: tauri::AppHandle,
+    pub(crate) operations: Arc<dyn WebOperations>,
+    pub(crate) desktop_events: Arc<dyn DesktopBroadcastEvents>,
+}
+
+pub(crate) struct WebSessionCreate {
+    pub(crate) shell: String,
+    pub(crate) shell_args: Vec<String>,
+    pub(crate) cwd: String,
+    pub(crate) session_name: Option<String>,
+    pub(crate) agent_id: Option<String>,
+    pub(crate) agent_label: Option<String>,
+    pub(crate) resolved_spawn: Option<crate::config::agent_command::AgentSpawnCommand>,
+    pub(crate) resolved_agent_host_shell: Option<crate::pty::backend::ResolvedAgentHostShell>,
+}
+
+pub(crate) trait AgentUpdateOperations: Send + Sync {
+    fn agent_update_status(&self) -> Result<AgentUpdateStatus, String>;
+    fn agent_update_answer<'a>(
+        &'a self,
+        settings: &'a SettingsState,
+        command: String,
+        enabled: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + 'a>>;
+    fn agent_update_cancel<'a>(
+        &'a self,
+        command: String,
+    ) -> Pin<Box<dyn Future<Output = Result<AgentUpdateCancelResponse, String>> + Send + 'a>>;
+    fn agent_updates_cancel_all<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<AgentUpdateCancelAllResponse, String>> + Send + 'a>>;
+    fn agent_update_overview<'a>(
+        &'a self,
+        settings: &'a SettingsState,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<AgentUpdateOverviewRow>, String>> + Send + 'a>>;
+    fn install_coding_agent<'a>(
+        &'a self,
+        settings: &'a SettingsState,
+        key: String,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+}
+
+pub(crate) trait WebOperations: AgentUpdateOperations + Send + Sync {
+    fn selection(&self) -> &crate::session::selection::SelectionCoordinator;
+    fn warnings(&self) -> &crate::session::warnings::SessionWarningState;
+    fn purge_guard(&self) -> Option<&Arc<crate::session::purge_guard::PurgeGuard>>;
+    fn response_close(&self) -> Option<&crate::pty::manager::ResponseCloseState>;
+    fn detached(&self) -> &crate::app_state::DetachedSessionsState;
+    fn restore(&self) -> Option<&Arc<crate::app_state::RestoreInProgress>>;
+    fn emit_agent_file_save_events(&self, reply: &crate::config::settings::AgentFileSaveReply);
+    fn create_session<'a>(
+        &'a self,
+        session_mgr: &'a Arc<tokio::sync::RwLock<SessionManager>>,
+        pty_mgr: &'a Arc<Mutex<PtyManager>>,
+        request: WebSessionCreate,
+    ) -> Pin<Box<dyn Future<Output = Result<SessionInfo, String>> + Send + 'a>>;
+    fn destroy_session<'a>(
+        &'a self,
+        uuid: Uuid,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+    fn mark_successful_pty_write_busy<'a>(
+        &'a self,
+        uuid: Uuid,
+        byte_count: usize,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    fn note_user_message_to_session<'a>(
+        &'a self,
+        uuid: Uuid,
+        data: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    fn apply_coding_agent_profile_selection<'a>(
+        &'a self,
+        session_mgr: &'a Arc<tokio::sync::RwLock<SessionManager>>,
+        pty_mgr: &'a Arc<Mutex<PtyManager>>,
+        settings: &'a SettingsState,
+        request: ApplyCodingAgentProfileSelectionRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(ApplyCodingAgentProfileSelectionResult, Value), String>>
+                + Send
+                + 'a,
+        >,
+    >;
+    fn discover_project<'a>(
+        &'a self,
+        session_mgr: &'a Arc<tokio::sync::RwLock<SessionManager>>,
+        path: &'a str,
+        settings: &'a SettingsState,
+    ) -> Pin<Box<dyn Future<Output = Result<AcDiscoveryResult, String>> + Send + 'a>>;
+    fn open_project<'a>(
+        &'a self,
+        settings: &'a SettingsState,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<ProjectRegistration, String>> + Send + 'a>>;
+    fn remove_project<'a>(
+        &'a self,
+        settings: &'a SettingsState,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+    fn archive_project<'a>(
+        &'a self,
+        settings: &'a SettingsState,
+        session_mgr: &'a Arc<tokio::sync::RwLock<SessionManager>>,
+        pty_mgr: &'a Arc<Mutex<PtyManager>>,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+    fn unarchive_project<'a>(
+        &'a self,
+        settings: &'a SettingsState,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<ProjectRegistration, String>> + Send + 'a>>;
+    fn agency_status<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'a>>;
+    fn agency_update<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'a>>;
 }
 
 pub(crate) struct WebCommandsDispatcher {
@@ -52,14 +180,11 @@ impl super::command_port::WebCommandDispatcher for WebCommandsDispatcher {
         id: u64,
         cmd: &'a str,
         args: &'a Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Value> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Value> + Send + 'a>> {
         Box::pin(dispatch(&self.state, id, cmd, args))
     }
 
-    fn binary<'a>(
-        &'a self,
-        data: &'a [u8],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+    fn binary<'a>(&'a self, data: &'a [u8]) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(handle_binary_message(&self.state, data))
     }
 }
@@ -75,12 +200,12 @@ pub async fn dispatch(state: &WsState, id: u64, cmd: &str, args: &Value) -> Valu
 }
 
 async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Value, String> {
+    let operations = state.operations.as_ref();
     if let Some(result) = dispatch_agent_update_command(state, cmd, args).await {
         return result;
     }
-    if state
-        .app_handle
-        .try_state::<Arc<crate::app_state::RestoreInProgress>>()
+    if operations
+        .restore()
         .is_some_and(|restore| restore.0.load(std::sync::atomic::Ordering::SeqCst))
     {
         return Err("selectionCoordinatorBusy".to_string());
@@ -118,20 +243,13 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         }
 
         "get_active_session" => {
-            let selection = state
-                .app_handle
-                .state::<crate::session::selection::SelectionCoordinator>()
-                .snapshot()
-                .await?;
+            let selection = operations.selection().snapshot().await?;
             serde_json::to_value(selection).map_err(|error| error.to_string())
         }
-
         "drain_session_warnings" => {
             let session_id = args.get("sessionId").and_then(|v| v.as_str());
             let drained = {
-                let warnings = state
-                    .app_handle
-                    .state::<crate::session::warnings::SessionWarningState>();
+                let warnings = operations.warnings();
                 let mut buffer = warnings
                     .lock()
                     .map_err(|err| format!("session warning buffer lock poisoned: {err}"))?;
@@ -139,7 +257,6 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             };
             serde_json::to_value(drained).map_err(|e| e.to_string())
         }
-
         "create_session" => {
             let cfg = state.settings.read().await;
             let cwd = str_or(
@@ -182,12 +299,10 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                         spawn.shell.clone(),
                         spawn.shell_args.clone(),
                         Some(spawn.trusted_agent_label.clone()),
-                        Some(
-                            crate::pty::backend::ResolvedAgentHostShell {
-                                program: cfg.default_shell.clone(),
-                                args: cfg.default_shell_args.clone(),
-                            },
-                        ),
+                        Some(crate::pty::backend::ResolvedAgentHostShell {
+                            program: cfg.default_shell.clone(),
+                            args: cfg.default_shell_args.clone(),
+                        }),
                     )
                 } else {
                     (
@@ -198,89 +313,68 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                     )
                 };
             drop(cfg);
-
-            let info = crate::commands::session::create_session_inner(
-                &state.app_handle,
-                &state.session_mgr,
-                &state.pty_mgr,
-                shell,
-                shell_args,
-                cwd,
-                session_name,
-                agent_id,
-                agent_label, // agent_label (auto-detected for legacy custom shell)
-                false,       // skip_tooling_save
-                Vec::new(),  // git_repos
-                true,        // skip_auto_resume = true → fresh create, no `--continue` injection
-                resolved_spawn,
-                resolved_agent_host_shell,
-                // #973 - browser-mode create. The browser client pushes its fitted size after
-                // attach, not at create time, so this keeps AC's 120x30 for now.
-                None,
-                crate::commands::session::CreateSelectionIntent::User,
-            )
-            .await?;
+            let info = operations
+                .create_session(
+                    &state.session_mgr,
+                    &state.pty_mgr,
+                    WebSessionCreate {
+                        shell,
+                        shell_args,
+                        cwd,
+                        session_name,
+                        agent_id,
+                        agent_label,
+                        resolved_spawn,
+                        resolved_agent_host_shell,
+                    },
+                )
+                .await?;
 
             serde_json::to_value(info).map_err(|e| e.to_string())
         }
-
         "destroy_session" => {
             let id = require_str(args, "id")?;
             let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
-
-            crate::commands::session::destroy_session_inner(&state.app_handle, uuid).await?;
-
+            operations.destroy_session(uuid).await?;
             Ok(json!(null))
         }
-
         "switch_session" => {
             let id = require_str(args, "id")?;
             let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
-
-            state
-                .app_handle
-                .state::<crate::session::selection::SelectionCoordinator>()
+            operations
+                .selection()
                 .transition(crate::session::selection::SelectionRequest::user_switch(uuid))
                 .await?;
-
             Ok(json!(null))
         }
-
         "rename_session" => {
             let id = require_str(args, "id")?;
             let name = require_str(args, "name")?;
             let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
-
             let mgr = state.session_mgr.read().await;
             mgr.rename_session(uuid, name.clone())
                 .await
                 .map_err(|e| e.to_string())?;
-
             broadcast_all(
-                &state.app_handle,
+                state.desktop_events.as_ref(),
                 &state.broadcaster,
                 "session_renamed",
                 &json!({ "id": id, "name": name }),
             );
-
             Ok(json!(null))
         }
-
         "set_last_prompt" => {
             let id = require_str(args, "id")?;
             let text = require_str(args, "text")?;
             let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
-
             let mgr = state.session_mgr.read().await;
             mgr.set_last_prompt(uuid, text.clone()).await;
-
             broadcast_all(
-                &state.app_handle,
+                state.desktop_events.as_ref(),
                 &state.broadcaster,
                 "last_prompt",
                 &json!({ "sessionId": id, "text": text }),
             );
-
             Ok(json!(null))
         }
 
@@ -290,14 +384,12 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let cols = terminal_dimension(args, "cols", 120)?;
             let rows = terminal_dimension(args, "rows", 30)?;
             let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-
             state
                 .pty_mgr
                 .lock()
                 .unwrap()
                 .resize(uuid, cols, rows)
                 .map_err(|e| e.to_string())?;
-
             Ok(json!(null))
         }
 
@@ -314,38 +406,24 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                         .collect()
                 })
                 .unwrap_or_default();
-
             let permit = crate::pty::manager::PtyManager::acquire_input_writer(
                 &state.pty_mgr,
                 uuid,
             )
             .await
             .map_err(|error| error.to_string())?;
-            if state
-                .app_handle
-                .try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>()
+            if operations
+                .purge_guard()
                 .is_some_and(|guard| guard.blocks_session(uuid))
             {
                 return Err("purge-room in progress for this session; input rejected".to_string());
             }
             crate::pty::manager::PtyManager::write_with_permit(&permit, &data)
                 .map_err(|error| error.to_string())?;
-            crate::commands::pty::mark_successful_pty_write_busy(
-                &state.app_handle,
-                uuid,
-                data.len(),
-            )
-            .await;
+            operations.mark_successful_pty_write_busy(uuid, data.len()).await;
             drop(permit);
-
             // #552 web UI input is a real user message (resets badge + silence).
-            crate::commands::pty::note_user_message_to_session(
-                &state.app_handle,
-                uuid,
-                crate::commands::pty::UserInputSource::Web(&data),
-            )
-            .await;
-
+            operations.note_user_message_to_session(uuid, &data).await;
             Ok(json!(null))
         }
 
@@ -395,7 +473,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 edits,
             )
             .await?;
-            crate::commands::config::emit_agent_file_save_events(&state.app_handle, &reply);
+            operations.emit_agent_file_save_events(&reply);
             serde_json::to_value(reply).map_err(|e| e.to_string())
         }
         "remember_agent_file_source" => {
@@ -428,11 +506,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let new_settings: crate::config::settings::AppSettings =
                 serde_json::from_value(args.get("newSettings").cloned().unwrap_or(args.clone()))
                     .map_err(|e| e.to_string())?;
-
-            let tracker = state
-                .app_handle
-                .try_state::<crate::pty::manager::ResponseCloseState>()
-                .map(|state| state.inner().clone());
+            let tracker = operations.response_close().cloned();
             let (saved, changed) =
                 crate::commands::config::persist_protected_settings_update_with_publication(
                     &state.settings,
@@ -450,14 +524,13 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 .await?;
             if changed {
                 broadcast_all(
-                    &state.app_handle,
+                    state.desktop_events.as_ref(),
                     &state.broadcaster,
                     "room_idle_confirmation_updated",
                     &json!({}),
                 );
             }
             crate::commands::config::purge_sessions_after_settings_update(&saved).await;
-
             Ok(json!(null))
         }
 
@@ -465,11 +538,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let draft: crate::config::settings::AppSettings =
                 serde_json::from_value(args.get("draft").cloned().unwrap_or(args.clone()))
                     .map_err(|e| e.to_string())?;
-
-            let tracker = state
-                .app_handle
-                .try_state::<crate::pty::manager::ResponseCloseState>()
-                .map(|state| state.inner().clone());
+            let tracker = operations.response_close().cloned();
             let (saved, events) =
                 crate::commands::config::persist_settings_draft_update_with_publication(
                     &state.settings,
@@ -487,7 +556,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 .await?;
             if events.room_idle_confirmation_changed {
                 broadcast_all(
-                    &state.app_handle,
+                    state.desktop_events.as_ref(),
                     &state.broadcaster,
                     "room_idle_confirmation_updated",
                     &json!({}),
@@ -496,7 +565,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             crate::commands::config::purge_sessions_after_settings_update(&saved).await;
             if events.profiles_changed {
                 broadcast_all(
-                    &state.app_handle,
+                    state.desktop_events.as_ref(),
                     &state.broadcaster,
                     "coding_agent_profiles_updated",
                     &json!({}),
@@ -504,7 +573,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             }
             for agent_id in events.env_agent_ids {
                 broadcast_all(
-                    &state.app_handle,
+                    state.desktop_events.as_ref(),
                     &state.broadcaster,
                     "coding_agent_env_settings_updated",
                     &json!({ "agentId": agent_id }),
@@ -517,10 +586,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         "set_terminal_snapshots_enabled" => {
             let expected: bool = require_json(args, "expected")?;
             let enabled: bool = require_json(args, "enabled")?;
-            let tracker = state
-                .app_handle
-                .try_state::<crate::pty::manager::ResponseCloseState>()
-                .map(|state| state.inner().clone());
+            let tracker = operations.response_close().cloned();
             crate::commands::config::set_terminal_snapshots_enabled_with_publication(
                 &state.settings,
                 expected,
@@ -597,24 +663,8 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             }
         }
 
-        "get_agency_templates_status" => {
-            let status =
-                tauri::async_runtime::spawn_blocking(crate::cli::agency_templates::status_cache)
-                    .await
-                    .map_err(|e| format!("Agency template status task failed: {}", e))??;
-            serde_json::to_value(status).map_err(|e| e.to_string())
-        }
-
-        "update_agency_templates" => {
-            let result = tauri::async_runtime::spawn_blocking(|| {
-                crate::cli::agency_templates::update_cache(
-                    crate::cli::agency_templates::AgencyTemplatesUpdateArgs::default_ui_update(),
-                )
-            })
-            .await
-            .map_err(|e| format!("Agency template update task failed: {}", e))??;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
+        "get_agency_templates_status" => operations.agency_status().await,
+        "update_agency_templates" => operations.agency_update().await,
 
         // --- Screen replay for late-joining clients ---
         "subscribe_session" => {
@@ -657,12 +707,12 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let event = require_str(args, "event")?;
             let payload = args.get("payload").cloned().unwrap_or(json!(null));
             validate_client_broadcast(&event, &payload)?;
-            broadcast_all(&state.app_handle, &state.broadcaster, &event, &payload);
+            broadcast_all(state.desktop_events.as_ref(), &state.broadcaster, &event, &payload);
             Ok(json!(null))
         }
 
         "list_detached_sessions" => {
-            let detached = state.app_handle.state::<crate::app_state::DetachedSessionsState>();
+            let detached = operations.detached();
             let set = detached.lock().unwrap();
             Ok(json!(set.iter().map(|u| u.to_string()).collect::<Vec<_>>()))
         }
@@ -761,6 +811,7 @@ async fn dispatch_browser_project_command(
     cmd: BrowserProjectCommand,
     args: &Value,
 ) -> Result<Value, String> {
+    let operations = state.operations.as_ref();
     match cmd {
         BrowserProjectCommand::CheckProjectPath => {
             let path = require_str(args, "path")?;
@@ -771,23 +822,9 @@ async fn dispatch_browser_project_command(
 
         BrowserProjectCommand::DiscoverProject => {
             let path = require_str(args, "path")?;
-            let branch_watcher = state
-                .app_handle
-                .state::<Arc<crate::commands::ac_discovery::DiscoveryBranchWatcher>>();
-            let coordinator_clocks = state
-                .app_handle
-                .state::<crate::config::coordinator_clocks::CoordinatorClocksState>(
-            );
-
-            let result = crate::commands::ac_discovery::discover_project_inner(
-                &state.app_handle,
-                &state.session_mgr,
-                &path,
-                &state.settings,
-                branch_watcher.inner(),
-                coordinator_clocks.inner(),
-            )
-            .await?;
+            let result = operations
+                .discover_project(&state.session_mgr, &path, &state.settings)
+                .await?;
 
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
@@ -811,7 +848,7 @@ async fn dispatch_browser_project_command(
             let payload =
                 crate::commands::project_settings::project_groups_updated_payload(&path, &result);
             broadcast_all(
-                &state.app_handle,
+                state.desktop_events.as_ref(),
                 &state.broadcaster,
                 crate::commands::project_settings::PROJECT_GROUPS_UPDATED_EVENT,
                 &payload,
@@ -821,47 +858,27 @@ async fn dispatch_browser_project_command(
 
         BrowserProjectCommand::OpenProject => {
             let path = require_str(args, "path")?;
-            let result = crate::commands::ac_discovery::open_project_inner(
-                &state.app_handle,
-                &state.settings,
-                &path,
-            )
-            .await?;
+            let result = operations.open_project(&state.settings, &path).await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
 
         BrowserProjectCommand::RemoveProject => {
             let path = require_str(args, "path")?;
-            crate::commands::ac_discovery::remove_project_inner(
-                &state.app_handle,
-                &state.settings,
-                &path,
-            )
-            .await?;
+            operations.remove_project(&state.settings, &path).await?;
             Ok(json!(null))
         }
 
         BrowserProjectCommand::ArchiveProject => {
             let path = require_str(args, "path")?;
-            crate::commands::ac_discovery::archive_project_inner(
-                &state.app_handle,
-                &state.settings,
-                &state.session_mgr,
-                &state.pty_mgr,
-                &path,
-            )
-            .await?;
+            operations
+                .archive_project(&state.settings, &state.session_mgr, &state.pty_mgr, &path)
+                .await?;
             Ok(json!(null))
         }
 
         BrowserProjectCommand::UnarchiveProject => {
             let path = require_str(args, "path")?;
-            let result = crate::commands::ac_discovery::unarchive_project_inner(
-                &state.app_handle,
-                &state.settings,
-                &path,
-            )
-            .await?;
+            let result = operations.unarchive_project(&state.settings, &path).await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
 
@@ -899,6 +916,7 @@ async fn project_file_difference_value(args: &Value) -> Result<Value, String> {
 /// Handle a binary PTY write from a WS client.
 /// Format: [36 bytes UUID ASCII][raw PTY input bytes]
 async fn handle_binary_message(state: &WsState, data: &[u8]) {
+    let operations = state.operations.as_ref();
     if data.len() < 36 {
         return;
     }
@@ -917,21 +935,17 @@ async fn handle_binary_message(state: &WsState, data: &[u8]) {
     let write_result =
         match crate::pty::manager::PtyManager::acquire_input_writer(&state.pty_mgr, uuid).await {
             Ok(permit) => {
-                if state
-                    .app_handle
-                    .try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>()
+                if operations
+                    .purge_guard()
                     .is_some_and(|guard| guard.blocks_session(uuid))
                 {
                     return;
                 }
                 let result = crate::pty::manager::PtyManager::write_with_permit(&permit, pty_data);
                 if result.is_ok() {
-                    crate::commands::pty::mark_successful_pty_write_busy(
-                        &state.app_handle,
-                        uuid,
-                        pty_data.len(),
-                    )
-                    .await;
+                    operations
+                        .mark_successful_pty_write_busy(uuid, pty_data.len())
+                        .await;
                 }
                 result
             }
@@ -943,12 +957,9 @@ async fn handle_binary_message(state: &WsState, data: &[u8]) {
 
     // #552 web UI keystrokes (binary frame) are the real web input path and a
     // genuine user message: reset the badge clock + auto-close silence.
-    crate::commands::pty::note_user_message_to_session(
-        &state.app_handle,
-        uuid,
-        crate::commands::pty::UserInputSource::Web(pty_data),
-    )
-    .await;
+    operations
+        .note_user_message_to_session(uuid, pty_data)
+        .await;
 }
 
 pub(crate) fn binary_pty_write_succeeded(
