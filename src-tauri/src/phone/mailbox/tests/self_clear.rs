@@ -817,7 +817,7 @@ async fn plain_self_clear_process_message_auth_binding_and_untouched_files() {
             );
             msg.action = Some(super::super::PLAIN_SELF_CLEAR_ACTION.into());
             std::fs::write(&path, serde_json::to_vec_pretty(&msg).unwrap()).unwrap();
-            MailboxPoller::new()
+            MailboxPoller::default()
                 .process_message(&app, &path, OutboxOrigin::Replica)
                 .await
                 .unwrap();
@@ -895,7 +895,7 @@ async fn plain_self_clear_process_message_rejects_invalid_self_requests() {
             std::fs::create_dir_all(&ack).unwrap();
         }
         std::fs::write(&path, serde_json::to_vec_pretty(&msg).unwrap()).unwrap();
-        MailboxPoller::new()
+        MailboxPoller::default()
             .process_message(&app, &path, OutboxOrigin::Replica)
             .await
             .unwrap();
