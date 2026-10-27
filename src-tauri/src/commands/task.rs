@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::cli::task_ops::{self, TaskOp};
 use crate::config::ac_root::is_ac_root_name; // gate 5 (path-based clean, #545)
 use crate::config::settings::SettingsState;
+use crate::filesystem::projects::{canonical_project_path, project_path_is_dir};
 use crate::session::manager::SessionManager;
 use crate::session::session::find_workgroup_task_path_for_cwd;
 
@@ -88,7 +89,7 @@ fn validate_wg_root(
     // 1. Canonicalize: proves existence and resolves `..` + symlinks to a real
     //    absolute path. Mirrors open_in_explorer (window.rs). A traversal or a
     //    symlink that escapes is normalized here and then caught by gate 4.
-    let canonical = std::fs::canonicalize(workgroup_root).map_err(|_| {
+    let canonical = canonical_project_path(Path::new(workgroup_root)).map_err(|_| {
         format!(
             "room root does not exist or is inaccessible: {}",
             workgroup_root
@@ -96,7 +97,7 @@ fn validate_wg_root(
     })?;
 
     // 2. Must be a directory.
-    if !canonical.is_dir() {
+    if !project_path_is_dir(&canonical) {
         return Err(format!("room root is not a directory: {}", workgroup_root));
     }
 
@@ -121,7 +122,7 @@ fn validate_wg_root(
     //    does not match `C:\project-x` and separator/prefix mismatches cannot
     //    sneak through. Un-canonicalizable project entries are skipped, not fatal.
     let under_known_root = project_paths.iter().any(|base| {
-        std::fs::canonicalize(base)
+        canonical_project_path(Path::new(base))
             .map(|canon_base| canonical.starts_with(&canon_base))
             .unwrap_or(false)
     });
@@ -245,14 +246,7 @@ pub async fn task_get_title(
     session_id: String,
 ) -> Result<Option<String>, String> {
     let wg_root = resolve_wg_root(&session_mgr, &session_id).await?;
-    let task_path = wg_root.join("TASK.md");
-    let content = match std::fs::read_to_string(&task_path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("read TASK.md: {}", e)),
-    };
-    let parsed = task_ops::parse_task(&content);
-    Ok(task_ops::title_value_of(&parsed))
+    task_ops::read_title(&wg_root)
 }
 
 /// Shared title validator for both the session-based `task_set_title` and
