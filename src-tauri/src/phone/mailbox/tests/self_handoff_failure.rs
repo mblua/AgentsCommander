@@ -2,6 +2,7 @@ use super::*;
 use crate::phone::mailbox::handoff::SELF_HANDOFF_FLAVOR_SWITCH;
 use crate::phone::mailbox::self_handoff::failure::{
     consume_outcome, retry_notice, NoticeDelivery, SelfHandoffFailure, SelfHandoffOutcome,
+    CONTINUATION_FAILURE,
 };
 
 fn failure_fixture(id: Uuid) -> SelfHandoffFailure {
@@ -220,7 +221,7 @@ async fn issue_3189_clear_failure_reports_and_abandon_each_leg() {
 async fn issue_3189_respawn_failures_and_success_both_flavors() {
     use crate::phone::mailbox::handoff::SELF_HANDOFF_FLAVOR_RESTART;
     for flavor in [SELF_HANDOFF_FLAVOR_SWITCH, SELF_HANDOFF_FLAVOR_RESTART] {
-        for mode in 0..5 {
+        for mode in 0..6 {
             let id = Uuid::new_v4();
             let new_id = Uuid::new_v4();
             let pending = Arc::new(crate::PendingSelfClear::default());
@@ -253,7 +254,13 @@ async fn issue_3189_respawn_failures_and_success_both_flavors() {
                         Ok(new_id.to_string())
                     }
                 },
-                |_, _| async { Ok(()) },
+                move |_, _| async move {
+                    if mode == 5 {
+                        Err("phase-2 write failed".into())
+                    } else {
+                        Ok(())
+                    }
+                },
                 |_, _| async {},
             )
             .await;
@@ -262,15 +269,18 @@ async fn issue_3189_respawn_failures_and_success_both_flavors() {
                 SelfHandoffOutcome::Completed => assert_eq!(mode, 4),
                 SelfHandoffOutcome::Failed(f) => {
                     assert_ne!(mode, 4);
-                    assert_eq!(f.continuation, mode == 3);
+                    assert_eq!(f.continuation, mode == 3 || mode == 5);
                     assert_eq!(
                         f.current,
                         match mode {
                             1 => None,
-                            3 => Some(new_id),
+                            3 | 5 => Some(new_id),
                             _ => Some(id),
                         }
                     );
+                    if mode == 5 {
+                        assert_eq!(f.reason, CONTINUATION_FAILURE);
+                    }
                 }
             }
         }
