@@ -23,6 +23,7 @@ use super::{
 };
 
 impl RemoteSweeper {
+    #[cfg(test)]
     pub(crate) fn new(
         session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
         settings: SettingsState,
@@ -38,12 +39,48 @@ impl RemoteSweeper {
         )
     }
 
+    pub(crate) fn with_state(
+        session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
+        settings: SettingsState,
+        emit: Emitter,
+        seams: RemoteSweeperSeams,
+        git_state: Arc<crate::pty::git_watcher::GitState>,
+    ) -> (Arc<Self>, mpsc::Receiver<RemoteTransition>) {
+        Self::with_capacity_and_state(
+            session_manager,
+            settings,
+            emit,
+            seams,
+            TRANSITION_QUEUE_CAPACITY,
+            git_state,
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_capacity(
         session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
         settings: SettingsState,
         emit: Emitter,
         seams: RemoteSweeperSeams,
         capacity: usize,
+    ) -> (Arc<Self>, mpsc::Receiver<RemoteTransition>) {
+        Self::with_capacity_and_state(
+            session_manager,
+            settings,
+            emit,
+            seams,
+            capacity,
+            Arc::new(crate::pty::git_watcher::GitState::new()),
+        )
+    }
+
+    pub(crate) fn with_capacity_and_state(
+        session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
+        settings: SettingsState,
+        emit: Emitter,
+        seams: RemoteSweeperSeams,
+        capacity: usize,
+        git_state: Arc<crate::pty::git_watcher::GitState>,
     ) -> (Arc<Self>, mpsc::Receiver<RemoteTransition>) {
         let RemoteSweeperSeams {
             probe,
@@ -68,6 +105,7 @@ impl RemoteSweeper {
         };
         let (transitions, receiver) = mpsc::channel(capacity);
         let sweeper = Arc::new(Self {
+            git_state,
             session_manager,
             settings,
             emit: Mutex::new(emit),
@@ -185,7 +223,7 @@ impl RemoteSweeper {
         .flat_map(|(_, repos, _)| repos.into_iter().map(|repo| repo.source_path))
         .collect();
 
-        let discovery = crate::pty::git_watcher::discovery_repo_paths();
+        let discovery = crate::pty::git_watcher::discovery_repo_paths(&self.git_state);
 
         if archived.is_empty() {
             crate::pty::git_watcher::build_work_list(discovery, sessions, &[])
@@ -242,7 +280,7 @@ impl RemoteSweeper {
         };
 
         let paths = self.work_list(archived).await;
-        let rooms = room_map();
+        let rooms = room_map(&self.git_state);
 
         let mut facts: Vec<PathFacts> = Vec::with_capacity(paths.len());
         for path in &paths {
@@ -731,8 +769,8 @@ impl RemoteSweeper {
         rooms: &HashMap<String, Vec<String>>,
     ) -> PathFacts {
         let room_dirs = rooms.get(path).cloned().unwrap_or_default();
-        let branch =
-            crate::pty::git_watcher::read_git_status(path).and_then(|status| status.branch);
+        let branch = crate::pty::git_watcher::read_git_status(path, &self.git_state)
+            .and_then(|status| status.branch);
 
         if tokio::fs::metadata(Path::new(path).join(".git"))
             .await

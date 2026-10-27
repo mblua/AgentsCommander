@@ -290,6 +290,7 @@ agentscommander_lib::app_run::setup -> agentscommander_lib::web::command_port
 agentscommander_lib::app_run::setup -> agentscommander_lib::web::commands
 agentscommander_lib::app_state -> agentscommander_lib::capture::state
 agentscommander_lib::app_state -> agentscommander_lib::config::activity_log
+agentscommander_lib::app_state -> agentscommander_lib::pty::git_watcher
 agentscommander_lib::app_state -> agentscommander_lib::pty::local_backend
 agentscommander_lib::capture::catalog -> agentscommander_lib::filesystem
 agentscommander_lib::capture::jev -> agentscommander_lib::capture::catalog
@@ -2609,6 +2610,7 @@ agentscommander_lib::pty::remote_watcher::sweeper -> agentscommander_lib::sessio
 agentscommander_lib::pty::remote_watcher::sweeper -> agentscommander_lib::shutdown
 agentscommander_lib::pty::remote_watcher::sweeper_state -> agentscommander_lib::config::remote_activity_cache
 agentscommander_lib::pty::remote_watcher::sweeper_state -> agentscommander_lib::config::settings
+agentscommander_lib::pty::remote_watcher::sweeper_state -> agentscommander_lib::pty::git_watcher
 agentscommander_lib::pty::remote_watcher::sweeper_state -> agentscommander_lib::pty::remote_watcher
 agentscommander_lib::pty::remote_watcher::sweeper_state -> agentscommander_lib::session::manager
 agentscommander_lib::pty::response_close -> agentscommander_lib::pty

@@ -10,9 +10,11 @@ use super::{
     CALL_TIMEOUT,
 };
 
-pub(crate) fn room_map() -> HashMap<String, Vec<String>> {
+pub(crate) fn room_map(
+    git_state: &crate::pty::git_watcher::GitState,
+) -> HashMap<String, Vec<String>> {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
-    for (repo_path, room_dir) in crate::pty::git_watcher::discovery_repo_rooms() {
+    for (repo_path, room_dir) in crate::pty::git_watcher::discovery_repo_rooms(git_state) {
         let rooms = map.entry(repo_path).or_default();
         if !rooms.contains(&room_dir) {
             rooms.push(room_dir);

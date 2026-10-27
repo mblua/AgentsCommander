@@ -42,13 +42,14 @@ fn ok_output(body: &str) -> GhCallOutput {
 
 /// Republishes a repo's branch: `Harness::repo` publishes `main`, and every
 /// #2141 staleness test needs a branch that is NOT the default one.
-fn publish_branch(path: &str, branch: &str) {
+fn publish_branch(path: &str, branch: &str, git_state: &crate::pty::git_watcher::GitState) {
     crate::pty::git_watcher::publish_git_status(
         path,
         Some(crate::pty::git_watcher::GitStatus {
             branch: Some(branch.to_string()),
             dirty: false,
         }),
+        git_state,
     );
 }
 
@@ -205,6 +206,7 @@ impl LocalGitScripts {
 }
 
 struct Harness {
+    git_state: Arc<crate::pty::git_watcher::GitState>,
     temp: tempfile::TempDir,
     sweeper: Arc<RemoteSweeper>,
     /// `Receiver::try_recv` needs `&mut`, and most round tests hold the
@@ -292,7 +294,8 @@ impl Harness {
 
         let settings: SettingsState = crate::config::settings::new_settings_state(settings);
         let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-        let (sweeper, transitions) = RemoteSweeper::with_capacity(
+        let git_state = Arc::new(crate::pty::git_watcher::GitState::new());
+        let (sweeper, transitions) = RemoteSweeper::with_capacity_and_state(
             sessions,
             settings,
             emit,
@@ -305,10 +308,12 @@ impl Harness {
                 publication_clock,
             },
             capacity,
+            git_state.clone(),
         );
         sweeper.lock_state().gh_path = Some(PathBuf::from("gh"));
 
         Self {
+            git_state,
             temp,
             sweeper,
             transitions: Mutex::new(transitions),
@@ -332,6 +337,7 @@ impl Harness {
                 branch: Some("main".to_string()),
                 dirty: false,
             }),
+            &self.git_state,
         );
         path
     }
@@ -364,12 +370,13 @@ impl Harness {
     }
 
     fn set_work(&self, paths: &[String]) {
-        crate::pty::git_watcher::set_discovery_repo_paths(paths.to_vec());
+        crate::pty::git_watcher::set_discovery_repo_paths(paths.to_vec(), &self.git_state);
         crate::pty::git_watcher::set_discovery_repo_rooms(
             paths
                 .iter()
                 .map(|path| (path.clone(), format!("{path}/room")))
                 .collect(),
+            &self.git_state,
         );
     }
 
@@ -533,6 +540,7 @@ fn budget_fixture() -> (Harness, Vec<String>) {
                 branch: Some("feature".to_string()),
                 dirty: false,
             }),
+            harness.git_state.as_ref(),
         );
         harness
             .git

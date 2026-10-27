@@ -61,9 +61,9 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         co_managed_supervisor_for_setup,
         co_managed_triggers,
         response_close_for_setup,
-        session_mgr_for_git,
-        session_mgr_for_git_sweeper,
-        session_mgr_for_discovery,
+        session_mgr_for_git: git_rows,
+        session_mgr_for_git_sweeper: sweep_rows,
+        session_mgr_for_discovery: rows,
         session_mgr_for_web,
         session_mgr_for_api,
         session_mgr_for_scraper,
@@ -85,6 +85,8 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         resource_monitor_for_setup,
         ui_automation_state_for_setup,
     } = ctx;
+    use crate::pty::git_watcher::GitSweeper;
+    use crate::pty::remote_watcher::RemoteSweeper;
     use tauri::WebviewUrl;
     use tauri::WebviewWindowBuilder;
     // Make AppHandle available to idle detector callbacks
@@ -141,42 +143,36 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     // self-healing: live agents re-write their cache every launch.
     crate::config::session_context::sweep_context_cache_at_startup();
     // Git branch watcher: polls git branch for each session every 5s
-    let git_watcher = GitWatcher::new(session_mgr_for_git, app.handle().clone());
-    // Register for Tauri commands that take `State<'_, Arc<GitWatcher>>`
-    // (e.g. `update_team`). Must happen BEFORE the
-    // `PtyManager::new(..., git_watcher, ...)` move below.
+    let git = _owners.git;
+    let settings = app.state::<SettingsState>().inner().clone();
+    let ui = app.handle().clone();
+    let git_watcher = GitWatcher::with_state(git_rows.clone(), ui.clone(), git.clone());
+    // Register for Tauri commands that take `State<'_, Arc<GitWatcher>>` (e.g. `update_team`). Must
+    // happen BEFORE the `PtyManager::new(..., git_watcher, ...)` move below.
     app.manage(Arc::clone(&git_watcher));
     // Discovery branch watcher: polls git branch for discovered replicas every 15s
-    let discovery_branch_watcher =
-        DiscoveryBranchWatcher::new(app.handle().clone(), session_mgr_for_discovery);
+    let discovery_branch_watcher = DiscoveryBranchWatcher::with_state(ui, rows, git.clone());
     app.manage(Arc::clone(&discovery_branch_watcher));
-    // #1298 - the single global POLLING producer of per-repo git state. Both
-    // watchers read its published snapshot instead of spawning `git` themselves.
+    // #1298 - the single global POLLING producer of per-repo git state. Both watchers read its
+    // published snapshot instead of spawning `git` themselves.
     //
-    // Started HERE and not inside `restore_observer_barrier` for exactly one
-    // reason: that barrier gates observers which mutate session metadata or
-    // persistence, and this one mutates neither, it only publishes into
-    // process-local maps. The construction point buys no head start by itself,
-    // because at this point there is nothing to sweep (sessions are restored
-    // below, discovery is frontend-driven). Cold start is governed by the
-    // empty-round floor instead (plan D3). Do not move this under the barrier, and
-    // do not "restore" a head-start rationale that was never true.
-    let git_sweeper = crate::pty::git_watcher::GitSweeper::new(
-        session_mgr_for_git_sweeper,
-        app.state::<SettingsState>().inner().clone(),
-    );
+    // Started HERE and not inside `restore_observer_barrier` for exactly one reason: that barrier
+    // gates observers which mutate session metadata or persistence, and this one mutates neither,
+    // it only publishes into process-local maps. The construction point buys no head start by
+    // itself, because at this point there is nothing to sweep (sessions are restored below,
+    // discovery is frontend-driven). Cold start is governed by the empty-round floor instead (plan
+    // D3). Do not move this under the barrier, and do not "restore" a head-start rationale that was
+    // never true.
+    let git_sweeper = GitSweeper::with_state(sweep_rows, settings.clone(), git.clone());
     git_sweeper.start(shutdown_for_setup.clone());
-    // #2064 - the remote activity producer: asks GitHub, through `gh`,
-    // whether CI runs on each room repo's exact HEAD and whether the
-    // default branch is ahead. Beside `GitSweeper` for the same reason it
-    // sits there: it mutates no session metadata, it only publishes into
-    // process-local maps. Phase B consumes the transition stream: the
-    // notifier started below is its only consumer.
-    let (remote_sweeper, remote_transitions) = crate::pty::remote_watcher::RemoteSweeper::new(
-        app.state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .inner()
-            .clone(),
-        app.state::<SettingsState>().inner().clone(),
+    // #2064 - the remote activity producer: asks GitHub, through `gh`, whether CI runs on each room
+    // repo's exact HEAD and whether the default branch is ahead. Beside `GitSweeper` for the same
+    // reason it sits there: it mutates no session metadata, it only publishes into process-local
+    // maps. Phase B consumes the transition stream: the notifier started below is its only
+    // consumer.
+    let (remote_sweeper, remote_transitions) = RemoteSweeper::with_state(
+        git_rows,
+        settings,
         Box::new({
             let app_for_remote_activity = app.handle().clone();
             move |payload: &crate::pty::remote_watcher::RemoteActivityPayload| {
@@ -184,6 +180,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
             }
         }),
         crate::remote_sweeper_seams(),
+        git,
     );
     let _ = remote_sweeper.start(shutdown_for_setup.clone());
     // #2064 Phase B - the transition stream's consumer. Started beside the

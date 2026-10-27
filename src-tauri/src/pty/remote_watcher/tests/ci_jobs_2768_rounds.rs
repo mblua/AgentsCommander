@@ -135,7 +135,7 @@ async fn i2768_lifecycle_isolation() {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .set_head_sha(&alias, 'b');
-    publish_branch(&alias, "feature");
+    publish_branch(&alias, "feature", h.git_state.as_ref());
     queue_endpoint(
         &h,
         &format!(

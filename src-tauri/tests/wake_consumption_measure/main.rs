@@ -216,7 +216,11 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("git handle app"),
     ));
-    let git_watcher = GitWatcher::new(Arc::clone(&session_mgr), git_app.handle().clone());
+    let git_watcher = GitWatcher::with_state(
+        Arc::clone(&session_mgr),
+        git_app.handle().clone(),
+        owners.git.clone(),
+    );
     let pty_mgr = Arc::new(Mutex::new(PtyManager::with_owners(
         Arc::clone(&output_senders),
         Arc::clone(&idle),

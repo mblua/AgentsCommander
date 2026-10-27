@@ -235,6 +235,7 @@ pub(crate) struct TransitionMeta {
 /// injected emitter rather than an `AppHandle`: it never emits anything itself,
 /// so it must not acquire a Tauri transport dependency it does not need.
 pub(crate) struct RemoteSweeper {
+    pub(crate) git_state: Arc<crate::pty::git_watcher::GitState>,
     pub(crate) session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     pub(crate) settings: SettingsState,
     pub(crate) emit: Mutex<Emitter>,

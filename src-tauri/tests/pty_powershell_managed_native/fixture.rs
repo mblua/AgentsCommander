@@ -271,7 +271,11 @@ pub(crate) fn make_fixture() -> Fixture {
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build git watcher handle app"),
     ));
-    let git_watcher = GitWatcher::new(Arc::clone(&session_mgr), git_app.handle().clone());
+    let git_watcher = GitWatcher::with_state(
+        Arc::clone(&session_mgr),
+        git_app.handle().clone(),
+        owners.git.clone(),
+    );
     let pty_mgr = Arc::new(Mutex::new(PtyManager::with_owners(
         output_senders,
         idle_detector,

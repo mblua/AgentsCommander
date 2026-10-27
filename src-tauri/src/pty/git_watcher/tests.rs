@@ -78,16 +78,17 @@ async fn set_git_repos_if_gen_rejects_stale_gen() {
 /// independent paths get independent counters.
 #[test]
 fn note_timeout_counts_per_path() {
+    let owner = GitState::new();
     // Process-global state: use unique-per-test path strings to avoid
     // collisions with other tests that may exercise this helper.
     let p1 = "/test-280-3-3/git-watcher/path-a";
     let p2 = "/test-280-3-3/git-watcher/path-b";
-    assert_eq!(note_timeout(p1), 1);
-    assert_eq!(note_timeout(p1), 2);
-    assert_eq!(note_timeout(p1), 3);
+    assert_eq!(note_timeout(p1, &owner), 1);
+    assert_eq!(note_timeout(p1, &owner), 2);
+    assert_eq!(note_timeout(p1, &owner), 3);
     // Independent counter for a different path.
-    assert_eq!(note_timeout(p2), 1);
-    assert_eq!(note_timeout(p1), 4);
+    assert_eq!(note_timeout(p2, &owner), 1);
+    assert_eq!(note_timeout(p1, &owner), 4);
 }
 
 /// #1298 T1 - the read-site clamp, and the executable form of INV-2: no floor
@@ -138,20 +139,21 @@ fn build_work_list_unions_dedupes_and_drops_archived() {
 /// overwrites a previous `Some`, so `branch` does not hold across a failure.
 #[test]
 fn published_git_status_round_trips_and_unknown_paths_read_none() {
+    let owner = GitState::new();
     // Process-global state: unique-per-test path strings, as the
     // `remember_dirty` and `note_timeout` tests do for the same reason.
     let path = "/test-1298/snapshot/path-a";
-    assert!(read_git_status("/test-1298/snapshot/never-published").is_none());
+    assert!(read_git_status("/test-1298/snapshot/never-published", &owner).is_none());
 
     let status = GitStatus {
         branch: Some("main".to_string()),
         dirty: true,
     };
-    publish_git_status(path, Some(status.clone()));
-    assert_eq!(read_git_status(path), Some(status));
+    publish_git_status(path, Some(status.clone()), &owner);
+    assert_eq!(read_git_status(path, &owner), Some(status));
 
-    publish_git_status(path, None);
-    assert!(read_git_status(path).is_none());
+    publish_git_status(path, None, &owner);
+    assert!(read_git_status(path, &owner).is_none());
 }
 
 /// #1298 T4 - the executable form of INV-8. The second half of the assertion is
@@ -164,6 +166,7 @@ fn published_git_status_round_trips_and_unknown_paths_read_none() {
 /// retain under test is the one that drops `path-dropped`.
 #[test]
 fn retain_swept_paths_evicts_dropped_paths_from_both_maps() {
+    let owner = GitState::new();
     let kept = "/test-1298/retain/path-kept";
     let dropped = "/test-1298/retain/path-dropped";
     let status = GitStatus {
@@ -171,19 +174,19 @@ fn retain_swept_paths_evicts_dropped_paths_from_both_maps() {
         dirty: true,
     };
 
-    publish_git_status(kept, Some(status.clone()));
-    publish_git_status(dropped, Some(status));
-    assert_eq!(remember_dirty(kept, Some(true)), Some(true));
-    assert_eq!(remember_dirty(dropped, Some(true)), Some(true));
+    publish_git_status(kept, Some(status.clone()), &owner);
+    publish_git_status(dropped, Some(status), &owner);
+    assert_eq!(remember_dirty(kept, Some(true), &owner), Some(true));
+    assert_eq!(remember_dirty(dropped, Some(true), &owner), Some(true));
 
-    let mut live: HashSet<String> = git_status_snapshot()
+    let mut live: HashSet<String> = git_status_snapshot(&owner)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .keys()
         .cloned()
         .collect();
     live.extend(
-        last_dirty_map()
+        last_dirty_map(&owner)
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .keys()
@@ -191,12 +194,12 @@ fn retain_swept_paths_evicts_dropped_paths_from_both_maps() {
     );
     live.remove(dropped);
 
-    retain_swept_paths(&live);
+    retain_swept_paths(&live, &owner);
 
-    assert!(read_git_status(kept).is_some());
-    assert_eq!(remember_dirty(kept, None), Some(true));
-    assert!(read_git_status(dropped).is_none());
-    assert_eq!(remember_dirty(dropped, None), None);
+    assert!(read_git_status(kept, &owner).is_some());
+    assert_eq!(remember_dirty(kept, None, &owner), Some(true));
+    assert!(read_git_status(dropped, &owner).is_none());
+    assert_eq!(remember_dirty(dropped, None, &owner), None);
 }
 
 // --- #1078: cached-origin parser semantics ---
@@ -573,9 +576,10 @@ async fn detect_git_status_handles_cached_history_matrix() {
 /// first answer", which renders violet, and that is honest.
 #[test]
 fn remember_dirty_never_detected_stays_none() {
+    let owner = GitState::new();
     let p = "/test-1028/remember/never-detected";
-    assert_eq!(remember_dirty(p, None), None);
-    assert_eq!(remember_dirty(p, None), None);
+    assert_eq!(remember_dirty(p, None, &owner), None);
+    assert_eq!(remember_dirty(p, None, &owner), None);
 }
 
 /// G1's regression guard: the hold must survive a CLUSTER, not just a single blip.
@@ -583,11 +587,12 @@ fn remember_dirty_never_detected_stays_none() {
 /// the worktree is being written to, i.e. exactly when the repo is dirty.
 #[test]
 fn remember_dirty_survives_failure_cluster() {
+    let owner = GitState::new();
     let p = "/test-1028/remember/cluster";
-    assert_eq!(remember_dirty(p, Some(true)), Some(true));
+    assert_eq!(remember_dirty(p, Some(true), &owner), Some(true));
     for tick in 0..5 {
         assert_eq!(
-            remember_dirty(p, None),
+            remember_dirty(p, None, &owner),
             Some(true),
             "tick {tick} of a 5-tick cluster must still hold red"
         );
@@ -597,11 +602,12 @@ fn remember_dirty_survives_failure_cluster() {
 /// A later success overwrites the memory; the hold is last-known, not sticky-red.
 #[test]
 fn remember_dirty_success_overwrites_then_holds() {
+    let owner = GitState::new();
     let p = "/test-1028/remember/overwrite";
-    assert_eq!(remember_dirty(p, Some(true)), Some(true));
-    assert_eq!(remember_dirty(p, Some(false)), Some(false));
+    assert_eq!(remember_dirty(p, Some(true), &owner), Some(true));
+    assert_eq!(remember_dirty(p, Some(false), &owner), Some(false));
     assert_eq!(
-        remember_dirty(p, None),
+        remember_dirty(p, None, &owner),
         Some(false),
         "holds the newer answer"
     );
@@ -610,12 +616,17 @@ fn remember_dirty_success_overwrites_then_holds() {
 /// Keyed by path: one repo's memory never leaks onto another.
 #[test]
 fn remember_dirty_keeps_paths_independent() {
+    let owner = GitState::new();
     let p1 = "/test-1028/remember/path-a";
     let p2 = "/test-1028/remember/path-b";
-    assert_eq!(remember_dirty(p1, Some(true)), Some(true));
-    assert_eq!(remember_dirty(p2, None), None, "p2 never detected");
-    assert_eq!(remember_dirty(p2, Some(false)), Some(false));
-    assert_eq!(remember_dirty(p1, None), Some(true), "p1 unaffected by p2");
+    assert_eq!(remember_dirty(p1, Some(true), &owner), Some(true));
+    assert_eq!(remember_dirty(p2, None, &owner), None, "p2 never detected");
+    assert_eq!(remember_dirty(p2, Some(false), &owner), Some(false));
+    assert_eq!(
+        remember_dirty(p1, None, &owner),
+        Some(true),
+        "p1 unaffected by p2"
+    );
 }
 
 /// The map is SHARED by both watchers on purpose: during a timeout cluster separate
@@ -625,13 +636,96 @@ fn remember_dirty_keeps_paths_independent() {
 /// watcher" sees the freshest successful observation of that path, whoever made it.
 #[test]
 fn remember_dirty_is_shared_across_watchers() {
+    let owner = GitState::new();
     let p = "/test-1028/remember/shared";
     // GitWatcher (5s) observes dirty.
-    assert_eq!(remember_dirty(p, Some(true)), Some(true));
+    assert_eq!(remember_dirty(p, Some(true), &owner), Some(true));
     // DiscoveryBranchWatcher (15s) fails on the same path and holds GitWatcher's
     // answer rather than its own older one or a confident clean.
-    assert_eq!(remember_dirty(p, None), Some(true));
+    assert_eq!(remember_dirty(p, None, &owner), Some(true));
     // Discovery then observes clean; GitWatcher's next failure holds THAT.
-    assert_eq!(remember_dirty(p, Some(false)), Some(false));
-    assert_eq!(remember_dirty(p, None), Some(false));
+    assert_eq!(remember_dirty(p, Some(false), &owner), Some(false));
+    assert_eq!(remember_dirty(p, None, &owner), Some(false));
+}
+
+fn poison_git_mutex<T>(mutex: &Mutex<T>) {
+    let poisoned = std::panic::catch_unwind(|| {
+        let _guard = mutex.lock().expect("fresh mutex");
+        panic!("poison this owner mutex");
+    });
+    assert!(poisoned.is_err());
+    assert!(mutex.is_poisoned());
+}
+
+#[test]
+fn git_owner_shared_producers_preserve_unknown_and_prune() {
+    let owner = Arc::new(GitState::new());
+    let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let settings = crate::config::settings::new_settings_state(AppSettings::default());
+    let first = GitSweeper::with_state(sessions.clone(), settings.clone(), owner.clone());
+    let second = GitSweeper::with_state(sessions, settings, owner.clone());
+    assert!(Arc::ptr_eq(&first.git_state, &second.git_state));
+    assert!(owner.timeout_counts.get().is_none());
+    assert!(owner.last_dirty.get().is_none());
+    assert!(owner.snapshot.get().is_none());
+    assert!(owner.discovery_paths.get().is_none());
+    assert!(owner.discovery_rooms.get().is_none());
+
+    let path = "shared-repo";
+    let status = GitStatus {
+        branch: Some("main".into()),
+        dirty: true,
+    };
+    publish_git_status(path, Some(status.clone()), &first.git_state);
+    assert_eq!(read_git_status(path, &second.git_state), Some(status));
+    assert_eq!(
+        remember_dirty(path, Some(true), &first.git_state),
+        Some(true)
+    );
+    publish_git_status(path, None, &second.git_state);
+    assert!(read_git_status(path, &first.git_state).is_none());
+    assert_eq!(remember_dirty(path, None, &second.git_state), Some(true));
+    let fresh = GitState::new();
+    assert_eq!(remember_dirty(path, None, &fresh), None);
+    assert!(read_git_status(path, &fresh).is_none());
+    retain_swept_paths(&HashSet::new(), &second.git_state);
+    assert!(read_git_status(path, &first.git_state).is_none());
+    assert_eq!(remember_dirty(path, None, &first.git_state), None);
+
+    assert_eq!(note_timeout(path, &first.git_state), 1);
+    poison_git_mutex(owner.timeout_counts.get().unwrap());
+    assert_eq!(note_timeout(path, &second.git_state), 2);
+    poison_git_mutex(last_dirty_map(&owner));
+    assert_eq!(
+        remember_dirty(path, Some(false), &first.git_state),
+        Some(false)
+    );
+    assert_eq!(remember_dirty(path, None, &second.git_state), Some(false));
+    poison_git_mutex(git_status_snapshot(&owner));
+    publish_git_status(
+        path,
+        Some(GitStatus {
+            branch: None,
+            dirty: false,
+        }),
+        &first.git_state,
+    );
+    assert_eq!(
+        read_git_status(path, &second.git_state).unwrap().dirty,
+        false
+    );
+    set_discovery_repo_paths(vec![path.into(), path.into()], &first.git_state);
+    poison_git_mutex(discovery_repo_paths_cell(&owner));
+    assert_eq!(discovery_repo_paths(&second.git_state), vec![path, path]);
+    set_discovery_repo_paths(vec![path.into()], &second.git_state);
+    assert_eq!(discovery_repo_paths(&first.git_state), vec![path]);
+    let rooms = vec![(path.into(), "room".into())];
+    set_discovery_repo_rooms(rooms.clone(), &first.git_state);
+    poison_git_mutex(discovery_repo_rooms_cell(&owner));
+    assert_eq!(discovery_repo_rooms(&second.git_state), rooms);
+    set_discovery_repo_rooms(Vec::new(), &second.git_state);
+    assert!(discovery_repo_rooms(&first.git_state).is_empty());
+    retain_swept_paths(&HashSet::new(), &first.git_state);
+    assert!(read_git_status(path, &second.git_state).is_none());
+    assert_eq!(remember_dirty(path, None, &second.git_state), None);
 }

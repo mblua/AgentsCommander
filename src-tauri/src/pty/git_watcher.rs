@@ -11,6 +11,28 @@ use crate::config::settings::AppSettings;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionRepo;
 
+/// Process-lived Git facts shared by producers and consumers.
+pub struct GitState {
+    timeout_counts: OnceLock<Mutex<HashMap<String, u64>>>,
+    last_dirty: OnceLock<Mutex<HashMap<String, bool>>>,
+    snapshot: OnceLock<Mutex<HashMap<String, Option<GitStatus>>>>,
+    discovery_paths: OnceLock<Mutex<Vec<String>>>,
+    discovery_rooms: OnceLock<Mutex<Vec<(String, String)>>>,
+}
+
+#[allow(clippy::new_without_default)]
+impl GitState {
+    pub fn new() -> Self {
+        Self {
+            timeout_counts: OnceLock::new(),
+            last_dirty: OnceLock::new(),
+            snapshot: OnceLock::new(),
+            discovery_paths: OnceLock::new(),
+            discovery_rooms: OnceLock::new(),
+        }
+    }
+}
+
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const DETECT_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -32,9 +54,10 @@ const SWEEP_MAX_INTERVAL_SECS: u64 = 3600;
 /// #1298 - now the sweeper's SINGLE counter rather than one of two: the
 /// per-watcher twin in `commands/ac_discovery.rs` went with its subject when
 /// detection was merged into one producer.
-fn note_timeout(path: &str) -> u64 {
-    static TIMEOUT_COUNTS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
-    let map = TIMEOUT_COUNTS.get_or_init(|| Mutex::new(HashMap::new()));
+fn note_timeout(path: &str, owner: &GitState) -> u64 {
+    let map = owner
+        .timeout_counts
+        .get_or_init(|| Mutex::new(HashMap::new()));
     let mut g = map.lock().unwrap_or_else(|e| e.into_inner());
     let count = g.entry(path.to_string()).or_insert(0);
     *count += 1;
@@ -96,8 +119,10 @@ pub(crate) struct GitStatus {
 /// `status.success()`). Only ever feed this from `detect_git_status`. A caller shaped
 /// like `detect_repo_branch` (`commands/ac_discovery.rs`), which has no `.git` guard
 /// and no ceiling, would silently violate it. Nothing does today.
-pub(crate) fn remember_dirty(path: &str, detected: Option<bool>) -> Option<bool> {
-    let mut g = last_dirty_map().lock().unwrap_or_else(|e| e.into_inner());
+pub(crate) fn remember_dirty(path: &str, detected: Option<bool>, owner: &GitState) -> Option<bool> {
+    let mut g = last_dirty_map(owner)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     match detected {
         Some(d) => {
             g.insert(path.to_string(), d);
@@ -112,10 +137,8 @@ pub(crate) fn remember_dirty(path: &str, detected: Option<bool>) -> Option<bool>
 /// published snapshot must gain and lose the same paths, or a dropped path reads
 /// `None` from the snapshot and its last successful `bool` from here, which is a
 /// confident colour sourced from a detection that will never be repeated.
-static LAST_DIRTY: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-
-fn last_dirty_map() -> &'static Mutex<HashMap<String, bool>> {
-    LAST_DIRTY.get_or_init(|| Mutex::new(HashMap::new()))
+fn last_dirty_map(owner: &GitState) -> &Mutex<HashMap<String, bool>> {
+    owner.last_dirty.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// #1298 - the snapshot the single global sweeper publishes and both poll loops
@@ -132,14 +155,12 @@ fn last_dirty_map() -> &'static Mutex<HashMap<String, bool>> {
 /// Same lock discipline as `remember_dirty`, including
 /// `.unwrap_or_else(|e| e.into_inner())`, which is required for the reason
 /// documented there. GC is `retain_swept_paths`, not absence of one.
-static GIT_STATUS_SNAPSHOT: OnceLock<Mutex<HashMap<String, Option<GitStatus>>>> = OnceLock::new();
-
-fn git_status_snapshot() -> &'static Mutex<HashMap<String, Option<GitStatus>>> {
-    GIT_STATUS_SNAPSHOT.get_or_init(|| Mutex::new(HashMap::new()))
+fn git_status_snapshot(owner: &GitState) -> &Mutex<HashMap<String, Option<GitStatus>>> {
+    owner.snapshot.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub(crate) fn publish_git_status(path: &str, status: Option<GitStatus>) {
-    let mut g = git_status_snapshot()
+pub(crate) fn publish_git_status(path: &str, status: Option<GitStatus>, owner: &GitState) {
+    let mut g = git_status_snapshot(owner)
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     g.insert(path.to_string(), status);
@@ -147,8 +168,8 @@ pub(crate) fn publish_git_status(path: &str, status: Option<GitStatus>) {
 
 /// `pub(crate)` is FORCED, exactly as it is for `remember_dirty`: one of the two
 /// readers lives in `commands/ac_discovery.rs`.
-pub(crate) fn read_git_status(path: &str) -> Option<GitStatus> {
-    let g = git_status_snapshot()
+pub(crate) fn read_git_status(path: &str, owner: &GitState) -> Option<GitStatus> {
+    let g = git_status_snapshot(owner)
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     g.get(path).cloned().flatten()
@@ -159,20 +180,18 @@ pub(crate) fn read_git_status(path: &str) -> Option<GitStatus> {
 /// pull: pulling would make `pty::git_watcher` import a `commands::` type, which
 /// is a layering inversion. Duplicates are expected (several replicas name the
 /// same repo) and `build_work_list` dedupes them.
-static DISCOVERY_REPO_PATHS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
-
-fn discovery_repo_paths_cell() -> &'static Mutex<Vec<String>> {
-    DISCOVERY_REPO_PATHS.get_or_init(|| Mutex::new(Vec::new()))
+fn discovery_repo_paths_cell(owner: &GitState) -> &Mutex<Vec<String>> {
+    owner.discovery_paths.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-pub(crate) fn set_discovery_repo_paths(paths: Vec<String>) {
-    *discovery_repo_paths_cell()
+pub(crate) fn set_discovery_repo_paths(paths: Vec<String>, owner: &GitState) {
+    *discovery_repo_paths_cell(owner)
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = paths;
 }
 
-pub(crate) fn discovery_repo_paths() -> Vec<String> {
-    discovery_repo_paths_cell()
+pub(crate) fn discovery_repo_paths(owner: &GitState) -> Vec<String> {
+    discovery_repo_paths_cell(owner)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone()
@@ -183,14 +202,12 @@ pub(crate) fn discovery_repo_paths() -> Vec<String> {
 /// `DISCOVERY_REPO_PATHS`. `room_dir` is the parent of the replica path, so no
 /// new filesystem discovery is involved. Same push-not-pull reason as above, and
 /// `GitSweeper` never reads this map.
-static DISCOVERY_REPO_ROOMS: OnceLock<Mutex<Vec<(String, String)>>> = OnceLock::new();
-
-fn discovery_repo_rooms_cell() -> &'static Mutex<Vec<(String, String)>> {
-    DISCOVERY_REPO_ROOMS.get_or_init(|| Mutex::new(Vec::new()))
+fn discovery_repo_rooms_cell(owner: &GitState) -> &Mutex<Vec<(String, String)>> {
+    owner.discovery_rooms.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-pub(crate) fn set_discovery_repo_rooms(pairs: Vec<(String, String)>) {
-    *discovery_repo_rooms_cell()
+pub(crate) fn set_discovery_repo_rooms(pairs: Vec<(String, String)>, owner: &GitState) {
+    *discovery_repo_rooms_cell(owner)
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = pairs;
 }
@@ -199,8 +216,8 @@ pub(crate) fn set_discovery_repo_rooms(pairs: Vec<(String, String)>) {
 /// `discovery_repo_paths` above): the ac_discovery tests assert that this map
 /// mirrors the pushed path vector, and a `pub(super)` accessor would be
 /// invisible from `commands::`. Production readers of both still live in `pty`.
-pub(crate) fn discovery_repo_rooms() -> Vec<(String, String)> {
-    discovery_repo_rooms_cell()
+pub(crate) fn discovery_repo_rooms(owner: &GitState) -> Vec<(String, String)> {
+    discovery_repo_rooms_cell(owner)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone()
@@ -213,14 +230,16 @@ pub(crate) fn discovery_repo_rooms() -> Vec<(String, String)> {
 ///
 /// Takes the two guards SEQUENTIALLY, never nested: nesting them would introduce
 /// the tree's only two-lock order between these maps for no benefit.
-fn retain_swept_paths(live: &HashSet<String>) {
+fn retain_swept_paths(live: &HashSet<String>, owner: &GitState) {
     {
-        let mut snapshot = git_status_snapshot()
+        let mut snapshot = git_status_snapshot(owner)
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         snapshot.retain(|path, _| live.contains(path));
     }
-    let mut dirty = last_dirty_map().lock().unwrap_or_else(|e| e.into_inner());
+    let mut dirty = last_dirty_map(owner)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     dirty.retain(|path, _| live.contains(path));
 }
 
@@ -384,9 +403,10 @@ pub(crate) async fn detect_git_status(working_dir: &str) -> Option<GitStatus> {
 }
 
 pub struct GitWatcher {
+    git_state: Arc<GitState>,
     session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     /// `None` only for the #2683 headless test constructor; production always
-    /// stores `Some` through `new`.
+    /// stores `Some` through `with_state`.
     app_handle: Option<AppHandle>,
     /// Last-emitted per-repo state keyed by session id. Equality gate for `session_git_repos`.
     /// `Vec` equality is order-sensitive; callers preserve replica config.json `repos` order.
@@ -408,12 +428,22 @@ pub(crate) struct CoordinatorChangedPayload {
 }
 
 impl GitWatcher {
+    #[cfg(test)]
     pub fn new(
         session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
         app_handle: AppHandle,
     ) -> Arc<Self> {
+        Self::with_state(session_manager, app_handle, Arc::new(GitState::new()))
+    }
+
+    pub fn with_state(
+        session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
+        app_handle: AppHandle,
+        git_state: Arc<GitState>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             session_manager,
+            git_state,
             app_handle: Some(app_handle),
             cache: Mutex::new(HashMap::new()),
         })
@@ -427,6 +457,7 @@ impl GitWatcher {
     ) -> Arc<Self> {
         Arc::new(Self {
             session_manager,
+            git_state: Arc::new(GitState::new()),
             app_handle: None,
             cache: Mutex::new(HashMap::new()),
         })
@@ -488,7 +519,7 @@ impl GitWatcher {
             // same "unknown" a failed detection produced before.
             let statuses: Vec<Option<GitStatus>> = repos
                 .iter()
-                .map(|r| read_git_status(&r.source_path))
+                .map(|r| read_git_status(&r.source_path, &self.git_state))
                 .collect();
 
             let refreshed: Vec<SessionRepo> = repos
@@ -504,7 +535,11 @@ impl GitWatcher {
                     // confident "clean" while the worktree has uncommitted work is the
                     // one error this feature must not make. Same shape in
                     // DiscoveryBranchWatcher::poll; the map behind it is shared.
-                    dirty: remember_dirty(&r.source_path, status.as_ref().map(|s| s.dirty)),
+                    dirty: remember_dirty(
+                        &r.source_path,
+                        status.as_ref().map(|s| s.dirty),
+                        &self.git_state,
+                    ),
                 })
                 .collect();
 
@@ -558,11 +593,11 @@ impl GitWatcher {
 ///
 /// Because `timeout` DROPS the future here, `detect_git_status` never returns on this
 /// path and cannot remember anything itself: the caller applies the dirty hold.
-async fn detect_status_with_timeout(working_dir: &str) -> Option<GitStatus> {
+async fn detect_status_with_timeout(working_dir: &str, owner: &GitState) -> Option<GitStatus> {
     match tokio::time::timeout(DETECT_TIMEOUT, detect_git_status(working_dir)).await {
         Ok(result) => result,
         Err(_) => {
-            let n = note_timeout(working_dir);
+            let n = note_timeout(working_dir, owner);
             // #280 §3.3 — throttle the per-path WARN. Observed rate is
             // ~120 timeouts/day/path; logging every one floods app.log.
             // Log the first sighting (heartbeat) and every 50th
@@ -669,18 +704,21 @@ pub(super) fn build_work_list(
 /// It unifies DETECTION, not EMISSION (INV-4): the two watchers keep their own
 /// events, keys, cadences and emission gates.
 pub struct GitSweeper {
+    git_state: Arc<GitState>,
     session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     settings: crate::config::settings::SettingsState,
 }
 
 impl GitSweeper {
-    pub fn new(
+    pub fn with_state(
         session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
         settings: crate::config::settings::SettingsState,
+        git_state: Arc<GitState>,
     ) -> Arc<Self> {
         Arc::new(Self {
             session_manager,
             settings,
+            git_state,
         })
     }
 
@@ -760,7 +798,7 @@ impl GitSweeper {
         .flat_map(|(_, repos, _)| repos.into_iter().map(|r| r.source_path))
         .collect();
 
-        let discovery = discovery_repo_paths();
+        let discovery = discovery_repo_paths(&self.git_state);
 
         // The WHOLE build, normalization included, runs on the blocking pool
         // whenever the archived list is non-empty: `build_work_list` canonicalizes
@@ -795,7 +833,11 @@ impl GitSweeper {
         // `publish_git_status` takes its std guard. Writing it the other way round
         // would hold a `std::sync::Mutex` guard across an await.
         futures::stream::iter(paths.iter().map(|p| async move {
-            publish_git_status(p, detect_status_with_timeout(p).await);
+            publish_git_status(
+                p,
+                detect_status_with_timeout(p, &self.git_state).await,
+                &self.git_state,
+            );
         }))
         .buffer_unordered(concurrency)
         .for_each(|_| async {})
@@ -806,7 +848,7 @@ impl GitSweeper {
         // round 1 the maps are empty too. Keep the guard anyway, it is free and it
         // protects a future consumer, but do not defend it with that false mechanism.
         if !paths.is_empty() {
-            retain_swept_paths(&paths.iter().cloned().collect());
+            retain_swept_paths(&paths.iter().cloned().collect(), &self.git_state);
         }
 
         let applied = if paths.is_empty() {
