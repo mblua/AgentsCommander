@@ -8,16 +8,18 @@ use super::PromptCase;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::filesystem::documents;
+
 pub(super) fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<CliError>> {
     reject_link_or_reparse(path, "prompt_suite_missing", None)?;
-    if !path.is_file() {
+    if !documents::prompt_suite_is_file(path) {
         return Err(vec![err_at_path(
             "prompt_suite_missing",
             format!("Prompt suite not found: {}", path.display()),
             path,
         )]);
     }
-    let bytes = std::fs::read(path).map_err(|e| {
+    let bytes = documents::read_prompt_suite(path).map_err(|e| {
         vec![err_at_path(
             "prompt_suite_missing",
             format!("Failed to read prompt suite: {}", e),
@@ -125,7 +127,7 @@ pub(super) fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<C
         )]);
     }
     Ok(ParsedPromptSuite {
-        path: std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
+        path: documents::canonical_prompt_suite_path(path),
         sha256,
         prompts,
     })

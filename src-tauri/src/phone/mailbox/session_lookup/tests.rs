@@ -175,7 +175,7 @@ async fn empty_live_lookup_never_resolves_routes() {
     let state = LookupState::new(false, true);
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        MailboxPoller::delivery_only().find_live_candidates(&state, FQN),
+        MailboxPoller::delivery_only_for_tests().find_live_candidates(&state, FQN),
     )
     .await
     .unwrap();
@@ -186,7 +186,7 @@ async fn empty_live_lookup_never_resolves_routes() {
 #[tokio::test]
 async fn active_and_all_only_observe_catalog_and_keep_exact_matches() {
     let state = LookupState::new(false, true);
-    let poller = MailboxPoller::delivery_only();
+    let poller = MailboxPoller::delivery_only_for_tests();
     assert_eq!(poller.find_active_session(&state, FQN).await, None);
     assert!(poller.find_all_sessions(&state, FQN).await.is_empty());
     assert_eq!(state.accesses(), ["sessions", "sessions"]);
@@ -213,7 +213,7 @@ async fn root_resolves_routes_before_catalog_read_even_when_empty() {
     assert_eq!(
         tokio::time::timeout(
             Duration::from_secs(5),
-            MailboxPoller::delivery_only().find_root_session_candidate(&state),
+            MailboxPoller::delivery_only_for_tests().find_root_session_candidate(&state),
         )
         .await
         .unwrap(),
@@ -226,7 +226,7 @@ async fn root_resolves_routes_before_catalog_read_even_when_empty() {
 async fn root_holds_catalog_during_presence_and_retains_exited_record() {
     let state = LookupState::new(true, false);
     let id = state.row("root", false, true, true).await;
-    let poller = MailboxPoller::delivery_only();
+    let poller = MailboxPoller::delivery_only_for_tests();
     assert_eq!(
         tokio::time::timeout(
             Duration::from_secs(5),
@@ -253,7 +253,7 @@ async fn live_releases_catalog_before_presence_and_keeps_sort_phantom_exited_rul
     let running = state.row("running", false, false, true).await;
     let (rows, had_match) = tokio::time::timeout(
         Duration::from_secs(5),
-        MailboxPoller::delivery_only().find_live_candidates(&state, FQN),
+        MailboxPoller::delivery_only_for_tests().find_live_candidates(&state, FQN),
     )
     .await
     .unwrap();
@@ -280,7 +280,7 @@ async fn scripted_presence_returns_before_routes_getter() {
     let state = LookupState::new(false, true);
     let id = state.row("hooked", false, false, false).await;
     let hooks = MailboxTestHooks::default();
-    let mut poller = MailboxPoller::delivery_only();
+    let mut poller = MailboxPoller::delivery_only_for_tests();
     poller.test_hooks = Some(hooks.clone());
     for present in [true, false] {
         hooks.pty_presence.lock().unwrap().insert(id, present);

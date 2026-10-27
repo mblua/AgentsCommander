@@ -63,7 +63,9 @@ pub struct DisplayEnvSnapshot {
 pub fn display_env_snapshot() -> DisplayEnvSnapshot {
     let default_socket_present = crate::config::environment::xdg_runtime_dir()
         .map(std::path::PathBuf::from)
-        .and_then(|dir| std::fs::metadata(dir.join("wayland-0")).ok())
+        .and_then(|dir| {
+            crate::filesystem::processes::wayland_socket_metadata(&dir.join("wayland-0")).ok()
+        })
         .map(|meta| {
             use std::os::unix::fs::FileTypeExt;
             meta.file_type().is_socket()

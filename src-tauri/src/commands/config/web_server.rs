@@ -794,3 +794,9 @@ impl crate::api::ApiState {
         Arc::new(app)
     }
 }
+
+impl crate::api::ApiMessageWarnings for tauri::AppHandle {
+    fn message_warnings(&self) -> Arc<crate::config::injected_messages::MessageWarnings> {
+        Arc::clone(&self.state::<crate::app_state::AppOwners>().messages)
+    }
+}

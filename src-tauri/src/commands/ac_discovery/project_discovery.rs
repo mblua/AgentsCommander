@@ -53,7 +53,7 @@ pub(crate) async fn discover_project_inner(
     coordinator_clocks: &crate::config::coordinator_clocks::CoordinatorClocksState,
 ) -> Result<AcDiscoveryResult, String> {
     let base = Path::new(path);
-    if !base.is_dir() {
+    if !crate::config::projects::configured_project_is_dir(base) {
         return Err(format!("Path is not a directory: {}", path));
     }
 

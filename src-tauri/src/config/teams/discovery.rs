@@ -35,7 +35,7 @@ pub(crate) fn discover_teams_from_project_paths(project_paths: &[String]) -> Vec
             repo_path
         );
         let base = Path::new(repo_path);
-        if !base.is_dir() {
+        if !crate::filesystem::projects::project_path_is_dir(base) {
             log::trace!(
                 "[teams] discover_teams: project_path skipped (not a directory) — path='{}'",
                 repo_path
@@ -45,17 +45,17 @@ pub(crate) fn discover_teams_from_project_paths(project_paths: &[String]) -> Vec
 
         // Check base and immediate children (same pattern as ac_discovery)
         let mut dirs_to_check = vec![base.to_path_buf()];
-        if let Ok(entries) = std::fs::read_dir(base) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
+        let _ = crate::filesystem::projects::visit_project_kind_children(base, |entry| {
+            if let Ok(p) = entry {
+                if crate::filesystem::projects::project_path_is_dir(&p) {
                     let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     if !name.starts_with('.') {
                         dirs_to_check.push(p);
                     }
                 }
             }
-        }
+            std::ops::ControlFlow::Continue(())
+        });
 
         for project_dir in dirs_to_check {
             let teams_before = teams.len();

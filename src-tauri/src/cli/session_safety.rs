@@ -64,7 +64,7 @@ pub(crate) fn ensure_no_live_sessions_under(root: &Path) -> Result<(), String> {
 }
 
 fn canonicalize_for_compare(path: &Path) -> PathBuf {
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let canonical = crate::filesystem::directories::canonical_session_guard_path(path);
     PathBuf::from(strip_long_prefix(&canonical.to_string_lossy()))
 }
 

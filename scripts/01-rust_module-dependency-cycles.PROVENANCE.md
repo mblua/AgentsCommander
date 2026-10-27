@@ -9,4 +9,5 @@
 
 Refresh procedure: re-copy the source file over this one, re-hash both with `sha256sum` and
 confirm they match, then update the version, date and SHA-256 above. Run `npm run check:arcs`;
-if the new version changes the output, regenerate `src-tauri/module-arcs.txt` in the same PR.
+the command validates and regenerates ignored `src-tauri/module-arcs.txt`. Never stage the record.
+CI publishes validated tested-tree bytes and a receipt; see `docs/testing/module-arcs.md`.

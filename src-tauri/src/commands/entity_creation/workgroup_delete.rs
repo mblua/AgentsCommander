@@ -227,7 +227,7 @@ pub(crate) fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, S
             if !dir_name_str.starts_with("repo-") {
                 continue;
             }
-            if !path.join(".git").exists() {
+            if !crate::repos::working_tree_marker_exists(&path.join(".git")) {
                 continue;
             }
 

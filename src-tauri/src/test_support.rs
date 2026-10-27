@@ -6,6 +6,13 @@
 //! so a gated module could not serve them. It is `#[doc(hidden)]` and must not
 //! be referenced from any production code path.
 
+type TestBuilder = tauri::Builder<tauri::Wry>;
+
+#[doc(hidden)]
+pub fn test_builder() -> TestBuilder {
+    test_builder_with_owners(crate::app_state::AppOwners::new())
+}
+
 /// A `tauri::Builder` that tests can `build()` off the main thread wherever the
 /// platform allows it.
 ///
@@ -16,13 +23,15 @@
 /// unavailable.
 #[cfg(any(windows, target_os = "linux"))]
 #[doc(hidden)]
-pub fn test_builder() -> tauri::Builder<tauri::Wry> {
-    crate::commands::session::selection_executor::install(tauri::Builder::default().any_thread())
+pub fn test_builder_with_owners(owners: crate::app_state::AppOwners) -> TestBuilder {
+    crate::commands::session::selection_executor::install(
+        tauri::Builder::default().any_thread().manage(owners),
+    )
 }
 
 /// macOS counterpart. See the note above.
 #[cfg(not(any(windows, target_os = "linux")))]
 #[doc(hidden)]
-pub fn test_builder() -> tauri::Builder<tauri::Wry> {
-    crate::commands::session::selection_executor::install(tauri::Builder::default())
+pub fn test_builder_with_owners(owners: crate::app_state::AppOwners) -> TestBuilder {
+    crate::commands::session::selection_executor::install(tauri::Builder::default().manage(owners))
 }

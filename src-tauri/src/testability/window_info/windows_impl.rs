@@ -152,5 +152,5 @@ fn process_path(pid: u32) -> Option<PathBuf> {
 }
 
 fn canonical_for_compare(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    crate::filesystem::directories::canonical_automation_executable(path)
 }

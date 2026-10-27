@@ -892,6 +892,7 @@ async fn a_degenerate_fitted_size_falls_back_instead_of_opening_a_zero_column_pt
 #[test]
 fn note_coordinator_create_on_app_seeds_and_clears_both_markers() {
     let app = tauri::test::mock_builder()
+        .manage(crate::app_state::AppOwners::new())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
     let clocks: crate::config::coordinator_clocks::CoordinatorClocksState =

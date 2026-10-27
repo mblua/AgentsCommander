@@ -166,9 +166,13 @@ pub(crate) struct ContextAlertMonitor {
 }
 
 impl ContextAlertMonitor {
-    pub(crate) fn start(app: tauri::AppHandle, cancellation: CancellationToken) -> Arc<Self> {
+    pub(crate) fn start(
+        app: tauri::AppHandle,
+        cancellation: CancellationToken,
+        messages: Arc<crate::config::injected_messages::MessageWarnings>,
+    ) -> Arc<Self> {
         Self::start_with_runtime(
-            Arc::new(ProductionContextAlertRuntime { app }),
+            Arc::new(ProductionContextAlertRuntime { app, messages }),
             Arc::new(ProductionAlertClock),
             cancellation,
         )

@@ -38,40 +38,8 @@ pub(super) async fn resolve_repo_root(
 }
 
 pub(super) async fn valid_repo_roots(settings: &AppSettings) -> Result<Vec<PathBuf>, String> {
-    let mut candidates = Vec::new();
-    if let Some(path) = &settings.project_path {
-        candidates.push(PathBuf::from(path));
-    }
-    candidates.extend(settings.project_paths.iter().map(PathBuf::from));
-
-    let mut roots = Vec::new();
-    for candidate in candidates {
-        let Ok(canonical) = canonicalize_existing_dir(&candidate).await else {
-            continue;
-        };
-        if is_valid_repo_root(&canonical).await.unwrap_or(false) {
-            push_unique_path(&mut roots, canonical.clone());
-        }
-        if let Ok(mut entries) = tokio::fs::read_dir(&canonical).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                let path = entry.path();
-                let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-                    continue;
-                };
-                if name.starts_with('.') || !name.starts_with("repo-") {
-                    continue;
-                }
-                let Ok(child) = canonicalize_existing_dir(&path).await else {
-                    continue;
-                };
-                if is_valid_repo_root(&child).await.unwrap_or(false) {
-                    push_unique_path(&mut roots, child);
-                }
-            }
-        }
-    }
-    roots.sort_by_key(|p| path_compare_key(p));
-    Ok(roots)
+    crate::repos::valid_spec_repo_roots(settings.project_path.as_deref(), &settings.project_paths)
+        .await
 }
 
 pub(super) async fn validate_existing_user_path(
@@ -149,16 +117,7 @@ pub(super) async fn internal_dirs(
 }
 
 pub(super) async fn is_valid_repo_root(path: &Path) -> Result<bool, String> {
-    if !path.is_dir() {
-        return Ok(false);
-    }
-    if is_link_or_reparse(path).await? {
-        return Ok(false);
-    }
-    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-        return Ok(false);
-    };
-    Ok(name.starts_with("repo-") || path.join(".git").exists())
+    crate::repos::is_valid_spec_repo_root(path).await
 }
 
 pub(super) async fn nearest_existing_parent(path: &Path) -> Result<PathBuf, String> {
@@ -306,6 +265,8 @@ pub(super) fn path_is_under(path: &Path, root: &Path) -> bool {
             .is_some()
 }
 
+// Retained for existing spec-path callers; discovery now owns a private equivalent.
+#[allow(dead_code)]
 pub(super) fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
     let key = path_compare_key(&path);
     if !paths.iter().any(|p| path_compare_key(p) == key) {

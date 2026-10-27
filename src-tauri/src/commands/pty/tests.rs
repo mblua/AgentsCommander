@@ -656,7 +656,9 @@ async fn capture_budget_fixture(
 
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
+    let owners = crate::AppOwners::new();
     let app = user_input_test_app(session_mgr.clone(), clocks.clone());
+    app.manage(owners.clone());
     let cwd = replica.to_string_lossy().into_owned();
     let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
     let session = {
@@ -674,7 +676,7 @@ async fn capture_budget_fixture(
         .await
         .expect("create coordinator session")
     };
-    crate::capture::state::forget_room_for_tests(&room);
+    crate::capture::state::forget_room_for_tests(&room, &owners.capture);
     (
         FreshIntentFixture {
             app,
@@ -688,9 +690,14 @@ async fn capture_budget_fixture(
 }
 
 /// Spend the room's whole budget, so a recharge is observable.
-fn exhaust_budget(room: &std::path::Path) {
-    crate::capture::state::spend_budget_for_tests(room, crate::capture::state::BUDGET_CAP);
-    assert_eq!(crate::capture::state::budget(room), 0);
+fn exhaust_budget(room: &std::path::Path, f: &FreshIntentFixture) {
+    let owners = f.app.state::<crate::AppOwners>();
+    crate::capture::state::spend_budget_for_tests(
+        room,
+        crate::capture::state::BUDGET_CAP,
+        &owners.capture,
+    );
+    assert_eq!(crate::capture::state::budget(room, &owners.capture), 0);
 }
 
 /// Test 17, assertion 1: substantive terminal input recharges to the cap.
@@ -698,7 +705,7 @@ fn exhaust_budget(room: &std::path::Path) {
 async fn substantive_terminal_input_recharges_the_budget() {
     let temp = tempfile::tempdir().expect("temp");
     let (f, room) = capture_budget_fixture(&temp).await;
-    exhaust_budget(&room);
+    exhaust_budget(&room, &f);
 
     note_user_message_to_session(
         f.app.handle(),
@@ -708,7 +715,7 @@ async fn substantive_terminal_input_recharges_the_budget() {
     .await;
 
     assert_eq!(
-        crate::capture::state::budget(&room),
+        crate::capture::state::budget(&room, &f.app.state::<crate::AppOwners>().capture),
         crate::capture::state::BUDGET_CAP
     );
 }
@@ -718,7 +725,7 @@ async fn substantive_terminal_input_recharges_the_budget() {
 async fn substantive_web_input_does_not_recharge_the_budget() {
     let temp = tempfile::tempdir().expect("temp");
     let (f, room) = capture_budget_fixture(&temp).await;
-    exhaust_budget(&room);
+    exhaust_budget(&room, &f);
 
     note_user_message_to_session(
         f.app.handle(),
@@ -727,7 +734,10 @@ async fn substantive_web_input_does_not_recharge_the_budget() {
     )
     .await;
 
-    assert_eq!(crate::capture::state::budget(&room), 0);
+    assert_eq!(
+        crate::capture::state::budget(&room, &f.app.state::<crate::AppOwners>().capture),
+        0
+    );
 }
 
 /// Test 17, assertion 3: inbound Telegram, which arrives as a complete
@@ -737,7 +747,7 @@ async fn substantive_web_input_does_not_recharge_the_budget() {
 async fn a_complete_message_does_not_recharge_the_budget() {
     let temp = tempfile::tempdir().expect("temp");
     let (f, room) = capture_budget_fixture(&temp).await;
-    exhaust_budget(&room);
+    exhaust_budget(&room, &f);
 
     note_user_message_to_session(
         f.app.handle(),
@@ -746,7 +756,10 @@ async fn a_complete_message_does_not_recharge_the_budget() {
     )
     .await;
 
-    assert_eq!(crate::capture::state::budget(&room), 0);
+    assert_eq!(
+        crate::capture::state::budget(&room, &f.app.state::<crate::AppOwners>().capture),
+        0
+    );
 }
 
 /// Test 17, assertion 4: a lone control key on the terminal is not
@@ -755,7 +768,7 @@ async fn a_complete_message_does_not_recharge_the_budget() {
 async fn a_non_substantive_terminal_write_does_not_recharge_the_budget() {
     let temp = tempfile::tempdir().expect("temp");
     let (f, room) = capture_budget_fixture(&temp).await;
-    exhaust_budget(&room);
+    exhaust_budget(&room, &f);
 
     for chunk in [b"\x1b[A".as_slice(), b"\r".as_slice(), b"\x03".as_slice()] {
         note_user_message_to_session(
@@ -764,7 +777,11 @@ async fn a_non_substantive_terminal_write_does_not_recharge_the_budget() {
             UserInputSource::Terminal(chunk),
         )
         .await;
-        assert_eq!(crate::capture::state::budget(&room), 0, "chunk={chunk:?}");
+        assert_eq!(
+            crate::capture::state::budget(&room, &f.app.state::<crate::AppOwners>().capture),
+            0,
+            "chunk={chunk:?}"
+        );
     }
 }
 
@@ -781,7 +798,7 @@ fn substantive_terminal_input_progresses_while_the_room_lock_is_held() {
         .expect("current-thread runtime");
     runtime.block_on(async {
         let (f, room) = capture_budget_fixture(&temp).await;
-        exhaust_budget(&room);
+        exhaust_budget(&room, &f);
 
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
@@ -814,7 +831,7 @@ fn substantive_terminal_input_progresses_while_the_room_lock_is_held() {
         holder.join().expect("holder");
 
         assert_eq!(
-            crate::capture::state::budget(&room),
+            crate::capture::state::budget(&room, &f.app.state::<crate::AppOwners>().capture),
             crate::capture::state::BUDGET_CAP
         );
         assert!(

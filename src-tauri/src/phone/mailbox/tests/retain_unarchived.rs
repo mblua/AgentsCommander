@@ -183,7 +183,7 @@ async fn resolve_repo_path_filters_archived_session_dirs() {
         .await
         .expect("create archived session");
     }
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
 
     let resolved = poller
         .resolve_repo_path(CANONICAL_WAKE_TO, &app_handle)
@@ -224,7 +224,7 @@ async fn resolve_wg_path_from_sessions_filters_archived_session_dirs() {
         .await
         .expect("create archived sibling session");
     }
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
 
     let resolved = poller
         .resolve_wg_path_from_sessions(&app_handle, LOCAL_WAKE_TO)

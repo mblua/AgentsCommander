@@ -56,7 +56,7 @@ async fn both_injection_sites_defer_silently_and_report_real_pty_failures() {
         assert!(menu_guard.is_blocked(session_id));
     }
 
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
 
     // Leg A — site A (logical command branch) defers silently.
     let mut defer_a = logical_command_message("clear", "");
@@ -196,7 +196,7 @@ async fn assert_wired_clear_and_compact_submission(clear_shell: &str, compact_sh
     register_mock_pty_route(&app, compact_id);
     let clear_message = logical_command_message("clear", "");
     let compact_message = logical_command_message("compact", "");
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     let started = std::time::Instant::now();
 
     let (clear_result, compact_result) = tokio::join!(
@@ -316,7 +316,7 @@ async fn remote_pi_compact_existing_session_has_no_actuation() {
         captured.lock().unwrap().push(event.payload().to_string());
     });
     let message = logical_command_message("compact", "must not follow up");
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
 
     let error = poller
         .inject_into_pty(

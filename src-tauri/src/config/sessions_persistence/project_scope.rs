@@ -29,7 +29,7 @@ pub(crate) fn normalize_call_count() -> usize {
 pub(super) fn normalize_for_project_compare(path: &Path) -> String {
     #[cfg(test)]
     NORMALIZE_CALLS.with(|calls| calls.set(calls.get() + 1));
-    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let path = crate::filesystem::directories::canonical_session_project_path(path);
     let mut s = strip_long_prefix_str(&path.to_string_lossy()).replace('\\', "/");
     while s.ends_with('/') && s.len() > 1 {
         s.pop();
@@ -320,7 +320,7 @@ pub(crate) fn validate_session_creation_cwd(
         ));
     }
     // 4. Registered but the directory does not exist.
-    if !Path::new(cwd).exists() {
+    if !crate::filesystem::directories::persisted_session_cwd_exists(Path::new(cwd)) {
         return Err(format!(
             "sessionCreateBlocked: cwd '{}' does not exist on disk",
             cwd

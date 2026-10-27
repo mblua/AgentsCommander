@@ -10,6 +10,7 @@ use super::notice::{
 use super::poller::MailboxPoller;
 #[cfg(test)]
 use super::pty_claim::MailboxTestEvent;
+use super::self_handoff::failure::{SelfHandoffFailure, SelfHandoffOutcome, CONTINUATION_FAILURE};
 use super::settle::{
     inject_handoff_prompt_with_archive, resolve_wg_path_from_session_dirs, self_clear_gate_advance,
     SelfClearBoundary, SelfClearGateAction, SelfClearGateState,
@@ -61,7 +62,8 @@ impl MailboxPoller {
         mut restart: Restart,
         mut inject: Inject,
         mut note_boundary: NoteBoundary,
-    ) where
+    ) -> SelfHandoffOutcome
+    where
         SessionState: FnMut(Uuid) -> SessionFut + Send + 'static,
         SessionFut: std::future::Future<Output = (bool, bool)> + Send,
         Persist: FnMut(PathBuf, String, String) -> PersistFut + Send + 'static,
@@ -73,11 +75,14 @@ impl MailboxPoller {
         NoteBoundary: FnMut(Uuid, SelfClearBoundary) -> NoteFut + Send + 'static,
         NoteFut: std::future::Future<Output = ()> + Send,
     {
+        let attempt = Uuid::new_v4();
+        let mut continuation = false;
+        let mut current = Some(original_session_id);
         let mut state = SelfClearGateState::new(std::time::Instant::now());
         let mut session_id = original_session_id;
         let mut new_alias_id: Option<Uuid> = None;
 
-        loop {
+        let reason = loop {
             tokio::time::sleep(poll).await;
             let (present, waiting) = session_state(session_id).await;
             let (next, action) = self_clear_gate_advance(
@@ -119,7 +124,7 @@ impl MailboxPoller {
                                 session_id,
                                 error
                             );
-                                break;
+                                break Some(error.to_string());
                             }
                         };
                     if let Err(e) =
@@ -131,7 +136,7 @@ impl MailboxPoller {
                             original_session_id,
                             e
                         );
-                        break;
+                        break Some(e);
                     }
                     let restarted =
                         restart(session_id, target_agent.clone(), target_profile.clone()).await;
@@ -146,7 +151,8 @@ impl MailboxPoller {
                                     id,
                                     e
                                 );
-                                break;
+                                current = None;
+                                break Some(e.to_string());
                             }
                         },
                         Err(e) => {
@@ -156,7 +162,7 @@ impl MailboxPoller {
                                 original_session_id,
                                 e
                             );
-                            break;
+                            break Some(e);
                         }
                     };
                     {
@@ -172,6 +178,8 @@ impl MailboxPoller {
                         }
                     }
                     session_id = new_id;
+                    current = Some(new_id);
+                    continuation = true;
                     continue;
                 }
                 SelfClearGateAction::InjectHandoff => {
@@ -201,7 +209,7 @@ impl MailboxPoller {
                         // (#756) switch handoff prompt is post-boundary content.
                         note_boundary(session_id, SelfClearBoundary::ContentInjected).await;
                     }
-                    break;
+                    break (!injected).then(|| CONTINUATION_FAILURE.to_string());
                 }
                 SelfClearGateAction::Abandon(reason) => {
                     log::warn!(
@@ -212,15 +220,29 @@ impl MailboxPoller {
                         session_id,
                         reason
                     );
-                    break;
+                    break Some(reason.to_string());
                 }
             }
-        }
+        };
 
         let mut set = pending.0.lock().unwrap_or_else(|e| e.into_inner());
         set.remove(&original_session_id);
         if let Some(new_id) = new_alias_id {
             set.remove(&new_id);
+        }
+        drop(set);
+        match reason {
+            None => SelfHandoffOutcome::Completed,
+            Some(reason) => SelfHandoffOutcome::Failed(SelfHandoffFailure {
+                action: flavor.action,
+                attempt,
+                original: original_session_id,
+                current,
+                root: cwd,
+                continuation,
+                reason,
+                forgotten: forgotten_summary.is_some(),
+            }),
         }
     }
 
@@ -671,7 +693,7 @@ impl MailboxPoller {
 
                 for rp in &project_paths {
                     let base = std::path::Path::new(rp);
-                    if !base.is_dir() {
+                    if !crate::filesystem::projects::project_path_is_dir(base) {
                         continue;
                     }
                     let base_name = base.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -680,22 +702,24 @@ impl MailboxPoller {
                     if project_matches(base_name) {
                         dirs_to_check.push(base.to_path_buf());
                     }
-                    if let Ok(entries) = std::fs::read_dir(base) {
-                        for entry in entries.flatten() {
-                            let p = entry.path();
-                            if !p.is_dir() {
-                                continue;
+                    let _ =
+                        crate::filesystem::projects::visit_project_kind_children(base, |item| {
+                            let Ok(p) = item else {
+                                return std::ops::ControlFlow::Continue(());
+                            };
+                            if !crate::filesystem::projects::project_path_is_dir(&p) {
+                                return std::ops::ControlFlow::Continue(());
                             }
                             let dir_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                             if dir_name.starts_with('.') {
-                                continue;
+                                return std::ops::ControlFlow::Continue(());
                             }
                             if !project_matches(dir_name) {
-                                continue;
+                                return std::ops::ControlFlow::Continue(());
                             }
                             dirs_to_check.push(p);
-                        }
-                    }
+                            std::ops::ControlFlow::Continue(())
+                        });
 
                     for dir in dirs_to_check {
                         let Some(ac_root) = crate::config::ac_root::existing_ac_root(&dir) else {

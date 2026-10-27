@@ -43,12 +43,7 @@ pub(crate) fn resolve_codex_sessions_root_at(
     _args: &[String],
     _cwd: &str,
 ) -> Option<PathBuf> {
-    let root = home.join(".codex").join("sessions");
-    if root.is_dir() {
-        Some(root)
-    } else {
-        None
-    }
+    crate::telegram::existing_codex_sessions_root(home)
 }
 
 /// Canonicalize a path-string for cwd comparison against Codex's

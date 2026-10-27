@@ -65,7 +65,7 @@ pub fn resolve_plan(
         .or_else(|| dirs::home_dir().map(|h| h.join(source.host_dir)))?;
 
     let src = host_dir.join(source.file);
-    if !src.is_file() {
+    if !crate::filesystem::directories::credential_source_is_file(&src) {
         log::info!(
             "[container-cred] no host credential at {}; container will start without host login",
             src.display()

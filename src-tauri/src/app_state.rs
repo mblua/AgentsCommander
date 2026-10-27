@@ -20,3 +20,42 @@ pub type ConfigSeedLockState = Arc<tokio::sync::Mutex<()>>;
 /// whether `session_ids.is_empty()` means "no live session for this FQN" or
 /// "restore loop hasn't reached this session yet — retry briefly."
 pub struct RestoreInProgress(pub AtomicBool);
+
+/// Process-lived owners shared by every runtime and explicit component constructor.
+#[derive(Clone)]
+pub struct AppOwners {
+    pub startup_summary: Arc<crate::startup::StartupMigrationSummary>,
+    pub response_effects: Arc<crate::session::selection::response_close::ResponseEffectRegistry>,
+    pub coordinator_order: Arc<crate::config::coordinator_clocks::CoordinatorCreateOrder>,
+    pub spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>,
+    pub messages: Arc<crate::config::injected_messages::MessageWarnings>,
+    pub remote: Arc<crate::pty::remote_watcher::RemoteActivityState>,
+    pub git: Arc<crate::pty::git_watcher::GitState>,
+    pub activity: Arc<crate::config::activity_log::ActivityCoalescer>,
+    pub capture: Arc<crate::capture::state::CaptureState>,
+    #[cfg(windows)]
+    pub git_guard: Arc<crate::pty::local_backend::GitGuardTempSequence>,
+}
+
+#[allow(clippy::new_without_default)]
+impl AppOwners {
+    pub fn new() -> Self {
+        Self {
+            startup_summary: Arc::new(crate::startup::StartupMigrationSummary::new()),
+            response_effects: Arc::new(
+                crate::session::selection::response_close::ResponseEffectRegistry::new(),
+            ),
+            coordinator_order: Arc::new(
+                crate::config::coordinator_clocks::CoordinatorCreateOrder::new(),
+            ),
+            spawn: Arc::new(crate::pty::spawn_diagnostics::SpawnRegistry::new()),
+            messages: Arc::new(crate::config::injected_messages::MessageWarnings::new()),
+            remote: Arc::new(crate::pty::remote_watcher::RemoteActivityState::new()),
+            git: Arc::new(crate::pty::git_watcher::GitState::new()),
+            activity: Arc::new(crate::config::activity_log::ActivityCoalescer::new()),
+            capture: Arc::new(crate::capture::state::CaptureState::new()),
+            #[cfg(windows)]
+            git_guard: Arc::new(crate::pty::local_backend::GitGuardTempSequence::new()),
+        }
+    }
+}

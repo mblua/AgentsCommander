@@ -300,21 +300,34 @@ type LastIdleAt = HashMap<Uuid, (Instant, DateTime<Utc>)>;
 /// annotation and cannot lose, invent, shorten or lengthen a millisecond of
 /// busy time. Taken only while the manager's write guard is held, so at most one
 /// thread is ever inside it.
-static COALESCER: OnceLock<Mutex<LastIdleAt>> = OnceLock::new();
+pub struct ActivityCoalescer {
+    last_idle_at: OnceLock<Mutex<LastIdleAt>>,
+}
+
+#[allow(clippy::new_without_default)]
+impl ActivityCoalescer {
+    pub fn new() -> Self {
+        Self {
+            last_idle_at: OnceLock::new(),
+        }
+    }
+}
 
 fn writer_lock() -> &'static Mutex<()> {
     WRITER.get_or_init(|| Mutex::new(()))
 }
 
-fn coalescer() -> &'static Mutex<LastIdleAt> {
-    COALESCER.get_or_init(|| Mutex::new(HashMap::new()))
+fn coalescer(owner: &ActivityCoalescer) -> &Mutex<LastIdleAt> {
+    owner
+        .last_idle_at
+        .get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Locks the coalescer, recovering from poison, and drops entries older than the
 /// window on the way in so the map stays bounded even if pruning never had
 /// another reason to run.
-fn locked_coalescer(now: Instant) -> MutexGuard<'static, LastIdleAt> {
-    let mut guard = coalescer()
+fn locked_coalescer(now: Instant, owner: &ActivityCoalescer) -> MutexGuard<'_, LastIdleAt> {
+    let mut guard = coalescer(owner)
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     guard.retain(|_, (stamped, _)| {
@@ -355,11 +368,16 @@ fn metrics_declaration() -> MetricsDeclaration {
 /// `SessionManager::state`'s write guard, and `log::*` reaches `logging.rs`,
 /// whose rotation holds a `Mutex<File>` and can rename a 50 MiB file. The caller
 /// logs after releasing.
-pub fn build_busy(id: Uuid, session: &Session, reason: BusyReason) -> ActivityRecord {
+pub fn build_busy(
+    id: Uuid,
+    session: &Session,
+    reason: BusyReason,
+    owner: &ActivityCoalescer,
+) -> ActivityRecord {
     let now_utc = Utc::now();
     let now_instant = Instant::now();
     let gap_ms = {
-        let previous = locked_coalescer(now_instant);
+        let previous = locked_coalescer(now_instant, owner);
         previous.get(&id).and_then(|(last_instant, last_utc)| {
             // Both clock domains must agree the gap is inside the window, so a
             // wall-clock jump or a suspend can only suppress a continuation.
@@ -390,10 +408,15 @@ pub fn build_busy(id: Uuid, session: &Session, reason: BusyReason) -> ActivityRe
 /// opening edge can annotate its block.
 ///
 /// Contains no `log::*` call; see [`build_busy`].
-pub fn build_idle(id: Uuid, session: &Session, reason: IdleReason) -> ActivityRecord {
+pub fn build_idle(
+    id: Uuid,
+    session: &Session,
+    reason: IdleReason,
+    owner: &ActivityCoalescer,
+) -> ActivityRecord {
     let now_utc = Utc::now();
     let now_instant = Instant::now();
-    locked_coalescer(now_instant).insert(id, (now_instant, now_utc));
+    locked_coalescer(now_instant, owner).insert(id, (now_instant, now_utc));
     ActivityRecord {
         v: SCHEMA_VERSION,
         at: stamp(now_utc),

@@ -775,7 +775,14 @@ where
     let legacy_check = if peer_boundary {
         Some(pre_write_check)
     } else {
-        pre_write_check(session.as_ref(), None)?;
+        // Internal notices must not admit a stale row after waiting for the writer.
+        // Refresh without retaining a shared state guard during caller I/O.
+        let current = if matches!(hold_policy, HoldPolicy::InternalNotice) {
+            manager.get_session(session_id).await
+        } else {
+            session
+        };
+        pre_write_check(current.as_ref(), None)?;
         None
     };
 

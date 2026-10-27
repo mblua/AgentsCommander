@@ -325,6 +325,7 @@ fn start_server_from(
         }
     };
 
+    let messages = app_handle.message_warnings();
     let state = ApiState {
         #[cfg(any(target_os = "windows", test))]
         window_screenshot_limiter: Arc::new(WindowScreenshotLimiter::new()),
@@ -345,6 +346,7 @@ fn start_server_from(
             app_handle.clone(),
             shutdown.clone(),
             dispatcher::DispatcherConfig::default(),
+            messages,
         );
         let (listener, addr) = match source {
             ApiBindSource::Address { bind, port } => {
@@ -480,3 +482,7 @@ async fn wait_for_dispatcher(
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) trait ApiMessageWarnings {
+    fn message_warnings(&self) -> Arc<crate::config::injected_messages::MessageWarnings>;
+}

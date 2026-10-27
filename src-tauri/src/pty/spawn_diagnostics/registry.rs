@@ -13,10 +13,14 @@ use super::{
 
 /// Count the spawns that happened in the window BEFORE this one, then record this
 /// attempt. Call once per spawn, at the top of the spawn path.
-pub fn note_spawn_attempt(cli: Option<CodingAgentKind>, thresholds: Thresholds) -> SpawnWindow {
+pub fn note_spawn_attempt(
+    cli: Option<CodingAgentKind>,
+    thresholds: Thresholds,
+    owner: &super::SpawnRegistry,
+) -> SpawnWindow {
     let window = thresholds.concurrency_window;
     let now = Instant::now();
-    let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
+    let mut registry = registry(owner).lock().unwrap_or_else(|e| e.into_inner());
 
     while let Some((at, _)) = registry.recent.front() {
         if now.duration_since(*at) > window {
@@ -49,10 +53,10 @@ pub fn note_spawn_attempt(cli: Option<CodingAgentKind>, thresholds: Thresholds) 
 }
 
 /// Register a spawned child and emit its spawn record.
-pub fn register(init: SpawnRecordInit) -> Arc<SpawnRecord> {
+pub fn register(init: SpawnRecordInit, owner: &super::SpawnRegistry) -> Arc<SpawnRecord> {
     let record = Arc::new(SpawnRecord::new(init));
     record.log_spawn();
-    registry()
+    registry(owner)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .records
@@ -70,8 +74,9 @@ pub fn mark_ac_stop(
     session_id: Uuid,
     source: &str,
     pre_stop: Option<ChildLiveness>,
+    owner: &super::SpawnRegistry,
 ) -> Option<Arc<SpawnRecord>> {
-    let record = registry()
+    let record = registry(owner)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .records
@@ -81,8 +86,8 @@ pub fn mark_ac_stop(
     Some(record)
 }
 
-pub fn forget(session_id: Uuid) {
-    registry()
+pub fn forget(session_id: Uuid, owner: &super::SpawnRegistry) {
+    registry(owner)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .records
@@ -93,8 +98,8 @@ pub fn forget(session_id: Uuid) {
 /// postcondition seam (Finding E): lets a test assert that a rejected spawn
 /// never recorded launch provenance, and lets the Windows integration
 /// regression read the exact adapted argv and awaited child exit.
-pub fn record_for(session_id: Uuid) -> Option<Arc<SpawnRecord>> {
-    registry()
+pub fn record_for(session_id: Uuid, owner: &super::SpawnRegistry) -> Option<Arc<SpawnRecord>> {
+    registry(owner)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .records

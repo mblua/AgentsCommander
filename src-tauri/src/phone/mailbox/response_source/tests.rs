@@ -56,7 +56,7 @@ async fn admitted(poller: &MailboxPoller, state: &AdmissionState) -> ResponseWak
 #[tokio::test]
 async fn prepare_rejects_missing_work_without_observations() {
     let state = AdmissionState::default();
-    assert!(MailboxPoller::delivery_only()
+    assert!(MailboxPoller::delivery_only_for_tests()
         .prepare_response_request(&state, &message(), Uuid::new_v4(), false, None)
         .await
         .is_none());
@@ -69,7 +69,7 @@ async fn prepare_rejects_excluded_classes_rooms_and_tokens_before_settings() {
         tracker: Some(ResponseCloseState::default()),
         ..Default::default()
     };
-    let poller = MailboxPoller::delivery_only();
+    let poller = MailboxPoller::delivery_only_for_tests();
     let work = admitted(&poller, &state).await;
     for case in 0..7 {
         let mut msg = message();
@@ -97,7 +97,7 @@ async fn valid_prepare_reaches_settings_after_rejection_checks() {
         tracker: Some(ResponseCloseState::default()),
         ..Default::default()
     };
-    let poller = MailboxPoller::delivery_only();
+    let poller = MailboxPoller::delivery_only_for_tests();
     let work = admitted(&poller, &state).await;
     let msg = message();
     let result = std::panic::AssertUnwindSafe(poller.prepare_response_request(
@@ -116,7 +116,7 @@ async fn valid_prepare_reaches_settings_after_rejection_checks() {
 #[tokio::test]
 async fn absent_tracker_stops_admission_without_other_observations() {
     let state = AdmissionState::default();
-    assert!(MailboxPoller::delivery_only()
+    assert!(MailboxPoller::delivery_only_for_tests()
         .admit_response_source(&state, Path::new("source.json"), &message(), true, "body")
         .await
         .is_none());
@@ -130,7 +130,7 @@ async fn unauthenticated_admission_and_identical_replay_only_observe_tracker() {
         tracker: Some(tracker.clone()),
         ..Default::default()
     };
-    let poller = MailboxPoller::delivery_only();
+    let poller = MailboxPoller::delivery_only_for_tests();
     let path = Path::new("source.json");
     let msg = message();
     let first = poller
@@ -163,7 +163,7 @@ async fn conflicting_replays_fail_closed_before_other_observations() {
             tracker: Some(tracker.clone()),
             ..Default::default()
         };
-        let poller = MailboxPoller::delivery_only();
+        let poller = MailboxPoller::delivery_only_for_tests();
         let path = Path::new("source.json");
         let mut msg = message();
         let original = poller
@@ -226,7 +226,7 @@ impl ResponseCompletionState for CompletionState {
 #[tokio::test]
 async fn missing_completion_entry_does_not_clone_or_observe_state() {
     let state = CompletionState::default();
-    MailboxPoller::delivery_only()
+    MailboxPoller::delivery_only_for_tests()
         .complete_response_delivery(&state, Path::new("missing.json"))
         .await;
     assert_eq!(state.clones.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -235,7 +235,7 @@ async fn missing_completion_entry_does_not_clone_or_observe_state() {
 #[tokio::test]
 async fn missing_completion_attempt_returns_before_observations() {
     let state = CompletionState::default();
-    let poller = MailboxPoller::delivery_only();
+    let poller = MailboxPoller::delivery_only_for_tests();
     let admission = AdmissionState {
         tracker: Some(ResponseCloseState::default()),
         ..Default::default()
@@ -249,7 +249,7 @@ async fn missing_completion_attempt_returns_before_observations() {
 #[tokio::test]
 async fn missing_completion_candidate_returns_before_observations() {
     let state = CompletionState::default();
-    let poller = MailboxPoller::delivery_only();
+    let poller = MailboxPoller::delivery_only_for_tests();
     let admission = AdmissionState {
         tracker: Some(ResponseCloseState::default()),
         ..Default::default()
@@ -274,7 +274,7 @@ async fn ordinary_completion_clones_once_settles_and_removes_only_its_origin() {
         tracker: Some(tracker.clone()),
         ..Default::default()
     };
-    let poller = MailboxPoller::delivery_only();
+    let poller = MailboxPoller::delivery_only_for_tests();
     let work = admitted(&poller, &admission).await;
     let other_path = Path::new("other.json");
     let other = poller

@@ -460,7 +460,10 @@ impl NativeFixture {
             PathBuf::from(configured)
         );
         let cwd = tempfile::tempdir().unwrap();
-        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let owners = crate::app_state::AppOwners::new();
+        let manager = Arc::new(tokio::sync::RwLock::new(
+            SessionManager::with_activity_coalescer(owners.activity.clone()),
+        ));
         let source = if archived {
             manager
                 .read()
@@ -524,6 +527,7 @@ impl NativeFixture {
             .unwrap(),
         );
         let app = tauri::test::mock_builder()
+            .manage(owners)
             .manage(manager.clone())
             .manage(pty.clone())
             .manage(coordinator.clone())

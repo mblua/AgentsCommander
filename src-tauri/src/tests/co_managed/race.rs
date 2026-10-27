@@ -34,7 +34,10 @@ async fn a_newer_candidate_survives_the_secret_path_commit() {
     let (slot, _first) = install_candidate(&registry, session_id, "leak AKIAIOSFODNN7EXAMPLE one");
     let first_seq = slot.snapshot().seq;
     let hooks = Arc::new(CoManagedTestHooks::default());
-    let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+    let (handle, _rx) = CoManagedSupervisorHandle::with_capture_state_and_test_hooks(
+        fixture.owners.capture.clone(),
+        Arc::clone(&hooks),
+    );
     let next = co_managed_candidate(&session_id.to_string(), "leak AKIAIOSFODNN7EXAMPLE two");
     let offered = arm_post_commit_offer(&hooks, &slot, next);
 
@@ -81,7 +84,10 @@ async fn a_newer_candidate_survives_the_automatic_path_commit() {
     let (slot, _first) = install_candidate(&registry, session_id, "candidate text alpha");
     let first_seq = slot.snapshot().seq;
     let hooks = Arc::new(CoManagedTestHooks::default());
-    let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+    let (handle, _rx) = CoManagedSupervisorHandle::with_capture_state_and_test_hooks(
+        fixture.owners.capture.clone(),
+        Arc::clone(&hooks),
+    );
     let next = co_managed_candidate(&session_id.to_string(), "candidate text bravo");
     let offered = arm_post_commit_offer(&hooks, &slot, next);
 
@@ -138,7 +144,10 @@ async fn a_newer_candidate_survives_the_budget_fallback_commit() {
     let (slot, _first) = install_candidate(&registry, session_id, "candidate text alpha");
     let first_seq = slot.snapshot().seq;
     let hooks = Arc::new(CoManagedTestHooks::default());
-    let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+    let (handle, _rx) = CoManagedSupervisorHandle::with_capture_state_and_test_hooks(
+        fixture.owners.capture.clone(),
+        Arc::clone(&hooks),
+    );
     let next = co_managed_candidate(&session_id.to_string(), "candidate text bravo");
     let offered = arm_post_commit_offer(&hooks, &slot, next);
 
@@ -192,7 +201,10 @@ async fn without_a_race_the_automatic_path_consumes_the_candidate() {
     let (slot, _first) = install_candidate(&registry, session_id, "candidate text alpha");
     let first_seq = slot.snapshot().seq;
     let hooks = Arc::new(CoManagedTestHooks::default());
-    let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+    let (handle, _rx) = CoManagedSupervisorHandle::with_capture_state_and_test_hooks(
+        fixture.owners.capture.clone(),
+        Arc::clone(&hooks),
+    );
 
     let trigger = CoManagedTrigger::IdleEdge(session_id);
     super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
@@ -248,7 +260,8 @@ async fn the_idle_edge_never_emits_a_bare_idle_for_an_armed_session() {
     .await;
     install_candidate(&registry, session_id, "candidate text");
     let events = capture_events(&app);
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
     handle.armed.arm(&session_id.to_string());
 
     let comanaged = emit_session_idle_edge(app.handle(), &handle.armed, Some(&handle), session_id);
@@ -288,7 +301,8 @@ async fn enabling_the_flag_alone_emits_nothing_and_a_cycle_emits_true_then_false
     .await;
     install_candidate(&registry, session_id, "candidate text");
     let events = capture_events(&app);
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(disabled.owners.capture.clone());
     super::handle_co_managed_trigger(
         app.handle(),
         &handle,
@@ -320,7 +334,8 @@ async fn enabling_the_flag_alone_emits_nothing_and_a_cycle_emits_true_then_false
     .await;
     install_candidate(&registry2, session2, "candidate text");
     let events2 = capture_events(&app2);
-    let (handle2, _rx2) = CoManagedSupervisorHandle::new();
+    let (handle2, _rx2) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
     super::handle_co_managed_trigger(
         app2.handle(),
         &handle2,
@@ -362,7 +377,8 @@ async fn the_state_event_is_emitted_with_emit_not_emit_to() {
     .await;
     install_candidate(&registry, session_id, "candidate text");
     let events = capture_events(&app);
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
 
     super::handle_co_managed_trigger(
         app.handle(),
@@ -406,7 +422,10 @@ async fn contention_terminates_after_three_attempts_and_keeps_the_flag_armed() {
     let seq_before = slot.seq();
     let events = capture_events(&app);
     let hooks = Arc::new(CoManagedTestHooks::default());
-    let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+    let (handle, _rx) = CoManagedSupervisorHandle::with_capture_state_and_test_hooks(
+        fixture.owners.capture.clone(),
+        Arc::clone(&hooks),
+    );
 
     // Hold the advisory lock for the whole cycle.
     let lock_path = crate::config::co_managed::lock_path(&fixture.room_root);
@@ -482,7 +501,10 @@ async fn losing_readiness_clears_the_armed_flag_for_a_contended_candidate() {
     let seq_before = slot.seq();
     let events = capture_events(&app);
     let hooks = Arc::new(CoManagedTestHooks::default());
-    let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+    let (handle, _rx) = CoManagedSupervisorHandle::with_capture_state_and_test_hooks(
+        fixture.owners.capture.clone(),
+        Arc::clone(&hooks),
+    );
 
     // Hold the advisory lock so the first trigger abstains on contention.
     let lock_path = crate::config::co_managed::lock_path(&fixture.room_root);
@@ -560,7 +582,8 @@ async fn root_destination_derives_the_project_from_the_room() {
     )
     .await;
     install_candidate(&registry, session_id, "candidate text");
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
 
     super::handle_co_managed_trigger(
         app.handle(),
@@ -590,7 +613,11 @@ async fn the_blocking_commit_does_not_park_a_current_thread_worker() {
     let session_id = uuid::Uuid::new_v4();
     let (slot, record) = install_candidate(&registry, session_id, "candidate text");
     let expected_seq = slot.seq();
-    let expected_key = crate::capture::state::consumption_key(&fixture.room_root, record.as_ref());
+    let expected_key = crate::capture::state::consumption_key(
+        &fixture.room_root,
+        record.as_ref(),
+        &fixture.owners.capture,
+    );
     // The holder signals the acquired lock before the commit starts, so the
     // commit cannot win the race and find it free, and it holds the lock
     // until the async worker proves progress instead of for a fixed sleep,
@@ -653,6 +680,7 @@ async fn the_blocking_commit_does_not_park_a_current_thread_worker() {
         expected_seq,
         expected_key,
         pre,
+        fixture.owners.capture.clone(),
     )
     .await;
     let ticks_when_commit_returned = ticks.load(Ordering::SeqCst);
@@ -698,7 +726,8 @@ async fn the_late_poll_residual_paints_waiting_then_red() {
     )
     .await;
     let events = capture_events(&app);
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
 
     // The idle edge fires with no candidate: false.
     emit_session_idle_edge(app.handle(), &handle.armed, Some(&handle), session_id);
@@ -754,7 +783,8 @@ fn route_co_managed_wake_requires_an_authoritative_room() {
     let temp = tempfile::TempDir::new().unwrap();
     let not_a_room = temp.path().join("not-a-room");
     std::fs::create_dir_all(&not_a_room).unwrap();
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_test_hooks(Arc::new(CoManagedTestHooks::default()));
     let error = route_co_managed_wake(
         &handle,
         &not_a_room,
@@ -783,7 +813,8 @@ fn issue_3081_co_managed_post_flush_snapshot_and_queue_failures() {
             )
             .unwrap();
         }
-        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        let (handle, _rx) =
+            CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
         let warning = route_co_managed_wake(
             &handle,
             &fixture.room_root,
@@ -822,7 +853,8 @@ fn issue_3081_co_managed_post_flush_snapshot_and_queue_failures() {
     let queue = crate::config::co_managed::queue_dir(&fixture.room_root);
     std::fs::create_dir_all(queue.parent().unwrap()).unwrap();
     std::fs::write(queue, b"blocked queue").unwrap();
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
     let error = route_co_managed_wake(
         &handle,
         &fixture.room_root,
@@ -859,7 +891,8 @@ async fn issue_3081_co_managed_archive_failure_surfaces_warning_and_keeps_outcom
     )
     .await;
     install_candidate(&registry, session_id, "candidate text");
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
     super::handle_co_managed_trigger(
         app.handle(),
         &handle,
