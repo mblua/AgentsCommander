@@ -1,8 +1,5 @@
 use super::creation_trace::{CreationTrace, Origin, Outcome, Reason, Stage};
-use super::matrix_copy::{
-    cleanup_owned_copy_artifacts, copy_agent_matrix_strict_with_hooks, write_owned_team_file,
-    MatrixCopyHooks, MatrixCopyKind, MatrixCopyStage, OwnedCopyArtifacts, OwnedCopyEntry,
-};
+use super::matrix_copy::MatrixCopyHooks;
 use super::matrix_layout::{
     parse_role_frontmatter, repo_dir_name_from_url, sanitize_name, selected_ac_root,
     validate_existing_name,
@@ -11,8 +8,8 @@ use super::repo_clone::git_clone_async;
 use super::room_number::{determine_next_wg_number, room_dir_name, room_number_pad_width};
 use super::room_task::prepare_new_room_task_content;
 use super::team_config::{
-    create_new_team_config_on_disk_guarded, normalized_team_config_bytes, read_team_config,
-    resolve_context_alert_argument, ContextAlertWriteMode, TeamConfigMutationGuard,
+    create_new_team_config_on_disk_guarded, read_team_config, resolve_context_alert_argument,
+    ContextAlertWriteMode, TeamConfigMutationGuard,
 };
 use super::team_update::emit_coordinator_refresh;
 use super::workgroup::initialize_workgroup_replicas_on_disk_traced;
@@ -21,11 +18,17 @@ use super::{
     WorkgroupCloneResult,
 };
 use crate::config::ac_root::existing_ac_root;
+use crate::config::entity_creation::copies::copy_agent_matrix_strict_with_hooks;
 #[cfg(test)]
 pub(crate) use crate::config::entity_creation::copies::portable_source_ref;
 pub(crate) use crate::config::entity_creation::copies::{
     preflight_team_sources, project_directory_identity, require_absent, verify_owned_entry,
     verify_team_copies,
+};
+use crate::config::entity_creation::teams::normalized_team_config_bytes;
+use crate::filesystem::projects::entities::copies::{
+    cleanup_owned_copy_artifacts, write_owned_team_file, MatrixCopyKind, MatrixCopyStage,
+    OwnedCopyArtifacts, OwnedCopyEntry,
 };
 use crate::session::manager::SessionManager;
 use std::collections::HashSet;
