@@ -4,9 +4,12 @@ use super::{
 };
 use serde_json::json;
 use std::sync::Arc;
-use tauri::AppHandle;
-use tauri::Manager;
 use uuid::Uuid;
+
+pub(crate) trait BackendWatchdogHost {
+    fn resource_monitor(&self) -> Option<Arc<crate::resource_monitor::ResourceMonitorState>>;
+    fn selection_coordinator(&self) -> Option<crate::session::selection::SelectionCoordinator>;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BackendWatchdogMode {
@@ -46,8 +49,8 @@ impl BackendWatchdogMode {
     }
 }
 
-pub(super) async fn handle_backend_request(
-    app: &AppHandle,
+pub(crate) async fn handle_backend_request<H: BackendWatchdogHost>(
+    app: &H,
     request: &UiAutomationRequest,
 ) -> UiAutomationResponse {
     if request.action != UiAutomationAction::Backend {
@@ -70,16 +73,16 @@ pub(super) async fn handle_backend_request(
     }
 }
 
-pub(super) async fn handle_resource_watchdog_backend_request(
-    app: &AppHandle,
+pub(crate) async fn handle_resource_watchdog_backend_request<H: BackendWatchdogHost>(
+    app: &H,
     request: &UiAutomationRequest,
 ) -> UiAutomationResponse {
     let cfg = crate::config::settings::load_settings();
     handle_resource_watchdog_backend_request_with_config(app, request, &cfg).await
 }
 
-pub(super) async fn handle_resource_watchdog_backend_request_with_config<R: tauri::Runtime>(
-    app: &AppHandle<R>,
+pub(crate) async fn handle_resource_watchdog_backend_request_with_config<H: BackendWatchdogHost>(
+    app: &H,
     request: &UiAutomationRequest,
     cfg: &crate::config::settings::AppSettings,
 ) -> UiAutomationResponse {
@@ -90,8 +93,7 @@ pub(super) async fn handle_resource_watchdog_backend_request_with_config<R: taur
         }
     };
 
-    let Some(monitor) = app.try_state::<Arc<crate::resource_monitor::ResourceMonitorState>>()
-    else {
+    let Some(monitor) = app.resource_monitor() else {
         return UiAutomationResponse::error_for_request(
             request,
             "backend_state_missing",
@@ -130,9 +132,7 @@ pub(super) async fn handle_resource_watchdog_backend_request_with_config<R: taur
     let mut kill_results = Vec::new();
     if kill_enabled {
         for decision in decisions.iter().filter(|decision| decision.kill_required) {
-            let Some(coordinator) =
-                app.try_state::<crate::session::selection::SelectionCoordinator>()
-            else {
+            let Some(coordinator) = app.selection_coordinator() else {
                 kill_results.push(json!({
                     "ok": false,
                     "sessionId": decision.session_id,
@@ -186,11 +186,11 @@ pub(super) async fn handle_resource_watchdog_backend_request_with_config<R: taur
             BackendWatchdogMode::QuarantineRetry | BackendWatchdogMode::Tick
         )
     {
-        match app.try_state::<crate::session::selection::SelectionCoordinator>() {
+        match app.selection_coordinator() {
             Some(coordinator) => {
                 for report in crate::resource_monitor::watchdog::run_quarantine_retries(
                     &monitor,
-                    coordinator.inner(),
+                    &coordinator,
                     &groups,
                 )
                 .await

@@ -559,3 +559,35 @@ fn invoke_handler(
 
 #[cfg(test)]
 mod tests;
+
+impl testability::ui_automation::UiAutomationHost for tauri::AppHandle {
+    fn available_windows(&self) -> Vec<String> {
+        testability::ui_automation::liveness::available_window_labels(self)
+    }
+    fn spawn_background(&self, future: futures::future::BoxFuture<'static, ()>) {
+        tauri::async_runtime::spawn(future);
+    }
+    fn backend_request<'a>(
+        &'a self,
+        request: &'a testability::ui_automation::UiAutomationRequest,
+    ) -> futures::future::BoxFuture<'a, testability::ui_automation::UiAutomationResponse> {
+        Box::pin(
+            testability::ui_automation::backend_watchdog::handle_backend_request(self, request),
+        )
+    }
+}
+
+impl<R: tauri::Runtime> testability::ui_automation::backend_watchdog::BackendWatchdogHost
+    for tauri::AppHandle<R>
+{
+    fn resource_monitor(&self) -> Option<Arc<resource_monitor::ResourceMonitorState>> {
+        use tauri::Manager;
+        self.try_state::<Arc<resource_monitor::ResourceMonitorState>>()
+            .map(|state| Arc::clone(state.inner()))
+    }
+    fn selection_coordinator(&self) -> Option<session::selection::SelectionCoordinator> {
+        use tauri::Manager;
+        self.try_state::<session::selection::SelectionCoordinator>()
+            .map(|state| state.inner().clone())
+    }
+}

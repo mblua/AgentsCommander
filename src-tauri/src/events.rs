@@ -5,3 +5,4 @@ mod loops;
 mod phone;
 mod screenshot;
 mod session;
+mod ui_automation;

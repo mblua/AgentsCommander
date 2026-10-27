@@ -1,8 +1,8 @@
 mod args;
-mod backend_watchdog;
+pub(crate) mod backend_watchdog;
 mod cli_run;
 mod files;
-mod liveness;
+pub(crate) mod liveness;
 mod protocol;
 
 #[cfg(test)]
@@ -19,7 +19,6 @@ pub use args::{
     UiBackendArgs, UiClickArgs, UiContextClickArgs, UiHoverArgs, UiKeyArgs, UiPointerArgs,
     UiQueryArgs, UiSetArgs, UiTerminalArgs, UiTypeArgs, UiWaitArgs,
 };
-use backend_watchdog::handle_backend_request;
 #[cfg(test)]
 use backend_watchdog::handle_resource_watchdog_backend_request_with_config;
 #[cfg(test)]
@@ -38,13 +37,11 @@ use files::{
     cleanup_stale_automation_files, read_session_file_with_retry, retry_remove_file, retry_rename,
     write_json_atomic_new, write_json_atomic_replace,
 };
+use futures::future::BoxFuture;
 pub use liveness::pid_is_alive;
 #[cfg(target_os = "windows")]
 use liveness::process_path;
-use liveness::{
-    available_window_labels, current_exe_path_string, now_unix_ms, paths_equal_for_compare,
-    sorted_labels,
-};
+use liveness::{current_exe_path_string, now_unix_ms, paths_equal_for_compare, sorted_labels};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -52,7 +49,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{fs, io};
-use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
 pub const UI_AUTOMATION_DIR: &str = crate::config::instance_artifacts::UI_AUTOMATION_DIR_NAME;
@@ -71,6 +67,20 @@ const SESSION_READ_RETRY_COUNT: usize = 8;
 const SESSION_READ_RETRY_DELAY_MS: u64 = 25;
 const CLI_MAX_AVAILABLE_TARGETS: usize = 8;
 const CLI_MAX_TARGET_TEXT_CHARS: usize = 80;
+
+pub trait UiAutomationEvents {
+    fn automation_request(&self, window: &str, request: &UiAutomationRequest)
+        -> Result<(), String>;
+}
+
+pub trait UiAutomationHost: UiAutomationEvents + Clone + Send + Sync + 'static {
+    fn available_windows(&self) -> Vec<String>;
+    fn spawn_background(&self, future: BoxFuture<'static, ()>);
+    fn backend_request<'a>(
+        &'a self,
+        request: &'a UiAutomationRequest,
+    ) -> BoxFuture<'a, UiAutomationResponse>;
+}
 
 #[derive(Debug, Clone)]
 struct PendingRequest {
@@ -131,7 +141,7 @@ impl UiAutomationState {
         self.inner.enabled && self.inner.available.load(Ordering::SeqCst)
     }
 
-    pub fn start(&self, app: AppHandle, shutdown: ShutdownSignal) {
+    pub fn start<H: UiAutomationHost>(&self, app: H, shutdown: ShutdownSignal) {
         if !self.inner.enabled {
             self.cleanup_session_file_unchecked();
             return;
@@ -146,7 +156,7 @@ impl UiAutomationState {
 
         let state = self.clone();
         let shutdown = shutdown.token().clone();
-        tauri::async_runtime::spawn(async move {
+        app.clone().spawn_background(Box::pin(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(POLL_MS));
             loop {
                 tokio::select! {
@@ -154,7 +164,7 @@ impl UiAutomationState {
                     _ = interval.tick() => state.poll_once(&app),
                 }
             }
-        });
+        }));
     }
 
     pub fn cleanup_session_file(&self) {
@@ -275,14 +285,14 @@ impl UiAutomationState {
         write_json_atomic_replace(&self.inner.session_path, &session)
     }
 
-    fn poll_once(&self, app: &AppHandle) {
+    fn poll_once<H: UiAutomationHost>(&self, app: &H) {
         if let Err(e) = self.poll_once_inner(app) {
             log::warn!("[ui-automation] poll failed: {}", e);
         }
     }
 
-    fn poll_once_inner(&self, app: &AppHandle) -> io::Result<()> {
-        self.sync_live_window_labels(available_window_labels(app))?;
+    fn poll_once_inner<H: UiAutomationHost>(&self, app: &H) -> io::Result<()> {
+        self.sync_live_window_labels(app.available_windows())?;
         self.expire_pending_requests();
 
         let requests_dir = self.requests_dir();
@@ -365,7 +375,7 @@ impl UiAutomationState {
         }
     }
 
-    fn process_request_file(&self, app: &AppHandle, request_file: RequestFile) {
+    fn process_request_file<H: UiAutomationHost>(&self, app: &H, request_file: RequestFile) {
         let raw = match fs::read_to_string(&request_file.path) {
             Ok(raw) => raw,
             Err(e) => {
@@ -424,7 +434,7 @@ impl UiAutomationState {
             return;
         }
 
-        let available_windows = available_window_labels(app);
+        let available_windows = app.available_windows();
         if !available_windows
             .iter()
             .any(|label| label == &request.window)
@@ -479,7 +489,7 @@ impl UiAutomationState {
             pending_map.insert(request.request_id.clone(), pending);
         }
 
-        if let Err(e) = app.emit_to(&request.window, "ui_automation_request", &request) {
+        if let Err(e) = app.automation_request(&request.window, &request) {
             let pending = {
                 let mut pending_map = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
                 pending_map.remove(&request.request_id)
@@ -490,7 +500,7 @@ impl UiAutomationState {
                     "webview_unavailable",
                     "Failed to emit automation request to the requested WebView.",
                 );
-                response.available_windows = Some(available_window_labels(app));
+                response.available_windows = Some(app.available_windows());
                 response.diagnostics = Some(json!({ "message": e.to_string() }));
                 let _ = write_json_atomic_new(&pending.response_path, &response);
                 let _ = retry_remove_file(&pending.inflight_path);
@@ -498,9 +508,9 @@ impl UiAutomationState {
         }
     }
 
-    fn process_backend_request_file(
+    fn process_backend_request_file<H: UiAutomationHost>(
         &self,
-        app: &AppHandle,
+        app: &H,
         request_file: &RequestFile,
         request: &UiAutomationRequest,
     ) {
@@ -532,8 +542,8 @@ impl UiAutomationState {
         let state = self.clone();
         let app = app.clone();
         let request = request.clone();
-        tauri::async_runtime::spawn(async move {
-            let response = handle_backend_request(&app, &request).await;
+        app.clone().spawn_background(Box::pin(async move {
+            let response = app.backend_request(&request).await;
             let pending = state
                 .inner
                 .pending
@@ -551,7 +561,7 @@ impl UiAutomationState {
                 );
             }
             let _ = retry_remove_file(&pending.inflight_path);
-        });
+        }));
     }
 
     fn is_pending(&self, request_id: &str) -> bool {
