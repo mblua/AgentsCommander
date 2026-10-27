@@ -253,3 +253,7 @@ pub(crate) fn append_harness_audit(path: &Path, line: &str) -> io::Result<()> {
 pub(crate) fn write_window_screenshot(path: &Path, bytes: &[u8]) -> io::Result<()> {
     std::fs::write(path, bytes)
 }
+
+pub(crate) fn read_cli_room_task(path: &Path) -> io::Result<Vec<u8>> {
+    std::fs::read(path)
+}
