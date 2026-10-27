@@ -431,7 +431,21 @@ pub fn save_map_to(path: &Path, map: &HashMap<String, ClockEntry>) -> Result<(),
         std::process::id(),
         SAVE_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    let write_result = (|| -> std::io::Result<()> {
+        use std::io::Write;
+
+        let mut file = file;
+        file.write_all(json.as_bytes())?;
+        #[cfg(all(test, windows))]
+        let file = tests::issue_3278_sync_handle(&tmp, file)?;
+        file.sync_all()
+    })();
+    if let Err(error) = write_result {
+        // The closure dropped the handle before cleanup, including on Windows.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error.to_string());
+    }
     // Reuse sessions_persistence::rename_with_retry for the Windows AV/indexer
     // hold retry (#280/#291). Discard the rich diagnostics on error.
     crate::config::sessions_persistence::rename_with_retry(&tmp, path)
