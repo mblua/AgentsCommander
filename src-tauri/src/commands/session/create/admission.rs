@@ -25,6 +25,7 @@ use uuid::Uuid;
 /// `failed()`/Drop with the spawn fence set counts as `succeeded()`.
 pub(crate) struct CoordinatorCreateTicket<R: tauri::Runtime> {
     pub(crate) app: tauri::AppHandle<R>,
+    coordinator_order: Arc<crate::config::coordinator_clocks::CoordinatorCreateOrder>,
     pub(crate) cwd: String,
     pub(crate) fqn: String,
     pub(crate) done: bool,
@@ -73,56 +74,55 @@ impl<R: tauri::Runtime> CoordinatorCreateTicket<R> {
             return;
         };
         // Held through the emits below (see `CLOSE_MARKER_EVENT_ORDER`).
-        let _order = CLOSE_MARKER_EVENT_ORDER
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let (escrow, manual, auto) = {
-            let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
-            let escrow = g.finish_coordinator_create(&self.fqn, false);
-            let mut manual = None;
-            let mut auto = None;
-            if let Some(c) = escrow {
-                if let Some(t) = c.manually_closed_at {
-                    if g.mark_manually_closed(&self.fqn, t) {
-                        manual = Some(t);
+        self.coordinator_order.with_order(|| {
+            let (escrow, manual, auto) = {
+                let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+                let escrow = g.finish_coordinator_create(&self.fqn, false);
+                let mut manual = None;
+                let mut auto = None;
+                if let Some(c) = escrow {
+                    if let Some(t) = c.manually_closed_at {
+                        if g.mark_manually_closed(&self.fqn, t) {
+                            manual = Some(t);
+                        }
+                    }
+                    if let Some(t) = c.auto_closed_at {
+                        if g.mark_auto_closed(&self.fqn, t) {
+                            auto = Some(t);
+                        }
                     }
                 }
-                if let Some(t) = c.auto_closed_at {
-                    if g.mark_auto_closed(&self.fqn, t) {
-                        auto = Some(t);
-                    }
-                }
-            }
-            (escrow, manual, auto)
-        };
-        #[cfg(test)]
-        restore_emit_seam::hit(&self.fqn);
-        if let Some(t) = manual {
-            let _ = self.app.emit(
+                (escrow, manual, auto)
+            };
+            #[cfg(test)]
+            restore_emit_seam::hit(&self.fqn);
+            if let Some(t) = manual {
+                let _ = self.app.emit(
                 "coordinator_manual_close_changed",
                 serde_json::json!({ "replicaPath": self.cwd, "manuallyClosedAt": t.to_rfc3339() }),
             );
-        }
-        if let Some(t) = auto {
-            let _ = self.app.emit(
-                "coordinator_auto_close_changed",
-                serde_json::json!({ "replicaPath": self.cwd, "autoClosedAt": t.to_rfc3339() }),
-            );
-        }
-        if manual.is_some() || auto.is_some() {
-            log::info!(
+            }
+            if let Some(t) = auto {
+                let _ = self.app.emit(
+                    "coordinator_auto_close_changed",
+                    serde_json::json!({ "replicaPath": self.cwd, "autoClosedAt": t.to_rfc3339() }),
+                );
+            }
+            if manual.is_some() || auto.is_some() {
+                log::info!(
                 "[coordinator-create] restored close markers after failed create fqn={} auto={:?} \
                  manual={:?}",
                 self.fqn,
                 auto,
                 manual
             );
-        } else if escrow.is_none() {
-            log::info!(
+            } else if escrow.is_none() {
+                log::info!(
                 "[coordinator-create] failed create handed markers to an in-flight create fqn={}",
                 self.fqn
             );
-        }
+            }
+        });
     }
 }
 
@@ -877,58 +877,55 @@ pub(crate) fn note_coordinator_create_on_app<R: tauri::Runtime>(
         // agent_fqn_from_path returns String (teams.rs:80), not Option.
         let fqn = crate::config::teams::agent_fqn_from_path(cwd);
         let now = chrono::Utc::now();
+        let coordinator_order = app
+            .state::<crate::app_state::AppOwners>()
+            .coordinator_order
+            .clone();
         // Held through the emits below: a restore can never emit its timestamp
         // after this create's clear has emitted null.
-        let _order = CLOSE_MARKER_EVENT_ORDER
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let (seeded, cleared_auto, cleared_manual) = {
-            let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
-            let seeded = g.seed_if_absent(&fqn, now);
-            let auto_before = g.auto_closed_at(&fqn);
-            let manual_before = g.manually_closed_at(&fqn);
-            let cleared_auto = g.clear_auto_closed(&fqn);
-            let cleared_manual = g.clear_manually_closed(&fqn);
-            g.begin_coordinator_create(
-                &fqn,
-                ClearedCloseMarkers {
-                    auto_closed_at: auto_before.filter(|_| cleared_auto),
-                    manually_closed_at: manual_before.filter(|_| cleared_manual),
-                },
-            );
-            (seeded, cleared_auto, cleared_manual)
-        };
-        if seeded {
-            let _ = app.emit(
+        coordinator_order.with_order(|| {
+            let (seeded, cleared_auto, cleared_manual) = {
+                let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+                let seeded = g.seed_if_absent(&fqn, now);
+                let auto_before = g.auto_closed_at(&fqn);
+                let manual_before = g.manually_closed_at(&fqn);
+                let cleared_auto = g.clear_auto_closed(&fqn);
+                let cleared_manual = g.clear_manually_closed(&fqn);
+                g.begin_coordinator_create(
+                    &fqn,
+                    ClearedCloseMarkers {
+                        auto_closed_at: auto_before.filter(|_| cleared_auto),
+                        manually_closed_at: manual_before.filter(|_| cleared_manual),
+                    },
+                );
+                (seeded, cleared_auto, cleared_manual)
+            };
+            if seeded {
+                let _ = app.emit(
                 "coordinator_clock_updated",
                 serde_json::json!({ "replicaPath": cwd, "lastUserMessageAt": now.to_rfc3339() }),
             );
-        }
-        if cleared_auto {
-            let _ = app.emit(
-                "coordinator_auto_close_changed",
-                serde_json::json!({ "replicaPath": cwd, "autoClosedAt": null }),
-            );
-        }
-        if cleared_manual {
-            let _ = app.emit(
-                "coordinator_manual_close_changed",
-                serde_json::json!({ "replicaPath": cwd, "manuallyClosedAt": null }),
-            );
-        }
-        Some(CoordinatorCreateTicket {
-            app: app.clone(),
-            cwd: cwd.to_string(),
-            fqn,
-            done: false,
-            session_may_exist: false,
+            }
+            if cleared_auto {
+                let _ = app.emit(
+                    "coordinator_auto_close_changed",
+                    serde_json::json!({ "replicaPath": cwd, "autoClosedAt": null }),
+                );
+            }
+            if cleared_manual {
+                let _ = app.emit(
+                    "coordinator_manual_close_changed",
+                    serde_json::json!({ "replicaPath": cwd, "manuallyClosedAt": null }),
+                );
+            }
+            Some(CoordinatorCreateTicket {
+                app: app.clone(),
+                coordinator_order: coordinator_order.clone(),
+                cwd: cwd.to_string(),
+                fqn,
+                done: false,
+                session_may_exist: false,
+            })
         })
     }
 }
-
-/// (#2413) Orders close-marker changes made by coordinator creates with their
-/// events. The create's clear and a failed create's restore each hold it from
-/// the clocks change through their emits, so the UI receives their events in
-/// the same order as the clock changes. Taken before the clocks lock, never
-/// held across an `.await`.
-static CLOSE_MARKER_EVENT_ORDER: Mutex<()> = Mutex::new(());
