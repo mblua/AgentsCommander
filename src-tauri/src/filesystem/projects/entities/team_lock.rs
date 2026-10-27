@@ -167,7 +167,7 @@ pub(crate) fn acquire(
                 let remaining = timeout.saturating_sub(started.elapsed());
                 let delay = poll_interval.min(remaining);
                 #[cfg(test)]
-                observe_delay(delay, remaining);
+                tests::observe_delay(delay, remaining);
                 if delay.is_zero() {
                     std::thread::yield_now();
                 } else {
@@ -251,18 +251,5 @@ fn validate_team_config_lock_sentinel(
     Ok(())
 }
 
-#[cfg(test)]
-std::thread_local! {
- static DELAYS: std::cell::RefCell<Option<Vec<(Duration, Duration)>>> =
-  const { std::cell::RefCell::new(None) };
-}
-#[cfg(test)]
-fn observe_delay(delay: Duration, remaining: Duration) {
-    DELAYS.with_borrow_mut(|items| {
-        if let Some(items) = items {
-            items.push((delay, remaining));
-        }
-    });
-}
 #[cfg(test)]
 mod tests;

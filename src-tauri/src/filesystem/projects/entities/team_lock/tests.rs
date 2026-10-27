@@ -1,6 +1,18 @@
 use super::*;
 use std::error::Error;
 
+std::thread_local! {
+ static DELAYS: std::cell::RefCell<Option<Vec<(Duration, Duration)>>> =
+  const { std::cell::RefCell::new(None) };
+}
+pub(super) fn observe_delay(delay: Duration, remaining: Duration) {
+    DELAYS.with_borrow_mut(|items| {
+        if let Some(items) = items {
+            items.push((delay, remaining));
+        }
+    });
+}
+
 const SENTINEL: &str = "test.lock";
 
 #[test]
