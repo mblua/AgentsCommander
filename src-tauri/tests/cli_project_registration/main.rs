@@ -288,6 +288,7 @@ fn assert_no_ac_side_effect_dirs(root: &Path) {
 // P05: production consumers must never finalize GUI migrations while reading.
 const P05_TOKEN: &str = "a873f0dd-732b-46b7-abd4-f690dc37080a";
 const P05_MESSAGE: &str = "20261009-150000-room01-peer-to-room01-coord-p05.md";
+const P05_ROOT_MESSAGE: &str = "20261009-150000-root-to-room01-coord-p05.md";
 
 struct ReadonlyFixture {
     _tmp: Tmp,
