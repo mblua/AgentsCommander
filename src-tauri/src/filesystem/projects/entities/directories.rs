@@ -3,6 +3,20 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
+pub(crate) fn strict_team_candidates(
+    root: &Path,
+) -> io::Result<impl Iterator<Item = io::Result<PathBuf>>> {
+    Ok(std::fs::read_dir(root)?.filter_map(|entry| match entry {
+        Ok(entry) if entry.path().is_dir() => Some(Ok(entry.path())),
+        Ok(_) => None,
+        Err(error) => Some(Err(error)),
+    }))
+}
+
+pub(crate) fn inspect_agent_replica(path: &Path) -> io::Result<()> {
+    std::fs::symlink_metadata(path).map(|_| ())
+}
+
 pub(crate) fn room_slot_candidates(root: &Path) -> io::Result<Vec<io::Result<OsString>>> {
     Ok(std::fs::read_dir(root)?
         .filter_map(|entry| match entry {

@@ -235,6 +235,36 @@ pub(crate) fn read_team_config(
     read_team_config_classified(ac_root, team_name).map_err(|e| e.to_string())
 }
 
+pub(crate) fn read_raw_team_config(
+    ac_root: &Path,
+    team_name: &str,
+) -> Result<Option<(PathBuf, Vec<u8>)>, String> {
+    let path = config_path(ac_root, team_name);
+    match publication::read_team_config_bytes(&path) {
+        Ok(bytes) => Ok(Some((path, bytes))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!(
+            "Cannot read team '{}' config.json: {}",
+            team_name, e
+        )),
+    }
+}
+
+pub(crate) fn read_team_config_bytes(config_path: &Path) -> Result<Vec<u8>, String> {
+    publication::read_team_config_bytes(config_path)
+        .map_err(|e| format!("{}: {}", config_path.display(), e))
+}
+
+pub(crate) fn write_team_config_json_atomic(
+    ac_root: &Path,
+    team_guard: &TeamConfigMutationGuard,
+    config_path: &Path,
+    json: &[u8],
+) -> Result<(), String> {
+    team_guard.require_ac_root(ac_root)?;
+    crate::config::local_config_io::write_file_atomic(config_path, json)
+}
+
 pub(crate) fn normalized_team_config_bytes(
     ac_root: &Path,
     config: &TeamConfigResult,

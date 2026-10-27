@@ -20,6 +20,43 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
+pub(crate) fn strict_team_candidates(root: &Path) -> Result<Vec<PathBuf>, String> {
+    strict_teams_from_observations(disk::strict_team_candidates(root))
+}
+
+pub(crate) fn strict_teams_from_observations(
+    entries: io::Result<impl IntoIterator<Item = io::Result<PathBuf>>>,
+) -> Result<Vec<PathBuf>, String> {
+    let entries = entries.map_err(|e| {
+        format!(
+            "Cannot read Project AC Root directory for agent delete: {}",
+            e
+        )
+    })?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|e| {
+            format!(
+                "Cannot read directory entry during agent delete scan: {}",
+                e
+            )
+        })?;
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("_team_"))
+        {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+pub(crate) fn inspect_agent_replica(path: &Path) -> io::Result<()> {
+    disk::inspect_agent_replica(path)
+}
+
 pub(crate) fn room_slot_candidates(root: &Path) -> Vec<u32> {
     room_slots_from_observations(disk::room_slot_candidates(root).unwrap_or_default())
 }
