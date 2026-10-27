@@ -1,9 +1,13 @@
 use std::path::Path;
 use std::time::Duration;
 
-use tauri::Manager;
-
 use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
+use crate::config::settings::SettingsState;
+
+pub(crate) trait ArchiveGateHost {
+    fn archive_settings(&self) -> SettingsState;
+    fn auto_unarchived(&self, path: &str, session_label: &str);
+}
 
 fn folder_name(path: &str) -> String {
     Path::new(path)
@@ -48,11 +52,11 @@ fn auto_unarchive_registration(
 }
 
 /// #881: read-only preflight used before restart destroys the dormant row.
-pub(crate) async fn probe_spawn_refusal<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn probe_spawn_refusal<H: ArchiveGateHost + ?Sized>(
+    app: &H,
     cwd: &str,
 ) -> Result<(), String> {
-    let settings = app.state::<crate::config::settings::SettingsState>();
+    let settings = app.archive_settings();
     let archived = {
         let current = settings.read().await;
         if let Some(error) = &current.project_paths_persistence_error {
@@ -77,8 +81,8 @@ pub(crate) async fn probe_spawn_refusal<R: tauri::Runtime>(
 
 /// #881: enforce that a session spawn never leaves a live PTY inside an
 /// archived project.
-pub(crate) async fn enforce_unarchived_for_spawn<R, W, WF, A, AF, P, F>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn enforce_unarchived_for_spawn<H, W, WF, A, AF, P, F>(
+    app: &H,
     cwd: &str,
     session_label: &str,
     prepare: W,
@@ -86,7 +90,7 @@ pub(crate) async fn enforce_unarchived_for_spawn<R, W, WF, A, AF, P, F>(
     publish_settings: F,
 ) -> Result<(), String>
 where
-    R: tauri::Runtime,
+    H: ArchiveGateHost + ?Sized,
     W: FnMut() -> WF,
     WF: std::future::Future<Output = Result<(), String>>,
     A: FnMut() -> AF,
@@ -94,7 +98,7 @@ where
     P: Send + 'static,
     F: FnOnce(&crate::config::settings::AppSettings),
 {
-    let settings = app.state::<crate::config::settings::SettingsState>();
+    let settings = app.archive_settings();
     let archived = {
         let current = settings.read().await;
         if let Some(error) = &current.project_paths_persistence_error {
@@ -117,8 +121,8 @@ where
     auto_unarchive_for_activation(app, &root, session_label, prepare, admit, publish_settings).await
 }
 
-async fn auto_unarchive_for_activation<R, W, WF, A, AF, P, F>(
-    app: &tauri::AppHandle<R>,
+async fn auto_unarchive_for_activation<H, W, WF, A, AF, P, F>(
+    app: &H,
     root: &str,
     session_label: &str,
     mut prepare: W,
@@ -126,7 +130,7 @@ async fn auto_unarchive_for_activation<R, W, WF, A, AF, P, F>(
     publish_settings: F,
 ) -> Result<(), String>
 where
-    R: tauri::Runtime,
+    H: ArchiveGateHost + ?Sized,
     W: FnMut() -> WF,
     WF: std::future::Future<Output = Result<(), String>>,
     A: FnMut() -> AF,
@@ -134,7 +138,7 @@ where
     P: Send + 'static,
     F: FnOnce(&crate::config::settings::AppSettings),
 {
-    let settings = app.state::<crate::config::settings::SettingsState>();
+    let settings = app.archive_settings();
     let (mut s, permission, path) = loop {
         // Target acquisition never waits while a settings guard is held.
         prepare().await?;
@@ -211,13 +215,7 @@ where
         root,
         session_label
     );
-    crate::commands::ac_discovery::broadcast_project_archive_changed(
-        app,
-        &reg.path,
-        false,
-        crate::commands::ac_discovery::ArchiveChangeReason::AutoUnarchive,
-        Some(session_label),
-    );
+    app.auto_unarchived(&reg.path, session_label);
     Ok(())
 }
 
