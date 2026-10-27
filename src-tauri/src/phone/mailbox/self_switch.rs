@@ -10,6 +10,7 @@ use super::notice::{
 use super::poller::MailboxPoller;
 #[cfg(test)]
 use super::pty_claim::MailboxTestEvent;
+use super::self_handoff::failure::{SelfHandoffFailure, SelfHandoffOutcome, CONTINUATION_FAILURE};
 use super::settle::{
     inject_handoff_prompt_with_archive, resolve_wg_path_from_session_dirs, self_clear_gate_advance,
     SelfClearBoundary, SelfClearGateAction, SelfClearGateState,
@@ -62,7 +63,8 @@ impl MailboxPoller {
         mut restart: Restart,
         mut inject: Inject,
         mut note_boundary: NoteBoundary,
-    ) where
+    ) -> SelfHandoffOutcome
+    where
         SessionState: FnMut(Uuid) -> SessionFut + Send + 'static,
         SessionFut: std::future::Future<Output = (bool, bool)> + Send,
         Persist: FnMut(PathBuf, String, String) -> PersistFut + Send + 'static,
@@ -79,12 +81,26 @@ impl MailboxPoller {
                 "[mailbox] switch driver missing legacy reservation for {}",
                 original_session_id
             );
-            return;
+            return SelfHandoffOutcome::Failed(SelfHandoffFailure {
+                action: flavor.action,
+                attempt: Uuid::new_v4(),
+                original: original_session_id,
+                current: Some(original_session_id),
+                root: cwd,
+                continuation: false,
+                reason: format!(
+                    "switch driver missing legacy reservation for {original_session_id}"
+                ),
+                forgotten: forgotten_summary.is_some(),
+            });
         };
+        let attempt = Uuid::new_v4();
+        let mut continuation = false;
+        let mut current = Some(original_session_id);
         let mut state = SelfClearGateState::new(std::time::Instant::now());
         let mut session_id = original_session_id;
 
-        loop {
+        let reason = loop {
             tokio::time::sleep(poll).await;
             let (present, waiting) = session_state(session_id).await;
             let (next, action) = self_clear_gate_advance(
@@ -126,7 +142,7 @@ impl MailboxPoller {
                                 session_id,
                                 error
                             );
-                                break;
+                                break Some(error.to_string());
                             }
                         };
                     if let Err(e) =
@@ -138,7 +154,7 @@ impl MailboxPoller {
                             original_session_id,
                             e
                         );
-                        break;
+                        break Some(e);
                     }
                     let restarted =
                         restart(session_id, target_agent.clone(), target_profile.clone()).await;
@@ -153,7 +169,8 @@ impl MailboxPoller {
                                     id,
                                     e
                                 );
-                                break;
+                                current = None;
+                                break Some(e.to_string());
                             }
                         },
                         Err(e) => {
@@ -163,7 +180,7 @@ impl MailboxPoller {
                                 original_session_id,
                                 e
                             );
-                            break;
+                            break Some(e);
                         }
                     };
                     if let Err(error) = pending.alias(&lease, new_id) {
@@ -175,6 +192,8 @@ impl MailboxPoller {
                         );
                     }
                     session_id = new_id;
+                    current = Some(new_id);
+                    continuation = true;
                     continue;
                 }
                 SelfClearGateAction::InjectHandoff => {
@@ -204,7 +223,7 @@ impl MailboxPoller {
                         // (#756) switch handoff prompt is post-boundary content.
                         note_boundary(session_id, SelfClearBoundary::ContentInjected).await;
                     }
-                    break;
+                    break (!injected).then(|| CONTINUATION_FAILURE.to_string());
                 }
                 SelfClearGateAction::Abandon(reason) => {
                     log::warn!(
@@ -215,12 +234,25 @@ impl MailboxPoller {
                         session_id,
                         reason
                     );
-                    break;
+                    break Some(reason.to_string());
                 }
             }
-        }
+        };
 
         pending.release(&lease);
+        match reason {
+            None => SelfHandoffOutcome::Completed,
+            Some(reason) => SelfHandoffOutcome::Failed(SelfHandoffFailure {
+                action: flavor.action,
+                attempt,
+                original: original_session_id,
+                current,
+                root: cwd,
+                continuation,
+                reason,
+                forgotten: forgotten_summary.is_some(),
+            }),
+        }
     }
 
     /// #617 - write the self-clear queue-ack response, then move the message to

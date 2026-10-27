@@ -154,19 +154,18 @@ impl PendingSelfClear {
         entries.retain(|_, entry| &entry.lease != lease);
         before != entries.len()
     }
+    pub(crate) fn contains(&self, sid: Uuid) -> bool {
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&sid)
+    }
 }
 
 #[cfg(test)]
 impl PendingSelfClear {
     pub(crate) fn seed_legacy(&self, sid: Uuid) -> bool {
         self.reserve_legacy(sid).is_ok()
-    }
-
-    pub(crate) fn contains(&self, sid: Uuid) -> bool {
-        self.entries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key(&sid)
     }
 
     pub(crate) fn len(&self) -> usize {

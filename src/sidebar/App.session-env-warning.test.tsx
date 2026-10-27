@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SidebarApp from "./App";
-import { toastStore } from "../shared/stores/toasts";
+import { TOAST_EXIT_MS, toastStore } from "../shared/stores/toasts";
 import { FakeTransport } from "../shared/testing/fake-transport";
 import {
   baseSettings,
@@ -153,6 +153,103 @@ describe("SidebarApp session environment warnings", () => {
           message: warning.message,
           exiting: false,
         });
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("keeps a self-handoff failure visible until dismissed in the same session", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const warning = {
+      sessionId: SESSION_A,
+      key: "self-handoff",
+      kind: "self-handoff-failed" as const,
+      message:
+        `self-switch attempt attempt-live for session ${SESSION_A} failed: session locked. ` +
+        "Unlock the session or use reviewed --force, then retry.",
+    };
+    const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+    try {
+      await waitFor(() => expect(rendered.root.textContent).toContain("General"));
+      vi.useFakeTimers();
+      fake.emitFromBackend("session_env_warning", warning);
+      await Promise.resolve();
+      const alert = document.body.querySelector('[role="alert"]');
+      expect(alert).not.toBeNull();
+      expect(alert?.textContent).toContain(warning.message);
+
+      await vi.advanceTimersByTimeAsync(5000);
+      await Promise.resolve();
+      expect(document.body.contains(alert)).toBe(true);
+      expect(alert?.textContent).toContain(warning.message);
+      expect(alert?.classList.contains("toast-item--exiting")).toBe(false);
+      const dismiss = alert?.querySelector<HTMLButtonElement>(
+        '[data-ac-testid="toast.item.dismiss"]'
+      );
+      expect(dismiss).not.toBeNull();
+      dismiss!.click();
+      await vi.advanceTimersByTimeAsync(TOAST_EXIT_MS);
+      await Promise.resolve();
+      expect(document.body.contains(alert)).toBe(false);
+      expect(rendered.root.textContent).toContain("General");
+      expect(fake.callsFor("set_active_session")).toHaveLength(0);
+    } finally {
+      rendered.cleanup();
+      toastStore.clear();
+      vi.useRealTimers();
+    }
+  });
+
+  it("renders a buffered self-handoff failure on mount", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const warning = {
+      sessionId: SESSION_A,
+      key: "self-handoff",
+      kind: "self-handoff-failed" as const,
+      message:
+        `self-restart attempt attempt-buffered for session ${SESSION_A} failed: session locked. ` +
+        "Unlock the session or use reviewed --force, then retry.",
+    };
+    fake.resolve("drain_session_warnings", [warning]);
+    const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+    try {
+      await waitFor(() => {
+        const alert = document.body.querySelector('[role="alert"]');
+        expect(alert).not.toBeNull();
+        expect(alert?.textContent).toContain(warning.message);
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("renders one self-handoff failure for live and deferred initial drain overlap", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const warning = {
+      sessionId: SESSION_A,
+      key: "self-handoff",
+      kind: "self-handoff-failed" as const,
+      message:
+        `self-switch attempt attempt-overlap for session ${SESSION_A} failed: session locked. ` +
+        "Unlock the session or use reviewed --force, then retry.",
+    };
+    let finishDrain!: (warnings: typeof warning[]) => void;
+    fake.onInvoke("drain_session_warnings", () => new Promise<typeof warning[]>((resolve) => {
+      finishDrain = resolve;
+    }));
+    const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+    try {
+      await waitFor(() => expect(finishDrain).toBeTypeOf("function"));
+      fake.emitFromBackend("session_env_warning", warning);
+      finishDrain([warning]);
+      await waitFor(() => {
+        const alerts = [...document.body.querySelectorAll('[role="alert"]')];
+        expect(alerts).toHaveLength(1);
+        expect(alerts[0].textContent).toContain(warning.message);
       });
     } finally {
       rendered.cleanup();
