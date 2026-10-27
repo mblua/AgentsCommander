@@ -91,13 +91,13 @@ pub(crate) fn log_discard_veto<R: tauri::Runtime>(
         log::warn!(
             target: "agentscommander_lib::response_close_diag",
             "stage=discard_veto reason={} session={} protected_session={} target={} \
-             phase={} protection_nonce={} token={} epoch={} version={} owner_reason={} \
+             phase={} protection_nonce={} epoch={} version={} owner_reason={} \
              close_nonce={} generation={} recorded_terminal={} owner_nonce={} \
              previous={} replacement={}",
             observed.reason.code(), observed.session,
             diagnostic_value(observed.protected_session),
             diagnostic_value(observed.target), diagnostic_value(observed.phase),
-            diagnostic_value(observed.protection_nonce), diagnostic_value(observed.token),
+            diagnostic_value(observed.protection_nonce),
             diagnostic_value(observed.epoch), diagnostic_value(observed.version), owner_reason,
             diagnostic_value(close_nonce), diagnostic_value(generation),
             diagnostic_value(recorded_terminal), diagnostic_value(observed.owner_nonce),
@@ -602,10 +602,10 @@ pub(crate) async fn settle_response_close<R: tauri::Runtime>(
                 let binding = owner.ticket().committed_binding();
                 log::warn!(
                     target: "agentscommander_lib::response_close_diag",
-                    "stage=settlement reason={} session={} target={} token={} \
+                    "stage=settlement reason={} session={} target={} \
                      protection_nonce={} close_nonce={} generation={}",
                     reason.code(), binding.member.session_id, binding.member.target,
-                    binding.member.token, owner.registration().carrier.nonce,
+                    owner.registration().carrier.nonce,
                     binding.close_nonce, binding.member.generation
                 );
             }

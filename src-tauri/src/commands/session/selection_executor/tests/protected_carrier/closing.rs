@@ -64,6 +64,12 @@ fn records(log: &PollLog, stage: &str) -> Vec<BTreeMap<String, String>> {
                 })
                 .collect::<BTreeMap<_, _>>()
         })
+        .inspect(|record| {
+            assert!(
+                !record.contains_key("token"),
+                "auth token must not be logged"
+            );
+        })
         .filter(|record| record.get("stage").is_some_and(|value| value == stage))
         .collect()
 }
@@ -160,6 +166,7 @@ async fn dormant(f: &ProtectedFixture) {
 async fn issue_3248_terminal_settlement_rejection() {
     let name = format!("{PREFIX}issue_3248_terminal_settlement_rejection");
     run_isolated(&name, async {
+        let log = logger();
         let f = ProtectedFixture::new(false).await;
         force(&f);
         f.retire().await;
@@ -177,7 +184,9 @@ async fn issue_3248_terminal_settlement_rejection() {
         );
         let owner = closing(&f, true).await;
         let binding = owner.ticket().committed_binding();
+        let settlements = records(&log, "settlement").len();
         reconcile_response_closes(n.app.handle()).await;
+        assert_eq!(records(&log, "settlement").len(), settlements + 1);
         let retry = closing(&f, true).await;
         assert!(Arc::ptr_eq(&owner, &retry));
         assert!(retry.ticket().committed_binding() == binding);
@@ -282,7 +291,6 @@ async fn issue_3248_diagnostic_reasons() {
                 );
                 exact(&record, "session", f.native.source);
                 exact(&record, "target", &f.carrier.target);
-                exact(&record, "token", f.carrier.token);
                 exact(&record, "protection_nonce", f.carrier.nonce);
                 exact(&record, "close_nonce", binding.close_nonce);
                 exact(&record, "generation", binding.member.generation);
@@ -327,7 +335,6 @@ async fn issue_3248_diagnostic_unreadable() {
         exact(record, "recorded_terminal", "unknown");
         exact(record, "session", f.native.source);
         exact(record, "target", &f.carrier.target);
-        exact(record, "token", f.carrier.token);
         exact(record, "protection_nonce", f.carrier.nonce);
         exact(record, "close_nonce", binding.close_nonce);
         exact(record, "generation", binding.member.generation);
@@ -384,7 +391,6 @@ async fn diagnostic_preparing_control() {
         exact(record, "session", p.native.source);
         exact(record, "protected_session", p.native.source);
         exact(record, "target", &carrier.target);
-        exact(record, "token", carrier.token);
         exact(record, "protection_nonce", carrier.nonce);
         exact(record, "owner_nonce", owner_nonce);
         exact(record, "previous", p.native.source);
@@ -430,6 +436,7 @@ async fn diagnostic_slot_unreadable_control() {
         assert_eq!(observed.len(), 1);
         assert_eq!(observed[0].reason, DiscardVetoReason::SlotLockUnreadable);
         assert_eq!(observed[0].target, None);
+        assert_eq!(observed[0].token, None);
         assert_eq!(observed[0].phase, None);
         assert_eq!(observed[0].protection_nonce, None);
         let records = self::records(&log, "discard_veto");
@@ -440,7 +447,6 @@ async fn diagnostic_slot_unreadable_control() {
             "target",
             "phase",
             "protection_nonce",
-            "token",
             "close_nonce",
             "generation",
             "protected_session",
