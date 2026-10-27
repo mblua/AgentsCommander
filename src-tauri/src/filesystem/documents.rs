@@ -218,3 +218,38 @@ pub(crate) fn read_cli_outbox_text(path: &Path) -> io::Result<String> {
 pub(crate) fn write_cli_outbox_message(path: &Path, bytes: &[u8]) -> io::Result<()> {
     std::fs::write(path, bytes)
 }
+
+pub(crate) fn write_cli_session_document(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+pub(crate) fn read_cli_session_result(path: &Path) -> io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+pub(crate) fn remove_cli_session_artifact(path: &Path) -> io::Result<()> {
+    std::fs::remove_file(path)
+}
+
+pub(crate) fn write_refresh_request_stage(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+pub(crate) fn finalize_refresh_request(tmp: &Path, dst: &Path) -> io::Result<()> {
+    std::fs::rename(tmp, dst).inspect_err(|_| {
+        let _ = std::fs::remove_file(tmp);
+    })
+}
+
+pub(crate) fn append_harness_audit(path: &Path, line: &str) -> io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{}", line)
+}
+
+pub(crate) fn write_window_screenshot(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    std::fs::write(path, bytes)
+}

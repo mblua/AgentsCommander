@@ -218,3 +218,19 @@ pub(crate) fn cli_outbox_artifact_exists(path: &Path) -> bool {
 pub(crate) fn cli_agent_root_is_dir(path: &Path) -> bool {
     path.is_dir()
 }
+
+pub(crate) fn ensure_cli_session_requests(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+pub(crate) fn ensure_project_refresh_requests(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+pub(crate) fn ensure_harness_logs(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+pub(crate) fn canonical_created_agent(path: &Path) -> io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
