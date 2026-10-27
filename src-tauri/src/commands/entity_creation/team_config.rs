@@ -1,6 +1,9 @@
 use super::delete_guard::metadata_is_link_or_reparse;
-use super::matrix_layout::validate_existing_name;
 use super::{RepoAssignment, TeamConfigResult};
+pub(crate) use crate::config::entity_creation::names::{
+    normalize_context_alert_percentages, normalize_team_agent_refs, resolve_agent_ref,
+    validate_existing_name,
+};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -417,24 +420,6 @@ pub(crate) fn create_new_team_config_on_disk_guarded(
     Ok(team_dir)
 }
 
-pub(crate) fn normalize_context_alert_percentages(values: &[u8]) -> Result<Vec<u8>, String> {
-    if values.len() > 3 {
-        return Err("contextAlertPercentages must contain at most 3 values".to_string());
-    }
-    if values.iter().any(|value| !(1..=100).contains(value)) {
-        return Err(
-            "contextAlertPercentages values must be integer percentages from 1 through 100"
-                .to_string(),
-        );
-    }
-    let mut normalized = values.to_vec();
-    normalized.sort_unstable();
-    if normalized.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err("contextAlertPercentages values must be distinct".to_string());
-    }
-    Ok(normalized)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ContextAlertWriteMode {
     Create,
@@ -484,49 +469,4 @@ pub(crate) fn normalize_team_config_for_project(
         repos,
         context_alert_percentages,
     })
-}
-
-pub(super) fn normalize_team_agent_refs(
-    ac_root: &Path,
-    refs: &[String],
-) -> Result<Vec<String>, String> {
-    let mut normalized = Vec::new();
-    for agent in refs {
-        let resolved = resolve_agent_ref(ac_root, agent)?;
-        if !normalized.contains(&resolved) {
-            normalized.push(resolved);
-        }
-    }
-    Ok(normalized)
-}
-
-pub(crate) fn resolve_agent_ref(ac_root: &Path, raw_agent: &str) -> Result<String, String> {
-    let trimmed = raw_agent.trim();
-    if trimmed.is_empty() {
-        return Err("Agent reference cannot be empty".to_string());
-    }
-    if trimmed.contains('\0') {
-        return Err("Agent reference must not contain NUL".to_string());
-    }
-    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains(':') {
-        return Err(format!(
-            "Invalid agent reference '{}': team configs must use portable refs like '_agent_name' \
-             or 'name', not filesystem paths",
-            raw_agent
-        ));
-    }
-    if Path::new(trimmed).is_absolute() {
-        return Err(format!(
-            "Invalid agent reference '{}': absolute paths are not allowed in team configs",
-            raw_agent
-        ));
-    }
-    let bare = trimmed.strip_prefix("_agent_").unwrap_or(trimmed);
-    validate_existing_name(bare, "Agent")?;
-    let canonical_ref = format!("_agent_{}", bare);
-    let matrix_dir = ac_root.join(&canonical_ref);
-    if !matrix_dir.is_dir() {
-        return Err(format!("Agent '{}' not found", bare));
-    }
-    Ok(canonical_ref)
 }

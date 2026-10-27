@@ -1,5 +1,7 @@
 use super::{AGENT_MATRIX_DIRS, AGENT_REPLICA_DIRS};
-use crate::config::ac_root::existing_ac_root;
+pub(crate) use crate::config::entity_creation::names::{
+    sanitize_name, selected_ac_root, validate_existing_name,
+};
 use crate::config::settings::AppSettings;
 use std::path::{Path, PathBuf};
 
@@ -45,51 +47,6 @@ pub(crate) fn create_agent_replica_layout(
     std::fs::create_dir_all(replica_dir).map_err(|e| ("replica_dir", e))?;
     for &sub in AGENT_REPLICA_DIRS {
         std::fs::create_dir_all(replica_dir.join(sub)).map_err(|e| (sub, e))?;
-    }
-    Ok(())
-}
-
-/// Sanitize a user-provided name into a safe directory component:
-/// lowercase, only a-z 0-9 and hyphens, no leading/trailing hyphens.
-pub(crate) fn sanitize_name(raw: &str) -> Result<String, String> {
-    let sanitized: String = raw
-        .to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-
-    if sanitized.is_empty() {
-        return Err("Name must contain at least one alphanumeric character".into());
-    }
-    Ok(sanitized)
-}
-
-/// Validate that an existing entity name is safe for path operations.
-/// Unlike `sanitize_name`, this does NOT transform the name — it just rejects
-/// names that contain path traversal or separator characters.
-///
-/// `pub(crate)` so the sentinel-collision invariant test in
-/// `wg_delete_diagnostic::tests` can prove that no valid WG name can collide
-/// with the `BLOCKERS:` / `DIRTY_REPOS:` sentinel prefixes.
-pub(crate) fn validate_existing_name(name: &str, entity_label: &str) -> Result<(), String> {
-    if name.is_empty() {
-        return Err(format!("{} name cannot be empty", entity_label));
-    }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-        return Err(format!(
-            "Invalid {} name: only alphanumeric characters and hyphens are allowed",
-            entity_label
-        ));
     }
     Ok(())
 }
@@ -373,9 +330,4 @@ pub(super) fn write_local_config_value(
         Ok(())
     })?;
     Ok(())
-}
-
-pub(super) fn selected_ac_root(project: &Path) -> Result<PathBuf, String> {
-    existing_ac_root(project)
-        .ok_or_else(|| format!(".ac directory not found in {}", project.display()))
 }
