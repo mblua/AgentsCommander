@@ -3,6 +3,11 @@ use super::super::names::{
     validate_existing_name, RepoAssignment, TeamConfigResult,
 };
 use super::conventions;
+use crate::config::entity_creation::copies::{verify_owned_entry, verify_team_copies};
+use crate::filesystem::projects::entities::copies::{
+    write_owned_team_file, MatrixCopyHooks, MatrixCopyKind, MatrixCopyStage, OwnedCopyArtifacts,
+    OwnedCopyEntry,
+};
 use crate::filesystem::projects::entities::publication;
 use crate::filesystem::projects::entities::team_lock::{self, LockCause, LockFailure, LockStep};
 use std::path::{Path, PathBuf};
@@ -383,6 +388,46 @@ pub(crate) fn config_path(ac_root: &Path, team_name: &str) -> PathBuf {
     ac_root
         .join(format!("_team_{}", team_name))
         .join("config.json")
+}
+
+pub(crate) fn publish_owned_team(
+    owned: &mut OwnedCopyArtifacts,
+    bytes: &[u8],
+    copies: &[OwnedCopyArtifacts],
+    hooks: &mut MatrixCopyHooks<'_>,
+) -> Result<(), String> {
+    owned.create_directory(Path::new(""))?;
+    owned.create_directory(Path::new("memory"))?;
+    hooks.run(MatrixCopyStage::TeamConventions, &owned.root)?;
+    conventions::write_owned_empty(owned)?;
+    let temporary = PathBuf::from(format!(".config-{}.tmp", uuid::Uuid::new_v4()));
+    write_owned_team_file(owned, &temporary, bytes)?;
+    hooks.run(MatrixCopyStage::TeamPublication, &owned.root)?;
+    verify_team_copies(copies)?;
+    for entry in &owned.entries {
+        verify_owned_entry(owned, entry)?;
+    }
+    let temporary_entry = owned.entries.last().expect("temporary entry");
+    let identity = temporary_entry.identity;
+    let digest = temporary_entry.digest;
+    let config = owned.root.join("config.json");
+    publication::link_owned_team_config(&owned.root.join(&temporary), &config)
+        .map_err(|e| format!("Failed to publish config.json: {e}"))?;
+    owned.entries.push(OwnedCopyEntry {
+        relative: PathBuf::from("config.json"),
+        identity,
+        kind: MatrixCopyKind::File,
+        digest,
+    });
+    hooks.run(MatrixCopyStage::TeamUnlink, &owned.root)?;
+    // Verify both names and their directory chain before removing our temporary.
+    for entry in owned.entries.iter().rev().take(2) {
+        verify_owned_entry(owned, entry)?;
+    }
+    publication::unlink_owned_team_temporary(&owned.root.join(&temporary))
+        .map_err(|e| e.to_string())?;
+    owned.entries.retain(|entry| entry.relative != temporary);
+    Ok(())
 }
 
 #[cfg(test)]

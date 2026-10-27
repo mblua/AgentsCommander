@@ -142,5 +142,25 @@ pub(crate) fn clone_target_present(path: &Path) -> bool {
     disk::clone_target_present(path)
 }
 
+pub(crate) fn agent_matrix_candidates(root: &Path) -> impl Iterator<Item = PathBuf> {
+    disk::agent_matrix_candidates(root)
+        .into_iter()
+        .flatten()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("_agent_"))
+        })
+}
+
+pub(crate) fn agent_matrix_role(matrix: &Path) -> Option<String> {
+    let role = matrix.join("Role.md");
+    if disk::agent_matrix_role_present(&role) {
+        crate::filesystem::documents::read_repository_role(&role).ok()
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests;

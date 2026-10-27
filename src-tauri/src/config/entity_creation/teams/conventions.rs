@@ -14,3 +14,13 @@ pub(crate) fn write_empty_for_new_team(team_dir: &Path) -> Result<(), String> {
     publication::write_empty_team_conventions(&team_dir.join("conventions.md"))
         .map_err(|e| format!("Failed to write conventions.md: {}", e))
 }
+
+pub(crate) fn write_owned_empty(
+    owned: &mut crate::filesystem::projects::entities::copies::OwnedCopyArtifacts,
+) -> Result<(), String> {
+    crate::filesystem::projects::entities::copies::write_owned_team_file(
+        owned,
+        Path::new("conventions.md"),
+        &[],
+    )
+}

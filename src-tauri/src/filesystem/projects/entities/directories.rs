@@ -66,3 +66,14 @@ pub(crate) fn claim_matrix_directory(path: &Path) -> io::Result<()> {
 pub(crate) fn matrix_directory_present(path: &Path) -> bool {
     path.exists()
 }
+
+pub(crate) fn agent_matrix_candidates(root: &Path) -> io::Result<impl Iterator<Item = PathBuf>> {
+    Ok(std::fs::read_dir(root)?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir()))
+}
+
+pub(crate) fn agent_matrix_role_present(path: &Path) -> bool {
+    path.exists()
+}

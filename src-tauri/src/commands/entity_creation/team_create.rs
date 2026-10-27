@@ -2,15 +2,11 @@ use super::creation_trace::{CreationTrace, Origin, Outcome, Reason, Stage};
 use super::matrix_copy::MatrixCopyHooks;
 use super::matrix_layout::{
     parse_role_frontmatter, repo_dir_name_from_url, sanitize_name, selected_ac_root,
-    validate_existing_name,
 };
 use super::repo_clone::git_clone_async;
 use super::room_number::{determine_next_wg_number, room_dir_name, room_number_pad_width};
 use super::room_task::prepare_new_room_task_content;
-use super::team_config::{
-    create_new_team_config_on_disk_guarded, read_team_config, resolve_context_alert_argument,
-    ContextAlertWriteMode, TeamConfigMutationGuard,
-};
+use super::team_config::{read_team_config, resolve_context_alert_argument, ContextAlertWriteMode};
 use super::team_update::emit_coordinator_refresh;
 use super::workgroup::initialize_workgroup_replicas_on_disk_traced;
 use super::{
@@ -18,18 +14,10 @@ use super::{
     WorkgroupCloneResult,
 };
 use crate::config::ac_root::existing_ac_root;
-use crate::config::entity_creation::copies::copy_agent_matrix_strict_with_hooks;
 #[cfg(test)]
 pub(crate) use crate::config::entity_creation::copies::portable_source_ref;
-pub(crate) use crate::config::entity_creation::copies::{
-    preflight_team_sources, project_directory_identity, require_absent, verify_owned_entry,
-    verify_team_copies,
-};
-use crate::config::entity_creation::teams::normalized_team_config_bytes;
-use crate::filesystem::projects::entities::copies::{
-    cleanup_owned_copy_artifacts, write_owned_team_file, MatrixCopyKind, MatrixCopyStage,
-    OwnedCopyArtifacts, OwnedCopyEntry,
-};
+use crate::config::entity_creation::copies::project_directory_identity;
+use crate::config::entity_creation::directories;
 use crate::session::manager::SessionManager;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -70,25 +58,11 @@ pub(super) fn list_all_agents_for_destination(
             .unwrap_or("unknown")
             .to_string();
 
-        let entries = match std::fs::read_dir(&ac_root) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-
+        for path in directories::agent_matrix_candidates(&ac_root) {
             let dir_name = match path.file_name().and_then(|n| n.to_str()) {
                 Some(n) => n.to_string(),
                 None => continue,
             };
-
-            if !dir_name.starts_with("_agent_") {
-                continue;
-            }
 
             let agent_name_from_dir = dir_name
                 .strip_prefix("_agent_")
@@ -96,15 +70,9 @@ pub(super) fn list_all_agents_for_destination(
                 .to_string();
 
             // Try to read Role.md frontmatter for richer metadata
-            let role_path = path.join("Role.md");
-            let (fm_name, fm_description) = if role_path.exists() {
-                match std::fs::read_to_string(&role_path) {
-                    Ok(content) => parse_role_frontmatter(&content),
-                    Err(_) => (None, None),
-                }
-            } else {
-                (None, None)
-            };
+            let (fm_name, fm_description) = directories::agent_matrix_role(&path)
+                .map(|content| parse_role_frontmatter(&content))
+                .unwrap_or((None, None));
 
             agents.push(AgentInfo {
                 name: fm_name.unwrap_or(agent_name_from_dir),
@@ -123,91 +91,16 @@ pub(super) fn list_all_agents_for_destination(
     Ok(agents)
 }
 
-pub(super) fn publish_owned_team(
-    owned: &mut OwnedCopyArtifacts,
-    bytes: &[u8],
-    copies: &[OwnedCopyArtifacts],
-    hooks: &mut MatrixCopyHooks<'_>,
-) -> Result<(), String> {
-    owned.create_directory(Path::new(""))?;
-    owned.create_directory(Path::new("memory"))?;
-    hooks.run(MatrixCopyStage::TeamConventions, &owned.root)?;
-    write_owned_team_file(owned, Path::new("conventions.md"), &[])?;
-    let temporary = PathBuf::from(format!(".config-{}.tmp", uuid::Uuid::new_v4()));
-    write_owned_team_file(owned, &temporary, bytes)?;
-    hooks.run(MatrixCopyStage::TeamPublication, &owned.root)?;
-    verify_team_copies(copies)?;
-    for entry in &owned.entries {
-        verify_owned_entry(owned, entry)?;
-    }
-    let temporary_entry = owned.entries.last().expect("temporary entry");
-    let identity = temporary_entry.identity;
-    let digest = temporary_entry.digest;
-    std::fs::hard_link(owned.root.join(&temporary), owned.root.join("config.json"))
-        .map_err(|e| format!("Failed to publish config.json: {e}"))?;
-    owned.entries.push(OwnedCopyEntry {
-        relative: PathBuf::from("config.json"),
-        identity,
-        kind: MatrixCopyKind::File,
-        digest,
-    });
-    hooks.run(MatrixCopyStage::TeamUnlink, &owned.root)?;
-    // Verify both names and their directory chain before removing our temporary.
-    for entry in owned.entries.iter().rev().take(2) {
-        verify_owned_entry(owned, entry)?;
-    }
-    std::fs::remove_file(owned.root.join(&temporary)).map_err(|e| e.to_string())?;
-    owned.entries.retain(|entry| entry.relative != temporary);
-    Ok(())
-}
-
 pub(super) fn create_team_from_sources(
     project: &Path,
     name: &str,
-    mut config: TeamConfigResult,
+    config: TeamConfigResult,
     sources: Option<Vec<TeamAgentSource>>,
     hooks: &mut MatrixCopyHooks<'_>,
 ) -> Result<PathBuf, String> {
-    validate_existing_name(name, "Team")?;
-    let ac = selected_ac_root(project)?;
-    let guard = TeamConfigMutationGuard::acquire(&ac)?;
-    let Some(sources) = sources else {
-        return create_new_team_config_on_disk_guarded(&ac, name, &config, &guard);
-    };
-    let ac = ac.canonicalize().map_err(|e| e.to_string())?;
-    let mut team = OwnedCopyArtifacts {
-        root: ac.join(format!("_team_{name}")),
-        entries: Vec::new(),
-    };
-    require_absent(&team.root)?;
-    let foreign = preflight_team_sources(project, &ac, &mut config, sources)?;
-    let mut copies = Vec::new();
-    let result = (|| -> Result<(), String> {
-        for (source_project, agent) in foreign {
-            copies.push(copy_agent_matrix_strict_with_hooks(
-                &source_project,
-                &agent,
-                &ac,
-                &agent,
-                hooks,
-            )?);
-        }
-        let bytes = normalized_team_config_bytes(&ac, &config)?;
-        publish_owned_team(&mut team, &bytes, &copies, hooks)
-    })();
-    if let Err(primary) = result {
-        let mut errors = vec![primary];
-        if let Err(error) = hooks.run(MatrixCopyStage::BeforeCleanup, &team.root) {
-            errors.push(error);
-        }
-        for owned in std::iter::once(&team).chain(copies.iter().rev()) {
-            if let Err(error) = cleanup_owned_copy_artifacts(owned) {
-                errors.push(error);
-            }
-        }
-        return Err(errors.join("; "));
-    }
-    Ok(team.root)
+    crate::config::entity_creation::teams::create_team_from_sources(
+        project, name, config, sources, hooks,
+    )
 }
 
 /// Create a team directory inside {project_path}/.ac/_team_{name}/

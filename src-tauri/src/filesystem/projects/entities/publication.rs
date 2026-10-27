@@ -43,3 +43,11 @@ where
 pub(crate) fn write_created_role(path: &Path, bytes: &[u8]) -> io::Result<()> {
     std::fs::write(path, bytes)
 }
+
+pub(crate) fn link_owned_team_config(temporary: &Path, config: &Path) -> io::Result<()> {
+    std::fs::hard_link(temporary, config)
+}
+
+pub(crate) fn unlink_owned_team_temporary(temporary: &Path) -> io::Result<()> {
+    std::fs::remove_file(temporary)
+}
