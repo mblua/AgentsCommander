@@ -1,17 +1,10 @@
 #!/usr/bin/env node
 
-// Gate for #2447: fails when src-tauri/module-arcs.txt does not match what the two recording
-// steps produce from the current tree. It regenerates a candidate record into an OS temp
-// directory (never the work tree) and compares it with the committed record as raw bytes.
-//
-// The committed record was produced on Windows under Node v24.13.0 (#2462). If a later Node or
-// OS change moves the output, that is where to start looking.
-
+// Generate a validated, ignored record. Cycle policy belongs to check:cycles.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-
 import { realRunner, runSelfTest } from './gate-support.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -20,327 +13,168 @@ const PROJECTION = path.join(ROOT, 'scripts', '02-module-arc-record.mjs');
 const RECORD = path.join(ROOT, 'src-tauri', 'module-arcs.txt');
 const CRATE = path.join(ROOT, 'src-tauri');
 const EXPECTED_TOOL_VERSION = '1.1.1';
-
-const REGENERATE = `To regenerate the record, from the repo root:
-
-  node scripts/01-rust_module-dependency-cycles.mjs src-tauri --emit-graph graph.json --quiet
-  npm run record:arcs -- --graph graph.json
-
-then delete graph.json (it is gitignored and must never be committed) and commit
-src-tauri/module-arcs.txt. The detector exits 1 when it finds cycles; that is expected.`;
-
 const USAGE = `Usage: node scripts/check-module-arcs.mjs [--self-test] [--help]
-
-Regenerates the module-arc record from the current tree into a temp directory and
-fails when it differs from src-tauri/module-arcs.txt byte for byte.
-
-  --self-test  Run the embedded self-test (10 cases).
-  --help       Print this usage and exit 0.`;
-
+Generates validated ignored src-tauri/module-arcs.txt from the current tree.
+Run check:cycles separately. Never commit the generated record.
+--self-test runs validation/publication controls; --help prints this usage.`;
 class GateError extends Error {}
 
-function readRecord(recordPath) {
-  let bytes;
+function arcCount(bytes) {
+  let text;
   try {
-    bytes = fs.readFileSync(recordPath);
-  } catch (err) {
-    throw new GateError(`committed record ${recordPath} is missing or unreadable: ${err.message}`);
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch { throw new GateError('projection is not valid UTF-8'); }
+  if (text === '') return 0;
+  if (text.includes('\r') || !text.endsWith('\n')) {
+    throw new GateError('projection must use LF lines and a terminal LF');
   }
-  if (bytes.length === 0) throw new GateError(`committed record ${recordPath} is zero bytes`);
-  return bytes;
+  const lines = text.slice(0, -1).split('\n');
+  let previous;
+  for (const line of lines) {
+    const pair = line.split(' -> ');
+    const invalid = (id) => !id || /\s/u.test(id)
+      || id.includes(String.fromCharCode(0));
+    if (pair.length !== 2 || pair.some(invalid)) {
+      throw new GateError('projection has an invalid arc');
+    }
+    if (pair[0] === pair[1]) throw new GateError('projection contains a self-arc');
+    if (previous !== undefined && previous >= line) {
+      throw new GateError('projection must be sorted and unique');
+    }
+    previous = line;
+  }
+  return lines.length;
 }
 
-function splitLines(text) {
-  const lines = text.split('\n');
-  if (lines[lines.length - 1] === '') lines.pop();
-  return lines;
-}
-
-// Lines keep their terminator, so a CRLF line, or a last line without a newline, differs from
-// its LF twin.
-function terminatedLines(text) {
-  return text.split(/(?<=\n)/).filter((line) => line !== '');
-}
-
-const CONTEXT = 3;
-const NO_NEWLINE = '\\ No newline at end of file';
-
-// A unified diff (git-style headers, @@ hunks, 3 context lines, LCS) from the committed record to
-// the regenerated one, so `git apply` accepts it. Line ends are kept verbatim, never escaped.
-export function unifiedDiff(oldText, newText) {
-  const a = terminatedLines(oldText);
-  const b = terminatedLines(newText);
-  const n = a.length;
-  const m = b.length;
-  const lcs = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
-  for (let i = n - 1; i >= 0; i -= 1) {
-    for (let j = m - 1; j >= 0; j -= 1) {
-      lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
-    }
-  }
-  // ops: [kind, oldIndex, newIndex]
-  const ops = [];
-  let i = 0;
-  let j = 0;
-  while (i < n || j < m) {
-    if (i < n && j < m && a[i] === b[j]) {
-      ops.push([' ', i, j]);
-      i += 1;
-      j += 1;
-    } else if (j < m && (i === n || lcs[i][j + 1] >= lcs[i + 1][j])) {
-      ops.push(['+', i, j]);
-      j += 1;
-    } else {
-      ops.push(['-', i, j]);
-      i += 1;
-    }
-  }
-  const out = ['--- a/src-tauri/module-arcs.txt', '+++ b/src-tauri/module-arcs.txt'];
-  const emit = (prefix, line) => {
-    if (line.endsWith('\n')) out.push(prefix + line.slice(0, -1));
-    else out.push(prefix + line, NO_NEWLINE);
-  };
-  let k = 0;
-  while (k < ops.length) {
-    if (ops[k][0] === ' ') {
-      k += 1;
-      continue;
-    }
-    // One hunk absorbs every later change that sits within 2 * CONTEXT unchanged lines.
-    const first = Math.max(0, k - CONTEXT);
-    let last = k;
-    for (let e = k + 1; e < ops.length && e - last <= 2 * CONTEXT; e += 1) {
-      if (ops[e][0] !== ' ') last = e;
-    }
-    const stop = Math.min(ops.length, last + CONTEXT + 1);
-    const hunk = ops.slice(first, stop);
-    const oldCount = hunk.filter((op) => op[0] !== '+').length;
-    const newCount = hunk.filter((op) => op[0] !== '-').length;
-    const oldStart = oldCount === 0 ? hunk[0][1] : hunk[0][1] + 1;
-    const newStart = newCount === 0 ? hunk[0][2] : hunk[0][2] + 1;
-    out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`);
-    for (const [kind, oi, ni] of hunk) emit(kind, kind === '+' ? b[ni] : a[oi]);
-    k = stop;
-  }
-  return `${out.join('\n')}\n`;
-}
-
-// Applies a diff produced by unifiedDiff to `oldText`, strictly: headers, hunk counts and every
-// context or removed line must match. Used only by the self-test to prove the format.
-export function applyUnifiedDiff(oldText, diff) {
-  const a = terminatedLines(oldText);
-  const lines = diff.split('\n');
-  if (lines.pop() !== '') throw new Error('diff must end with a newline');
-  if (lines[0] !== '--- a/src-tauri/module-arcs.txt' || lines[1] !== '+++ b/src-tauri/module-arcs.txt') {
-    throw new Error('missing ---/+++ headers');
-  }
-  const result = [];
-  let pos = 0;
-  let li = 2;
-  if (li === lines.length) throw new Error('no hunk');
-  while (li < lines.length) {
-    const h = /^@@ -(\d+),(\d+) \+(\d+),(\d+) @@$/.exec(lines[li]);
-    if (!h) throw new Error(`bad hunk header: ${lines[li]}`);
-    li += 1;
-    let [oldStart, oldCount, , newCount] = h.slice(1).map(Number);
-    const start = oldCount === 0 ? oldStart : oldStart - 1;
-    if (start < pos) throw new Error('overlapping hunks');
-    result.push(...a.slice(pos, start));
-    pos = start;
-    while (oldCount > 0 || newCount > 0) {
-      const line = lines[li];
-      if (line === undefined) throw new Error('hunk shorter than its header');
-      li += 1;
-      let body = line.slice(1);
-      if (lines[li] === NO_NEWLINE) li += 1;
-      else body += '\n';
-      if (line[0] === '+') {
-        result.push(body);
-        newCount -= 1;
-        continue;
-      }
-      if (line[0] !== ' ' && line[0] !== '-') throw new Error(`bad hunk line: ${line}`);
-      if (a[pos] !== body) throw new Error(`hunk does not match line ${pos + 1}`);
-      pos += 1;
-      oldCount -= 1;
-      if (line[0] === ' ') {
-        result.push(body);
-        newCount -= 1;
-      }
-    }
-    if (oldCount !== 0 || newCount !== 0) throw new Error('hunk counts do not match its lines');
-  }
-  result.push(...a.slice(pos));
-  return result.join('');
-}
-
-// Runs the two steps with `runner` and compares. Returns { ok, message }; throws GateError.
-export async function checkModuleArcs({ runner = realRunner, recordPath = RECORD } = {}) {
-  const committed = readRecord(recordPath);
+export async function checkModuleArcs({
+  runner = realRunner, recordPath = RECORD,
+  publicationFs = { copyFileSync: fs.copyFileSync, renameSync: fs.renameSync },
+} = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'check-module-arcs-'));
+  let sibling;
   try {
     const graphPath = path.join(tmp, 'graph.json');
     const candidatePath = path.join(tmp, 'module-arcs.txt');
-
     const det = await runner([DETECTOR, CRATE, '--emit-graph', graphPath, '--quiet']);
-    if (det.exit === 3) {
-      throw new GateError(`detector exit 3: analysis incomplete, no graph written\n${det.stderr}`);
-    }
     if (det.exit !== 0 && det.exit !== 1) {
-      throw new GateError(`detector exit ${det.exit}: unexpected exit code (only 0 and 1 are accepted)\n${det.stderr}`);
+      throw new GateError(`detector exit ${det.exit}: no usable analysis\n${det.stderr}`);
     }
-
-    let graph;
-    try {
-      graph = JSON.parse(fs.readFileSync(graphPath, 'utf8'));
-    } catch (err) {
-      throw new GateError(`detector exit ${det.exit} but its graph is unreadable: ${err.message}`);
+    const graph = JSON.parse(fs.readFileSync(graphPath, 'utf8'));
+    if (graph?.tool?.version !== EXPECTED_TOOL_VERSION) {
+      throw new GateError(`detector TOOL_VERSION must be ${EXPECTED_TOOL_VERSION}`);
     }
-    const version = graph && graph.tool && graph.tool.version;
-    if (version !== EXPECTED_TOOL_VERSION) {
-      throw new GateError(`detector TOOL_VERSION is ${JSON.stringify(version)}, expected '${EXPECTED_TOOL_VERSION}'`);
-    }
-
     const proj = await runner([PROJECTION, '--graph', graphPath, '--out', candidatePath]);
-    if (proj.exit !== 0) {
-      throw new GateError(`projection exit ${proj.exit}\n${proj.stderr}`);
-    }
-    let candidate;
-    try {
-      candidate = fs.readFileSync(candidatePath);
-    } catch (err) {
-      throw new GateError(`projection exit 0 but wrote no record: ${err.message}`);
-    }
-
-    if (Buffer.compare(committed, candidate) === 0) {
-      const arcs = splitLines(committed.toString('utf8')).length;
-      return { ok: true, message: `module-arcs.txt is current: ${arcs} arcs, ${committed.length} bytes.` };
-    }
-    const diff = unifiedDiff(committed.toString('utf8'), candidate.toString('utf8'));
-    const crNote = committed.includes(13) || candidate.includes(13)
-      ? ' A carriage return is present; the diff keeps line endings verbatim.'
-      : '';
-    return {
-      ok: false,
-      message: `module-arcs.txt is STALE: it does not match the current tree `
-        + `(committed ${committed.length} bytes, regenerated ${candidate.length} bytes).${crNote}\n\n${diff}\n${REGENERATE}`,
-    };
-  } finally {
+    if (proj.exit !== 0) throw new GateError(`projection exit ${proj.exit}\n${proj.stderr}`);
+    const candidate = fs.readFileSync(candidatePath);
+    const count = arcCount(candidate);
+    // Unique sibling reservation, then same-directory rename, never a cross-volume rename.
+    const owned = `${recordPath}.${process.pid}.${path.basename(tmp)}.tmp`;
+    fs.closeSync(fs.openSync(owned, 'wx'));
+    sibling = owned;
+    publicationFs.copyFileSync(candidatePath, sibling);
+    publicationFs.renameSync(sibling, recordPath);
+    return { ok: true,
+      message: `Generated ${recordPath}: ${count} arcs, ${candidate.length} bytes.` };
+  } catch (err) { throw new GateError(err.message); }
+  finally {
+    if (sibling) fs.rmSync(sibling, { force: true });
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Self-test. Stub runners stand in for the detector and the projection; every file lives in its
-// own directory under os.tmpdir(), removed in a finally.
-
 const RECORD_TEXT = 'a -> b\na -> c\nb -> c\n';
-
-// A stub runner: the detector call writes a graph (unless exit is 3), the projection call
-// writes `candidate` to its --out.
-function stubRunner({ detectorExit = 0, candidate = RECORD_TEXT, version = EXPECTED_TOOL_VERSION } = {}) {
+function stubRunner({ detectorExit = 0, candidate = RECORD_TEXT,
+  version = EXPECTED_TOOL_VERSION, graph, projectionExit = 0,
+  missing = false, spawnError = false, malformed = false } = {}) {
   return async (argv) => {
     const flag = (name) => argv[argv.indexOf(name) + 1];
+    if (spawnError) throw new Error('spawn sentinel');
     if (argv[0] === DETECTOR) {
-      if (detectorExit === 0 || detectorExit === 1) {
-        fs.writeFileSync(flag('--emit-graph'), JSON.stringify({ tool: { version } }));
-      }
+      if (graph !== null) fs.writeFileSync(flag('--emit-graph'),
+        malformed ? '{' : JSON.stringify(graph ?? { tool: { version } }));
       return { exit: detectorExit, stdout: '', stderr: '' };
     }
-    fs.writeFileSync(flag('--out'), candidate);
-    return { exit: 0, stdout: '', stderr: '' };
+    if (!missing) fs.writeFileSync(flag('--out'), candidate);
+    return { exit: projectionExit, stdout: '', stderr: '' };
   };
 }
 
-async function withRecord(bytes, fn) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'check-module-arcs-self-'));
+async function publicationCase(options, failure, prior, publicationFs) {
+  if (options === undefined) options = {};
+  if (prior === undefined) prior = RECORD_TEXT;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'module-arcs-self-'));
   try {
     const recordPath = path.join(dir, 'module-arcs.txt');
-    if (bytes !== null) fs.writeFileSync(recordPath, bytes);
-    return await fn(recordPath);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-async function expectResult(recordBytes, runner, ok) {
-  return withRecord(recordBytes, async (recordPath) => {
-    const result = await checkModuleArcs({ runner, recordPath });
-    if (result.ok !== ok) throw new Error(`expected ok=${ok}, got ok=${result.ok}: ${result.message}`);
-    if (!ok && !result.message.includes('npm run record:arcs -- --graph graph.json')) {
-      throw new Error('a stale result must print the regeneration commands');
-    }
-  });
-}
-
-async function expectGateError(recordBytes, runner, needle) {
-  return withRecord(recordBytes, async (recordPath) => {
+    if (prior !== null) fs.writeFileSync(recordPath, prior);
+    let error;
     try {
-      await checkModuleArcs({ runner, recordPath });
-    } catch (err) {
-      if (!(err instanceof GateError)) throw err;
-      if (!err.message.includes(needle)) throw new Error(`gate error lacks "${needle}": ${err.message}`);
-      return;
+      const result = await checkModuleArcs({
+        runner: stubRunner(options), recordPath, publicationFs,
+      });
+      if (!result.ok) throw new Error(result.message);
+    } catch (err) { error = err; }
+    if (failure) {
+      if (!(error instanceof GateError) || !error.message.includes(failure)) {
+        throw new Error(`expected ${failure}, got ${error?.message ?? 'success'}`);
+      }
+      if (!fs.readFileSync(recordPath).equals(Buffer.from(prior))) {
+        throw new Error('failure changed prior final');
+      }
+    } else {
+      if (error) throw error;
+      if (!fs.readFileSync(recordPath).equals(Buffer.from(options.candidate ?? RECORD_TEXT))) {
+        throw new Error('published bytes differ');
+      }
     }
-    throw new Error('expected a gate error, got a result');
-  });
-}
-
-// Every pair must round-trip through a strict unified-diff parser: headers, @@ counts, context.
-function diffFormatCase() {
-  const many = Array.from({ length: 40 }, (_, n) => `m${String(n).padStart(2, '0')} -> x\n`);
-  const pairs = [
-    ['a -> b\n', 'a -> b\na -> c\n'],
-    [RECORD_TEXT, 'a -> b\nb -> c\n'],
-    [RECORD_TEXT, RECORD_TEXT.replace(/\n/g, '\r\n')],
-    [RECORD_TEXT, RECORD_TEXT.slice(0, -1)],
-    [many.join(''), [...many.slice(0, 5), 'new -> y\n', ...many.slice(5, 30), ...many.slice(31)].join('')],
-    ['', RECORD_TEXT],
-  ];
-  for (const [oldText, newText] of pairs) {
-    const diff = unifiedDiff(oldText, newText);
-    if (!/^--- a\/\S+\n\+\+\+ b\/\S+\n@@ -\d+,\d+ \+\d+,\d+ @@\n/.test(diff)) {
-      throw new Error(`not a unified diff:\n${diff}`);
+    if (fs.readdirSync(dir).some((name) => name !== 'module-arcs.txt')) {
+      throw new Error('owned sibling temp leaked');
     }
-    if (/\(line \d+\)/.test(diff)) throw new Error('diff lines must carry the arc text only');
-    if (applyUnifiedDiff(oldText, diff) !== newText) throw new Error(`diff does not reproduce the candidate:\n${diff}`);
-  }
-  const twoHunks = unifiedDiff(pairs[4][0], pairs[4][1]);
-  if ((twoHunks.match(/^@@ /gm) || []).length !== 2) throw new Error(`expected two hunks:\n${twoHunks}`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
 const CASES = [
-  ['equal bytes pass', () => expectResult(RECORD_TEXT, stubRunner(), true)],
-  ['one arc removed fails', () => expectResult(RECORD_TEXT, stubRunner({ candidate: 'a -> b\nb -> c\n' }), false)],
-  ['one arc added fails', () => expectResult(RECORD_TEXT, stubRunner({ candidate: `${RECORD_TEXT}c -> d\n` }), false)],
-  ['CRLF against LF fails', () => expectResult(RECORD_TEXT.replace(/\n/g, '\r\n'), stubRunner(), false)],
-  ['missing record is a gate error', () => expectGateError(null, stubRunner(), 'missing or unreadable')],
-  ['zero-byte record is a gate error', () => expectGateError('', stubRunner(), 'zero bytes')],
-  ['detector exit 1 with a written graph passes', () => expectResult(RECORD_TEXT, stubRunner({ detectorExit: 1 }), true)],
-  ['detector exit 3 is a gate error', () => expectGateError(RECORD_TEXT, stubRunner({ detectorExit: 3 }), 'detector exit 3')],
-  ['detector exit 7 is a gate error naming the code', () => expectGateError(RECORD_TEXT, stubRunner({ detectorExit: 7 }), 'detector exit 7')],
-  ['the diff is a valid unified diff that turns the committed record into the candidate', diffFormatCase],
+  ['absent final generated', () => publicationCase({}, null, null)],
+  ['stale final replaced', () => publicationCase({}, null, 'stale')],
+  ['valid DAG arc added', () => publicationCase({ candidate: `${RECORD_TEXT}c -> d\n` })],
+  ['valid DAG arc removed', () => publicationCase({ candidate: 'a -> b\n' })],
+  ['zero arcs accepted', () => publicationCase({ candidate: '' })],
+  ['detector1 accepted', () => publicationCase({ detectorExit: 1 })],
+  ['detector3 rejected', () => publicationCase({ detectorExit: 3 }, 'detector exit 3')],
+  ['unexpected exit rejected', () => publicationCase({ detectorExit: 7 }, 'detector exit 7')],
+  ['spawn failure rejected', () => publicationCase({ spawnError: true }, 'spawn sentinel')],
+  ['missing graph rejected', () => publicationCase({ graph: null }, 'ENOENT')],
+  ['malformed graph rejected', () => publicationCase({ malformed: true }, 'JSON')],
+  ['bad version rejected', () => publicationCase({ version: 'wrong' }, 'TOOL_VERSION')],
+  ['projection failure rejected',
+    () => publicationCase({ projectionExit: 3 }, 'projection exit')],
+  ['missing candidate cannot reuse final',
+    () => publicationCase({ missing: true }, 'ENOENT')],
+  ['bad UTF8 rejected', () => publicationCase({ candidate: Buffer.from([255]) }, 'UTF-8')],
+  ['CRLF rejected', () => publicationCase({ candidate: 'a -> b\r\n' }, 'LF')],
+  ['missing terminal LF rejected', () => publicationCase({ candidate: 'a -> b' }, 'LF')],
+  ['unsorted rejected', () => publicationCase({ candidate: 'b -> c\na -> b\n' }, 'sorted')],
+  ['duplicate rejected', () => publicationCase({ candidate: 'a -> b\na -> b\n' }, 'unique')],
+  ['self arc rejected', () => publicationCase({ candidate: 'a -> a\n' }, 'self-arc')],
+  ['empty endpoint rejected', () => publicationCase({ candidate: 'a -> \n' }, 'invalid arc')],
+  ...['copyFileSync', 'renameSync'].map((operation) => [
+    `${operation} sentinel preserves final`,
+    () => publicationCase({}, `${operation} sentinel`, RECORD_TEXT, {
+      copyFileSync: fs.copyFileSync, renameSync: fs.renameSync,
+      [operation]: () => { throw new Error(`${operation} sentinel`); },
+    }),
+  ]),
 ];
 
-const selfTest = () => runSelfTest(CASES);
-
 async function main(args) {
-  if (args.includes('--help')) {
-    console.log(USAGE);
-    return 0;
-  }
-  if (args.includes('--self-test')) return selfTest();
-  if (args.length > 0) {
-    console.error(`unknown argument: ${args[0]}\n\n${USAGE}`);
-    return 2;
-  }
+  if (args.includes('--help')) { console.log(USAGE); return 0; }
+  if (args.includes('--self-test')) return runSelfTest(CASES);
+  if (args.length) { console.error(USAGE); return 2; }
   try {
     const result = await checkModuleArcs();
-    (result.ok ? console.log : console.error)(result.message);
-    return result.ok ? 0 : 1;
+    console.log(result.message);
+    return 0;
   } catch (err) {
-    if (!(err instanceof GateError)) throw err;
-    console.error(`check-module-arcs: gate error: ${err.message}\n\n${REGENERATE}`);
+    console.error(`check-module-arcs: gate error: ${err.message}`);
     return 3;
   }
 }

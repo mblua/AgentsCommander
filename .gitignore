@@ -38,3 +38,7 @@ artifacts/
 
 # Portable zip staging output (#1589)
 dist-portable/
+
+# Generated module arcs and task-owned publication temporaries (#3288).
+/src-tauri/module-arcs.txt
+/src-tauri/module-arcs.txt.*.tmp
