@@ -551,6 +551,55 @@ async fn issue_3189_retry_callback_pending_cancels() {
 }
 
 #[tokio::test]
+async fn issue_3189_retry_callback_waiting_defers() {
+    {
+        let (app, id, backend) = issue_3189_notice_app().await;
+        let app = app.handle();
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let permit = PtyManager::acquire_input_writer(&pty, id).await.unwrap();
+        let signal = Arc::new(tokio::sync::Notify::new());
+        self_handoff::failure::register_inject_signal(id, Some(signal.clone()));
+        let report = MailboxPoller::report_self_handoff_failure(app, issue_3189_failure(id));
+        tokio::pin!(report);
+        tokio::select! {
+            _ = signal.notified() => {}
+            _ = &mut report => panic!("report must wait for held input permit"),
+            _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("injector not reached"),
+        }
+        // Poll with a dedicated waker until blocked. The permit release must wake it;
+        // this proves it registered at acquire, rather than merely reaching the signal.
+        let wake = Arc::new(Issue3189Wake(AtomicU32::new(0)));
+        let waker = std::task::Waker::from(wake.clone());
+        let mut context = std::task::Context::from_waker(&waker);
+        assert!(std::future::Future::poll(report.as_mut(), &mut context).is_pending());
+        assert!(backend.writes.lock().unwrap().is_empty());
+        let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        manager.read().await.mark_busy(id).await;
+        let before = wake.0.load(Ordering::SeqCst);
+        drop(permit);
+        assert!(
+            wake.0.load(Ordering::SeqCst) > before,
+            "injector must await held permit"
+        );
+        assert!(futures::poll!(&mut report).is_pending());
+        assert!(backend.writes.lock().unwrap().is_empty());
+        manager.read().await.mark_idle(id).await;
+        tokio::time::timeout(Duration::from_secs(5), report)
+            .await
+            .unwrap();
+        self_handoff::failure::register_inject_signal(id, None);
+        let warnings = issue_3189_warnings(app);
+
+        assert_eq!(backend.writes.lock().unwrap().len(), 3);
+        assert_eq!(warnings.len(), 1);
+        let writes = backend.writes.lock().unwrap();
+        assert!(String::from_utf8_lossy(&writes[0])
+            .starts_with("[AgentsCommander self-handoff failure]"));
+        assert_eq!(&writes[1..], &[b"\r".to_vec(), b"\r".to_vec()]);
+    }
+}
+
+#[tokio::test]
 async fn issue_3189_hard_write_and_enter() {
     for failure_at in [0, 1] {
         let (app, id, backend) = issue_3189_notice_app().await;
@@ -714,6 +763,40 @@ fn issue_3189_adapter_wiring() {
         assert!(spawn.contains("Self::run_self_switch_after_sustained_idle("));
         assert!(spawn.contains(flavor));
     }
+    let adapter = source
+        .split_once("async fn run_self_switch_after_sustained_idle")
+        .unwrap()
+        .1;
+    let persist = adapter
+        .split_once("let persist = move")
+        .unwrap()
+        .1
+        .split_once("let app_for_restart")
+        .unwrap()
+        .0;
+    let guard = persist
+        .split_once("crate::config::coding_agent_profiles::set_replica_coding_agent_selection(")
+        .unwrap()
+        .0;
+    assert!(guard.contains(
+        "if flavor.action == SELF_HANDOFF_FLAVOR_RESTART.action {
+                    return Ok(());"
+    ));
+    let restart = adapter
+        .split_once("let restart = move")
+        .unwrap()
+        .1
+        .split_once("let app_for_inject")
+        .unwrap()
+        .0;
+    assert!(restart.contains(
+        "if flavor.action == SELF_HANDOFF_FLAVOR_SWITCH.action {
+                        Some(profile)"
+    ));
+    let decode = restart.split_once("} else {").unwrap().1;
+    assert!(decode
+        .trim_start()
+        .starts_with("decode_restart_profile_from_seam(&profile)"));
     assert!(!source.contains("async fn run_self_restart_after_sustained_idle"));
 }
 

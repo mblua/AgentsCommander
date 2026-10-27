@@ -164,13 +164,10 @@ async fn handle_self_restart_inherited_profile_response_carries_null_profile() {
 /// For the same structural reason there is no "persist saw ZERO calls" clause. The shared
 /// driver calls `persist` exactly once in the `InjectClear` arm for BOTH flavors, and the
 /// flavor refactor deliberately changed no control flow. What separates a restart from a
-/// switch is not the CALL but the CLOSURE: `run_self_restart_after_sustained_idle` supplies
-/// an inert one, so `set_replica_coding_agent_selection` is never reached. That closure is
-/// caller-supplied, so NO driver-seam test can pin it; asserting zero here would assert
-/// against the driver's own contract, and asserting zero on a closure this test itself
-/// supplies would be vacuous. The invariant is pinned where it is observable: A3's grep over
-/// `handle_self_restart`, `run_self_restart_after_sustained_idle` and the restart persist
-/// closure, and T4's positive assertion that the Selection-UI cells survive the handler with
+/// switch is the closure: the shared production adapter returns early for restart.
+/// The caller-supplied closure cannot be pinned by this driver-seam test.
+/// The invariant and None-profile decoding are pinned by `issue_3189_adapter_wiring`.
+/// T4 also asserts that the Selection-UI cells survive the handler with
 /// a deliberately mismatched value in place. Asserting the call count is `1` here is not
 /// vacuous: it pins that the flavor parameter did not fork the shared control flow.
 #[tokio::test]
