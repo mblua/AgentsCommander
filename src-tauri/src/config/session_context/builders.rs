@@ -1,3 +1,4 @@
+use super::default_context::SELF_CLEAR_MANUAL_SECTION;
 #[cfg(test)]
 use super::ROOT_CONTEXT_TEST_CONFIG;
 use super::{
@@ -631,6 +632,7 @@ pub(crate) fn build_root_agent_context_at(
         first = false;
         combined.push_str(&content);
     }
+    combined.push_str(SELF_CLEAR_MANUAL_SECTION);
     write_root_context_cache(cwd, config_dir, &combined, "replica-context")
 }
 

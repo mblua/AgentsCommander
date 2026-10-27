@@ -6,8 +6,8 @@ use serde::Serialize;
 use crate::commands::entity_creation::{list_workgroup_dirs, parse_task_title};
 use crate::config::daemon_pid::{detect_daemon_state, DaemonState};
 use crate::config::remote_activity_cache::{
-    read_snapshot, snapshot_is_fresh, PersistedCiState, PersistedRepoCi, RemoteActivitySnapshot,
-    REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME, REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS,
+    read_snapshot_from_dir, snapshot_is_fresh, PersistedCiState, PersistedRepoCi,
+    RemoteActivitySnapshot, REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS,
 };
 use crate::config::sessions_persistence::{load_sessions_raw, PersistedSession};
 use crate::session::session::persisted_is_working;
@@ -292,8 +292,7 @@ pub(super) fn read_fresh_ci_snapshot(
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<RemoteActivitySnapshot, String> {
     let dir = dir.ok_or_else(|| "the instance config directory is unavailable".to_string())?;
-    let path = dir.join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME);
-    let snapshot = read_snapshot(&path)?;
+    let snapshot = read_snapshot_from_dir(dir)?;
     if !snapshot_is_fresh(&snapshot, now) {
         return Err(format!(
             "the remote activity snapshot is not current \

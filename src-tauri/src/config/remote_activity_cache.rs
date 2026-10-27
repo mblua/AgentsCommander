@@ -16,10 +16,7 @@ use std::path::Path;
 use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
-/// The artifact name re-exported so both call sites join the registry's
-/// constant through this module instead of importing
-/// `config::instance_artifacts` directly (which would add a second
-/// CLI-to-registry arc for a name).
+/// Artifact name shared by owner directory operations and compatible path-based tests.
 pub(crate) use super::instance_artifacts::REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME;
 use super::local_config_io::write_file_atomic;
 
@@ -95,10 +92,9 @@ fn sorted_dedup(values: &[u64]) -> Vec<u64> {
     values
 }
 
-/// Atomically publish the whole-file snapshot to `path` (the caller joins
-/// `REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME` onto its directory, the only permitted
-/// destination). Entries are sorted by their RAW path string before
-/// serialization, so the bytes are deterministic and no CLI path normalizer is
+/// Atomically publish to an explicit path for compatibility with existing fixtures.
+/// Production callers use `write_snapshot_to_dir`. Entries are sorted by their RAW path
+/// string before serialization, so the bytes are deterministic and no CLI path normalizer is
 /// needed here. A failure returns the writer's message and leaves no partial
 /// file behind (`write_file_atomic` publishes by rename).
 pub(crate) fn write_snapshot(
@@ -125,6 +121,19 @@ pub(crate) fn write_snapshot(
     let bytes = serde_json::to_vec_pretty(&dto)
         .map_err(|e| format!("failed to serialize remote activity snapshot: {e}"))?;
     write_file_atomic(path, &bytes)
+}
+
+/// Publish the instance snapshot in its config directory using the existing atomic codec.
+pub(crate) fn write_snapshot_to_dir(
+    dir: &Path,
+    generated_at: DateTime<Utc>,
+    repos: &[(String, PersistedRepoCi)],
+) -> Result<(), String> {
+    write_snapshot(
+        &dir.join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME),
+        generated_at,
+        repos,
+    )
 }
 
 /// Read and validate `path`, the reader the CLI and the producer round-trip
@@ -164,6 +173,11 @@ pub(crate) fn read_snapshot(path: &Path) -> Result<RemoteActivitySnapshot, Strin
         generated_at,
         repos,
     })
+}
+
+/// Read the instance snapshot from its config directory using the existing codec.
+pub(crate) fn read_snapshot_from_dir(dir: &Path) -> Result<RemoteActivitySnapshot, String> {
+    read_snapshot(&dir.join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME))
 }
 
 /// Whether `snapshot` may be read as current at `now`: at most

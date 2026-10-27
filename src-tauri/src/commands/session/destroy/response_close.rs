@@ -10,6 +10,7 @@ use crate::pty::manager::PtyManager;
 use crate::resource_monitor::ResourceMonitorState;
 use crate::session::manager::acquire_carrier_mutation_permit;
 use crate::session::manager::SessionManager;
+use crate::session::selection::response_close::ResponseEffectOwner;
 use crate::session::selection::SelectionSource;
 use crate::session::selection::SelectionTransaction;
 use crate::session::session::SessionCommunicationKind;
@@ -23,146 +24,33 @@ use tauri::Emitter;
 use tauri::Manager;
 use uuid::Uuid;
 
-#[derive(Clone)]
-pub(crate) enum ResponseEffectState<T> {
-    NotStarted,
-    Running,
-    Completed(Result<T, String>),
-    Ambiguous,
-}
-
-pub(crate) struct ResponseEffectRecord {
-    stages: Vec<(&'static str, ResponseEffectState<()>)>,
-    group: Option<ResponseEffectState<crate::resource_monitor::ResourceKillResult>>,
-    group_worker: Option<
-        tokio::task::JoinHandle<Result<crate::resource_monitor::ResourceKillResult, String>>,
-    >,
-    sealed: bool,
-}
-
-pub(crate) struct ResponseEffectOwner {
-    ticket: crate::pty::manager::ResponseCloseTicket,
-    registration: crate::session::selection::ResponseCloseRegistration,
-    backend: Arc<dyn crate::pty::backend::PtyBackend>,
-    record: Mutex<ResponseEffectRecord>,
-}
-
-pub(crate) fn response_effect_owners(
-) -> &'static Mutex<std::collections::HashMap<Uuid, Arc<ResponseEffectOwner>>> {
-    static OWNERS: std::sync::OnceLock<
-        Mutex<std::collections::HashMap<Uuid, Arc<ResponseEffectOwner>>>,
-    > = std::sync::OnceLock::new();
-    OWNERS.get_or_init(Default::default)
-}
-
-impl ResponseEffectOwner {
-    fn start(&self, name: &'static str) -> Option<usize> {
-        let mut record = self.record.lock().ok()?;
-        if record.sealed || record.stages.len() == record.stages.capacity() {
-            return None;
-        }
-        let index = record.stages.len();
-        record.stages.push((name, ResponseEffectState::NotStarted));
-        record.stages[index].1 = ResponseEffectState::Running;
-        Some(index)
-    }
-
-    fn complete(&self, index: usize, outcome: Result<(), String>) -> Option<()> {
-        let mut record = self.record.lock().ok()?;
-        let (_, stage) = record.stages.get_mut(index)?;
-        if !matches!(stage, ResponseEffectState::Running) {
-            return None;
-        }
-        *stage = ResponseEffectState::Completed(outcome);
-        Some(())
-    }
-
-    fn terminal(&self) -> bool {
-        let Ok(record) = self.record.lock() else {
-            return false;
-        };
-        record.sealed
-            && record
-                .stages
-                .iter()
-                .all(|(_, stage)| matches!(stage, ResponseEffectState::Completed(_)))
-            && record
-                .group
-                .as_ref()
-                .is_none_or(|stage| matches!(stage, ResponseEffectState::Completed(_)))
-    }
-
-    fn kill_failed(&self) -> bool {
-        self.record.lock().ok().is_some_and(|record| {
-            record.stages.iter().any(|(name, stage)| {
-                *name == "kill" && matches!(stage, ResponseEffectState::Completed(Err(_)))
-            })
-        })
-    }
-
-    fn seal(&self) -> Option<()> {
-        self.record.lock().ok()?.sealed = true;
-        Some(())
-    }
+pub(crate) fn response_effect_owners<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Arc<crate::session::selection::response_close::ResponseEffectRegistry> {
+    app.state::<crate::app_state::AppOwners>()
+        .response_effects
+        .clone()
 }
 
 pub(crate) async fn response_group_effect(
     owner: &Arc<ResponseEffectOwner>,
     monitor: &Arc<ResourceMonitorState>,
 ) -> Option<()> {
-    let id = owner.registration.member.session_id;
+    let id = owner.registration().member.session_id;
     if !monitor.has_registered_group(id) {
         return Some(());
     }
-    {
-        let mut record = owner.record.lock().ok()?;
-        record.group = Some(ResponseEffectState::Running);
+    owner.start_group(|| {
         let monitor = monitor.clone();
-        owner.backend.publish_stop_witness(id, "session-destroy");
-        record.group_worker = Some(tokio::task::spawn_blocking(move || {
+        owner.backend().publish_stop_witness(id, "session-destroy");
+        tokio::task::spawn_blocking(move || {
             monitor.kill_group(
                 id,
                 crate::resource_monitor::ResourceKillReason::SessionDestroy,
             )
-        }));
-    }
-    // The JoinHandle stays in the retained owner while it is polled. Losing
-    // this waiter does not drop the only handle or fabricate a group outcome.
-    std::future::poll_fn(|cx| {
-        use std::future::Future;
-        let Ok(mut record) = owner.record.lock() else {
-            return std::task::Poll::Pending;
-        };
-        let Some(worker) = record.group_worker.as_mut() else {
-            return std::task::Poll::Pending;
-        };
-        match std::pin::Pin::new(worker).poll(cx) {
-            std::task::Poll::Pending => std::task::Poll::Pending,
-            std::task::Poll::Ready(Ok(outcome)) => {
-                if let Err(error) = &outcome {
-                    log::warn!(
-                        "[session] resource cleanup failed session={} source=ResponseClose: {}",
-                        id,
-                        error
-                    );
-                }
-                record.group = Some(ResponseEffectState::Completed(outcome));
-                let _ = record.group_worker.take();
-                std::task::Poll::Ready(Some(()))
-            }
-            std::task::Poll::Ready(Err(error)) => {
-                record.group = Some(ResponseEffectState::Ambiguous);
-                let _ = record.group_worker.take();
-                log::warn!(
-                    "[session] resource cleanup task failed session={} source=ResponseClose: {}",
-                    id,
-                    error
-                );
-                std::task::Poll::Ready(None)
-            }
-        }
-    })
-    .await
+        })
+    })?;
+    std::future::poll_fn(|cx| owner.poll_group(cx, id)).await
 }
 
 pub(crate) async fn execute_response_close_transaction<R: tauri::Runtime>(
@@ -252,8 +140,8 @@ pub(crate) async fn commit_response_close<R: tauri::Runtime>(
     manager: &SessionManager,
     owner: &Arc<ResponseEffectOwner>,
 ) -> bool {
-    let member = &owner.registration.member;
-    let coordinator = &owner.registration.coordinator;
+    let member = &owner.registration().member;
+    let coordinator = &owner.registration().coordinator;
     let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
     let Ok(member_route) = PtyManager::snapshot_route_proof(&pty, member.session_id) else {
         return false;
@@ -297,7 +185,7 @@ pub(crate) async fn commit_response_close<R: tauri::Runtime>(
     manager
         .with_current_carrier_snapshot(&permit, |current| {
             let Some((member_row, coordinator_row)) =
-                response_close_current_rows(current, &owner.registration)
+                response_close_current_rows(current, owner.registration())
             else {
                 return false;
             };
@@ -323,7 +211,7 @@ pub(crate) async fn commit_response_close<R: tauri::Runtime>(
                 is_working(coordinator_row),
                 now,
             );
-            let carrier = &owner.registration.carrier;
+            let carrier = &owner.registration().carrier;
             try_with_agents_layer_publication_state(&carrier.directory, |suppressed| {
                 if suppressed {
                     return None;
@@ -345,7 +233,7 @@ pub(crate) async fn commit_response_close<R: tauri::Runtime>(
                     CarrierCheckpointTransition::BeginClosing,
                     |_| {
                         member_authority
-                            .try_commit_response_close(&tracker, &owner.ticket, now)
+                            .try_commit_response_close(&tracker, owner.ticket(), now)
                             .ok()
                     },
                 )
@@ -378,32 +266,18 @@ pub(crate) async fn execute_response_close_core<R: tauri::Runtime>(
         let pty = pty.lock().map_err(|_| "pty_manager_poisoned".to_owned())?;
         pty.backend_for_kind(binding.member.backend)
     };
-    let owner = Arc::new(ResponseEffectOwner {
-        ticket,
-        registration,
-        backend,
-        record: Mutex::new(ResponseEffectRecord {
-            stages: Vec::with_capacity(16),
-            group: None,
-            group_worker: None,
-            sealed: false,
-        }),
-    });
+    let owner = Arc::new(ResponseEffectOwner::new(ticket, registration, backend));
+    if !response_effect_owners(transaction.app())
+        .insert_if_absent(binding.member.session_id, owner.clone())
+        .map_err(|_| "response_effect_owner_poisoned".to_owned())?
     {
-        let mut owners = response_effect_owners()
-            .lock()
-            .map_err(|_| "response_effect_owner_poisoned".to_owned())?;
-        if owners.contains_key(&binding.member.session_id) {
-            return Ok(ResponseCloseDisposition::ReconcilePending);
-        }
-        owners.insert(binding.member.session_id, owner.clone());
+        return Ok(ResponseCloseDisposition::ReconcilePending);
     }
     let manager = transaction.manager().await;
     if !commit_response_close(transaction.app(), &manager, &owner).await {
-        response_effect_owners()
-            .lock()
-            .map_err(|_| "response_effect_owner_poisoned".to_owned())?
-            .remove(&binding.member.session_id);
+        response_effect_owners(transaction.app())
+            .remove(binding.member.session_id)
+            .map_err(|_| "response_effect_owner_poisoned".to_owned())?;
         return Ok(ResponseCloseDisposition::Rejected);
     }
     let monitor = transaction
@@ -418,14 +292,14 @@ pub(crate) async fn execute_response_close_core<R: tauri::Runtime>(
         return Ok(ResponseCloseDisposition::ReconcilePending);
     };
     let kill_result = owner
-        .backend
+        .backend()
         .kill(binding.member.session_id)
         .map_err(|error| error.to_string());
     let kill_error = kill_result.as_ref().err().cloned();
     if owner.complete(kill, kill_result).is_none() {
         return Ok(ResponseCloseDisposition::ReconcilePending);
     }
-    if owner.backend.has_session(binding.member.session_id) {
+    if owner.backend().has_session(binding.member.session_id) {
         let _ = owner.seal();
         return Ok(settle_response_close(transaction.app(), &manager, &owner)
             .await
@@ -485,7 +359,7 @@ pub(crate) async fn run_response_close_auxiliary<R: tauri::Runtime>(
     manager: &SessionManager,
     owner: &Arc<ResponseEffectOwner>,
 ) {
-    let id = owner.registration.member.session_id;
+    let id = owner.registration().member.session_id;
     let Some(detach) = owner.start("detach") else {
         return;
     };
@@ -601,7 +475,7 @@ pub(crate) async fn settle_response_close<R: tauri::Runtime>(
     if !owner.terminal() {
         return None;
     }
-    let binding = owner.ticket.committed_binding();
+    let binding = owner.ticket().committed_binding();
     let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
     let route = PtyManager::snapshot_route_proof(&pty, binding.member.session_id).ok()?;
     let authority = PtyManager::authority_route_proof(&pty, binding.member.session_id).ok()?;
@@ -648,7 +522,7 @@ pub(crate) async fn settle_response_close<R: tauri::Runtime>(
             if tracker.generation(row.id) != Some(binding.member.generation) {
                 return None;
             }
-            let absent = !owner.backend.has_session(row.id);
+            let absent = !owner.backend().has_session(row.id);
             let dormant = absent
                 && matches!(row.status, SessionStatus::Exited(0))
                 && !row.was_detached
@@ -659,7 +533,7 @@ pub(crate) async fn settle_response_close<R: tauri::Runtime>(
                 && current.versions.get(&row.id).is_some_and(|version| {
                     *version >= binding.member.carrier_version && *version < u64::MAX
                 })
-                && owner.backend.context_session_liveness(row.id) == ContextSessionLiveness::Live;
+                && owner.backend().context_session_liveness(row.id) == ContextSessionLiveness::Live;
             if !dormant && !live {
                 return None;
             }
@@ -674,7 +548,7 @@ pub(crate) async fn settle_response_close<R: tauri::Runtime>(
             } else {
                 None
             };
-            let carrier = &owner.registration.carrier;
+            let carrier = &owner.registration().carrier;
             try_with_agents_layer_publication_state(&carrier.directory, |suppressed| {
                 if suppressed {
                     return None;
@@ -722,7 +596,7 @@ pub(crate) async fn settle_response_close<R: tauri::Runtime>(
                     };
                     tracker
                         .finish_response_close(
-                            &owner.ticket,
+                            owner.ticket(),
                             ResponseCloseSettlementEvidence {
                                 committed_binding: binding.clone(),
                                 current_settlement,
@@ -743,10 +617,9 @@ pub(crate) async fn settle_response_close<R: tauri::Runtime>(
         .await;
     drop(permit);
     if let Some(disposition) = settled {
-        response_effect_owners()
-            .lock()
-            .ok()?
-            .remove(&binding.member.session_id);
+        response_effect_owners(app)
+            .remove(binding.member.session_id)
+            .ok()?;
         crate::session::selection::forget_response_close_registration(binding.member.session_id);
 
         if matches!(disposition, ResponseCloseDisposition::Dormant) {
@@ -763,10 +636,7 @@ pub(crate) async fn reconcile_response_closes<R: tauri::Runtime>(app: &AppHandle
     let Some(tracker) = app.try_state::<crate::pty::manager::ResponseCloseState>() else {
         return;
     };
-    let owners = response_effect_owners()
-        .lock()
-        .ok()
-        .map(|owners| owners.values().cloned().collect::<Vec<_>>());
+    let owners = response_effect_owners(app).snapshot();
     let Some(owners) = owners.filter(|owners| !owners.is_empty()) else {
         return;
     };
@@ -776,7 +646,7 @@ pub(crate) async fn reconcile_response_closes<R: tauri::Runtime>(app: &AppHandle
         .await
         .clone();
     for owner in owners {
-        if !owner.registration.tracker.same_state(&tracker) || !owner.terminal() {
+        if !owner.registration().tracker.same_state(&tracker) || !owner.terminal() {
             continue;
         }
         // Reconcile only the latest carrier, without repeating an observed

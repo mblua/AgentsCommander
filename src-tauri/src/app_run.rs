@@ -42,13 +42,13 @@ pub(crate) fn run(
     #[cfg(target_os = "linux")]
     let display_env = crate::screenshot::display_env_snapshot();
 
-    preflight_config_startup()?;
+    preflight_config_startup(owners.startup_summary.as_ref())?;
 
     // Same backend the CLI path now installs in `main.rs` — see `logging.rs`
     // for the rationale. Idempotent, so a hypothetical second call (or the
     // CLI path having already run in this process) is a no-op.
     crate::logging::init_logger();
-    log_naming_migration_summary();
+    log_naming_migration_summary(owners.startup_summary.as_ref());
 
     // Generate master token — printed to stdout and persisted to master-token.txt for CLI use
     let master_token = MasterToken::new(uuid::Uuid::new_v4().to_string());

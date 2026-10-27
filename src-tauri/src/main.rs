@@ -57,7 +57,9 @@ fn main() {
                             std::env::set_var("AC_MACHINE_OUTPUT", "1");
                         }
                         if !matches!(&cmd, Commands::TestReset(_)) {
-                            if let Err(error) = agentscommander_lib::preflight_config_startup() {
+                            if let Err(error) = agentscommander_lib::preflight_config_startup(
+                                owners.startup_summary.as_ref(),
+                            ) {
                                 agentscommander_lib::cli::present_fatal_startup_message(
                                     &error.to_string(),
                                 );
@@ -71,7 +73,9 @@ fn main() {
                             // GATED on `cli.command.is_some()` so the GUI branch
                             // below initializes via `lib::run()` exactly once.
                             agentscommander_lib::logging::init_logger();
-                            agentscommander_lib::log_naming_migration_summary();
+                            agentscommander_lib::log_naming_migration_summary(
+                                owners.startup_summary.as_ref(),
+                            );
 
                             // Issue #609 Phase 2 - one-line "update available" notice for
                             // terminal runs. Cache-only (no network, no blocking). M1: gate

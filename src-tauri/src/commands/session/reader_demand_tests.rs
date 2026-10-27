@@ -45,6 +45,7 @@ pub(crate) fn harness(fixture: &RoomFixture) -> Harness {
         .to_string_lossy()
         .into_owned()];
     let app = tauri::test::mock_builder()
+        .manage(crate::app_state::AppOwners::new())
         .manage(crate::config::settings::new_settings_state(settings))
         .manage(Arc::clone(&manager))
         .manage(bridge_state)
