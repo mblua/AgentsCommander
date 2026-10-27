@@ -50,7 +50,7 @@ pub(super) fn load_and_validate_resume_artifacts(
     let state_dir = run_dir.join("attempt-state");
     for path in [&run_path, &attempts_path, &report_path, &markdown_path] {
         reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
-        if !directories::experiment_path_is_file(&path) {
+        if !directories::experiment_path_is_file(path) {
             return Err(vec![err_at_path(
                 "run_artifact_missing",
                 format!("Run artifact not found: {}", path.display()),

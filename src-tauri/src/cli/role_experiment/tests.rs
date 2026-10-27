@@ -615,7 +615,7 @@ fn issue_3298_inspection_and_document_failures_keep_native_errors() {
     let actual = documents::read_experiment_document(&file).unwrap_err();
     assert_eq!(actual.kind(), expected.kind());
     assert_eq!(actual.to_string(), expected.to_string());
-    let child = dir.path().join("invalid component");
+    let child = dir.path().join("invalid\0component");
     let native = std::fs::symlink_metadata(&child).unwrap_err();
     assert_ne!(native.kind(), std::io::ErrorKind::NotFound);
     let failure = directories::inspect_experiment_path_chain(&child).unwrap_err();
