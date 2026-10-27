@@ -1,5 +1,6 @@
 use super::replica_read::extract_task_first_line;
 use crate::config::settings::SettingsState;
+use crate::filesystem::projects as project_fs;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionRepo;
 use serde::Serialize;
@@ -112,14 +113,14 @@ pub(crate) struct TaskUpdatedPayload {
 }
 
 pub(crate) fn validate_snapshot_room(raw: &str, projects: &[String]) -> Result<PathBuf, String> {
-    let canonical =
-        std::fs::canonicalize(raw).map_err(|error| format!("invalid room root: {error}"))?;
+    let canonical = project_fs::canonical_project_path(Path::new(raw))
+        .map_err(|error| format!("invalid room root: {error}"))?;
     let room_name = canonical.file_name().and_then(|name| name.to_str());
     let workspace_name = canonical
         .parent()
         .and_then(Path::file_name)
         .and_then(|name| name.to_str());
-    if !canonical.is_dir()
+    if !project_fs::project_path_is_dir(&canonical)
         || !room_name.is_some_and(crate::config::entity_prefix::has_entity_prefix)
         || !workspace_name.is_some_and(crate::config::ac_root::is_ac_root_name)
     {
@@ -129,7 +130,7 @@ pub(crate) fn validate_snapshot_room(raw: &str, projects: &[String]) -> Result<P
     }
     let configured = projects
         .iter()
-        .filter_map(|project| std::fs::canonicalize(project).ok())
+        .filter_map(|project| project_fs::canonical_project_path(Path::new(project)).ok())
         .any(|project| canonical.starts_with(project));
     if !configured {
         return Err("room root is outside configured project paths".into());
@@ -194,7 +195,7 @@ pub async fn task_get_snapshot_at(
 }
 
 pub(crate) fn task_sentinels(root: &Path) -> Result<TaskSentinels, String> {
-    let stat = |name| match std::fs::metadata(root.join(name)) {
+    let stat = |name| match project_fs::project_path_metadata(&root.join(name)) {
         Ok(metadata) => Ok(Some(StatSentinel {
             len: metadata.len(),
             mtime: metadata.modified().ok(),
