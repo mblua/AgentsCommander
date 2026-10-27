@@ -281,6 +281,7 @@ fn managed_catalog_false_row_is_part_of_the_revision_and_refreshes_only_the_base
 
 #[test]
 fn desupported_master_not_seeded_not_reseedable_and_reseed_refused() {
+    let owner = CatalogReseedState::new();
     // R11: a de-supported key's master is not seeded, is not listed as
     // reseedable, and its re-seed is refused server-side; the other masters
     // are unaffected.
@@ -318,9 +319,9 @@ fn desupported_master_not_seeded_not_reseedable_and_reseed_refused() {
         let mut got = reseedable_command_basenames();
         got.sort();
         assert_eq!(got, vec!["codex", "opencode"]);
-        let err = reseed_master_for_command(dir.path(), "claude").unwrap_err();
+        let err = reseed_master_for_command(&owner, dir.path(), "claude").unwrap_err();
         assert!(err.contains("not a recognized built-in"), "{err}");
-        assert!(reseed_master_for_command(dir.path(), "codex").is_ok());
+        assert!(reseed_master_for_command(&owner, dir.path(), "codex").is_ok());
     });
 }
 

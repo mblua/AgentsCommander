@@ -124,3 +124,48 @@ fn install_coding_agent_2736_resolves_the_cwd_with_the_updater_precedence() {
     let fallback = crate::config::config_dir().expect("test config dir");
     assert_eq!(super::install_cwd_for(&AppSettings::default()), fallback);
 }
+
+#[tokio::test]
+async fn install_command_guard_is_shared_by_native_app_facades() {
+    let root = crate::AppOwners::new();
+    let independent_owner = crate::agent_update::AgentInstallState::new();
+    let command = "pass3-install-dedup-fixture";
+    let guard = crate::agent_update::InstallInFlight::acquire(root.installs.clone(), command)
+        .expect("fixture command acquired");
+    let state = state_for(AppSettings::default());
+    for key in ["first-key", "second-key"] {
+        let app = crate::test_support::test_builder_with_owners(root.clone())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("same-root app facade");
+        let result =
+            super::install_coding_agent_inner_with(app.handle(), &state, key.into(), |_| {
+                Ok(vec![install_fixture_entry_2736(
+                    key,
+                    Some(crate::config::coding_agents_catalog::InstallCommands {
+                        default: command.into(),
+                        windows: None,
+                        macos: None,
+                        linux: None,
+                    }),
+                )])
+            })
+            .await;
+        assert_eq!(
+            result,
+            Err("an install is already running for that command".into())
+        );
+    }
+    assert!(crate::agent_update::contains_install_command(
+        &root.installs,
+        command
+    ));
+    assert!(!crate::agent_update::contains_install_command(
+        &independent_owner,
+        command
+    ));
+    drop(guard);
+    assert!(!crate::agent_update::contains_install_command(
+        &root.installs,
+        command
+    ));
+}

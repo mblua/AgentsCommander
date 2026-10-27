@@ -213,7 +213,10 @@ pub(crate) fn co_managed_provider_label(kind: Option<CodingAgentKind>) -> &'stat
 }
 
 pub(crate) fn co_managed_same_directory(left: &std::path::Path, right: &std::path::Path) -> bool {
-    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+    match (
+        crate::filesystem::projects::canonical_project_path(left),
+        crate::filesystem::projects::canonical_project_path(right),
+    ) {
         (Ok(left), Ok(right)) => crate::path_identity::paths_equivalent(&left, &right),
         _ => crate::path_identity::paths_equivalent(left, right),
     }

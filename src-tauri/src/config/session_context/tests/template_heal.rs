@@ -933,6 +933,7 @@ fn current_tokenized_default_on_disk_is_not_rewritten() {
 
 #[test]
 fn root_never_reads_creates_syncs_or_heals_a_ac_ancestor_global() {
+    let manual = super::super::default_context::SELF_CLEAR_MANUAL_SECTION;
     let temp = tempfile::tempdir().unwrap();
     let ac = temp.path().join(".ac");
     let root = ac.join("room-1-demo").join("ac-root-agent");
@@ -943,13 +944,20 @@ fn root_never_reads_creates_syncs_or_heals_a_ac_ancestor_global() {
     let cache =
         build_root_agent_context_at(&path_string(&root), root.parent().unwrap(), None, false)
             .unwrap();
-    assert_eq!(std::fs::read_to_string(cache).unwrap(), "");
+    let content = std::fs::read_to_string(cache).unwrap();
+    assert_eq!(content, manual);
+    assert_eq!(content.matches("## Manual context clear").count(), 1);
     assert_eq!(
         std::fs::read_to_string(&sentinel).unwrap(),
         "PROJECT_GLOBAL_SENTINEL {{AGENT_ROOT}}\n"
     );
     std::fs::remove_file(&sentinel).unwrap();
-    build_root_agent_context_at(&path_string(&root), root.parent().unwrap(), None, false).unwrap();
+    let cache =
+        build_root_agent_context_at(&path_string(&root), root.parent().unwrap(), None, false)
+            .unwrap();
+    let content = std::fs::read_to_string(cache).unwrap();
+    assert_eq!(content, manual);
+    assert_eq!(content.matches("## Manual context clear").count(), 1);
     for filename in [
         GLOBAL_CONTEXT_TEMPLATE_FILENAME,
         COORDINATOR_CONTEXT_TEMPLATE_FILENAME,

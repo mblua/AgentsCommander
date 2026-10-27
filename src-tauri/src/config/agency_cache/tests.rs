@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::role_templates::AGENCY_MANIFEST_FILE;
 use std::time::Duration;
 
 fn manifest(template_count: usize) -> AgencyTemplatesManifest {
@@ -286,4 +287,52 @@ fn try_symlink_file(target: &Path, link: &Path) -> bool {
 #[cfg(not(any(unix, windows)))]
 fn try_symlink_file(_target: &Path, _link: &Path) -> bool {
     false
+}
+
+#[test]
+fn cached_manifest_keeps_count_mismatch_and_parse_errors() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let live = agency_templates_dir(tmp.path());
+    write_valid_cache(&live);
+    let mut current = read_cached_agency_manifest(&live).unwrap();
+    current.template_count = 9;
+    write_staged_agency_manifest(&live, &current).unwrap();
+    assert_eq!(
+        current_manifest_if_valid(tmp.path()).unwrap_err(),
+        "Cached manifest template count mismatch"
+    );
+    fs::write(live.join(AGENCY_MANIFEST_FILE), "{bad").unwrap();
+    let error = serde_json::from_str::<AgencyTemplatesManifest>("{bad").unwrap_err();
+    assert_eq!(
+        current_manifest_if_valid(tmp.path()).unwrap_err(),
+        format!("Failed to parse cached manifest: {error}")
+    );
+    fs::write(live.join(AGENCY_MANIFEST_FILE), [255]).unwrap();
+    let error = fs::read_to_string(live.join(AGENCY_MANIFEST_FILE)).unwrap_err();
+    assert_eq!(
+        current_manifest_if_valid(tmp.path()).unwrap_err(),
+        format!("Failed to read cached manifest: {error}")
+    );
+}
+
+#[test]
+fn staged_rewrite_persists_collected_count_before_publication() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let staging = tmp.path().join("staging");
+    write_valid_cache(&staging);
+    let mut current = read_staged_agency_manifest(&staging).unwrap();
+    current.template_count = 9;
+    write_staged_agency_manifest(&staging, &current).unwrap();
+    let templates = collect_agency_templates_from_dir(&staging).unwrap();
+    let mut current = read_staged_agency_manifest(&staging).unwrap();
+    current.template_count = templates.len();
+    write_staged_agency_manifest(&staging, &current).unwrap();
+    collect_agency_templates_from_dir(&staging).unwrap();
+    publish_staging(tmp.path(), &staging).unwrap();
+    assert_eq!(
+        current_manifest_if_valid(tmp.path())
+            .unwrap()
+            .template_count,
+        1
+    );
 }

@@ -91,8 +91,8 @@ where
     let toplevel = git(&["rev-parse", "--show-toplevel"]).await?;
     let toplevel = std::str::from_utf8(strip_line_terminator(&toplevel))
         .map_err(|_| "toplevel is not UTF-8".to_string())?;
-    let toplevel_canonical =
-        std::fs::canonicalize(toplevel).map_err(|e| format!("canonicalize toplevel: {e}"))?;
+    let toplevel_canonical = crate::repos::canonical_git_project(Path::new(toplevel))
+        .map_err(|e| format!("canonicalize toplevel: {e}"))?;
     if toplevel_canonical != project_canonical {
         return Err("project is not its repository toplevel".to_string());
     }

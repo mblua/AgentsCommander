@@ -110,7 +110,7 @@ fn execute_inner(args: WindowScreenshotArgs) -> Result<(), WindowScreenshotCliEr
                 }
             })
     })?;
-    std::fs::write(&args.output, &png)
+    crate::filesystem::documents::write_window_screenshot(&args.output, &png)
         .map_err(|error| WindowScreenshotCliError::OutputWriteFailed(error.to_string()))
 }
 

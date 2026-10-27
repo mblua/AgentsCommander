@@ -697,3 +697,186 @@ fn issue_3278_sync_sessions_failure_keeps_previous() {
     assert_eq!(std::fs::read(&path).unwrap(), previous);
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }
+
+struct Issue3298Fault {
+    path: std::path::PathBuf,
+    calls: usize,
+    failures: Vec<(usize, std::io::ErrorKind)>,
+}
+
+thread_local! {
+    static ISSUE_3298_FAULT: std::cell::RefCell<Option<Issue3298Fault>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+struct Issue3298Guard(Option<Issue3298Fault>);
+
+impl Issue3298Guard {
+    fn arm(path: &std::path::Path, failures: Vec<(usize, std::io::ErrorKind)>) -> Self {
+        Self(ISSUE_3298_FAULT.with_borrow_mut(|slot| {
+            slot.replace(Issue3298Fault {
+                path: path.to_owned(),
+                calls: 0,
+                failures,
+            })
+        }))
+    }
+}
+
+impl Drop for Issue3298Guard {
+    fn drop(&mut self) {
+        ISSUE_3298_FAULT.with_borrow_mut(|slot| *slot = self.0.take());
+    }
+}
+
+pub(crate) fn issue_3298_replace_fault(path: &std::path::Path) -> std::io::Result<()> {
+    ISSUE_3298_FAULT.with_borrow_mut(|slot| {
+        let Some(probe) = slot.as_mut().filter(|probe| probe.path == path) else {
+            return Ok(());
+        };
+        probe.calls += 1;
+        match probe.failures.iter().find(|(call, _)| *call == probe.calls) {
+            Some((_, kind)) => Err(std::io::Error::new(*kind, "issue3298 injected")),
+            None => Ok(()),
+        }
+    })
+}
+
+#[test]
+fn issue_3298_reparse_bit_without_symlink() {
+    use crate::path_identity::link_flags_indicate_link_or_reparse as flags;
+    assert!(flags(false, 0x400));
+    assert!(!flags(false, 0));
+    assert!(flags(true, 0));
+}
+
+#[test]
+fn issue_3298_replace_branches_preserve_cleanup_and_retention() {
+    use documents::{replace_experiment_artifact, ExperimentArtifactFailure as Failure};
+    use std::io::ErrorKind::{AlreadyExists, PermissionDenied};
+    // Calls: write=1, flush=2, rename=3, remove=4, second rename=5.
+    for stage in 0..=5 {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("attempts.jsonl");
+        std::fs::write(&path, b"previous").unwrap();
+        let failures = match stage {
+            0 => vec![(3, AlreadyExists)],
+            1..=3 => vec![(stage, PermissionDenied)],
+            _ => vec![(3, AlreadyExists), (stage, PermissionDenied)],
+        };
+        let _guard = Issue3298Guard::arm(&path, failures);
+        let result = replace_experiment_artifact(&path, b"next\n");
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        let temps: Vec<_> = entries
+            .iter()
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".tmp-")
+            })
+            .collect();
+        if stage == 0 {
+            result.unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), b"next\n");
+        } else {
+            let error = result.unwrap_err();
+            match (stage, error) {
+                (
+                    1,
+                    Failure::Write {
+                        path: failed,
+                        error,
+                    },
+                )
+                | (
+                    2,
+                    Failure::Flush {
+                        path: failed,
+                        error,
+                    },
+                ) => {
+                    assert_eq!(&failed, temps[0]);
+                    assert_eq!(error.kind(), PermissionDenied);
+                }
+                (
+                    3..=5,
+                    Failure::Replace {
+                        path: failed,
+                        error,
+                    },
+                ) => {
+                    assert_eq!(failed, path);
+                    assert_eq!(error.kind(), PermissionDenied);
+                }
+                (_, other) => panic!("wrong stage: {other:?}"),
+            }
+            if stage == 5 {
+                assert!(!path.exists());
+            } else {
+                assert_eq!(std::fs::read(&path).unwrap(), b"previous");
+            }
+        }
+        assert_eq!(temps.len(), usize::from(matches!(stage, 1 | 2 | 4)));
+        if stage == 1 {
+            assert_eq!(std::fs::read(temps[0]).unwrap(), b"");
+        } else if matches!(stage, 2 | 4) {
+            assert_eq!(std::fs::read(temps[0]).unwrap(), b"next\n");
+        }
+    }
+}
+
+#[test]
+fn issue_3298_fault_scope_and_guard_restore() {
+    use std::io::ErrorKind::PermissionDenied;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("target");
+    let outer = Issue3298Guard::arm(&path, vec![(1, PermissionDenied)]);
+    issue_3298_replace_fault(&dir.path().join("other")).unwrap();
+    let other_thread = path.clone();
+    std::thread::spawn(move || issue_3298_replace_fault(&other_thread).unwrap())
+        .join()
+        .unwrap();
+    let _ = std::panic::catch_unwind(|| {
+        let _inner = Issue3298Guard::arm(&path, vec![]);
+        panic!("unwind guard");
+    });
+    assert_eq!(
+        issue_3298_replace_fault(&path).unwrap_err().kind(),
+        PermissionDenied
+    );
+    drop(outer);
+    issue_3298_replace_fault(&path).unwrap();
+}
+
+#[test]
+fn issue_3298_visit_is_immediate_and_stops_at_break() {
+    use std::ops::ControlFlow;
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["a", "b", "c"] {
+        std::fs::write(dir.path().join(name), b"x").unwrap();
+    }
+    let mut seen = 0;
+    let result = directories::visit_experiment_entries(dir.path(), |entry| {
+        let (path, name) = entry.unwrap();
+        assert_eq!(path.file_name().unwrap(), name);
+        std::fs::remove_file(&path).unwrap();
+        seen += 1;
+        ControlFlow::Break(path)
+    })
+    .unwrap();
+    assert!(matches!(result, ControlFlow::Break(_)));
+    assert_eq!(seen, 1);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    let missing = dir.path().join("missing");
+    let expected = std::fs::read_dir(&missing).unwrap_err();
+    let actual = directories::visit_experiment_entries(&missing, |_| -> ControlFlow<()> {
+        panic!("callback on failed start");
+    })
+    .unwrap_err();
+    assert_eq!(actual.to_string(), expected.to_string());
+    assert_eq!(actual.raw_os_error(), expected.raw_os_error());
+}

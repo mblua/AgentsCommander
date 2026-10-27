@@ -74,13 +74,14 @@ pub(crate) fn write_session_request(request: &SessionRequest) -> Result<(), Stri
     let config_dir = config::config_dir().ok_or("Cannot determine config directory")?;
 
     let requests_dir = config_dir.join(SESSION_REQUESTS_DIR_NAME);
-    std::fs::create_dir_all(&requests_dir)
+    crate::filesystem::directories::ensure_cli_session_requests(&requests_dir)
         .map_err(|e| format!("Failed to create session-requests dir: {}", e))?;
 
     let path = requests_dir.join(format!("{}.json", request.id));
     let json = serde_json::to_string_pretty(request)
         .map_err(|e| format!("Failed to serialize session request: {}", e))?;
-    std::fs::write(&path, json).map_err(|e| format!("Failed to write session request: {}", e))?;
+    crate::filesystem::documents::write_cli_session_document(&path, json.as_bytes())
+        .map_err(|e| format!("Failed to write session request: {}", e))?;
 
     Ok(())
 }
@@ -125,12 +126,12 @@ pub(crate) fn is_session_request_result_path(path: &Path) -> bool {
 pub(crate) fn write_session_request_result(result: &SessionRequestResult) -> Result<(), String> {
     let config_dir = config::config_dir().ok_or("Cannot determine config directory")?;
     let requests_dir = config_dir.join(SESSION_REQUESTS_DIR_NAME);
-    std::fs::create_dir_all(&requests_dir)
+    crate::filesystem::directories::ensure_cli_session_requests(&requests_dir)
         .map_err(|e| format!("Failed to create session-requests dir: {}", e))?;
     let path = session_request_result_path(&config_dir, &result.id);
     let json = serde_json::to_string_pretty(result)
         .map_err(|e| format!("Failed to serialize session request result: {}", e))?;
-    std::fs::write(&path, json)
+    crate::filesystem::documents::write_cli_session_document(&path, json.as_bytes())
         .map_err(|e| format!("Failed to write session request result: {}", e))?;
     Ok(())
 }
@@ -140,17 +141,17 @@ pub(crate) fn write_session_request_result(result: &SessionRequestResult) -> Res
 pub(crate) fn read_session_request_result(id: &str) -> Option<SessionRequestResult> {
     let config_dir = config::config_dir()?;
     let path = session_request_result_path(&config_dir, id);
-    let content = match std::fs::read_to_string(&path) {
+    let content = match crate::filesystem::documents::read_cli_session_result(&path) {
         Ok(content) => content,
         Err(_) => return None,
     };
     match serde_json::from_str::<SessionRequestResult>(&content) {
         Ok(result) => {
-            let _ = std::fs::remove_file(&path);
+            let _ = crate::filesystem::documents::remove_cli_session_artifact(&path);
             Some(result)
         }
         Err(_) => {
-            let _ = std::fs::remove_file(&path);
+            let _ = crate::filesystem::documents::remove_cli_session_artifact(&path);
             None
         }
     }

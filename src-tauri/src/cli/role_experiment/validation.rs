@@ -12,6 +12,7 @@ use crate::cli::session_safety::find_live_sessions_under;
 use crate::cli::session_safety::LiveSessionBlocker;
 use crate::commands::entity_creation::sanitize_name;
 use crate::commands::entity_creation::validate_existing_name;
+use crate::filesystem::{directories, documents};
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
@@ -165,7 +166,7 @@ pub(super) fn validate_variant_files(
     ) {
         errors.append(&mut e);
     }
-    if !matrix.is_dir() {
+    if !directories::experiment_path_is_dir(&matrix) {
         errors.push(err(
             "variant_matrix_missing",
             format!("Variant matrix is missing: {}", matrix.display()),
@@ -183,7 +184,7 @@ pub(super) fn validate_variant_files(
             Some(variant.name.as_str()),
         ));
     }
-    if !role.is_file() {
+    if !directories::experiment_path_is_file(&role) {
         errors.push(err(
             "variant_role_missing",
             format!("Variant Role.md is missing: {}", role.display()),
@@ -232,7 +233,7 @@ fn paths_equivalent(a: &Path, b: &Path) -> bool {
 }
 
 fn canonical_or_self(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| normalize_lexical(path))
+    documents::canonical_experiment_role(path).unwrap_or_else(|_| normalize_lexical(path))
 }
 
 fn normalize_lexical(path: &Path) -> PathBuf {
@@ -288,10 +289,10 @@ pub(super) fn copy_source_skills(
     warnings: &mut Vec<CliWarning>,
 ) {
     let src = source_matrix.join("skills");
-    if !src.exists() {
+    if !directories::experiment_path_exists(&src) {
         return;
     }
-    for link in collect_link_paths(&src) {
+    for link in directories::collect_experiment_link_paths(&src) {
         warnings.push(warn(
             "source_skills_copy_warning",
             format!(
@@ -312,86 +313,35 @@ pub(super) fn copy_source_skills(
     }
 }
 
-fn collect_link_paths(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    collect_link_paths_into(root, &mut out);
-    out
-}
-
-fn collect_link_paths_into(root: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(meta) = std::fs::symlink_metadata(root) else {
-        return;
-    };
-    if is_link_or_reparse(&meta) {
-        out.push(root.to_path_buf());
-        return;
-    }
-    if !meta.is_dir() {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        collect_link_paths_into(&entry.path(), out);
-    }
-}
-
 pub(super) fn reject_link_or_reparse(
     path: &Path,
     code: &'static str,
     variant: Option<&str>,
 ) -> Result<(), Vec<CliError>> {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component.as_os_str());
-        if matches!(component, Component::Prefix(_) | Component::RootDir) {
-            continue;
+    directories::inspect_experiment_path_chain(path)
+        .map_err(|failure| map_path_failure(failure, code, variant))
+}
+
+pub(crate) fn map_path_failure(
+    failure: directories::ExperimentPathFailure,
+    code: &'static str,
+    variant: Option<&str>,
+) -> Vec<CliError> {
+    use directories::ExperimentPathFailure;
+    let message = match failure {
+        ExperimentPathFailure::Link { path } => format!(
+            "Path component is a symlink or reparse point: {}",
+            path.display(),
+        ),
+        ExperimentPathFailure::Inspect { path, error } => {
+            format!("Failed to inspect {}: {}", path.display(), error)
         }
-        let metadata = match std::fs::symlink_metadata(&current) {
-            Ok(metadata) => metadata,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
-            Err(e) => {
-                return Err(vec![err(
-                    code,
-                    format!("Failed to inspect {}: {}", current.display(), e),
-                    variant,
-                )]);
-            }
-        };
-        if is_link_or_reparse(&metadata) {
-            return Err(vec![err(
-                code,
-                format!(
-                    "Path component is a symlink or reparse point: {}",
-                    current.display()
-                ),
-                variant,
-            )]);
-        }
-    }
-    Ok(())
+    };
+    vec![err(code, message, variant)]
 }
 
 pub(super) fn is_link_path(path: &Path) -> bool {
-    std::fs::symlink_metadata(path)
-        .map(|m| is_link_or_reparse(&m))
-        .unwrap_or(false)
-}
-
-fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
-    if meta.file_type().is_symlink() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return true;
-        }
-    }
-    false
+    directories::experiment_path_is_link(path)
 }
 
 pub(super) fn find_live_sessions_for_variant(
@@ -399,42 +349,45 @@ pub(super) fn find_live_sessions_for_variant(
     variant_agent_name: &str,
 ) -> Vec<LiveSessionBlocker> {
     let mut out = find_live_sessions_under(&ac_root.join(format!("_agent_{}", variant_agent_name)));
-    if let Ok(entries) = std::fs::read_dir(ac_root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if crate::config::entity_prefix::has_entity_prefix(name) && path.is_dir() {
-                let replica = path.join(format!("__agent_{}", variant_agent_name));
-                if replica.is_dir() {
-                    out.extend(find_live_sessions_under(&replica));
-                }
+    let _ = directories::visit_experiment_entries(ac_root, |entry| {
+        let Ok((path, _)) = entry else {
+            return std::ops::ControlFlow::<()>::Continue(());
+        };
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            return std::ops::ControlFlow::Continue(());
+        };
+        if crate::config::entity_prefix::has_entity_prefix(name)
+            && directories::experiment_path_is_dir(&path)
+        {
+            let replica = path.join(format!("__agent_{}", variant_agent_name));
+            if directories::experiment_path_is_dir(&replica) {
+                out.extend(find_live_sessions_under(&replica));
             }
         }
-    }
+        std::ops::ControlFlow::Continue(())
+    });
     out
 }
 
 pub(super) fn replica_role_overrides(ac_root: &Path, variant_agent_name: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(ac_root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if crate::config::entity_prefix::has_entity_prefix(name) && !name.contains("-role-exp-")
-            {
-                let role = path
-                    .join(format!("__agent_{}", variant_agent_name))
-                    .join("Role.md");
-                if role.exists() {
-                    out.push(role);
-                }
+    let _ = directories::visit_experiment_entries(ac_root, |entry| {
+        let Ok((path, _)) = entry else {
+            return std::ops::ControlFlow::<()>::Continue(());
+        };
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            return std::ops::ControlFlow::Continue(());
+        };
+        if crate::config::entity_prefix::has_entity_prefix(name) && !name.contains("-role-exp-") {
+            let role = path
+                .join(format!("__agent_{}", variant_agent_name))
+                .join("Role.md");
+            if directories::experiment_path_exists(&role) {
+                out.push(role);
             }
         }
-    }
+        std::ops::ControlFlow::Continue(())
+    });
     out
 }
 
@@ -465,7 +418,7 @@ pub(super) fn add_diff_warnings(
         &control.name,
     )
     .join("Role.md");
-    let Ok(control_text) = std::fs::read_to_string(control_role) else {
+    let Ok(control_text) = documents::read_experiment_document(&control_role) else {
         return;
     };
     for variant in variants.iter().filter(|v| v.name != "control") {
@@ -475,7 +428,7 @@ pub(super) fn add_diff_warnings(
             &variant.name,
         )
         .join("Role.md");
-        let Ok(text) = std::fs::read_to_string(role) else {
+        let Ok(text) = documents::read_experiment_document(&role) else {
             continue;
         };
         let (_, stats) = line_diff("control", &variant.name, &control_text, &text);

@@ -61,3 +61,211 @@ pub(super) fn response_registration_route(
         && route.saved_cwd_matches_path(std::path::Path::new(&row.working_directory))
         && route.matches_requester_route(identity.backend, route.saved_cwd(), route.saved_replica())
 }
+
+pub struct ResponseEffectRegistry {
+    owners: &'static std::sync::OnceLock<
+        Mutex<std::collections::HashMap<uuid::Uuid, Arc<ResponseEffectOwner>>>,
+    >,
+}
+
+impl ResponseEffectRegistry {
+    pub(crate) fn new() -> Self {
+        Self {
+            // Retain the former static's owner records for the process lifetime.
+            owners: Box::leak(Box::new(std::sync::OnceLock::new())),
+        }
+    }
+
+    pub(crate) fn insert_if_absent(
+        &self,
+        id: uuid::Uuid,
+        owner: Arc<ResponseEffectOwner>,
+    ) -> Result<bool, ()> {
+        let mut owners = self
+            .owners
+            .get_or_init(Default::default)
+            .lock()
+            .map_err(|_| ())?;
+        if owners.contains_key(&id) {
+            return Ok(false);
+        }
+        owners.insert(id, owner);
+        Ok(true)
+    }
+
+    pub(crate) fn remove(&self, id: uuid::Uuid) -> Result<(), ()> {
+        let mut owners = self
+            .owners
+            .get_or_init(Default::default)
+            .lock()
+            .map_err(|_| ())?;
+        owners.remove(&id);
+        Ok(())
+    }
+
+    pub(crate) fn snapshot(&self) -> Option<Vec<Arc<ResponseEffectOwner>>> {
+        self.owners
+            .get_or_init(Default::default)
+            .lock()
+            .ok()
+            .map(|owners| owners.values().cloned().collect())
+    }
+}
+
+#[derive(Clone)]
+enum ResponseEffectState<T> {
+    NotStarted,
+    Running,
+    Completed(Result<T, String>),
+    Ambiguous,
+}
+
+struct ResponseEffectRecord {
+    stages: Vec<(&'static str, ResponseEffectState<()>)>,
+    group: Option<ResponseEffectState<crate::resource_monitor::types::ResourceKillResult>>,
+    group_worker: Option<
+        tokio::task::JoinHandle<Result<crate::resource_monitor::types::ResourceKillResult, String>>,
+    >,
+    sealed: bool,
+}
+
+pub(crate) struct ResponseEffectOwner {
+    ticket: crate::pty::manager::ResponseCloseTicket,
+    registration: ResponseCloseRegistration,
+    backend: Arc<dyn crate::pty::backend::PtyBackend>,
+    record: Mutex<ResponseEffectRecord>,
+}
+
+impl ResponseEffectOwner {
+    pub(crate) fn start(&self, name: &'static str) -> Option<usize> {
+        let mut record = self.record.lock().ok()?;
+        if record.sealed || record.stages.len() == record.stages.capacity() {
+            return None;
+        }
+        let index = record.stages.len();
+        record.stages.push((name, ResponseEffectState::NotStarted));
+        record.stages[index].1 = ResponseEffectState::Running;
+        Some(index)
+    }
+
+    pub(crate) fn complete(&self, index: usize, outcome: Result<(), String>) -> Option<()> {
+        let mut record = self.record.lock().ok()?;
+        let (_, stage) = record.stages.get_mut(index)?;
+        if !matches!(stage, ResponseEffectState::Running) {
+            return None;
+        }
+        *stage = ResponseEffectState::Completed(outcome);
+        Some(())
+    }
+
+    pub(crate) fn terminal(&self) -> bool {
+        let Ok(record) = self.record.lock() else {
+            return false;
+        };
+        record.sealed
+            && record
+                .stages
+                .iter()
+                .all(|(_, stage)| matches!(stage, ResponseEffectState::Completed(_)))
+            && record
+                .group
+                .as_ref()
+                .is_none_or(|stage| matches!(stage, ResponseEffectState::Completed(_)))
+    }
+
+    pub(crate) fn kill_failed(&self) -> bool {
+        self.record.lock().ok().is_some_and(|record| {
+            record.stages.iter().any(|(name, stage)| {
+                *name == "kill" && matches!(stage, ResponseEffectState::Completed(Err(_)))
+            })
+        })
+    }
+
+    pub(crate) fn seal(&self) -> Option<()> {
+        self.record.lock().ok()?.sealed = true;
+        Some(())
+    }
+
+    pub(crate) fn new(
+        ticket: crate::pty::manager::ResponseCloseTicket,
+        registration: ResponseCloseRegistration,
+        backend: Arc<dyn crate::pty::backend::PtyBackend>,
+    ) -> Self {
+        Self {
+            ticket,
+            registration,
+            backend,
+            record: Mutex::new(ResponseEffectRecord {
+                stages: Vec::with_capacity(16),
+                group: None,
+                group_worker: None,
+                sealed: false,
+            }),
+        }
+    }
+
+    pub(crate) fn ticket(&self) -> &crate::pty::manager::ResponseCloseTicket {
+        &self.ticket
+    }
+
+    pub(crate) fn registration(&self) -> &ResponseCloseRegistration {
+        &self.registration
+    }
+
+    pub(crate) fn backend(&self) -> &Arc<dyn crate::pty::backend::PtyBackend> {
+        &self.backend
+    }
+
+    pub(crate) fn start_group(
+        &self,
+        start: impl FnOnce() -> tokio::task::JoinHandle<
+            Result<crate::resource_monitor::types::ResourceKillResult, String>,
+        >,
+    ) -> Option<()> {
+        let mut record = self.record.lock().ok()?;
+        record.group = Some(ResponseEffectState::Running);
+        record.group_worker = Some(start());
+        Some(())
+    }
+
+    pub(crate) fn poll_group(
+        &self,
+        cx: &mut std::task::Context<'_>,
+        id: uuid::Uuid,
+    ) -> std::task::Poll<Option<()>> {
+        // The JoinHandle stays in the retained owner while it is polled. Losing
+        // this waiter does not drop the only handle or fabricate a group outcome.
+        use std::future::Future;
+        let Ok(mut record) = self.record.lock() else {
+            return std::task::Poll::Pending;
+        };
+        let Some(worker) = record.group_worker.as_mut() else {
+            return std::task::Poll::Pending;
+        };
+        match std::pin::Pin::new(worker).poll(cx) {
+            std::task::Poll::Pending => std::task::Poll::Pending,
+            std::task::Poll::Ready(Ok(outcome)) => {
+                if let Err(error) = &outcome {
+                    log::warn!(
+                        "[session] resource cleanup failed session={} source=ResponseClose: {}",
+                        id,
+                        error
+                    );
+                }
+                record.group = Some(ResponseEffectState::Completed(outcome));
+                let _ = record.group_worker.take();
+                std::task::Poll::Ready(Some(()))
+            }
+            std::task::Poll::Ready(Err(error)) => {
+                record.group = Some(ResponseEffectState::Ambiguous);
+                let _ = record.group_worker.take();
+                log::warn!(
+                    "[session] resource cleanup task failed session={} source=ResponseClose: {}",
+                    id,
+                    error
+                );
+                std::task::Poll::Ready(None)
+            }
+        }
+    }
+}
