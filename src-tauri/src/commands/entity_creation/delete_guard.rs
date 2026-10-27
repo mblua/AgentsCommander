@@ -1,5 +1,7 @@
 #[cfg(test)]
 pub(crate) use crate::config::entity_creation::directories::is_file_in_use_error;
+#[cfg(test)]
+pub(crate) use crate::config::entity_creation::directories::metadata_parts_are_link_or_reparse;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionStatus;
 use std::path::Path;
@@ -8,7 +10,7 @@ use std::sync::Arc;
 #[cfg(test)]
 pub(super) use crate::config::entity_creation::directories::FILE_ATTRIBUTE_REPARSE_POINT;
 pub(crate) use crate::config::entity_creation::directories::{
-    is_rename_blocked_by_handle, metadata_is_link_or_reparse, metadata_parts_are_link_or_reparse,
+    is_rename_blocked_by_handle, metadata_is_link_or_reparse,
 };
 
 pub(crate) fn validate_delete_root_not_link_or_reparse(path: &Path) -> Result<(), String> {

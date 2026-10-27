@@ -11,4 +11,5 @@ pub(crate) use deletion::{remove_replica_directory_with, validate_delete_root_pa
 
 pub(crate) mod team_lock;
 
+pub(crate) mod copies;
 pub(crate) mod publication;

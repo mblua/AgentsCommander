@@ -1,8 +1,7 @@
 use super::creation_trace::{CreationTrace, Origin, Outcome, Reason, Stage};
 use super::matrix_copy::{
-    cleanup_owned_copy_artifacts, copy_agent_matrix_strict_with_hooks, validate_copy_provenance,
-    write_owned_team_file, MatrixCopyHooks, MatrixCopyIdentity, MatrixCopyKind, MatrixCopyStage,
-    OwnedCopyArtifacts, OwnedCopyEntry, COPY_PROVENANCE_FILE,
+    cleanup_owned_copy_artifacts, copy_agent_matrix_strict_with_hooks, write_owned_team_file,
+    MatrixCopyHooks, MatrixCopyKind, MatrixCopyStage, OwnedCopyArtifacts, OwnedCopyEntry,
 };
 use super::matrix_layout::{
     parse_role_frontmatter, repo_dir_name_from_url, sanitize_name, selected_ac_root,
@@ -11,11 +10,9 @@ use super::matrix_layout::{
 use super::repo_clone::git_clone_async;
 use super::room_number::{determine_next_wg_number, room_dir_name, room_number_pad_width};
 use super::room_task::prepare_new_room_task_content;
-use super::team_config::resolve_agent_ref;
 use super::team_config::{
-    create_new_team_config_on_disk_guarded, normalize_context_alert_percentages,
-    normalized_team_config_bytes, read_team_config, resolve_context_alert_argument,
-    ContextAlertWriteMode, TeamConfigMutationGuard,
+    create_new_team_config_on_disk_guarded, normalized_team_config_bytes, read_team_config,
+    resolve_context_alert_argument, ContextAlertWriteMode, TeamConfigMutationGuard,
 };
 use super::team_update::emit_coordinator_refresh;
 use super::workgroup::initialize_workgroup_replicas_on_disk_traced;
@@ -24,6 +21,12 @@ use super::{
     WorkgroupCloneResult,
 };
 use crate::config::ac_root::existing_ac_root;
+#[cfg(test)]
+pub(crate) use crate::config::entity_creation::copies::portable_source_ref;
+pub(crate) use crate::config::entity_creation::copies::{
+    preflight_team_sources, project_directory_identity, require_absent, verify_owned_entry,
+    verify_team_copies,
+};
 use crate::session::manager::SessionManager;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -38,16 +41,6 @@ pub async fn list_all_agents(
     destination_project_path: Option<String>,
 ) -> Result<Vec<AgentInfo>, String> {
     list_all_agents_for_destination(&project_paths, destination_project_path.as_deref())
-}
-
-pub(super) fn project_directory_identity(
-    project: &Path,
-) -> Result<(PathBuf, MatrixCopyIdentity), String> {
-    let canonical =
-        crate::config::projects::canonical_source_project(project).map_err(|e| e.to_string())?;
-    selected_ac_root(&canonical)?;
-    let handle = OwnedCopyArtifacts::open_existing(&canonical, MatrixCopyKind::Directory)?;
-    Ok((canonical, OwnedCopyArtifacts::handle_identity(&handle)?))
 }
 
 pub(super) fn list_all_agents_for_destination(
@@ -125,123 +118,6 @@ pub(super) fn list_all_agents_for_destination(
 
     agents.sort_by_key(|a| a.name.to_lowercase());
     Ok(agents)
-}
-
-pub(super) fn portable_source_ref(raw: &str) -> Result<String, String> {
-    let trimmed = raw.trim();
-    if trimmed.contains(['/', '\\', ':', '\0']) {
-        return Err("Invalid portable agent reference".into());
-    }
-    let bare = trimmed.strip_prefix("_agent_").unwrap_or(trimmed);
-    validate_existing_name(bare, "Agent")?;
-    Ok(format!("_agent_{bare}"))
-}
-
-pub(super) fn require_absent(path: &Path) -> Result<(), String> {
-    match std::fs::symlink_metadata(path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.to_string()),
-        Ok(_) => Err(format!("Destination already exists: {}", path.display())),
-    }
-}
-
-pub(super) fn preflight_team_sources(
-    project: &Path,
-    ac: &Path,
-    config: &mut TeamConfigResult,
-    sources: Vec<TeamAgentSource>,
-) -> Result<Vec<(PathBuf, String)>, String> {
-    let (_, destination_identity) = project_directory_identity(project)?;
-    let mut selected = HashSet::new();
-    for agent in &mut config.agents {
-        *agent = portable_source_ref(agent)?;
-        if !selected.insert(agent.clone()) {
-            return Err(format!("Duplicate selected agent: {agent}"));
-        }
-    }
-    if !config.coordinator.trim().is_empty() {
-        config.coordinator = portable_source_ref(&config.coordinator)?;
-        if !selected.contains(&config.coordinator) {
-            return Err("Orchestrator must be one of the selected agents".into());
-        }
-    }
-    for repo in &mut config.repos {
-        for agent in &mut repo.agents {
-            *agent = portable_source_ref(agent)?;
-            if !selected.contains(agent) {
-                return Err("Repository agent must be one of the selected agents".into());
-            }
-        }
-    }
-    normalize_context_alert_percentages(&config.context_alert_percentages)?;
-    let mut seen = HashSet::new();
-    let mut foreign = Vec::new();
-    for source in sources {
-        let agent = portable_source_ref(&source.agent_ref)?;
-        if !selected.contains(&agent) || !seen.insert(agent.clone()) {
-            return Err(format!("Extra or duplicate agent source: {agent}"));
-        }
-        let (source_project, identity) =
-            project_directory_identity(Path::new(&source.source_project_path))?;
-        let source_ac = selected_ac_root(&source_project)?
-            .canonicalize()
-            .map_err(|e| e.to_string())?;
-        resolve_agent_ref(&source_ac, &agent)?;
-        let matrix = source_ac.join(&agent);
-        let handle = OwnedCopyArtifacts::open_existing(&matrix, MatrixCopyKind::Directory)?;
-        drop(handle);
-        let canonical_matrix = matrix.canonicalize().map_err(|e| e.to_string())?;
-        let parent = canonical_matrix
-            .parent()
-            .ok_or("Source Matrix has no parent")?;
-        let parent_handle = OwnedCopyArtifacts::open_existing(parent, MatrixCopyKind::Directory)?;
-        let ac_handle = OwnedCopyArtifacts::open_existing(&source_ac, MatrixCopyKind::Directory)?;
-        if OwnedCopyArtifacts::handle_identity(&parent_handle)?
-            != OwnedCopyArtifacts::handle_identity(&ac_handle)?
-        {
-            return Err("Source Matrix is not a direct project child".into());
-        }
-        if identity != destination_identity {
-            require_absent(&ac.join(&agent))?;
-            foreign.push((source_project, agent));
-        }
-    }
-    if seen != selected {
-        return Err("Agent sources must cover exactly all selected agents".into());
-    }
-    Ok(foreign)
-}
-
-pub(super) fn verify_owned_entry(
-    owned: &OwnedCopyArtifacts,
-    entry: &OwnedCopyEntry,
-) -> Result<(), String> {
-    owned.verify_directories(&entry.relative)?;
-    let path = owned.root.join(&entry.relative);
-    let handle = OwnedCopyArtifacts::open_existing(&path, entry.kind)?;
-    if OwnedCopyArtifacts::handle_identity(&handle)? != entry.identity {
-        return Err(format!("Output replaced: {}", path.display()));
-    }
-    if entry.kind == MatrixCopyKind::File {
-        let stamp =
-            OwnedCopyArtifacts::read_file(&path, None, None, &mut MatrixCopyHooks::default())?;
-        if stamp.digest != entry.digest {
-            return Err(format!("Output modified: {}", path.display()));
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn verify_team_copies(copies: &[OwnedCopyArtifacts]) -> Result<(), String> {
-    for copy in copies {
-        for entry in &copy.entries {
-            verify_owned_entry(copy, entry)?;
-        }
-        let history =
-            std::fs::read(copy.root.join(COPY_PROVENANCE_FILE)).map_err(|e| e.to_string())?;
-        validate_copy_provenance(Some(&history))?;
-    }
-    Ok(())
 }
 
 pub(super) fn publish_owned_team(
