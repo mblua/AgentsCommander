@@ -85,7 +85,7 @@
 //! - so unit tests and every CLI subcommand write nothing, by construction.
 
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
@@ -94,6 +94,8 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
+
+use crate::filesystem::activity_log as activity_io;
 
 use crate::session::profile::{idle_tuning_for, CodingAgentKind};
 use crate::session::session::Session;
@@ -599,11 +601,7 @@ fn push_line(buffer: &mut String, record: &ActivityRecord) {
 /// Opened per call, so no handle is held across a rename and rotation cannot
 /// fail on Windows for sharing reasons.
 fn write_append(path: &Path, buffer: &str) -> std::io::Result<()> {
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    file.write_all(buffer.as_bytes())
+    activity_io::append_activity(path, buffer)
 }
 
 /// Shift `activity.jsonl.<i>` up one slot and move the live file into `.1`.
@@ -612,7 +610,7 @@ fn write_append(path: &Path, buffer: &str) -> std::io::Result<()> {
 /// Best-effort throughout: on failure the live file keeps growing past the cap
 /// until a later rotation succeeds.
 fn rotate_if_needed(path: &Path) -> bool {
-    let size = match std::fs::metadata(path) {
+    let size = match activity_io::activity_metadata(path) {
         Ok(metadata) => metadata.len(),
         // No file yet, or unreadable: nothing to rotate.
         Err(_) => return false,
@@ -630,11 +628,11 @@ fn rotate_if_needed(path: &Path) -> bool {
     // `.ACTIVITY_KEEP` is evicted by the first iteration.
     for index in (1..ACTIVITY_KEEP).rev() {
         let from = parent.join(format!("{name}.{index}"));
-        if !from.exists() {
+        if !activity_io::activity_exists(&from) {
             continue;
         }
         let to = parent.join(format!("{name}.{}", index + 1));
-        if let Err(error) = std::fs::rename(&from, &to) {
+        if let Err(error) = activity_io::rename_activity(&from, &to) {
             log::warn!(
                 "[activity] rotation could not shift {} to {} (continuing): {}",
                 from.display(),
@@ -644,7 +642,7 @@ fn rotate_if_needed(path: &Path) -> bool {
         }
     }
     let first = parent.join(format!("{name}.1"));
-    if let Err(error) = std::fs::rename(path, &first) {
+    if let Err(error) = activity_io::rename_activity(path, &first) {
         log::warn!(
             "[activity] rotation of {} failed, leaving the active file in place: {}",
             path.display(),
@@ -827,13 +825,13 @@ fn read_rotated_records(path: &Path) -> Vec<ScannedRecord> {
 /// Read the last [`TAIL_READ_BYTES`] of `path` and return every valid record in
 /// file order.
 fn read_tail_records(path: &Path) -> RegionRead {
-    let mut file = match std::fs::File::open(path) {
+    let mut file = match activity_io::open_activity_tail(path) {
         Ok(file) => file,
         // A missing file recorded nothing; that is empty, not broken.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return RegionRead::Empty,
         Err(_) => return RegionRead::Unreadable,
     };
-    let len = match file.metadata() {
+    let len = match activity_io::opened_activity_metadata(&file) {
         Ok(metadata) => metadata.len(),
         Err(_) => return RegionRead::Unreadable,
     };
@@ -843,11 +841,11 @@ fn read_tail_records(path: &Path) -> RegionRead {
     // Clamped: a bare `End(-TAIL_READ_BYTES)` on a short file is an error on
     // Windows.
     let window = len.min(TAIL_READ_BYTES);
-    if file.seek(SeekFrom::End(-(window as i64))).is_err() {
+    if activity_io::seek_activity_tail(&mut file, SeekFrom::End(-(window as i64))).is_err() {
         return RegionRead::Unreadable;
     }
     let mut bytes = Vec::with_capacity(window as usize);
-    if file.read_to_end(&mut bytes).is_err() {
+    if activity_io::read_activity_tail(&mut file, &mut bytes).is_err() {
         return RegionRead::Unreadable;
     }
     // The seek point can land mid-codepoint and `name`/`cwd` come from
