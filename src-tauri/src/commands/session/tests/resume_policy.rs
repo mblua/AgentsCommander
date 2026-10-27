@@ -850,3 +850,47 @@ fn agent_path_2589_claude_wrapper_without_extension_uses_the_default_base() {
     );
     assert_eq!(resolved, agent_path_2589_default_base(cwd));
 }
+
+#[test]
+fn p19_wrapper_bom() {
+    let tmp = tempfile::tempdir().unwrap();
+    let custom_base = tmp.path().join(".claude-bom");
+    let wrapper = tmp.path().join("claude-bom.cmd");
+    let mut bytes = vec![0xef, 0xbb, 0xbf];
+    bytes.extend_from_slice(
+        format!("set CLAUDE_CONFIG_DIR={}\r\n", custom_base.display()).as_bytes(),
+    );
+    std::fs::write(&wrapper, bytes).unwrap();
+    let cwd = r"C:\Users\Test\repo";
+    let resolved = super::super::resolve_claude_projects_dir(wrapper.to_str().unwrap(), &[], cwd);
+    assert_eq!(
+        resolved,
+        Some(
+            custom_base
+                .join("projects")
+                .join(crate::session::session::mangle_cwd_for_claude(cwd))
+        )
+    );
+}
+
+#[test]
+fn p19_wrapper_non_utf8() {
+    let tmp = tempfile::tempdir().unwrap();
+    let custom_base = tmp.path().join(".claude-non-utf8");
+    let wrapper = tmp.path().join("claude-non-utf8.cmd");
+    let mut bytes = vec![0xff, 0x0a];
+    bytes.extend_from_slice(
+        format!("set CLAUDE_CONFIG_DIR={}\r\n", custom_base.display()).as_bytes(),
+    );
+    std::fs::write(&wrapper, bytes).unwrap();
+    let cwd = r"C:\Users\Test\repo";
+    let resolved = super::super::resolve_claude_projects_dir(wrapper.to_str().unwrap(), &[], cwd);
+    assert_eq!(
+        resolved,
+        Some(
+            custom_base
+                .join("projects")
+                .join(crate::session::session::mangle_cwd_for_claude(cwd))
+        )
+    );
+}

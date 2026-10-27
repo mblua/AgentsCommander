@@ -482,7 +482,9 @@ pub(crate) fn start_native_restore_startup(
                 }
 
                 // Skip sessions whose CWD no longer exists (permanent failure)
-                if !std::path::Path::new(&ps.working_directory).exists() {
+                if !crate::filesystem::directories::restore_cwd_exists(std::path::Path::new(
+                    &ps.working_directory,
+                )) {
                     log::warn!(
                         "Skipping restore of '{}': CWD '{}' no longer exists",
                         ps.name,

@@ -766,7 +766,7 @@ pub(crate) fn classify_create_carrier_scope(
             publication_epoch: 0,
         };
     }
-    let Ok(canonical) = std::fs::canonicalize(cwd) else {
+    let Ok(canonical) = crate::filesystem::directories::canonical_carrier_cwd(cwd) else {
         return CreateCarrierScope::Waiting;
     };
     classify_lifecycle_carrier_scope(permit, Some(target), &canonical)

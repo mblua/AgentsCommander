@@ -47,7 +47,7 @@ impl ConsumptionKey {
 /// a rotated-away file; falling back to the literal path keeps a key stable
 /// rather than turning a missing file into a different identity every call.
 pub fn normalise_path(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    crate::filesystem::directories::canonical_transcript_path(path)
 }
 
 /// What the reader has seen of one file: its length and a capped head prefix.

@@ -151,10 +151,10 @@ impl DiscoveryBranchWatcher {
         // converge to one map slot per project. Without this, the same project can
         // end up with two entries (e.g. from `discover_ac_agents` reading `read_dir`
         // output vs `discover_project` receiving a user-typed path) and emit doubled.
-        let canonical_key = std::fs::canonicalize(project_dir)
-            .ok()
-            .map(|p| projected_path_string(&p))
-            .unwrap_or_else(|| projected_path_string(Path::new(project_dir)));
+        let canonical_key =
+            crate::config::projects::canonical_watch_project(Path::new(project_dir))
+                .map(|p| projected_path_string(&p))
+                .unwrap_or_else(|| projected_path_string(Path::new(project_dir)));
 
         // Invariant: git_repos order = replica.repo_paths order (which follows config.json
         // `repos`).

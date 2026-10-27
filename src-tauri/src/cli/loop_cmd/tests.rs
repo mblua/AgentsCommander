@@ -128,3 +128,52 @@ fn session_start_does_not_disturb_the_busy_coordinator_flag() {
     assert_eq!(without.session_start, None);
     assert_eq!(with.session_start, Some(SessionStartCli::Accumulate));
 }
+
+#[test]
+fn p15_prompt_empty() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("empty.txt");
+    for bytes in [b"".as_slice(), b" \t\r\n".as_slice()] {
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            read_prompt_file(&path).unwrap_err(),
+            format!("Prompt file '{}' is empty", path.display())
+        );
+    }
+}
+
+#[test]
+fn p15_prompt_oversized() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("oversized.txt");
+    std::fs::write(&path, vec![b'a'; MAX_LOOP_PROMPT_FILE_BYTES as usize + 1]).unwrap();
+    assert_eq!(
+        read_prompt_file(&path).unwrap_err(),
+        format!(
+            "Prompt file '{}' is larger than {} bytes",
+            path.display(),
+            MAX_LOOP_PROMPT_FILE_BYTES
+        )
+    );
+}
+
+#[test]
+fn p15_prompt_invalid_utf8() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("invalid.bin");
+    std::fs::write(&path, [0xff, 0xfe, 0xfd]).unwrap();
+    assert_eq!(
+        read_prompt_file(&path).unwrap_err(),
+        format!("Prompt file '{}' is not valid UTF-8", path.display())
+    );
+}
+
+#[test]
+fn p15_prompt_missing() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("missing.txt");
+    let prefix = format!("Failed to read prompt file '{}': ", path.display());
+    let error = read_prompt_file(&path).unwrap_err();
+    assert!(error.starts_with(&prefix));
+    assert!(error.len() > prefix.len());
+}

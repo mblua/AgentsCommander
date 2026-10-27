@@ -763,7 +763,7 @@ impl RemoteSweeper {
         let branch = crate::pty::git_watcher::read_git_status(path, &self.git_state)
             .and_then(|status| status.branch);
 
-        if tokio::fs::metadata(Path::new(path).join(".git"))
+        if crate::filesystem::repositories::git_root_metadata(&Path::new(path).join(".git"))
             .await
             .is_err()
         {
