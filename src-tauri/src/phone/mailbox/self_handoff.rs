@@ -20,6 +20,7 @@ use super::settle::{
 use crate::config::settings::SettingsState;
 use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
+use crate::session::maintenance::{MaintenanceError, PendingSelfClear};
 use crate::session::manager::SessionManager;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -139,10 +140,16 @@ impl MailboxPoller {
                 .await;
         }
 
-        let newly_inserted = {
-            let pending = app.state::<Arc<crate::PendingSelfClear>>();
-            let mut set = pending.0.lock().unwrap_or_else(|e| e.into_inner());
-            set.insert(session_id)
+        let reservation = {
+            let pending = app.state::<Arc<PendingSelfClear>>();
+            pending.reserve_legacy(session_id)
+        };
+        let newly_inserted = match reservation {
+            Ok(_) => true,
+            Err(MaintenanceError::AlreadyLegacy) => false,
+            Err(error) => {
+                return self.reject_message(path, msg, &error.to_string()).await;
+            }
         };
         let status = if newly_inserted {
             "queued"
@@ -373,10 +380,16 @@ impl MailboxPoller {
 
         // 7. Idempotency - atomic check-and-set. The set is SHARED with clear and switch, so the
         //    three operations cannot race on one session.
-        let newly_inserted = {
-            let pending = app.state::<Arc<crate::PendingSelfClear>>();
-            let mut set = pending.0.lock().unwrap_or_else(|e| e.into_inner());
-            set.insert(session_id)
+        let reservation = {
+            let pending = app.state::<Arc<PendingSelfClear>>();
+            pending.reserve_legacy(session_id)
+        };
+        let newly_inserted = match reservation {
+            Ok(_) => true,
+            Err(MaintenanceError::AlreadyLegacy) => false,
+            Err(error) => {
+                return self.reject_message(path, msg, &error.to_string()).await;
+            }
         };
         let status = if newly_inserted {
             "queued"
@@ -469,7 +482,7 @@ impl MailboxPoller {
         poll: std::time::Duration,
         max_defer: std::time::Duration,
     ) {
-        let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
+        let pending = app.state::<Arc<PendingSelfClear>>().inner().clone();
 
         let app_for_state = app.clone();
         let session_state = move |session_id: Uuid| {
@@ -539,7 +552,7 @@ impl MailboxPoller {
         session_id: Uuid,
         clear_text: &'static str,
         root: PathBuf,
-        pending: Arc<crate::PendingSelfClear>,
+        pending: Arc<PendingSelfClear>,
         forgotten_summary: Option<ForgottenSummary>,
         settle: std::time::Duration,
         poll: std::time::Duration,
@@ -555,6 +568,13 @@ impl MailboxPoller {
         NoteBoundary: FnMut(Uuid, SelfClearBoundary) -> NoteFut + Send + 'static,
         NoteFut: std::future::Future<Output = ()> + Send,
     {
+        let Some(lease) = pending.legacy_lease(session_id) else {
+            log::warn!(
+                "[mailbox] clear driver missing legacy reservation for {}",
+                session_id
+            );
+            return;
+        };
         let mut state = SelfClearGateState::new(std::time::Instant::now());
 
         loop {
@@ -638,11 +658,7 @@ impl MailboxPoller {
 
         // Always de-register (handoff injected / destroy / cap-expiry / clear-inject-fail all land
         // here).
-        pending
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&session_id);
+        pending.release(&lease);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -658,7 +674,7 @@ impl MailboxPoller {
         poll: std::time::Duration,
         max_defer: std::time::Duration,
     ) {
-        let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
+        let pending = app.state::<Arc<PendingSelfClear>>().inner().clone();
 
         let app_for_state = app.clone();
         let session_state = move |session_id: Uuid| {
@@ -804,7 +820,7 @@ impl MailboxPoller {
         poll: std::time::Duration,
         max_defer: std::time::Duration,
     ) {
-        let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
+        let pending = app.state::<Arc<PendingSelfClear>>().inner().clone();
 
         let app_for_state = app.clone();
         let session_state = move |session_id: Uuid| {

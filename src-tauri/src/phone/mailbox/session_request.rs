@@ -12,6 +12,7 @@ use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::SettingsState;
 use crate::phone::types::OutboxMessage;
 use crate::pty::inject::LogicalPtyCommand;
+use crate::session::maintenance::{MaintenanceError, PendingSelfClear};
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
@@ -594,10 +595,16 @@ impl MailboxPoller {
         }
 
         // 3. Idempotency - atomic check-and-set. insert() returns false if already present.
-        let newly_inserted = {
-            let pending = app.state::<Arc<crate::PendingSelfClear>>();
-            let mut set = pending.0.lock().unwrap_or_else(|e| e.into_inner());
-            set.insert(session_id)
+        let reservation = {
+            let pending = app.state::<Arc<PendingSelfClear>>();
+            pending.reserve_legacy(session_id)
+        };
+        let newly_inserted = match reservation {
+            Ok(_) => true,
+            Err(MaintenanceError::AlreadyLegacy) => false,
+            Err(error) => {
+                return self.reject_message(path, msg, &error.to_string()).await;
+            }
         };
         let status = if newly_inserted {
             "queued"

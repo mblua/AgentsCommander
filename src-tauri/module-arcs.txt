@@ -2173,7 +2173,6 @@ agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::pty
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::session::manager
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::session::selection
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::session::session
-agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::commands::pty
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::commands::session
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::config::coding_agent_profiles
@@ -2186,9 +2185,9 @@ agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::phone:
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::phone::types
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::pty::inject
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::pty::manager
+agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::session::maintenance
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::session::manager
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::session::selection
-agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::commands::pty
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::commands::session
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::config
@@ -2206,6 +2205,7 @@ agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::types
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::pty::backend
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::pty::manager
+agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::session::maintenance
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::session::manager
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::session::selection
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::session::session
@@ -2237,6 +2237,7 @@ agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::pho
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::pty::inject
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::pty::manager
+agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::session::maintenance
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::session::manager
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::session::profile
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::session::purge_guard

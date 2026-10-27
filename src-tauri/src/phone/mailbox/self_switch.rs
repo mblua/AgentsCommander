@@ -17,6 +17,7 @@ use super::settle::{
 use crate::config::settings::SettingsState;
 use crate::config::teams;
 use crate::phone::types::OutboxMessage;
+use crate::session::maintenance::PendingSelfClear;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionStatus;
 use std::path::Path;
@@ -52,7 +53,7 @@ impl MailboxPoller {
         target_profile: String,
         forgotten_summary: Option<ForgottenSummary>,
         flavor: SelfHandoffFlavor,
-        pending: Arc<crate::PendingSelfClear>,
+        pending: Arc<PendingSelfClear>,
         settle: std::time::Duration,
         poll: std::time::Duration,
         max_defer: std::time::Duration,
@@ -73,9 +74,15 @@ impl MailboxPoller {
         NoteBoundary: FnMut(Uuid, SelfClearBoundary) -> NoteFut + Send + 'static,
         NoteFut: std::future::Future<Output = ()> + Send,
     {
+        let Some(lease) = pending.legacy_lease(original_session_id) else {
+            log::warn!(
+                "[mailbox] switch driver missing legacy reservation for {}",
+                original_session_id
+            );
+            return;
+        };
         let mut state = SelfClearGateState::new(std::time::Instant::now());
         let mut session_id = original_session_id;
-        let mut new_alias_id: Option<Uuid> = None;
 
         loop {
             tokio::time::sleep(poll).await;
@@ -159,17 +166,13 @@ impl MailboxPoller {
                             break;
                         }
                     };
-                    {
-                        let mut set = pending.0.lock().unwrap_or_else(|e| e.into_inner());
-                        if set.insert(new_id) {
-                            new_alias_id = Some(new_id);
-                        } else {
-                            log::warn!(
-                                "[mailbox] {}: new session {} was already marked pending",
-                                flavor.action,
-                                new_id
-                            );
-                        }
+                    if let Err(error) = pending.alias(&lease, new_id) {
+                        log::warn!(
+                            "[mailbox] {}: new session {} alias refused: {:?}",
+                            flavor.action,
+                            new_id,
+                            error
+                        );
                     }
                     session_id = new_id;
                     continue;
@@ -217,11 +220,7 @@ impl MailboxPoller {
             }
         }
 
-        let mut set = pending.0.lock().unwrap_or_else(|e| e.into_inner());
-        set.remove(&original_session_id);
-        if let Some(new_id) = new_alias_id {
-            set.remove(&new_id);
-        }
+        pending.release(&lease);
     }
 
     /// #617 - write the self-clear queue-ack response, then move the message to
