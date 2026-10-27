@@ -3,4 +3,5 @@
 mod logging;
 mod loops;
 mod phone;
+mod screenshot;
 mod session;

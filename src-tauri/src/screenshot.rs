@@ -112,6 +112,13 @@ pub struct ScreenshotCaptureEvent {
     pub message: String,
 }
 
+/// Typed screenshot notifications, delivered by the native event adapter.
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub trait ScreenshotEvents {
+    fn capture_saved(&self, result: ScreenshotCaptureResult);
+    fn capture_failed(&self, event: ScreenshotCaptureEvent);
+}
+
 /// Hotkey registration status exposed to the frontend. Never carries the
 /// internal `Shortcut`; commands clone this out of `ScreenshotHotkeyRuntime`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
