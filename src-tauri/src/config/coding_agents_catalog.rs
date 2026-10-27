@@ -360,7 +360,28 @@ fn catalog_fault_paths_match(armed: &Path, publishing: &Path) -> bool {
 /// Serialize all re-seeds (rare, user-initiated) so two never race on a master
 /// mid-swap. Stricter than strictly per-dest, which is safe (never a partial or
 /// racy state).
-static RESEED_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub struct CatalogReseedState {
+    lock: std::sync::Mutex<()>,
+}
+
+impl CatalogReseedState {
+    pub(crate) fn new() -> Self {
+        Self {
+            lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    pub(crate) fn with_reseed<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|_| "re-seed lock poisoned".to_string())?;
+        operation()
+    }
+}
 
 #[cfg(test)]
 pub(crate) fn hold_selected_catalog_test_lock(path: &Path) -> impl std::fmt::Debug {
