@@ -301,8 +301,11 @@ agentscommander_lib::capture::state -> agentscommander_lib::capture::key
 agentscommander_lib::capture::state -> agentscommander_lib::capture::record
 agentscommander_lib::capture::state -> agentscommander_lib::capture::sink
 agentscommander_lib::capture::state -> agentscommander_lib::config::co_managed
+agentscommander_lib::cli -> agentscommander_lib
 agentscommander_lib::cli -> agentscommander_lib::config
 agentscommander_lib::cli -> agentscommander_lib::config::settings
+agentscommander_lib::cli -> agentscommander_lib::phone::mailbox
+agentscommander_lib::cli -> agentscommander_lib::phone::types
 agentscommander_lib::cli -> agentscommander_lib::testability::reset
 agentscommander_lib::cli -> agentscommander_lib::testability::ui_automation
 agentscommander_lib::cli -> agentscommander_lib::testability::window_info
