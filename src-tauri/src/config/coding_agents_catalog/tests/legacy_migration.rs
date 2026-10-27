@@ -426,6 +426,7 @@ fn managed_catalog_corrupt_instance_legacy_blocks_transfer_without_writes() {
 
 #[test]
 fn legacy_masters_empty_dir_copied_verbatim_and_inert() {
+    let owner = CatalogReseedState::new();
     let project = seed_dir();
     let legacy = legacy_dir();
     let legacy_seed = legacy.path().join("_seed");
@@ -444,7 +445,7 @@ fn legacy_masters_empty_dir_copied_verbatim_and_inert() {
     assert_eq!(std::fs::read_dir(&claude_dir).unwrap().count(), 0);
     // The embedded default is NOT seeded (present = user-owned rule); the
     // Settings re-seed button restores it.
-    reseed_master_for_command(project.path(), "claude").unwrap();
+    reseed_master_for_command(&owner, project.path(), "claude").unwrap();
     assert!(crate::config::config_seed::is_nonempty_seed_dir(
         &claude_dir
     ));
@@ -452,6 +453,7 @@ fn legacy_masters_empty_dir_copied_verbatim_and_inert() {
 
 #[test]
 fn reseed_with_no_primary_targets_legacy_config_dir() {
+    let owner = CatalogReseedState::new();
     // The Settings re-seed button must keep working on pre-migration
     // installs with zero registered projects: no primary root -> the legacy
     // `<config_dir>/coding-agents/_seed/<dest>` masters are the target.
@@ -469,7 +471,7 @@ fn reseed_with_no_primary_targets_legacy_config_dir() {
     std::fs::create_dir_all(&legacy_master).unwrap();
     std::fs::write(legacy_master.join("marker"), b"x").unwrap();
 
-    let result = reseed_master_for_command(config_dir.path(), "claude");
+    let result = reseed_master_for_command(&owner, config_dir.path(), "claude");
     assert!(result.is_ok(), "legacy reseed works: {result:?}");
     let m = master("claude");
     assert_eq!(
