@@ -172,7 +172,8 @@ fn write_refresh_traced(
         crate::filesystem::projects::canonical_refresh_project(project_path)
             .unwrap_or_else(|_| project_path.to_path_buf());
     let canonical_changed_path =
-        std::fs::canonicalize(changed_path).unwrap_or_else(|_| changed_path.to_path_buf());
+        crate::filesystem::directories::canonical_cli_discovery_path(changed_path)
+            .unwrap_or_else(|_| changed_path.to_path_buf());
     let request = ProjectRefreshRequest {
         id: uuid::Uuid::new_v4().to_string(),
         project_path: canonical_project_path.to_string_lossy().to_string(),
@@ -201,7 +202,8 @@ fn write_refresh_traced(
 
 pub(crate) fn write_project_registration_refresh(project_path: &Path, reason: &str) {
     let canonical_project_path =
-        std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
+        crate::filesystem::directories::canonical_cli_discovery_path(project_path)
+            .unwrap_or_else(|_| project_path.to_path_buf());
     let request = ProjectRefreshRequest {
         id: uuid::Uuid::new_v4().to_string(),
         project_path: canonical_project_path.to_string_lossy().to_string(),
@@ -229,10 +231,12 @@ fn list(args: WorkgroupListArgs) -> Result<(), String> {
                 name,
                 team,
                 path: path.to_string_lossy().to_string(),
-                has_messaging: path
-                    .join(crate::phone::messaging::MESSAGING_DIR_NAME)
-                    .is_dir(),
-                has_task: path.join("TASK.md").is_file(),
+                has_messaging: crate::filesystem::directories::cli_discovery_is_dir(
+                    &path.join(crate::phone::messaging::MESSAGING_DIR_NAME),
+                ),
+                has_task: crate::filesystem::directories::cli_discovery_is_file(
+                    &path.join("TASK.md"),
+                ),
                 replicas,
             })
         })
@@ -258,7 +262,9 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
                     || !args.repo_exclude_agents.is_empty();
                 let team_dir = ac_root.join(format!("_team_{}", safe_team));
                 let config_path = team_dir.join("config.json");
-                let team_config_exists = team_dir.exists() || config_path.exists();
+                let team_config_exists =
+                    crate::filesystem::directories::cli_discovery_exists(&team_dir)
+                        || crate::filesystem::directories::cli_discovery_exists(&config_path);
                 let provisioning_config = if team_config_exists {
                     read_team_config(&ac_root, &safe_team)?;
                     if has_legacy_team_flags {

@@ -217,3 +217,54 @@ mod lean_json;
 mod peer_filter;
 mod role_execute;
 mod status_index;
+
+#[test]
+fn discovery_filters_entries_bootstraps_mailboxes_and_preserves_role_fallback() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let ac_root = temp.path().join("proj-a/.ac");
+    let wg_dir = ac_root.join("room-1-devs");
+    let root = wg_dir.join("__agent_alice");
+    let peer_dir = wg_dir.join("__agent_bob");
+    let matrix = ac_root.join("_agent_bob");
+    for dir in [&root, &peer_dir, &matrix, &wg_dir.join("irrelevant")] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(wg_dir.join("__agent_file"), b"not a directory").unwrap();
+    std::fs::write(
+        peer_dir.join("config.json"),
+        r#"{"identity":"../../_agent_bob"}"#,
+    )
+    .unwrap();
+    std::fs::write(matrix.join("CLAUDE.md"), "## Role\nFallback role.\n").unwrap();
+    let discover = || {
+        let wg = detect_wg_replica(root.to_str().unwrap()).unwrap().unwrap();
+        discover_wg_peers(wg, &[])
+    };
+    let peers = discover();
+    assert_eq!(peers.len(), 1);
+    assert_eq!(peers[0].name, "proj-a:room-1-devs/bob");
+    assert_eq!(peers[0].role, "Fallback role.");
+    let mailbox = peer_dir.join(crate::config::agent_local_dir_name());
+    assert!(mailbox.join("inbox").is_dir());
+    assert!(mailbox.join("outbox").is_dir());
+    std::fs::write(matrix.join("Role.md"), "## Role\nPrimary role.\n").unwrap();
+    let peers = discover();
+    assert_eq!(peers.len(), 1);
+    assert_eq!(peers[0].role, "Primary role.");
+
+    let missing = wg_dir.join("absent");
+    assert!(detect_wg_replica(missing.to_str().unwrap())
+        .unwrap()
+        .is_none());
+    let peers = discover_wg_peers(
+        WgReplicaInfo {
+            my_agent_name: "alice".to_string(),
+            my_wg_name: "room-1-devs".to_string(),
+            my_wg_dir: missing,
+            ac_root,
+            my_project: "proj-a".to_string(),
+        },
+        &[],
+    );
+    assert!(peers.is_empty());
+}
