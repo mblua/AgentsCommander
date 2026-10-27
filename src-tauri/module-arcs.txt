@@ -71,7 +71,7 @@ agentscommander_lib::agent_update::updater -> agentscommander_lib::config::agent
 agentscommander_lib::agent_update::updater -> agentscommander_lib::process::agent::update
 agentscommander_lib::agent_version -> agentscommander_lib::process::agent
 agentscommander_lib::agent_version::process_owner -> agentscommander_lib::process::agent
-agentscommander_lib::api -> agentscommander_lib::app_state
+agentscommander_lib::api -> agentscommander_lib::config::injected_messages
 agentscommander_lib::api -> agentscommander_lib::config::settings
 agentscommander_lib::api -> agentscommander_lib::phone::types
 agentscommander_lib::api -> agentscommander_lib::pty::manager
@@ -781,8 +781,10 @@ agentscommander_lib::commands::config::web_server -> agentscommander_lib
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::api
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::api::audit
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::api::auth
+agentscommander_lib::commands::config::web_server -> agentscommander_lib::app_state
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::config
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::config::coding_agent_profiles
+agentscommander_lib::commands::config::web_server -> agentscommander_lib::config::injected_messages
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::config::root_agent
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::config::settings
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::config::teams
