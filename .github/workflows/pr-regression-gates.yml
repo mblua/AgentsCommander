@@ -82,10 +82,52 @@ jobs:
         run: |
           npm run check:served-paths:self
           npm run check:served-paths
-      - name: "Check module-arc record is current (#2447)"
+      - name: "Generate validated module arcs (#3288)"
+        id: generate_module_arcs
+        env:
+          TESTED_SHA: ${{ github.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           npm run check:arcs:self
+          npm run record:arcs:self
           npm run check:arcs
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import { execFileSync } from 'node:child_process';
+          const testedSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          if (testedSha !== process.env.TESTED_SHA) {
+            throw new Error('tested tree identity mismatch');
+          }
+          const dir = 'artifacts/module-arcs';
+          fs.mkdirSync(dir, { recursive: true });
+          const record = fs.readFileSync('src-tauri/module-arcs.txt');
+          fs.writeFileSync(dir + '/module-arcs.txt', record);
+          const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+          const receipt = {
+            testedSha, ...(process.env.PR_HEAD_SHA ? { prHeadSha: process.env.PR_HEAD_SHA } : {}),
+            generatedUtc: new Date().toISOString(), sha256: hash(record), bytes: record.length,
+            arcCount: record.length ? record.toString('utf8').split(String.fromCharCode(10)).length - 1 : 0,
+            detectorVersion: '1.1.1', nodeVersion: process.version,
+          };
+          fs.writeFileSync(dir + '/receipt.json', JSON.stringify(receipt, null, 2) + String.fromCharCode(10));
+          const saved = JSON.parse(fs.readFileSync(dir + '/receipt.json', 'utf8'));
+          const staged = fs.readFileSync(dir + '/module-arcs.txt');
+          if (!staged.equals(record) || saved.sha256 !== hash(staged)
+              || saved.bytes !== staged.length || saved.testedSha !== testedSha) {
+            throw new Error('module arc receipt verification failed');
+          }
+          NODE
+      - name: Upload tested-tree module arcs
+        if: steps.generate_module_arcs.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: module-arcs-${{ github.sha }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            artifacts/module-arcs/module-arcs.txt
+            artifacts/module-arcs/receipt.json
       - name: "Check no new dependency cycles (#2447)"
         run: |
           npm run check:cycles:self
