@@ -1,5 +1,6 @@
 use clap::{Args, Subcommand};
 use serde::Serialize;
+use std::ops::ControlFlow;
 
 use crate::cli::workgroup::{
     build_new_team_config, clone_missing_for_config, push_unique, resolve_cli_ac_root,
@@ -197,15 +198,17 @@ fn list(args: TeamListArgs) -> Result<(), String> {
             repos: config.repos,
             context_alert_percentages: config.context_alert_percentages,
         });
-    } else if let Ok(entries) = std::fs::read_dir(&ac_root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
+    } else {
+        let _ = crate::filesystem::directories::visit_cli_discovery_entries(&ac_root, |entry| {
+            let Ok((path, entry_name)) = entry else {
+                return ControlFlow::<()>::Continue(());
+            };
+            if !crate::filesystem::directories::cli_discovery_is_dir(&path) {
+                return ControlFlow::Continue(());
             }
-            let name = entry.file_name().to_string_lossy().to_string();
+            let name = entry_name.to_string_lossy().to_string();
             let Some(team) = name.strip_prefix("_team_") else {
-                continue;
+                return ControlFlow::Continue(());
             };
             if let Ok(config) = read_team_config(&ac_root, team) {
                 items.push(TeamListItem {
@@ -217,7 +220,9 @@ fn list(args: TeamListArgs) -> Result<(), String> {
                     context_alert_percentages: config.context_alert_percentages,
                 });
             }
-        }
+
+            ControlFlow::Continue(())
+        });
         items.sort_by(|a, b| a.team.cmp(&b.team));
     }
     print_json(&items)
@@ -263,7 +268,7 @@ fn add_member(args: TeamAddMemberArgs) -> Result<(), String> {
     let ac_root = resolve_cli_ac_root(&project_path)?;
     let guard = TeamConfigMutationGuard::acquire(&ac_root)?;
     let wg_dir = ac_root.join(&args.workgroup);
-    if !wg_dir.is_dir() {
+    if !crate::filesystem::directories::cli_discovery_is_dir(&wg_dir) {
         return Err(format!("Room '{}' not found", args.workgroup));
     }
     let team = parse_team_from_workgroup_name(&args.workgroup)?;
@@ -329,7 +334,7 @@ fn remove_member_hooked(
     let project_path = resolve_cli_project(&args.project)?;
     let ac_root = resolve_cli_ac_root(&project_path)?;
     let wg_dir = ac_root.join(&args.workgroup);
-    if !wg_dir.is_dir() {
+    if !crate::filesystem::directories::cli_discovery_is_dir(&wg_dir) {
         return Err(format!("Room '{}' not found", args.workgroup));
     }
     let team = parse_team_from_workgroup_name(&args.workgroup)?;

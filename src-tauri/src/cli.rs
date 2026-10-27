@@ -11,6 +11,7 @@ mod list_sessions;
 mod loop_cmd;
 mod new_project;
 mod open_project;
+mod plain_clear;
 mod purge_wg;
 mod raise_hand;
 mod role_experiment;
@@ -139,6 +140,9 @@ pub enum Commands {
     /// (two-phase, deferred: clear after 30s sustained idle, then resume-prompt after a fresh 30s)
     #[command(name = "self-handoff-and-clear")]
     SelfClear(self_clear::SelfClearArgs),
+    /// Request an immediate clear attempt for this session, without handoff or idle wait
+    #[command(name = "self-clear")]
+    PlainSelfClear(plain_clear::PlainClearArgs),
     /// Hand off via SELF-HANDOFF.md, switch or hard-reset the caller, then resume from it
     #[command(name = "self-handoff-and-switch")]
     SelfSwitch(self_switch::SelfSwitchArgs),
@@ -440,6 +444,7 @@ pub fn handle_cli(
     let code = match cmd {
         Commands::Send(args) => send::execute(args),
         Commands::SelfClear(args) => self_clear::execute(args),
+        Commands::PlainSelfClear(args) => execute_plain_clear(args),
         Commands::SelfSwitch(args) => self_switch::execute(args),
         Commands::SelfRestart(args) => self_restart::execute(args),
         Commands::RaiseHand(args) => raise_hand::execute(args),
@@ -505,6 +510,113 @@ pub fn flush_outputs() {
     use std::io::Write;
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
+}
+
+fn execute_plain_clear(args: plain_clear::PlainClearArgs) -> i32 {
+    use std::path::PathBuf;
+    use uuid::Uuid;
+    let Some(root) = args.root else {
+        eprintln!("Error: --root is required.");
+        return 1;
+    };
+    let is_root = match validate_cli_token(&args.token) {
+        Ok((_, privileged)) => privileged,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
+    let sender = self_clear::resolve_self_clear_sender(&root);
+    let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
+    let msg_id = Uuid::new_v4().to_string();
+    let request_id = Uuid::new_v4().to_string();
+    let message = crate::phone::types::OutboxMessage {
+        id: msg_id.clone(),
+        token: args.token,
+        from: sender.clone(),
+        to: String::new(),
+        body: String::new(),
+        mode: String::new(),
+        get_output: false,
+        request_id: Some(request_id.clone()),
+        sender_agent: None,
+        preferred_agent: String::new(),
+        requested_profile: None,
+        effective_agent_id: None,
+        effective_profile: None,
+        profile_fallback_applied: false,
+        dispatch_not_applied: None,
+        priority: "normal".into(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        command: None,
+        action: Some(crate::phone::mailbox::PLAIN_SELF_CLEAR_ACTION.into()),
+        target: None,
+        force: None,
+        timeout_secs: None,
+        switch_coding_agent: None,
+        switch_profile: None,
+        dry_run: None,
+        quiet_period_ms: None,
+        pty_input: None,
+    };
+    let outbox_dir = if is_root {
+        crate::config::config_dir()
+            .map(|d| d.join("app-outbox-path.txt"))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|s| PathBuf::from(s.trim()))
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(|| ac_dir.join("outbox"))
+    } else {
+        ac_dir.join("outbox")
+    };
+    let request_path = outbox_dir.join(format!("{msg_id}.json"));
+    let ack_path = ac_dir.join("responses").join(format!("{request_id}.json"));
+    let rejection_path = outbox_dir
+        .join("rejected")
+        .join(format!("{msg_id}.reason.txt"));
+    let delivered_path = outbox_dir.join("delivered").join(format!("{msg_id}.json"));
+    let read_optional = |path: &std::path::Path| match std::fs::read_to_string(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    };
+    let clock = std::time::Instant::now();
+    let result = plain_clear::run(
+        &plain_clear::Binding {
+            action: crate::phone::mailbox::PLAIN_SELF_CLEAR_ACTION,
+            request_id: &request_id,
+            requested_by: &sender,
+        },
+        args.timeout,
+        plain_clear::Callbacks {
+            publish: || {
+                let bytes = serde_json::to_vec_pretty(&message).map_err(|e| e.to_string())?;
+                std::fs::create_dir_all(&outbox_dir).map_err(|e| e.to_string())?;
+                std::fs::write(&request_path, bytes).map_err(|e| e.to_string())
+            },
+            read: || plain_clear::Observation {
+                ack: read_optional(&ack_path),
+                rejection: read_optional(&rejection_path),
+                delivered: std::fs::metadata(&delivered_path)
+                    .map(|m| m.is_file())
+                    .or_else(|e| {
+                        if e.kind() == std::io::ErrorKind::NotFound {
+                            Ok(false)
+                        } else {
+                            Err(e.to_string())
+                        }
+                    }),
+            },
+            now: || clock.elapsed(),
+            wait: std::thread::sleep,
+        },
+    );
+    if result.code == 0 {
+        crate::cli_println!("{}", result.message);
+    } else {
+        eprintln!("{}", result.message);
+    }
+    result.code
 }
 
 #[cfg(test)]

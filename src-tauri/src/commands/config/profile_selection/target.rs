@@ -382,7 +382,8 @@ pub(crate) fn enumerate_profile_assignment_targets(
 }
 
 pub(crate) fn canonical_compare_key(path: &Path) -> String {
-    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let path = crate::filesystem::projects::canonical_project_path(path)
+        .unwrap_or_else(|_| path.to_path_buf());
     let mut text =
         crate::path_utils::path_to_string_without_windows_verbatim_prefix(&path).replace('\\', "/");
     if cfg!(windows) {
@@ -392,7 +393,7 @@ pub(crate) fn canonical_compare_key(path: &Path) -> String {
 }
 
 pub(crate) fn canonical_real_dir(path: &Path, label: &str) -> Result<PathBuf, String> {
-    let metadata = std::fs::symlink_metadata(path)
+    let metadata = crate::filesystem::projects::project_path_symlink_metadata(path)
         .map_err(|e| format!("{} '{}' is not readable: {}", label, path.display(), e))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(format!(
@@ -401,7 +402,7 @@ pub(crate) fn canonical_real_dir(path: &Path, label: &str) -> Result<PathBuf, St
             path.display()
         ));
     }
-    std::fs::canonicalize(path)
+    crate::filesystem::projects::canonical_project_path(path)
         .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
         .map_err(|e| {
             format!(
@@ -436,103 +437,31 @@ pub(crate) fn validate_wg_replica_path(path: &Path) -> Result<(), String> {
 }
 
 pub(crate) fn collect_replica_dirs_in_workgroup(wg_dir: &Path, out: &mut CandidateDirs) {
-    let entries = match std::fs::read_dir(wg_dir) {
-        Ok(entries) => entries,
-        Err(e) => {
-            out.mark_incomplete(
-                format!("Failed to read room '{}': {}", wg_dir.display(), e),
-                ScopeFault::new(ScopeFaultCode::FolderUnreadable, wg_dir),
-            );
-            return;
-        }
-    };
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(e) => {
-                out.mark_incomplete(
-                    format!(
-                        "Failed to read an entry in room '{}': {}",
-                        wg_dir.display(),
-                        e
-                    ),
-                    ScopeFault::new(ScopeFaultCode::FolderUnreadable, wg_dir),
-                );
-                continue;
-            }
-        };
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
-            Err(e) => {
-                out.mark_incomplete(
-                    format!(
-                        "Failed to inspect an entry in room '{}': {}",
-                        wg_dir.display(),
-                        e
-                    ),
-                    ScopeFault::new(ScopeFaultCode::FolderUnreadable, wg_dir),
-                );
-                continue;
-            }
-        };
-        if !file_type.is_dir() {
-            continue;
-        }
-        let name = entry.file_name();
-        if name.to_string_lossy().starts_with("__agent_") {
-            out.dirs.push(entry.path());
-        }
-    }
+    crate::filesystem::profile_targets::visit_room_replicas(wg_dir, |event| {
+        record_profile_directory_event(out, event);
+    });
 }
 
 pub(crate) fn collect_kind_replica_dirs(ac_root: &Path, out: &mut CandidateDirs) {
-    let entries = match std::fs::read_dir(ac_root) {
-        Ok(entries) => entries,
-        Err(e) => {
-            out.mark_incomplete(
-                format!("Failed to read workspace '{}': {}", ac_root.display(), e),
-                ScopeFault::new(ScopeFaultCode::FolderUnreadable, ac_root),
-            );
-            return;
-        }
-    };
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(e) => {
-                out.mark_incomplete(
-                    format!(
-                        "Failed to read an entry in workspace '{}': {}",
-                        ac_root.display(),
-                        e
-                    ),
-                    ScopeFault::new(ScopeFaultCode::FolderUnreadable, ac_root),
-                );
-                continue;
-            }
-        };
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
-            Err(e) => {
-                out.mark_incomplete(
-                    format!(
-                        "Failed to inspect an entry in workspace '{}': {}",
-                        ac_root.display(),
-                        e
-                    ),
-                    ScopeFault::new(ScopeFaultCode::FolderUnreadable, ac_root),
-                );
-                continue;
-            }
-        };
-        if !file_type.is_dir()
-            || !crate::config::entity_prefix::has_entity_prefix(
-                &entry.file_name().to_string_lossy(),
-            )
-        {
-            continue;
-        }
-        collect_replica_dirs_in_workgroup(&entry.path(), out);
+    crate::filesystem::profile_targets::visit_kind_replicas(
+        ac_root,
+        crate::config::entity_prefix::has_entity_prefix,
+        |event| record_profile_directory_event(out, event),
+    );
+}
+
+fn record_profile_directory_event(
+    out: &mut CandidateDirs,
+    event: crate::filesystem::profile_targets::ProfileDirectoryEvent,
+) {
+    use crate::filesystem::profile_targets::ProfileDirectoryEvent;
+
+    match event {
+        ProfileDirectoryEvent::Candidate(path) => out.dirs.push(path),
+        ProfileDirectoryEvent::Fault { warning, scope } => out.mark_incomplete(
+            warning,
+            ScopeFault::new(ScopeFaultCode::FolderUnreadable, &scope),
+        ),
     }
 }
 

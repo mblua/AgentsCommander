@@ -1,9 +1,7 @@
 use clap::Args;
 use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
-use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
-use std::io::Write;
 
 use crate::config::instance_artifacts::LOGS_DIR_NAME;
 
@@ -420,7 +418,7 @@ fn write_audit_log(
     let config_dir = crate::config::config_dir()
         .ok_or_else(|| "could not determine config directory".to_string())?;
     let log_dir = config_dir.join(LOGS_DIR_NAME);
-    std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
+    crate::filesystem::directories::ensure_harness_logs(&log_dir).map_err(|e| e.to_string())?;
     let log_path = log_dir.join("harness.log");
 
     let redacted = redacted_display(input);
@@ -448,12 +446,7 @@ fn write_audit_log(
     };
 
     let line = serde_json::to_string(&entry).map_err(|e| e.to_string())?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| e.to_string())?;
-    writeln!(file, "{}", line).map_err(|e| e.to_string())
+    crate::filesystem::documents::append_harness_audit(&log_path, &line).map_err(|e| e.to_string())
 }
 
 fn decision_parts(decision: &PolicyDecision) -> (&'static str, Vec<String>) {

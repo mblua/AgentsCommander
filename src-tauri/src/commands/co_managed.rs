@@ -7,7 +7,7 @@
 //! `generate_handler!` (invisible to the module-arc instrument) and the
 //! phase-9 frontend. See phase 2 section 4.1.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager};
 
@@ -17,6 +17,7 @@ use crate::capture::secrets;
 use crate::config::co_managed::{self, CoManagedConfig, CoManagedState};
 use crate::config::entity_prefix::ROOM_DIR_PREFIX;
 use crate::config::settings::SettingsState;
+use crate::filesystem::projects::{canonical_project_path, project_path_is_dir};
 use crate::network::OutboundNetwork;
 
 /// Canonicalise `room_root` and prove it is a Room of a registered project
@@ -27,9 +28,9 @@ async fn canonical_room_root<R: tauri::Runtime>(
     app: &AppHandle<R>,
     room_root: &str,
 ) -> Result<PathBuf, String> {
-    let canonical = std::fs::canonicalize(room_root)
+    let canonical = canonical_project_path(Path::new(room_root))
         .map_err(|e| format!("coManagedRoomRootInvalid: {room_root}: {e}"))?;
-    if !canonical.is_dir() {
+    if !project_path_is_dir(&canonical) {
         return Err(format!(
             "coManagedRoomRootInvalid: {} is not a directory",
             canonical.display()
@@ -68,7 +69,7 @@ async fn canonical_room_root<R: tauri::Runtime>(
         let candidate_ac = candidate
             .path
             .join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR);
-        std::fs::canonicalize(&candidate_ac)
+        canonical_project_path(&candidate_ac)
             .map(|path| crate::path_identity::paths_equivalent(&path, ac_root))
             .unwrap_or(false)
     });
@@ -158,7 +159,7 @@ async fn live_sessions_in_room<R: tauri::Runtime>(
                     // comparing a raw candidate with a canonical root drops every live
                     // session and the toggle starts no reader (#2267 phase 4, Windows
                     // CI `toggling_the_flag_on_a_live_session_starts_and_stops_the_reader`).
-                    let candidate = std::fs::canonicalize(&root).unwrap_or(root);
+                    let candidate = canonical_project_path(&root).unwrap_or(root);
                     crate::path_identity::paths_equivalent(&candidate, room_root)
                 })
         })

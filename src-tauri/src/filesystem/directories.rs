@@ -206,3 +206,65 @@ pub(crate) fn experiment_path_is_link(path: &Path) -> bool {
         .map(|metadata| crate::path_identity::is_link_or_reparse(&metadata))
         .unwrap_or(false)
 }
+
+pub(crate) fn ensure_cli_outbox(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+pub(crate) fn cli_outbox_artifact_exists(path: &Path) -> bool {
+    path.exists()
+}
+
+pub(crate) fn cli_agent_root_is_dir(path: &Path) -> bool {
+    path.is_dir()
+}
+
+pub(crate) fn ensure_cli_session_requests(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+pub(crate) fn ensure_project_refresh_requests(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+pub(crate) fn ensure_harness_logs(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+pub(crate) fn canonical_created_agent(path: &Path) -> io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+pub(crate) fn visit_cli_discovery_entries<B>(
+    root: &Path,
+    mut visit: impl FnMut(io::Result<(PathBuf, std::ffi::OsString)>) -> std::ops::ControlFlow<B>,
+) -> io::Result<std::ops::ControlFlow<B>> {
+    for entry in std::fs::read_dir(root)? {
+        if let std::ops::ControlFlow::Break(value) =
+            visit(entry.map(|entry| (entry.path(), entry.file_name())))
+        {
+            return Ok(std::ops::ControlFlow::Break(value));
+        }
+    }
+    Ok(std::ops::ControlFlow::Continue(()))
+}
+
+pub(crate) fn cli_discovery_is_dir(path: &Path) -> bool {
+    path.is_dir()
+}
+pub(crate) fn cli_discovery_is_file(path: &Path) -> bool {
+    path.is_file()
+}
+pub(crate) fn cli_discovery_exists(path: &Path) -> bool {
+    path.exists()
+}
+pub(crate) fn canonical_cli_discovery_path(path: &Path) -> io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+pub(crate) fn ensure_cli_peer_mailbox(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+pub(crate) fn create_cli_outbox(path: &Path) -> io::Result<()> {
+    std::fs::create_dir(path)
+}
