@@ -2,9 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
 
-use agentscommander_lib::config::sessions_persistence::{
-    load_sessions_raw_from_dir_for_test, PersistedSession,
-};
+use agentscommander_lib::config::sessions_persistence::PersistedSession;
 use agentscommander_lib::session::session::SessionStatus;
 
 /// Excludes one test's open write descriptor on a freshly copied binary from

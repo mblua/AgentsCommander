@@ -1,7 +1,6 @@
 use super::{
     assert_same_path, command_for_binary, config_dir_for_bin, copy_binary_into,
-    project_with_agents, run_json, run_stdout, spawn_lock, write_settings, Path, PathBuf, Stdio,
-    Tmp,
+    project_with_agents, run_json, run_stdout, spawn_lock, write_settings, Path, PathBuf, Tmp,
 };
 
 /// AC3 and requirement (A): creation produces a Room.

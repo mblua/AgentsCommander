@@ -1,3 +1,5 @@
+use agentscommander_lib::config::sessions_persistence::load_sessions_raw_from_dir_for_test;
+
 use super::{
     assert_no_side_effect_dirs, assert_outside_sentinel_survives, assert_refresh_request,
     assert_same_path, config_dir_for_bin, copy_binary_into, create_basic_workgroup,
