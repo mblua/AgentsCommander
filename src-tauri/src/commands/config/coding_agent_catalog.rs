@@ -190,18 +190,25 @@ pub fn list_reseedable_agent_commands() -> Vec<String> {
 #[tauri::command]
 pub async fn reseed_coding_agent_default(
     settings: State<'_, SettingsState>,
+    owners: State<'_, crate::app_state::AppOwners>,
     command: String,
 ) -> Result<crate::config::coding_agents_catalog::ReseedResult, String> {
     let settings = settings.read().await;
     let ac_dir = crate::config::coding_agents_catalog::primary_project_root(&settings)
         .map(|root| root.join(".ac"));
     match ac_dir {
-        Some(ac_dir) => {
-            crate::config::coding_agents_catalog::reseed_master_for_command(&ac_dir, &command)
-        }
+        Some(ac_dir) => crate::config::coding_agents_catalog::reseed_master_for_command(
+            &owners.catalog_reseed,
+            &ac_dir,
+            &command,
+        ),
         None => {
             let config_dir = crate::config::config_dir().ok_or("No config dir")?;
-            crate::config::coding_agents_catalog::reseed_master_for_command(&config_dir, &command)
+            crate::config::coding_agents_catalog::reseed_master_for_command(
+                &owners.catalog_reseed,
+                &config_dir,
+                &command,
+            )
         }
     }
 }
