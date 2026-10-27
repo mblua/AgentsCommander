@@ -155,7 +155,7 @@ async fn manual_coordinator_cascade_barrier_publishes_only_one_final_selection()
     use tauri::Manager;
 
     let root = crate::config::root_agent::root_agent_dir().expect("resolve root agent dir");
-    std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
+    std::fs::create_dir_all(root).expect("Root fixture creation succeeds");
     let cwd = tempfile::tempdir().unwrap();
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
@@ -234,7 +234,7 @@ async fn manual_coordinator_cascade_failed_selected_member_stays_selected_withou
     use tauri::Manager;
 
     let root = crate::config::root_agent::root_agent_dir().expect("resolve root agent dir");
-    std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
+    std::fs::create_dir_all(root).expect("Root fixture creation succeeds");
     let cwd = tempfile::tempdir().unwrap();
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();

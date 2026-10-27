@@ -218,7 +218,7 @@ async fn issue_3145_restart_mirror_forced_fresh_never_inherits() {
 #[tokio::test]
 async fn issue_3145_manual_auto_close_reload_retains_input_during_teardown() {
     let root = crate::config::root_agent::root_agent_dir().expect("resolve root agent dir");
-    std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
+    std::fs::create_dir_all(root).expect("Root fixture creation succeeds");
     for source in [DestructionSource::ManualClose, DestructionSource::AutoClose] {
         let fixture = room_fixture();
         configure_room(fixture.room_path(), true);
@@ -328,7 +328,7 @@ async fn issue_3145_open_claude_without_forced_fresh(
 #[tokio::test]
 async fn issue_3145_initial_claude_launch_retains_input_after_close_reload_resume() {
     let root = crate::config::root_agent::root_agent_dir().expect("resolve root agent dir");
-    std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
+    std::fs::create_dir_all(root).expect("Root fixture creation succeeds");
     for accepted in ["A", ""] {
         let fixture = room_fixture();
         configure_room(fixture.room_path(), true);
@@ -407,7 +407,7 @@ async fn issue_3145_initial_claude_launch_retains_input_after_close_reload_resum
 #[tokio::test]
 async fn issue_3145_configured_external_resume_stays_blocked_after_close_reload() {
     let root = crate::config::root_agent::root_agent_dir().expect("resolve root agent dir");
-    std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
+    std::fs::create_dir_all(root).expect("Root fixture creation succeeds");
     let fixture = room_fixture();
     configure_room(fixture.room_path(), true);
     let mut first = restart_harness(&fixture);

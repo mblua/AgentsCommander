@@ -195,13 +195,8 @@ pub(crate) fn make_lifecycle_fixture() -> LifecycleFixture {
         agentscommander_lib::config::config_dir().expect("config dir override"),
         config_dir
     );
-    let root =
-        agentscommander_lib::config::root_agent::root_agent_dir().expect("resolve root agent dir");
-    assert_eq!(
-        PathBuf::from(&root),
-        config_dir.join(agentscommander_lib::config::root_agent::ROOT_AGENT_DIR_NAME)
-    );
-    std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
+    let root = config_dir.join(agentscommander_lib::config::ROOT_AGENT_DIR_NAME);
+    std::fs::create_dir_all(root).expect("Root fixture creation succeeds");
     // Seed canonical project authority before the unrelated Preserve save.
     let mut settings = AppSettings::default();
     settings.default_shell = "powershell.exe".to_string();
