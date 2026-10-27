@@ -9,9 +9,11 @@ use serde::Serialize;
 
 use crate::config::role_templates::{
     agency_template_metas_from_cache, agency_templates_dir, agency_templates_status,
-    collect_agency_templates_from_dir, parse_agency_template_frontmatter, slug_segment,
+    collect_agency_templates_from_dir, parse_agency_template_frontmatter,
+    read_cached_agency_manifest, read_staged_agency_manifest, slug_segment,
     strip_yaml_frontmatter_for_role_template, title_case_slug, validate_role_template_body,
-    AgencyTemplatesManifest, AGENCY_MANIFEST_FILE, AGENCY_TEMPLATES_DIR,
+    write_normalized_agency_manifest, write_staged_agency_manifest, AgencyTemplatesManifest,
+    AGENCY_TEMPLATES_DIR,
 };
 
 use crate::process::is_running as process_is_running;
@@ -327,18 +329,9 @@ pub fn update_cache_at(
     )?;
     let templates = collect_agency_templates_from_dir(staging.path())
         .map_err(|e| format!("Staged Agency cache failed validation: {}", e))?;
-    let mut manifest: AgencyTemplatesManifest = serde_json::from_str(
-        &fs::read_to_string(staging.path().join(AGENCY_MANIFEST_FILE))
-            .map_err(|e| format!("Failed to read staged manifest: {}", e))?,
-    )
-    .map_err(|e| format!("Failed to parse staged manifest: {}", e))?;
+    let mut manifest = read_staged_agency_manifest(staging.path())?;
     manifest.template_count = templates.len();
-    fs::write(
-        staging.path().join(AGENCY_MANIFEST_FILE),
-        serde_json::to_string_pretty(&manifest)
-            .map_err(|e| format!("Failed to encode manifest: {}", e))?,
-    )
-    .map_err(|e| format!("Failed to write staged manifest: {}", e))?;
+    write_staged_agency_manifest(staging.path(), &manifest)?;
     collect_agency_templates_from_dir(staging.path())
         .map_err(|e| format!("Staged Agency cache failed validation: {}", e))?;
 
@@ -362,11 +355,7 @@ pub fn update_cache(args: AgencyTemplatesUpdateArgs) -> Result<UpdateResult, Str
 fn current_manifest_if_valid(config_dir: &Path) -> Result<AgencyTemplatesManifest, String> {
     let root = agency_templates_dir(config_dir);
     let templates = collect_agency_templates_from_dir(&root)?;
-    let manifest: AgencyTemplatesManifest = serde_json::from_str(
-        &fs::read_to_string(root.join(AGENCY_MANIFEST_FILE))
-            .map_err(|e| format!("Failed to read cached manifest: {}", e))?,
-    )
-    .map_err(|e| format!("Failed to parse cached manifest: {}", e))?;
+    let manifest = read_cached_agency_manifest(&root)?;
     if templates.len() != manifest.template_count {
         return Err("Cached manifest template count mismatch".into());
     }
@@ -431,12 +420,7 @@ pub(crate) fn normalize_extracted_repo_to_cache(
     if manifest.template_count == 0 {
         return Err("Agency repository did not contain any role templates".into());
     }
-    fs::write(
-        staging.join(AGENCY_MANIFEST_FILE),
-        serde_json::to_string_pretty(&manifest)
-            .map_err(|e| format!("Failed to encode Agency manifest: {}", e))?,
-    )
-    .map_err(|e| format!("Failed to write Agency manifest: {}", e))?;
+    write_normalized_agency_manifest(staging, &manifest)?;
     collect_agency_templates_from_dir(staging)
         .map_err(|e| format!("Normalized Agency cache failed validation: {}", e))?;
     Ok(())

@@ -17,6 +17,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use uuid::Uuid;
 
+const HOST_PTY_CORE_LIMIT: usize = 8;
+
 impl MailboxPoller {
     pub(crate) fn settle_response_source(&self, path: &Path, _success: bool) {
         let origin = wake_claim_origin(path).unwrap_or_else(|| path.to_path_buf());
@@ -832,6 +834,7 @@ impl MailboxPoller {
         let (wake_outcomes_tx, wake_outcomes_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             messages,
+            host_pty_slots: Arc::new(tokio::sync::Semaphore::new(HOST_PTY_CORE_LIMIT)),
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
             response_sources: Arc::new(Mutex::new(HashMap::new())),
@@ -852,6 +855,7 @@ impl MailboxPoller {
         let (wake_outcomes_tx, wake_outcomes_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             messages,
+            host_pty_slots: Arc::new(tokio::sync::Semaphore::new(HOST_PTY_CORE_LIMIT)),
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
             response_sources: Arc::new(Mutex::new(HashMap::new())),
@@ -877,6 +881,7 @@ impl MailboxPoller {
         let (wake_outcomes_tx, wake_outcomes_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             messages,
+            host_pty_slots: Arc::new(tokio::sync::Semaphore::new(HOST_PTY_CORE_LIMIT)),
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
             response_sources: Arc::new(Mutex::new(HashMap::new())),

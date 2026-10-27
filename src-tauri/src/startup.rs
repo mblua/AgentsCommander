@@ -87,13 +87,13 @@ impl std::error::Error for StartupError {
     }
 }
 
-pub fn preflight_config_startup() -> Result<(), StartupError> {
+pub fn preflight_config_startup(owner: &StartupMigrationSummary) -> Result<(), StartupError> {
     if let Some(error) = config::config_startup_error() {
         return Err(StartupError {
             kind: StartupErrorKind::Config(error),
         });
     }
-    preflight_config_startup_for(config::config_dir().as_deref())
+    preflight_config_startup_for(owner, config::config_dir().as_deref())
 }
 
 /// #2714 - the scope key of the one naming migration that runs at startup.
@@ -101,46 +101,79 @@ pub(crate) const INSTANCE_FAMILIES_SCOPE: &str = "instance-families";
 
 /// The summary `run()` logs once `init_logger` has run: the migration runs
 /// before the logger, so `log::*` from inside it goes nowhere.
-static NAMING_MIGRATION_SUMMARY: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+pub struct StartupMigrationSummary {
+    summary: std::sync::Mutex<Option<String>>,
+}
 
-pub(crate) fn record_naming_migration_summary(summary: Option<String>) {
-    if let Ok(mut slot) = NAMING_MIGRATION_SUMMARY.lock() {
-        *slot = summary;
+impl StartupMigrationSummary {
+    pub(crate) fn new() -> Self {
+        Self {
+            summary: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn record(&self, summary: Option<String>) {
+        if let Ok(mut slot) = self.summary.lock() {
+            *slot = summary;
+        }
+    }
+
+    pub(crate) fn take(&self) -> Option<String> {
+        self.summary.lock().ok().and_then(|mut slot| slot.take())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison_for_test(&self) {
+        let _slot = self.summary.lock().unwrap();
+        panic!("poison startup migration summary");
     }
 }
 
-pub(crate) fn take_naming_migration_summary() -> Option<String> {
-    NAMING_MIGRATION_SUMMARY
-        .lock()
-        .ok()
-        .and_then(|mut slot| slot.take())
+pub(crate) fn record_naming_migration_summary(
+    owner: &StartupMigrationSummary,
+    summary: Option<String>,
+) {
+    owner.record(summary);
+}
+
+pub(crate) fn take_naming_migration_summary(owner: &StartupMigrationSummary) -> Option<String> {
+    owner.take()
 }
 
 /// Called by both entries right after `init_logger`.
-pub fn log_naming_migration_summary() {
-    if let Some(summary) = take_naming_migration_summary() {
+pub fn log_naming_migration_summary(owner: &StartupMigrationSummary) {
+    if let Some(summary) = take_naming_migration_summary(owner) {
         log::info!("{summary}");
     }
 }
 
 /// Decides the `None` case: with no configuration directory every path this
 /// scope renames is absent, so the migration is skipped and startup continues.
-pub(crate) fn preflight_config_startup_for(config_dir: Option<&Path>) -> Result<(), StartupError> {
+pub(crate) fn preflight_config_startup_for(
+    owner: &StartupMigrationSummary,
+    config_dir: Option<&Path>,
+) -> Result<(), StartupError> {
     match config_dir {
-        Some(config_dir) => preflight_config_startup_in(config_dir),
+        Some(config_dir) => preflight_config_startup_in(owner, config_dir),
         None => {
-            record_naming_migration_summary(Some(format!(
+            record_naming_migration_summary(
+                owner,
+                Some(format!(
                 "[naming-migration] {INSTANCE_FAMILIES_SCOPE}: skipped, no configuration directory"
-            )));
+            )),
+            );
             Ok(())
         }
     }
 }
 
 /// All of the startup migration work, against an explicit directory.
-pub(crate) fn preflight_config_startup_in(config_dir: &Path) -> Result<(), StartupError> {
+pub(crate) fn preflight_config_startup_in(
+    owner: &StartupMigrationSummary,
+    config_dir: &Path,
+) -> Result<(), StartupError> {
     let summary = migrate_instance_families(config_dir)?;
-    record_naming_migration_summary(summary);
+    record_naming_migration_summary(owner, summary);
     Ok(())
 }
 

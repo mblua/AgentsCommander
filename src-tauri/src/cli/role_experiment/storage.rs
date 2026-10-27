@@ -14,11 +14,9 @@ use super::RunWorkgroupArtifact;
 use super::VariantMetadata;
 use crate::cli::workgroup;
 use crate::commands::entity_creation::sanitize_name;
+use crate::filesystem::{directories, documents};
 use serde::Deserialize;
 use serde::Serialize;
-use std::fs;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -30,7 +28,7 @@ pub(super) fn resolve_ac_root(project_path: &Path) -> Result<PathBuf, Vec<CliErr
     let ac_root = workgroup::resolve_cli_ac_root(project_path)
         .map_err(|e| vec![err("workspace_not_found", e, None)])?;
     reject_link_or_reparse(&ac_root, "workspace_link_or_reparse", None)?;
-    std::fs::canonicalize(&ac_root).map_err(|e| {
+    documents::canonical_experiment_role(&ac_root).map_err(|e| {
         vec![err(
             "workspace_not_found",
             format!("Failed to canonicalize Project AC Root: {}", e),
@@ -80,7 +78,7 @@ pub(super) fn load_variant_metadata(
 }
 
 pub(super) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
-    let content = std::fs::read_to_string(path)
+    let content = documents::read_experiment_document(path)
         .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
     serde_json::from_str(&content).map_err(|e| format!("Failed to parse {}: {}", path.display(), e))
 }
@@ -99,7 +97,7 @@ pub(super) fn write_json<T: Serialize>(
         )]
     })?;
     json.push('\n');
-    std::fs::write(path, json).map_err(|e| {
+    documents::write_experiment_document(path, json.as_bytes()).map_err(|e| {
         vec![err(
             code,
             format!("Failed to write {}: {}", path.display(), e),
@@ -139,7 +137,7 @@ pub(super) fn load_attempts(run_dir: &Path) -> Result<Vec<AttemptArtifact>, Vec<
 }
 
 fn read_attempts_jsonl(path: &Path) -> Result<Vec<AttemptArtifact>, Vec<CliError>> {
-    let content = fs::read_to_string(path).map_err(|e| {
+    let content = documents::read_experiment_document(path).map_err(|e| {
         vec![err_at_path(
             "run_artifact_unparseable",
             format!("Failed to read {}: {}", path.display(), e),
@@ -209,24 +207,7 @@ pub(super) fn replace_attempts(
 }
 
 pub(super) fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), Vec<CliError>> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|e| {
-            vec![err_at_path(
-                "run_artifact_write_failed",
-                format!("Failed to create {}: {}", path.display(), e),
-                path,
-            )]
-        })?;
-    file.write_all(bytes).map_err(|e| {
-        vec![err_at_path(
-            "run_artifact_write_failed",
-            format!("Failed to write {}: {}", path.display(), e),
-            path,
-        )]
-    })
+    documents::create_experiment_artifact(path, bytes).map_err(map_artifact_failure)
 }
 
 pub(super) fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), Vec<CliError>> {
@@ -242,82 +223,38 @@ pub(super) fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<
 }
 
 pub(super) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), Vec<CliError>> {
-    reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
-    let parent = path.parent().ok_or_else(|| {
-        vec![err_at_path(
-            "run_artifact_write_failed",
-            "Target path has no parent",
-            path,
-        )]
-    })?;
-    reject_link_or_reparse(parent, "run_artifact_link_or_reparse", None)?;
-    fs::create_dir_all(parent).map_err(|e| {
-        vec![err_at_path(
-            "run_artifact_write_failed",
-            format!("Failed to create {}: {}", parent.display(), e),
-            parent,
-        )]
-    })?;
-    let tmp = parent.join(format!(
-        ".tmp-{}-{}",
-        std::process::id(),
-        uuid::Uuid::new_v4().simple()
-    ));
-    {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-            .map_err(|e| {
-                vec![err_at_path(
-                    "run_artifact_write_failed",
-                    format!("Failed to create {}: {}", tmp.display(), e),
-                    &tmp,
-                )]
-            })?;
-        file.write_all(bytes).map_err(|e| {
-            vec![err_at_path(
-                "run_artifact_write_failed",
-                format!("Failed to write {}: {}", tmp.display(), e),
-                &tmp,
-            )]
-        })?;
-        file.flush().map_err(|e| {
-            vec![err_at_path(
-                "run_artifact_write_failed",
-                format!("Failed to flush {}: {}", tmp.display(), e),
-                &tmp,
-            )]
-        })?;
-    }
-    match fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            fs::remove_file(path).map_err(|remove_err| {
-                vec![err_at_path(
-                    "run_artifact_write_failed",
-                    format!("Failed to replace {}: {}", path.display(), remove_err),
-                    path,
-                )]
-            })?;
-            fs::rename(&tmp, path).map_err(|rename_err| {
-                let _ = fs::remove_file(&tmp);
-                vec![err_at_path(
-                    "run_artifact_write_failed",
-                    format!("Failed to replace {}: {}", path.display(), rename_err),
-                    path,
-                )]
-            })
+    documents::replace_experiment_artifact(path, bytes).map_err(map_artifact_failure)
+}
+
+pub(crate) fn map_artifact_failure(failure: documents::ExperimentArtifactFailure) -> Vec<CliError> {
+    use documents::ExperimentArtifactFailure as Failure;
+    let (action, path, error) = match failure {
+        Failure::PathInspection(failure) => {
+            return super::validation::map_path_failure(
+                failure,
+                "run_artifact_link_or_reparse",
+                None,
+            );
         }
-        Err(e) => {
-            let _ = fs::remove_file(&tmp);
-            Err(vec![err_at_path(
+        Failure::NoParent { path } => {
+            return vec![err_at_path(
                 "run_artifact_write_failed",
-                format!("Failed to replace {}: {}", path.display(), e),
-                path,
-            )])
+                "Target path has no parent",
+                &path,
+            )]
         }
-    }
+        Failure::CreateDirectory { path, error } | Failure::Create { path, error } => {
+            ("create", path, error)
+        }
+        Failure::Write { path, error } => ("write", path, error),
+        Failure::Flush { path, error } => ("flush", path, error),
+        Failure::Replace { path, error } => ("replace", path, error),
+    };
+    vec![err_at_path(
+        "run_artifact_write_failed",
+        format!("Failed to {} {}: {}", action, path.display(), error),
+        &path,
+    )]
 }
 
 pub(super) fn ensure_run_artifact_dirs(run_dir: &Path) -> Result<(), Vec<CliError>> {
@@ -325,21 +262,21 @@ pub(super) fn ensure_run_artifact_dirs(run_dir: &Path) -> Result<(), Vec<CliErro
     for name in ["prompts", "outputs", "transcripts", "attempt-state"] {
         let dir = run_dir.join(name);
         reject_link_or_reparse(&dir, "run_artifact_link_or_reparse", None)?;
-        fs::create_dir_all(&dir).map_err(|e| {
+        directories::ensure_experiment_directory(&dir).map_err(|e| {
             vec![err_at_path(
                 "run_artifact_write_failed",
                 format!("Failed to create {}: {}", dir.display(), e),
                 &dir,
             )]
         })?;
-        let canonical_run = fs::canonicalize(run_dir).map_err(|e| {
+        let canonical_run = documents::canonical_experiment_role(run_dir).map_err(|e| {
             vec![err_at_path(
                 "run_artifact_write_failed",
                 format!("Failed to canonicalize {}: {}", run_dir.display(), e),
                 run_dir,
             )]
         })?;
-        let canonical_dir = fs::canonicalize(&dir).map_err(|e| {
+        let canonical_dir = documents::canonical_experiment_role(&dir).map_err(|e| {
             vec![err_at_path(
                 "run_artifact_write_failed",
                 format!("Failed to canonicalize {}: {}", dir.display(), e),
@@ -390,7 +327,7 @@ pub(super) fn next_attempt_output_path(
     let base = run_dir
         .join("outputs")
         .join(format!("{}.txt", attempt.attempt_id));
-    if !base.exists() {
+    if !directories::experiment_path_exists(&base) {
         validate_child_path(run_dir, &base)?;
         return Ok(base);
     }
@@ -398,7 +335,7 @@ pub(super) fn next_attempt_output_path(
         let retry = run_dir
             .join("outputs")
             .join(format!("{}.retry-{idx:02}.txt", attempt.attempt_id));
-        if !retry.exists() {
+        if !directories::experiment_path_exists(&retry) {
             validate_child_path(run_dir, &retry)?;
             return Ok(retry);
         }
@@ -413,14 +350,14 @@ pub(super) fn next_attempt_output_path(
 fn validate_child_path(root: &Path, child: &Path) -> Result<(), Vec<CliError>> {
     reject_link_or_reparse(child, "run_artifact_link_or_reparse", None)?;
     let parent = child.parent().unwrap_or(root);
-    let canonical_root = fs::canonicalize(root).map_err(|e| {
+    let canonical_root = documents::canonical_experiment_role(root).map_err(|e| {
         vec![err_at_path(
             "run_artifact_write_failed",
             format!("Failed to canonicalize {}: {}", root.display(), e),
             root,
         )]
     })?;
-    let canonical_parent = fs::canonicalize(parent).map_err(|e| {
+    let canonical_parent = documents::canonical_experiment_role(parent).map_err(|e| {
         vec![err_at_path(
             "run_artifact_write_failed",
             format!("Failed to canonicalize {}: {}", parent.display(), e),
@@ -460,14 +397,14 @@ pub(super) fn create_run_workgroup_dirs(
     );
     let path = ac_root.join(&name);
     reject_link_or_reparse(&path, "run_artifact_link_or_reparse", None)?;
-    fs::create_dir(&path).map_err(|e| {
+    directories::create_experiment_directory(&path).map_err(|e| {
         vec![err_at_path(
             "run_artifact_write_failed",
             format!("Failed to create {}: {}", path.display(), e),
             &path,
         )]
     })?;
-    fs::create_dir(path.join("messaging")).map_err(|e| {
+    directories::create_experiment_directory(&path.join("messaging")).map_err(|e| {
         vec![err_at_path(
             "run_artifact_write_failed",
             format!("Failed to create messaging dir: {}", e),
@@ -489,7 +426,7 @@ pub(super) fn create_run_workgroup_dirs(
             "run_artifact_link_or_reparse",
             Some(&variant.name),
         )?;
-        fs::create_dir(&replica).map_err(|e| {
+        directories::create_experiment_directory(&replica).map_err(|e| {
             vec![err_at_path(
                 "run_artifact_write_failed",
                 format!("Failed to create {}: {}", replica.display(), e),
@@ -497,7 +434,7 @@ pub(super) fn create_run_workgroup_dirs(
             )]
         })?;
         for child in ["memory", "plans", "skills"] {
-            fs::create_dir(replica.join(child)).map_err(|e| {
+            directories::create_experiment_directory(&replica.join(child)).map_err(|e| {
                 vec![err_at_path(
                     "run_artifact_write_failed",
                     format!("Failed to create replica {}: {}", child, e),
@@ -507,7 +444,7 @@ pub(super) fn create_run_workgroup_dirs(
         }
         let role_path =
             variant_matrix_path(ac_root, &variant.source_agent, &variant.name).join("Role.md");
-        let role_text = fs::read_to_string(&role_path).map_err(|e| {
+        let role_text = documents::read_experiment_document(&role_path).map_err(|e| {
             vec![err_at_path(
                 "variant_role_missing",
                 format!("Failed to read {}: {}", role_path.display(), e),
@@ -518,7 +455,7 @@ pub(super) fn create_run_workgroup_dirs(
     }
     Ok(RunWorkgroupArtifact {
         name,
-        path: fs::canonicalize(&path)
+        path: documents::canonical_experiment_role(&path)
             .unwrap_or(path)
             .to_string_lossy()
             .to_string(),
@@ -544,27 +481,35 @@ pub(super) fn role_exp_room_dir_name(
 
 fn next_workgroup_number(ac_root: &Path) -> Result<u32, Vec<CliError>> {
     let mut max = 0;
-    for entry in fs::read_dir(ac_root).map_err(|e| {
-        vec![err_at_path(
-            "workspace_not_found",
-            format!("Failed to read {}: {}", ac_root.display(), e),
-            ac_root,
-        )]
-    })? {
-        let entry = entry.map_err(|e| {
-            vec![err(
-                "workspace_not_found",
-                format!("Failed to read Project AC Root entry: {}", e),
-                None,
-            )]
-        })?;
-        let name = entry.file_name().to_string_lossy().to_string();
+    let visit = directories::visit_experiment_entries(ac_root, |entry| {
+        let (_, name) = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                return std::ops::ControlFlow::Break(vec![err(
+                    "workspace_not_found",
+                    format!("Failed to read Project AC Root entry: {}", e),
+                    None,
+                )])
+            }
+        };
+        let name = name.to_string_lossy().to_string();
         if let Some(rest) = crate::config::entity_prefix::strip_entity_prefix(&name) {
             let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
             if let Ok(n) = digits.parse::<u32>() {
                 max = max.max(n);
             }
         }
+        std::ops::ControlFlow::Continue(())
+    })
+    .map_err(|e| {
+        vec![err_at_path(
+            "workspace_not_found",
+            format!("Failed to read {}: {}", ac_root.display(), e),
+            ac_root,
+        )]
+    })?;
+    if let std::ops::ControlFlow::Break(errors) = visit {
+        return Err(errors);
     }
     Ok(max + 1)
 }
@@ -573,7 +518,7 @@ pub(super) fn validate_workgroup_under_ac_root(
     ac_root: &Path,
     workgroup: &RunWorkgroupArtifact,
 ) -> Result<(), Vec<CliError>> {
-    let ac_root = fs::canonicalize(ac_root).map_err(|e| {
+    let ac_root = documents::canonical_experiment_role(ac_root).map_err(|e| {
         vec![err_at_path(
             "workspace_not_found",
             format!("Failed to canonicalize Project AC Root: {}", e),
@@ -582,7 +527,7 @@ pub(super) fn validate_workgroup_under_ac_root(
     })?;
     let path = PathBuf::from(&workgroup.path);
     reject_link_or_reparse(&path, "run_artifact_link_or_reparse", None)?;
-    let canonical = fs::canonicalize(&path).map_err(|e| {
+    let canonical = documents::canonical_experiment_role(&path).map_err(|e| {
         vec![err_at_path(
             "run_artifact_mismatch",
             format!("Failed to canonicalize room: {}", e),

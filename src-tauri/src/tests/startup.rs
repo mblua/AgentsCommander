@@ -120,12 +120,13 @@ fn data_files(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
 /// E7.
 #[test]
 fn instance_families_happy_path() {
+    let summary_owner = crate::startup::StartupMigrationSummary::new();
     let _guard = naming_migration_guard();
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path();
     seed_instance_families(dir);
 
-    crate::preflight_config_startup_in(dir).expect("migration succeeds");
+    crate::preflight_config_startup_in(&summary_owner, dir).expect("migration succeeds");
 
     for (from, to) in INSTANCE_FAMILIES_FIXTURE {
         assert!(!dir.join(from).exists(), "{from} survived");
@@ -142,7 +143,7 @@ fn instance_families_happy_path() {
     );
 
     let before = directory_snapshot(dir);
-    crate::preflight_config_startup_in(dir).expect("second run is a no-op");
+    crate::preflight_config_startup_in(&summary_owner, dir).expect("second run is a no-op");
     assert_eq!(
         directory_snapshot(dir),
         before,
@@ -153,13 +154,14 @@ fn instance_families_happy_path() {
 /// The personal overlay is still read after the migration renamed it.
 #[test]
 fn the_overlay_is_read_under_its_new_name_after_migration() {
+    let summary_owner = crate::startup::StartupMigrationSummary::new();
     let _guard = naming_migration_guard();
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path();
     std::fs::write(dir.join("settings.json"), r#"{"logLevel":"info"}"#).unwrap();
     std::fs::write(dir.join("settings.local.json"), r#"{"logLevel":"debug"}"#).unwrap();
 
-    crate::preflight_config_startup_in(dir).unwrap();
+    crate::preflight_config_startup_in(&summary_owner, dir).unwrap();
 
     let mut base = serde_json::json!({"logLevel": "info"});
     let overlay = crate::config::local_overlay::LocalSettingsOverlay::load_and_merge(
@@ -176,6 +178,7 @@ fn the_overlay_is_read_under_its_new_name_after_migration() {
 /// E8.
 #[test]
 fn a_pre_existing_target_wins_and_the_old_file_is_set_aside() {
+    let summary_owner = crate::startup::StartupMigrationSummary::new();
     let _guard = naming_migration_guard();
     for existing_ordinals in [0_u32, 1] {
         let temp = tempfile::tempdir().unwrap();
@@ -192,7 +195,7 @@ fn a_pre_existing_target_wins_and_the_old_file_is_set_aside() {
         let expected_name = format!("settings.json.deprecated-{}.no-git", existing_ordinals + 1);
         let before = data_files(dir);
 
-        crate::preflight_config_startup_in(dir).expect("both-present is not fatal");
+        crate::preflight_config_startup_in(&summary_owner, dir).expect("both-present is not fatal");
 
         assert_eq!(
             std::fs::read_to_string(dir.join("settings.30.instance.no-git.json")).unwrap(),
@@ -242,6 +245,7 @@ fn a_pre_existing_target_wins_and_the_old_file_is_set_aside() {
 /// E9.
 #[test]
 fn a_stale_lock_or_temp_is_left_on_disk_and_noted() {
+    let summary_owner = crate::startup::StartupMigrationSummary::new();
     let _guard = naming_migration_guard();
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path();
@@ -249,7 +253,7 @@ fn a_stale_lock_or_temp_is_left_on_disk_and_noted() {
     std::fs::write(dir.join("settings.json.lock"), "old lock bytes").unwrap();
     std::fs::write(dir.join("settings.json.99.op.tmp"), "stale temp bytes").unwrap();
 
-    crate::preflight_config_startup_in(dir).expect("migration succeeds");
+    crate::preflight_config_startup_in(&summary_owner, dir).expect("migration succeeds");
 
     assert_eq!(
         std::fs::read_to_string(dir.join("settings.json.lock")).unwrap(),
@@ -271,6 +275,7 @@ fn a_stale_lock_or_temp_is_left_on_disk_and_noted() {
 /// E12.
 #[test]
 fn only_the_three_fatal_outcomes_stop_startup() {
+    let summary_owner = crate::startup::StartupMigrationSummary::new();
     let _guard = naming_migration_guard();
 
     // An unreadable journal.
@@ -279,7 +284,7 @@ fn only_the_three_fatal_outcomes_stop_startup() {
     seed_instance_families(dir);
     let journal = dir.join("naming-migration.state.no-git.json");
     std::fs::write(&journal, "not json").unwrap();
-    let message = crate::preflight_config_startup_in(dir)
+    let message = crate::preflight_config_startup_in(&summary_owner, dir)
         .expect_err("an unreadable journal is fatal")
         .to_string();
     assert!(
@@ -295,7 +300,7 @@ fn only_the_three_fatal_outcomes_stop_startup() {
     seed_instance_families(dir);
     let lock = dir.join("settings.30.instance.no-git.json.lock");
     std::fs::create_dir(&lock).unwrap();
-    let message = crate::preflight_config_startup_in(dir)
+    let message = crate::preflight_config_startup_in(&summary_owner, dir)
         .expect_err("an Io refusal is fatal")
         .to_string();
     assert!(message.contains(&lock.display().to_string()), "{message}");
@@ -306,7 +311,7 @@ fn only_the_three_fatal_outcomes_stop_startup() {
     let dir = temp.path();
     seed_instance_families(dir);
     std::fs::write(dir.join("settings.30.instance.no-git.json"), "the new file").unwrap();
-    crate::preflight_config_startup_in(dir).expect("both-present is not fatal");
+    crate::preflight_config_startup_in(&summary_owner, dir).expect("both-present is not fatal");
     assert_eq!(
         instance_families_record(dir).status,
         crate::config::naming_migration::ScopeStatus::Complete
@@ -320,6 +325,7 @@ fn only_the_three_fatal_outcomes_stop_startup() {
 /// E13.
 #[test]
 fn a_contended_migration_waits_then_defers_to_the_winner() {
+    let summary_owner = crate::startup::StartupMigrationSummary::new();
     use crate::config::naming_migration as nm;
     let _guard = naming_migration_guard();
 
@@ -351,7 +357,8 @@ fn a_contended_migration_waits_then_defers_to_the_winner() {
         })
     };
     held_rx.recv().unwrap();
-    crate::preflight_config_startup_in(&dir).expect("the winner completed the scope");
+    crate::preflight_config_startup_in(&summary_owner, &dir)
+        .expect("the winner completed the scope");
     winner.join().unwrap();
     let record = instance_families_record(&dir);
     assert_eq!(record.status, nm::ScopeStatus::Complete);
@@ -389,7 +396,7 @@ fn a_contended_migration_waits_then_defers_to_the_winner() {
         })
     };
     held_rx.recv().unwrap();
-    let message = crate::preflight_config_startup_in(&dir)
+    let message = crate::preflight_config_startup_in(&summary_owner, &dir)
         .expect_err("an expired budget with no winner is fatal")
         .to_string();
     release_tx.send(()).unwrap();
@@ -403,26 +410,32 @@ fn a_contended_migration_waits_then_defers_to_the_winner() {
 /// exactly what `take_naming_migration_summary` returns.
 #[test]
 fn the_post_logger_summary_names_what_was_renamed() {
+    let summary_owner = crate::startup::StartupMigrationSummary::new();
     let _guard = naming_migration_guard();
-    let _ = crate::take_naming_migration_summary();
+    let _ = crate::take_naming_migration_summary(&summary_owner);
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path();
     seed_instance_families(dir);
     std::fs::write(dir.join("settings.30.instance.no-git.json"), "the new file").unwrap();
 
-    crate::preflight_config_startup_in(dir).unwrap();
-    let summary = crate::take_naming_migration_summary().expect("a migrating start logs");
+    crate::preflight_config_startup_in(&summary_owner, dir).unwrap();
+    let summary =
+        crate::take_naming_migration_summary(&summary_owner).expect("a migrating start logs");
     assert!(summary.contains("instance-families"), "{summary}");
     assert!(summary.contains("7 renamed"), "{summary}");
     assert!(
         summary.contains("settings.json.deprecated-1.no-git"),
         "the demoted file must be named: {summary}"
     );
-    assert_eq!(crate::take_naming_migration_summary(), None, "taken once");
-
-    crate::preflight_config_startup_in(dir).unwrap();
     assert_eq!(
-        crate::take_naming_migration_summary(),
+        crate::take_naming_migration_summary(&summary_owner),
+        None,
+        "taken once"
+    );
+
+    crate::preflight_config_startup_in(&summary_owner, dir).unwrap();
+    assert_eq!(
+        crate::take_naming_migration_summary(&summary_owner),
         None,
         "a no-op start logs nothing"
     );
@@ -431,13 +444,14 @@ fn the_post_logger_summary_names_what_was_renamed() {
 /// E19.
 #[test]
 fn a_complete_scope_whose_old_name_is_back_is_re_run() {
+    let summary_owner = crate::startup::StartupMigrationSummary::new();
     let _guard = naming_migration_guard();
 
     // The data rename was lost behind a durable `Complete`.
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path();
     seed_instance_families(dir);
-    crate::preflight_config_startup_in(dir).unwrap();
+    crate::preflight_config_startup_in(&summary_owner, dir).unwrap();
     std::fs::rename(
         dir.join("settings.30.instance.no-git.json"),
         dir.join("settings.json"),
@@ -447,7 +461,7 @@ fn a_complete_scope_whose_old_name_is_back_is_re_run() {
         instance_families_record(dir).status,
         crate::config::naming_migration::ScopeStatus::Complete
     );
-    crate::preflight_config_startup_in(dir).expect("re-run succeeds");
+    crate::preflight_config_startup_in(&summary_owner, dir).expect("re-run succeeds");
     assert!(
         !dir.join("settings.json").exists(),
         "the stale Complete was trusted"
@@ -459,7 +473,7 @@ fn a_complete_scope_whose_old_name_is_back_is_re_run() {
 
     // Both names present behind a durable `Complete`.
     std::fs::write(dir.join("settings.json"), "a restored old file").unwrap();
-    crate::preflight_config_startup_in(dir).expect("both-present is not fatal");
+    crate::preflight_config_startup_in(&summary_owner, dir).expect("both-present is not fatal");
     assert_eq!(
         std::fs::read_to_string(dir.join("settings.30.instance.no-git.json")).unwrap(),
         "bytes of settings.json"
@@ -474,26 +488,29 @@ fn a_complete_scope_whose_old_name_is_back_is_re_run() {
 /// path that exists but is not a readable directory is fatal.
 #[test]
 fn a_missing_config_dir_skips_and_a_bad_one_is_fatal() {
+    let summary_owner = crate::startup::StartupMigrationSummary::new();
     let _guard = naming_migration_guard();
     let temp = tempfile::tempdir().unwrap();
 
     // Absent: skipped, recorded, and nothing is written anywhere.
-    let _ = crate::take_naming_migration_summary();
+    let _ = crate::take_naming_migration_summary(&summary_owner);
     let absent = temp.path().join("absent-config");
-    crate::preflight_config_startup_in(&absent).expect("an absent directory is skipped");
+    crate::preflight_config_startup_in(&summary_owner, &absent)
+        .expect("an absent directory is skipped");
     assert!(!absent.exists(), "the directory was created");
     assert_eq!(
         std::fs::read_dir(temp.path()).unwrap().count(),
         0,
         "a journal, lock or temporary was written"
     );
-    let summary = crate::take_naming_migration_summary().expect("the skip is recorded");
+    let summary =
+        crate::take_naming_migration_summary(&summary_owner).expect("the skip is recorded");
     assert!(summary.contains("skipped"), "{summary}");
 
     // A regular file where the directory should be.
     let file = temp.path().join("config-is-a-file");
     std::fs::write(&file, "not a directory").unwrap();
-    let message = crate::preflight_config_startup_in(&file)
+    let message = crate::preflight_config_startup_in(&summary_owner, &file)
         .expect_err("a regular file is fatal")
         .to_string();
     assert!(message.contains(&file.display().to_string()), "{message}");
@@ -504,14 +521,14 @@ fn a_missing_config_dir_skips_and_a_bad_one_is_fatal() {
     let child = file.join("child");
     #[cfg(unix)]
     {
-        let message = crate::preflight_config_startup_in(&child)
+        let message = crate::preflight_config_startup_in(&summary_owner, &child)
             .expect_err("a path below a file is fatal")
             .to_string();
         assert!(message.contains(&child.display().to_string()), "{message}");
     }
     #[cfg(windows)]
     {
-        crate::preflight_config_startup_in(&child)
+        crate::preflight_config_startup_in(&summary_owner, &child)
             .expect("Windows reports a path below a file as not found");
         assert!(std::fs::metadata(&file).unwrap().is_file());
         assert!(!child.exists());
@@ -521,18 +538,21 @@ fn a_missing_config_dir_skips_and_a_bad_one_is_fatal() {
 /// E20.
 #[test]
 fn no_config_dir_skips_the_migration_and_starts() {
+    let summary_owner = crate::startup::StartupMigrationSummary::new();
     let _guard = naming_migration_guard();
-    let _ = crate::take_naming_migration_summary();
+    let _ = crate::take_naming_migration_summary(&summary_owner);
     let untouched = tempfile::tempdir().unwrap();
 
-    crate::preflight_config_startup_for(None).expect("no configuration directory is not fatal");
+    crate::preflight_config_startup_for(&summary_owner, None)
+        .expect("no configuration directory is not fatal");
 
     assert_eq!(
         std::fs::read_dir(untouched.path()).unwrap().count(),
         0,
         "the migration wrote somewhere"
     );
-    let summary = crate::take_naming_migration_summary().expect("the skip is recorded");
+    let summary =
+        crate::take_naming_migration_summary(&summary_owner).expect("the skip is recorded");
     assert!(summary.contains("skipped"), "{summary}");
 }
 
@@ -581,6 +601,7 @@ fn issue_1577_prepare_app_outbox_creates_the_shared_path() {
 #[cfg(target_os = "linux")]
 #[test]
 fn issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start() {
+    let summary_owner = crate::startup::StartupMigrationSummary::new();
     use std::fs::OpenOptions;
     use std::os::unix::fs::PermissionsExt;
     use std::process::{Command, Stdio};
@@ -613,7 +634,8 @@ fn issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start() {
             reason.starts_with(&reason_prefix),
             "unexpected reason: {reason}"
         );
-        let refusal = crate::preflight_config_startup().expect_err("startup must be refused");
+        let refusal =
+            crate::preflight_config_startup(&summary_owner).expect_err("startup must be refused");
         assert_eq!(
             refusal.to_string(),
             format!(
@@ -855,4 +877,44 @@ fn issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start() {
         failures.push(error);
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn startup_summary_clones_preserve_once_none_overwrite_and_poison() {
+    let root = crate::AppOwners::new();
+    let repeated_run = root.clone();
+    crate::startup::record_naming_migration_summary(
+        root.startup_summary.as_ref(),
+        Some("old".into()),
+    );
+    crate::startup::record_naming_migration_summary(
+        repeated_run.startup_summary.as_ref(),
+        Some("new".into()),
+    );
+    assert_eq!(
+        crate::take_naming_migration_summary(root.startup_summary.as_ref()).as_deref(),
+        Some("new")
+    );
+    assert_eq!(
+        crate::take_naming_migration_summary(repeated_run.startup_summary.as_ref()),
+        None
+    );
+    crate::startup::record_naming_migration_summary(
+        root.startup_summary.as_ref(),
+        Some("discard".into()),
+    );
+    crate::startup::record_naming_migration_summary(repeated_run.startup_summary.as_ref(), None);
+    assert_eq!(
+        crate::take_naming_migration_summary(root.startup_summary.as_ref()),
+        None
+    );
+    assert!(std::panic::catch_unwind(|| repeated_run.startup_summary.poison_for_test()).is_err());
+    crate::startup::record_naming_migration_summary(
+        root.startup_summary.as_ref(),
+        Some("ignored".into()),
+    );
+    assert_eq!(
+        crate::take_naming_migration_summary(repeated_run.startup_summary.as_ref()),
+        None
+    );
 }

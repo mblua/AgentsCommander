@@ -1,7 +1,5 @@
 use uuid::Uuid;
 
-use crate::config::instance_artifacts::DEBUG_LOGS_FILE_NAME;
-
 // #3083: closed diagnostic vocabulary; no client-selected target or text.
 pub(crate) const RAIL_DIAGNOSTIC_ERROR: &str = "invalid rail diagnostic";
 pub(crate) const RAIL_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -261,12 +259,7 @@ pub fn append_rail_diagnostic(record: Option<serde_json::Value>) -> Result<(), S
 
 #[tauri::command]
 pub async fn save_debug_logs(content: String) -> Result<(), String> {
-    let path = crate::config::config_dir()
-        .ok_or("No config dir")?
-        .join(DEBUG_LOGS_FILE_NAME);
-    tokio::fs::write(&path, &content)
-        .await
-        .map_err(|e| format!("Failed to write logs: {}", e))?;
+    let path = crate::debug_logs::save_debug_logs(crate::config::config_dir(), &content).await?;
     log::info!("Debug logs saved to {:?} ({} bytes)", path, content.len());
     Ok(())
 }

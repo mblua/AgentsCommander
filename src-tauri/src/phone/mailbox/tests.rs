@@ -273,7 +273,7 @@ async fn issue_3189_selection_turn_refusal_reports() {
     std::fs::write(root.path().join("SELF-HANDOFF.md"), "turn notes").unwrap();
     let id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(id);
+    assert!(pending.seed_legacy(id));
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let executor = Arc::new(Issue3189TurnExecutor {
         id,
@@ -315,7 +315,7 @@ async fn issue_3189_selection_turn_refusal_reports() {
                 );
                 assert!(!failure.continuation);
                 assert_eq!(failure.current, Some(id));
-                assert!(pending.0.lock().unwrap().is_empty());
+                assert!(pending.is_empty());
                 let _turn = crate::session::selection::acquire_selection_operation_turn()
                     .await
                     .unwrap();
@@ -328,7 +328,7 @@ async fn issue_3189_selection_turn_refusal_reports() {
     .await
     .unwrap();
     assert_eq!(executor.persists.load(Ordering::SeqCst), 0);
-    pending.0.lock().unwrap().insert(id);
+    assert!(pending.seed_legacy(id));
     let outcome = tokio::time::timeout(Duration::from_secs(3), executor.driver())
         .await
         .unwrap();
@@ -337,7 +337,7 @@ async fn issue_3189_selection_turn_refusal_reports() {
     };
     assert_eq!(failure.reason, "outside worker reached persistence");
     assert_eq!(executor.persists.load(Ordering::SeqCst), 1);
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
     assert_eq!(
         std::fs::read(root.path().join("SELF-HANDOFF.md")).unwrap(),
         b"turn notes"
@@ -501,7 +501,8 @@ async fn issue_3189_real_warning_and_notice() {
 
 #[tokio::test]
 async fn issue_3189_retry_callback_pending_cancels() {
-    for cancel in [true, false] {
+    for class in 0..4 {
+        let cancel = class != 0;
         let (app, id, backend) = issue_3189_notice_app().await;
         let app = app.handle();
         let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
@@ -522,12 +523,23 @@ async fn issue_3189_retry_callback_pending_cancels() {
         let mut context = std::task::Context::from_waker(&waker);
         assert!(std::future::Future::poll(report.as_mut(), &mut context).is_pending());
         assert!(backend.writes.lock().unwrap().is_empty());
-        if cancel {
-            app.state::<Arc<crate::PendingSelfClear>>()
-                .0
-                .lock()
-                .unwrap()
-                .insert(id);
+        let pending = app.state::<Arc<crate::PendingSelfClear>>();
+        if class == 1 {
+            assert!(pending.seed_legacy(id));
+        } else if class >= 2 {
+            use crate::session::maintenance::{PlainIdentity, PlainReservation};
+            let owner = PlainIdentity {
+                session_id: id,
+                request_id: Uuid::new_v4(),
+                action: "self-clear".into(),
+                requested_by: "test".into(),
+            };
+            let PlainReservation::New(lease) = pending.reserve_plain(owner) else {
+                panic!("expected fresh Plain reservation");
+            };
+            if class == 3 {
+                pending.arm_plain(&lease).unwrap();
+            }
         }
         let before = wake.0.load(Ordering::SeqCst);
         drop(permit);

@@ -649,3 +649,127 @@ fn format_conversion_is_exact() {
         TerminalSnapshotFormat::Png
     );
 }
+
+#[test]
+fn p04_private_child_creates_directory_and_preserves_regular_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let child = directory.path().join("private");
+    ensure_private_child(directory.path(), &child).unwrap();
+    assert!(child.is_dir());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&child).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+    let occupied = directory.path().join("occupied");
+    std::fs::write(&occupied, b"keep").unwrap();
+    let parent = crate::path_identity::verify_directory(directory.path()).unwrap();
+    assert_eq!(
+        ensure_private_child(directory.path(), &occupied).unwrap_err(),
+        "unsafe_path"
+    );
+    assert_eq!(std::fs::read(&occupied).unwrap(), b"keep");
+    assert!(crate::path_identity::same_object(
+        &parent,
+        &crate::path_identity::verify_directory(directory.path()).unwrap(),
+    ));
+}
+
+#[test]
+fn p04_snapshot_publication_preserves_bytes_stages_and_collisions() {
+    let directory = tempfile::tempdir().unwrap();
+    let temporary = directory.path().join("temporary");
+    let destination = directory.path().join("request.json");
+    let mut stages = Vec::new();
+    crate::filesystem::publish_terminal_snapshot_request(
+        temporary.clone(),
+        &destination,
+        b"private request",
+        |stage| stages.push(stage),
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&destination).unwrap(), b"private request");
+    let mut expected = vec!["publish_request.open_temporary"];
+    #[cfg(unix)]
+    expected.push("publish_request.unix_mode");
+    expected.extend([
+        "publish_request.write_temporary",
+        "publish_request.verify_temporary",
+        "publish_request.publish_atomic",
+        "publish_request.verify_published",
+    ]);
+    assert_eq!(stages, expected);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&destination)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+    assert_eq!(
+        crate::filesystem::publish_terminal_snapshot_request(
+            temporary.clone(),
+            &destination,
+            b"replacement",
+            |_| {},
+        )
+        .unwrap_err(),
+        "response_unavailable"
+    );
+    assert_eq!(std::fs::read(&destination).unwrap(), b"private request");
+    std::fs::write(&temporary, b"keep temporary").unwrap();
+    let absent = directory.path().join("absent.json");
+    assert_eq!(
+        crate::filesystem::publish_terminal_snapshot_request(
+            temporary.clone(),
+            &absent,
+            b"replacement",
+            |_| {},
+        )
+        .unwrap_err(),
+        "response_unavailable"
+    );
+    assert_eq!(std::fs::read(&temporary).unwrap(), b"keep temporary");
+    assert!(!absent.exists());
+}
+
+#[test]
+fn p04_snapshot_response_accepts_private_valid_body() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("response.json");
+    let request_id = Uuid::new_v4().to_string();
+    let tag = "a".repeat(64);
+    let bytes = terminal_snapshot_renderer::encode_host_failure_payload(
+        &request_id,
+        &tag,
+        &canonical_timestamp(chrono::Utc::now() + chrono::Duration::seconds(60)),
+        TerminalSnapshotReasonCode::InvalidRequest,
+    )
+    .unwrap();
+    write_private_response(&path, &bytes);
+    let read = || {
+        read_response(
+            &path,
+            &request_id,
+            &tag,
+            "project:wg-1-team/member",
+            TerminalSnapshotFormat::Json,
+            Instant::now() + Duration::from_secs(30),
+        )
+    };
+    assert!(read().is_ok());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(read().unwrap_err(), "response_unavailable");
+    }
+}

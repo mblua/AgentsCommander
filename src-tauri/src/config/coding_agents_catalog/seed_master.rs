@@ -8,7 +8,7 @@ use crate::config::seed_manifest::ManifestActivationToken;
 use super::{
     acquire_catalog_lock, active_builtin_agent_support, catalog_dir,
     ensure_seeded_for_project_with_token, is_supported_builtin, publish_replace, CatalogPaths,
-    RESEED_LOCK, SEED_TEMP_COUNTER,
+    CatalogReseedState, SEED_TEMP_COUNTER,
 };
 
 // ---------------------------------------------------------------------------
@@ -329,7 +329,11 @@ pub(crate) fn tree_byte_count(dir: &Path) -> u64 {
 /// `agent` cannot false-match). On success: a timestamped `.bak` of the current
 /// master is made FIRST, then a trash-first atomic swap installs the embedded
 /// default. On failure the prior master is restored; never a partial state.
-pub fn reseed_master_for_command(ac_dir: &Path, command: &str) -> Result<ReseedResult, String> {
+pub fn reseed_master_for_command(
+    owner: &CatalogReseedState,
+    ac_dir: &Path,
+    command: &str,
+) -> Result<ReseedResult, String> {
     let basename = command_executable_basename(command)
         .ok_or_else(|| format!("'{command}' is not a valid coding-agent command"))?;
     let master = embedded_master_for_command_basename(&basename).ok_or_else(|| {
@@ -337,53 +341,51 @@ pub fn reseed_master_for_command(ac_dir: &Path, command: &str) -> Result<ReseedR
     })?;
     let dir = master_dir_for_dest(ac_dir, master.dest);
 
-    let _guard = RESEED_LOCK
-        .lock()
-        .map_err(|_| "re-seed lock poisoned".to_string())?;
+    owner.with_reseed(|| {
+        // 1. `.bak` the current master (verbatim), BEFORE any swap.
+        let backup_path = if dir.exists() {
+            Some(backup_master_dir(&dir)?)
+        } else {
+            None
+        };
 
-    // 1. `.bak` the current master (verbatim), BEFORE any swap.
-    let backup_path = if dir.exists() {
-        Some(backup_master_dir(&dir)?)
-    } else {
-        None
-    };
+        // 2. Trash-first atomic swap of the embedded default into the master.
+        let sfx = unique_suffix();
+        let staging = staging_sibling(&dir, "reseedtmp", &sfx);
+        let trash = staging_sibling(&dir, "reseedold", &sfx);
+        let _ = std::fs::remove_dir_all(&staging);
+        let _ = std::fs::remove_dir_all(&trash);
 
-    // 2. Trash-first atomic swap of the embedded default into the master.
-    let sfx = unique_suffix();
-    let staging = staging_sibling(&dir, "reseedtmp", &sfx);
-    let trash = staging_sibling(&dir, "reseedold", &sfx);
-    let _ = std::fs::remove_dir_all(&staging);
-    let _ = std::fs::remove_dir_all(&trash);
+        write_embedded_files_into(&staging, master)?;
 
-    write_embedded_files_into(&staging, master)?;
-
-    if dir.exists() {
-        if let Err(e) = std::fs::rename(&dir, &trash) {
+        if dir.exists() {
+            if let Err(e) = std::fs::rename(&dir, &trash) {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(format!(
+                    "master {} is in use ({e}); re-seed aborted, master unchanged",
+                    dir.display()
+                ));
+            }
+        }
+        if let Err(e) = std::fs::rename(&staging, &dir) {
+            // Restore the prior master so we never leave a hole.
+            if !dir.exists() && trash.exists() {
+                let _ = std::fs::rename(&trash, &dir);
+            }
             let _ = std::fs::remove_dir_all(&staging);
             return Err(format!(
-                "master {} is in use ({e}); re-seed aborted, master unchanged",
+                "failed to install re-seeded master {} ({e}); prior config restored",
                 dir.display()
             ));
         }
-    }
-    if let Err(e) = std::fs::rename(&staging, &dir) {
-        // Restore the prior master so we never leave a hole.
-        if !dir.exists() && trash.exists() {
-            let _ = std::fs::rename(&trash, &dir);
-        }
-        let _ = std::fs::remove_dir_all(&staging);
-        return Err(format!(
-            "failed to install re-seeded master {} ({e}); prior config restored",
-            dir.display()
-        ));
-    }
-    let _ = std::fs::remove_dir_all(&trash);
+        let _ = std::fs::remove_dir_all(&trash);
 
-    Ok(ReseedResult {
-        dest: master.dest.to_string(),
-        backup_path: backup_path
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default(),
+        Ok(ReseedResult {
+            dest: master.dest.to_string(),
+            backup_path: backup_path
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+        })
     })
 }
 

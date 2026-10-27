@@ -24,6 +24,11 @@ pub struct RestoreInProgress(pub AtomicBool);
 /// Process-lived owners shared by every runtime and explicit component constructor.
 #[derive(Clone)]
 pub struct AppOwners {
+    pub catalog_reseed: Arc<crate::config::coding_agents_catalog::CatalogReseedState>,
+    pub installs: Arc<crate::agent_update::AgentInstallState>,
+    pub startup_summary: Arc<crate::startup::StartupMigrationSummary>,
+    pub response_effects: Arc<crate::session::selection::response_close::ResponseEffectRegistry>,
+    pub coordinator_order: Arc<crate::config::coordinator_clocks::CoordinatorCreateOrder>,
     pub spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>,
     pub messages: Arc<crate::config::injected_messages::MessageWarnings>,
     pub remote: Arc<crate::pty::remote_watcher::RemoteActivityState>,
@@ -38,6 +43,17 @@ pub struct AppOwners {
 impl AppOwners {
     pub fn new() -> Self {
         Self {
+            catalog_reseed: Arc::new(
+                crate::config::coding_agents_catalog::CatalogReseedState::new(),
+            ),
+            installs: Arc::new(crate::agent_update::AgentInstallState::new()),
+            startup_summary: Arc::new(crate::startup::StartupMigrationSummary::new()),
+            response_effects: Arc::new(
+                crate::session::selection::response_close::ResponseEffectRegistry::new(),
+            ),
+            coordinator_order: Arc::new(
+                crate::config::coordinator_clocks::CoordinatorCreateOrder::new(),
+            ),
             spawn: Arc::new(crate::pty::spawn_diagnostics::SpawnRegistry::new()),
             messages: Arc::new(crate::config::injected_messages::MessageWarnings::new()),
             remote: Arc::new(crate::pty::remote_watcher::RemoteActivityState::new()),

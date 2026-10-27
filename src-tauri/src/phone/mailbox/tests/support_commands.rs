@@ -96,8 +96,7 @@ pub(super) async fn pending_self_clear_len(
     app: &tauri::AppHandle<tauri::test::MockRuntime>,
 ) -> usize {
     let pending = app.state::<Arc<crate::PendingSelfClear>>();
-    let g = pending.0.lock().unwrap_or_else(|e| e.into_inner());
-    g.len()
+    pending.len()
 }
 
 pub(super) async fn pending_self_clear_contains(
@@ -105,8 +104,7 @@ pub(super) async fn pending_self_clear_contains(
     id: Uuid,
 ) -> bool {
     let pending = app.state::<Arc<crate::PendingSelfClear>>();
-    let g = pending.0.lock().unwrap_or_else(|e| e.into_inner());
-    g.contains(&id)
+    pending.contains(id)
 }
 
 /// Build a self-clear outbox message with an explicit `from`, written under

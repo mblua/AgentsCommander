@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -6,8 +7,8 @@ use serde::Serialize;
 use crate::commands::entity_creation::{list_workgroup_dirs, parse_task_title};
 use crate::config::daemon_pid::{detect_daemon_state, DaemonState};
 use crate::config::remote_activity_cache::{
-    read_snapshot, snapshot_is_fresh, PersistedCiState, PersistedRepoCi, RemoteActivitySnapshot,
-    REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME, REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS,
+    read_snapshot_from_dir, snapshot_is_fresh, PersistedCiState, PersistedRepoCi,
+    RemoteActivitySnapshot, REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS,
 };
 use crate::config::sessions_persistence::{load_sessions_raw, PersistedSession};
 use crate::session::session::persisted_is_working;
@@ -292,8 +293,7 @@ pub(super) fn read_fresh_ci_snapshot(
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<RemoteActivitySnapshot, String> {
     let dir = dir.ok_or_else(|| "the instance config directory is unavailable".to_string())?;
-    let path = dir.join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME);
-    let snapshot = read_snapshot(&path)?;
+    let snapshot = read_snapshot_from_dir(dir)?;
     if !snapshot_is_fresh(&snapshot, now) {
         return Err(format!(
             "the remote activity snapshot is not current \
@@ -477,7 +477,7 @@ pub(super) fn aggregate_room_ci(
 /// separator normalized. Applying one function to both sides makes one-sided
 /// normalization impossible.
 pub(crate) fn canonical_activity_path_key(path: &Path) -> String {
-    let raw = match std::fs::canonicalize(path) {
+    let raw = match crate::filesystem::directories::canonical_cli_discovery_path(path) {
         Ok(canonical) => canonical.to_string_lossy().to_string(),
         Err(_) => path.to_string_lossy().to_string(),
     };
@@ -536,18 +536,20 @@ pub(super) fn room_is_working(
 /// persisted name `<room>/x`.
 pub(super) fn list_replica_activity_dirs(wg_dir: &Path) -> Vec<(PathBuf, String)> {
     let mut replicas = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(wg_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().to_string();
-            if let Some(agent) = name.strip_prefix("__agent_") {
-                replicas.push((path, agent.to_string()));
-            }
+    let _ = crate::filesystem::directories::visit_cli_discovery_entries(wg_dir, |entry| {
+        let Ok((path, entry_name)) = entry else {
+            return ControlFlow::<()>::Continue(());
+        };
+        if !crate::filesystem::directories::cli_discovery_is_dir(&path) {
+            return ControlFlow::Continue(());
         }
-    }
+        let name = entry_name.to_string_lossy().to_string();
+        if let Some(agent) = name.strip_prefix("__agent_") {
+            replicas.push((path, agent.to_string()));
+        }
+
+        ControlFlow::Continue(())
+    });
     replicas.sort_by(|left, right| left.1.cmp(&right.1));
     replicas
 }
@@ -556,18 +558,20 @@ pub(super) fn list_replica_activity_dirs(wg_dir: &Path) -> Vec<(PathBuf, String)
 /// is aggregated over exactly these, never over arbitrary descendants.
 pub(super) fn list_room_repo_dirs(wg_dir: &Path) -> Vec<PathBuf> {
     let mut repos = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(wg_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("repo-") {
-                repos.push(path);
-            }
+    let _ = crate::filesystem::directories::visit_cli_discovery_entries(wg_dir, |entry| {
+        let Ok((path, entry_name)) = entry else {
+            return ControlFlow::<()>::Continue(());
+        };
+        if !crate::filesystem::directories::cli_discovery_is_dir(&path) {
+            return ControlFlow::Continue(());
         }
-    }
+        let name = entry_name.to_string_lossy().to_string();
+        if name.starts_with("repo-") {
+            repos.push(path);
+        }
+
+        ControlFlow::Continue(())
+    });
     repos.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
     repos
 }
@@ -578,7 +582,7 @@ pub(super) fn list_room_repo_dirs(wg_dir: &Path) -> Vec<PathBuf> {
 /// backs up or repairs the file.
 pub(super) fn read_task_title(room_dir: &Path) -> Option<String> {
     let path = room_dir.join("TASK.md");
-    match std::fs::read(&path) {
+    match crate::filesystem::documents::read_cli_room_task(&path) {
         Ok(bytes) => match String::from_utf8(bytes) {
             Ok(text) => parse_task_title(&text),
             Err(_) => {

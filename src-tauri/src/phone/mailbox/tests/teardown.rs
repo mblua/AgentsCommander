@@ -1,3 +1,5 @@
+mod host_pty;
+
 use super::*;
 use crate::phone::mailbox::teardown::{
     observation_budget, observe_close_attempt, observe_purge, run_purge_batch,

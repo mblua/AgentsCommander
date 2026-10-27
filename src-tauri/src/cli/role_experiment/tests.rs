@@ -521,3 +521,168 @@ fn resume_checks_run_presence_before_invalid_attempts() {
         Some(run_dir.join("run.json").to_string_lossy().to_string())
     );
 }
+
+#[test]
+fn issue_3298_artifact_error_envelopes() {
+    use crate::filesystem::documents::ExperimentArtifactFailure as Failure;
+    let path = PathBuf::from("attempts.jsonl");
+    let tmp = PathBuf::from(".tmp-fixture");
+    for (failure, action, expected_path) in [
+        (
+            Failure::Create {
+                path: path.clone(),
+                error: std::io::Error::other("native"),
+            },
+            "create",
+            &path,
+        ),
+        (
+            Failure::Write {
+                path: path.clone(),
+                error: std::io::Error::other("native"),
+            },
+            "write",
+            &path,
+        ),
+        (
+            Failure::Create {
+                path: tmp.clone(),
+                error: std::io::Error::other("native"),
+            },
+            "create",
+            &tmp,
+        ),
+        (
+            Failure::Write {
+                path: tmp.clone(),
+                error: std::io::Error::other("native"),
+            },
+            "write",
+            &tmp,
+        ),
+        (
+            Failure::Flush {
+                path: tmp.clone(),
+                error: std::io::Error::other("native"),
+            },
+            "flush",
+            &tmp,
+        ),
+        (
+            Failure::Replace {
+                path: path.clone(),
+                error: std::io::Error::other("native"),
+            },
+            "replace",
+            &path,
+        ),
+        (
+            Failure::CreateDirectory {
+                path: path.clone(),
+                error: std::io::Error::other("native"),
+            },
+            "create",
+            &path,
+        ),
+    ] {
+        let errors = storage::map_artifact_failure(failure);
+        let error = &errors[0];
+        assert_eq!(error.code, "run_artifact_write_failed");
+        assert_eq!(
+            error.message,
+            format!("Failed to {} {}: native", action, expected_path.display())
+        );
+        assert_eq!(
+            error.path,
+            Some(expected_path.to_string_lossy().to_string())
+        );
+        assert!(error.variant.is_none());
+        assert!(error.line.is_none());
+    }
+    let errors = storage::map_artifact_failure(Failure::NoParent { path: path.clone() });
+    assert_eq!(errors[0].code, "run_artifact_write_failed");
+    assert_eq!(errors[0].message, "Target path has no parent");
+    assert_eq!(errors[0].path, Some(path.to_string_lossy().to_string()));
+}
+
+#[test]
+fn issue_3298_inspection_and_document_failures_keep_native_errors() {
+    use crate::filesystem::{directories, documents};
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("regular");
+    std::fs::write(&file, [0xff]).unwrap();
+    let expected = std::fs::read_to_string(&file).unwrap_err();
+    let actual = documents::read_experiment_document(&file).unwrap_err();
+    assert_eq!(actual.kind(), expected.kind());
+    assert_eq!(actual.to_string(), expected.to_string());
+    let child = dir.path().join("invalid\0component");
+    let native = std::fs::symlink_metadata(&child).unwrap_err();
+    assert_ne!(native.kind(), std::io::ErrorKind::NotFound);
+    let failure = directories::inspect_experiment_path_chain(&child).unwrap_err();
+    let errors = validation::map_path_failure(failure, "fixture", Some("test"));
+    assert_eq!(errors[0].code, "fixture");
+    assert_eq!(
+        errors[0].message,
+        format!("Failed to inspect {}: {}", child.display(), native)
+    );
+    assert_eq!(errors[0].variant.as_deref(), Some("test"));
+    assert!(errors[0].path.is_none());
+    assert!(errors[0].line.is_none());
+    let errors = storage::atomic_write_bytes(&child, b"blocked").unwrap_err();
+    assert_eq!(errors[0].code, "run_artifact_link_or_reparse");
+    assert_eq!(
+        errors[0].message,
+        format!("Failed to inspect {}: {}", child.display(), native)
+    );
+    assert!(errors[0].path.is_none());
+    assert!(errors[0].variant.is_none());
+    assert!(errors[0].line.is_none());
+    let missing = dir.path().join("missing").join(".").join("..").join("next");
+    directories::inspect_experiment_path_chain(&missing).unwrap();
+    storage::atomic_write_bytes(&missing.join("file"), b"regular").unwrap();
+    assert_eq!(std::fs::read(missing.join("file")).unwrap(), b"regular");
+}
+
+#[cfg(windows)]
+#[test]
+fn issue_3298_junction_destination_and_ancestor_envelopes() {
+    use crate::filesystem::directories;
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real");
+    let link = dir.path().join("linked");
+    std::fs::create_dir(&real).unwrap();
+    crate::config::teams::create_test_junction(&link, &real);
+    assert!(directories::experiment_path_is_link(&link));
+    assert_eq!(
+        directories::collect_experiment_link_paths(&link),
+        vec![link.clone()]
+    );
+    for target in [
+        link.clone(),
+        link.join("attempts.jsonl"),
+        link.join("parent/new"),
+    ] {
+        let errors = storage::atomic_write_bytes(&target, b"must not publish").unwrap_err();
+        assert_eq!(errors[0].code, "run_artifact_link_or_reparse");
+        assert_eq!(
+            errors[0].message,
+            format!(
+                "Path component is a symlink or reparse point: {}",
+                link.display()
+            )
+        );
+        assert!(errors[0].path.is_none());
+        assert!(errors[0].variant.is_none());
+        assert!(errors[0].line.is_none());
+    }
+    assert!(std::fs::read_dir(&real).unwrap().next().is_none());
+    std::fs::remove_dir(&link).unwrap();
+}
+
+#[test]
+fn issue_3298_missing_path_retains_lexical_dot_parent_fallback() {
+    let (_tmp, mut loaded) = loaded_fixture("alpha");
+    loaded.experiment.source_matrix_path = "../../missing/../_agent_alpha/.".into();
+    loaded.experiment.source_role_path = "../../missing/../_agent_alpha/./Role.md".into();
+    assert!(validation::validate_loaded_experiment_source_metadata(&loaded).is_empty());
+}
