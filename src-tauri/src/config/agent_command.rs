@@ -904,5 +904,13 @@ pub fn build_agent_spawn_command(
     Ok(command)
 }
 
+pub(crate) fn read_claude_resume_wrapper(path: &Path) -> Option<Vec<u8>> {
+    crate::filesystem::documents::read_claude_resume_wrapper(path)
+}
+
+pub(crate) fn resume_host_directory_is_dir(path: &Path) -> bool {
+    crate::filesystem::directories::resume_host_directory_is_dir(path)
+}
+
 #[cfg(test)]
 mod tests;

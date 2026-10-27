@@ -94,3 +94,7 @@ pub(crate) fn restore_cwd_exists(path: &Path) -> bool {
 pub(crate) fn agent_search_directory_exists(path: &Path) -> bool {
     path.is_dir()
 }
+
+pub(crate) fn resume_host_directory_is_dir(path: &Path) -> bool {
+    path.is_dir()
+}

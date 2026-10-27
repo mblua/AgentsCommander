@@ -77,3 +77,15 @@ pub(crate) fn experiment_role_metadata(path: &Path) -> io::Result<std::fs::Metad
 pub(crate) fn read_experiment_role(path: &Path) -> io::Result<Vec<u8>> {
     std::fs::read(path)
 }
+
+pub(crate) fn read_claude_resume_wrapper(path: &Path) -> Option<Vec<u8>> {
+    // Cap read at 64 KiB; real wrappers are < 1 KiB. Refusing larger
+    // files protects against accidentally treating an exe-renamed-as-cmd
+    // as a wrapper.
+    const MAX: u64 = 64 * 1024;
+    let metadata = std::fs::metadata(path).ok()?;
+    if metadata.len() > MAX {
+        return None;
+    }
+    std::fs::read(path).ok()
+}
