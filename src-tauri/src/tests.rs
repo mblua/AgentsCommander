@@ -78,6 +78,7 @@ use std::sync::atomic::AtomicUsize;
 use tauri::Listener;
 
 struct CoManagedFixture {
+    owners: crate::AppOwners,
     _temp: tempfile::TempDir,
     project: PathBuf,
     room_root: PathBuf,
@@ -132,6 +133,7 @@ fn make_co_managed_fixture_in(temp: tempfile::TempDir, root: PathBuf) -> CoManag
     let projects_dir = root.join("claude-projects");
     std::fs::create_dir_all(&projects_dir).unwrap();
     CoManagedFixture {
+        owners: crate::AppOwners::new(),
         _temp: temp,
         project,
         room_root,
@@ -214,6 +216,7 @@ fn co_managed_app_with_project_paths(
     let registry = Arc::new(CaptureRegistry::new());
     let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
     let app = tauri::test::mock_builder()
+        .manage(fixture.owners.clone())
         .manage(crate::config::settings::new_settings_state(settings))
         .manage(session_manager.clone())
         .manage(crate::network::OutboundNetwork::new().expect("shared outbound network"))

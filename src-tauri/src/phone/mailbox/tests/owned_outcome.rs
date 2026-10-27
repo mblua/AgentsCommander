@@ -106,7 +106,7 @@ async fn owned_outcome_drain_settles_or_requeues_every_disk_state() {
     };
     // A source-only completion has no current app/route authority and cannot arm.
     let (positive, member, _, work) = prepare();
-    let positive_poller = MailboxPoller::new();
+    let positive_poller = MailboxPoller::default();
     let positive_path = PathBuf::from("positive.json");
     positive_poller
         .response_sources
@@ -126,7 +126,7 @@ async fn owned_outcome_drain_settles_or_requeues_every_disk_state() {
         let origin = outbox.join("restore-success.json");
         let claim = wake_claim_path(&origin);
         std::fs::write(&claim, "{}").unwrap();
-        let mut poller = MailboxPoller::new();
+        let mut poller = MailboxPoller::default();
         let (tracker, member, coordinator, work) = prepare();
         assert!(tracker
             .reserve_policy_candidate(
@@ -209,7 +209,7 @@ async fn owned_outcome_drain_settles_or_requeues_every_disk_state() {
         let receipt = delivered_dir.join("claim-with-receipt.json");
         std::fs::write(&claim, "{}").unwrap();
         std::fs::write(&receipt, "{}").unwrap();
-        let mut poller = MailboxPoller::new();
+        let mut poller = MailboxPoller::default();
         let (tracker, member, coordinator, work) = prepare();
         assert!(tracker
             .reserve_policy_candidate(
@@ -285,7 +285,7 @@ async fn owned_outcome_drain_settles_or_requeues_every_disk_state() {
         let receipt = rejected_dir.join("claim-with-rejected-receipt.json");
         std::fs::write(&claim, "{}").unwrap();
         std::fs::write(&receipt, "{}").unwrap();
-        let mut poller = MailboxPoller::new();
+        let mut poller = MailboxPoller::default();
         let (tracker, member, coordinator, work) = prepare();
         assert!(tracker
             .reserve_policy_candidate(
@@ -362,7 +362,7 @@ async fn owned_outcome_drain_settles_or_requeues_every_disk_state() {
         let receipt = delivered_dir.join("restored-with-receipt.json");
         std::fs::write(&origin, "{}").unwrap();
         std::fs::write(&receipt, "{}").unwrap();
-        let mut poller = MailboxPoller::new();
+        let mut poller = MailboxPoller::default();
         let (tracker, member, coordinator, work) = prepare();
         assert!(tracker
             .reserve_policy_candidate(
@@ -449,7 +449,7 @@ async fn owned_outcome_drain_settles_or_requeues_every_disk_state() {
         std::fs::create_dir_all(&origin).unwrap();
         std::fs::write(&claim, "{}").unwrap();
         let outcome = Err("restore remains pending".to_string());
-        let mut poller = MailboxPoller::new();
+        let mut poller = MailboxPoller::default();
         let (tracker, member, coordinator, work) = prepare();
         assert!(tracker
             .reserve_policy_candidate(
@@ -540,7 +540,7 @@ async fn owned_outcome_drain_settles_or_requeues_every_disk_state() {
         std::fs::create_dir_all(&claim).unwrap();
         std::fs::write(&receipt, "{}").unwrap();
         let outcome = Err("delete remains pending".to_string());
-        let mut poller = MailboxPoller::new();
+        let mut poller = MailboxPoller::default();
         let (tracker, member, coordinator, work) = prepare();
         assert!(tracker
             .reserve_policy_candidate(
@@ -630,7 +630,7 @@ async fn owned_outcome_drain_settles_or_requeues_every_disk_state() {
         assert!(claim.try_exists().is_err());
         assert!(wake_claim_has_settled_receipt(&origin).is_err());
         let outcome = Err("observation remains pending".to_string());
-        let mut poller = MailboxPoller::new();
+        let mut poller = MailboxPoller::default();
         let (tracker, member, coordinator, work) = prepare();
         assert!(tracker
             .reserve_policy_candidate(

@@ -342,7 +342,7 @@ async fn process_message_root_self_clear_with_canonical_sender_queues() {
         Some(token.to_string()),
         &canonical_from,
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .process_message(&app, &path, OutboxOrigin::Replica)
         .await
@@ -420,7 +420,7 @@ async fn process_message_root_self_clear_with_buggy_sender_is_rejected() {
         Some(token.to_string()),
         &buggy_from,
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .process_message(&app, &path, OutboxOrigin::Replica)
         .await
@@ -520,7 +520,7 @@ async fn process_message_root_self_restart_with_canonical_sender_queues() {
         Some(token.to_string()),
         &canonical_from,
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     // `false` is the real agent-outbox path, so BOTH anti-spoof gates run.
     poller
         .process_message(&app, &path, OutboxOrigin::Replica)
@@ -599,7 +599,7 @@ async fn process_message_root_self_restart_with_buggy_sender_is_rejected() {
         Some(token.to_string()),
         &buggy_from,
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .process_message(&app, &path, OutboxOrigin::Replica)
         .await

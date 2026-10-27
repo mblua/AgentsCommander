@@ -679,6 +679,7 @@ impl MailboxPoller {
         else {
             return Ok(OwnedPeerWakeStep::Relist);
         };
+        let validation_messages = Arc::clone(&self.messages);
         let validation_app = app.clone();
         let validation_message = msg.clone();
         let validation_request = request.clone();
@@ -686,12 +687,13 @@ impl MailboxPoller {
         let continuation = target
             .continuation
             .with_source_validation(Arc::new(move || {
+                let messages = Arc::clone(&validation_messages);
                 let app = validation_app.clone();
                 let msg = validation_message.clone();
                 let request = validation_request.clone();
                 let physical = physical.clone();
                 Box::pin(async move {
-                    if MailboxPoller::delivery_only()
+                    if MailboxPoller::delivery_only(messages)
                         .owned_peer_source_is_current(&app, &msg, &request, &physical)
                         .await
                     {

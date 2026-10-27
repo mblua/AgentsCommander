@@ -109,6 +109,7 @@ enum TestPtyOutputDelivery {
 }
 
 pub(crate) struct Fixture {
+    pub(crate) spawn: Arc<agentscommander_lib::pty::spawn_diagnostics::SpawnRegistry>,
     pub(crate) app: tauri::App,
     pub(crate) session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     pub(crate) pty_mgr: Arc<Mutex<PtyManager>>,
@@ -250,7 +251,10 @@ pub(crate) fn make_fixture() -> Fixture {
         Arc::new(Mutex::new(HashMap::new()));
     let listener_errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let owners = agentscommander_lib::AppOwners::new();
+    let session_mgr = Arc::new(tokio::sync::RwLock::new(
+        SessionManager::with_activity_coalescer(owners.activity.clone()),
+    ));
     let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
     let tg_mgr: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
         TelegramBridgeManager::new(Arc::clone(&output_senders)),
@@ -264,17 +268,24 @@ pub(crate) fn make_fixture() -> Fixture {
         s
     });
     let git_app = Box::leak(Box::new(
-        agentscommander_lib::test_support::test_builder()
+        agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build git watcher handle app"),
     ));
-    let git_watcher = GitWatcher::new(Arc::clone(&session_mgr), git_app.handle().clone());
-    let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
+    let git_watcher = GitWatcher::with_state(
+        Arc::clone(&session_mgr),
+        git_app.handle().clone(),
+        owners.git.clone(),
+    );
+    let pty_mgr = Arc::new(Mutex::new(PtyManager::with_owners(
         output_senders,
         idle_detector,
         Arc::clone(&git_watcher),
         None,
         None,
+        #[cfg(windows)]
+        owners.git_guard.clone(),
+        owners.spawn.clone(),
     )));
 
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
@@ -289,7 +300,7 @@ pub(crate) fn make_fixture() -> Fixture {
 
     let deliveries = Arc::clone(&captured_deliveries);
     let error_capture = Arc::clone(&listener_errors);
-    let app = agentscommander_lib::test_support::test_builder()
+    let app = agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
         .manage(MasterToken::new(
             "pty-powershell-native-master-token".into(),
         ))
@@ -312,7 +323,9 @@ pub(crate) fn make_fixture() -> Fixture {
         .manage(spec_board_state)
         .manage(config_seed_lock)
         .manage(git_watcher)
-        .manage(Arc::new(ResourceMonitorState::new()))
+        .manage(Arc::new(ResourceMonitorState::with_spawn_registry(
+            owners.spawn.clone(),
+        )))
         .manage(Arc::clone(&pty_mgr))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build pty powershell native test app");
@@ -352,6 +365,7 @@ pub(crate) fn make_fixture() -> Fixture {
     });
 
     Fixture {
+        spawn: owners.spawn.clone(),
         app,
         session_mgr,
         pty_mgr,
@@ -565,7 +579,7 @@ pub(crate) async fn wait_for_exit_code(
 ) -> Result<u32, String> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if let Some(record) = spawn_diagnostics::record_for(session_id) {
+        if let Some(record) = spawn_diagnostics::record_for(session_id, fixture.spawn.as_ref()) {
             if let Some(ChildLiveness::Exited { code, .. }) = record.final_liveness() {
                 return Ok(code);
             }

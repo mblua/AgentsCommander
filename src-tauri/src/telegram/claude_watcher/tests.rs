@@ -586,21 +586,30 @@ fn backdate(path: &Path, secs: u64) {
 
 /// Commit `record` as an `Automatic` effect and return `routable`, the
 /// routing answer of `capture::state::commit_effect`.
-fn routable(room: &Path, record: &Arc<CapturedRecord>) -> bool {
-    commit_automatic(room, record)
+fn routable(
+    room: &Path,
+    record: &Arc<CapturedRecord>,
+    capture: &crate::capture::state::CaptureState,
+) -> bool {
+    commit_automatic(room, record, capture)
         .expect("the commit takes the record")
         .routable
 }
 
 /// [`routable`] for a record that may be refused outright: a refusal such
 /// as `AlreadyConsumed` routes nothing.
-fn routes(room: &Path, record: &Arc<CapturedRecord>) -> bool {
-    commit_automatic(room, record).is_ok_and(|effect| effect.routable)
+fn routes(
+    room: &Path,
+    record: &Arc<CapturedRecord>,
+    capture: &crate::capture::state::CaptureState,
+) -> bool {
+    commit_automatic(room, record, capture).is_ok_and(|effect| effect.routable)
 }
 
 fn commit_automatic(
     room: &Path,
     record: &Arc<CapturedRecord>,
+    capture: &crate::capture::state::CaptureState,
 ) -> Result<crate::capture::state::CommittedEffect, crate::capture::state::AbstainReason> {
     use crate::capture::key::ConsumptionKey;
     use crate::capture::state::{commit_effect, EffectKind, EffectPreconditions};
@@ -616,13 +625,13 @@ fn commit_automatic(
         observed_at: std::time::Instant::now(),
         kind: EffectKind::Automatic,
     };
-    commit_effect(room, &slot, slot.seq(), &key, &pre)
+    commit_effect(room, &slot, slot.seq(), &key, &pre, capture)
 }
 
-fn room(temp: &tempfile::TempDir) -> PathBuf {
+fn room(temp: &tempfile::TempDir, capture: &crate::capture::state::CaptureState) -> PathBuf {
     let room = temp.path().join("room-1-dev-team");
     std::fs::create_dir_all(&room).expect("room dir");
-    crate::capture::state::forget_room_for_tests(&room);
+    crate::capture::state::forget_room_for_tests(&room, capture);
     room
 }
 
@@ -631,6 +640,7 @@ fn room(temp: &tempfile::TempDir) -> PathBuf {
 /// actually routed.
 #[tokio::test]
 async fn a_fresh_spawn_first_reply_is_live_and_routed() {
+    let capture = &crate::capture::state::CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
     let projects = temp.path().join("projects");
     std::fs::create_dir_all(&projects).expect("projects dir");
@@ -661,7 +671,7 @@ async fn a_fresh_spawn_first_reply_is_live_and_routed() {
         "supporting evidence only"
     );
     assert!(
-        routable(&room(&temp), &record),
+        routable(&room(&temp, capture), &record, capture),
         "the first reply must be routed"
     );
 }
@@ -671,8 +681,9 @@ async fn a_fresh_spawn_first_reply_is_live_and_routed() {
 /// consumed. A new reader stamps it `Preamble` and never routes it again.
 #[tokio::test]
 async fn an_existing_pinned_file_reply_is_not_routed_twice() {
+    let capture = &crate::capture::state::CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let room = room(&temp);
+    let room = room(&temp, capture);
     let projects = temp.path().join("projects");
     std::fs::create_dir_all(&projects).expect("projects dir");
     let old = projects.join("old-session.jsonl");
@@ -694,7 +705,10 @@ async fn an_existing_pinned_file_reply_is_not_routed_twice() {
         RecordOrigin::Live,
         &ReaderAttachment::default(),
     );
-    assert!(routable(&room, &earlier[0]), "the first delivery is routed");
+    assert!(
+        routable(&room, &earlier[0], capture),
+        "the first delivery is routed"
+    );
 
     let mut reader = Reader::start(&projects, Some(PIN_ID.to_string()));
     let record = reader
@@ -708,7 +722,7 @@ async fn an_existing_pinned_file_reply_is_not_routed_twice() {
     assert_eq!(record.origin, RecordOrigin::Preamble);
     assert!(crate::capture::state::is_baseline(&record));
     assert!(
-        !routable(&room, &record),
+        !routable(&room, &record, capture),
         "a consumed reply must not route twice"
     );
 }
@@ -717,6 +731,7 @@ async fn an_existing_pinned_file_reply_is_not_routed_twice() {
 /// `Preamble` and is still suppressed.
 #[tokio::test]
 async fn an_mtime_first_attach_over_history_is_still_suppressed() {
+    let capture = &crate::capture::state::CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
     let projects = temp.path().join("projects");
     std::fs::create_dir_all(&projects).expect("projects dir");
@@ -737,7 +752,7 @@ async fn an_mtime_first_attach_over_history_is_still_suppressed() {
     assert_eq!(record.file, history);
     assert_eq!(record.origin, RecordOrigin::Preamble);
     assert!(
-        !routable(&room(&temp), &record),
+        !routable(&room(&temp, capture), &record, capture),
         "history must stay suppressed"
     );
 }
@@ -845,8 +860,9 @@ fn runs_first_attach_decision_only_before_the_first_attach() {
 /// nothing restored routes a second time.
 #[tokio::test]
 async fn a_vanished_pinned_transcript_is_not_pinned_again() {
+    let capture = &crate::capture::state::CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let room = room(&temp);
+    let room = room(&temp, capture);
     let projects = temp.path().join("projects");
     std::fs::create_dir_all(&projects).expect("projects dir");
 
@@ -861,7 +877,10 @@ async fn a_vanished_pinned_transcript_is_not_pinned_again() {
         .expect("the pinned reply reaches the sink");
     assert_eq!(first.file, pinned);
     assert_eq!(first.origin, RecordOrigin::Live);
-    assert!(routable(&room, &first), "the first delivery is routed");
+    assert!(
+        routable(&room, &first, capture),
+        "the first delivery is routed"
+    );
 
     // One poll picks up the backdated mtime, so the file is stale.
     backdate(&pinned, 60);
@@ -891,7 +910,7 @@ async fn a_vanished_pinned_transcript_is_not_pinned_again() {
             record.text
         );
         assert!(
-            !routes(&room, record),
+            !routes(&room, record, capture),
             "a restored reply must not route twice: {:?}",
             record.text
         );

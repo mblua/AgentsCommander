@@ -234,9 +234,17 @@ pub(crate) async fn commit_co_managed_effect(
     expected_seq: u64,
     expected_key: capture::key::ConsumptionKey,
     pre: capture::state::EffectPreconditions,
+    capture: Arc<capture::state::CaptureState>,
 ) -> Result<capture::state::CommittedEffect, capture::state::AbstainReason> {
     tauri::async_runtime::spawn_blocking(move || {
-        capture::state::commit_effect(&room_root, &slot, expected_seq, &expected_key, &pre)
+        capture::state::commit_effect(
+            &room_root,
+            &slot,
+            expected_seq,
+            &expected_key,
+            &pre,
+            &capture,
+        )
     })
     .await
     .unwrap_or(Err(capture::state::AbstainReason::LockUnavailable(
@@ -272,6 +280,7 @@ pub(crate) async fn commit_co_managed_with_retries<R: tauri::Runtime>(
             expected_seq,
             expected_key.clone(),
             pre,
+            handle.capture.clone(),
         )
         .await;
         match &result {
@@ -333,7 +342,8 @@ pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
         return CoManagedOutcome::Done("session vanished".to_string());
     };
     let from_fqn = crate::config::teams::agent_fqn_from_path(&session.working_directory);
-    let expected_key = capture::state::consumption_key(room_root, candidate.as_ref());
+    let expected_key =
+        capture::state::consumption_key(room_root, candidate.as_ref(), &handle.capture);
     let text = candidate.text.clone();
 
     // (1) The detector runs before any write and before any network call.

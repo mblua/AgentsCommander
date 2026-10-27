@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 mod config;
-mod output;
+mod filesystem;
 mod pty_result;
 mod snapshot;
 
@@ -214,9 +214,8 @@ async fn send_standard(options: SendOptions) -> HelperResult<()> {
     let body = match (options.file, options.message) {
         (Some(_), Some(_)) => return Err("exactly_one_payload_required".to_string()),
         (None, None) => return Err("exactly_one_payload_required".to_string()),
-        (Some(path), None) => {
-            std::fs::read_to_string(path).map_err(|_| "send_file_unreadable".to_string())?
-        }
+        (Some(path), None) => crate::filesystem::read_send_message(&path)
+            .map_err(|_| "send_file_unreadable".to_string())?,
         (None, Some(text)) => text,
     };
     if body.len() > INLINE_BODY_MAX_BYTES {

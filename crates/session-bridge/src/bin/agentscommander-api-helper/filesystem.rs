@@ -596,5 +596,9 @@ fn validate_windows_snapshot_path(
     Ok(())
 }
 
+pub(crate) fn read_send_message(path: &str) -> std::io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
 #[cfg(test)]
 mod tests;

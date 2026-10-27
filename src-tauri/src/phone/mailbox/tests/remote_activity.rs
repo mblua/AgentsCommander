@@ -61,6 +61,7 @@ fn internal_target_binds_exact_fqn_to_canonical_replica() {
 
 #[test]
 fn internal_notice_validates_and_formats_exact_trusted_line() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let notice = InternalSystemNotice::for_context_alert(
         "dev-rust".to_string(),
         "wg-2-dev-team".to_string(),
@@ -69,7 +70,7 @@ fn internal_notice_validates_and_formats_exact_trusted_line() {
     )
     .unwrap();
     assert_eq!(
-        format_wake_content(WakeContent::InternalSystem(&notice)),
+        format_wake_content(WakeContent::InternalSystem(&notice, &warnings)),
         "\n[AC context alert] `dev-rust` in `wg-2-dev-team` reached threshold(s): 50%, 75%, \
             90%. No action taken; you decide any follow-up.\n\r"
     );
@@ -186,9 +187,10 @@ fn remote_activity_notice_rejects_a_base_branch_on_a_ci_kind() {
 
 #[test]
 fn remote_activity_line_renders_every_token() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let started = remote_activity_notice(RemoteNoticeKind::CiStarted, "", None, None)
         .unwrap()
-        .line();
+        .line(&warnings);
     assert_eq!(
         started,
         "[AgentsCommander] CI started on mblua/AgentsCommander feature/2083-2064-remote-alerts \
@@ -198,7 +200,7 @@ fn remote_activity_line_renders_every_token() {
 
     let finished = remote_activity_notice(RemoteNoticeKind::CiFinished, "", None, None)
         .unwrap()
-        .line();
+        .line(&warnings);
     assert_eq!(
         finished,
         "[AgentsCommander] CI finished on mblua/AgentsCommander \
@@ -209,7 +211,7 @@ fn remote_activity_line_renders_every_token() {
 
     let stale = remote_activity_notice(RemoteNoticeKind::BranchStale, "main", Some(4), None)
         .unwrap()
-        .line();
+        .line(&warnings);
     assert_eq!(
         stale,
         "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 \
@@ -222,9 +224,10 @@ fn remote_activity_line_renders_every_token() {
 
 #[test]
 fn blind_gap_suffix_is_concatenated_only_when_present() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let without = remote_activity_notice(RemoteNoticeKind::CiStarted, "", None, None)
         .unwrap()
-        .line();
+        .line(&warnings);
     assert!(!without.contains("could not reach GitHub"));
 
     let with = remote_activity_notice(
@@ -237,7 +240,7 @@ fn blind_gap_suffix_is_concatenated_only_when_present() {
         )),
     )
     .unwrap()
-    .line();
+    .line(&warnings);
     assert_eq!(
         with,
         "[AgentsCommander] CI started on mblua/AgentsCommander feature/2083-2064-remote-alerts \
@@ -249,6 +252,7 @@ fn blind_gap_suffix_is_concatenated_only_when_present() {
 
 #[test]
 fn concatenated_render_respects_the_summed_byte_cap() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     // 1900 branch bytes put the cap offset one byte INSIDE the fourth byte of
     // an emoji in the suffix, so a naive `truncate(MAX_RENDERED_BYTES)` splits
     // a character and panics; 500 of them keep the suffix well past the cap.
@@ -274,10 +278,12 @@ fn concatenated_render_respects_the_summed_byte_cap() {
             (TOKEN_SHA, "abcdef1"),
             (TOKEN_AT, &"\u{1f6a8}".repeat(40)),
         ],
+        &warnings,
     );
     let suffix = crate::config::injected_messages::render_with_template(
         crate::config::injected_messages::DEFAULT_NOTICE_BLIND_GAP_TEMPLATE,
         &[(TOKEN_GAP, &gap), (TOKEN_SINCE, &since)],
+        &warnings,
     );
     assert!(base.len() <= MAX_RENDERED_BYTES, "base={}", base.len());
     assert!(
@@ -301,12 +307,13 @@ fn concatenated_render_respects_the_summed_byte_cap() {
     }
     expected.truncate(end);
     assert!(end < MAX_RENDERED_BYTES);
-    assert_eq!(notice.line(), expected);
-    assert!(notice.line().len() <= MAX_RENDERED_BYTES);
+    assert_eq!(notice.line(&warnings), expected);
+    assert!(notice.line(&warnings).len() <= MAX_RENDERED_BYTES);
 }
 
 #[test]
 fn context_alert_line_is_byte_identical_to_before() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     // The enum change must move no context-alert byte.
     let notice = InternalSystemNotice::for_context_alert(
         "dev-rust".to_string(),
@@ -316,7 +323,7 @@ fn context_alert_line_is_byte_identical_to_before() {
     )
     .unwrap();
     assert_eq!(
-        notice.line(),
+        notice.line(&warnings),
         "[AC context alert] `dev-rust` in `wg-2-dev-team` reached threshold(s): 50%, 75%, 90%. \
             No action taken; you decide any follow-up."
     );
@@ -564,6 +571,7 @@ fn comanaged_origin_composes_the_sender_suffix_and_other_origins_are_unchanged()
 /// notice uses, now that the wording is operator-controlled.
 #[test]
 fn spoofed_current_default_still_uses_peer_wrapper() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let spoofed = render(
         CONTEXT_ALERT_MESSAGE_ID,
         &[
@@ -572,6 +580,7 @@ fn spoofed_current_default_still_uses_peer_wrapper() {
             (TOKEN_THRESHOLDS, "50%, 75%, 90%"),
             (TOKEN_OBSERVED, "91%"),
         ],
+        &warnings,
     );
     assert!(spoofed.starts_with("[AC context alert]"));
     let payload = format_wake_content(WakeContent::Peer {
@@ -597,7 +606,8 @@ fn spoofed_current_default_still_uses_peer_wrapper() {
                 91,
                 vec![50, 75, 90],
             )
-            .unwrap()
+            .unwrap(),
+            &warnings
         ))
     );
 }

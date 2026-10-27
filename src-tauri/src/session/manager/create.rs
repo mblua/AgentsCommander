@@ -15,9 +15,30 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 impl SessionManager {
+    #[cfg(test)]
     pub fn new() -> Self {
+        Self::with_activity_coalescer(Arc::new(
+            crate::config::activity_log::ActivityCoalescer::new(),
+        ))
+    }
+
+    pub(crate) fn with_response_close(
+        state: crate::pty::response_close::ResponseCloseState,
+        owner: Arc<crate::config::activity_log::ActivityCoalescer>,
+    ) -> Self {
+        state.bind_publisher(crate::pty::response_close::ResponseClosePublisher::Manager);
+        Self {
+            response_close: state,
+            ..Self::with_activity_coalescer(owner)
+        }
+    }
+
+    pub fn with_activity_coalescer(
+        activity: Arc<crate::config::activity_log::ActivityCoalescer>,
+    ) -> Self {
         let epoch = Uuid::new_v4();
         Self {
+            activity,
             response_close: crate::pty::response_close::ResponseCloseState::default(),
             prompt_initialization: Arc::new(tokio::sync::OnceCell::new()),
             state: Arc::new(RwLock::new(SessionManagerState {

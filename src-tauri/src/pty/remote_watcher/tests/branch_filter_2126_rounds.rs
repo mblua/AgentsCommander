@@ -7,7 +7,7 @@ async fn stale_without_own_commits_sends_no_notice_but_keeps_the_chip() {
     let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
-    publish_branch(&repo, "fix/2141");
+    publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
     harness.set_work(std::slice::from_ref(&repo));
     {
         let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
@@ -51,7 +51,7 @@ async fn stale_without_own_commits_notifies_once_after_the_first_own_commit() {
     let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
-    publish_branch(&repo, "fix/2141");
+    publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
     harness.set_work(std::slice::from_ref(&repo));
     {
         let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
@@ -108,7 +108,7 @@ async fn branch_that_commits_while_behind_notifies_after_the_carry_over() {
     let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
-    publish_branch(&repo, "fix/2141");
+    publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
     harness.set_work(std::slice::from_ref(&repo));
     {
         let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
@@ -149,7 +149,7 @@ async fn carry_over_does_not_duplicate_a_notice_across_a_commit() {
     let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
-    publish_branch(&repo, "fix/2141");
+    publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
     harness.set_work(std::slice::from_ref(&repo));
     {
         let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
@@ -200,7 +200,7 @@ async fn carry_over_leaves_the_ci_axis_unknown_on_a_new_sha() {
         ..AppSettings::default()
     });
     let repo = harness.repo("repo-a");
-    publish_branch(&repo, "fix/2141");
+    publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
     harness.set_work(std::slice::from_ref(&repo));
     {
         let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
@@ -274,8 +274,8 @@ async fn two_live_keys_on_one_branch_never_seed_each_other() {
     let harness = Harness::new(AppSettings::default());
     let first = harness.repo("repo-a");
     let second = harness.repo("repo-b");
-    publish_branch(&first, "fix/2141");
-    publish_branch(&second, "fix/2141");
+    publish_branch(&first, "fix/2141", harness.git_state.as_ref());
+    publish_branch(&second, "fix/2141", harness.git_state.as_ref());
     harness.set_work(&[first.clone(), second.clone()]);
     {
         let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
@@ -337,7 +337,7 @@ async fn stale_with_a_missing_ahead_by_still_sends_the_notice() {
     let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
-    publish_branch(&repo, "fix/2141");
+    publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
     harness.set_work(std::slice::from_ref(&repo));
     let no_ahead_by = serde_json::json!({ "status": "behind", "behind_by": 4 }).to_string();
     {
@@ -372,6 +372,7 @@ async fn stale_on_a_feature_branch_still_sends_the_notice() {
             branch: Some("fix/2131".to_string()),
             dirty: false,
         }),
+        harness.git_state.as_ref(),
     );
     harness.set_work(std::slice::from_ref(&repo));
     {
@@ -419,6 +420,7 @@ async fn stale_with_an_unresolved_default_branch_still_sends_the_notice() {
             branch: Some(DEFAULT_BRANCH_LABEL.to_string()),
             dirty: false,
         }),
+        harness.git_state.as_ref(),
     );
     harness.set_work(std::slice::from_ref(&repo));
     {

@@ -84,6 +84,7 @@ async fn snapshot_is_keyed_by_the_exact_unnormalized_path() {
             branch: Some("main".to_string()),
             dirty: false,
         }),
+        harness.git_state.as_ref(),
     );
     harness.set_work(std::slice::from_ref(&unnormalized));
 
@@ -360,6 +361,7 @@ async fn base_branch_resolution_walks_the_three_step_chain() {
                 branch: Some("fix/2131".to_string()),
                 dirty: false,
             }),
+            harness.git_state.as_ref(),
         );
         harness.set_work(&[repo]);
         {

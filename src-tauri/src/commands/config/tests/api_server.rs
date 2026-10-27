@@ -396,3 +396,13 @@ fn mint_api_client_rejects_expiry_beyond_max() {
     );
     assert!(!fixture.path.exists());
 }
+
+#[test]
+fn api_warning_port_preserves_managed_owner_identity() {
+    let app = api_server_command_test_app(AppSettings::default());
+    let root = app.state::<crate::app_state::AppOwners>();
+    let first = crate::api::ApiMessageWarnings::message_warnings(app.handle());
+    let second = crate::api::ApiMessageWarnings::message_warnings(app.handle());
+    assert!(Arc::ptr_eq(&first, &root.messages));
+    assert!(Arc::ptr_eq(&second, &root.messages));
+}
