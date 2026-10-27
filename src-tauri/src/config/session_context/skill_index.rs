@@ -89,7 +89,7 @@ pub(crate) fn resolve_skill_owner_root(
 
     if is_canonical_agent_matrix_dir(agent_root) {
         let agent_path = Path::new(agent_root);
-        return std::fs::canonicalize(agent_path)
+        return crate::filesystem::context_skills::canonical_skill_source(agent_path)
             .map(|p| display_path(&p))
             .ok()
             .or_else(|| Some(display_path(agent_path)));
@@ -97,7 +97,7 @@ pub(crate) fn resolve_skill_owner_root(
 
     if super::super::root_agent::is_root_agent_dir_name(agent_root) {
         let agent_path = Path::new(agent_root);
-        return std::fs::canonicalize(agent_path)
+        return crate::filesystem::context_skills::canonical_skill_source(agent_path)
             .map(|p| display_path(&p))
             .ok()
             .or_else(|| Some(display_path(agent_path)));
@@ -157,7 +157,7 @@ pub(crate) fn frontmatter_utf8(bytes: Vec<u8>) -> Result<String, String> {
 }
 
 pub(crate) fn extract_skill_frontmatter(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path)
+    let mut file = crate::filesystem::context_skills::open_skill_frontmatter(path)
         .map_err(|e| format!("failed to open SKILL.md frontmatter: {}", e))?;
     let mut read_buffer = [0_u8; 1024];
     let mut current_line: Vec<u8> = Vec::new();
@@ -229,7 +229,7 @@ pub(crate) fn extract_skill_frontmatter(path: &Path) -> Result<String, String> {
 }
 
 pub(crate) fn find_exact_skill_entrypoint(skill_dir: &Path) -> Result<PathBuf, String> {
-    let entries = std::fs::read_dir(skill_dir)
+    let entries = crate::filesystem::context_skills::skill_source_entries(skill_dir)
         .map_err(|e| format!("unable to read skill directory: {}", e))?;
 
     for entry in entries {
@@ -350,9 +350,10 @@ pub(crate) fn collect_skill_index(matrix_root: Option<&str>, directory: &str) ->
     let canonical_matrix = canonical_or_original(matrix_path);
     let matrix_root_display = display_path(&canonical_matrix);
     let skills_path = matrix_path.join(directory);
-    let skills_root_display = std::fs::canonicalize(&skills_path)
-        .map(|p| display_path(&p))
-        .unwrap_or_else(|_| display_path(&canonical_matrix.join(directory)));
+    let skills_root_display =
+        crate::filesystem::context_skills::canonical_skill_source(&skills_path)
+            .map(|p| display_path(&p))
+            .unwrap_or_else(|_| display_path(&canonical_matrix.join(directory)));
     let mut index = SkillIndex {
         matrix_root: Some(sanitize_skill_metadata_for_context(&matrix_root_display)),
         skills_root: Some(sanitize_skill_metadata_for_context(&skills_root_display)),
@@ -360,20 +361,21 @@ pub(crate) fn collect_skill_index(matrix_root: Option<&str>, directory: &str) ->
         warnings: Vec::new(),
     };
 
-    if !skills_path.exists() {
+    if !crate::filesystem::context_skills::skill_source_exists(&skills_path) {
         return index;
     }
 
-    let skills_file_type = match std::fs::symlink_metadata(&skills_path) {
-        Ok(metadata) => metadata.file_type(),
-        Err(e) => {
-            index.warnings.push(format!(
-                "`{directory}` could not be inspected: {}",
-                sanitize_skill_metadata_for_context(&e.to_string())
-            ));
-            return index;
-        }
-    };
+    let skills_file_type =
+        match crate::filesystem::context_skills::inspect_skill_source(&skills_path) {
+            Ok(metadata) => metadata.file_type(),
+            Err(e) => {
+                index.warnings.push(format!(
+                    "`{directory}` could not be inspected: {}",
+                    sanitize_skill_metadata_for_context(&e.to_string())
+                ));
+                return index;
+            }
+        };
     if !skills_file_type.is_dir() || skills_file_type.is_symlink() {
         index.warnings.push(format!(
             "`{directory}` exists but is not a directory: {}",
@@ -382,7 +384,7 @@ pub(crate) fn collect_skill_index(matrix_root: Option<&str>, directory: &str) ->
         return index;
     }
 
-    let entries = match std::fs::read_dir(&skills_path) {
+    let entries = match crate::filesystem::context_skills::skill_source_entries(&skills_path) {
         Ok(entries) => entries,
         Err(e) => {
             index.warnings.push(format!(
@@ -538,9 +540,10 @@ pub(crate) fn collect_skill_index(matrix_root: Option<&str>, directory: &str) ->
             }
         };
 
-        let entrypoint_display = std::fs::canonicalize(&entrypoint)
-            .map(|p| display_path(&p))
-            .unwrap_or_else(|_| display_path(&entrypoint));
+        let entrypoint_display =
+            crate::filesystem::context_skills::canonical_skill_source(&entrypoint)
+                .map(|p| display_path(&p))
+                .unwrap_or_else(|_| display_path(&entrypoint));
 
         index.skills.push(SkillMetadata {
             folder_name: display_folder,

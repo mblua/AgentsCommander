@@ -41,12 +41,12 @@ pub(crate) fn write_combined_context_file(
     let config_dir = super::super::config_dir()
         .ok_or_else(|| "Could not resolve app config directory".to_string())?;
     let context_dir = config_dir.join(CONTEXT_CACHE_DIR_NAME);
-    std::fs::create_dir_all(&context_dir)
+    crate::filesystem::session_context::ensure_context_directory(&context_dir)
         .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
 
     let hash = simple_hash(cwd);
     let file_path = context_dir.join(format!("{}-{}.md", filename_prefix, hash));
-    std::fs::write(&file_path, &combined)
+    crate::filesystem::session_context::write_context_cache(&file_path, &combined)
         .map_err(|e| format!("Failed to write combined context file: {}", e))?;
 
     Ok(file_path.to_string_lossy().to_string())
@@ -62,8 +62,8 @@ pub(crate) fn resolved_paths_include_path(
         }
 
         match (
-            std::fs::canonicalize(path),
-            std::fs::canonicalize(candidate),
+            crate::filesystem::session_context::canonical_context_source(path),
+            crate::filesystem::session_context::canonical_context_source(candidate),
         ) {
             (Ok(left), Ok(right)) => left == right,
             _ => false,
@@ -101,7 +101,7 @@ pub(crate) fn is_canonical_agent_matrix_dir(cwd: &str) -> bool {
         return false;
     }
 
-    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+    let Ok(metadata) = crate::filesystem::session_context::inspect_context_source(path) else {
         return false;
     };
     let file_type = metadata.file_type();
@@ -109,7 +109,8 @@ pub(crate) fn is_canonical_agent_matrix_dir(cwd: &str) -> bool {
         return false;
     }
 
-    let Ok(canonical_path) = std::fs::canonicalize(path) else {
+    let Ok(canonical_path) = crate::filesystem::session_context::canonical_context_source(path)
+    else {
         return false;
     };
     has_agent_matrix_dir_name(&canonical_path) && path_parent_is_ac_root(&canonical_path)

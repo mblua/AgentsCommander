@@ -55,7 +55,7 @@ pub(crate) fn build_replica_context_with_activation(
     let config_path = cwd_path.join("config.json");
 
     // No config.json → no replica context, fall back to default behavior
-    if !config_path.exists() {
+    if !crate::filesystem::session_context::context_source_exists(&config_path) {
         return Ok(None);
     }
 
@@ -65,7 +65,7 @@ pub(crate) fn build_replica_context_with_activation(
             crate::config::replica_identity::WG_REPLICA_REQUIRED_CONTEXT,
         )?
     } else {
-        let config_content = std::fs::read_to_string(&config_path)
+        let config_content = crate::filesystem::session_context::read_context_source(&config_path)
             .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
         let config: serde_json::Value = serde_json::from_str(&config_content)
             .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?;
@@ -158,7 +158,8 @@ pub(crate) fn build_replica_context_from_config(
         });
     if let Some(role_abs) = auto_role_abs {
         let already_included = resolved_paths_include_path(&resolved_paths, &role_abs);
-        if !already_included && role_abs.exists() {
+        if !already_included && crate::filesystem::session_context::context_source_exists(&role_abs)
+        {
             resolved_paths.push((ROLE_MD_FILENAME.to_string(), role_abs));
         }
     }
@@ -203,9 +204,11 @@ pub(crate) fn build_replica_context_from_config(
 pub(crate) fn root_context_candidate(root: &str) -> bool {
     super::super::root_agent::is_root_agent_dir_name(root)
         || super::super::root_agent::is_root_agent_path(root)
-        || std::fs::canonicalize(root).ok().is_some_and(|path| {
-            super::super::root_agent::is_root_agent_dir_name(&display_path(&path))
-        })
+        || crate::filesystem::session_context::canonical_context_source(root)
+            .ok()
+            .is_some_and(|path| {
+                super::super::root_agent::is_root_agent_dir_name(&display_path(&path))
+            })
 }
 
 pub(crate) fn root_context_config_dir() -> Result<PathBuf, String> {
@@ -481,7 +484,8 @@ pub(crate) fn root_runtime_values(
     mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> HashMap<&'static str, String> {
     let root_path = Path::new(root);
-    let canonical = std::fs::canonicalize(root_path).unwrap_or_else(|_| root_path.to_path_buf());
+    let canonical = crate::filesystem::session_context::canonical_context_source(root_path)
+        .unwrap_or_else(|_| root_path.to_path_buf());
     let index = discover_skill_index(Some(root));
     HashMap::from([
         ("AGENT_ROOT", display_path(&canonical)),
@@ -511,7 +515,7 @@ pub(crate) fn read_rendered_root_template(
     mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
     auto_self_clear: bool,
 ) -> Result<String, String> {
-    let base = std::fs::read_to_string(path)
+    let base = crate::filesystem::session_context::read_context_source(path)
         .map_err(|e| format!("Failed to read context file {}: {}", path.display(), e))?;
     let selected = managed_template_local_override(path).unwrap_or(base);
     render_root_template_text(
@@ -529,10 +533,10 @@ pub(crate) fn write_root_context_cache(
     prefix: &str,
 ) -> Result<String, String> {
     let dir = config_dir.join(CONTEXT_CACHE_DIR_NAME);
-    std::fs::create_dir_all(&dir)
+    crate::filesystem::session_context::ensure_context_directory(&dir)
         .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
     let path = dir.join(format!("{}-{}.md", prefix, simple_hash(root)));
-    std::fs::write(&path, content)
+    crate::filesystem::session_context::write_context_cache(&path, content)
         .map_err(|e| format!("Failed to write combined context file: {}", e))?;
     Ok(path.to_string_lossy().to_string())
 }
@@ -557,14 +561,15 @@ pub(crate) fn build_root_agent_context_at(
 ) -> Result<String, String> {
     let cwd_path = Path::new(cwd);
     let config_path = cwd_path.join("config.json");
-    let config: Option<serde_json::Value> = match std::fs::read_to_string(&config_path) {
-        Ok(text) => Some(
-            serde_json::from_str(&text)
-                .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?,
-        ),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(format!("Failed to read {}: {}", config_path.display(), e)),
-    };
+    let config: Option<serde_json::Value> =
+        match crate::filesystem::session_context::read_context_source(&config_path) {
+            Ok(text) => Some(
+                serde_json::from_str(&text)
+                    .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?,
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("Failed to read {}: {}", config_path.display(), e)),
+        };
     let defaults = serde_json::json!(["../Context.root-agent.md", "Role.md"]);
     super::super::root_agent::ensure_default_root_agent_skills_at(cwd_path)?;
     let entries = config
@@ -600,8 +605,8 @@ pub(crate) fn build_root_agent_context_at(
         let path = cwd_path.join(raw);
         let label = path.file_name().and_then(|n| n.to_str()).unwrap_or(raw);
         let is_template = match (
-            std::fs::canonicalize(&path),
-            std::fs::canonicalize(&canonical_template),
+            crate::filesystem::session_context::canonical_context_source(&path),
+            crate::filesystem::session_context::canonical_context_source(&canonical_template),
         ) {
             (Ok(left), Ok(right)) => left == right,
             _ => path == canonical_template,
@@ -617,7 +622,7 @@ pub(crate) fn build_root_agent_context_at(
                 auto_self_clear,
             )?
         } else {
-            let base = std::fs::read_to_string(&path)
+            let base = crate::filesystem::session_context::read_context_source(&path)
                 .map_err(|e| format!("Failed to read context file {}: {}", path.display(), e))?;
             let selected = managed_template_local_override(&path).unwrap_or(base);
             if path.file_name() == Some(OsStr::new(ROLE_MD_FILENAME)) {
@@ -644,8 +649,8 @@ pub(crate) fn build_direct_matrix_context(
     let cwd_path = Path::new(cwd);
     let role_path = Path::new(cwd).join(ROLE_MD_FILENAME);
     let config_path = cwd_path.join("config.json");
-    let config = if config_path.exists() {
-        let config_content = std::fs::read_to_string(&config_path)
+    let config = if crate::filesystem::session_context::context_source_exists(&config_path) {
+        let config_content = crate::filesystem::session_context::read_context_source(&config_path)
             .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
         Some(
             serde_json::from_str::<serde_json::Value>(&config_content)
@@ -713,7 +718,9 @@ pub(crate) fn build_direct_matrix_context(
         ));
     }
 
-    if role_path.exists() && !resolved_paths_include_path(&resolved_paths, &role_path) {
+    if crate::filesystem::session_context::context_source_exists(&role_path)
+        && !resolved_paths_include_path(&resolved_paths, &role_path)
+    {
         resolved_paths.push((ROLE_MD_FILENAME.to_string(), role_path));
     }
 

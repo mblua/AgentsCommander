@@ -59,12 +59,13 @@ pub(crate) fn resolve_session_context_content_with_activation(
         return Ok(None);
     };
 
-    let mut content = std::fs::read_to_string(&context_path).map_err(|e| {
-        format!(
-            "Failed to read resolved session context {}: {}",
-            context_path, e
-        )
-    })?;
+    let mut content = crate::filesystem::session_context::read_context_source(&context_path)
+        .map_err(|e| {
+            format!(
+                "Failed to read resolved session context {}: {}",
+                context_path, e
+            )
+        })?;
 
     // #979: never append coordinator prose to Root, and never let a Root cwd reach
     // `read_or_create_context_template`. That call resolves its directory through
@@ -206,7 +207,7 @@ pub(crate) fn materialize_resolved_context_file(
 
     for filename in cleanup {
         let path = cwd_path.join(filename);
-        let meta = match std::fs::symlink_metadata(&path) {
+        let meta = match crate::filesystem::session_context::inspect_context_source(&path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => {
@@ -220,8 +221,10 @@ pub(crate) fn materialize_resolved_context_file(
         if is_link_or_reparse(&meta) {
             // Remove the link/junction ENTRY itself (never its target): try file
             // (file symlink) first, then dir (dir symlink / junction).
-            std::fs::remove_file(&path)
-                .or_else(|_| std::fs::remove_dir(&path))
+            crate::filesystem::session_context::remove_context_entry(&path)
+                .or_else(|_| {
+                    crate::filesystem::session_context::remove_context_link_directory(&path)
+                })
                 .map_err(|e| {
                     format!(
                         "Failed to remove link at context path {}: {}",
@@ -237,7 +240,7 @@ pub(crate) fn materialize_resolved_context_file(
                 path.display()
             ));
         } else {
-            std::fs::remove_file(&path).map_err(|e| {
+            crate::filesystem::session_context::remove_context_entry(&path).map_err(|e| {
                 format!(
                     "Failed to remove stale context file {}: {}",
                     path.display(),
@@ -250,7 +253,7 @@ pub(crate) fn materialize_resolved_context_file(
     let target_path = cwd_path.join(target_filename);
     // Defensive: the target is always in `cleanup`, so a surviving link here is
     // unexpected; never write THROUGH one (belt-and-suspenders for direct callers).
-    if let Ok(meta) = std::fs::symlink_metadata(&target_path) {
+    if let Ok(meta) = crate::filesystem::session_context::inspect_context_source(&target_path) {
         if is_link_or_reparse(&meta) {
             return Err(format!(
                 "Refusing to write context through a link at {}",
@@ -258,7 +261,7 @@ pub(crate) fn materialize_resolved_context_file(
             ));
         }
     }
-    std::fs::write(&target_path, content)
+    crate::filesystem::session_context::write_context_cache(&target_path, content)
         .map_err(|e| format!("Failed to write {}: {}", target_path.display(), e))?;
 
     log::info!(
@@ -348,14 +351,14 @@ pub fn sweep_context_cache_at_startup() {
 /// unrelated file dropped in the dir is never deleted. A file whose mtime cannot be
 /// read (or is in the future) is KEPT (conservative). A missing dir is a no-op.
 pub fn sweep_context_cache_dir(context_dir: &Path, now: SystemTime, retention: Duration) -> usize {
-    let entries = match std::fs::read_dir(context_dir) {
+    let entries = match crate::filesystem::session_context::context_cache_entries(context_dir) {
         Ok(e) => e,
         Err(_) => return 0, // first run / missing dir
     };
     let mut removed = 0usize;
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_file() {
+        if !crate::filesystem::session_context::context_cache_entry_is_file(&path) {
             continue;
         }
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
@@ -371,7 +374,7 @@ pub fn sweep_context_cache_dir(context_dir: &Path, now: SystemTime, retention: D
             continue;
         }; // mtime in the future -> keep
         if age > retention {
-            match std::fs::remove_file(&path) {
+            match crate::filesystem::session_context::remove_context_entry(&path) {
                 Ok(()) => removed += 1,
                 Err(e) => {
                     log::warn!(
