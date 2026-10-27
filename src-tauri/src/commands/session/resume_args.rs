@@ -427,8 +427,8 @@ pub(crate) fn maybe_inject_muse_resume(
 }
 
 /// Single-pass expansion of `%NAME%` (cmd) and `$env:NAME` (PowerShell)
-/// environment-variable references against `std::env::var`. Unknown names
-/// are preserved literally, so a downstream `is_dir()` check returns
+/// environment-variable references against `config::environment::resume_expansion_value`.
+/// Unknown names are preserved literally, so a downstream `is_dir()` check returns
 /// false rather than silently mis-resolving. Names must be ASCII
 /// alphanumeric or `_`; anything else terminates the name.
 ///
@@ -451,7 +451,7 @@ pub(crate) fn expand_env_var_refs(input: &str) -> String {
                 let valid =
                     !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
                 if valid {
-                    if let Ok(v) = std::env::var(name) {
+                    if let Ok(v) = crate::config::environment::resume_expansion_value(name) {
                         buf.push_str(&v);
                     } else {
                         buf.push('%');
@@ -496,7 +496,7 @@ pub(crate) fn expand_env_var_refs(input: &str) -> String {
             }
             if name_end > name_start {
                 let name = &buf[name_start..name_end];
-                if let Ok(v) = std::env::var(name) {
+                if let Ok(v) = crate::config::environment::resume_expansion_value(name) {
                     out.push_str(&v);
                 } else {
                     out.push_str(&buf[i..name_end]);
