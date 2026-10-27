@@ -1093,6 +1093,19 @@ jobs:
             }
           done
 
+      - name: "cargo test (issue_3278_ snapshot durability)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          FILTER=issue_3278_
+          EXPECTED=6
+          cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-3278.log
+          grep -qE '^test .*issue_3278_parent_directory_sync_success [.][.][.] ok$' test-3278.log
+          grep -qE '^test .*issue_3278_parent_directory_sync_missing [.][.][.] ok$' test-3278.log
+          grep -qE "^test result: ok[.] $EXPECTED passed; 0 failed; 0 ignored;" test-3278.log
+
       # IS #1577: the ONLY CI execution of the primary-case test. It copies a
       # binary into a mode-0555 directory and depends on that mode actually
       # being enforced, so it must run on a native Linux filesystem.
@@ -2377,6 +2390,19 @@ jobs:
               exit 1
             }
           done
+
+      - name: "cargo test (issue_3278_ snapshot durability)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          FILTER=issue_3278_
+          EXPECTED=6
+          cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-3278.log
+          grep -qE '^test .*issue_3278_parent_directory_sync_success [.][.][.] ok$' test-3278.log
+          grep -qE '^test .*issue_3278_parent_directory_sync_missing [.][.][.] ok$' test-3278.log
+          grep -qE "^test result: ok[.] $EXPECTED passed; 0 failed; 0 ignored;" test-3278.log
 
       # IS #1850: focused debug execution of every issue_1850 test. Guards
       # mirror the #1577 step: pipefail catches a failing test, the identifier
