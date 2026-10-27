@@ -87,6 +87,7 @@ pub(crate) fn session_test_app_with_store(
     let target_gate_state =
         crate::api::message_store::PtyInputTargetGateState::for_root(store_root);
     let mut builder = tauri::test::mock_builder()
+        .manage(crate::app_state::AppOwners::new())
         .manage(crate::commands::session::selection_executor::state::<
             tauri::test::MockRuntime,
         >())
