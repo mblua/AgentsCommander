@@ -19,6 +19,7 @@ pub(crate) mod profile_targets;
 pub(crate) mod projects;
 pub(crate) mod repositories;
 pub(crate) mod room_diagnostics;
+pub(crate) mod seed_manifest;
 pub(crate) mod session_context;
 pub(crate) mod spec_board;
 pub(crate) mod tasks;

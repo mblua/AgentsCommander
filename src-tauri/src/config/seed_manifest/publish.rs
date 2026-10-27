@@ -5,7 +5,9 @@ use super::{
     OpenedRegularFile, SeedManifestError, MAX_LOCK_POLL, RAW_COMPARE_BUFFER_BYTES,
     SEED_MANIFEST_TEMP_PREFIX, SEED_MANIFEST_TEMP_SUFFIX,
 };
-use std::fs::File;
+use crate::filesystem::seed_manifest::{
+    self as manifest_disk, ManifestFile as File, ManifestLockError,
+};
 use std::io;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -61,10 +63,10 @@ pub(crate) fn acquire_kernel_lock(
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(()),
-            Err(std::fs::TryLockError::WouldBlock) => {
+            Err(ManifestLockError::WouldBlock) => {
                 saw_contention = true;
             }
-            Err(std::fs::TryLockError::Error(source)) => {
+            Err(ManifestLockError::Error(source)) => {
                 return Err(SeedManifestError::LockIo {
                     path: path.to_path_buf(),
                     saw_contention,
@@ -134,7 +136,7 @@ pub(crate) fn remove_if_same_identity(
                 .to_string(),
         });
     }
-    std::fs::remove_file(path).map_err(|source| SeedManifestError::TempFile {
+    manifest_disk::remove_manifest_temp(path).map_err(|source| SeedManifestError::TempFile {
         operation: "remove unchanged temp",
         path: path.to_path_buf(),
         source,
@@ -165,7 +167,7 @@ pub(crate) fn remove_prior_unix_temp_if_safe(path: &Path) -> Result<(), SeedMani
             reason: "prior temp path identity changed during cleanup proof".to_string(),
         });
     }
-    std::fs::remove_file(path).map_err(|source| SeedManifestError::TempFile {
+    manifest_disk::remove_manifest_temp(path).map_err(|source| SeedManifestError::TempFile {
         operation: "remove proved stale Unix temp",
         path: path.to_path_buf(),
         source,
@@ -201,7 +203,7 @@ pub(crate) fn verify_temp_path(
     Ok(())
 }
 
-pub(crate) fn stream_matches(file: &mut File, expected: &[u8]) -> io::Result<bool> {
+pub(crate) fn stream_matches(file: &mut (impl Read + Seek), expected: &[u8]) -> io::Result<bool> {
     file.seek(SeekFrom::Start(0))?;
     let mut offset = 0_usize;
     let mut buffer = [0_u8; RAW_COMPARE_BUFFER_BYTES];
@@ -226,10 +228,12 @@ pub(crate) fn atomic_publish_manifest(
     canonical: &Path,
     _had_canonical: bool,
 ) -> Result<(), SeedManifestError> {
-    std::fs::rename(temp, canonical).map_err(|source| SeedManifestError::AtomicReplace {
-        operation: "rename",
-        temp: temp.to_path_buf(),
-        canonical: canonical.to_path_buf(),
-        source,
+    manifest_disk::rename_manifest_temp(temp, canonical).map_err(|source| {
+        SeedManifestError::AtomicReplace {
+            operation: "rename",
+            temp: temp.to_path_buf(),
+            canonical: canonical.to_path_buf(),
+            source,
+        }
     })
 }
