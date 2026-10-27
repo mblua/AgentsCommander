@@ -628,7 +628,7 @@ async fn self_restart_driver_restart_failure_skips_inject_and_cleans_pending() {
         }
     };
 
-    MailboxPoller::drive_self_switch_after_sustained_idle(
+    let outcome = MailboxPoller::drive_self_switch_after_sustained_idle(
         original_id,
         temp.path().to_path_buf(),
         "pi".into(),
@@ -647,6 +647,10 @@ async fn self_restart_driver_restart_failure_skips_inject_and_cleans_pending() {
     )
     .await;
 
+    assert!(matches!(outcome,
+        crate::phone::mailbox::self_handoff::failure::SelfHandoffOutcome::Failed(ref failure)
+        if failure.reason == "destroyed but not recreated" && !failure.continuation
+    ));
     assert_eq!(*inject_calls.lock().unwrap(), 0);
     assert!(
         temp.path().join("SELF-HANDOFF.md").is_file(),
