@@ -51,6 +51,18 @@ const LOCK_TIMEOUT_5S: Duration = Duration::from_secs(5);
 /// Compatibility acquisition argument; age no longer controls ownership.
 const LOCK_STALE_AFTER_5M: Duration = Duration::from_secs(300);
 
+/// Read the title without acquiring a mutation lock or recovering task state.
+pub(crate) fn read_title(root: &Path) -> Result<Option<String>, String> {
+    let task_path = root.join("TASK.md");
+    let content = match crate::filesystem::tasks::read_task_title_text(&task_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("read TASK.md: {}", e)),
+    };
+    let parsed = parse_task(&content);
+    Ok(title_value_of(&parsed))
+}
+
 // ── Public surface ──────────────────────────────────────────────────────────
 
 /// Edit operation requested by a verb.

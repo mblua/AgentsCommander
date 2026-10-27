@@ -222,14 +222,15 @@ pub(crate) struct ContainerPathContext {
 }
 
 pub(crate) fn container_path_context_for_cwd(cwd: &str) -> Result<ContainerPathContext, String> {
-    let canonical_host_root = std::fs::canonicalize(cwd)
-        .map(|path| crate::path_utils::path_to_string_without_windows_verbatim_prefix(&path))
-        .map_err(|err| {
-            format!(
-                "failed to canonicalize container mount source '{}': {}",
-                cwd, err
-            )
-        })?;
+    let canonical_host_root =
+        crate::filesystem::projects::canonical_project_path(std::path::Path::new(cwd))
+            .map(|path| crate::path_utils::path_to_string_without_windows_verbatim_prefix(&path))
+            .map_err(|err| {
+                format!(
+                    "failed to canonicalize container mount source '{}': {}",
+                    cwd, err
+                )
+            })?;
     if let Some(reason) = crate::pty::container_paths::container_mount_source_rejection(
         std::path::Path::new(&canonical_host_root),
     ) {
