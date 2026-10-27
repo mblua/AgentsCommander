@@ -31,7 +31,7 @@ async fn shared_pty_engine_worker_drains_promptly_on_shutdown_without_writing() 
         let state = state.clone();
         let injection_id = injection_id.clone();
         tokio::spawn(async move {
-            MailboxPoller::new()
+            MailboxPoller::default()
                 .dispatch_pty_input_operation(
                     &app,
                     &state,

@@ -150,6 +150,7 @@ pub fn start_dispatcher(
     app: tauri::AppHandle,
     shutdown: CancellationToken,
     config: DispatcherConfig,
+    messages: Arc<crate::config::injected_messages::MessageWarnings>,
 ) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(config.poll_interval);
@@ -180,8 +181,9 @@ pub fn start_dispatcher(
                             &config,
                             |msg| {
                                     let app = app.clone();
+                                    let messages = Arc::clone(&messages);
                                     async move {
-                                        crate::phone::mailbox::MailboxPoller::new()
+                                        crate::phone::mailbox::MailboxPoller::new(messages)
                                             .deliver_wake_with_origin(
                                                 &app,
                                                 &msg,
@@ -232,6 +234,7 @@ pub fn start_dispatcher(
                                         })
                                     {
                                         let worker_app = app.clone();
+                                        let worker_messages = Arc::clone(&messages);
                                         let worker_state = state.clone();
                                         let worker_client_store = Arc::clone(&client_store);
                                         let injection_id = candidate.injection_id.clone();
@@ -241,7 +244,9 @@ pub fn start_dispatcher(
                                             &shutdown,
                                             candidate,
                                             async move {
-                                                crate::phone::mailbox::MailboxPoller::new()
+                                                crate::phone::mailbox::MailboxPoller::new(
+                                                    worker_messages,
+                                                )
                                                     .dispatch_pty_input_operation(
                                                         &worker_app,
                                                         &worker_state,

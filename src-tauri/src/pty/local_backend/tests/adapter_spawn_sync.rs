@@ -86,7 +86,7 @@ fn invalid_configured_shell_token_never_reaches_pty() {
         "no PTY map entry may exist for a rejected input"
     );
     assert!(
-        crate::pty::spawn_diagnostics::record_for(id).is_none(),
+        crate::pty::spawn_diagnostics::record_for(id, backend.spawn.as_ref()).is_none(),
         "no launch provenance may be recorded for a rejected input"
     );
     assert!(
@@ -116,7 +116,7 @@ fn invalid_cmd_payload_token_never_reaches_pty() {
     );
     assert_eq!(backend.pre_pty_attempts.load(Ordering::SeqCst), 0);
     assert!(backend.ptys.lock().unwrap().is_empty());
-    assert!(crate::pty::spawn_diagnostics::record_for(id).is_none());
+    assert!(crate::pty::spawn_diagnostics::record_for(id, backend.spawn.as_ref()).is_none());
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn invalid_explicit_batch_argument_never_reaches_pty() {
     );
     assert_eq!(backend.pre_pty_attempts.load(Ordering::SeqCst), 0);
     assert!(backend.ptys.lock().unwrap().is_empty());
-    assert!(crate::pty::spawn_diagnostics::record_for(id).is_none());
+    assert!(crate::pty::spawn_diagnostics::record_for(id, backend.spawn.as_ref()).is_none());
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn blank_configured_program_never_reaches_pty() {
     );
     assert_eq!(backend.pre_pty_attempts.load(Ordering::SeqCst), 0);
     assert!(backend.ptys.lock().unwrap().is_empty());
-    assert!(crate::pty::spawn_diagnostics::record_for(id).is_none());
+    assert!(crate::pty::spawn_diagnostics::record_for(id, backend.spawn.as_ref()).is_none());
 }
 
 #[test]
@@ -176,7 +176,7 @@ fn non_empty_custom_shell_args_never_reaches_pty() {
     );
     assert_eq!(backend.pre_pty_attempts.load(Ordering::SeqCst), 0);
     assert!(backend.ptys.lock().unwrap().is_empty());
-    assert!(crate::pty::spawn_diagnostics::record_for(id).is_none());
+    assert!(crate::pty::spawn_diagnostics::record_for(id, backend.spawn.as_ref()).is_none());
 }
 
 #[test]
@@ -206,7 +206,7 @@ fn detached_launcher_never_reaches_pty() {
             "no PTY map entry may exist for a rejected launcher"
         );
         assert!(
-            crate::pty::spawn_diagnostics::record_for(id).is_none(),
+            crate::pty::spawn_diagnostics::record_for(id, backend.spawn.as_ref()).is_none(),
             "no launch provenance may be recorded for a rejected launcher"
         );
         assert!(
@@ -227,7 +227,7 @@ fn accepted_spawn_increments_observer_and_registers_session() {
     backend.spawn_sync(spec).expect("valid spawn must succeed");
     assert_eq!(backend.pre_pty_attempts.load(Ordering::SeqCst), 1);
     assert!(backend.ptys.lock().unwrap().contains_key(&id));
-    assert!(crate::pty::spawn_diagnostics::record_for(id).is_some());
+    assert!(crate::pty::spawn_diagnostics::record_for(id, backend.spawn.as_ref()).is_some());
     assert!(backend.fanout.get_pty_size(id).is_some());
 
     backend.kill(id).expect("kill spawned child");

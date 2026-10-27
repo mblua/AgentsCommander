@@ -362,6 +362,7 @@ impl MailboxPoller {
         if !source_executor.bind(&continuation) {
             return Ok(PtySpawnStep::RetainedUnowned);
         }
+        let validation_messages = Arc::clone(&self.messages);
         let validation_app = app.clone();
         let validation_claim = claimed.clone();
         let validation_initial = initial.clone();
@@ -370,6 +371,7 @@ impl MailboxPoller {
         let validation_api = api_client_store.cloned();
         let validation_request = request.clone();
         let continuation = continuation.with_source_validation(Arc::new(move || {
+            let messages = Arc::clone(&validation_messages);
             let app = validation_app.clone();
             let claimed = validation_claim.clone();
             let initial = validation_initial.clone();
@@ -379,7 +381,7 @@ impl MailboxPoller {
             let request = validation_request.clone();
             Box::pin(async move {
                 use crate::session::selection::OwnedSourceStop as Stop;
-                let delivery = MailboxPoller::delivery_only();
+                let delivery = MailboxPoller::delivery_only(messages);
                 let store = app
                     .try_state::<crate::api::message_store::MessageStoreState>()
                     .and_then(|state| state.store.as_ref().ok().cloned())

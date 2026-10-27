@@ -328,7 +328,10 @@ pub(super) const LOCAL_WAKE_TO: &str = "wg-1-dev-team/dev-rust";
 pub(super) const WAKE_BODY: &str = "wake body";
 
 pub(super) fn make_mailbox_app(projects_root: &Path) -> tauri::App<tauri::test::MockRuntime> {
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let owners = crate::app_state::AppOwners::new();
+    let session_mgr = Arc::new(tokio::sync::RwLock::new(
+        SessionManager::with_activity_coalescer(owners.activity.clone()),
+    ));
 
     let settings = AppSettings {
         project_paths: vec![projects_root.to_string_lossy().to_string()],
@@ -347,6 +350,7 @@ pub(super) fn make_mailbox_app(projects_root: &Path) -> tauri::App<tauri::test::
     let (pty_mgr, _) = make_test_pty_manager();
 
     tauri::test::mock_builder()
+        .manage(owners)
         .manage(crate::commands::session::selection_executor::state::<
             tauri::test::MockRuntime,
         >())
@@ -648,7 +652,10 @@ pub(super) async fn prepare_retained_exited_respawn(
     let app = fixture.app.handle();
     let tracker = crate::pty::manager::ResponseCloseState::default();
     let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-    *managers.write().await = SessionManager::with_response_close(tracker.clone());
+    *managers.write().await = SessionManager::with_response_close(
+        tracker.clone(),
+        app.state::<crate::app_state::AppOwners>().activity.clone(),
+    );
     app.state::<Arc<Mutex<PtyManager>>>()
         .lock()
         .unwrap()

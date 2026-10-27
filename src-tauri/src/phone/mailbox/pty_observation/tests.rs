@@ -150,7 +150,7 @@ async fn host_enqueue_rejects_app_outbox_without_getters() {
         },
     };
     let observations = Observations::default();
-    let result = MailboxPoller::delivery_only()
+    let result = MailboxPoller::delivery_only_for_tests()
         .validate_and_enqueue_host_pty_input(
             &observations,
             &temp.path().join(format!("{id}.json")),
@@ -171,7 +171,7 @@ async fn bad_claimed_authority_uuid_observes_no_getters() {
     let mut claimed = claim(&store);
     claimed.authority_session_id = "invalid".into();
     let observations = Observations::default();
-    assert!(MailboxPoller::delivery_only()
+    assert!(MailboxPoller::delivery_only_for_tests()
         .validate_claimed_host_authority(&observations, &claimed)
         .await
         .is_none());
@@ -185,7 +185,7 @@ async fn expired_target_observes_no_getters() {
     let mut claimed = claim(&store);
     claimed.expires_at = canonical_pty_timestamp(chrono::Utc::now() - chrono::Duration::seconds(1));
     let observations = Observations::default();
-    assert!(MailboxPoller::delivery_only()
+    assert!(MailboxPoller::delivery_only_for_tests()
         .validate_selected_pty_target(
             &observations,
             &claimed,
@@ -207,7 +207,7 @@ async fn target_observes_restore_then_purge_then_sessions() {
         sessions: Some(Arc::new(tokio::sync::RwLock::new(SessionManager::new()))),
         ..Default::default()
     };
-    assert!(MailboxPoller::delivery_only()
+    assert!(MailboxPoller::delivery_only_for_tests()
         .validate_selected_pty_target(
             &observations,
             &claimed,
@@ -231,7 +231,7 @@ async fn blocked_restore_skips_later_getters() {
         ))),
         ..Default::default()
     };
-    assert!(MailboxPoller::delivery_only()
+    assert!(MailboxPoller::delivery_only_for_tests()
         .validate_selected_pty_target(
             &observations,
             &claimed,
@@ -260,7 +260,7 @@ async fn api_missing_store_or_credentials_observes_no_getters() {
         temp.path().join("clients"),
     ));
     let observations = Observations::default();
-    let poller = MailboxPoller::delivery_only();
+    let poller = MailboxPoller::delivery_only_for_tests();
     assert!(poller
         .validate_claimed_api_authority(&observations, &claimed, None)
         .await
@@ -294,7 +294,7 @@ async fn readiness_expiry_and_failed_heartbeat_observe_no_getters() {
         past,
     );
     claimed.expires_at = canonical_pty_timestamp(past);
-    let poller = MailboxPoller::delivery_only();
+    let poller = MailboxPoller::delivery_only_for_tests();
     assert_eq!(
         poller
             .wait_for_pty_input_ready(
@@ -348,7 +348,7 @@ async fn readiness_restore_blocks_later_getters_and_absence_reaches_authority() 
         claimed.lease_owner.clone(),
         crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at).unwrap(),
     );
-    let poller = MailboxPoller::delivery_only();
+    let poller = MailboxPoller::delivery_only_for_tests();
     for blocked in [true, false] {
         let observations = Observations {
             readiness_flow: true,
