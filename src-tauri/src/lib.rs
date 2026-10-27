@@ -21,6 +21,7 @@ pub mod resource_monitor;
 pub mod screenshot;
 pub mod session;
 pub mod shutdown;
+pub(crate) mod spec_board;
 pub mod telegram;
 pub mod test_support;
 pub mod testability;

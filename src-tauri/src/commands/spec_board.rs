@@ -17,6 +17,9 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 use crate::config::settings::{AppSettings, SettingsState};
+use crate::spec_board::internal_dirs;
+use crate::spec_board::types::SnapshotFile;
+pub use crate::spec_board::types::{SpecBoardFileKind, SpecBoardSnapshot, SpecBoardSnapshotSource};
 use crate::SpecBoardState;
 
 mod paths;
@@ -24,10 +27,7 @@ mod snapshots;
 
 #[cfg(test)]
 use paths::path_compare_key;
-use paths::{
-    internal_dirs, resolve_repo_root, validate_existing_user_path,
-    validate_new_or_existing_user_path,
-};
+use paths::{resolve_repo_root, validate_existing_user_path, validate_new_or_existing_user_path};
 #[cfg(test)]
 use snapshots::write_snapshot_atomic;
 use snapshots::{create_snapshot_for_doc, list_snapshots_from_dir, read_snapshot_files};
@@ -56,13 +56,6 @@ pub struct SpecBoardDocument {
     pub updated_at_ms: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum SpecBoardFileKind {
-    Mermaid,
-    Markdown,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpecBoardConflict {
@@ -70,29 +63,6 @@ pub struct SpecBoardConflict {
     pub pending_external_content: String,
     pub pending_external_diagram_source: String,
     pub detected_at_ms: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpecBoardSnapshot {
-    pub id: String,
-    pub label: String,
-    pub created_at_ms: i64,
-    pub source: SpecBoardSnapshotSource,
-    pub content: String,
-    pub diagram_source: String,
-    pub hash: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum SpecBoardSnapshotSource {
-    Initial,
-    Open,
-    Edit,
-    Save,
-    External,
-    Checkout,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,21 +82,6 @@ pub struct SpecBoardChangedEvent {
 pub struct SpecBoardFileMissingEvent {
     pub doc_id: String,
     pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SnapshotFile {
-    id: String,
-    label: String,
-    created_at_ms: i64,
-    sequence: u64,
-    source: SpecBoardSnapshotSource,
-    content: String,
-    diagram_source: String,
-    file_kind: SpecBoardFileKind,
-    path: Option<String>,
-    hash: String,
 }
 
 struct DocumentState {
