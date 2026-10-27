@@ -18,6 +18,7 @@ pub(crate) mod repositories;
 pub(crate) mod room_diagnostics;
 pub(crate) mod spec_board;
 pub(crate) mod tasks;
+pub(crate) mod terminal_snapshots;
 pub(crate) mod transcripts;
 
 /// Read the capture catalog without changing the platform's file semantics.
