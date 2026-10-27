@@ -564,7 +564,8 @@ impl MailboxPoller {
         notice: &InternalSystemNotice,
         guard: InternalNoticeGuard,
     ) -> Result<(), String> {
-        let payload = format_wake_content(WakeContent::InternalSystem(notice));
+        let payload =
+            format_wake_content(WakeContent::InternalSystem(notice, self.messages.as_ref()));
 
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {

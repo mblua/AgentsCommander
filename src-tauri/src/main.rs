@@ -97,7 +97,8 @@ fn main() {
                             }
                         }
 
-                        let code = agentscommander_lib::cli::handle_cli(cmd);
+                        let code =
+                            agentscommander_lib::cli::handle_cli(cmd, owners.messages.as_ref());
                         std::process::exit(code);
                     }
                     None => {

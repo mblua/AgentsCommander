@@ -36,7 +36,7 @@ async fn handle_self_switch_unknown_coding_agent_lists_configured_ids() {
         None,
         "proj-a:wg-1-dev-team/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_handoff_switch(&app, &path, &msg, false)
         .await

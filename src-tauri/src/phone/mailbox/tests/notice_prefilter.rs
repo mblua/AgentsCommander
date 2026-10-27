@@ -370,6 +370,7 @@ async fn issue_2113_case_differing_project_segment_destroys_exited_orchestrator(
 /// substitution, so this half cannot depend on how the field was produced.
 #[test]
 fn issue_2129_branch_stale_line_renders_a_qualified_base() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let resolved = remote_activity_notice(
         RemoteNoticeKind::BranchStale,
         "main on GitHub",
@@ -377,7 +378,7 @@ fn issue_2129_branch_stale_line_renders_a_qualified_base() {
         None,
     )
     .expect("a branch-stale notice")
-    .line();
+    .line(&warnings);
     assert_eq!(
         resolved,
         "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 \
@@ -392,7 +393,7 @@ fn issue_2129_branch_stale_line_renders_a_qualified_base() {
         None,
     )
     .expect("a branch-stale notice")
-    .line();
+    .line(&warnings);
     assert_eq!(
         sentinel,
         "[AgentsCommander] mblua/AgentsCommander feature/2083-2064-remote-alerts is now 4 \
@@ -413,7 +414,7 @@ fn issue_2129_branch_stale_line_renders_a_qualified_base() {
         None,
     )
     .expect("a branch-stale notice")
-    .line();
+    .line(&warnings);
     assert_eq!(
         counterpart,
         "[AgentsCommander] mblua/AgentsCommander main is now 4 commits behind its counterpart \
@@ -689,7 +690,9 @@ async fn a_telegram_wake_reports_the_refusal() {
     let mut msg = root_outbox_message("wake".to_string(), None);
     msg.sender_agent = Some(wake_agents()[0].id.clone());
 
-    let result = MailboxPoller::new().resolve_agent_command(&app, &msg).await;
+    let result = MailboxPoller::default()
+        .resolve_agent_command(&app, &msg)
+        .await;
 
     assert_eq!(
         result.err(),
@@ -717,7 +720,7 @@ async fn the_daemon_response_file_carries_the_refusal() {
     app.state::<SettingsState>().write().await.agents_layer = b3_unreadable(&sidecar);
     let request = write_session_request_for_test(&fixture.cwd, "codex");
 
-    MailboxPoller::new().poll_session_requests(&app).await;
+    MailboxPoller::default().poll_session_requests(&app).await;
 
     let result = read_session_request_result_json(&request.id);
     assert_eq!(result["status"], "rejected", "unexpected result: {result}");

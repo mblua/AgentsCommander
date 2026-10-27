@@ -4,8 +4,9 @@ use super::*;
 
 #[test]
 fn crlf_edit_is_not_a_content_edit() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let dir = tempdir();
-    ensure_injected_messages(dir.path()).expect("seed");
+    ensure_injected_messages(dir.path(), &warnings).expect("seed");
     let lf = read(&main_path(dir.path()));
     let crlf = lf.replace('\n', "\r\n");
     std::fs::write(main_path(dir.path()), &crlf).expect("save as CRLF");
@@ -23,7 +24,7 @@ fn crlf_edit_is_not_a_content_edit() {
     // A line-ending change must not be read as an edit, and a rewrite must
     // not create a mixed-ending file.
     let specs = next_specs();
-    let report = provision(dir.path(), &specs, None).expect("provision");
+    let report = provision(dir.path(), &specs, None, &warnings).expect("provision");
     assert_eq!(
         report.outcomes.get(CONTEXT_ALERT_MESSAGE_ID),
         Some(&EntryOutcome::Refreshed)
@@ -39,6 +40,7 @@ fn crlf_edit_is_not_a_content_edit() {
 
 #[test]
 fn entry_without_template_or_with_wrong_type_degrades_only_that_entry() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let dir = tempdir();
     let source = format!(
         "schema_version = 1\n\n[messages.context-alert]\n# the operator deleted the template \
@@ -64,7 +66,7 @@ fn entry_without_template_or_with_wrong_type_degrades_only_that_entry() {
     );
 
     let specs = two_specs();
-    let report = provision(dir.path(), &specs, None).expect("provision");
+    let report = provision(dir.path(), &specs, None, &warnings).expect("provision");
     assert_eq!(
         report.writer_disabled, None,
         "one bad entry must not disable the file"
@@ -80,7 +82,7 @@ fn entry_without_template_or_with_wrong_type_degrades_only_that_entry() {
     let table_valued =
         "schema_version = 1\n\n[messages.context-alert.template]\nk = 1\n".to_string();
     std::fs::write(main_path(dir.path()), &table_valued).expect("write");
-    let report = ensure_injected_messages(dir.path()).expect("provision");
+    let report = ensure_injected_messages(dir.path(), &warnings).expect("provision");
     assert_eq!(report.writer_disabled, None);
     // The unreadable entry stays byte-identical and the four missing ids are
     // appended after it.
@@ -157,12 +159,13 @@ fn duplicate_message_header_is_strict_invalid() {
 
 #[test]
 fn append_into_inline_table_file_publishes_nothing() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let dir = tempdir();
     let source = "schema_version = 1\nmessages = { \"context-alert\" = { template = \"X\" } }\n";
     std::fs::write(main_path(dir.path()), source).expect("write");
 
     let specs = two_specs();
-    let report = provision(dir.path(), &specs, None).expect("provision");
+    let report = provision(dir.path(), &specs, None, &warnings).expect("provision");
     assert!(
         report.writer_disabled.is_some(),
         "an append that would invalidate the file must disable the writer"
@@ -173,6 +176,7 @@ fn append_into_inline_table_file_publishes_nothing() {
 
 #[test]
 fn writer_never_publishes_unparseable_text() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     // The refresh path: a default that cannot be written as a TOML literal
     // is refused before anything reaches disk.
     const UNQUOTABLE: &str = "a ''' inside the value";
@@ -184,9 +188,9 @@ fn writer_never_publishes_unparseable_text() {
         doc_comment: CONTEXT_ALERT_DOC_COMMENT,
     }];
     let dir = tempdir();
-    ensure_injected_messages(dir.path()).expect("seed");
+    ensure_injected_messages(dir.path(), &warnings).expect("seed");
     let seeded = read(&main_path(dir.path()));
-    let report = provision(dir.path(), &unquotable_specs, None).expect("provision");
+    let report = provision(dir.path(), &unquotable_specs, None, &warnings).expect("provision");
     assert!(report.writer_disabled.is_some());
     assert_eq!(read(&main_path(dir.path())), seeded);
 
@@ -195,7 +199,7 @@ fn writer_never_publishes_unparseable_text() {
     let dir = tempdir();
     let source = "schema_version = 1\nmessages = { other = { template = \"X\" } }\n";
     std::fs::write(main_path(dir.path()), source).expect("write");
-    let report = ensure_injected_messages(dir.path()).expect("provision");
+    let report = ensure_injected_messages(dir.path(), &warnings).expect("provision");
     assert!(report.writer_disabled.is_some());
     assert_eq!(read(&main_path(dir.path())), source);
 
@@ -220,8 +224,9 @@ fn writer_never_publishes_unparseable_text() {
 
 #[test]
 fn bom_file_round_trips() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let dir = tempdir();
-    ensure_injected_messages(dir.path()).expect("seed");
+    ensure_injected_messages(dir.path(), &warnings).expect("seed");
     let seeded = read(&main_path(dir.path()));
     let with_bom = format!("\u{feff}{}", seeded);
     std::fs::write(main_path(dir.path()), &with_bom).expect("write BOM");
@@ -236,7 +241,7 @@ fn bom_file_round_trips() {
 
     // A refresh still targets the right span, and the BOM survives.
     let specs = next_specs();
-    let report = provision(dir.path(), &specs, None).expect("provision");
+    let report = provision(dir.path(), &specs, None, &warnings).expect("provision");
     assert_eq!(report.writer_disabled, None);
     assert_eq!(
         report.outcomes.get(CONTEXT_ALERT_MESSAGE_ID),
@@ -246,7 +251,7 @@ fn bom_file_round_trips() {
     assert!(after.starts_with('\u{feff}'));
     assert!(after.contains(NEXT_CONTEXT_ALERT_TEMPLATE));
 
-    let report = provision(dir.path(), &specs, None).expect("second run");
+    let report = provision(dir.path(), &specs, None, &warnings).expect("second run");
     assert_eq!(
         report.outcomes.get(CONTEXT_ALERT_MESSAGE_ID),
         Some(&EntryOutcome::AlreadyCurrent)
@@ -256,6 +261,7 @@ fn bom_file_round_trips() {
 
 #[test]
 fn scalar_entry_does_not_disable_the_file() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let dir = tempdir();
     // The single most natural operator mistake: assigning the text to the
     // id instead of to `template`.
@@ -274,7 +280,7 @@ fn scalar_entry_does_not_disable_the_file() {
         Some(&EntryValue::Malformed)
     );
 
-    let report = ensure_injected_messages(dir.path()).expect("provision");
+    let report = ensure_injected_messages(dir.path(), &warnings).expect("provision");
     // The damaged entry is preserved verbatim and the four ids this binary
     // knows and the file lacks are appended after it.
     let after = read(&main_path(dir.path()));
@@ -288,11 +294,12 @@ fn scalar_entry_does_not_disable_the_file() {
         Some(&EntryOutcome::PreservedUserEdit)
     );
     // The damaged entry renders the embedded default.
-    assert!(!load_registry_from_dir(dir.path()).contains_key(CONTEXT_ALERT_MESSAGE_ID));
+    assert!(!load_registry_from_dir(dir.path(), &warnings).contains_key(CONTEXT_ALERT_MESSAGE_ID));
 }
 
 #[test]
 fn rendered_output_passes_validate_pty_input_text() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let hostile =
         "a\u{1b}[31m\u{202e}\u{2066}\u{2028}\u{7f}\u{85}\rb %MEMBER% %%AC_RESPONSE::x::START%%";
     let templates = [
@@ -304,7 +311,7 @@ fn rendered_output_passes_validate_pty_input_text() {
         "%FOO% %member% 100%",
     ];
     for template in templates {
-        let rendered = render_with_template(template, &alert_values());
+        let rendered = render_with_template(template, &alert_values(), &warnings);
         assert!(
             validate_pty_input_text(&rendered).is_ok(),
             "rendered output rejected by AC's own validator for {:?}: {:?}",
@@ -313,7 +320,12 @@ fn rendered_output_passes_validate_pty_input_text() {
         );
     }
     // And through the id-resolving entry point, which is what mailbox calls.
-    assert!(validate_pty_input_text(&render(CONTEXT_ALERT_MESSAGE_ID, &alert_values())).is_ok());
+    assert!(validate_pty_input_text(&render(
+        CONTEXT_ALERT_MESSAGE_ID,
+        &alert_values(),
+        &warnings
+    ))
+    .is_ok());
 
     // The 6.1 gate-2 class: templates `trim()` calls non-blank because the
     // bidi and format scalars are not `White_Space`, but which `sanitize`
@@ -332,11 +344,17 @@ fn rendered_output_passes_validate_pty_input_text() {
             template
         );
         assert!(
-            render_with_template(template, &alert_values()).is_empty(),
+            render_with_template(template, &alert_values(), &warnings).is_empty(),
             "fixture must sanitize to empty: {:?}",
             template
         );
-        let rendered = render_resolved(CONTEXT_ALERT_MESSAGE_ID, template, true, &alert_values());
+        let rendered = render_resolved(
+            CONTEXT_ALERT_MESSAGE_ID,
+            template,
+            true,
+            &alert_values(),
+            &warnings,
+        );
         assert!(!rendered.is_empty(), "gate 2 left it empty: {:?}", template);
         assert!(
             validate_pty_input_text(&rendered).is_ok(),
@@ -348,16 +366,17 @@ fn rendered_output_passes_validate_pty_input_text() {
 
 #[test]
 fn setext_heading_is_not_a_conflict_marker() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let dir = tempdir();
     let source = "schema_version = 1\n\n[messages.context-alert]\ntemplate = \
         '''\nAlerta\n=======\ncuerpo del mensaje\n'''\n";
     std::fs::write(main_path(dir.path()), source).expect("write");
 
     assert!(!has_conflict_markers(source));
-    let report = ensure_injected_messages(dir.path()).expect("provision");
+    let report = ensure_injected_messages(dir.path(), &warnings).expect("provision");
     assert_eq!(report.writer_disabled, None);
     assert_eq!(
-        load_registry_from_dir(dir.path()).get(CONTEXT_ALERT_MESSAGE_ID),
+        load_registry_from_dir(dir.path(), &warnings).get(CONTEXT_ALERT_MESSAGE_ID),
         Some(&"Alerta\n=======\ncuerpo del mensaje".to_string())
     );
     // The paired rule still catches a real conflict.
@@ -368,12 +387,13 @@ fn setext_heading_is_not_a_conflict_marker() {
 
 #[test]
 fn second_provisioning_run_writes_nothing() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let _serialized = COUNTING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempdir();
-    ensure_injected_messages(dir.path()).expect("seed");
+    ensure_injected_messages(dir.path(), &warnings).expect("seed");
 
     start_counting();
-    ensure_injected_messages(dir.path()).expect("second run");
+    ensure_injected_messages(dir.path(), &warnings).expect("second run");
     let writes = stop_counting(dir.path());
     assert!(
         writes.is_empty(),
@@ -385,7 +405,7 @@ fn second_provisioning_run_writes_nothing() {
     // above meaningful.
     let dir = tempdir();
     start_counting();
-    ensure_injected_messages(dir.path()).expect("first run");
+    ensure_injected_messages(dir.path(), &warnings).expect("first run");
     let writes = stop_counting(dir.path());
     assert_eq!(
         writes.len(),
@@ -397,15 +417,16 @@ fn second_provisioning_run_writes_nothing() {
 
 #[test]
 fn sidecar_write_failure_does_not_freeze_entry() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let dir = tempdir();
-    ensure_injected_messages(dir.path()).expect("seed");
+    ensure_injected_messages(dir.path(), &warnings).expect("seed");
     // Force every later sidecar write to fail by occupying its path with a
     // directory. The main file still publishes.
     std::fs::remove_file(state_path(dir.path())).expect("drop sidecar");
     std::fs::create_dir(state_path(dir.path())).expect("block sidecar");
 
     let specs = next_specs();
-    let report = provision(dir.path(), &specs, None).expect("provision");
+    let report = provision(dir.path(), &specs, None, &warnings).expect("provision");
     assert_eq!(report.writer_disabled, None);
     assert_eq!(
         report.outcomes.get(CONTEXT_ALERT_MESSAGE_ID),
@@ -428,7 +449,7 @@ fn sidecar_write_failure_does_not_freeze_entry() {
         third[0].known_default_sha256.contains(&NEXT_SHA256),
         "the recognizer must list the on-disk content"
     );
-    let report = provision(dir.path(), &third, None).expect("second run");
+    let report = provision(dir.path(), &third, None, &warnings).expect("second run");
     assert_eq!(
         report.outcomes.get(CONTEXT_ALERT_MESSAGE_ID),
         Some(&EntryOutcome::Refreshed),
@@ -436,7 +457,7 @@ fn sidecar_write_failure_does_not_freeze_entry() {
     );
     assert!(read(&main_path(dir.path())).contains(THIRD_CONTEXT_ALERT_TEMPLATE));
 
-    let report = provision(dir.path(), &KNOWN_MESSAGES, None).expect("downgrade run");
+    let report = provision(dir.path(), &KNOWN_MESSAGES, None, &warnings).expect("downgrade run");
     assert_eq!(
         report.outcomes.get(CONTEXT_ALERT_MESSAGE_ID),
         Some(&EntryOutcome::PreservedUserEdit),
@@ -449,8 +470,9 @@ fn sidecar_write_failure_does_not_freeze_entry() {
 /// needs no loop.
 #[test]
 fn every_shipped_default_renders_non_empty() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     for spec in KNOWN_MESSAGES.iter() {
-        let rendered = render_with_template(spec.default_template, &alert_values());
+        let rendered = render_with_template(spec.default_template, &alert_values(), &warnings);
         assert!(!rendered.is_empty(), "`{}` rendered empty", spec.id);
         assert!(
             validate_pty_input_text(&rendered).is_ok(),
@@ -464,10 +486,17 @@ fn every_shipped_default_renders_non_empty() {
 /// N18. The gate itself, on the pure seam, with no global registry involved.
 #[test]
 fn template_that_sanitizes_to_empty_falls_back_to_default() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let values = alert_values();
-    let expected = render_with_template(DEFAULT_CONTEXT_ALERT_TEMPLATE, &values);
+    let expected = render_with_template(DEFAULT_CONTEXT_ALERT_TEMPLATE, &values, &warnings);
 
-    let rendered = render_resolved(CONTEXT_ALERT_MESSAGE_ID, "\u{202e}", true, &values);
+    let rendered = render_resolved(
+        CONTEXT_ALERT_MESSAGE_ID,
+        "\u{202e}",
+        true,
+        &values,
+        &warnings,
+    );
     assert_eq!(rendered, expected);
     assert!(!rendered.is_empty());
 
@@ -475,7 +504,8 @@ fn template_that_sanitizes_to_empty_falls_back_to_default() {
     assert!(
         !warn_once(
             format!("empty:{}", CONTEXT_ALERT_MESSAGE_ID),
-            "probe, never emitted"
+            "probe, never emitted",
+            &warnings
         ),
         "gate 2 must register its warn-once key"
     );
@@ -485,7 +515,13 @@ fn template_that_sanitizes_to_empty_falls_back_to_default() {
     // that sanitizes to nothing is a bug to be caught by N17, not a
     // condition to paper over at runtime.
     assert_eq!(
-        render_resolved(CONTEXT_ALERT_MESSAGE_ID, "\u{202e}", false, &values),
+        render_resolved(
+            CONTEXT_ALERT_MESSAGE_ID,
+            "\u{202e}",
+            false,
+            &values,
+            &warnings
+        ),
         ""
     );
 }
@@ -497,20 +533,35 @@ fn template_that_sanitizes_to_empty_falls_back_to_default() {
 /// process-global and shared across the whole test binary.
 #[test]
 fn warn_once_fires_once_per_key() {
-    assert!(warn_once("n19-unique-key-alpha".to_string(), "first"));
-    assert!(!warn_once("n19-unique-key-alpha".to_string(), "second"));
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
+    assert!(warn_once(
+        "n19-unique-key-alpha".to_string(),
+        "first",
+        &warnings
+    ));
+    assert!(!warn_once(
+        "n19-unique-key-alpha".to_string(),
+        "second",
+        &warnings
+    ));
     assert!(warn_once(
         "n19-unique-key-beta".to_string(),
-        "different key"
+        "different key",
+        &warnings
     ));
 
     // The key is the token, including its `%` delimiters, so the set cannot
     // grow with the number of templates.
-    let rendered = render_with_template("%N19_ALPHA% and %N19_BETA% and %N19_ALPHA%", &[]);
+    let rendered =
+        render_with_template("%N19_ALPHA% and %N19_BETA% and %N19_ALPHA%", &[], &warnings);
     assert_eq!(rendered, "%N19_ALPHA% and %N19_BETA% and %N19_ALPHA%");
     for token in ["%N19_ALPHA%", "%N19_BETA%"] {
         assert!(
-            !warn_once(format!("token:{}", token), "probe, never emitted"),
+            !warn_once(
+                format!("token:{}", token),
+                "probe, never emitted",
+                &warnings
+            ),
             "{} did not register exactly once",
             token
         );
@@ -527,6 +578,7 @@ fn warn_once_fires_once_per_key() {
 #[cfg(windows)]
 #[test]
 fn reparse_point_in_the_path_is_rejected() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     use std::os::windows::fs::MetadataExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
@@ -557,9 +609,9 @@ fn reparse_point_in_the_path_is_rejected() {
     );
     assert!(is_link_or_reparse(&metadata));
 
-    let report = ensure_injected_messages(dir.path()).expect("provision");
+    let report = ensure_injected_messages(dir.path(), &warnings).expect("provision");
     assert!(report.writer_disabled.is_some());
-    assert!(load_registry_from_dir(dir.path()).is_empty());
+    assert!(load_registry_from_dir(dir.path(), &warnings).is_empty());
 
     // Neither followed nor replaced.
     let after = std::fs::symlink_metadata(&link).expect("still there");
@@ -576,6 +628,7 @@ fn reparse_point_in_the_path_is_rejected() {
 
 #[test]
 fn absent_version_keys_are_treated_as_current_and_never_written_back() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let dir = tempdir();
     let source = format!(
         "[messages.context-alert]\ntemplate = '''\n{}\n'''\n",
@@ -583,7 +636,7 @@ fn absent_version_keys_are_treated_as_current_and_never_written_back() {
     );
     std::fs::write(main_path(dir.path()), &source).expect("write");
 
-    let report = ensure_injected_messages(dir.path()).expect("provision");
+    let report = ensure_injected_messages(dir.path(), &warnings).expect("provision");
     assert_eq!(report.writer_disabled, None);
     assert_eq!(
         report.outcomes.get(CONTEXT_ALERT_MESSAGE_ID),
@@ -715,13 +768,14 @@ fn newer_coverage_version_literal_raised_to_three() {
 
 #[test]
 fn existing_operator_file_at_coverage_one_is_appended_not_rewritten() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let dir = tempdir();
     let source =
         "schema_version = 1\ncoverage_version = 1\n\n[messages.context-alert]\ntemplate = \
         '''\nOPERATOR %MEMBER% EDITED\n'''\n";
     std::fs::write(main_path(dir.path()), source).expect("write");
 
-    let report = ensure_injected_messages(dir.path()).expect("provision");
+    let report = ensure_injected_messages(dir.path(), &warnings).expect("provision");
     assert_eq!(report.writer_disabled, None);
     assert_eq!(
         report.outcomes.get(CONTEXT_ALERT_MESSAGE_ID),
@@ -747,12 +801,12 @@ fn existing_operator_file_at_coverage_one_is_appended_not_rewritten() {
         expected_appended_headers()
     );
     assert_eq!(
-        load_registry_from_dir(dir.path()).get(CONTEXT_ALERT_MESSAGE_ID),
+        load_registry_from_dir(dir.path(), &warnings).get(CONTEXT_ALERT_MESSAGE_ID),
         Some(&"OPERATOR %MEMBER% EDITED".to_string())
     );
     for spec in KNOWN_MESSAGES.iter().skip(1) {
         assert_eq!(
-            load_registry_from_dir(dir.path()).get(spec.id),
+            load_registry_from_dir(dir.path(), &warnings).get(spec.id),
             Some(&spec.default_template.to_string()),
             "{}",
             spec.id
@@ -762,16 +816,17 @@ fn existing_operator_file_at_coverage_one_is_appended_not_rewritten() {
 
 #[test]
 fn unusable_path_preserves_state_and_keeps_rendering() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     // A directory where the file should be: preserved, writer disabled,
     // rendering unaffected, and never fatal.
     let dir = tempdir();
     std::fs::create_dir(main_path(dir.path())).expect("directory in the way");
-    let report = ensure_injected_messages(dir.path()).expect("provision");
+    let report = ensure_injected_messages(dir.path(), &warnings).expect("provision");
     assert!(report.writer_disabled.is_some());
     assert!(main_path(dir.path()).is_dir());
-    assert!(load_registry_from_dir(dir.path()).is_empty());
+    assert!(load_registry_from_dir(dir.path(), &warnings).is_empty());
     assert_eq!(
-        render(CONTEXT_ALERT_MESSAGE_ID, &alert_values()),
-        render_with_template(DEFAULT_CONTEXT_ALERT_TEMPLATE, &alert_values())
+        render(CONTEXT_ALERT_MESSAGE_ID, &alert_values(), &warnings),
+        render_with_template(DEFAULT_CONTEXT_ALERT_TEMPLATE, &alert_values(), &warnings)
     );
 }

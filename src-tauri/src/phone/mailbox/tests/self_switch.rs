@@ -36,7 +36,7 @@ async fn self_switch_established_source_to_pi_target_remains_supported() {
         Some("A"),
         "proj-a:wg-1-dev-team/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
 
     poller
         .handle_self_handoff_switch(&app, &path, &message, false)
@@ -233,7 +233,7 @@ async fn handle_self_switch_pi_source_queues_with_resolved_targets() {
         Some("c"),
         "proj-a:wg-1-dev-team/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_handoff_switch(&app, &path, &msg, false)
         .await
@@ -279,7 +279,7 @@ async fn self_switch_pi_source_to_established_target_completes() {
         Some("A"),
         "proj-a:wg-1-dev-team/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
 
     poller
         .handle_self_handoff_switch(&app, &path, &message, false)
@@ -484,7 +484,7 @@ async fn self_switch_pi_source_omitted_target_hard_resets_to_pi() {
         None,
         "proj-a:wg-1-dev-team/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
 
     poller
         .handle_self_handoff_switch(&app, &path, &message, false)
@@ -687,7 +687,7 @@ async fn self_switch_pi_source_none_agent_id_omitted_target_resolves_pi_via_repl
         None,
         "proj-a:wg-1-dev-team/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
 
     poller
         .handle_self_handoff_switch(&app, &path, &message, false)
@@ -733,7 +733,7 @@ async fn handle_self_switch_pending_alias_reports_already_queued() {
         None,
         "proj-a:wg-1-dev-team/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_handoff_switch(&app, &path, &msg, false)
         .await
@@ -773,7 +773,7 @@ async fn handle_self_switch_rejects_origin_before_handoff_gate() {
         None,
         "proj-a/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_handoff_switch(&app, &path, &msg, false)
         .await
@@ -804,7 +804,7 @@ async fn handle_self_switch_rejects_fake_replica_before_handoff_gate() {
         None,
         "proj-a:wg-1-dev-team/fake",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_handoff_switch(&app, &path, &msg, false)
         .await

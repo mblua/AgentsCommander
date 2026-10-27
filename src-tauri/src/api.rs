@@ -309,6 +309,7 @@ fn start_server_from(
         }
     };
 
+    let messages = Arc::clone(&app_handle.state::<crate::app_state::AppOwners>().messages);
     let state = ApiState {
         #[cfg(any(target_os = "windows", test))]
         window_screenshot_limiter: Arc::new(WindowScreenshotLimiter::new()),
@@ -329,6 +330,7 @@ fn start_server_from(
             app_handle.clone(),
             shutdown.clone(),
             dispatcher::DispatcherConfig::default(),
+            messages,
         );
         let (listener, addr) = match source {
             ApiBindSource::Address { bind, port } => {

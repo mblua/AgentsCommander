@@ -344,7 +344,7 @@ fn outbox_verification_failure_drops_aliases_before_reclamation() {
     std::fs::rename(&ordinary_origin, &ordinary_claim).unwrap();
     let canonical_origin = canonical_outbox.join("m.json");
     let canonical_live_claim = wake_claim_path(&canonical_origin);
-    let mut poller = MailboxPoller::new();
+    let mut poller = MailboxPoller::default();
     assert!(poller.live_claims.insert(canonical_live_claim.clone()));
 
     // The ordinary spelling and a case-altered alias differ as raw values
@@ -455,7 +455,7 @@ async fn ten_guard_drops_reach_terminal_rejection() {
     let delivered_payload = outbox
         .join("delivered")
         .join(format!("{}.json", expected.id));
-    let mut poller = MailboxPoller::new();
+    let mut poller = MailboxPoller::default();
 
     for attempt in 1..=10u32 {
         let claim = wake_claim_path(&origin);

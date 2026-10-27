@@ -28,6 +28,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub(super) struct ProductionContextAlertRuntime {
     pub(super) app: tauri::AppHandle,
+    pub(super) messages: Arc<crate::config::injected_messages::MessageWarnings>,
 }
 
 impl ContextAlertRuntime for ProductionContextAlertRuntime {
@@ -61,8 +62,9 @@ impl ContextAlertRuntime for ProductionContextAlertRuntime {
 
     fn deliver_attempt(&self, attempt: ReadyAttempt) -> BoxFuture<'static, Result<(), String>> {
         let app = self.app.clone();
+        let messages = Arc::clone(&self.messages);
         Box::pin(async move {
-            MailboxPoller::new()
+            MailboxPoller::new(messages)
                 .deliver_internal_system_notice(
                     &app,
                     attempt.target,

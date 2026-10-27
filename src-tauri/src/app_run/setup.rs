@@ -85,9 +85,11 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         resource_monitor_for_setup,
         ui_automation_state_for_setup,
     } = ctx;
+    use crate::config::injected_messages as injected;
     use crate::pty::git_watcher::GitSweeper;
     use crate::pty::remote_watcher::RemoteSweeper;
     use tauri::WebviewUrl;
+    let messages = _owners.messages;
     use tauri::WebviewWindowBuilder;
     // Make AppHandle available to idle detector callbacks
     let _ = app_handle_lock.set(app.handle().clone());
@@ -184,17 +186,16 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         _owners.remote,
     );
     let _ = remote_sweeper.start(shutdown_for_setup.clone());
-    // #2064 Phase B - the transition stream's consumer. Started beside the
-    // sweeper that produces it, in this same setup closure, and handed a
-    // child of the same shutdown token, so the notifier stops when the app
-    // does. It injects only into a room orchestrator, and only when both
-    // its feature dial and its notify dial are on.
-    // The JoinHandle is dropped on purpose: the monitor's lifecycle is its
-    // shutdown token and the sweeper's channel, not a join at exit.
+    // #2064 Phase B - the transition stream's consumer. Started beside the sweeper that produces
+    // it, in this same setup closure, and handed a child of the same shutdown token, so the
+    // notifier stops when the app does. It injects only into a room orchestrator, and only when
+    // both its feature dial and its notify dial are on. The JoinHandle is dropped on purpose: the
+    // monitor's lifecycle is its shutdown token and the sweeper's channel, not a join at exit.
     drop(crate::session::remote_alerts::start(
         app.handle().clone(),
         remote_transitions,
         shutdown_for_setup.token().child_token(),
+        messages.clone(),
     ));
     let pty_mgr = Arc::new(Mutex::new(PtyManager::with_owners(
         output_senders_for_pty,
@@ -242,6 +243,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     let context_alert_monitor = crate::session::context_alerts::ContextAlertMonitor::start(
         app.handle().clone(),
         shutdown_for_setup.token().child_token(),
+        messages.clone(),
     );
     app.manage(Arc::clone(&context_alert_monitor));
     // #1032 context scrape. Must be after `.manage(settings)` above, since the
@@ -487,23 +489,21 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         );
     }
 
-    // #1157 - seed and reconcile the operator-editable injected-message
-    // templates. Best effort, never fatal, matching the block above.
+    // #1157 - seed and reconcile the operator-editable injected-message templates. Best effort,
+    // never fatal, matching the block above.
     //
-    // The ordering is NOT load-bearing: `render` resolves from the
-    // registry or the embedded default and never fails, so an alert
-    // firing before this point still renders correctly. The cost is
-    // bounded and small (one read plus at most three small atomic
-    // writes on the setup thread), not "non-blocking"; moving it to
-    // tokio::spawn would buy nothing and would race the registry load.
+    // The ordering is NOT load-bearing: `render` resolves from the registry or the embedded default
+    // and never fails, so an alert firing before this point still renders correctly. The cost is
+    // bounded and small (one read plus at most three small atomic writes on the setup thread), not
+    // "non-blocking"; moving it to tokio::spawn would buy nothing and would race the registry load.
     if let Some(dir) = crate::config::config_dir() {
-        if let Err(e) = crate::config::injected_messages::ensure_injected_messages(&dir) {
+        if let Err(e) = injected::ensure_injected_messages(&dir, messages.as_ref()) {
             log::warn!("[injected-messages] provisioning failed: {}", e);
         }
     }
     // Force the registry once, so the first alert - whose line() runs
     // on a tokio worker - never performs a blocking read there.
-    let _ = crate::config::injected_messages::registry();
+    let _ = injected::registry(messages.as_ref());
 
     // §224 A.2.5 / G-IMPL-1 — Set restore_in_progress=TRUE BEFORE the
     // mailbox poller starts. The restore task now also owns the root-agent
@@ -991,6 +991,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
             non_stop_state_for_setup,
             ui_automation_state_for_setup,
             shutdown_for_setup,
+            messages,
         );
     }
 

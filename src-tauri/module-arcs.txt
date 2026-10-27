@@ -71,6 +71,7 @@ agentscommander_lib::agent_update::updater -> agentscommander_lib::config::agent
 agentscommander_lib::agent_update::updater -> agentscommander_lib::process::agent::update
 agentscommander_lib::agent_version -> agentscommander_lib::process::agent
 agentscommander_lib::agent_version::process_owner -> agentscommander_lib::process::agent
+agentscommander_lib::api -> agentscommander_lib::app_state
 agentscommander_lib::api -> agentscommander_lib::config::settings
 agentscommander_lib::api -> agentscommander_lib::phone::types
 agentscommander_lib::api -> agentscommander_lib::pty::manager
@@ -97,6 +98,7 @@ agentscommander_lib::api::dispatcher -> agentscommander_lib::api::actuation
 agentscommander_lib::api::dispatcher -> agentscommander_lib::api::audit
 agentscommander_lib::api::dispatcher -> agentscommander_lib::api::auth
 agentscommander_lib::api::dispatcher -> agentscommander_lib::api::message_store
+agentscommander_lib::api::dispatcher -> agentscommander_lib::config::injected_messages
 agentscommander_lib::api::dispatcher -> agentscommander_lib::phone::mailbox
 agentscommander_lib::api::dispatcher -> agentscommander_lib::phone::types
 agentscommander_lib::api::dispatcher -> agentscommander_lib::pty::menu_guard
@@ -290,6 +292,7 @@ agentscommander_lib::app_run::setup -> agentscommander_lib::web::command_port
 agentscommander_lib::app_run::setup -> agentscommander_lib::web::commands
 agentscommander_lib::app_state -> agentscommander_lib::capture::state
 agentscommander_lib::app_state -> agentscommander_lib::config::activity_log
+agentscommander_lib::app_state -> agentscommander_lib::config::injected_messages
 agentscommander_lib::app_state -> agentscommander_lib::pty::git_watcher
 agentscommander_lib::app_state -> agentscommander_lib::pty::local_backend
 agentscommander_lib::app_state -> agentscommander_lib::pty::remote_watcher
@@ -306,6 +309,7 @@ agentscommander_lib::capture::state -> agentscommander_lib::capture::record
 agentscommander_lib::capture::state -> agentscommander_lib::capture::sink
 agentscommander_lib::capture::state -> agentscommander_lib::config::co_managed
 agentscommander_lib::cli -> agentscommander_lib::config
+agentscommander_lib::cli -> agentscommander_lib::config::injected_messages
 agentscommander_lib::cli -> agentscommander_lib::config::settings
 agentscommander_lib::cli -> agentscommander_lib::testability::reset
 agentscommander_lib::cli -> agentscommander_lib::testability::ui_automation
@@ -2016,6 +2020,7 @@ agentscommander_lib::phone::mailbox::poller -> agentscommander_lib::api::message
 agentscommander_lib::phone::mailbox::poller -> agentscommander_lib::cli::create_agent_matrix
 agentscommander_lib::phone::mailbox::poller -> agentscommander_lib::commands::session
 agentscommander_lib::phone::mailbox::poller -> agentscommander_lib::config::agent_command
+agentscommander_lib::phone::mailbox::poller -> agentscommander_lib::config::injected_messages
 agentscommander_lib::phone::mailbox::poller -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::phone::mailbox::poller -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::phone::mailbox::poller -> agentscommander_lib::config::settings
@@ -2162,6 +2167,7 @@ agentscommander_lib::phone::mailbox::response_observation -> agentscommander_lib
 agentscommander_lib::phone::mailbox::response_observation -> agentscommander_lib::session::selection
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::config
+agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::config::injected_messages
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::config::teams
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::phone::mailbox::handoff
@@ -2735,6 +2741,7 @@ agentscommander_lib::restore::native -> agentscommander_lib::commands::ac_discov
 agentscommander_lib::restore::native -> agentscommander_lib::commands::session
 agentscommander_lib::restore::native -> agentscommander_lib::commands::session::selection_executor
 agentscommander_lib::restore::native -> agentscommander_lib::config
+agentscommander_lib::restore::native -> agentscommander_lib::config::injected_messages
 agentscommander_lib::restore::native -> agentscommander_lib::config::root_agent
 agentscommander_lib::restore::native -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::restore::native -> agentscommander_lib::config::settings
@@ -2775,6 +2782,7 @@ agentscommander_lib::session::auto_close -> agentscommander_lib::pty::manager
 agentscommander_lib::session::auto_close -> agentscommander_lib::session::manager
 agentscommander_lib::session::auto_close -> agentscommander_lib::session::selection
 agentscommander_lib::session::auto_close -> agentscommander_lib::shutdown
+agentscommander_lib::session::context_alerts -> agentscommander_lib::config::injected_messages
 agentscommander_lib::session::context_alerts -> agentscommander_lib::phone::mailbox
 agentscommander_lib::session::context_alerts -> agentscommander_lib::pty::context_scrape
 agentscommander_lib::session::context_alerts::actor -> agentscommander_lib::phone::mailbox
@@ -2782,6 +2790,7 @@ agentscommander_lib::session::context_alerts::actor -> agentscommander_lib::pty:
 agentscommander_lib::session::context_alerts::actor -> agentscommander_lib::session::context_alerts
 agentscommander_lib::session::context_alerts::runtime -> agentscommander_lib::commands::entity_creation
 agentscommander_lib::session::context_alerts::runtime -> agentscommander_lib::config::ac_root
+agentscommander_lib::session::context_alerts::runtime -> agentscommander_lib::config::injected_messages
 agentscommander_lib::session::context_alerts::runtime -> agentscommander_lib::config::replica_identity
 agentscommander_lib::session::context_alerts::runtime -> agentscommander_lib::config::teams
 agentscommander_lib::session::context_alerts::runtime -> agentscommander_lib::path_utils
@@ -2865,6 +2874,7 @@ agentscommander_lib::session::manager::turn -> agentscommander_lib::session::man
 agentscommander_lib::session::manager::turn -> agentscommander_lib::session::manager::carrier
 agentscommander_lib::session::manager::turn -> agentscommander_lib::session::session
 agentscommander_lib::session::profile::pty_submission -> agentscommander_lib::session::profile
+agentscommander_lib::session::remote_alerts -> agentscommander_lib::config::injected_messages
 agentscommander_lib::session::remote_alerts -> agentscommander_lib::config::settings
 agentscommander_lib::session::remote_alerts -> agentscommander_lib::config::teams
 agentscommander_lib::session::remote_alerts -> agentscommander_lib::phone::mailbox
