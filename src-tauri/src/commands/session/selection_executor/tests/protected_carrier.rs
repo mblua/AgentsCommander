@@ -1,5 +1,7 @@
 //! Protected carrier provisioning and retirement fixture.
 
+mod closing;
+
 use super::native_fixture::NativeFixture;
 use std::sync::Arc;
 use tauri::Manager;

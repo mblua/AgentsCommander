@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 #[derive(Default)]
 pub(crate) struct PortTestBackend {
+    kill_pause: Mutex<Option<KillPause>>,
     spawn_pause: Mutex<
         Option<(
             tokio::sync::oneshot::Sender<Uuid>,
@@ -31,7 +32,35 @@ pub(crate) struct PortTestBackend {
     kills: Mutex<std::collections::HashMap<Uuid, usize>>,
 }
 
+struct KillPause {
+    session: Uuid,
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
 impl PortTestBackend {
+    pub(crate) fn gate_kill(
+        &self,
+        session: Uuid,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (entered, reached) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        assert!(self
+            .kill_pause
+            .lock()
+            .unwrap()
+            .replace(KillPause {
+                session,
+                entered,
+                release: wait,
+            })
+            .is_none());
+        (reached, release)
+    }
+
     pub(crate) fn gate_spawn(
         &self,
     ) -> (
@@ -115,6 +144,22 @@ impl crate::pty::backend::PtyBackend for PortTestBackend {
     }
 
     fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+        let gate = {
+            let mut pause = self.kill_pause.lock().unwrap();
+            if pause.as_ref().is_some_and(|gate| gate.session == id) {
+                pause.take()
+            } else {
+                None
+            }
+        };
+        if let Some(gate) = gate {
+            gate.entered
+                .send(())
+                .expect("kill gate observer must remain");
+            gate.release
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("kill gate requires explicit release before its deadline");
+        }
         *self.kills.lock().unwrap().entry(id).or_default() += 1;
         self.set_live(id, false);
         Ok(())
