@@ -1984,6 +1984,7 @@ agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::config:
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::config::settings
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::config::teams
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::path_identity
+agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox::handoff
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox::notice
 agentscommander_lib::phone::mailbox::outbox_auth -> agentscommander_lib::phone::mailbox::poller
@@ -2173,6 +2174,7 @@ agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::pty
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::session::manager
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::session::selection
 agentscommander_lib::phone::mailbox::response_source -> agentscommander_lib::session::session
+agentscommander_lib::phone::mailbox::self_clear -> agentscommander_lib::session::maintenance
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::commands::pty
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::commands::session
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::config::coding_agent_profiles
@@ -2224,14 +2226,18 @@ agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::sess
 agentscommander_lib::phone::mailbox::session_lookup -> agentscommander_lib::session::session
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::commands::entity_creation
+agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::commands::pty
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::config
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::config::root_agent
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::config::settings
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::config::teams
+agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::path_identity
+agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::phone::mailbox
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::phone::mailbox::handoff
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::phone::mailbox::notice
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::phone::mailbox::poller
+agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::phone::mailbox::self_clear
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::phone::mailbox::settle
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::phone::types
 agentscommander_lib::phone::mailbox::session_request -> agentscommander_lib::pty::idle_detector

@@ -616,7 +616,10 @@ impl MailboxPoller {
         // "can A reach B" team rules. Routing it through can_communicate would wrongly
         // reject valid callers in no shared team. close-session stays in the
         // post-routing action block because it IS a cross-agent operation.
-        if msg.action.as_deref() == Some(SELF_CLEAR_ACTION) {
+        if matches!(
+            msg.action.as_deref(),
+            Some(SELF_CLEAR_ACTION | super::PLAIN_SELF_CLEAR_ACTION)
+        ) {
             return Ok(std::ops::ControlFlow::Break(
                 self.handle_self_clear(app, path, msg, is_app_outbox).await,
             ));

@@ -764,3 +764,143 @@ async fn self_switch_driver_restarts_uses_new_id_and_cleans_pending() {
     );
     assert!(pending.is_empty());
 }
+
+#[tokio::test]
+async fn plain_self_clear_process_message_auth_binding_and_untouched_files() {
+    for role in ["specialist", "coordinator", "root"] {
+        for seeded in [false, true] {
+            if role == "root" && seeded {
+                continue;
+            }
+            let fixture = make_self_switch_fixture();
+            let app = app_handle(&fixture.app);
+            let root = if role == "root" {
+                PathBuf::from(crate::config::root_agent::root_agent_dir().unwrap())
+            } else if role == "coordinator" {
+                let path = fixture
+                    .replica
+                    .parent()
+                    .unwrap()
+                    .join("__agent_team-coordinator");
+                std::fs::create_dir_all(&path).unwrap();
+                path
+            } else {
+                fixture.replica.clone()
+            };
+            let (sid, token) = if role == "coordinator" {
+                seed_raise_hand_session(&app, &root, true, SessionStatus::Running).await
+            } else {
+                seed_self_switch_session(&app, &root, "claude", None, None, None).await
+            };
+            if role == "root" {
+                app.state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                    .read()
+                    .await
+                    .set_is_root_agent(sid, true)
+                    .await;
+            }
+            if seeded {
+                for name in ["SELF-HANDOFF.md", "SELF-FORGET.md"] {
+                    std::fs::write(root.join(name), name).unwrap();
+                }
+            }
+            let sender =
+                sender_name_for_session_cwd_with_root_flag(&root.to_string_lossy(), role == "root");
+            let mid = Uuid::new_v4().to_string();
+            let rid = Uuid::new_v4().to_string();
+            let (path, mut msg) = build_self_clear_message_with_from(
+                &root,
+                &mid,
+                &rid,
+                Some(token.to_string()),
+                &sender,
+            );
+            msg.action = Some(super::super::PLAIN_SELF_CLEAR_ACTION.into());
+            std::fs::write(&path, serde_json::to_vec_pretty(&msg).unwrap()).unwrap();
+            MailboxPoller::new()
+                .process_message(&app, &path, OutboxOrigin::Replica)
+                .await
+                .unwrap();
+            let base = root.join(crate::config::agent_local_dir_name());
+            let ack = base.join("responses").join(format!("{rid}.json"));
+            let actual = std::fs::read(&ack).unwrap();
+            let expected = format!(
+                "{{\n  \"action\": \"self-clear\",\n  \"status\": \"accepted\",\n  \
+                 \"session_id\": \"{sid}\",\n  \"request_id\": \"{rid}\",\n  \
+                 \"requested_by\": \"{sender}\"\n}}"
+            );
+            assert_eq!(actual, expected.as_bytes());
+            assert!(!path.exists());
+            assert!(base
+                .join("outbox/delivered")
+                .join(format!("{mid}.json"))
+                .is_file());
+            if role != "root" {
+                for name in ["SELF-HANDOFF.md", "SELF-FORGET.md"] {
+                    if seeded {
+                        assert_eq!(std::fs::read(root.join(name)).unwrap(), name.as_bytes());
+                    } else {
+                        assert!(!root.join(name).exists());
+                    }
+                }
+                assert!(!root.join("self-clear").exists());
+            }
+            // Root cleanup owns only UUID leaves; shared handoff names are never inspected.
+            std::fs::remove_file(ack).unwrap();
+            std::fs::remove_file(base.join("outbox/delivered").join(format!("{mid}.json")))
+                .unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn plain_self_clear_process_message_rejects_invalid_self_requests() {
+    for case in [
+        "invalid",
+        "stale",
+        "sender",
+        "root_sender",
+        "target",
+        "to",
+        "shell",
+        "request_id",
+        "directory",
+    ] {
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        let root = &fixture.replica;
+        let shell = if case == "shell" { "cmd" } else { "claude" };
+        let (sid, token) = seed_self_switch_session(&app, root, shell, None, None, None).await;
+        let sender = sender_name_for_session_cwd_with_root_flag(&root.to_string_lossy(), false);
+        let mid = Uuid::new_v4().to_string();
+        let rid = Uuid::new_v4().to_string();
+        let (path, mut msg) =
+            build_self_clear_message_with_from(root, &mid, &rid, Some(token.to_string()), &sender);
+        msg.action = Some(super::super::PLAIN_SELF_CLEAR_ACTION.into());
+        match case {
+            "invalid" => msg.token = Some("invalid".into()),
+            "stale" => msg.token = Some(Uuid::new_v4().to_string()),
+            "sender" => msg.from = "proj-a:wg-1-dev-team/other".into(),
+            "root_sender" => msg.from = crate::config::root_agent::ROOT_AGENT_SENDER.into(),
+            "target" => msg.target = Some(sender.clone()),
+            "to" => msg.to = sender,
+            "request_id" => msg.request_id = None,
+            _ => {}
+        }
+        let ack = root
+            .join(crate::config::agent_local_dir_name())
+            .join("responses")
+            .join(format!("{rid}.json"));
+        if case == "directory" {
+            std::fs::create_dir_all(&ack).unwrap();
+        }
+        std::fs::write(&path, serde_json::to_vec_pretty(&msg).unwrap()).unwrap();
+        MailboxPoller::new()
+            .process_message(&app, &path, OutboxOrigin::Replica)
+            .await
+            .unwrap();
+        assert!(!ack.is_file(), "{case}");
+        assert!(read_reject_reason(root, &mid).is_some(), "{case}");
+        assert!(!pending_self_clear_contains(&app, sid).await);
+    }
+}

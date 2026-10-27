@@ -570,6 +570,13 @@ impl MailboxPoller {
             }
         };
 
+        let pending = app.state::<Arc<PendingSelfClear>>().inner().clone();
+        if msg.action.as_deref() == Some(super::PLAIN_SELF_CLEAR_ACTION) {
+            return self
+                .handle_plain_self_clear(app, path, msg, session, clear_text, pending)
+                .await;
+        }
+
         // 2b. #626 existence gate - REFUSE if the agent did not write its handoff notes. Clearing
         // with
         // no SELF-HANDOFF.md would wipe context with no way to resume (the agent would post-clear
@@ -595,10 +602,7 @@ impl MailboxPoller {
         }
 
         // 3. Idempotency - atomic check-and-set. insert() returns false if already present.
-        let reservation = {
-            let pending = app.state::<Arc<PendingSelfClear>>();
-            pending.reserve_legacy(session_id)
-        };
+        let reservation = pending.reserve_legacy(session_id);
         let newly_inserted = match reservation {
             Ok(_) => true,
             Err(MaintenanceError::AlreadyLegacy) => false,
@@ -800,5 +804,145 @@ impl MailboxPoller {
 
         self.write_raise_hand_response(app, path, msg, session_id, raised, status, is_app_outbox)
             .await
+    }
+}
+
+// A stage is owned only after create_new succeeds. Cleanup never touches the destination.
+struct PlainReceiptStage {
+    path: std::path::PathBuf,
+    written: Vec<u8>,
+}
+
+impl Drop for PlainReceiptStage {
+    fn drop(&mut self) {
+        match std::fs::read(&self.path) {
+            Ok(bytes) if bytes == self.written => {
+                if let Err(error) = std::fs::remove_file(&self.path) {
+                    log::warn!("[mailbox] self-clear stage cleanup failed: {}", error);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => log::warn!("[mailbox] self-clear stage changed; preserving it"),
+        }
+    }
+}
+
+impl MailboxPoller {
+    async fn handle_plain_self_clear<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+        session: SessionInfo,
+        clear_text: &'static str,
+        pending: Arc<PendingSelfClear>,
+    ) -> Result<(), String> {
+        use super::self_clear::{accept, Callbacks, PlainError, Prepared, Request};
+        use crate::session::maintenance::PlainIdentity;
+        use std::io::Write;
+        let request_id = match msg
+            .request_id
+            .as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok())
+        {
+            Some(id) => id,
+            None => {
+                return self
+                    .reject_message(path, msg, "self-clear requires request_id UUID")
+                    .await
+            }
+        };
+        let identity = PlainIdentity {
+            session_id: Uuid::parse_str(&session.id).map_err(|e| e.to_string())?,
+            request_id,
+            action: super::PLAIN_SELF_CLEAR_ACTION.into(),
+            requested_by: msg.from.clone(),
+        };
+        let canonical = super::notice::sender_name_for_session_cwd_with_root_flag(
+            &session.working_directory,
+            session.is_root_agent
+                || crate::config::root_agent::is_root_agent_path(&session.working_directory),
+        );
+        if let Err(error) = super::self_clear::validate_caller(
+            &identity,
+            &canonical,
+            &msg.to,
+            msg.target.as_deref(),
+        ) {
+            return self.reject_message(path, msg, &error).await;
+        }
+        let request = Request {
+            identity,
+            root: session.working_directory.into(),
+            local_dir: crate::config::agent_local_dir_name(),
+            clear_text,
+        };
+        #[cfg(not(test))]
+        let inject = {
+            let app = app.clone();
+            move |sid, text: String| async move {
+                crate::pty::inject::inject_text_into_session(&app, sid, &text).await
+            }
+        };
+        #[cfg(test)]
+        let inject = |_sid, _text: String| async {
+            Err("self-clear synthetic test injector: no PTY input".to_string())
+        };
+        let boundary_app = app.clone();
+        let result = accept(
+            request,
+            pending,
+            Callbacks {
+                read_receipt: |destination: &std::path::Path| match std::fs::read(destination) {
+                    Ok(bytes) => Ok(Some(bytes)),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(error) => Err(error.to_string()),
+                },
+                prepare_receipt: |destination: &std::path::Path, bytes: &[u8], _lease: &_| {
+                    let parent = destination
+                        .parent()
+                        .ok_or("self-clear: no responses directory")?;
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                    let stage_path = parent.join(format!("{}.stage", Uuid::new_v4()));
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&stage_path)
+                        .map_err(|e| e.to_string())?;
+                    let mut stage = PlainReceiptStage {
+                        path: stage_path,
+                        written: Vec::new(),
+                    };
+                    while stage.written.len() < bytes.len() {
+                        let remaining = &bytes[stage.written.len()..];
+                        let count = file.write(remaining).map_err(|e| e.to_string())?;
+                        if count == 0 {
+                            return Err("self-clear: stage write made no progress".into());
+                        }
+                        stage.written.extend_from_slice(&remaining[..count]);
+                    }
+                    drop(file);
+                    let bytes = std::fs::read(&stage.path).map_err(|e| e.to_string())?;
+                    Ok(Prepared { stage, bytes })
+                },
+                publish_prepared: |stage: &PlainReceiptStage, destination: &std::path::Path| {
+                    crate::path_identity::publish_new_file_atomic(&stage.path, destination)
+                },
+                launch: |driver| {
+                    tauri::async_runtime::spawn(driver);
+                },
+                transport: || self.move_to_delivered(app, path, msg),
+                inject,
+                note_boundary: move |sid| async move {
+                    crate::commands::pty::stamp_fresh_boundary_to_session(&boundary_app, sid).await;
+                },
+            },
+        )
+        .await;
+        match result {
+            Ok(()) => Ok(()),
+            Err(PlainError::Rejected(error)) => self.reject_message(path, msg, &error).await,
+            Err(PlainError::Retryable(error) | PlainError::Transport(error)) => Err(error),
+        }
     }
 }
