@@ -292,6 +292,7 @@ agentscommander_lib::app_state -> agentscommander_lib::capture::state
 agentscommander_lib::app_state -> agentscommander_lib::config::activity_log
 agentscommander_lib::app_state -> agentscommander_lib::pty::git_watcher
 agentscommander_lib::app_state -> agentscommander_lib::pty::local_backend
+agentscommander_lib::app_state -> agentscommander_lib::pty::remote_watcher
 agentscommander_lib::capture::catalog -> agentscommander_lib::filesystem
 agentscommander_lib::capture::jev -> agentscommander_lib::capture::catalog
 agentscommander_lib::capture::jev -> agentscommander_lib::network

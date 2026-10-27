@@ -181,6 +181,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         }),
         crate::remote_sweeper_seams(),
         git,
+        _owners.remote,
     );
     let _ = remote_sweeper.start(shutdown_for_setup.clone());
     // #2064 Phase B - the transition stream's consumer. Started beside the

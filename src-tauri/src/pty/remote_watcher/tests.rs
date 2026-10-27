@@ -206,6 +206,7 @@ impl LocalGitScripts {
 }
 
 struct Harness {
+    remote_state: Arc<RemoteActivityState>,
     git_state: Arc<crate::pty::git_watcher::GitState>,
     temp: tempfile::TempDir,
     sweeper: Arc<RemoteSweeper>,
@@ -245,6 +246,20 @@ impl Harness {
         settings: AppSettings,
         capacity: usize,
         snapshot_dir: Option<PathBuf>,
+    ) -> Self {
+        Self::with_remote_owner(
+            settings,
+            capacity,
+            snapshot_dir,
+            Arc::new(RemoteActivityState::new()),
+        )
+    }
+
+    fn with_remote_owner(
+        settings: AppSettings,
+        capacity: usize,
+        snapshot_dir: Option<PathBuf>,
+        remote_state: Arc<RemoteActivityState>,
     ) -> Self {
         let temp = tempfile::tempdir().expect("tempdir");
         let emitted = Arc::new(Mutex::new(Vec::new()));
@@ -309,10 +324,12 @@ impl Harness {
             },
             capacity,
             git_state.clone(),
+            remote_state.clone(),
         );
         sweeper.lock_state().gh_path = Some(PathBuf::from("gh"));
 
         Self {
+            remote_state,
             git_state,
             temp,
             sweeper,
@@ -389,10 +406,7 @@ impl Harness {
     }
 
     fn snapshot(&self) -> HashMap<String, RemoteActivity> {
-        remote_activity_snapshot()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.remote_state.read_snapshot(Clone::clone)
     }
 
     fn drain_transitions(&self) -> Vec<RemoteTransition> {
@@ -776,4 +790,58 @@ fn i2768_details(h: &Harness) -> Vec<String> {
         .into_iter()
         .filter(|endpoint| endpoint.contains("/actions/runs/"))
         .collect()
+}
+
+#[tokio::test]
+async fn remote_owner_shared_snapshot_and_poison() {
+    let _guard = round_test_lock().await;
+    let owner = Arc::new(RemoteActivityState::new());
+    let first = Harness::with_remote_owner(
+        AppSettings::default(),
+        TRANSITION_QUEUE_CAPACITY,
+        None,
+        owner.clone(),
+    );
+    let second = Harness::with_remote_owner(
+        AppSettings::default(),
+        TRANSITION_QUEUE_CAPACITY,
+        None,
+        owner.clone(),
+    );
+    assert!(Arc::ptr_eq(&first.remote_state, &second.remote_state));
+    assert!(Arc::ptr_eq(&first.sweeper.remote_state, &owner));
+    assert!(Arc::ptr_eq(&second.sweeper.remote_state, &owner));
+    assert!(owner.snapshot.get().is_none(), "constructors stay lazy");
+    let now = Instant::now();
+    let wall = Local::now();
+    let first_repo = first.repo("first");
+    first.set_work(std::slice::from_ref(&first_repo));
+    first.round(now, wall).await;
+    assert!(second.snapshot().contains_key(&first_repo));
+    assert_eq!(first.snapshot(), second.snapshot());
+    assert_eq!(first.emitted_count(), 1);
+    let fresh = RemoteActivityState::new();
+    assert!(fresh.read_snapshot(Clone::clone).is_empty());
+
+    let poisoned = std::panic::catch_unwind(|| {
+        let _guard = owner.snapshot.get().unwrap().lock().unwrap();
+        panic!("poison only the shared remote snapshot");
+    });
+    assert!(poisoned.is_err());
+    assert!(owner.snapshot.get().unwrap().is_poisoned());
+    assert!(first.snapshot().contains_key(&first_repo), "reads recover");
+    let second_repo = second.repo("second");
+    second.set_work(std::slice::from_ref(&second_repo));
+    second.round(now, wall).await;
+    let updated = first.snapshot();
+    assert!(
+        updated.contains_key(&second_repo),
+        "publication survives poison"
+    );
+    assert!(!updated.contains_key(&first_repo), "GC shares the owner");
+    assert_eq!(updated, second.snapshot());
+    assert_eq!(second.emitted_count(), 1);
+    second.set_work(&[]);
+    second.round(now + Duration::from_secs(1), wall).await;
+    assert!(first.snapshot().is_empty(), "empty work prunes every entry");
 }
