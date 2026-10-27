@@ -206,3 +206,15 @@ pub(crate) fn experiment_path_is_link(path: &Path) -> bool {
         .map(|metadata| crate::path_identity::is_link_or_reparse(&metadata))
         .unwrap_or(false)
 }
+
+pub(crate) fn ensure_cli_outbox(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+pub(crate) fn cli_outbox_artifact_exists(path: &Path) -> bool {
+    path.exists()
+}
+
+pub(crate) fn cli_agent_root_is_dir(path: &Path) -> bool {
+    path.is_dir()
+}

@@ -210,3 +210,11 @@ pub(crate) fn replace_experiment_artifact(
         }
     }
 }
+
+pub(crate) fn read_cli_outbox_text(path: &Path) -> io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+pub(crate) fn write_cli_outbox_message(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    std::fs::write(path, bytes)
+}
