@@ -13,6 +13,7 @@ use super::RunArtifact;
 use super::RunArtifactPaths;
 use super::RunWorkgroupArtifact;
 use super::VariantMetadata;
+use crate::filesystem::directories;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -41,7 +42,7 @@ pub(super) fn create_generated_run_dir(
             format!("{}-{:02}", base, idx)
         };
         let dir = run_dir(loaded, &run_id);
-        match std::fs::create_dir(&dir) {
+        match directories::create_experiment_directory(&dir) {
             Ok(()) => return Ok((run_id, dir)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
@@ -67,7 +68,7 @@ pub(super) fn create_explicit_run_dir(
     validate_run_id(run_id)?;
     ensure_runs_dir(loaded)?;
     let dir = run_dir(loaded, run_id);
-    match std::fs::create_dir(&dir) {
+    match directories::create_experiment_directory(&dir) {
         Ok(()) => Ok(dir),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(vec![err_at_path(
             "run_id_exists",
@@ -84,11 +85,11 @@ pub(super) fn create_explicit_run_dir(
 
 fn ensure_runs_dir(loaded: &LoadedExperiment) -> Result<(), Vec<CliError>> {
     let dir = runs_dir(loaded);
-    if dir.exists() {
+    if directories::experiment_path_exists(&dir) {
         reject_link_or_reparse(&dir, "run_artifact_link_or_reparse", None)?;
     } else {
         reject_link_or_reparse(&loaded.experiment_dir, "run_artifact_link_or_reparse", None)?;
-        std::fs::create_dir_all(&dir).map_err(|e| {
+        directories::ensure_experiment_directory(&dir).map_err(|e| {
             vec![err_at_path(
                 "run_artifact_write_failed",
                 format!("Failed to create runs directory {}: {}", dir.display(), e),
