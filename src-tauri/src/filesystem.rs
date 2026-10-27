@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 pub(crate) mod attachments;
+pub(crate) mod config_seed;
 pub(crate) mod context_skills;
 pub(crate) mod context_templates;
 pub(crate) mod debug_logs;
