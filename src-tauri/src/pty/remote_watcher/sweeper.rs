@@ -7,7 +7,7 @@ use chrono::{DateTime, Local, Utc};
 use futures::stream::StreamExt;
 use tokio::sync::mpsc;
 
-use crate::config::remote_activity_cache::{PersistedRepoCi, REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME};
+use crate::config::remote_activity_cache::PersistedRepoCi;
 use crate::config::settings::SettingsState;
 use crate::session::manager::SessionManager;
 use crate::shutdown::ShutdownSignal;
@@ -708,7 +708,7 @@ impl RemoteSweeper {
         // slow disk cannot stall the sweeper's async worker.
         if self.snapshot_persistence == SnapshotPersistence::Enabled {
             if let Some(snapshot_dir) = &self.snapshot_dir {
-                let path = snapshot_dir.join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME);
+                let snapshot_dir = snapshot_dir.clone();
                 let entries: Vec<(String, PersistedRepoCi)> =
                     self.remote_state.read_snapshot(|snapshot| {
                         snapshot
@@ -718,8 +718,8 @@ impl RemoteSweeper {
                     });
                 let generated_at = (self.publication_clock)();
                 let write = tokio::task::spawn_blocking(move || {
-                    crate::config::remote_activity_cache::write_snapshot(
-                        &path,
+                    crate::config::remote_activity_cache::write_snapshot_to_dir(
+                        &snapshot_dir,
                         generated_at,
                         &entries,
                     )
