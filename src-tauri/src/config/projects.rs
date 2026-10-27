@@ -7,6 +7,8 @@
 //! mutable `&mut AppSettings` borrow plus a `&Path`. Callers own the
 //! lock-acquire and the `save_settings` call.
 
+pub(crate) mod ac_root_gitignore;
+
 use crate::filesystem::projects as project_fs;
 use std::collections::HashSet;
 use std::ops::ControlFlow;

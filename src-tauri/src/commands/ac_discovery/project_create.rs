@@ -1,5 +1,6 @@
 use super::gitignore::ensure_ac_root_gitignore;
 use crate::config::ac_root::{ac_root_for_project, canonical_ac_root_label, existing_ac_root};
+use crate::filesystem::projects::{self as project_fs, discovery};
 use std::path::Path;
 
 /// Check if a folder has a Project AC Root subdirectory.
@@ -70,7 +71,7 @@ where
 {
     let project_dir =
         crate::config::projects::absolutise(path).map_err(|error| error.to_string())?;
-    match std::fs::symlink_metadata(&project_dir) {
+    match project_fs::project_path_symlink_metadata(&project_dir) {
         Ok(metadata) if !metadata.is_dir() => {
             return Err(format!(
                 "Project path is not a directory: {}",
@@ -79,7 +80,7 @@ where
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir_all(&project_dir).map_err(|error| {
+            discovery::create_project_directory_all(&project_dir).map_err(|error| {
                 format!(
                     "Failed to create project directory {}: {}",
                     project_dir.display(),
@@ -97,7 +98,7 @@ where
     }
 
     let ac_root = ac_root_for_project(&project_dir);
-    let created = match std::fs::create_dir(&ac_root) {
+    let created = match discovery::create_project_ac_root(&ac_root) {
         Ok(()) => true,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
         Err(error) => {
