@@ -2,6 +2,7 @@ use super::notice::{
     InternalNoticeGuard, InternalSystemNotice, InternalSystemTarget, WakeDeliveryOrigin,
 };
 use super::settle::{observe_pty_spawn_scope, raw_privileged_probe, OutboxClassification};
+use crate::filesystem::phone_mailbox;
 #[cfg(test)]
 use crate::phone::mailbox::ConsumptionVerdict;
 use crate::phone::types::OutboxMessage;
@@ -416,7 +417,7 @@ pub(crate) fn write_atomic_pty_metadata(
     let parent = destination.parent().ok_or("unsafe_path")?;
     let parent_identity =
         crate::path_identity::verify_directory(parent).map_err(|_| "unsafe_path")?;
-    let destination_identity = match std::fs::symlink_metadata(destination) {
+    let destination_identity = match phone_mailbox::mailbox_path_symlink_metadata(destination) {
         Ok(_) => Some(
             crate::path_identity::verify_regular_file(destination).map_err(|_| "unsafe_path")?,
         ),
@@ -428,29 +429,11 @@ pub(crate) fn write_atomic_pty_metadata(
         .and_then(|value| value.to_str())
         .ok_or("unsafe_path")?;
     let temp = parent.join(format!(".{file_name}.{}.pty-input-tmp", Uuid::new_v4()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(0x0002_0000);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        };
-        options
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
     let result = (|| {
-        let mut file = options.open(&temp).map_err(|_| "artifact_unclaimed")?;
-        use std::io::Write;
-        file.write_all(bytes).map_err(|_| "artifact_unclaimed")?;
-        file.flush().map_err(|_| "artifact_unclaimed")?;
-        file.sync_all().map_err(|_| "artifact_unclaimed")?;
+        let mut file =
+            phone_mailbox::open_pty_metadata_stage(&temp).map_err(|_| "artifact_unclaimed")?;
+        phone_mailbox::write_pty_metadata_stage(&mut file, bytes)
+            .map_err(|_| "artifact_unclaimed")?;
         crate::path_identity::verify_opened_regular_file(&temp, &file, false)
             .map_err(|_| "unsafe_path")?;
         drop(file);
@@ -468,7 +451,7 @@ pub(crate) fn write_atomic_pty_metadata(
                     return Err("unsafe_path");
                 }
             }
-            None => match std::fs::symlink_metadata(destination) {
+            None => match phone_mailbox::mailbox_path_symlink_metadata(destination) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 _ => return Err("unsafe_path"),
             },
@@ -483,19 +466,17 @@ pub(crate) fn write_atomic_pty_metadata(
         if published != bytes {
             return Err("artifact_unclaimed");
         }
-        if let Ok(parent_handle) = std::fs::File::open(parent) {
-            if let Err(error) = parent_handle.sync_all() {
-                log::debug!(
-                    "[pty-input] metadata parent sync failed code=artifact_unclaimed \
-                    error_kind={:?}",
-                    error.kind()
-                );
-            }
+        if let Some(Err(error)) = phone_mailbox::sync_pty_metadata_parent(parent) {
+            log::debug!(
+                "[pty-input] metadata parent sync failed code=artifact_unclaimed \
+                error_kind={:?}",
+                error.kind()
+            );
         }
         Ok(())
     })();
     if result.is_err() {
-        if let Err(error) = std::fs::remove_file(&temp) {
+        if let Err(error) = phone_mailbox::remove_mailbox_artifact(&temp) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 log::debug!(
                     "[pty-input] metadata temp cleanup failed code=artifact_unclaimed \
