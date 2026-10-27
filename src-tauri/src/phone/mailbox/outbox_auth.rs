@@ -291,6 +291,13 @@ impl MailboxPoller {
         let mut msg: OutboxMessage = serde_json::from_str(content)
             .map_err(|e| format!("Failed to parse outbox message: {}", e))?;
 
+        if let Some(raw) = msg.request_id.as_deref() {
+            let parsed = Uuid::parse_str(raw).map_err(|_| "invalid_request_id".to_string())?;
+            if raw != parsed.hyphenated().to_string() {
+                return Err("invalid_request_id".to_string());
+            }
+        }
+
         log::info!(
             "[mailbox] Processing message {} from='{}' to='{}' mode='{}'",
             msg.id,
