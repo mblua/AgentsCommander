@@ -146,7 +146,11 @@ pub(super) fn sanitize(value: &str) -> String {
 /// Pure seam: expand then sanitize. Tests and future ids feed it arbitrary
 /// values, so it may not assume the upstream validation `InternalSystemNotice`
 /// applies to `member` and `workgroup`.
-pub(crate) fn render_with_template(template: &str, values: &[(&str, &str)]) -> String {
+pub(crate) fn render_with_template(
+    template: &str,
+    values: &[(&str, &str)],
+    warnings: &crate::config::injected_messages::MessageWarnings,
+) -> String {
     let (expanded, unknown) = expand_tokens(template, values);
     for token in unknown {
         warn_once(
@@ -155,6 +159,7 @@ pub(crate) fn render_with_template(template: &str, values: &[(&str, &str)]) -> S
                 "[injected-messages] unknown placeholder {} left as literal text",
                 token
             ),
+            warnings,
         );
     }
     sanitize(&expanded)
@@ -175,8 +180,9 @@ pub(super) fn render_resolved(
     template: &str,
     from_registry: bool,
     values: &[(&str, &str)],
+    warnings: &crate::config::injected_messages::MessageWarnings,
 ) -> String {
-    let rendered = render_with_template(template, values);
+    let rendered = render_with_template(template, values, warnings);
     if !rendered.is_empty() {
         return rendered;
     }
@@ -193,8 +199,9 @@ pub(super) fn render_resolved(
                      the built-in default is used instead",
                     id
                 ),
+                warnings,
             );
-            return render_with_template(spec.default_template, values);
+            return render_with_template(spec.default_template, values, warnings);
         }
     }
     rendered
@@ -204,8 +211,12 @@ pub(super) fn render_resolved(
 /// Never fails and never blocks an alert. Returns a non-empty string for every
 /// id in `KNOWN_MESSAGES`; it returns `""` only for an id this binary does not
 /// know, which no production call site can produce.
-pub(crate) fn render(id: &str, values: &[(&str, &str)]) -> String {
-    let (template, from_registry) = match registry().get(id) {
+pub(crate) fn render(
+    id: &str,
+    values: &[(&str, &str)],
+    warnings: &crate::config::injected_messages::MessageWarnings,
+) -> String {
+    let (template, from_registry) = match registry(warnings).get(id) {
         Some(template) => (template.clone(), true),
         None => match spec_for(id) {
             Some(spec) => (spec.default_template.to_string(), false),
@@ -213,7 +224,7 @@ pub(crate) fn render(id: &str, values: &[(&str, &str)]) -> String {
             None => return String::new(),
         },
     };
-    render_resolved(id, &template, from_registry, values)
+    render_resolved(id, &template, from_registry, values, warnings)
 }
 
 pub(super) fn spec_for(id: &str) -> Option<&'static MessageSpec> {

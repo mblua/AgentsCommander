@@ -20,7 +20,7 @@ async fn session_request_result_sidecar_written_on_success() {
     let app = app_handle(&fixture.app);
     let request = write_session_request_for_test(&fixture.cwd, "codex");
 
-    MailboxPoller::new().poll_session_requests(&app).await;
+    MailboxPoller::default().poll_session_requests(&app).await;
 
     let result = read_session_request_result_json(&request.id);
     assert_eq!(result["status"], "created", "unexpected result: {}", result);
@@ -60,7 +60,7 @@ async fn session_request_result_sidecar_written_on_rejection() {
     let request = write_session_request_for_test(&fixture.cwd, "codex");
     fixture.backend.fail_spawn.store(true, Ordering::SeqCst);
 
-    MailboxPoller::new().poll_session_requests(&app).await;
+    MailboxPoller::default().poll_session_requests(&app).await;
 
     let result = read_session_request_result_json(&request.id);
     assert_eq!(result["status"], "rejected");
@@ -93,7 +93,7 @@ async fn malformed_request_writes_rejected_result() {
     std::fs::create_dir_all(&requests_dir).unwrap();
     std::fs::write(requests_dir.join(format!("{id}.json")), "{ not json !!").unwrap();
 
-    MailboxPoller::new().poll_session_requests(&app).await;
+    MailboxPoller::default().poll_session_requests(&app).await;
 
     let result = read_session_request_result_json(&id);
     assert_eq!(result["status"], "rejected");
@@ -125,7 +125,7 @@ async fn result_sidecars_are_not_consumed_as_requests() {
     )
     .unwrap();
 
-    MailboxPoller::new().poll_session_requests(&app).await;
+    MailboxPoller::default().poll_session_requests(&app).await;
 
     assert!(
         result_path.exists(),
@@ -173,7 +173,7 @@ async fn stale_result_sidecars_are_swept() {
     )
     .unwrap();
 
-    MailboxPoller::new().poll_session_requests(&app).await;
+    MailboxPoller::default().poll_session_requests(&app).await;
 
     assert!(!stale_path.exists(), "stale result sidecar must be swept");
     assert!(fresh_path.exists(), "fresh result sidecar must be kept");

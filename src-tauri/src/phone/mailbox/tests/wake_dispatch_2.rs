@@ -270,7 +270,7 @@ async fn poll_keeps_supported_busy_command_retriable() {
     }
     let source =
         write_logical_command_message(&fixture.sender_cwd, "poll-pi-busy-clear", "clear", "");
-    let mut poller = MailboxPoller::new();
+    let mut poller = MailboxPoller::default();
 
     poller.poll(&app).await.unwrap();
     poller.settle_wake_workers().await;
@@ -391,7 +391,7 @@ fn reclaim_returns_unowned_claims_and_never_resurrects_settled_or_live_ones() {
     std::fs::write(outbox.join("delivered").join("m-delivered.json"), "{}").unwrap();
     std::fs::write(outbox.join("rejected").join("m-rejected.json"), "{}").unwrap();
 
-    let mut poller = MailboxPoller::new();
+    let mut poller = MailboxPoller::default();
     poller.live_claims.insert(live.clone());
     let claims = vec![
         unowned.clone(),

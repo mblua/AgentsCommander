@@ -96,8 +96,11 @@ fn publish(path: &Path, bytes: &[u8]) -> Result<(), String> {
     write_file_atomic(path, bytes)
 }
 
-pub(crate) fn ensure_injected_messages(dir: &Path) -> Result<ProvisionReport, String> {
-    provision(dir, &KNOWN_MESSAGES, None)
+pub(crate) fn ensure_injected_messages(
+    dir: &Path,
+    warnings: &crate::config::injected_messages::MessageWarnings,
+) -> Result<ProvisionReport, String> {
+    provision(dir, &KNOWN_MESSAGES, None, warnings)
 }
 
 /// Seeds, reconciles and appends, then regenerates the companion.
@@ -111,6 +114,7 @@ pub(super) fn provision(
     dir: &Path,
     specs: &[MessageSpec],
     forced: Option<&BTreeSet<String>>,
+    warnings: &crate::config::injected_messages::MessageWarnings,
 ) -> Result<ProvisionReport, String> {
     let path = dir.join(INJECTED_MESSAGES_FILENAME);
     let state_path = dir.join(INJECTED_MESSAGES_STATE_FILENAME);
@@ -133,7 +137,15 @@ pub(super) fn provision(
 
     match source {
         None => seed_new_file(&path, &state_path, specs, &mut report)?,
-        Some(source) => reconcile(&path, &state_path, &source, specs, forced, &mut report)?,
+        Some(source) => reconcile(
+            &path,
+            &state_path,
+            &source,
+            specs,
+            forced,
+            &mut report,
+            warnings,
+        )?,
     }
 
     write_reference(dir, specs);
@@ -232,6 +244,7 @@ fn reconcile(
     specs: &[MessageSpec],
     forced: Option<&BTreeSet<String>>,
     report: &mut ProvisionReport,
+    warnings: &crate::config::injected_messages::MessageWarnings,
 ) -> Result<(), String> {
     let model = analyze_source(source);
     if let Some(reason) = model
@@ -282,6 +295,7 @@ fn reconcile(
                         spec.id,
                         display_path(path)
                     ),
+                    warnings,
                 );
             }
             Some(EntryValue::Template(template)) => {
@@ -309,6 +323,7 @@ fn reconcile(
                             spec.id,
                             display_path(path)
                         ),
+                        warnings,
                     );
                     if entry_state.last_observed_sha256.as_deref() != Some(&observed_hash) {
                         entry_state.last_observed_sha256 = Some(observed_hash);
@@ -343,6 +358,7 @@ fn reconcile(
                             spec.id,
                             display_path(path)
                         ),
+                        warnings,
                     );
                     if entry_state.last_observed_sha256.as_deref() != Some(&observed_hash) {
                         entry_state.last_observed_sha256 = Some(observed_hash);
@@ -539,7 +555,11 @@ pub(crate) fn known_message_ids() -> Vec<&'static str> {
 
 /// Resets templates to the shipped defaults through the same surgical writer,
 /// so comments, unknown keys, entry order and every other id's edits survive.
-pub(crate) fn reseed(dir: &Path, target: ReseedTarget) -> Result<Vec<String>, String> {
+pub(crate) fn reseed(
+    dir: &Path,
+    target: ReseedTarget,
+    warnings: &crate::config::injected_messages::MessageWarnings,
+) -> Result<Vec<String>, String> {
     let ids: BTreeSet<String> = match &target {
         ReseedTarget::All => KNOWN_MESSAGES
             .iter()
@@ -557,7 +577,7 @@ pub(crate) fn reseed(dir: &Path, target: ReseedTarget) -> Result<Vec<String>, St
         }
     };
 
-    let report = provision(dir, &KNOWN_MESSAGES, Some(&ids))?;
+    let report = provision(dir, &KNOWN_MESSAGES, Some(&ids), warnings)?;
     if let Some(reason) = report.writer_disabled {
         return Err(format!(
             "{} was left untouched: {}",

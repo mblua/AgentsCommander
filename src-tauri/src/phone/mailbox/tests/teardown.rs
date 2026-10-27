@@ -509,7 +509,7 @@ async fn p01_purge_success_releases_before_response() {
     let (fixture, sender, _peer, sid) = native_fixture().await;
     let token = sender_token(&fixture, &sender).await;
     request(&sender, "p01-success", PURGE_WG_ACTION, token);
-    let mut poller = MailboxPoller::new();
+    let mut poller = MailboxPoller::default();
     pump(&mut poller, &fixture).await;
     let response = read_response_json(&sender, "p01-success").expect("purge response exists");
     assert_eq!(response["status"], "purged", "{response}");
@@ -560,7 +560,7 @@ async fn p01_pending_duplicate_purge_waits_for_key_even_without_public_row() {
         "close-session",
         MAILBOX_MASTER_TOKEN.into(),
     );
-    let mut poller = MailboxPoller::new();
+    let mut poller = MailboxPoller::default();
     {
         let observation = poller.poll(app);
         tokio::pin!(observation);
@@ -631,7 +631,7 @@ async fn p01_close_blocked_input_writer_and_graceful_fallback() {
     let outcome = observe_close_attempt(
         observation_budget(false, 0).unwrap(),
         accepted.clone(),
-        MailboxPoller::new().close_session_attempt(app, sid, false, 0, accepted),
+        MailboxPoller::default().close_session_attempt(app, sid, false, 0, accepted),
     )
     .await;
     assert_eq!(
@@ -644,7 +644,7 @@ async fn p01_close_blocked_input_writer_and_graceful_fallback() {
     assert!(fixture.backend.writes_for(sid).is_empty());
     drop(permit);
     fixture.backend.fail_write.store(true, Ordering::SeqCst);
-    let outcome = MailboxPoller::new()
+    let outcome = MailboxPoller::default()
         .close_session_attempt(app, sid, false, 0, Arc::new(AtomicBool::new(false)))
         .await;
     assert_eq!(
@@ -662,7 +662,7 @@ async fn p01_close_immediate_destroy_error_duplicate_missing_and_root() {
     let token = MAILBOX_MASTER_TOKEN.to_string();
     fixture.backend.fail_kill_once.store(true, Ordering::SeqCst);
     request(&sender, "p01-error", "close-session", token.clone());
-    let mut poller = MailboxPoller::new();
+    let mut poller = MailboxPoller::default();
     pump(&mut poller, &fixture).await;
     let error = read_response_json(&sender, "p01-error").unwrap();
     assert_eq!(error["status"], "timeout");
@@ -743,7 +743,7 @@ async fn p01_close_auth_rejected_without_destroy() {
         "close-session",
         Uuid::new_v4().to_string(),
     );
-    let mut poller = MailboxPoller::new();
+    let mut poller = MailboxPoller::default();
     pump(&mut poller, &fixture).await;
     assert!(!path.exists());
     let rejected = path.parent().unwrap().join("rejected/p01-auth.reason.txt");

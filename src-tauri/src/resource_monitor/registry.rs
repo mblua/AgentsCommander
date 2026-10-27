@@ -62,6 +62,7 @@ pub trait ProcessTreeBackend: Send + Sync + 'static {
 
 #[derive(Clone)]
 pub struct ResourceMonitorState {
+    spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>,
     inner: Arc<Mutex<ResourceMonitorInner>>,
     backend: Arc<dyn ProcessTreeBackend>,
 }
@@ -217,8 +218,20 @@ impl ResourceLaunchRegistration {
 }
 
 impl ResourceMonitorState {
+    #[cfg(test)]
     pub fn with_backend(backend: Arc<dyn ProcessTreeBackend>) -> Self {
+        Self::with_backend_and_spawn_registry(
+            backend,
+            Arc::new(crate::pty::spawn_diagnostics::SpawnRegistry::new()),
+        )
+    }
+
+    pub fn with_backend_and_spawn_registry(
+        backend: Arc<dyn ProcessTreeBackend>,
+        spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>,
+    ) -> Self {
         Self {
+            spawn,
             inner: Arc::new(Mutex::new(ResourceMonitorInner {
                 groups: HashMap::new(),
                 pending_permits: BTreeSet::new(),
@@ -502,6 +515,7 @@ impl ResourceMonitorState {
     }
 }
 
+#[cfg(test)]
 impl Default for ResourceMonitorState {
     fn default() -> Self {
         Self::new()

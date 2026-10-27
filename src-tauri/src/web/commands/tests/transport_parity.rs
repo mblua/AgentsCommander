@@ -553,7 +553,8 @@ async fn issue_1937_transport_parity_assignment_preview_queues_behind_the_turn()
 /// here, mirroring the pty_lifecycle harness (plan Finding F).
 #[cfg(windows)]
 fn ws_state_for_1271(settings: AppSettings) -> WsState {
-    let app = crate::test_support::test_builder()
+    let owners = crate::AppOwners::new();
+    let app = crate::test_support::test_builder_with_owners(owners.clone())
         .manage(crate::session::warnings::new_session_warning_state())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build 1271 web test app");
@@ -562,12 +563,15 @@ fn ws_state_for_1271(settings: AppSettings) -> WsState {
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let idle_detector = IdleDetector::new(|_| {}, |_| {});
     let git_watcher = GitWatcher::new(Arc::clone(&session_mgr), app_handle.clone());
-    let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
+    let pty_mgr = Arc::new(Mutex::new(PtyManager::with_owners(
         Arc::new(Mutex::new(HashMap::new())),
         idle_detector,
         git_watcher,
         Some(broadcaster.clone()),
         None,
+        #[cfg(windows)]
+        owners.git_guard.clone(),
+        owners.spawn.clone(),
     )));
     let shutdown = crate::shutdown::ShutdownSignal::new();
     let coordinator = crate::session::selection::SelectionCoordinator::new(
@@ -576,13 +580,15 @@ fn ws_state_for_1271(settings: AppSettings) -> WsState {
     );
     let settings = crate::config::settings::new_settings_state(settings);
 
-    let full_app = crate::test_support::test_builder()
+    let full_app = crate::test_support::test_builder_with_owners(owners.clone())
         .manage(settings.clone())
         .manage(Arc::clone(&session_mgr))
         .manage(Arc::clone(&pty_mgr))
         .manage(coordinator.clone())
         .manage(Arc::new(
-            crate::resource_monitor::ResourceMonitorState::new(),
+            crate::resource_monitor::ResourceMonitorState::with_spawn_registry(
+                owners.spawn.clone(),
+            ),
         ))
         .manage(Arc::new(crate::RestoreInProgress(
             std::sync::atomic::AtomicBool::new(false),
@@ -700,7 +706,11 @@ async fn configured_default_shell_invalid_input_leaves_no_session_state_via_web(
         .pending_ids;
     for id in &pending_ids {
         assert!(
-            crate::pty::spawn_diagnostics::record_for(*id).is_none(),
+            crate::pty::spawn_diagnostics::record_for(
+                *id,
+                state.app_handle.state::<crate::AppOwners>().spawn.as_ref()
+            )
+            .is_none(),
             "no launch provenance may be recorded for the rejected session"
         );
         assert!(
@@ -781,7 +791,11 @@ async fn configured_default_shell_invalid_payload_leaves_no_session_state_via_we
         .await
         .pending_ids;
     for id in &pending_ids {
-        assert!(crate::pty::spawn_diagnostics::record_for(*id).is_none());
+        assert!(crate::pty::spawn_diagnostics::record_for(
+            *id,
+            state.app_handle.state::<crate::AppOwners>().spawn.as_ref()
+        )
+        .is_none());
         assert!(!state.pty_mgr.lock().unwrap().has_session(*id));
         assert!(state.pty_mgr.lock().unwrap().get_pty_size(*id).is_none());
     }

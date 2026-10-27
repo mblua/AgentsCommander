@@ -18,7 +18,12 @@ pub use platform::PlatformProcessTreeBackend;
 pub use stub::PlatformProcessTreeBackend;
 
 impl ResourceMonitorState {
+    #[cfg(test)]
     pub fn new() -> Self {
-        Self::with_backend(Arc::new(PlatformProcessTreeBackend::new()))
+        Self::with_spawn_registry(Arc::new(crate::pty::spawn_diagnostics::SpawnRegistry::new()))
+    }
+
+    pub fn with_spawn_registry(spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>) -> Self {
+        Self::with_backend_and_spawn_registry(Arc::new(PlatformProcessTreeBackend::new()), spawn)
     }
 }

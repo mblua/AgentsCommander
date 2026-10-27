@@ -20,7 +20,8 @@ async fn idle_edge_with_a_disabled_room_makes_no_call_and_emits_comanaged_false(
     .await;
     install_candidate(&registry, session_id, "candidate text");
     let events = capture_events(&app);
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
 
     let comanaged = emit_session_idle_edge(app.handle(), &handle.armed, Some(&handle), session_id);
     super::handle_co_managed_trigger(
@@ -73,7 +74,10 @@ async fn enabled_room_writes_the_message_file_before_the_queue_entry() {
     .await;
     install_candidate(&registry, session_id, "candidate text");
     let hooks = Arc::new(CoManagedTestHooks::default());
-    let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+    let (handle, _rx) = CoManagedSupervisorHandle::with_capture_state_and_test_hooks(
+        fixture.owners.capture.clone(),
+        Arc::clone(&hooks),
+    );
 
     super::handle_co_managed_trigger(
         app.handle(),
@@ -137,7 +141,8 @@ async fn a_record_while_already_idle_emits_active_true_and_enqueues_only_when_en
     .await;
     install_candidate(&registry, session_id, "candidate text");
     let events = capture_events(&app);
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
 
     super::handle_co_managed_trigger(
         app.handle(),
@@ -169,7 +174,8 @@ async fn a_record_while_already_idle_emits_active_true_and_enqueues_only_when_en
     .await;
     install_candidate(&registry2, session2, "candidate text");
     let events2 = capture_events(&app2);
-    let (handle2, _rx2) = CoManagedSupervisorHandle::new();
+    let (handle2, _rx2) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
     super::handle_co_managed_trigger(
         app2.handle(),
         &handle2,
@@ -198,7 +204,8 @@ async fn a_non_orchestrator_session_never_triggers() {
     )
     .await;
     install_candidate(&registry, session_id, "candidate text");
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
 
     super::handle_co_managed_trigger(
         app.handle(),
@@ -330,7 +337,8 @@ async fn a_fifty_kib_candidate_reaches_the_file_intact() {
     .await;
     let big = "x".repeat(50 * 1024);
     install_candidate(&registry, session_id, &big);
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
 
     super::handle_co_managed_trigger(
         app.handle(),
@@ -398,7 +406,8 @@ async fn a_pointer_that_does_not_fit_is_rejected_and_nothing_is_queued() {
     )
     .await;
     install_candidate(&registry, session_id, "candidate text");
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
 
     super::handle_co_managed_trigger(
         app.handle(),
@@ -468,7 +477,8 @@ async fn flipping_the_room_flag_during_the_classifier_call_produces_zero_effects
     )
     .await;
     install_candidate(&registry, session_id, "candidate text");
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
     let trigger_handle = app.handle().clone();
     let supervisor = handle.clone();
     let task = tokio::spawn(async move {
@@ -520,7 +530,8 @@ async fn budget_exhaustion_abstains_sends_text_and_enqueues_nothing() {
     )
     .await;
     install_candidate(&registry, session_id, "candidate text");
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
 
     super::handle_co_managed_trigger(
         app.handle(),

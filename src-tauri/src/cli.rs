@@ -433,7 +433,10 @@ pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), Stri
 /// Caller contract: `attach_parent_console()` MUST be called before this — see
 /// `main.rs`. Done there (not here) so the eprintln!s inside `init_logger()`
 /// reach the user's terminal on Windows release builds.
-pub fn handle_cli(cmd: Commands) -> i32 {
+pub fn handle_cli(
+    cmd: Commands,
+    warnings: &crate::config::injected_messages::MessageWarnings,
+) -> i32 {
     let code = match cmd {
         Commands::Send(args) => send::execute(args),
         Commands::SelfClear(args) => self_clear::execute(args),
@@ -463,7 +466,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::Loop(args) => loop_cmd::execute(args),
         Commands::Harness(args) => harness::execute(args),
         Commands::CodingAgent(args) => coding_agent::execute(args),
-        Commands::InjectedMessages(args) => injected_messages::execute(args),
+        Commands::InjectedMessages(args) => injected_messages::execute(args, warnings),
         Commands::ApiClient(args) => api_client::execute(args),
         Commands::TerminalSnapshot(args) => terminal_snapshot::execute(args),
         Commands::TestReset(args) => crate::testability::reset::execute(args),
