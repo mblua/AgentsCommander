@@ -257,3 +257,7 @@ pub(crate) fn write_window_screenshot(path: &Path, bytes: &[u8]) -> io::Result<(
 pub(crate) fn read_cli_room_task(path: &Path) -> io::Result<Vec<u8>> {
     std::fs::read(path)
 }
+
+pub(crate) fn read_cli_message_archive_source(path: &Path) -> io::Result<Vec<u8>> {
+    std::fs::read(path)
+}
