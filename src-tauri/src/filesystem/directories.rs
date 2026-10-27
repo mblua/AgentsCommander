@@ -110,3 +110,99 @@ pub(crate) fn canonical_container_mount(path: &Path) -> std::io::Result<PathBuf>
 pub(crate) fn container_mount_is_dir(path: &Path) -> bool {
     path.is_dir()
 }
+
+pub(crate) fn ensure_experiment_directory(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+pub(crate) fn create_experiment_directory(path: &Path) -> io::Result<()> {
+    std::fs::create_dir(path)
+}
+
+pub(crate) fn experiment_path_exists(path: &Path) -> bool {
+    path.exists()
+}
+
+pub(crate) fn experiment_path_is_file(path: &Path) -> bool {
+    path.is_file()
+}
+
+pub(crate) fn experiment_path_is_dir(path: &Path) -> bool {
+    path.is_dir()
+}
+
+pub(crate) fn visit_experiment_entries<B>(
+    root: &Path,
+    mut visit: impl FnMut(io::Result<(PathBuf, std::ffi::OsString)>) -> std::ops::ControlFlow<B>,
+) -> io::Result<std::ops::ControlFlow<B>> {
+    for entry in std::fs::read_dir(root)? {
+        if let std::ops::ControlFlow::Break(value) =
+            visit(entry.map(|entry| (entry.path(), entry.file_name())))
+        {
+            return Ok(std::ops::ControlFlow::Break(value));
+        }
+    }
+    Ok(std::ops::ControlFlow::Continue(()))
+}
+
+pub(crate) fn collect_experiment_link_paths(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    collect_experiment_link_paths_into(root, &mut out);
+    out
+}
+
+fn collect_experiment_link_paths_into(root: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(meta) = std::fs::symlink_metadata(root) else {
+        return;
+    };
+    if crate::path_identity::is_link_or_reparse(&meta) {
+        out.push(root.to_path_buf());
+        return;
+    }
+    if !meta.is_dir() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        collect_experiment_link_paths_into(&entry.path(), out);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum ExperimentPathFailure {
+    Link { path: PathBuf },
+    Inspect { path: PathBuf, error: io::Error },
+}
+
+pub(crate) fn inspect_experiment_path_chain(path: &Path) -> Result<(), ExperimentPathFailure> {
+    use std::path::Component;
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if matches!(component, Component::Prefix(_) | Component::RootDir) {
+            continue;
+        }
+        let metadata = match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(ExperimentPathFailure::Inspect {
+                    path: current,
+                    error,
+                })
+            }
+        };
+        if crate::path_identity::is_link_or_reparse(&metadata) {
+            return Err(ExperimentPathFailure::Link { path: current });
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn experiment_path_is_link(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| crate::path_identity::is_link_or_reparse(&metadata))
+        .unwrap_or(false)
+}
