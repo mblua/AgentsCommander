@@ -710,10 +710,7 @@ fn git_owner_shared_producers_preserve_unknown_and_prune() {
         }),
         &first.git_state,
     );
-    assert_eq!(
-        read_git_status(path, &second.git_state).unwrap().dirty,
-        false
-    );
+    assert!(!read_git_status(path, &second.git_state).unwrap().dirty);
     set_discovery_repo_paths(vec![path.into(), path.into()], &first.git_state);
     poison_git_mutex(discovery_repo_paths_cell(&owner));
     assert_eq!(discovery_repo_paths(&second.git_state), vec![path, path]);
