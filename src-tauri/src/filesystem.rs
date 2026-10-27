@@ -9,6 +9,7 @@ pub(crate) mod attachments;
 pub(crate) mod debug_logs;
 pub(crate) mod directories;
 pub(crate) mod documents;
+pub(crate) mod phone_mailbox;
 pub(crate) mod processes;
 pub(crate) mod profile_targets;
 pub(crate) mod projects;
