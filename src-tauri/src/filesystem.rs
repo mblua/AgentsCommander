@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 pub(crate) mod attachments;
+pub(crate) mod debug_logs;
 pub(crate) mod directories;
 pub(crate) mod documents;
 pub(crate) mod processes;
