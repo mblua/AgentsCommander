@@ -119,7 +119,7 @@ type Row = (&'static str, usize, usize, &'static [(Reason, usize)]);
 
 const INVENTORY: &[Row] = &[
     (
-        "crates/session-bridge/src/bin/agentscommander-api-helper/output/tests.rs",
+        "crates/session-bridge/src/bin/agentscommander-api-helper/filesystem/tests.rs",
         1,
         0,
         &[(TestOnly, 1)],

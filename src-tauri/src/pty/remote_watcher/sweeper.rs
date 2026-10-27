@@ -14,15 +14,16 @@ use crate::shutdown::ShutdownSignal;
 
 use super::{
     activity_for, build_gh_command_spec, clamp_interval_secs, due, is_sha40, jitter_offset,
-    parse_github_nwo, persisted_repo_ci, query_key, remote_activity_snapshot, room_map,
-    run_local_git, spawn_gh, CiState, Emitter, FailureKind, GhQuery, KeyOutcome, KeyPlan,
-    PathFacts, QueryKey, RemoteActivity, RemoteActivityPayload, RemoteSweeper, RemoteSweeperSeams,
-    RemoteTransition, RoundCtx, SnapshotPersistence, StalenessCarry, SweeperState, BACKOFF_CAP,
-    DEFAULT_BRANCH_LABEL, GH_BUDGET_BURST, MAX_GH_CALLS_PER_MINUTE, QUERY_CONCURRENCY,
-    ROUND_INTERVAL, ROUND_LOG_LEVEL, SECONDARY_BACKOFF_BASE, TRANSITION_QUEUE_CAPACITY,
+    parse_github_nwo, persisted_repo_ci, query_key, room_map, run_local_git, spawn_gh, CiState,
+    Emitter, FailureKind, GhQuery, KeyOutcome, KeyPlan, PathFacts, QueryKey, RemoteActivity,
+    RemoteActivityPayload, RemoteSweeper, RemoteSweeperSeams, RemoteTransition, RoundCtx,
+    SnapshotPersistence, StalenessCarry, SweeperState, BACKOFF_CAP, DEFAULT_BRANCH_LABEL,
+    GH_BUDGET_BURST, MAX_GH_CALLS_PER_MINUTE, QUERY_CONCURRENCY, ROUND_INTERVAL, ROUND_LOG_LEVEL,
+    SECONDARY_BACKOFF_BASE, TRANSITION_QUEUE_CAPACITY,
 };
 
 impl RemoteSweeper {
+    #[cfg(test)]
     pub(crate) fn new(
         session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
         settings: SettingsState,
@@ -38,12 +39,52 @@ impl RemoteSweeper {
         )
     }
 
+    pub(crate) fn with_state(
+        session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
+        settings: SettingsState,
+        emit: Emitter,
+        seams: RemoteSweeperSeams,
+        git_state: Arc<crate::pty::git_watcher::GitState>,
+        remote_state: Arc<super::RemoteActivityState>,
+    ) -> (Arc<Self>, mpsc::Receiver<RemoteTransition>) {
+        Self::with_capacity_and_state(
+            session_manager,
+            settings,
+            emit,
+            seams,
+            TRANSITION_QUEUE_CAPACITY,
+            git_state,
+            remote_state,
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_capacity(
         session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
         settings: SettingsState,
         emit: Emitter,
         seams: RemoteSweeperSeams,
         capacity: usize,
+    ) -> (Arc<Self>, mpsc::Receiver<RemoteTransition>) {
+        Self::with_capacity_and_state(
+            session_manager,
+            settings,
+            emit,
+            seams,
+            capacity,
+            Arc::new(crate::pty::git_watcher::GitState::new()),
+            Arc::new(super::RemoteActivityState::new()),
+        )
+    }
+
+    pub(crate) fn with_capacity_and_state(
+        session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
+        settings: SettingsState,
+        emit: Emitter,
+        seams: RemoteSweeperSeams,
+        capacity: usize,
+        git_state: Arc<crate::pty::git_watcher::GitState>,
+        remote_state: Arc<super::RemoteActivityState>,
     ) -> (Arc<Self>, mpsc::Receiver<RemoteTransition>) {
         let RemoteSweeperSeams {
             probe,
@@ -68,6 +109,8 @@ impl RemoteSweeper {
         };
         let (transitions, receiver) = mpsc::channel(capacity);
         let sweeper = Arc::new(Self {
+            remote_state,
+            git_state,
             session_manager,
             settings,
             emit: Mutex::new(emit),
@@ -185,7 +228,7 @@ impl RemoteSweeper {
         .flat_map(|(_, repos, _)| repos.into_iter().map(|repo| repo.source_path))
         .collect();
 
-        let discovery = crate::pty::git_watcher::discovery_repo_paths();
+        let discovery = crate::pty::git_watcher::discovery_repo_paths(&self.git_state);
 
         if archived.is_empty() {
             crate::pty::git_watcher::build_work_list(discovery, sessions, &[])
@@ -242,7 +285,7 @@ impl RemoteSweeper {
         };
 
         let paths = self.work_list(archived).await;
-        let rooms = room_map();
+        let rooms = room_map(&self.git_state);
 
         let mut facts: Vec<PathFacts> = Vec::with_capacity(paths.len());
         for path in &paths {
@@ -630,20 +673,8 @@ impl RemoteSweeper {
                 activities.push(activity_for(&state, fact));
             }
         }
-        {
-            let mut snapshot = remote_activity_snapshot()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            for (fact, activity) in facts.iter().zip(&activities) {
-                snapshot.insert(fact.path.clone(), activity.clone());
-            }
-            // GC runs UNCONDITIONALLY, including on an EMPTY work list: an empty
-            // list means every repo went away, and the correct chip state for a
-            // repo that went away is `Unknown`, which is what an emptied snapshot
-            // produces. A `if !paths.is_empty()` guard would leave the last
-            // colours on screen forever after the last room closes.
-            snapshot.retain(|path, _| live.contains(path));
-        }
+        self.remote_state
+            .publish(facts.iter().map(|fact| &fact.path).zip(&activities), &live);
 
         let mut payload = RemoteActivityPayload {
             repo_paths: Vec::with_capacity(facts.len()),
@@ -678,15 +709,13 @@ impl RemoteSweeper {
         if self.snapshot_persistence == SnapshotPersistence::Enabled {
             if let Some(snapshot_dir) = &self.snapshot_dir {
                 let path = snapshot_dir.join(REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME);
-                let entries: Vec<(String, PersistedRepoCi)> = {
-                    let snapshot = remote_activity_snapshot()
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    snapshot
-                        .iter()
-                        .map(|(path, activity)| (path.clone(), persisted_repo_ci(activity)))
-                        .collect()
-                };
+                let entries: Vec<(String, PersistedRepoCi)> =
+                    self.remote_state.read_snapshot(|snapshot| {
+                        snapshot
+                            .iter()
+                            .map(|(path, activity)| (path.clone(), persisted_repo_ci(activity)))
+                            .collect()
+                    });
                 let generated_at = (self.publication_clock)();
                 let write = tokio::task::spawn_blocking(move || {
                     crate::config::remote_activity_cache::write_snapshot(
@@ -731,8 +760,8 @@ impl RemoteSweeper {
         rooms: &HashMap<String, Vec<String>>,
     ) -> PathFacts {
         let room_dirs = rooms.get(path).cloned().unwrap_or_default();
-        let branch =
-            crate::pty::git_watcher::read_git_status(path).and_then(|status| status.branch);
+        let branch = crate::pty::git_watcher::read_git_status(path, &self.git_state)
+            .and_then(|status| status.branch);
 
         if crate::filesystem::repositories::git_root_metadata(&Path::new(path).join(".git"))
             .await

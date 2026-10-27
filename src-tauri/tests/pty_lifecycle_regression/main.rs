@@ -440,7 +440,10 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
             .into_iter()
             .find(|row| row.name == "PTY lifecycle persisted")
             .expect("persisted recipe row");
-        let second_session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let second_owners = agentscommander_lib::AppOwners::new();
+        let second_session_mgr = Arc::new(tokio::sync::RwLock::new(
+            SessionManager::with_activity_coalescer(second_owners.activity.clone()),
+        ));
         let second_captured = Arc::clone(&fixture.captured_output);
         let second_sequences = Arc::clone(&fixture.captured_sequences);
         let second_deliveries = Arc::clone(&fixture.captured_deliveries);
@@ -453,6 +456,7 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
             &second_errors,
             &fixture.cleanup,
             Some(second_session_mgr),
+            second_owners,
         );
 
         let restored = create_session_inner(

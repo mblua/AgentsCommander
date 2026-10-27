@@ -310,7 +310,7 @@ pub(crate) enum ReseedTarget {
 /// assertions in `phone::mailbox` hermetic by construction rather than by luck:
 /// under `cargo test` `config_dir()` resolves to a real directory next to the
 /// test binary, and any file left there would make them order-dependent.
-pub(crate) fn registry() -> &'static BTreeMap<String, String> {
+pub(crate) fn registry(_warnings: &MessageWarnings) -> &'static BTreeMap<String, String> {
     static REGISTRY: OnceLock<BTreeMap<String, String>> = OnceLock::new();
     REGISTRY.get_or_init(|| {
         #[cfg(test)]
@@ -320,7 +320,7 @@ pub(crate) fn registry() -> &'static BTreeMap<String, String> {
         #[cfg(not(test))]
         {
             match crate::config::config_dir() {
-                Some(dir) => load_registry_from_dir(&dir),
+                Some(dir) => load_registry_from_dir(&dir, _warnings),
                 None => BTreeMap::new(),
             }
         }
@@ -328,7 +328,7 @@ pub(crate) fn registry() -> &'static BTreeMap<String, String> {
 }
 
 /// The registry load with no global state, so resolution is testable.
-fn load_registry_from_dir(dir: &Path) -> BTreeMap<String, String> {
+fn load_registry_from_dir(dir: &Path, warnings: &MessageWarnings) -> BTreeMap<String, String> {
     let path = dir.join(INJECTED_MESSAGES_FILENAME);
     let source = match read_source(&path) {
         Ok(Some(source)) => source,
@@ -341,6 +341,7 @@ fn load_registry_from_dir(dir: &Path) -> BTreeMap<String, String> {
                     display_path(&path),
                     reason
                 ),
+                warnings,
             );
             return BTreeMap::new();
         }
@@ -356,6 +357,7 @@ fn load_registry_from_dir(dir: &Path) -> BTreeMap<String, String> {
                 display_path(&path),
                 reason
             ),
+            warnings,
         );
         return BTreeMap::new();
     }
@@ -544,28 +546,44 @@ fn display_path(path: &Path) -> String {
         .to_string()
 }
 
-/// Returns whether it emitted: `true` on the first use of `key`, `false`
-/// afterwards. That return value is the only observable this mechanism has, and
-/// the log is the only channel this feature has to the operator, so without it
-/// nothing about that channel is testable.
-fn warn_once(key: String, message: &str) -> bool {
-    static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    let warned = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
-    match warned.lock() {
-        Ok(mut guard) => {
-            if guard.insert(key) {
-                log::warn!("{}", message);
-                true
-            } else {
-                false
-            }
-        }
-        // A poisoned warn-once set must never cost the caller its message.
-        Err(_) => {
-            log::warn!("{}", message);
-            true
+pub struct MessageWarnings {
+    warned: OnceLock<Mutex<HashSet<String>>>,
+}
+
+#[allow(clippy::new_without_default)]
+impl MessageWarnings {
+    pub fn new() -> Self {
+        Self {
+            warned: OnceLock::new(),
         }
     }
+
+    /// Returns whether it emitted: `true` on the first use of `key`, `false`
+    /// afterwards. That return value is the only observable this mechanism has, and
+    /// the log is the only channel this feature has to the operator, so without it
+    /// nothing about that channel is testable.
+    fn warn_once(&self, key: String, message: &str) -> bool {
+        let warned = self.warned.get_or_init(|| Mutex::new(HashSet::new()));
+        match warned.lock() {
+            Ok(mut guard) => {
+                if guard.insert(key) {
+                    log::warn!("{}", message);
+                    true
+                } else {
+                    false
+                }
+            }
+            // A poisoned warn-once set must never cost the caller its message.
+            Err(_) => {
+                log::warn!("{}", message);
+                true
+            }
+        }
+    }
+}
+
+fn warn_once(key: String, message: &str, warnings: &MessageWarnings) -> bool {
+    warnings.warn_once(key, message)
 }
 
 // ---------------------------------------------------------------------------

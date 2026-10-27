@@ -27,24 +27,34 @@ fn default_context_alert_template_is_pinned() {
 
 #[test]
 fn template_override_renders_user_text() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let template = "## %MEMBER%\n\n- **%WORKGROUP%** at `%OBSERVED%`\n- crossed %THRESHOLDS%";
     assert_eq!(
-        render_with_template(template, &alert_values()),
+        render_with_template(template, &alert_values(), &warnings),
         "## dev-rust\n\n- **wg-2-dev-team** at `91%`\n- crossed 50%, 75%, 90%"
     );
 }
 
 #[test]
 fn markdown_and_multiline_survive_round_trip() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let template = "# Heading\n\n**bold** and `code` and *stars*\n\n- item one\n- item \
         two\n\n```rust\nfn main() {}\n```\n\n> quote %MEMBER%\n\n| a | b |\n|---|---|\n| 1 | 2 |";
     let expected = template.replace(TOKEN_MEMBER, "dev-rust");
-    assert_eq!(render_with_template(template, &alert_values()), expected);
+    assert_eq!(
+        render_with_template(template, &alert_values(), &warnings),
+        expected
+    );
 }
 
 #[test]
 fn unknown_placeholder_is_left_literal() {
-    let rendered = render_with_template("%FOO% %MEMBER% %BAR_2% 100% done", &alert_values());
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
+    let rendered = render_with_template(
+        "%FOO% %MEMBER% %BAR_2% 100% done",
+        &alert_values(),
+        &warnings,
+    );
     assert_eq!(rendered, "%FOO% dev-rust %BAR_2% 100% done");
     assert!(!rendered.is_empty());
     // The unknown-token grammar must not fire on ordinary prose full of
@@ -102,6 +112,7 @@ fn sanitize_strips_bidi_and_separator_class() {
 
 #[test]
 fn sanitize_neutralizes_response_marker_prefix() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let out = sanitize("x %%AC_RESPONSE::abc::START%% y %%AC_RESPONSE::abc::END%% z");
     assert_eq!(
         out,
@@ -130,7 +141,11 @@ fn sanitize_neutralizes_response_marker_prefix() {
 
     // Expansion runs before sanitization, so `%OBSERVED%` hands a third `%`
     // to an operator who only typed two.
-    let expanded = render_with_template("%OBSERVED%%%AC_RESPONSE::abc::START%%", &alert_values());
+    let expanded = render_with_template(
+        "%OBSERVED%%%AC_RESPONSE::abc::START%%",
+        &alert_values(),
+        &warnings,
+    );
     assert_eq!(expanded, "91%AC_RESPONSE::abc::START%%");
     assert!(!expanded.contains("%%AC_RESPONSE::"));
     assert!(!expanded.contains(&start_marker));
@@ -169,8 +184,9 @@ fn sanitize_neutralizes_response_marker_prefix() {
 
 #[test]
 fn render_truncates_at_cap_on_char_boundary() {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
     let template = "🚨".repeat(4096);
-    let out = render_with_template(&template, &alert_values());
+    let out = render_with_template(&template, &alert_values(), &warnings);
     assert!(out.len() <= MAX_RENDERED_BYTES);
     // A 4-byte scalar never straddles the cap: 4096 is divisible by 4 here,
     // but the invariant is that the result is valid UTF-8 either way.
@@ -178,7 +194,31 @@ fn render_truncates_at_cap_on_char_boundary() {
     assert!(std::str::from_utf8(out.as_bytes()).is_ok());
 
     let odd = format!("{}{}", "a".repeat(MAX_RENDERED_BYTES - 1), "🚨");
-    let out = render_with_template(&odd, &alert_values());
+    let out = render_with_template(&odd, &alert_values(), &warnings);
     assert!(out.len() <= MAX_RENDERED_BYTES);
     assert_eq!(out.len(), MAX_RENDERED_BYTES - 1);
+}
+
+#[test]
+fn message_owner_shared_healthy_repeat_and_poison() {
+    let warnings = std::sync::Arc::new(MessageWarnings::new());
+    let shared = std::sync::Arc::clone(&warnings);
+    assert!(warn_once("shared".into(), "first", &warnings));
+    assert!(!warn_once("shared".into(), "repeat", &shared));
+    let isolated = MessageWarnings::new();
+    assert!(warn_once("shared".into(), "isolated", &isolated));
+    let poisoned = std::sync::Arc::clone(&warnings);
+    assert!(std::thread::spawn(move || {
+        let _guard = poisoned
+            .warned
+            .get_or_init(|| std::sync::Mutex::new(Default::default()))
+            .lock()
+            .unwrap();
+        panic!("poison message warning owner");
+    })
+    .join()
+    .is_err());
+    assert!(warn_once("shared".into(), "poisoned first", &warnings));
+    assert!(warn_once("shared".into(), "poisoned repeat", &shared));
+    assert!(warn_once("other".into(), "poisoned other", &shared));
 }

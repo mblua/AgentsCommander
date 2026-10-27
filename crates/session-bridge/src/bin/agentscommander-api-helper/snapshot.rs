@@ -1,5 +1,5 @@
 use crate::config::{api_url, authorization_value, next_utf8};
-use crate::output::{create_snapshot_output, validate_snapshot_output_path};
+use crate::filesystem::{create_snapshot_output, validate_snapshot_output_path};
 use reqwest::header::{
     ACCEPT_ENCODING, AUTHORIZATION, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE,
     PRAGMA,

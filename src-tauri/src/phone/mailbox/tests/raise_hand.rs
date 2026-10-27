@@ -350,7 +350,7 @@ async fn raise_hand_process_message_coordinator_with_task_title_sets_state_and_e
         "rid-rh-1",
         Some(token.to_string()),
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .process_message(&app, &path, OutboxOrigin::Replica)
         .await
@@ -402,7 +402,7 @@ async fn raise_hand_process_message_second_request_reports_already_visible() {
         "rid-rh-2a",
         Some(token.to_string()),
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .process_message(&app, &first_path, OutboxOrigin::Replica)
         .await
@@ -458,7 +458,7 @@ async fn raise_hand_process_message_without_visible_title_slot_returns_false() {
         let rid = format!("rid-rh-noslot-{idx}");
         let (path, _msg) =
             build_raise_hand_message(&fixture.sender_cwd, &msg_id, &rid, Some(token.to_string()));
-        let poller = MailboxPoller::new();
+        let poller = MailboxPoller::default();
         poller
             .process_message(&app, &path, OutboxOrigin::Replica)
             .await
@@ -496,7 +496,7 @@ async fn raise_hand_process_message_non_coordinator_returns_false() {
         "rid-rh-noncoord",
         Some(token.to_string()),
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .process_message(&app, &path, OutboxOrigin::Replica)
         .await
@@ -532,7 +532,7 @@ async fn raise_hand_process_message_exited_coordinator_returns_false() {
         "rid-rh-exited",
         Some(token.to_string()),
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .process_message(&app, &path, OutboxOrigin::Replica)
         .await

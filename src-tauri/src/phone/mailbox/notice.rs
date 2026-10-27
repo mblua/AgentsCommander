@@ -372,7 +372,10 @@ impl InternalSystemNotice {
     /// #1157 - the wording now lives in the operator-editable injected-message
     /// registry. This function keeps its signature and its threshold formatting;
     /// the only embedded copy of the text is `DEFAULT_CONTEXT_ALERT_TEMPLATE`.
-    pub(crate) fn line(&self) -> String {
+    pub(crate) fn line(
+        &self,
+        warnings: &crate::config::injected_messages::MessageWarnings,
+    ) -> String {
         match self {
             Self::ContextAlert {
                 member,
@@ -396,6 +399,7 @@ impl InternalSystemNotice {
                         (TOKEN_THRESHOLDS, thresholds.as_str()),
                         (TOKEN_OBSERVED, observed.as_str()),
                     ],
+                    warnings,
                 )
             }
             Self::RemoteActivity {
@@ -444,13 +448,14 @@ impl InternalSystemNotice {
                         ],
                     ),
                 };
-                let mut rendered = render(id, &values);
+                let mut rendered = render(id, &values, warnings);
                 if let Some((gap, since)) = blind_gap {
                     // A SUFFIX id, not twin ids: the blindness clause is edited
                     // once and applies to every notice, present and future.
                     rendered.push_str(&render(
                         NOTICE_BLIND_GAP_MESSAGE_ID,
                         &[(TOKEN_GAP, gap.as_str()), (TOKEN_SINCE, since.as_str())],
+                        warnings,
                     ));
                 }
                 truncate_to_rendered_cap(rendered)
@@ -471,7 +476,10 @@ pub(crate) enum WakeContent<'a> {
         /// exact FQN and is the credential.
         comanaged: bool,
     },
-    InternalSystem(&'a InternalSystemNotice),
+    InternalSystem(
+        &'a InternalSystemNotice,
+        &'a crate::config::injected_messages::MessageWarnings,
+    ),
 }
 
 pub(crate) fn format_wake_content(content: WakeContent<'_>) -> String {
@@ -491,7 +499,7 @@ pub(crate) fn format_wake_content(content: WakeContent<'_>) -> String {
                 crate::phone::messaging::format_pty_wrap(from, body)
             }
         }
-        WakeContent::InternalSystem(notice) => format!("\n{}\n\r", notice.line()),
+        WakeContent::InternalSystem(notice, warnings) => format!("\n{}\n\r", notice.line(warnings)),
     }
 }
 

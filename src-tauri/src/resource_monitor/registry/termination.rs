@@ -213,7 +213,12 @@ impl ResourceMonitorState {
         // is not registered, already terminating or already terminated kills nothing, so
         // it must not latch an attribution). No-op for sessions with no local spawn
         // record. Taken with no resource-monitor lock held.
-        crate::pty::spawn_diagnostics::mark_ac_stop(session_id, reason.as_log_reason(), None);
+        crate::pty::spawn_diagnostics::mark_ac_stop(
+            session_id,
+            reason.as_log_reason(),
+            None,
+            self.spawn.as_ref(),
+        );
 
         let mut targets = previous_targets;
         let mut current_cleanup_identities = BTreeSet::new();

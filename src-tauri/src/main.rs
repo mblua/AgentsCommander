@@ -5,6 +5,7 @@ use agentscommander_lib::testability::{ui_automation, window_placement};
 use clap::{CommandFactory, FromArgMatches};
 
 fn main() {
+    let owners = agentscommander_lib::AppOwners::new();
     // Resolve actual binary name at runtime so --help shows the correct name.
     // Leaked once at startup — lives for the process lifetime.
     let binary_name: &'static str = Box::leak(
@@ -96,7 +97,8 @@ fn main() {
                             }
                         }
 
-                        let code = agentscommander_lib::cli::handle_cli(cmd);
+                        let code =
+                            agentscommander_lib::cli::handle_cli(cmd, owners.messages.as_ref());
                         std::process::exit(code);
                     }
                     None => {
@@ -148,9 +150,11 @@ fn main() {
                             );
                             std::process::exit(0);
                         }
-                        if let Err(error) =
-                            agentscommander_lib::run(placement, ui_automation_enabled)
-                        {
+                        if let Err(error) = agentscommander_lib::run(
+                            placement,
+                            ui_automation_enabled,
+                            owners.clone(),
+                        ) {
                             agentscommander_lib::cli::present_fatal_startup_message(
                                 &error.to_string(),
                             );

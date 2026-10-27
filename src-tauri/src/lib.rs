@@ -58,7 +58,7 @@ use voice::tracker::{VoiceTracker, VoiceTrackingState};
 use web::auth::WebAccessToken;
 use web::broadcast::WsBroadcaster;
 
-pub use app_state::{ConfigSeedLockState, DetachedSessionsState, RestoreInProgress};
+pub use app_state::{AppOwners, ConfigSeedLockState, DetachedSessionsState, RestoreInProgress};
 pub(crate) use co_managed::route::spawn_co_managed_supervisor;
 #[cfg(test)]
 pub(crate) use co_managed::CoManagedTestHooks;
@@ -314,8 +314,9 @@ fn pin_handler<F: Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'st
 pub fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
     ui_automation_enabled: bool,
+    owners: AppOwners,
 ) -> Result<(), StartupError> {
-    app_run::run(test_window_placement, ui_automation_enabled)
+    app_run::run(test_window_placement, ui_automation_enabled, owners)
 }
 
 /// #2374 - the remote sweeper's production seams. The snapshot destination is

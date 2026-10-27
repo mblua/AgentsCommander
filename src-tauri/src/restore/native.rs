@@ -49,6 +49,7 @@ pub(crate) fn start_native_restore_startup(
     non_stop_state: crate::loops::non_stop_watchdog::NonStopWatchdogState,
     ui_automation_state: crate::testability::ui_automation::UiAutomationState,
     shutdown: ShutdownSignal,
+    messages: Arc<crate::config::injected_messages::MessageWarnings>,
 ) -> tauri::async_runtime::JoinHandle<()> {
     let lifecycle_owner = Arc::clone(&settings_state);
     let lifecycle_observer = Arc::clone(&restore_observer_barrier);
@@ -877,7 +878,7 @@ pub(crate) fn start_native_restore_startup(
 
             app.state::<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>()
                 .start_artifact_cleanup();
-            let mailbox_poller = phone::mailbox::MailboxPoller::new();
+            let mailbox_poller = phone::mailbox::MailboxPoller::new(messages);
             mailbox_poller.start(app.app_handle().clone(), shutdown.clone());
             loop_scheduler
                 .clone()
