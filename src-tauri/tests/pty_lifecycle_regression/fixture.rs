@@ -198,7 +198,7 @@ pub(crate) fn make_lifecycle_fixture() -> LifecycleFixture {
     let root =
         agentscommander_lib::config::root_agent::root_agent_dir().expect("resolve root agent dir");
     assert_eq!(
-        root,
+        PathBuf::from(&root),
         config_dir.join(agentscommander_lib::config::root_agent::ROOT_AGENT_DIR_NAME)
     );
     std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
