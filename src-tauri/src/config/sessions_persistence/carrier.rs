@@ -1,4 +1,10 @@
+mod discard_diagnostics;
 mod publication;
+#[cfg(test)]
+pub(crate) use discard_diagnostics::poison_discard_slot_for_test;
+pub(crate) use discard_diagnostics::{
+    observe_discard_veto, DiscardVetoObservation, DiscardVetoReason,
+};
 
 pub(super) use self::publication::{
     all_carrier_protections, prepare_protected_publication, probe_publication_directory,
