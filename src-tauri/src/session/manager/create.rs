@@ -15,6 +15,102 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 impl SessionManager {
+    pub(super) fn validate_owned_commit(
+        state: &SessionManagerState,
+        request: Option<(
+            super::OwnedMutationHeader,
+            super::OwnedRowIdentity,
+            &super::OwnedAction,
+        )>,
+        m: &LifecycleMutations,
+        reentry: bool,
+    ) -> Result<(), String> {
+        let Some((header, a, action)) = request else {
+            return Ok(());
+        };
+        let b = header.binding;
+        let finalization = m.finalizations.first();
+        let finalizes_b = match finalization {
+            Some(super::FinalizeMutation::Live(x, witness)) => {
+                *x == b
+                    && witness.session_id == b.session_id
+                    && witness.has_pty
+                    && !witness.detached
+            }
+            _ => false,
+        };
+        let valid = match action {
+            super::OwnedAction::FinalizeB { .. } => {
+                m.removals.is_empty()
+                    && m.mark_exited.is_empty()
+                    && m.detached_intent.is_empty()
+                    && m.finalizations.len() == 1
+                    && finalizes_b
+                    && (m.prompt_transfers.is_empty() || m.prompt_transfers == [(a.id, b)])
+            }
+            super::OwnedAction::RemoveA { committed_b } => {
+                committed_b.initial_b.is_some_and(|(token, _, version)| {
+                    m.removals == [a.id]
+                        && m.mark_exited.is_empty()
+                        && m.detached_intent.is_empty()
+                        && m.finalizations.is_empty()
+                        && m.prompt_transfers.is_empty()
+                        && (reentry
+                            || (!state.pending_create.contains_key(&b.session_id)
+                                && state.carrier_versions.get(&b.session_id) == Some(&version)
+                                && state
+                                    .sessions
+                                    .get(&b.session_id)
+                                    .is_some_and(|row| row.token == token)))
+                })
+            }
+            _ => false,
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err("owned manager mutation set conflict".into())
+        }
+    }
+
+    #[allow(dead_code, reason = "P02 owned route activates in P13")]
+    pub(crate) async fn rollback_owned_pending(
+        &self,
+        mut permit: CarrierMutationPermit,
+        binding: PendingCreateBinding,
+        claim: super::OwnedMutationClaim,
+    ) -> super::OwnedMutationObservation {
+        #[cfg(test)]
+        let probe = claim.probe();
+        permit.attach(claim);
+        let cell = permit.owned_cell().expect("original owned claim");
+        if let Some(observation) = self
+            .observe_owned_terminal(&permit, None, Some(binding))
+            .await
+        {
+            return observation;
+        }
+        let result = self
+            .rollback_pending_create_with_carrier_permit(&permit, binding)
+            .await;
+        permit.fail_unapplied(if result.is_ok() {
+            super::OwnedMutationFailure::AbsentWithoutReceipt
+        } else {
+            super::OwnedMutationFailure::Validation
+        });
+        drop(permit);
+        let observation = self.observe_owned_mutation(&cell);
+        #[cfg(test)]
+        if matches!(observation, super::OwnedMutationObservation::Applied(_)) {
+            if let Some(probe) = probe {
+                probe
+                    .pause(crate::config::sessions_persistence::ProbeEvent::ManagerReceiptFinalized)
+                    .await;
+            }
+        }
+        observation
+    }
+
     #[cfg(test)]
     pub fn new() -> Self {
         Self::with_activity_coalescer(Arc::new(
@@ -387,6 +483,14 @@ impl SessionManager {
         binding: PendingCreateBinding,
     ) -> Result<(), String> {
         let mut state = self.carrier_state_write(carrier_permit).await;
+        state.validate_owned_identity()?;
+        if let Some((header, _, action)) = state.owned_request() {
+            if header.binding != binding
+                || !matches!(action, super::OwnedAction::RollbackPendingB { .. })
+            {
+                return Err("owned rollback binding conflict".into());
+            }
+        }
         if !binding_matches(&state, binding) {
             if !state.sessions.contains_key(&binding.session_id) {
                 return Ok(());
@@ -396,11 +500,13 @@ impl SessionManager {
                 binding.session_id
             ));
         }
+        state.start_owned_mutation();
         state.pending_create.remove(&binding.session_id);
         state.pending_prompts.remove(&binding.session_id);
         state.sessions.remove(&binding.session_id);
         retire_coding_agent_binding(&mut state, binding.session_id);
         state.order.retain(|id| *id != binding.session_id);
+        state.finish();
         Ok(())
     }
 

@@ -2872,6 +2872,7 @@ agentscommander_lib::session::context_alerts::runtime -> agentscommander_lib::se
 agentscommander_lib::session::context_alerts::runtime -> agentscommander_lib::session::session
 agentscommander_lib::session::manager -> agentscommander_lib::config::activity_log
 agentscommander_lib::session::manager -> agentscommander_lib::config::root_agent
+agentscommander_lib::session::manager -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::session::manager -> agentscommander_lib::config::settings
 agentscommander_lib::session::manager -> agentscommander_lib::config::teams
 agentscommander_lib::session::manager -> agentscommander_lib::errors
@@ -2885,6 +2886,7 @@ agentscommander_lib::session::manager -> agentscommander_lib::session::selection
 agentscommander_lib::session::manager -> agentscommander_lib::session::session
 agentscommander_lib::session::manager::binding -> agentscommander_lib::session::manager
 agentscommander_lib::session::manager::binding -> agentscommander_lib::session::manager::carrier
+agentscommander_lib::session::manager::carrier -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::session::manager::carrier -> agentscommander_lib::errors
 agentscommander_lib::session::manager::carrier -> agentscommander_lib::path_identity
 agentscommander_lib::session::manager::carrier -> agentscommander_lib::pty::backend
@@ -2902,6 +2904,7 @@ agentscommander_lib::session::manager::communication -> agentscommander_lib::ses
 agentscommander_lib::session::manager::communication -> agentscommander_lib::session::manager::carrier
 agentscommander_lib::session::manager::communication -> agentscommander_lib::session::session
 agentscommander_lib::session::manager::create -> agentscommander_lib::config::activity_log
+agentscommander_lib::session::manager::create -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::session::manager::create -> agentscommander_lib::errors
 agentscommander_lib::session::manager::create -> agentscommander_lib::pty::backend
 agentscommander_lib::session::manager::create -> agentscommander_lib::pty::response_close

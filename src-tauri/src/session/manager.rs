@@ -20,10 +20,17 @@ mod prompt;
 mod turn;
 
 use binding::{clear_failed_recipe_for_runtime_binding, retire_coding_agent_binding};
+#[allow(
+    unused_imports,
+    reason = "P02 owned interfaces activate in later phases"
+)]
 pub(crate) use carrier::{
     acquire_carrier_mutation_permit, process_carrier_publication_gate, CarrierDisposition,
-    CarrierMutationPermit, CarrierPhysicalIdentity, CarrierSnapshot, RaiseCarrierOutcome,
-    RetiredCarrierRouteObservation,
+    CarrierMutationPermit, CarrierPhysicalIdentity, CarrierSnapshot, OwnedAction, OwnedActionFacts,
+    OwnedActionRole, OwnedActionWitness, OwnedMutationCell, OwnedMutationClaim,
+    OwnedMutationFailure, OwnedMutationHeader, OwnedMutationObservation, OwnedMutationReceipt,
+    OwnedMutationReservation, OwnedRowIdentity, RaiseCarrierOutcome,
+    RetiredCarrierRouteObservation, WitnessConflict,
 };
 use commit::{
     append_finalized_live_activity, resolve_selection_commit_target, validate_lifecycle_mutations,
@@ -195,7 +202,7 @@ impl LifecycleMutations {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct CommitResult {
     pub removed_rows: Vec<SessionInfo>,
     pub missing_ids: Vec<Uuid>,
@@ -218,6 +225,91 @@ impl Default for SessionManager {
 }
 
 impl SessionManager {
+    async fn observe_owned_terminal(
+        &self,
+        permit: &CarrierMutationPermit,
+        mutations: Option<&LifecycleMutations>,
+        binding: Option<PendingCreateBinding>,
+    ) -> Option<OwnedMutationObservation> {
+        let receipt = match permit.terminal_receipt(self)? {
+            Ok(receipt) => receipt,
+            Err(observation) => return Some(observation),
+        };
+        let state = self.state.read().await;
+        let request_matches = match (mutations, binding) {
+            (Some(m), None) => {
+                Self::validate_owned_commit(&state, permit.owned_request(), m, true).is_ok()
+            }
+            (None, Some(binding)) => matches!(permit.owned_request(),
+                Some((header, _, OwnedAction::RollbackPendingB { .. }))
+                    if header.binding == binding),
+            _ => false,
+        };
+        let tracker_matches = self.response_close.is_healthy()
+            && permit.owned_request().is_none_or(|(header, _, action)| {
+                action.launch().is_none_or(|(_, generation)| {
+                    self.response_close
+                        .generation(header.binding.session_id)
+                        .is_none_or(|current| current == generation)
+                })
+            });
+        let valid = tracker_matches
+            && request_matches
+            && receipt.after.iter().all(|(identity, present, pending)| {
+                state.carrier_versions.get(&identity.id) == Some(&identity.version)
+                    && state.sessions.get(&identity.id).map(|row| row.token)
+                        == present.then_some(identity.token)
+                    && state.pending_create.contains_key(&identity.id) == *pending
+            });
+        Some(if valid {
+            OwnedMutationObservation::Applied(receipt)
+        } else {
+            OwnedMutationObservation::ExitedUnknown(OwnedMutationFailure::Conflict)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code, reason = "P02 owned route activates in P13")]
+    pub(crate) async fn commit_owned_transition(
+        &self,
+        mut permit: CarrierMutationPermit,
+        capability: &CommitCapability,
+        decision: CommitDecision,
+        cause: SelectionCause,
+        mutations: LifecycleMutations,
+        claim: OwnedMutationClaim,
+    ) -> OwnedMutationObservation {
+        #[cfg(test)]
+        let probe = claim.probe();
+        permit.attach(claim);
+        let cell = permit.owned_cell().expect("original owned claim");
+        if let Some(observation) = self
+            .observe_owned_terminal(&permit, Some(&mutations), None)
+            .await
+        {
+            return observation;
+        }
+        let result = self
+            .commit_selection_transition_with_carrier_permit(
+                &permit, capability, decision, cause, mutations,
+            )
+            .await;
+        if result.is_err() {
+            permit.fail_unapplied(OwnedMutationFailure::Validation);
+        }
+        drop(permit);
+        let observation = self.observe_owned_mutation(&cell);
+        #[cfg(test)]
+        if matches!(observation, OwnedMutationObservation::Applied(_)) {
+            if let Some(probe) = probe {
+                probe
+                    .pause(crate::config::sessions_persistence::ProbeEvent::ManagerReceiptFinalized)
+                    .await;
+            }
+        }
+        observation
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn mark_idle_with_carrier_permit(
         &self,
@@ -517,6 +609,8 @@ impl SessionManager {
         mutations: LifecycleMutations,
     ) -> Result<CommitResult, String> {
         let mut state = self.carrier_state_write(carrier_permit).await;
+        state.validate_owned_identity()?;
+        Self::validate_owned_commit(&state, state.owned_request(), &mutations, false)?;
         let old_selection = state.selection.clone();
         let old_id = old_selection.id();
         let old_mode = old_selection.mode();
@@ -564,6 +658,7 @@ impl SessionManager {
         ) {
             return Err("invalid canonical selection target".to_string());
         }
+        state.start_owned_mutation();
         apply_commit_prompt_domains(&mut state, &mutations, cause);
         let mut result = CommitResult::default();
         let mut changed_ids = HashSet::new();
@@ -719,6 +814,8 @@ impl SessionManager {
         // is recorded. Such a session was never observably working. One promoted
         // to `Active` still reads as working and is recorded.
         append_finalized_live_activity(&state, finalized_live_ids, &mut result, &self.activity);
+        state.copy_owned_result(&result);
+        state.finish();
 
         Ok(result)
     }
@@ -825,6 +922,41 @@ impl SessionManager {
             }
         }
         removed
+    }
+}
+
+impl OwnedAction {
+    fn expected_a_version(&self, a: OwnedRowIdentity) -> Option<u64> {
+        match self {
+            Self::RemoveA { committed_b } => committed_b
+                .after
+                .iter()
+                .find(|(row, present, pending)| {
+                    row.id == a.id && row.token == a.token && *present && !*pending
+                })
+                .map(|(row, _, _)| row.version),
+            _ => Some(a.version),
+        }
+    }
+
+    fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::FinalizeB {
+                    token: a,
+                    generation: x,
+                },
+                Self::FinalizeB {
+                    token: b,
+                    generation: y,
+                },
+            ) => a == b && x == y,
+            (Self::RollbackPendingB { launch: a }, Self::RollbackPendingB { launch: b }) => a == b,
+            (Self::RemoveA { committed_b: a }, Self::RemoveA { committed_b: b }) => {
+                Arc::ptr_eq(a, b)
+            }
+            _ => false,
+        }
     }
 }
 

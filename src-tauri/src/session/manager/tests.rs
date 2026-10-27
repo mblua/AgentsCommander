@@ -47,6 +47,7 @@ mod binding;
 mod create_transaction;
 mod finalization;
 mod metadata;
+mod owned_receipts;
 mod raise_hand;
 mod response_close_carrier;
 mod team;

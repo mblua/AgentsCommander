@@ -1,3 +1,4 @@
+#![expect(dead_code, reason = "P02 owned receipts activate in later phases")]
 use super::super::session::{Session, SessionCommunication, SessionStatus};
 use super::{PendingCreateBinding, RetainedPrompt, SessionManager, SessionManagerState};
 use crate::errors::AppError;
@@ -17,6 +18,7 @@ pub(crate) fn process_carrier_publication_gate() -> &'static Arc<tokio::sync::Mu
 pub(crate) struct CarrierMutationPermit {
     gate: Arc<tokio::sync::Mutex<()>>,
     _guard: tokio::sync::OwnedMutexGuard<()>,
+    owned: Option<OwnedMutationClaim>,
 }
 
 pub(crate) async fn acquire_carrier_mutation_permit() -> CarrierMutationPermit {
@@ -25,6 +27,7 @@ pub(crate) async fn acquire_carrier_mutation_permit() -> CarrierMutationPermit {
     CarrierMutationPermit {
         gate,
         _guard: guard,
+        owned: None,
     }
 }
 
@@ -163,6 +166,13 @@ pub(super) struct CarrierStateWrite<'a> {
     pending_before: HashSet<Uuid>,
     selection_before: SessionSelection,
     tracker: &'a crate::pty::response_close::ResponseCloseState,
+    manager_state: Arc<tokio::sync::RwLock<SessionManagerState>>,
+    owned: Option<(Arc<OwnedMutationCell>, OwnedAction)>,
+    owned_before: Vec<OwnedRowIdentity>,
+    result: Option<super::CommitResult>,
+    finished: bool,
+    #[cfg(test)]
+    probe: Option<crate::config::sessions_persistence::OperationScope>,
 }
 
 impl std::ops::Deref for CarrierStateWrite<'_> {
@@ -220,8 +230,8 @@ pub(super) fn stable_carrier_equal(a: &Session, b: &Session) -> bool {
         }
 }
 
-impl Drop for CarrierStateWrite<'_> {
-    fn drop(&mut self) {
+impl CarrierStateWrite<'_> {
+    fn publish_carriers(&mut self) {
         let incompatible: Vec<_> = self
             .state
             .prompt_keys
@@ -374,7 +384,29 @@ impl SessionManager {
         permit: &CarrierMutationPermit,
     ) -> CarrierStateWrite<'a> {
         assert!(permit.proves(), "foreign carrier mutation permit");
+        let owned = permit
+            .owned
+            .as_ref()
+            .map(|claim| (claim.cell.clone(), claim.action.clone()));
         let state = self.state.write().await;
+        let owned_before = owned
+            .as_ref()
+            .map(|(cell, _)| {
+                [
+                    cell.reservation.original_a.id,
+                    cell.reservation.header.binding.session_id,
+                ]
+                .into_iter()
+                .filter_map(|id| {
+                    state.sessions.get(&id).map(|row| OwnedRowIdentity {
+                        id,
+                        token: row.token,
+                        version: state.carrier_versions.get(&id).copied().unwrap_or(0),
+                    })
+                })
+                .collect()
+            })
+            .unwrap_or_default();
         let before = state.sessions.clone();
         let pending_before = state.pending_create.keys().copied().collect();
         let selection_before = state.selection.clone();
@@ -384,6 +416,13 @@ impl SessionManager {
             pending_before,
             selection_before,
             tracker: &self.response_close,
+            manager_state: self.state.clone(),
+            owned,
+            owned_before,
+            result: None,
+            finished: false,
+            #[cfg(test)]
+            probe: permit.owned.as_ref().and_then(|claim| claim.probe.clone()),
         }
     }
 
@@ -427,5 +466,515 @@ impl SessionManager {
     #[allow(dead_code)]
     pub(crate) fn reserve_carrier_create_binding(&self) -> PendingCreateBinding {
         PendingCreateBinding::new(Uuid::new_v4(), Uuid::new_v4())
+    }
+}
+
+impl Drop for CarrierStateWrite<'_> {
+    fn drop(&mut self) {
+        if self.finished {
+            if std::thread::panicking() {
+                self.publish_owned(false);
+            }
+        } else {
+            self.finish();
+        }
+    }
+}
+
+// Additive owned actions remain unactivated until the selection owner adopts them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OwnedActionRole {
+    FinalizeB,
+    RollbackPendingB,
+    RemoveA,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OwnedMutationHeader {
+    pub operation: Uuid,
+    pub executor_nonce: Uuid,
+    pub preparing_nonce: Uuid,
+    pub binding: PendingCreateBinding,
+    pub role: OwnedActionRole,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OwnedRowIdentity {
+    pub id: Uuid,
+    pub token: Uuid,
+    pub version: u64,
+}
+pub(crate) struct OwnedMutationReservation {
+    pub header: OwnedMutationHeader,
+    pub original_a: OwnedRowIdentity,
+}
+#[derive(Clone)]
+pub(crate) enum OwnedAction {
+    FinalizeB {
+        token: Uuid,
+        generation: u64,
+    },
+    RollbackPendingB {
+        launch: Option<(Uuid, u64)>,
+    },
+    RemoveA {
+        committed_b: Arc<OwnedMutationReceipt>,
+    },
+}
+pub(crate) struct OwnedActionFacts {
+    pub header: OwnedMutationHeader,
+    pub action: OwnedAction,
+}
+#[derive(Debug)]
+pub(crate) struct WitnessConflict;
+pub(crate) struct OwnedActionWitness {
+    cell: Arc<OwnedMutationCell>,
+    action: OwnedAction,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OwnedMutationFailure {
+    Conflict,
+    CancelledBeforeMutation,
+    Validation,
+    AbsentWithoutReceipt,
+    PartialMutation,
+    TrackerUnavailable,
+}
+#[derive(Clone, Debug)]
+pub(crate) enum OwnedMutationObservation {
+    NotEntered,
+    InProgress,
+    NotApplied(OwnedMutationFailure),
+    Applied(Arc<OwnedMutationReceipt>),
+    ExitedUnknown(OwnedMutationFailure),
+}
+#[derive(Debug)]
+pub(crate) struct OwnedMutationReceipt {
+    cell: std::sync::Weak<OwnedMutationCell>,
+    pub result: Option<super::CommitResult>,
+    pub removed_row: Option<Session>,
+    pub before: Vec<OwnedRowIdentity>,
+    pub after: Vec<(OwnedRowIdentity, bool, bool)>,
+    pub pending_before: bool,
+    pub pending_after: bool,
+    pub initial_b: Option<(Uuid, u64, u64)>,
+    // Pending is additive manager publication, never full tracker settlement proof.
+    pub tracker_pending: bool,
+}
+struct OwnedMutationState {
+    manager: Option<std::sync::Weak<tokio::sync::RwLock<SessionManagerState>>>,
+    action: Option<OwnedAction>,
+    observation: OwnedMutationObservation,
+    partial: Option<Arc<OwnedMutationReceipt>>,
+}
+pub(crate) struct OwnedMutationCell {
+    reservation: OwnedMutationReservation,
+    step_nonce: Uuid,
+    slot: std::sync::Weak<tokio::sync::RwLock<SessionManager>>,
+    state: std::sync::Mutex<OwnedMutationState>,
+    started: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    pub(super) panic_point: std::sync::atomic::AtomicU8,
+}
+pub(crate) struct OwnedMutationClaim {
+    cell: Arc<OwnedMutationCell>,
+    action: OwnedAction,
+    terminal: bool,
+    failure: OwnedMutationFailure,
+    #[cfg(test)]
+    probe: Option<crate::config::sessions_persistence::OperationScope>,
+}
+impl OwnedMutationCell {
+    pub(crate) fn partial_receipt(&self) -> Option<Arc<OwnedMutationReceipt>> {
+        self.state.lock().ok()?.partial.clone()
+    }
+    pub(crate) fn reserve(
+        reservation: OwnedMutationReservation,
+        canonical_manager_slot: &Arc<tokio::sync::RwLock<SessionManager>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            reservation,
+            step_nonce: Uuid::new_v4(),
+            slot: Arc::downgrade(canonical_manager_slot),
+            started: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            panic_point: std::sync::atomic::AtomicU8::new(0),
+            state: std::sync::Mutex::new(OwnedMutationState {
+                manager: None,
+                action: None,
+                observation: OwnedMutationObservation::NotEntered,
+                partial: None,
+            }),
+        })
+    }
+}
+impl OwnedAction {
+    pub(super) fn launch(&self) -> Option<(Uuid, u64)> {
+        match self {
+            Self::FinalizeB { token, generation } => Some((*token, *generation)),
+            Self::RollbackPendingB { launch } => *launch,
+            Self::RemoveA { committed_b } => committed_b
+                .initial_b
+                .map(|(token, generation, _)| (token, generation)),
+        }
+    }
+}
+impl OwnedActionWitness {
+    pub(crate) fn from_trusted_owner(
+        _capability: &super::CommitCapability,
+        cell: &Arc<OwnedMutationCell>,
+        facts: OwnedActionFacts,
+    ) -> Result<Self, WitnessConflict> {
+        let role = match &facts.action {
+            OwnedAction::FinalizeB { .. } => OwnedActionRole::FinalizeB,
+            OwnedAction::RollbackPendingB { .. } => OwnedActionRole::RollbackPendingB,
+            OwnedAction::RemoveA { committed_b } => {
+                let original = committed_b.cell.upgrade().ok_or(WitnessConflict)?;
+                let mut expected = cell.reservation.header;
+                expected.role = OwnedActionRole::FinalizeB;
+                if original.reservation.header != expected
+                    || original.reservation.original_a != cell.reservation.original_a
+                    || !std::sync::Weak::ptr_eq(&original.slot, &cell.slot)
+                    || committed_b.initial_b.is_none()
+                {
+                    return Err(WitnessConflict);
+                }
+                OwnedActionRole::RemoveA
+            }
+        };
+        if facts.header != cell.reservation.header || facts.header.role != role {
+            return Err(WitnessConflict);
+        }
+        Ok(Self {
+            cell: cell.clone(),
+            action: facts.action,
+        })
+    }
+}
+impl SessionManager {
+    pub(crate) fn observe_owned_mutation(
+        &self,
+        cell: &OwnedMutationCell,
+    ) -> OwnedMutationObservation {
+        cell.state
+            .lock()
+            .map(|state| state.observation.clone())
+            .unwrap_or(OwnedMutationObservation::ExitedUnknown(
+                OwnedMutationFailure::Conflict,
+            ))
+    }
+    pub(crate) fn claim_owned_mutation(
+        &self,
+        cell: &Arc<OwnedMutationCell>,
+        witness: OwnedActionWitness,
+    ) -> Result<OwnedMutationClaim, OwnedMutationObservation> {
+        let conflict = || OwnedMutationObservation::ExitedUnknown(OwnedMutationFailure::Conflict);
+        if !Arc::ptr_eq(cell, &witness.cell) {
+            return Err(conflict());
+        }
+        let slot = cell.slot.upgrade().ok_or_else(conflict)?;
+        let current = slot
+            .try_read()
+            .map_err(|_| self.observe_owned_mutation(cell))?;
+        if !Arc::ptr_eq(&self.state, &current.state) {
+            return Err(conflict());
+        }
+        drop(current);
+        if let OwnedAction::RemoveA { committed_b } = &witness.action {
+            let original = committed_b.cell.upgrade().ok_or_else(conflict)?;
+            let state = original.state.lock().map_err(|_| conflict())?;
+            if !state
+                .manager
+                .as_ref()
+                .and_then(std::sync::Weak::upgrade)
+                .is_some_and(|manager| Arc::ptr_eq(&manager, &self.state))
+                || !matches!(&state.observation, OwnedMutationObservation::Applied(receipt)
+                    if Arc::ptr_eq(receipt, committed_b))
+            {
+                return Err(conflict());
+            }
+        }
+        let mut state = cell.state.lock().map_err(|_| conflict())?;
+        if state
+            .action
+            .as_ref()
+            .is_some_and(|action| !action.same(&witness.action))
+            || state.manager.as_ref().is_some_and(|manager| {
+                !manager
+                    .upgrade()
+                    .is_some_and(|manager| Arc::ptr_eq(&manager, &self.state))
+            })
+        {
+            return Err(conflict());
+        }
+        let terminal = match &state.observation {
+            OwnedMutationObservation::NotEntered => false,
+            OwnedMutationObservation::Applied(_) => true,
+            other => return Err(other.clone()),
+        };
+        if !terminal {
+            state.manager = Some(Arc::downgrade(&self.state));
+            state.action = Some(witness.action.clone());
+            state.observation = OwnedMutationObservation::InProgress;
+        }
+        drop(state);
+        Ok(OwnedMutationClaim {
+            cell: cell.clone(),
+            action: witness.action,
+            terminal,
+            failure: OwnedMutationFailure::CancelledBeforeMutation,
+            #[cfg(test)]
+            probe: crate::config::sessions_persistence::OperationScope::current(),
+        })
+    }
+}
+impl Drop for OwnedMutationClaim {
+    fn drop(&mut self) {
+        if self.terminal {
+            return;
+        }
+        let mut state = self
+            .cell
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if matches!(state.observation, OwnedMutationObservation::InProgress) {
+            state.observation = if self.cell.started.load(std::sync::atomic::Ordering::Acquire) {
+                OwnedMutationObservation::ExitedUnknown(OwnedMutationFailure::PartialMutation)
+            } else {
+                OwnedMutationObservation::NotApplied(self.failure)
+            };
+        }
+    }
+}
+impl CarrierMutationPermit {
+    pub(super) fn attach(&mut self, claim: OwnedMutationClaim) {
+        self.owned = Some(claim);
+    }
+    pub(super) fn fail_unapplied(&mut self, reason: OwnedMutationFailure) {
+        if let Some(claim) = &mut self.owned {
+            claim.failure = reason;
+        }
+    }
+    pub(super) fn owned_cell(&self) -> Option<Arc<OwnedMutationCell>> {
+        self.owned.as_ref().map(|claim| claim.cell.clone())
+    }
+    pub(super) fn owned_request(
+        &self,
+    ) -> Option<(OwnedMutationHeader, OwnedRowIdentity, &OwnedAction)> {
+        let claim = self.owned.as_ref()?;
+        Some((
+            claim.cell.reservation.header,
+            claim.cell.reservation.original_a,
+            &claim.action,
+        ))
+    }
+    pub(super) fn terminal_receipt(
+        &self,
+        manager: &SessionManager,
+    ) -> Option<Result<Arc<OwnedMutationReceipt>, OwnedMutationObservation>> {
+        let claim = self.owned.as_ref().filter(|claim| claim.terminal)?;
+        let conflict = || OwnedMutationObservation::ExitedUnknown(OwnedMutationFailure::Conflict);
+        let valid = claim.cell.slot.upgrade().is_some_and(|slot| {
+            slot.try_read()
+                .is_ok_and(|current| Arc::ptr_eq(&current.state, &manager.state))
+        });
+        if !valid {
+            return Some(Err(conflict()));
+        }
+        Some(match manager.observe_owned_mutation(&claim.cell) {
+            OwnedMutationObservation::Applied(receipt) => Ok(receipt),
+            other => Err(other),
+        })
+    }
+}
+impl CarrierStateWrite<'_> {
+    pub(super) fn validate_owned_identity(&self) -> Result<(), String> {
+        let Some((cell, action)) = &self.owned else {
+            return Ok(());
+        };
+        let fail = || "owned manager mutation conflict".to_string();
+        let slot = cell.slot.upgrade().ok_or_else(fail)?;
+        let manager = slot.try_read().map_err(|_| fail())?;
+        if !Arc::ptr_eq(&manager.state, &self.manager_state) {
+            return Err(fail());
+        }
+        drop(manager);
+        let mut a = cell.reservation.original_a;
+        a.version = action.expected_a_version(a).ok_or_else(fail)?;
+        let b = cell.reservation.header.binding;
+        if !self
+            .state
+            .sessions
+            .get(&a.id)
+            .is_some_and(|row| row.token == a.token && !row.is_root_agent && !row.is_coordinator)
+            || self.state.carrier_versions.get(&a.id) != Some(&a.version)
+            || a.id == b.session_id
+            || self
+                .state
+                .sessions
+                .get(&b.session_id)
+                .is_some_and(|row| row.is_root_agent || row.is_coordinator)
+            || (self.state.sessions.contains_key(&b.session_id)
+                && !self.state.carrier_versions.contains_key(&b.session_id))
+            || cell.state.is_poisoned()
+            || !self.tracker.is_healthy()
+        {
+            return Err(fail());
+        }
+        if let Some((token, generation)) = action.launch() {
+            if !self
+                .state
+                .sessions
+                .get(&b.session_id)
+                .is_some_and(|row| row.token == token)
+                || self
+                    .tracker
+                    .generation(b.session_id)
+                    .is_some_and(|actual| actual != generation)
+            {
+                return Err(fail());
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn owned_request(
+        &self,
+    ) -> Option<(OwnedMutationHeader, OwnedRowIdentity, &OwnedAction)> {
+        self.owned
+            .as_ref()
+            .map(|(cell, action)| (cell.reservation.header, cell.reservation.original_a, action))
+    }
+    pub(super) fn start_owned_mutation(&self) {
+        if let Some((cell, _)) = &self.owned {
+            cell.started
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+    pub(super) fn copy_owned_result(&mut self, result: &super::CommitResult) {
+        if self.owned.is_some() {
+            #[cfg(test)]
+            self.inject_panic(1);
+            self.result = Some(result.clone());
+        }
+    }
+}
+impl CarrierStateWrite<'_> {
+    pub(super) fn finish(&mut self) {
+        if self.finished {
+            return;
+        }
+        // Mark first: a partial panic must never replay tracker/version publication.
+        self.finished = true;
+        self.publish_carriers();
+        self.publish_owned(!std::thread::panicking());
+    }
+    fn publish_owned(&mut self, completed: bool) {
+        let Some((cell, action)) = &self.owned else {
+            return;
+        };
+        if !cell.started.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        let binding = cell.reservation.header.binding;
+        let removed_id = match action {
+            OwnedAction::RemoveA { .. } => cell.reservation.original_a.id,
+            _ => binding.session_id,
+        };
+        let after = self
+            .owned_before
+            .iter()
+            .map(|before| {
+                let row = self.state.sessions.get(&before.id);
+                (
+                    OwnedRowIdentity {
+                        id: before.id,
+                        token: row.map_or(before.token, |row| row.token),
+                        version: self
+                            .state
+                            .carrier_versions
+                            .get(&before.id)
+                            .copied()
+                            .unwrap_or(before.version),
+                    },
+                    row.is_some(),
+                    self.state.pending_create.contains_key(&before.id),
+                )
+            })
+            .collect();
+        let receipt = Arc::new(OwnedMutationReceipt {
+            cell: Arc::downgrade(cell),
+            result: self.result.take(),
+            removed_row: if self.state.sessions.contains_key(&removed_id) {
+                None
+            } else {
+                self.before.get(&removed_id).cloned()
+            },
+            before: self.owned_before.clone(),
+            after,
+            pending_before: self.pending_before.contains(&binding.session_id),
+            pending_after: self.state.pending_create.contains_key(&binding.session_id),
+            initial_b: match action {
+                OwnedAction::FinalizeB { token, generation } => self
+                    .state
+                    .carrier_versions
+                    .get(&binding.session_id)
+                    .map(|version| (*token, *generation, *version)),
+                _ => None,
+            },
+            tracker_pending: true,
+        });
+        let healthy = self.tracker.is_healthy();
+        let mut slot = cell.state.lock().unwrap_or_else(|error| error.into_inner());
+        if !matches!(slot.observation, OwnedMutationObservation::InProgress) {
+            return;
+        }
+        let receipt = slot.partial.get_or_insert(receipt).clone();
+        drop(slot);
+        #[cfg(test)]
+        if completed {
+            self.inject_panic(2);
+        }
+        let mut slot = cell.state.lock().unwrap_or_else(|error| error.into_inner());
+        if !matches!(slot.observation, OwnedMutationObservation::InProgress) {
+            return;
+        }
+        slot.observation = if completed && healthy {
+            OwnedMutationObservation::Applied(receipt)
+        } else {
+            OwnedMutationObservation::ExitedUnknown(if healthy {
+                OwnedMutationFailure::PartialMutation
+            } else {
+                OwnedMutationFailure::TrackerUnavailable
+            })
+        };
+        drop(slot);
+        #[cfg(test)]
+        if completed && healthy {
+            if let Some(probe) = &self.probe {
+                probe.record(
+                    crate::config::sessions_persistence::ProbeEvent::ManagerReceiptFinalized,
+                );
+            }
+        }
+    }
+    #[cfg(test)]
+    fn inject_panic(&self, point: u8) {
+        if self.owned.as_ref().is_some_and(|(cell, _)| {
+            cell.panic_point
+                .compare_exchange(
+                    point,
+                    0,
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                )
+                .is_ok()
+        }) {
+            panic!("owned manager injected panic at {point}");
+        }
+    }
+}
+impl OwnedMutationClaim {
+    #[cfg(test)]
+    pub(super) fn probe(&self) -> Option<crate::config::sessions_persistence::OperationScope> {
+        self.probe.clone()
     }
 }
