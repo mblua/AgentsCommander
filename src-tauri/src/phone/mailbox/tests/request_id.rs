@@ -1,18 +1,10 @@
-use super::{
-    add_mailbox_session_with_shell, app_handle, assert_no_spawn_or_destroy_events,
-    build_raise_hand_message, make_mailbox_fixture, pending_self_clear_len, read_response_json,
-    seed_raise_hand_session, seed_self_handoff, wake_message_to_target, AppOutbox, MailboxFixture,
-    MailboxMockPtyBackend, MailboxPoller, MailboxTestHooks, OutboxMessage, OutboxOrigin,
-    SessionManager, SessionStatus, SettingsState, CANONICAL_WAKE_TO, MAILBOX_MASTER_TOKEN,
-    MAX_DELIVERY_ATTEMPTS,
-};
+use super::*;
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
 use crate::pty::manager::PtyManager;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::Manager;
 use uuid::Uuid;
 
 const V4: &str = "550e8400-e29b-41d4-a716-446655440000";
@@ -98,13 +90,9 @@ impl PtyBackend for CorrelationBackend {
 }
 
 fn observe_backend(fixture: &MailboxFixture) -> Arc<CorrelationBackend> {
-    fixture.app.unmanage::<Arc<Mutex<PtyManager>>>().unwrap();
     let backend = Arc::new(CorrelationBackend::default());
-    assert!(fixture
-        .app
-        .manage(Arc::new(Mutex::new(PtyManager::new_for_test(
-            backend.clone(),
-        )))));
+    let manager = fixture.app.state::<Arc<Mutex<PtyManager>>>();
+    *manager.lock().unwrap() = PtyManager::new_for_test(backend.clone());
     backend
 }
 
@@ -198,7 +186,7 @@ async fn noncanonical_ids_retry_ten_times_before_rejection_without_action_effect
         r"..\escape",
         "C:/escape",
         r"C:\escape",
-        r"\server\share\escape",
+        r"\\server\share\escape",
         "/escape",
         "",
         "legacy-request-id",
