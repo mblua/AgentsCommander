@@ -238,7 +238,7 @@ pub(crate) fn read_merged_top_level_key(path: &Path, key: &str) -> Option<Value>
 /// canonicalize); never falls back to the process CWD.
 pub(crate) fn production_instance_base() -> Option<PathBuf> {
     let base = super::super::instance_base()?;
-    std::fs::canonicalize(&base).ok()
+    crate::filesystem::projects::canonical_project_path(&base).ok()
 }
 
 /// Presence + JSON value of a raw field (absent vs null vs value).
@@ -706,7 +706,7 @@ pub(crate) fn resynced_selected_pair(
     index: usize,
     path: &str,
 ) -> ResolvedPair {
-    let canonical_raw = std::fs::canonicalize(path)
+    let canonical_raw = crate::filesystem::projects::canonical_project_path(Path::new(path))
         .ok()
         .and_then(|c| c.to_str().map(str::to_string));
     ResolvedPair {

@@ -10,7 +10,7 @@ pub async fn pick_folder(default_path: Option<String>) -> Result<Option<String>,
 
     if let Some(ref p) = default_path {
         let path = PathBuf::from(p);
-        if path.exists() {
+        if agent_creation::existing_picker_default(&path) {
             dialog = dialog.set_directory(&path);
         }
     }

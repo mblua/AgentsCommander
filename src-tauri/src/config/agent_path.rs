@@ -12,6 +12,7 @@
 //! Login-shell execution belongs to `process::host::login`; this module owns
 //! environment reads, the skip decision, caching and search-path composition.
 //! The dependency is one-way: login must not import config.
+//! Directory probes delegate to `filesystem::directories`, a zero-outgoing leaf.
 
 #[cfg(test)]
 pub(crate) use crate::process::host::login::parse_sentinel_path;
@@ -45,7 +46,7 @@ pub(crate) fn phase1_dirs(home: Option<&Path>) -> Vec<PathBuf> {
         .iter()
         .map(|dir| home.join(dir))
         .chain(ABSOLUTE_BIN_DIRS.iter().map(PathBuf::from))
-        .filter(|dir| dir.is_dir())
+        .filter(|dir| crate::filesystem::directories::agent_search_directory_exists(dir))
         .collect()
 }
 

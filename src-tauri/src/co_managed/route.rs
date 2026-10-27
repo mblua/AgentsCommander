@@ -32,9 +32,14 @@ pub(crate) fn co_managed_project_paths(settings_paths: &[String], room_root: &Pa
     let Some(project_dir) = room_root.parent().and_then(|ac_root| ac_root.parent()) else {
         return paths;
     };
-    let canon_project = std::fs::canonicalize(project_dir).ok();
+    let canon_project = crate::filesystem::projects::canonical_refresh_project(project_dir).ok();
     let already_present = paths.iter().any(|p| match &canon_project {
-        Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+        Some(canon_target) => {
+            crate::filesystem::projects::canonical_refresh_project(Path::new(p))
+                .ok()
+                .as_ref()
+                == Some(canon_target)
+        }
         None => Path::new(p) == project_dir,
     });
     if !already_present {

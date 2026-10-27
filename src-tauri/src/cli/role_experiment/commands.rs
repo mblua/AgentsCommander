@@ -366,7 +366,7 @@ pub(super) fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<Cli
         Some(args.variant.as_str()),
     )?;
     let role_input = map_err(
-        std::fs::canonicalize(&role_input),
+        crate::filesystem::documents::canonical_experiment_role(&role_input),
         "role_file_missing",
         Some(args.variant.as_str()),
     )?;
@@ -378,7 +378,7 @@ pub(super) fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<Cli
         )]);
     }
     let meta = map_err(
-        std::fs::metadata(&role_input),
+        crate::filesystem::documents::experiment_role_metadata(&role_input),
         "role_file_missing",
         Some(args.variant.as_str()),
     )?;
@@ -417,7 +417,7 @@ pub(super) fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<Cli
     )?;
 
     let bytes = map_err(
-        std::fs::read(&role_input),
+        crate::filesystem::documents::read_experiment_role(&role_input),
         "role_file_read_failed",
         Some(args.variant.as_str()),
     )?;

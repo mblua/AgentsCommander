@@ -9,6 +9,7 @@ use super::{
     ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME, SKILL_INDEX_TOTAL_MAX_BYTES,
 };
 use crate::config::instance_artifacts::CONTEXT_CACHE_DIR_NAME;
+use crate::filesystem::{directories, documents};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -132,7 +133,7 @@ pub(crate) fn build_replica_context_from_config(
             );
         } else {
             let abs = cwd_path.join(raw);
-            if abs.exists() {
+            if documents::configured_context_exists(&abs) {
                 let label = abs
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -444,11 +445,11 @@ pub(crate) fn render_root_repos_list(
             .filter_map(|v| v.as_str())
         {
             let resolved = cwd.join(rel);
-            let path = std::fs::canonicalize(&resolved)
+            let path = directories::canonical_context_repo(&resolved)
                 .map(|p| display_path(&p))
                 .unwrap_or_else(|_| display_path(&resolved));
             let name = resolved.file_name().and_then(|n| n.to_str()).unwrap_or(rel);
-            let status = if resolved.exists() {
+            let status = if directories::context_repo_exists(&resolved) {
                 format!(
                     "Branch: `{}`",
                     sanitize_skill_metadata_for_context(
@@ -576,7 +577,7 @@ pub(crate) fn build_root_agent_context_at(
         .flatten()
         .filter_map(|e| e.as_str())
         .filter(|raw| *raw != CONTEXT_TOKEN_GLOBAL && *raw != CONTEXT_TOKEN_REPOS)
-        .filter(|raw| !cwd_path.join(raw).exists())
+        .filter(|raw| !documents::configured_context_exists(&cwd_path.join(raw)))
         .collect();
     if !missing.is_empty() {
         return Err(format!(
@@ -677,7 +678,7 @@ pub(crate) fn build_direct_matrix_context(
                     );
                 } else {
                     let abs = cwd_path.join(raw);
-                    if abs.exists() {
+                    if documents::configured_context_exists(&abs) {
                         if !resolved_paths_include_path(&resolved_paths, &abs) {
                             let label = abs
                                 .file_name()

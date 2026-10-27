@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
@@ -37,7 +36,7 @@ pub(super) fn paths_equal_for_compare(a: &Path, b: &Path) -> bool {
 }
 
 pub(super) fn canonical_for_compare(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    crate::filesystem::directories::canonical_automation_executable(path)
 }
 
 pub(super) fn now_unix_ms() -> i64 {
@@ -98,7 +97,7 @@ pub fn pid_is_alive(pid: u32) -> bool {
 pub(super) fn pid_is_zombie(pid: libc::pid_t) -> bool {
     // `/proc/<pid>/stat` is `pid (comm) state ...` and `comm` may contain
     // spaces and parentheses, so read the state after the LAST ')'.
-    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+    crate::filesystem::processes::read_process_stat(pid)
         .ok()
         .and_then(|stat| {
             stat.rsplit_once(')')
