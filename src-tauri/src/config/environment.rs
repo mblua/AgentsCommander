@@ -71,5 +71,11 @@ pub(crate) fn spawn_diagnostic_value(key: &str) -> Result<String, std::env::VarE
     std::env::var(key)
 }
 
+/// Reads a named environment value for resume-wrapper reference expansion.
+/// Performs a fresh lookup and preserves absent and non-Unicode errors.
+pub(crate) fn resume_expansion_value(name: &str) -> Result<String, std::env::VarError> {
+    std::env::var(name)
+}
+
 #[cfg(test)]
 mod tests;
