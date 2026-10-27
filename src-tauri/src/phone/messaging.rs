@@ -142,7 +142,12 @@ pub enum MessagingError {
     EmptySlug,
     #[error("filename '{0}' contains path separators or traversal")]
     InvalidFilename(String),
-    #[error("filename '{0}' does not match the required shape")]
+    #[error(
+        "filename '{0}' does not match the required shape: \
+         YYYYMMDD-HHMMSS-<from>-to-<to>-<slug>[.N].md; \
+         if the sender is Root: require root-to immediately after the timestamp, e.g. \
+         20261022-092418-root-to-room21-ac-tech-lead-v5-fixer-installation-confirmed.md"
+    )]
     InvalidShape(String),
     #[error("message file not found: {0}")]
     FileNotFound(String),
