@@ -29,8 +29,15 @@ use tauri::Manager;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
+use crate::app_state::RestoreInProgress;
+use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
+use crate::pty::terminal_snapshot::TerminalSnapshotState;
 use crate::session::manager::SessionManager;
+use crate::session::purge_guard::PurgeGuard;
+use crate::session::warnings::SessionWarningEvents;
+
+pub(crate) use actuation::ApiSendSettings;
 
 /// Hard ceiling on a buffered request body. Inline sends allow a 256 KiB
 /// semantic body plus JSON envelope overhead.
@@ -147,6 +154,16 @@ impl WindowScreenshotLease {
     }
 }
 
+pub(crate) trait ApiRequestResources:
+    ApiSendSettings + SessionWarningEvents + Send + Sync
+{
+    fn required_settings(&self) -> SettingsState;
+    fn try_settings(&self) -> Option<SettingsState>;
+    fn snapshot_state(&self) -> Option<Arc<TerminalSnapshotState>>;
+    fn restore_flag(&self) -> Option<Arc<RestoreInProgress>>;
+    fn purge_guard(&self) -> Option<Arc<PurgeGuard>>;
+}
+
 /// Shared state injected into every handler.
 #[derive(Clone)]
 pub struct ApiState {
@@ -159,9 +176,8 @@ pub struct ApiState {
     pub message_store: Arc<message_store::MessageStore>,
     /// Per-source failed-auth lockout.
     pub lockout: Arc<auth::FailedAuthLockout>,
-    /// Reach to the live daemon (SessionManager / PtyManager / SettingsState)
-    /// for actuation, via `app.state::<...>()`.
-    pub app_handle: tauri::AppHandle,
+    /// Lazy access to the live daemon owners used by request handlers.
+    pub(crate) resources: Arc<dyn ApiRequestResources>,
     /// Live sessions, used by the container session transport.
     pub session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     /// PTY facade, used to reach the container transport backend.
@@ -315,7 +331,7 @@ fn start_server_from(
         store: store.clone(),
         message_store: message_store.clone(),
         lockout: Arc::new(auth::FailedAuthLockout::default()),
-        app_handle: app_handle.clone(),
+        resources: Arc::new(app_handle.clone()),
         session_mgr,
         pty_mgr,
     };

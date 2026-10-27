@@ -753,3 +753,44 @@ pub(crate) async fn is_tcp_socket_listening(addr: SocketAddr) -> bool {
 pub(crate) async fn is_tcp_listening(addr: SocketAddr) -> bool {
     is_tcp_socket_listening(addr).await
 }
+
+impl crate::api::ApiSendSettings for tauri::AppHandle {
+    fn api_send_settings(&self) -> SettingsState {
+        Arc::clone(self.state::<SettingsState>().inner())
+    }
+}
+
+impl crate::api::ApiRequestResources for tauri::AppHandle {
+    fn required_settings(&self) -> SettingsState {
+        Arc::clone(self.state::<SettingsState>().inner())
+    }
+
+    fn try_settings(&self) -> Option<SettingsState> {
+        self.try_state::<SettingsState>()
+            .map(|state| Arc::clone(state.inner()))
+    }
+
+    fn snapshot_state(&self) -> Option<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>> {
+        self.try_state::<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>()
+            .map(|state| Arc::clone(state.inner()))
+    }
+
+    fn restore_flag(&self) -> Option<Arc<crate::app_state::RestoreInProgress>> {
+        self.try_state::<Arc<crate::app_state::RestoreInProgress>>()
+            .map(|state| Arc::clone(state.inner()))
+    }
+
+    fn purge_guard(&self) -> Option<Arc<crate::session::purge_guard::PurgeGuard>> {
+        self.try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+            .map(|state| Arc::clone(state.inner()))
+    }
+}
+
+#[cfg(test)]
+impl crate::api::ApiState {
+    pub(crate) fn resources_from_native(
+        app: tauri::AppHandle,
+    ) -> Arc<dyn crate::api::ApiRequestResources> {
+        Arc::new(app)
+    }
+}

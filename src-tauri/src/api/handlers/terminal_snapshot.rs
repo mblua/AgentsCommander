@@ -5,7 +5,6 @@ use axum::body::{to_bytes, Body};
 use axum::extract::{ConnectInfo, OriginalUri, State};
 use axum::http::{header, HeaderMap, HeaderName, Request, StatusCode};
 use axum::response::Response;
-use tauri::Manager;
 use terminal_snapshot_renderer::{
     decode_bounded, to_ascii_json, TerminalSnapshotReasonCode, MAX_REQUEST_BYTES,
 };
@@ -16,7 +15,7 @@ use crate::api::schema::{TerminalSnapshotApiError, TerminalSnapshotApiRequest};
 use crate::api::ApiState;
 use crate::pty::terminal_snapshot::{
     TerminalSnapshotAuditGuard, TerminalSnapshotRequesterSelector, TerminalSnapshotServiceContext,
-    TerminalSnapshotServiceRequest, TerminalSnapshotSourcePlane, TerminalSnapshotState,
+    TerminalSnapshotServiceRequest, TerminalSnapshotSourcePlane,
 };
 
 pub async fn post(
@@ -57,8 +56,8 @@ async fn post_inner(
     audit: TerminalSnapshotAuditGuard,
 ) -> Result<Response, TerminalSnapshotReasonCode> {
     let snapshot_state = state
-        .app_handle
-        .try_state::<Arc<TerminalSnapshotState>>()
+        .resources
+        .snapshot_state()
         .ok_or(TerminalSnapshotReasonCode::ServiceUnavailable)?;
     let ingress = snapshot_state.try_admit_ingress(format!("api:{}", address.ip()))?;
     if uri.query().is_some() {
@@ -114,23 +113,17 @@ async fn post_inner(
         .map_err(map_bound_authority_error)?;
 
     let settings = state
-        .app_handle
-        .try_state::<crate::config::settings::SettingsState>()
-        .ok_or(TerminalSnapshotReasonCode::ServiceUnavailable)?
-        .inner()
-        .clone();
+        .resources
+        .try_settings()
+        .ok_or(TerminalSnapshotReasonCode::ServiceUnavailable)?;
     let restore = state
-        .app_handle
-        .try_state::<Arc<crate::RestoreInProgress>>()
-        .ok_or(TerminalSnapshotReasonCode::ServiceUnavailable)?
-        .inner()
-        .clone();
+        .resources
+        .restore_flag()
+        .ok_or(TerminalSnapshotReasonCode::ServiceUnavailable)?;
     let purge = state
-        .app_handle
-        .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
-        .ok_or(TerminalSnapshotReasonCode::ServiceUnavailable)?
-        .inner()
-        .clone();
+        .resources
+        .purge_guard()
+        .ok_or(TerminalSnapshotReasonCode::ServiceUnavailable)?;
     let context = TerminalSnapshotServiceContext {
         session_manager: Arc::clone(&state.session_mgr),
         pty_manager: Arc::clone(&state.pty_mgr),
