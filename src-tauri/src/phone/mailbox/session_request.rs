@@ -572,8 +572,32 @@ impl MailboxPoller {
 
         let pending = app.state::<Arc<PendingSelfClear>>().inner().clone();
         if msg.action.as_deref() == Some(super::PLAIN_SELF_CLEAR_ACTION) {
+            #[cfg(not(test))]
+            let inject = {
+                let app = app.clone();
+                move |sid, text: String| async move {
+                    crate::pty::inject::inject_text_into_session(&app, sid, &text).await
+                }
+            };
+            #[cfg(test)]
+            let inject = |_sid, _text: String| async {
+                Err("self-clear synthetic test injector: no PTY input".to_string())
+            };
+            let boundary_app = app.clone();
+            let note_boundary = move |sid| async move {
+                crate::commands::pty::stamp_fresh_boundary_to_session(&boundary_app, sid).await;
+            };
+            let transport = || self.move_to_delivered(app, path, msg);
+            let launch = Self::launch_self_clear_driver::<super::self_clear::Driver>;
             return self
-                .handle_plain_self_clear(app, path, msg, session, clear_text, pending)
+                .handle_plain_self_clear(
+                    path,
+                    msg,
+                    session,
+                    clear_text,
+                    pending,
+                    (launch, transport, inject, note_boundary),
+                )
                 .await;
         }
 
@@ -656,7 +680,7 @@ impl MailboxPoller {
                 // without a mid-flight session-manager lookup. A session's working
                 // directory never changes while its id stays alive.
                 let root = root.to_path_buf();
-                tauri::async_runtime::spawn(async move {
+                Self::launch_self_clear_driver(async move {
                     Self::run_self_clear_after_sustained_idle(
                         &app_clone,
                         session_id,
@@ -828,18 +852,35 @@ impl Drop for PlainReceiptStage {
 }
 
 impl MailboxPoller {
-    async fn handle_plain_self_clear<R: tauri::Runtime>(
+    fn launch_self_clear_driver<F>(driver: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        tauri::async_runtime::spawn(driver);
+    }
+
+    async fn handle_plain_self_clear<L, T, TF, I, IF, B, BF>(
         &self,
-        app: &tauri::AppHandle<R>,
         path: &std::path::Path,
         msg: &OutboxMessage,
         session: SessionInfo,
         clear_text: &'static str,
         pending: Arc<PendingSelfClear>,
-    ) -> Result<(), String> {
+        callbacks: (L, T, I, B),
+    ) -> Result<(), String>
+    where
+        L: FnOnce(super::self_clear::Driver),
+        T: FnOnce() -> TF,
+        TF: std::future::Future<Output = Result<(), String>>,
+        I: FnOnce(Uuid, String) -> IF + Send + 'static,
+        IF: std::future::Future<Output = Result<(), String>> + Send + 'static,
+        B: FnOnce(Uuid) -> BF + Send + 'static,
+        BF: std::future::Future<Output = ()> + Send + 'static,
+    {
         use super::self_clear::{accept, Callbacks, PlainError, Prepared, Request};
         use crate::session::maintenance::PlainIdentity;
         use std::io::Write;
+        let (launch, transport, inject, note_boundary) = callbacks;
         let request_id = match msg
             .request_id
             .as_deref()
@@ -877,18 +918,6 @@ impl MailboxPoller {
             local_dir: crate::config::agent_local_dir_name(),
             clear_text,
         };
-        #[cfg(not(test))]
-        let inject = {
-            let app = app.clone();
-            move |sid, text: String| async move {
-                crate::pty::inject::inject_text_into_session(&app, sid, &text).await
-            }
-        };
-        #[cfg(test)]
-        let inject = |_sid, _text: String| async {
-            Err("self-clear synthetic test injector: no PTY input".to_string())
-        };
-        let boundary_app = app.clone();
         let result = accept(
             request,
             pending,
@@ -928,14 +957,10 @@ impl MailboxPoller {
                 publish_prepared: |stage: &PlainReceiptStage, destination: &std::path::Path| {
                     crate::path_identity::publish_new_file_atomic(&stage.path, destination)
                 },
-                launch: |driver| {
-                    tauri::async_runtime::spawn(driver);
-                },
-                transport: || self.move_to_delivered(app, path, msg),
+                launch,
+                transport,
                 inject,
-                note_boundary: move |sid| async move {
-                    crate::commands::pty::stamp_fresh_boundary_to_session(&boundary_app, sid).await;
-                },
+                note_boundary,
             },
         )
         .await;
