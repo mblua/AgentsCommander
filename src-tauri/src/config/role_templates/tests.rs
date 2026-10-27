@@ -472,3 +472,128 @@ fn copy_dir_recursive_skips_symlink_root() {
         "nothing must be copied from a symlinked root"
     );
 }
+
+#[test]
+fn manifest_codecs_preserve_pretty_bytes_and_raw_read_contract() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let manifest = AgencyTemplatesManifest {
+        repo: "https://example.test/雪\n\"quoted\"".into(),
+        reference: r"réf\branch".into(),
+        commit: "not-a-sha".into(),
+        template_count: 7,
+    };
+    let expected = r#"{
+  "repo": "https://example.test/雪\n\"quoted\"",
+  "ref": "réf\\branch",
+  "commit": "not-a-sha",
+  "templateCount": 7
+}"#;
+    write_staged_agency_manifest(tmp.path(), &manifest).expect("staged write");
+    let path = tmp.path().join(AGENCY_MANIFEST_FILE);
+    assert_eq!(std::fs::read(&path).unwrap(), expected.as_bytes());
+    write_normalized_agency_manifest(tmp.path(), &manifest).expect("normalized write");
+    assert_eq!(std::fs::read(&path).unwrap(), expected.as_bytes());
+    for read in [read_staged_agency_manifest, read_cached_agency_manifest] {
+        let actual = read(tmp.path()).expect("raw reader accepts invalid commit");
+        assert_eq!(actual.repo, manifest.repo);
+        assert_eq!(actual.reference, manifest.reference);
+        assert_eq!(actual.commit, manifest.commit);
+        assert_eq!(actual.template_count, manifest.template_count);
+    }
+}
+
+#[test]
+fn manifest_raw_read_errors_keep_context_and_local_error_text() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    for root in [tmp.path().join("missing"), tmp.path().to_path_buf()] {
+        let error = std::fs::read_to_string(root.join(AGENCY_MANIFEST_FILE)).unwrap_err();
+        assert_eq!(
+            read_staged_agency_manifest(&root).unwrap_err(),
+            format!("Failed to read staged manifest: {error}")
+        );
+        assert_eq!(
+            read_cached_agency_manifest(&root).unwrap_err(),
+            format!("Failed to read cached manifest: {error}")
+        );
+    }
+    let path = tmp.path().join(AGENCY_MANIFEST_FILE);
+    std::fs::write(&path, [255]).unwrap();
+    let error = std::fs::read_to_string(&path).unwrap_err();
+    assert_eq!(
+        read_staged_agency_manifest(tmp.path()).unwrap_err(),
+        format!("Failed to read staged manifest: {error}")
+    );
+    assert_eq!(
+        read_cached_agency_manifest(tmp.path()).unwrap_err(),
+        format!("Failed to read cached manifest: {error}")
+    );
+    std::fs::write(&path, "{bad").unwrap();
+    let error = serde_json::from_str::<AgencyTemplatesManifest>("{bad").unwrap_err();
+    assert_eq!(
+        read_staged_agency_manifest(tmp.path()).unwrap_err(),
+        format!("Failed to parse staged manifest: {error}")
+    );
+    assert_eq!(
+        read_cached_agency_manifest(tmp.path()).unwrap_err(),
+        format!("Failed to parse cached manifest: {error}")
+    );
+}
+
+#[test]
+fn manifest_writers_preserve_contextual_directory_failure() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    seed_agency_cache(tmp.path(), "# Body\n");
+    let manifest = read_agency_manifest(tmp.path()).unwrap().unwrap();
+    let root = tmp.path().join("write-errors");
+    std::fs::create_dir_all(root.join(AGENCY_MANIFEST_FILE)).unwrap();
+    let encoded = serde_json::to_string_pretty(&manifest).unwrap();
+    let error = std::fs::write(root.join(AGENCY_MANIFEST_FILE), encoded).unwrap_err();
+    assert_eq!(
+        write_staged_agency_manifest(&root, &manifest).unwrap_err(),
+        format!("Failed to write staged manifest: {error}")
+    );
+    assert_eq!(
+        write_normalized_agency_manifest(&root, &manifest).unwrap_err(),
+        format!("Failed to write Agency manifest: {error}")
+    );
+}
+
+#[test]
+fn manifest_validated_reader_keeps_metadata_and_commit_rejections() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    assert!(read_agency_manifest(tmp.path()).unwrap().is_none());
+    let root = agency_templates_dir(tmp.path());
+    std::fs::create_dir_all(&root).unwrap();
+    assert_eq!(
+        read_agency_manifest(tmp.path()).unwrap_err(),
+        "manifestMissing"
+    );
+    let path = root.join(AGENCY_MANIFEST_FILE);
+    std::fs::create_dir(&path).unwrap();
+    assert_eq!(
+        read_agency_manifest(tmp.path()).unwrap_err(),
+        "manifestMissing"
+    );
+    std::fs::remove_dir(&path).unwrap();
+    seed_agency_cache(tmp.path(), "# Body\n");
+    let mut manifest = read_staged_agency_manifest(&root).unwrap();
+    manifest.commit = "not-a-sha".into();
+    write_staged_agency_manifest(&root, &manifest).unwrap();
+    assert_eq!(
+        read_cached_agency_manifest(&root).unwrap().commit,
+        "not-a-sha"
+    );
+    assert_eq!(
+        read_agency_manifest(tmp.path()).unwrap_err(),
+        "invalidCommit"
+    );
+    assert_eq!(
+        agency_templates_status(tmp.path()).reason.as_deref(),
+        Some("invalidCommit")
+    );
+    std::fs::write(&path, [255]).unwrap();
+    assert_eq!(
+        read_agency_manifest(tmp.path()).unwrap_err(),
+        "manifestMalformed"
+    );
+}
