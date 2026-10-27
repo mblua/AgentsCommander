@@ -306,15 +306,19 @@ fn pending_self_clear_set_is_idempotent() {
     let pending = crate::PendingSelfClear::default();
     let id = Uuid::new_v4();
     {
-        let mut g = pending.0.lock().unwrap();
-        assert!(g.insert(id), "first insert is newly-inserted");
-        assert!(!g.insert(id), "second insert collapses (already_queued)");
-        assert_eq!(g.len(), 1);
+        assert!(pending.seed_legacy(id), "first insert is newly-inserted");
+        assert!(
+            !pending.seed_legacy(id),
+            "second insert collapses (already_queued)"
+        );
+        assert_eq!(pending.len(), 1);
     }
     {
-        let mut g = pending.0.lock().unwrap();
-        assert!(g.remove(&id));
-        assert!(g.insert(id), "re-issue after removal queues again");
+        assert!(pending.remove_legacy_fixture(id));
+        assert!(
+            pending.seed_legacy(id),
+            "re-issue after removal queues again"
+        );
     }
 }
 

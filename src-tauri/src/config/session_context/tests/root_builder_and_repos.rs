@@ -168,7 +168,10 @@ fn root_context_builder_emits_the_prologue_without_any_config() {
     let built = build_root_agent_context_at(&path_string(&root), temp.path(), None, false)
         .expect("build root context");
     let content = std::fs::read_to_string(&built).expect("read built context");
-    assert_eq!(content, "");
+    assert_eq!(
+        content,
+        super::super::default_context::SELF_CLEAR_MANUAL_SECTION
+    );
 }
 
 #[test]
@@ -555,4 +558,27 @@ fn agent_repos_both_tokens_render_exactly_one_block() {
 
     assert_eq!(count_section_headings(&content, "# Agent Repos"), 1);
     assert_no_raw_template_placeholders(&content);
+}
+
+#[test]
+fn root_manual_clear_survives_custom_template_and_auto_setting_once() {
+    for auto in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("ac-root-agent");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME),
+            "CUSTOM_ROOT_TEMPLATE",
+        )
+        .unwrap();
+        std::fs::write(root.join("Role.md"), "ROOT_ROLE").unwrap();
+        let path =
+            build_root_agent_context_at(&path_string(&root), temp.path(), None, auto).unwrap();
+        let content = std::fs::read_to_string(path).unwrap();
+        assert_eq!(content.matches("## Manual context clear").count(), 1);
+        assert!(content.contains("CUSTOM_ROOT_TEMPLATE"));
+        assert!(content.contains("ROOT_ROLE"));
+        assert!(content.contains("including Root"));
+        assert!(content.contains("self-clear ON or OFF"));
+    }
 }
