@@ -2537,6 +2537,7 @@ agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::pty:
 agentscommander_lib::pty::docker_runtime::execution -> agentscommander_lib::pty::docker_runtime
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::config::settings
+agentscommander_lib::pty::git_watcher -> agentscommander_lib::filesystem::repositories
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::process::git::watcher
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::session::manager
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::session::session
@@ -2652,6 +2653,7 @@ agentscommander_lib::pty::remote_watcher::seams -> agentscommander_lib::pty::rem
 agentscommander_lib::pty::remote_watcher::sweeper -> agentscommander_lib::config::remote_activity_cache
 agentscommander_lib::pty::remote_watcher::sweeper -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::pty::remote_watcher::sweeper -> agentscommander_lib::config::settings
+agentscommander_lib::pty::remote_watcher::sweeper -> agentscommander_lib::filesystem::repositories
 agentscommander_lib::pty::remote_watcher::sweeper -> agentscommander_lib::pty::git_watcher
 agentscommander_lib::pty::remote_watcher::sweeper -> agentscommander_lib::pty::remote_watcher
 agentscommander_lib::pty::remote_watcher::sweeper -> agentscommander_lib::session::manager
