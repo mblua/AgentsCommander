@@ -17,6 +17,7 @@ use super::{
 use crate::config::coding_agent_profiles::{
     apply_replica_selection_default, read_replica_selection_default,
 };
+use crate::config::entity_creation::directories::{clone_target_present, replica_role_present};
 use crate::config::replica_identity::{
     normalize_wg_replica_context_entries, repair_wg_replica_config_value, ROLE_MD_FILENAME,
     WG_REPLICA_REQUIRED_CONTEXT,
@@ -28,43 +29,11 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn list_workgroup_dirs(ac_root: &Path) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(ac_root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if parse_team_from_workgroup_name(name).is_ok() {
-                dirs.push(path);
-            }
-        }
-    }
-    dirs.sort_by(|a, b| {
-        a.file_name()
-            .unwrap_or_default()
-            .cmp(b.file_name().unwrap_or_default())
-    });
-    dirs
+    crate::config::entity_creation::directories::workgroup_candidates(ac_root)
 }
 
 pub(crate) fn parse_team_from_workgroup_name(workgroup_name: &str) -> Result<String, String> {
-    let rest = crate::config::entity_prefix::strip_entity_prefix(workgroup_name)
-        .ok_or_else(|| format!("Invalid room name '{}'", workgroup_name))?;
-    let Some((number, team)) = rest.split_once('-') else {
-        return Err(format!("Invalid room name '{}'", workgroup_name));
-    };
-    let parsed = number
-        .parse::<u32>()
-        .map_err(|_| format!("Invalid room number in '{}'", workgroup_name))?;
-    if parsed == 0 || team.is_empty() {
-        return Err(format!("Invalid room name '{}'", workgroup_name));
-    }
-    validate_existing_name(team, "Team")?;
-    Ok(team.to_string())
+    crate::config::entity_creation::directories::parse_team_from_workgroup_name(workgroup_name)
 }
 
 pub(crate) fn agent_ref_bare_name(agent_ref: &str) -> String {
@@ -291,7 +260,7 @@ pub(super) fn initialize_replica_config_on_disk(
             &existing_context,
             &["$AGENTSCOMMANDER_CONTEXT"],
             &identity.identity,
-            identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
+            replica_role_present(&identity.matrix_dir.join(ROLE_MD_FILENAME)),
         ));
         if !had_config {
             if let Some(default) = read_replica_selection_default(&identity.matrix_dir)? {
@@ -597,7 +566,7 @@ async fn clone_missing_repos_for_workgroup_traced(
         }
         let dir_name = format!("repo-{}", repo_dir_name_from_url(&repo.url));
         let target = wg_dir.join(&dir_name);
-        if target.exists() {
+        if clone_target_present(&target) {
             if let Some(stage) = &repos_stage {
                 stage.skip_repo(index + 1, Reason::TargetExists);
             }

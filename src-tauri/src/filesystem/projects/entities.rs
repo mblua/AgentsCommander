@@ -1,3 +1,4 @@
+pub(crate) mod directories;
 use std::path::Path;
 
 pub(crate) fn agent_matrix_directory_present(path: &Path) -> bool {
