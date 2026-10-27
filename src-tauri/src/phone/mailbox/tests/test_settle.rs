@@ -1,5 +1,7 @@
 use super::*;
 
+mod root_protection;
+
 #[test]
 fn gate_accepts_peer_after_resize_settles() {
     let quiet = Duration::from_millis(3000);
@@ -290,6 +292,7 @@ async fn process_message_purge_wg_with_master_token_and_forged_from_is_rejected(
 /// purge with `failed_root_guard` and destroy nothing.
 #[tokio::test]
 async fn root_guard_aborts_purge() {
+    std::fs::create_dir_all(crate::config::root_agent::root_agent_dir().unwrap()).unwrap();
     let temp = tempfile::TempDir::new().unwrap();
     let (sender_cwd, peer_cwd) = setup_purge_fixture(&temp, "dev-team");
 
@@ -376,6 +379,7 @@ async fn root_guard_aborts_purge() {
 /// gate is actually exercised, not vacuously passed.
 #[tokio::test]
 async fn quiet_period_is_clamped_to_floor() {
+    std::fs::create_dir_all(crate::config::root_agent::root_agent_dir().unwrap()).unwrap();
     let temp = tempfile::TempDir::new().unwrap();
     let (sender_cwd, peer_cwd) = setup_purge_fixture(&temp, "dev-team");
 
