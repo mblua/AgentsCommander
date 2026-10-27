@@ -32,7 +32,9 @@ function arcCount(bytes) {
   let previous;
   for (const line of lines) {
     const pair = line.split(' -> ');
-    if (pair.length !== 2 || pair.some((id) => !id || /[\s\x00]/u.test(id))) {
+    const invalid = (id) => !id || /\s/u.test(id)
+      || id.includes(String.fromCharCode(0));
+    if (pair.length !== 2 || pair.some(invalid)) {
       throw new GateError('projection has an invalid arc');
     }
     if (pair[0] === pair[1]) throw new GateError('projection contains a self-arc');
@@ -97,7 +99,9 @@ function stubRunner({ detectorExit = 0, candidate = RECORD_TEXT,
   };
 }
 
-async function publicationCase(options = {}, failure, prior = RECORD_TEXT, publicationFs) {
+async function publicationCase(options, failure, prior, publicationFs) {
+  if (options === undefined) options = {};
+  if (prior === undefined) prior = RECORD_TEXT;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'module-arcs-self-'));
   try {
     const recordPath = path.join(dir, 'module-arcs.txt');
