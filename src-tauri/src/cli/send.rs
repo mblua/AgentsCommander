@@ -15,6 +15,17 @@ use pty_input::{
     ExpectedPtyArtifact,
 };
 
+fn validate_send_filename(
+    filename: &str,
+    root_is_root_agent: bool,
+) -> Result<(), crate::phone::messaging::MessagingError> {
+    if root_is_root_agent {
+        crate::phone::messaging::validate_root_notification_filename(filename)
+    } else {
+        crate::phone::messaging::validate_filename_only(filename)
+    }
+}
+
 #[derive(Args)]
 #[group(skip)]
 #[command(group(
@@ -41,6 +52,20 @@ verified Room orchestrator replica names returned by list-peers-lean. \
 Orchestrator --to targets may include the Root Agent canonical name \
 `agentscommander://root-agent`; only identity-verified Room orchestrator \
 replicas may use it.\n\n\
+FILENAME FORMAT: YYYYMMDD-HHMMSS-<from>-to-<to>-<slug>[.N].md. \
+Use exactly 8/6 ASCII digits for date/time (UTC convention); calendar dates and time ranges \
+are not checked. from/to/slug use non-empty [a-z0-9]+ segments joined by hyphens. The literal \
+to separator needs at least one segment before and two after it (recipient and slug). \
+Names do not authenticate identities; routing uses --to and the authenticated sender. \
+Use lowercase .md; no /, backslash, colon, traversal or other dots except optional .N. \
+.N is one/two digits with value 1-99: .1, .01 and .99 pass; .0, .00 and .100 fail. \
+Use a kebab-case slug: sanitize_slug generates up to 50 characters, but existing filenames \
+have no validator slug-length limit. Root senders require root-to immediately after the \
+timestamp; root-agent-to is invalid for Root. Room short names use room21-ac-dev-rust-v5; \
+legacy wg21-ac-dev-rust-v5 remains supported.\n\n\
+EXAMPLES:\n\
+20261022-092418-root-to-room21-ac-tech-lead-v5-fixer-installation-confirmed.md\n\
+20261022-093000-room21-ac-dev-rust-v5-to-room21-ac-tech-lead-v5-status.1.md\n\n\
 PRIVILEGED PTY INPUT: --pty-input and --pty-input-stdin submit validated exact UTF-8 text to one \
 authorized coding-agent PTY. This never directly executes a host or container OS shell command. \
 The caller's shell performs quoting and expansion before AC receives an argument, so prefer stdin \
@@ -54,7 +79,13 @@ durably queued in the outbox and is typically still delivered afterwards (e.g. w
 cold-spawn an idle peer). Exit 1 on confirmation timeout does NOT mean the message was lost; \
 verify the outbox instead of re-sending. --confirm-timeout is distinct from --timeout, which \
 bounds only the --get-output response wait. On enqueue, the CLI prints `Queued: <message-id>` to \
-stdout; a missing `Queued:` line means the message was NOT enqueued.")]
+stdout; a missing `Queued:` line means the message was NOT enqueued. \
+Queued confirms enqueue only, not delivery or a reply. Delivered confirms system delivery, \
+not reading or completed work. Keep the message ID and check delivered/<id>.json, \
+rejected/<id>.json and rejected/<id>.reason.txt in the effective outbox before resending. \
+The effective outbox is --outbox if supplied; otherwise a master token uses the app outbox \
+when available, falling back to <root>/<local-dir>/outbox. Session tokens use \
+<root>/<local-dir>/outbox. local-dir is configured per instance.")]
 pub struct SendArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION
@@ -68,7 +99,9 @@ pub struct SendArgs {
     pub to: String,
 
     /// Filename (not path) of a message file that already exists in
-    /// <room-root>/messaging/. Sender writes the file BEFORE calling send.
+    /// <room-root>/messaging/ or <root-agent-dir>/messaging/ for Root.
+    /// Use YYYYMMDD-HHMMSS-<from>-to-<to>-<slug>[.N].md; Root requires root-to.
+    /// Sender writes the file BEFORE calling send. See FILENAME FORMAT below.
     /// Mutually exclusive with --command and the PTY input forms.
     #[arg(long)]
     pub send: Option<String>,
@@ -587,7 +620,7 @@ pub fn execute(args: SendArgs) -> i32 {
 
     // Resolve message body from --send (file-based messaging per plan §4.1 [r2])
     let message_body = if let Some(ref filename) = args.send {
-        if let Err(e) = crate::phone::messaging::validate_filename_only(filename) {
+        if let Err(e) = validate_send_filename(filename, root_is_root_agent) {
             eprintln!("Error: {}", e);
             return 1;
         }

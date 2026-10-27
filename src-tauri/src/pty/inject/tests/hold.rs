@@ -434,6 +434,141 @@ async fn supported_restart_resume_wrapper_remains_exempt_under_hold() {
 }
 
 #[tokio::test]
+async fn issue_3286_queued_notice_exited_writes_nothing() {
+    use std::future::Future;
+    let (app, id, backend) = supported_agent_typing_hold_app("claude").await;
+    let manager = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .read()
+        .await
+        .clone();
+    manager.mark_idle(id).await;
+    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let writer = PtyManager::acquire_input_writer(&pty, id).await.unwrap();
+    let calls = std::cell::Cell::new(0);
+    let mut delivery = std::pin::pin!(inject_internal_notice_into_supported_agent_session(
+        app.handle(),
+        id,
+        "notice",
+        |_| {
+            calls.set(calls.get() + 1);
+            Ok(())
+        },
+    ));
+    {
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(delivery.as_mut().poll(&mut context).is_pending());
+    }
+    assert_eq!(calls.get(), 0);
+    assert!(recorded_writes(&backend, id).is_empty());
+    manager.mark_exited(id, 0).await;
+    assert!(matches!(
+        manager.get_session(id).await.unwrap().status,
+        SessionStatus::Exited(0)
+    ));
+    drop(writer);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(15), delivery)
+        .await
+        .unwrap();
+    assert!(recorded_writes(&backend, id).is_empty());
+    assert_eq!(calls.get(), 0);
+    assert_eq!(result, Err(format!("Session {id} exited before injection")));
+}
+
+#[tokio::test]
+async fn issue_3286_queued_notice_root_writes_nothing() {
+    use std::future::Future;
+    let (app, id, backend) = supported_agent_typing_hold_app("claude").await;
+    let manager = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .read()
+        .await
+        .clone();
+    manager.mark_idle(id).await;
+    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let writer = PtyManager::acquire_input_writer(&pty, id).await.unwrap();
+    let calls = std::cell::Cell::new(0);
+    let mut delivery = std::pin::pin!(inject_internal_notice_into_supported_agent_session(
+        app.handle(),
+        id,
+        "notice",
+        |_| {
+            calls.set(calls.get() + 1);
+            Ok(())
+        },
+    ));
+    {
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(delivery.as_mut().poll(&mut context).is_pending());
+    }
+    assert_eq!(calls.get(), 0);
+    assert!(recorded_writes(&backend, id).is_empty());
+    manager.set_is_root_agent(id, true).await;
+    assert!(manager.get_session(id).await.unwrap().is_root_agent);
+    drop(writer);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(15), delivery)
+        .await
+        .unwrap();
+    assert!(recorded_writes(&backend, id).is_empty());
+    assert_eq!(calls.get(), 0);
+    assert_eq!(
+        result,
+        Err(format!(
+            "Session {id} is a root session, not a supported orchestrator agent"
+        ))
+    );
+}
+
+#[tokio::test]
+async fn issue_3286_queued_notice_admissible_keeps_bytes() {
+    use std::future::Future;
+    for becomes_busy in [false, true] {
+        let (app, id, backend) = supported_agent_typing_hold_app("claude").await;
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        manager.mark_idle(id).await;
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let writer = PtyManager::acquire_input_writer(&pty, id).await.unwrap();
+        let calls = std::cell::Cell::new(0);
+        let mut delivery = std::pin::pin!(inject_internal_notice_into_supported_agent_session(
+            app.handle(),
+            id,
+            "notice",
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+        ));
+        {
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(delivery.as_mut().poll(&mut context).is_pending());
+        }
+        assert_eq!(calls.get(), 0);
+        assert!(recorded_writes(&backend, id).is_empty());
+        if becomes_busy {
+            manager.mark_busy(id).await;
+        }
+        assert_eq!(
+            manager.get_session(id).await.unwrap().waiting_for_input,
+            !becomes_busy
+        );
+        drop(writer);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(15), delivery)
+            .await
+            .unwrap();
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            recorded_writes(&backend, id),
+            vec![b"notice".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
+        );
+    }
+}
+
+#[tokio::test]
 async fn internal_notice_queued_behind_writer_rechecks_hold() {
     let (app, id, backend) = supported_agent_typing_hold_app("claude").await;
     let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
