@@ -616,7 +616,16 @@ fn issue_1867_isolation_source_contract() {
         ),
         (
             "cli_workgroup_team.rs",
-            include_str!("cli_workgroup_team.rs"),
+            concat!(
+                include_str!("cli_workgroup_team/main.rs"),
+                include_str!("cli_workgroup_team/workgroup.rs"),
+                include_str!("cli_workgroup_team/membership.rs"),
+                include_str!("cli_workgroup_team/team.rs"),
+                include_str!("cli_workgroup_team/scope.rs"),
+                include_str!("cli_workgroup_team/production.rs"),
+                include_str!("cli_workgroup_team/room.rs"),
+                include_str!("cli_workgroup_team/activity.rs"),
+            ),
             11,
             &[
                 ("run_json", 1),
