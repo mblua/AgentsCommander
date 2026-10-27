@@ -286,6 +286,7 @@ pub(crate) fn make_lifecycle_fixture() -> LifecycleFixture {
         &listener_errors,
         &cleanup,
         None,
+        agentscommander_lib::AppOwners::new(),
     );
 
     LifecycleFixture {
@@ -308,6 +309,7 @@ pub(crate) fn make_lifecycle_fixture() -> LifecycleFixture {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn make_test_app(
     repo_root: &Path,
     captured_output: &Arc<Mutex<HashMap<String, Vec<u8>>>>,
@@ -316,13 +318,17 @@ pub(crate) fn make_test_app(
     listener_errors: &Arc<Mutex<Vec<String>>>,
     _cleanup: &LifecycleCleanup,
     session_mgr_override: Option<Arc<tokio::sync::RwLock<SessionManager>>>,
+    owners: agentscommander_lib::AppOwners,
 ) -> (
     tauri::App,
     Arc<tokio::sync::RwLock<SessionManager>>,
     Arc<Mutex<PtyManager>>,
 ) {
-    let session_mgr = session_mgr_override
-        .unwrap_or_else(|| Arc::new(tokio::sync::RwLock::new(SessionManager::new())));
+    let session_mgr = session_mgr_override.unwrap_or_else(|| {
+        Arc::new(tokio::sync::RwLock::new(
+            SessionManager::with_activity_coalescer(owners.activity.clone()),
+        ))
+    });
     let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
     let tg_mgr: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
         TelegramBridgeManager::new(Arc::clone(&output_senders)),
@@ -336,17 +342,24 @@ pub(crate) fn make_test_app(
         s
     });
     let git_app = Box::leak(Box::new(
-        agentscommander_lib::test_support::test_builder()
+        agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build git watcher handle app"),
     ));
-    let git_watcher = GitWatcher::new(Arc::clone(&session_mgr), git_app.handle().clone());
-    let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
+    let git_watcher = GitWatcher::with_state(
+        Arc::clone(&session_mgr),
+        git_app.handle().clone(),
+        owners.git.clone(),
+    );
+    let pty_mgr = Arc::new(Mutex::new(PtyManager::with_owners(
         output_senders,
         idle_detector,
         Arc::clone(&git_watcher),
         None,
         None,
+        #[cfg(windows)]
+        owners.git_guard.clone(),
+        owners.spawn.clone(),
     )));
 
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
@@ -363,7 +376,7 @@ pub(crate) fn make_test_app(
     let captured_sequences = Arc::clone(captured_sequences);
     let captured_deliveries = Arc::clone(captured_deliveries);
     let listener_errors = Arc::clone(listener_errors);
-    let app = agentscommander_lib::test_support::test_builder()
+    let app = agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
         .manage(MasterToken::new("pty-lifecycle-master-token".into()))
         .manage(AppOutbox::new(
             repo_root.join(".app-outbox").to_string_lossy().to_string(),
@@ -384,7 +397,9 @@ pub(crate) fn make_test_app(
         .manage(spec_board_state)
         .manage(config_seed_lock)
         .manage(git_watcher)
-        .manage(Arc::new(ResourceMonitorState::new()))
+        .manage(Arc::new(ResourceMonitorState::with_spawn_registry(
+            owners.spawn.clone(),
+        )))
         .manage(Arc::clone(&pty_mgr))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build pty lifecycle test app");

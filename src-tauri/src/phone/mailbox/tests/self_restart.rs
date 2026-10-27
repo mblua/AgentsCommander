@@ -51,7 +51,7 @@ async fn handle_self_restart_unlaunchable_pinned_profile_is_rejected_synchronous
             .insert("ghost".to_string(), cells);
     }
     seed_self_handoff(&cwd);
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
 
     // The unlaunchable half: letter "B" composes an empty effective command.
     let (_bad_id, bad_token) =
@@ -137,7 +137,7 @@ async fn handle_self_restart_inherited_profile_response_carries_null_profile() {
         Some(token.to_string()),
         SELF_RESTART_TEST_FROM,
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_restart(&app, &path, &msg, false)
         .await

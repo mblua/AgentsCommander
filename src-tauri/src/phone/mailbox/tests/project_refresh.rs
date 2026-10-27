@@ -468,7 +468,7 @@ async fn remote_pi_clear_command_branch_writes_new_emits_logical_event_and_stamp
     fixture.app.listen_any("message_delivered", move |event| {
         captured.lock().unwrap().push(event.payload().to_string());
     });
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     let message = logical_command_message("clear", "");
 
     poller
@@ -535,7 +535,7 @@ async fn typing_hold_armed_during_post_clear_wait_does_not_drop_followup_body() 
         captured.lock().unwrap().push(event.payload().to_string());
     });
 
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     let message = logical_command_message("clear", "follow-up body");
     poller
         .inject_into_pty(

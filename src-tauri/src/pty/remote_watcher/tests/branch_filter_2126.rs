@@ -39,6 +39,7 @@ async fn incident_replay_identical_branch_and_default_get_no_notice() {
             branch: Some("fix/2124-ignore-short-idle-bursts".to_string()),
             dirty: false,
         }),
+        harness.git_state.as_ref(),
     );
     harness.set_work(&[default_repo.clone(), feature_repo.clone()]);
     {
@@ -124,6 +125,7 @@ async fn non_identical_branch_notifies_only_its_own_rooms() {
             branch: Some("fix/2124-ignore-short-idle-bursts".to_string()),
             dirty: false,
         }),
+        harness.git_state.as_ref(),
     );
     harness.set_work(&[default_repo.clone(), feature_repo.clone()]);
     {
@@ -277,6 +279,7 @@ async fn unresolved_default_branch_does_not_suppress() {
             branch: Some("fix/x".to_string()),
             dirty: false,
         }),
+        harness.git_state.as_ref(),
     );
     harness.set_work(std::slice::from_ref(&repo));
     {
@@ -354,6 +357,7 @@ async fn identity_compare_failure_is_unknown() {
             branch: Some("fix/x".to_string()),
             dirty: false,
         }),
+        harness.git_state.as_ref(),
     );
     harness.set_work(std::slice::from_ref(&repo));
     {
@@ -402,6 +406,7 @@ async fn branch_change_on_same_commit_retires_the_key_without_a_transition() {
             branch: Some("fix/x".to_string()),
             dirty: false,
         }),
+        harness.git_state.as_ref(),
     );
     tick(&mut now, &mut wall, 60);
     harness.round(now, wall).await;
@@ -588,6 +593,7 @@ async fn current_to_stale_emits_once_only() {
             branch: Some("fix/2131".to_string()),
             dirty: false,
         }),
+        harness.git_state.as_ref(),
     );
     harness.set_work(&[repo]);
     {

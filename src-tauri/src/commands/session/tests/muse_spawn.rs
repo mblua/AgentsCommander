@@ -272,8 +272,9 @@ async fn muse_post_spawn_nonzero_exit_is_reported_once_without_fresh_fallback() 
     let settings = muse_test_settings(&muse_path_str);
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     // The real local backend: the child monitor and exit attribution live in it.
+    let owners = crate::AppOwners::new();
     let git_app = Box::leak(Box::new(
-        crate::test_support::test_builder()
+        crate::test_support::test_builder_with_owners(owners.clone())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build git watcher app"),
     ));
@@ -284,11 +285,14 @@ async fn muse_post_spawn_nonzero_exit_is_reported_once_without_fresh_fallback() 
     let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
     let output_senders: crate::telegram::manager::OutputSenderMap =
         Arc::new(Mutex::new(HashMap::new()));
-    let backend = Arc::new(crate::pty::local_backend::LocalProcessBackend::new(
+    let backend = Arc::new(crate::pty::local_backend::LocalProcessBackend::with_owners(
         output_senders,
         idle_detector,
         git_watcher,
         None,
+        #[cfg(windows)]
+        owners.git_guard.clone(),
+        owners.spawn.clone(),
     ));
     let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
         backend,
@@ -347,7 +351,7 @@ async fn muse_post_spawn_nonzero_exit_is_reported_once_without_fresh_fallback() 
     assert_eq!(payload["agentKind"], serde_json::json!("muse"));
 
     // The monitor observes the bounded child exit and reports it once.
-    let record = crate::pty::spawn_diagnostics::record_for(id)
+    let record = crate::pty::spawn_diagnostics::record_for(id, owners.spawn.as_ref())
         .expect("launch provenance is recorded for the spawned child");
     assert_eq!(
         record.argv(),

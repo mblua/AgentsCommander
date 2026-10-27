@@ -14,7 +14,7 @@ async fn raise_hand_process_message_bad_tokens_are_rejected_not_false() {
         let rid = format!("rid-rh-bad-token-{idx}");
         let (path, _msg) =
             build_raise_hand_message(&fixture.sender_cwd, &msg_id, &rid, Some(token));
-        let poller = MailboxPoller::new();
+        let poller = MailboxPoller::default();
         poller
             .process_message(&app, &path, OutboxOrigin::Replica)
             .await
@@ -131,7 +131,7 @@ async fn handle_self_clear_valid_token_queues() {
 
     let (path, msg) =
         build_self_clear_message(&cwd, "msg-sc-1", "rid-sc-1", Some(token.to_string()));
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_clear(&app, &path, &msg, false)
         .await
@@ -171,7 +171,7 @@ async fn handle_self_clear_pi_valid_token_queues_and_archives_once() {
     std::fs::write(cwd.join("SELF-FORGET.md"), "Pi forgotten notes").unwrap();
     let (path, message) =
         build_self_clear_message(&cwd, "msg-sc-pi", "rid-sc-pi", Some(token.to_string()));
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
 
     poller
         .handle_self_clear(&app, &path, &message, false)
@@ -201,7 +201,7 @@ async fn handle_self_clear_second_request_is_already_queued() {
 
     let (path1, msg1) =
         build_self_clear_message(&cwd, "msg-sc-a", "rid-sc-a", Some(token.to_string()));
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_clear(&app, &path1, &msg1, false)
         .await
@@ -275,7 +275,7 @@ async fn handle_self_clear_missing_self_handoff_is_rejected() {
         "rid-sc-nohandoff",
         Some(token.to_string()),
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_clear(&app, &path, &msg, false)
         .await
@@ -321,7 +321,7 @@ async fn handle_self_clear_no_forget_md_still_queues() {
         "rid-sc-noforget",
         Some(token.to_string()),
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_clear(&app, &path, &msg, false)
         .await
@@ -353,7 +353,7 @@ async fn handle_self_clear_invalid_token_is_rejected() {
         "rid-sc-bad",
         Some(Uuid::new_v4().to_string()),
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_clear(&app, &path, &msg, false)
         .await
@@ -385,7 +385,7 @@ async fn handle_self_clear_non_coding_shell_is_rejected() {
         "rid-sc-shell",
         Some(token.to_string()),
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_clear(&app, &path, &msg, false)
         .await
@@ -422,7 +422,7 @@ async fn handle_self_clear_root_agent_is_allowed() {
 
     let (path, msg) =
         build_self_clear_message(&cwd, "msg-sc-root", "rid-sc-root", Some(token.to_string()));
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_clear(&app, &path, &msg, false)
         .await
@@ -473,7 +473,7 @@ async fn handle_self_switch_valid_token_queues_with_resolved_targets() {
         Some("c"),
         "proj-a:wg-1-dev-team/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_handoff_switch(&app, &path, &msg, false)
         .await
@@ -516,7 +516,7 @@ async fn handle_self_switch_unsupported_source_rejected_before_other_work() {
         Some("not-a-profile"),
         "proj-a:wg-1-dev-team/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
 
     poller
         .handle_self_handoff_switch(&app, &path, &message, false)

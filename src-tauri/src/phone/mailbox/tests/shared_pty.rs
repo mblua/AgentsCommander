@@ -52,7 +52,7 @@ async fn shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_targe
 
     tokio::time::timeout(
         Duration::from_secs(10),
-        MailboxPoller::new().dispatch_pty_input_operation(
+        MailboxPoller::default().dispatch_pty_input_operation(
             &app,
             &state,
             &injection_id,
@@ -422,7 +422,7 @@ async fn shared_pty_engine_rejects_busy_target_without_any_write() {
     let injection_id =
         enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"must not write");
 
-    MailboxPoller::new()
+    MailboxPoller::default()
         .dispatch_pty_input_operation(
             &app,
             &state,
@@ -483,7 +483,7 @@ async fn shared_pty_engine_bounds_held_permit_wait_by_expiry_then_next_target_pr
 
     tokio::time::timeout(
         Duration::from_secs(30),
-        MailboxPoller::new().dispatch_pty_input_operation(
+        MailboxPoller::default().dispatch_pty_input_operation(
             &app,
             &state,
             &expiring_id,
@@ -521,7 +521,7 @@ async fn shared_pty_engine_bounds_held_permit_wait_by_expiry_then_next_target_pr
         enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"next after expiry");
     tokio::time::timeout(
         Duration::from_secs(10),
-        MailboxPoller::new().dispatch_pty_input_operation(
+        MailboxPoller::default().dispatch_pty_input_operation(
             &app,
             &state,
             &next_id,
