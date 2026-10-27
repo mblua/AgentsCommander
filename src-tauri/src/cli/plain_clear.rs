@@ -71,7 +71,7 @@ fn accepted(content: &str, binding: &Binding<'_>) -> bool {
 pub(crate) fn run<P, R, C, W>(
     binding: &Binding<'_>,
     timeout: u64,
-    callbacks: Callbacks<P, R, C, W>,
+    mut callbacks: Callbacks<P, R, C, W>,
 ) -> Outcome
 where
     P: FnOnce() -> Result<(), String>,
@@ -81,9 +81,9 @@ where
 {
     let Callbacks {
         publish,
-        mut read,
         mut now,
         mut wait,
+        ..
     } = callbacks;
     if let Err(error) = publish() {
         return outcome(1, format!("self-clear request publication failed: {error}"));
@@ -95,7 +95,7 @@ where
             ack,
             rejection,
             delivered: _delivered,
-        } = read();
+        } = (callbacks.read)();
         match ack {
             Ok(Some(bytes)) => {
                 return if accepted(&bytes, binding) {
