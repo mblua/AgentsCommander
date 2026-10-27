@@ -147,7 +147,7 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
         // STEP 1 (plan Sec 4.3): does it exist? Resolve against the replica root,
         // the SAME base the renderer uses.
         let joined = replica_root.join(&entry);
-        let canonical = match std::fs::canonicalize(&joined) {
+        let canonical = match crate::filesystem::directories::canonical_container_mount(&joined) {
             Ok(canonical) => canonical,
             Err(_) => {
                 // NOT FOUND: benign, AC-produced state (a best-effort clone can
@@ -172,7 +172,7 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
         let name_has_repo_prefix = canonical_name
             .map(|name| name.starts_with("repo-"))
             .unwrap_or(false);
-        let is_dir = canonical.is_dir();
+        let is_dir = crate::filesystem::directories::container_mount_is_dir(&canonical);
         let not_rejected = container_mount_source_rejection(&canonical).is_none();
 
         if parent_is_wg_root && name_has_repo_prefix && is_dir && not_rejected {

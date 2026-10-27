@@ -98,3 +98,15 @@ pub(crate) fn agent_search_directory_exists(path: &Path) -> bool {
 pub(crate) fn resume_host_directory_is_dir(path: &Path) -> bool {
     path.is_dir()
 }
+
+pub(crate) fn credential_source_is_file(path: &Path) -> bool {
+    path.is_file()
+}
+
+pub(crate) fn canonical_container_mount(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+pub(crate) fn container_mount_is_dir(path: &Path) -> bool {
+    path.is_dir()
+}
