@@ -1,3 +1,4 @@
+use super::default_context::SELF_CLEAR_MANUAL_SECTION;
 use super::{
     build_direct_matrix_context, build_replica_context_with_activation,
     build_root_agent_context_with_auto, ensure_session_context_with_config,
@@ -102,6 +103,7 @@ pub(crate) fn resolve_session_context_content_with_activation(
     // Strip ALWAYS so an OFF setting truly removes the old always-on block.
     if !is_root {
         content = strip_legacy_self_maintenance(&content);
+        content.push_str(SELF_CLEAR_MANUAL_SECTION);
         if auto_self_clear {
             content.push_str(SELF_MAINTENANCE_AUTO_SECTION);
         }

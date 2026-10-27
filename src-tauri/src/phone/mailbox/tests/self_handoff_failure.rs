@@ -63,7 +63,7 @@ async fn issue_3189_locked_persist_retains_and_reports() {
             .unwrap();
         }
         let settings = settings.clone();
-        pending.0.lock().unwrap().insert(id);
+        assert!(pending.seed_legacy(id));
         let reports = Arc::new(Mutex::new(Vec::new()));
         let seen = reports.clone();
         let clean = pending.clone();
@@ -100,7 +100,7 @@ async fn issue_3189_locked_persist_retains_and_reports() {
             },
         );
         consume_outcome(driver, move |failure| async move {
-            assert!(clean.0.lock().unwrap().is_empty());
+            assert!(clean.is_empty());
             let _turn = tokio::time::timeout(
                 Duration::from_secs(1),
                 crate::session::selection::acquire_selection_operation_turn(),
@@ -134,7 +134,7 @@ async fn issue_3189_locked_persist_retains_and_reports() {
 async fn issue_3189_report_after_cleanup() {
     let id = Uuid::new_v4();
     let pending = Arc::new(crate::PendingSelfClear::default());
-    pending.0.lock().unwrap().insert(id);
+    assert!(pending.seed_legacy(id));
     let driver = MailboxPoller::drive_self_switch_after_sustained_idle(
         id,
         PathBuf::from("unused"),
@@ -154,7 +154,7 @@ async fn issue_3189_report_after_cleanup() {
     );
     consume_outcome(driver, |failure| async move {
         assert_eq!(failure.reason, "locked");
-        assert!(pending.0.lock().unwrap().is_empty());
+        assert!(pending.is_empty());
         let _turn = tokio::time::timeout(
             Duration::from_secs(1),
             crate::session::selection::acquire_selection_operation_turn(),
@@ -171,7 +171,7 @@ async fn issue_3189_clear_failure_reports_and_abandon_each_leg() {
     for mode in 0..5 {
         let id = Uuid::new_v4();
         let pending = Arc::new(crate::PendingSelfClear::default());
-        pending.0.lock().unwrap().insert(id);
+        assert!(pending.seed_legacy(id));
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("SELF-HANDOFF.md"), "notes").unwrap();
         let mut ticks = 0;
@@ -202,7 +202,7 @@ async fn issue_3189_clear_failure_reports_and_abandon_each_leg() {
             |_, _| async {},
         )
         .await;
-        assert!(pending.0.lock().unwrap().is_empty());
+        assert!(pending.is_empty());
         match outcome {
             SelfHandoffOutcome::Failed(f) => {
                 assert!(mode < 4);
@@ -225,7 +225,7 @@ async fn issue_3189_respawn_failures_and_success_both_flavors() {
             let id = Uuid::new_v4();
             let new_id = Uuid::new_v4();
             let pending = Arc::new(crate::PendingSelfClear::default());
-            pending.0.lock().unwrap().insert(id);
+            assert!(pending.seed_legacy(id));
             let root = tempfile::tempdir().unwrap();
             std::fs::write(root.path().join("SELF-HANDOFF.md"), "notes").unwrap();
             let mut ticks = 0;
@@ -264,7 +264,7 @@ async fn issue_3189_respawn_failures_and_success_both_flavors() {
                 |_, _| async {},
             )
             .await;
-            assert!(pending.0.lock().unwrap().is_empty());
+            assert!(pending.is_empty());
             match outcome {
                 SelfHandoffOutcome::Completed => assert_eq!(mode, 4),
                 SelfHandoffOutcome::Failed(f) => {
@@ -386,7 +386,7 @@ async fn issue_3189_retry_historical_after_completed_clear() {
     let status = retry_notice(
         Duration::from_millis(1),
         Duration::from_secs(1),
-        || pending.0.lock().unwrap().contains(&later_id),
+        || pending.contains(later_id),
         || {
             calls += 1;
             let pending = later_pending.clone();
@@ -395,7 +395,7 @@ async fn issue_3189_retry_historical_after_completed_clear() {
             let message = failure.message("2026-10-27T04:00:00Z");
             async move {
                 if calls == 1 {
-                    pending.0.lock().unwrap().insert(later_id);
+                    assert!(pending.seed_legacy(later_id));
                     let outcome = MailboxPoller::drive_self_clear_after_sustained_idle(
                         later_id,
                         "/clear",
@@ -411,7 +411,7 @@ async fn issue_3189_retry_historical_after_completed_clear() {
                     )
                     .await;
                     assert_eq!(outcome, SelfHandoffOutcome::Completed);
-                    assert!(pending.0.lock().unwrap().is_empty());
+                    assert!(pending.is_empty());
                     Err(NoticeDelivery::Failed("defer".into()))
                 } else {
                     *delivered.lock().unwrap() = message;
@@ -440,7 +440,7 @@ async fn issue_3189_cap_each_leg_all_actions() {
             let id = Uuid::new_v4();
             let new_id = Uuid::new_v4();
             let pending = Arc::new(crate::PendingSelfClear::default());
-            pending.0.lock().unwrap().insert(id);
+            assert!(pending.seed_legacy(id));
             let phase_complete = Arc::new(AtomicBool::new(false));
             let phase_seen = phase_complete.clone();
             let session_state = move |_| {
@@ -515,12 +515,116 @@ async fn issue_3189_cap_each_leg_all_actions() {
                 })
             );
             assert!(failure.reason.contains("MAX_DEFER cap"));
-            assert!(pending.0.lock().unwrap().is_empty());
+            assert!(pending.is_empty());
             assert_eq!(
                 std::fs::read(root.path().join("SELF-HANDOFF.md")).unwrap(),
                 b"cap notes"
             );
             assert!(!root.path().join("self-clear").exists());
+        }
+    }
+}
+
+#[tokio::test]
+async fn missing_legacy_lease_reports_failure_without_driver_effects() {
+    use crate::phone::mailbox::handoff::SELF_HANDOFF_FLAVOR_RESTART;
+    use crate::session::maintenance::{PlainIdentity, PlainReservation};
+    for mode in 0..3 {
+        for phase in 0..3 {
+            let pending = Arc::new(crate::PendingSelfClear::default());
+            let id = Uuid::new_v4();
+            let other = Uuid::new_v4();
+            let other_lease = pending.reserve_legacy(other).unwrap();
+            if phase != 0 {
+                let owner = PlainIdentity {
+                    session_id: id,
+                    request_id: Uuid::new_v4(),
+                    action: "self-clear".into(),
+                    requested_by: "test".into(),
+                };
+                let PlainReservation::New(lease) = pending.reserve_plain(owner) else {
+                    panic!("expected fresh Plain reservation");
+                };
+                if phase == 2 {
+                    pending.arm_plain(&lease).unwrap();
+                }
+            }
+            let root = tempfile::tempdir().unwrap();
+            let state = |_| -> std::future::Ready<(bool, bool)> { panic!("state callback") };
+            let inject =
+                |_, _| -> std::future::Ready<Result<(), String>> { panic!("inject callback") };
+            let boundary = |_, _| -> std::future::Ready<()> { panic!("boundary callback") };
+            let delay = Duration::from_secs(60);
+            let flavor = if mode == 2 {
+                SELF_HANDOFF_FLAVOR_RESTART
+            } else {
+                SELF_HANDOFF_FLAVOR_SWITCH
+            };
+            let outcome = if mode == 0 {
+                MailboxPoller::drive_self_clear_after_sustained_idle(
+                    id,
+                    "/clear",
+                    root.path().into(),
+                    pending.clone(),
+                    None,
+                    delay,
+                    delay,
+                    delay,
+                    state,
+                    inject,
+                    boundary,
+                )
+                .await
+            } else {
+                MailboxPoller::drive_self_switch_after_sustained_idle(
+                    id,
+                    root.path().into(),
+                    "codex".into(),
+                    "A".into(),
+                    None,
+                    flavor,
+                    pending.clone(),
+                    delay,
+                    delay,
+                    delay,
+                    state,
+                    |_, _, _| -> std::future::Ready<Result<(), String>> {
+                        panic!("persist callback")
+                    },
+                    |_, _, _| -> std::future::Ready<Result<String, String>> {
+                        panic!("restart callback")
+                    },
+                    inject,
+                    boundary,
+                )
+                .await
+            };
+            let SelfHandoffOutcome::Failed(failure) = outcome else {
+                panic!("missing lease must report failure");
+            };
+            assert_eq!(
+                failure.action,
+                if mode == 0 {
+                    SELF_CLEAR_ACTION
+                } else {
+                    flavor.action
+                }
+            );
+            assert!(!failure.attempt.is_nil());
+            assert_eq!(failure.original, id);
+            assert_eq!(failure.current, Some(id));
+            assert_eq!(failure.root, root.path());
+            assert!(!failure.continuation);
+            assert!(!failure.forgotten);
+            let driver = if mode == 0 { "clear" } else { "switch" };
+            assert_eq!(
+                failure.reason,
+                format!("{driver} driver missing legacy reservation for {id}")
+            );
+            assert_eq!(pending.legacy_lease(other), Some(other_lease));
+            assert_eq!(pending.contains(id), phase != 0);
+            assert_eq!(pending.len(), 1 + usize::from(phase != 0));
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
         }
     }
 }

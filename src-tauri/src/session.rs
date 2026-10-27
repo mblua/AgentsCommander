@@ -1,5 +1,6 @@
 pub(crate) mod auto_close;
 pub(crate) mod context_alerts;
+pub(crate) mod maintenance;
 pub mod manager;
 // Inner module shares the parent name; renaming would churn every import.
 pub mod profile;

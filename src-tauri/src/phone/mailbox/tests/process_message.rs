@@ -38,7 +38,7 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
     }
     seed_self_handoff(&fixture.replica);
     let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
-    pending.0.lock().unwrap().insert(source_id);
+    pending.seed_legacy(source_id);
 
     let persist_calls = Arc::new(Mutex::new(0usize));
     let persist_seen = persist_calls.clone();
@@ -188,7 +188,7 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
         *boundaries.lock().unwrap(),
         vec![(target_id, SelfClearBoundary::ContentInjected)]
     );
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 /// #1632 - mutual exclusion over the shared, NON-msg-id-scoped names in the process-global

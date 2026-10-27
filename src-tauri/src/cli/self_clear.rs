@@ -72,7 +72,7 @@ pub struct SelfClearArgs {
     pub timeout: u64,
 }
 
-/// Derive the `from` for a self-clear outbox message. Mirrors `send`'s sender
+/// Shared sender for plain self-clear and legacy handoff-clear. Mirrors `send`'s sender
 /// derivation (send.rs:218+:235): the Root Agent MUST send as `ROOT_AGENT_SENDER`,
 /// not the path-derived FQN that `agent_name_from_root` returns for the Root cwd.
 ///
