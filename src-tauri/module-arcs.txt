@@ -1241,6 +1241,7 @@ agentscommander_lib::commands::session::restart_resume -> agentscommander_lib::s
 agentscommander_lib::commands::session::restart_resume -> agentscommander_lib::web::commands
 agentscommander_lib::commands::session::resume_args -> agentscommander_lib::commands::session::agent_command
 agentscommander_lib::commands::session::resume_args -> agentscommander_lib::config::agent_command
+agentscommander_lib::commands::session::resume_args -> agentscommander_lib::config::environment
 agentscommander_lib::commands::session::resume_args -> agentscommander_lib::pty::backend
 agentscommander_lib::commands::session::resume_args -> agentscommander_lib::session::profile
 agentscommander_lib::commands::session::resume_probe -> agentscommander_lib::commands::session::agent_command
@@ -2234,10 +2235,14 @@ agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::phone:
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::phone::mailbox::poller
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::phone::mailbox::settle
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::phone::types
+agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::pty::inject
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::pty::manager
+agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::pty::menu_guard
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::session::manager
 agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::session::selection
+agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::session::session
+agentscommander_lib::phone::mailbox::self_handoff -> agentscommander_lib::session::warnings
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::commands::pty
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::commands::session
@@ -2253,6 +2258,7 @@ agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::filesys
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::mailbox::handoff
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::mailbox::notice
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::mailbox::poller
+agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::mailbox::self_handoff::failure
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::mailbox::settle
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::phone::types
 agentscommander_lib::phone::mailbox::self_switch -> agentscommander_lib::pty::backend
