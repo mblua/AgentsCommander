@@ -1,3 +1,4 @@
+pub(crate) mod failure;
 #[cfg(not(test))]
 use super::handoff::encode_restart_profile_for_seam;
 #[cfg(not(test))]
@@ -9,8 +10,8 @@ use super::handoff::SELF_CLEAR_SETTLE;
 use super::handoff::{
     build_self_clear_handoff_prompt, decode_restart_profile_from_seam, resolve_self_restart_recipe,
     resolve_switch_targets, validate_self_switch_spawn, validate_self_switch_wg_replica,
-    ForgottenSummary, ARCHIVE_TIMESTAMP_FORMAT, SELF_CLEAR_ACTION, SELF_HANDOFF_FLAVOR_RESTART,
-    SELF_HANDOFF_FLAVOR_SWITCH, SELF_HANDOFF_ROOT_NAME,
+    ForgottenSummary, SelfHandoffFlavor, ARCHIVE_TIMESTAMP_FORMAT, SELF_CLEAR_ACTION,
+    SELF_HANDOFF_FLAVOR_RESTART, SELF_HANDOFF_FLAVOR_SWITCH, SELF_HANDOFF_ROOT_NAME,
 };
 use super::poller::MailboxPoller;
 use super::settle::{
@@ -21,6 +22,7 @@ use crate::config::settings::SettingsState;
 use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
+use failure::{consume_outcome, SelfHandoffFailure, SelfHandoffOutcome, CONTINUATION_FAILURE};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -183,6 +185,7 @@ impl MailboxPoller {
                         target_agent,
                         target_profile,
                         forgotten_summary,
+                        SELF_HANDOFF_FLAVOR_SWITCH,
                         SELF_CLEAR_SETTLE,
                         SELF_CLEAR_POLL,
                         SELF_CLEAR_MAX_DEFER,
@@ -415,13 +418,14 @@ impl MailboxPoller {
                 let restart_profile = encode_restart_profile_for_seam(recipe.profile.as_deref());
                 let root = root.to_path_buf();
                 tauri::async_runtime::spawn(async move {
-                    Self::run_self_restart_after_sustained_idle(
+                    Self::run_self_switch_after_sustained_idle(
                         &app_clone,
                         session_id,
                         root,
                         restart_agent,
                         restart_profile,
                         forgotten_summary,
+                        SELF_HANDOFF_FLAVOR_RESTART,
                         SELF_CLEAR_SETTLE,
                         SELF_CLEAR_POLL,
                         SELF_CLEAR_MAX_DEFER,
@@ -511,18 +515,21 @@ impl MailboxPoller {
             }
         };
 
-        Self::drive_self_clear_after_sustained_idle(
-            session_id,
-            clear_text,
-            root,
-            pending,
-            forgotten_summary,
-            settle,
-            poll,
-            max_defer,
-            session_state,
-            inject,
-            note_boundary,
+        consume_outcome(
+            Self::drive_self_clear_after_sustained_idle(
+                session_id,
+                clear_text,
+                root,
+                pending,
+                forgotten_summary,
+                settle,
+                poll,
+                max_defer,
+                session_state,
+                inject,
+                note_boundary,
+            ),
+            |failure| Self::report_self_handoff_failure(app, failure),
         )
         .await;
     }
@@ -547,7 +554,8 @@ impl MailboxPoller {
         mut session_state: SessionState,
         mut inject: Inject,
         mut note_boundary: NoteBoundary,
-    ) where
+    ) -> SelfHandoffOutcome
+    where
         SessionState: FnMut(Uuid) -> SessionFut + Send + 'static,
         SessionFut: std::future::Future<Output = (bool, bool)> + Send,
         Inject: FnMut(Uuid, String) -> InjectFut + Send + 'static,
@@ -555,9 +563,11 @@ impl MailboxPoller {
         NoteBoundary: FnMut(Uuid, SelfClearBoundary) -> NoteFut + Send + 'static,
         NoteFut: std::future::Future<Output = ()> + Send,
     {
+        let attempt = Uuid::new_v4();
+        let mut continuation = false;
         let mut state = SelfClearGateState::new(std::time::Instant::now());
 
-        loop {
+        let reason = loop {
             tokio::time::sleep(poll).await;
 
             // Presence + waiting flag under a short-lived lock; never held across .await.
@@ -592,11 +602,12 @@ impl MailboxPoller {
                             session_id,
                             e
                         );
-                        break; // abandon the handoff if the clear could not even be sent
+                        break Some(e); // clear may have been partially submitted
                     }
                     // Logical clear reached the PTY; stamp before phase 2
                     // can possibly drop (stamp-then-drop ordering).
                     note_boundary(session_id, SelfClearBoundary::Cleared).await;
+                    continuation = true;
                     continue; // state is already Phase 2 with reset clocks
                 }
                 SelfClearGateAction::InjectHandoff => {
@@ -620,7 +631,7 @@ impl MailboxPoller {
                         // (#756) handoff prompt is post-boundary content.
                         note_boundary(session_id, SelfClearBoundary::ContentInjected).await;
                     }
-                    break;
+                    break (!injected).then(|| CONTINUATION_FAILURE.to_string());
                 }
                 SelfClearGateAction::Abandon(reason) => {
                     // Greppable abandon line so a silently-dropped clear/handoff is diagnosable.
@@ -631,10 +642,10 @@ impl MailboxPoller {
                         session_id,
                         reason
                     );
-                    break;
+                    break Some(reason.to_string());
                 }
             }
-        }
+        };
 
         // Always de-register (handoff injected / destroy / cap-expiry / clear-inject-fail all land
         // here).
@@ -643,6 +654,19 @@ impl MailboxPoller {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&session_id);
+        match reason {
+            None => SelfHandoffOutcome::Completed,
+            Some(reason) => SelfHandoffOutcome::Failed(SelfHandoffFailure {
+                action: SELF_CLEAR_ACTION,
+                attempt,
+                original: session_id,
+                current: Some(session_id),
+                root,
+                continuation,
+                reason,
+                forgotten: forgotten_summary.is_some(),
+            }),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -654,6 +678,7 @@ impl MailboxPoller {
         target_agent: String,
         target_profile: String,
         forgotten_summary: Option<ForgottenSummary>,
+        flavor: SelfHandoffFlavor,
         settle: std::time::Duration,
         poll: std::time::Duration,
         max_defer: std::time::Duration,
@@ -678,6 +703,9 @@ impl MailboxPoller {
         let persist = move |cwd: PathBuf, agent: String, profile: String| {
             let app = app_for_persist.clone();
             async move {
+                if flavor.action == SELF_HANDOFF_FLAVOR_RESTART.action {
+                    return Ok(());
+                }
                 let settings_snapshot = {
                     let settings = app.state::<SettingsState>();
                     let snapshot = settings.read().await.clone();
@@ -717,7 +745,11 @@ impl MailboxPoller {
                     settings.inner(),
                     session_id,
                     Some(agent),
-                    Some(profile),
+                    if flavor.action == SELF_HANDOFF_FLAVOR_SWITCH.action {
+                        Some(profile)
+                    } else {
+                        decode_restart_profile_from_seam(&profile)
+                    },
                     Some(true),
                     true,
                     crate::session::selection::TrustedRestartIntent::Background,
@@ -757,158 +789,144 @@ impl MailboxPoller {
             }
         };
 
-        Self::drive_self_switch_after_sustained_idle(
-            original_session_id,
-            cwd,
-            target_agent,
-            target_profile,
-            forgotten_summary,
-            SELF_HANDOFF_FLAVOR_SWITCH,
-            pending,
-            settle,
-            poll,
-            max_defer,
-            session_state,
-            persist,
-            restart,
-            inject,
-            note_boundary,
+        consume_outcome(
+            Self::drive_self_switch_after_sustained_idle(
+                original_session_id,
+                cwd,
+                target_agent,
+                target_profile,
+                forgotten_summary,
+                flavor,
+                pending,
+                settle,
+                poll,
+                max_defer,
+                session_state,
+                persist,
+                restart,
+                inject,
+                note_boundary,
+            ),
+            |failure| Self::report_self_handoff_failure(app, failure),
         )
         .await;
     }
 
-    /// #1632 - the restart flavor's production wrapper, modelled on
-    /// `run_self_switch_after_sustained_idle` with exactly two differences.
-    ///
-    /// 1. `persist` is a no-op closure. **No `set_replica_coding_agent_selection` call exists
-    ///    anywhere on this path**, so `tooling.currentCodingAgent`, `tooling.profile`,
-    ///    `tooling.instanceProfileOverride` and `tooling.instanceProfileOverrideSource` are
-    ///    untouched. That is the invariant separating a restart from a switch. (The spawn still
-    ///    rewrites `tooling.lastCodingAgent`, `tooling.codingAgents[<id>]` and
-    ///    `tooling.profileContentHash`, exactly as on any other restart.)
-    /// 2. The restart seam decodes the profile sentinel, so a session that inherited its letter
-    ///    crosses as `requested_profile: None` rather than as an invented letter.
-    ///
-    /// `#[cfg_attr(test, allow(dead_code))]` is required because the runner is only spawned under
-    /// `#[cfg(not(test))]`, so under `cfg(test)` it has no caller.
-    #[allow(clippy::too_many_arguments)]
-    #[cfg_attr(test, allow(dead_code))]
-    async fn run_self_restart_after_sustained_idle<R: tauri::Runtime>(
+    pub(crate) async fn report_self_handoff_failure<R: tauri::Runtime>(
         app: &tauri::AppHandle<R>,
-        original_session_id: Uuid,
-        cwd: PathBuf,
-        target_agent: String,
-        target_profile: String,
-        forgotten_summary: Option<ForgottenSummary>,
-        settle: std::time::Duration,
-        poll: std::time::Duration,
-        max_defer: std::time::Duration,
+        failure: SelfHandoffFailure,
     ) {
-        let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
-
-        let app_for_state = app.clone();
-        let session_state = move |session_id: Uuid| {
-            let app = app_for_state.clone();
-            async move {
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = session_mgr.read().await;
-                let sessions = mgr.list_sessions().await;
-                match sessions.iter().find(|s| s.id == session_id.to_string()) {
-                    Some(s) => (true, s.waiting_for_input),
-                    None => (false, false),
+        use crate::session::warnings::{emit_session_warning, SessionWarning};
+        use failure::{retry_notice, NoticeDelivery, ERR_SELF_HANDOFF_NOTICE_NOT_WAITING};
+        const ERR_SELF_HANDOFF_NOTICE_PENDING: &str = "self-handoff-notice-pending";
+        let observed = chrono::Utc::now().to_rfc3339();
+        let message = failure.message(&observed);
+        let diagnostic = failure.diagnostic_target();
+        let warn = |suffix: &str, text: String| {
+            emit_session_warning(
+                app,
+                SessionWarning::new(
+                    diagnostic,
+                    failure.key(suffix),
+                    failure::WARNING_KIND_SELF_HANDOFF_FAILED,
+                    text,
+                ),
+            );
+        };
+        warn("failure", message.clone());
+        let Some(target) = failure.current else {
+            warn(
+                "delivery:unavailable",
+                "The agent could not be notified: current UUID unknown".into(),
+            );
+            return;
+        };
+        let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let pending = app.state::<Arc<crate::PendingSelfClear>>();
+        let is_pending = || {
+            pending
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&target)
+        };
+        let body = format!("[AgentsCommander self-handoff failure] {message}");
+        let status = retry_notice(
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(30),
+            is_pending,
+            || async {
+                let session = { manager.read().await.get_session(target).await };
+                let Some(session) = session else {
+                    return Err(NoticeDelivery::Unavailable("session missing".into()));
+                };
+                if matches!(
+                    session.status,
+                    crate::session::session::SessionStatus::Exited(_)
+                ) || session.is_root_agent
+                    || session.agent_id.is_none()
+                    || !crate::pty::inject::needs_explicit_enter(&session.shell)
+                {
+                    return Err(NoticeDelivery::Unavailable(
+                        "session exited, root, agentless or unsupported shell".into(),
+                    ));
                 }
-            }
-        };
-
-        // #1632: deliberately inert. A restart reproduces the running recipe; it must not write
-        // the Selection UI's coding-agent or profile assignment, and it could not serve the Root
-        // Agent or an origin matrix agent even if it wanted to
-        // (`set_replica_coding_agent_selection` rejects any launch path whose final component does
-        // not start with `__agent_`).
-        let persist = move |_cwd: PathBuf, _agent: String, _profile: String| async move {
-            Ok::<(), String>(())
-        };
-
-        let app_for_restart = app.clone();
-        let restart = move |session_id: Uuid, agent: String, profile: String| {
-            let app = app_for_restart.clone();
-            async move {
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
-                let settings = app.state::<SettingsState>();
-                // (#747) An agent-initiated restart must not silently drop a raised hand; the
-                // injected handoff continues the same work. Capture before the destroy.
-                let carried_communication = {
-                    let mgr = session_mgr.read().await;
-                    mgr.get_session(session_id)
-                        .await
-                        .and_then(|s| s.communication.clone())
-                };
-                let result = crate::commands::session::restart_session_inner_with_intent(
-                    &app,
-                    session_mgr.inner(),
-                    pty_mgr.inner(),
-                    settings.inner(),
-                    session_id,
-                    Some(agent),
-                    // #1632: the ONLY difference from the switch closure. The seam's empty-string
-                    // sentinel decodes back to None, so an inherited letter reproduces exactly the
-                    // resolution the session's own spawn used and no letter is invented.
-                    decode_restart_profile_from_seam(&profile),
-                    Some(true),
-                    true,
-                    crate::session::selection::TrustedRestartIntent::Background,
-                    carried_communication,
-                    crate::config::sessions_persistence::CreationGateEnforcement::Enforce,
+                if !session.waiting_for_input {
+                    return Err(NoticeDelivery::Failed(
+                        ERR_SELF_HANDOFF_NOTICE_NOT_WAITING.into(),
+                    ));
+                }
+                #[cfg(test)]
+                failure::signal_inject(target);
+                crate::pty::inject::inject_internal_notice_into_supported_agent_session(
+                    app,
+                    target,
+                    &body,
+                    |snapshot| {
+                        if is_pending() {
+                            return Err(ERR_SELF_HANDOFF_NOTICE_PENDING.into());
+                        }
+                        if !snapshot.waiting_for_input {
+                            return Err(ERR_SELF_HANDOFF_NOTICE_NOT_WAITING.into());
+                        }
+                        Ok(())
+                    },
                 )
-                .await;
-                result.map(|info| info.id)
-            }
-        };
-
-        let app_for_inject = app.clone();
-        let inject = move |session_id: Uuid, prompt: String| {
-            use crate::pty::inject::inject_text_into_session;
-            let app = app_for_inject.clone();
-            async move { inject_text_into_session(&app, session_id, &prompt).await }
-        };
-
-        let app_for_boundary = app.clone();
-        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
-            let app = app_for_boundary.clone();
-            async move {
-                match boundary {
-                    SelfClearBoundary::Cleared => {
-                        crate::commands::pty::stamp_fresh_boundary_to_session(&app, session_id)
-                            .await
-                    }
-                    SelfClearBoundary::ContentInjected => {
-                        crate::commands::pty::note_post_boundary_content_to_session(
-                            &app, session_id,
-                        )
-                        .await
-                    }
-                };
-            }
-        };
-
-        Self::drive_self_switch_after_sustained_idle(
-            original_session_id,
-            cwd,
-            target_agent,
-            target_profile,
-            forgotten_summary,
-            SELF_HANDOFF_FLAVOR_RESTART,
-            pending,
-            settle,
-            poll,
-            max_defer,
-            session_state,
-            persist,
-            restart,
-            inject,
-            note_boundary,
+                .await
+                .map_err(NoticeDelivery::Failed)
+            },
+            |error| {
+                error.starts_with(ERR_SELF_HANDOFF_NOTICE_NOT_WAITING)
+                    || error.starts_with(crate::pty::menu_guard::ERR_MENU_GUARD_DEFERRED)
+                    || error.starts_with(crate::pty::menu_guard::ERR_TYPING_HOLD_DEFERRED)
+            },
+            ERR_SELF_HANDOFF_NOTICE_PENDING,
         )
         .await;
+        let (suffix, reason) = match status {
+            NoticeDelivery::Delivered => {
+                crate::commands::pty::note_post_boundary_content_to_session(app, target).await;
+                app.state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+                    .touch_silence(target);
+                return;
+            }
+            NoticeDelivery::Cancelled => (
+                "cancelled",
+                "notification cancelled: another self operation is pending".to_string(),
+            ),
+            NoticeDelivery::Unavailable(reason) => ("unavailable", reason),
+            NoticeDelivery::Failed(reason) => (
+                "failed",
+                format!("{reason}; submission may be partial; agent receipt is not confirmed"),
+            ),
+            NoticeDelivery::Exhausted => (
+                "exhausted",
+                "no further attempt will start after the 30-second retry window".to_string(),
+            ),
+        };
+        warn(
+            &format!("delivery:{suffix}"),
+            format!("The agent could not be notified: {reason}"),
+        );
     }
 }

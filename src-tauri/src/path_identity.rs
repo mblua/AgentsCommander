@@ -161,12 +161,12 @@ impl RetainedUnixFileWitness {
     }
 }
 
-fn link_flags_indicate_link_or_reparse(is_symlink: bool, attributes: u32) -> bool {
+pub(crate) fn link_flags_indicate_link_or_reparse(is_symlink: bool, attributes: u32) -> bool {
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
     is_symlink || attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
-fn is_link_or_reparse(metadata: &Metadata) -> bool {
+pub(crate) fn is_link_or_reparse(metadata: &Metadata) -> bool {
     #[cfg(windows)]
     let attributes = {
         use std::os::windows::fs::MetadataExt;
