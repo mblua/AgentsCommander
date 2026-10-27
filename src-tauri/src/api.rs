@@ -18,14 +18,16 @@ mod identity;
 pub mod message_store;
 pub mod schema;
 
+use std::fmt::Display;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
-use tauri::Manager;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
@@ -44,8 +46,35 @@ pub(crate) use actuation::ApiSendSettings;
 const MAX_BODY_LIMIT_BYTES: usize = crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES;
 const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub struct ApiServerStart {
-    pub join_handle: tauri::async_runtime::JoinHandle<()>,
+pub(crate) trait ApiJoinTask:
+    Future<Output = Result<(), Self::Error>> + Unpin + Send + 'static
+{
+    type Error: Display;
+    fn abort(&self);
+}
+
+pub(crate) trait NativeApiSpawner: Clone + Send + Sync + 'static {
+    type Join: ApiJoinTask;
+    fn spawn_owned(&self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>)
+        -> Self::Join;
+}
+
+pub trait ApiServerFactory: Sized {
+    type Error: Display;
+    type Join: Future<Output = Result<(), Self::Error>> + Unpin + Send + 'static;
+
+    fn start_api_owned(
+        self,
+        bind: String,
+        port: u16,
+        sessions: Arc<tokio::sync::RwLock<SessionManager>>,
+        pty: Arc<Mutex<PtyManager>>,
+        shutdown: CancellationToken,
+    ) -> ApiServerStart<Self::Join>;
+}
+
+pub struct ApiServerStart<J> {
+    pub join_handle: J,
     pub readiness: oneshot::Receiver<Result<SocketAddr, String>>,
 }
 
@@ -244,14 +273,28 @@ enum ApiBindSource {
 /// dir, invalid address, or `bind` error) it logs at error, sends readiness
 /// `Err`, and the task returns cleanly: it does NOT panic (§0.5 dev-rust F7,
 /// unlike `web/mod.rs`'s `.expect()`).
-pub fn start_server(
+pub fn start_server<H: ApiServerFactory>(
     bind: String,
     port: u16,
-    app_handle: tauri::AppHandle,
+    app_handle: H,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: Arc<Mutex<PtyManager>>,
     shutdown: CancellationToken,
-) -> ApiServerStart {
+) -> ApiServerStart<H::Join> {
+    app_handle.start_api_owned(bind, port, session_mgr, pty_mgr, shutdown)
+}
+
+pub(crate) fn start_server_core<H>(
+    bind: String,
+    port: u16,
+    app_handle: H,
+    session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: Arc<Mutex<PtyManager>>,
+    shutdown: CancellationToken,
+) -> ApiServerStart<H::Join>
+where
+    H: NativeApiSpawner + ApiRequestResources + dispatcher::DispatcherDelivery + ApiMessageWarnings,
+{
     start_server_from(
         ApiBindSource::Address { bind, port },
         app_handle,
@@ -265,13 +308,16 @@ pub fn start_server(
 /// moment it binds until the server owns the same socket, so there is no reserve-then-rebind
 /// window (#1768). Test-only; production always goes through `start_server`.
 #[cfg(test)]
-pub(crate) fn start_server_on_listener(
+pub(crate) fn start_server_on_listener<H>(
     listener: std::net::TcpListener,
-    app_handle: tauri::AppHandle,
+    app_handle: H,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: Arc<Mutex<PtyManager>>,
     shutdown: CancellationToken,
-) -> ApiServerStart {
+) -> ApiServerStart<H::Join>
+where
+    H: NativeApiSpawner + ApiRequestResources + dispatcher::DispatcherDelivery + ApiMessageWarnings,
+{
     start_server_from(
         ApiBindSource::Prebound(listener),
         app_handle,
@@ -281,13 +327,16 @@ pub(crate) fn start_server_on_listener(
     )
 }
 
-fn start_server_from(
+fn start_server_from<H>(
     source: ApiBindSource,
-    app_handle: tauri::AppHandle,
+    app_handle: H,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: Arc<Mutex<PtyManager>>,
     shutdown: CancellationToken,
-) -> ApiServerStart {
+) -> ApiServerStart<H::Join>
+where
+    H: NativeApiSpawner + ApiRequestResources + dispatcher::DispatcherDelivery + ApiMessageWarnings,
+{
     let (readiness_tx, readiness) = oneshot::channel();
     let store = match auth::ApiClientStore::at_config_dir() {
         Some(s) => Arc::new(s),
@@ -296,12 +345,12 @@ fn start_server_from(
             log::error!("[api-server] {}; API server not started", message);
             let _ = readiness_tx.send(Err(message));
             return ApiServerStart {
-                join_handle: tauri::async_runtime::spawn(async {}),
+                join_handle: app_handle.spawn_owned(Box::pin(async {})),
                 readiness,
             };
         }
     };
-    let message_store = match app_handle.try_state::<message_store::MessageStoreState>() {
+    let message_store = match app_handle.message_store_state() {
         Some(state) => match &state.store {
             Ok(store) => Arc::clone(store),
             Err(code) => {
@@ -309,7 +358,7 @@ fn start_server_from(
                 log::error!("[api-server] {}; API server not started", message);
                 let _send_result = readiness_tx.send(Err(message));
                 return ApiServerStart {
-                    join_handle: tauri::async_runtime::spawn(async {}),
+                    join_handle: app_handle.spawn_owned(Box::pin(async {})),
                     readiness,
                 };
             }
@@ -319,7 +368,7 @@ fn start_server_from(
             log::error!("[api-server] {}; API server not started", message);
             let _send_result = readiness_tx.send(Err(message));
             return ApiServerStart {
-                join_handle: tauri::async_runtime::spawn(async {}),
+                join_handle: app_handle.spawn_owned(Box::pin(async {})),
                 readiness,
             };
         }
@@ -338,16 +387,18 @@ fn start_server_from(
     };
     let router = build_router(state);
 
-    let join_handle = tauri::async_runtime::spawn(async move {
+    let server_host = app_handle.clone();
+    let join_handle = app_handle.spawn_owned(Box::pin(async move {
+        let app_handle = server_host;
         let mut readiness_tx = Some(readiness_tx);
-        let dispatcher_handle = dispatcher::start_dispatcher(
+        let dispatcher_handle = app_handle.spawn_owned(Box::pin(dispatcher::run_dispatcher(
             message_store,
             store,
             app_handle.clone(),
             shutdown.clone(),
             dispatcher::DispatcherConfig::default(),
             messages,
-        );
+        )));
         let (listener, addr) = match source {
             ApiBindSource::Address { bind, port } => {
                 let addr: SocketAddr =
@@ -421,7 +472,7 @@ fn start_server_from(
         }
         shutdown.cancel();
         wait_for_dispatcher(dispatcher_handle, "server-stop").await;
-    });
+    }));
 
     ApiServerStart {
         join_handle,
@@ -456,10 +507,7 @@ fn adopt_prebound_listener(
 
 const DISPATCHER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
-async fn wait_for_dispatcher(
-    mut dispatcher_handle: tauri::async_runtime::JoinHandle<()>,
-    reason: &'static str,
-) {
+async fn wait_for_dispatcher<J: ApiJoinTask>(mut dispatcher_handle: J, reason: &'static str) {
     match tokio::time::timeout(DISPATCHER_SHUTDOWN_TIMEOUT, &mut dispatcher_handle).await {
         Ok(Ok(())) => {}
         Ok(Err(err)) => {
