@@ -293,7 +293,9 @@ pub(crate) fn run(
         &startup_project_paths,
     );
     let coordinator_clocks_for_exit = Arc::clone(&coordinator_clocks);
-    let resource_monitor_state = Arc::new(resource_monitor::ResourceMonitorState::new());
+    let resource_monitor_state = Arc::new(
+        resource_monitor::ResourceMonitorState::with_spawn_registry(owners.spawn.clone()),
+    );
     // #714 screenshot capture lifecycle + global-hotkey registration state.
     let screenshot_capture_state: screenshot::ScreenshotCaptureState = Arc::new(
         tokio::sync::Mutex::new(screenshot::ScreenshotCaptureLifecycle::Idle),

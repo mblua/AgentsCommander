@@ -109,6 +109,7 @@ enum TestPtyOutputDelivery {
 }
 
 pub(crate) struct Fixture {
+    pub(crate) spawn: Arc<agentscommander_lib::pty::spawn_diagnostics::SpawnRegistry>,
     pub(crate) app: tauri::App,
     pub(crate) session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     pub(crate) pty_mgr: Arc<Mutex<PtyManager>>,
@@ -284,6 +285,7 @@ pub(crate) fn make_fixture() -> Fixture {
         None,
         #[cfg(windows)]
         owners.git_guard.clone(),
+        owners.spawn.clone(),
     )));
 
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
@@ -321,7 +323,9 @@ pub(crate) fn make_fixture() -> Fixture {
         .manage(spec_board_state)
         .manage(config_seed_lock)
         .manage(git_watcher)
-        .manage(Arc::new(ResourceMonitorState::new()))
+        .manage(Arc::new(ResourceMonitorState::with_spawn_registry(
+            owners.spawn.clone(),
+        )))
         .manage(Arc::clone(&pty_mgr))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build pty powershell native test app");
@@ -361,6 +365,7 @@ pub(crate) fn make_fixture() -> Fixture {
     });
 
     Fixture {
+        spawn: owners.spawn.clone(),
         app,
         session_mgr,
         pty_mgr,
@@ -574,7 +579,7 @@ pub(crate) async fn wait_for_exit_code(
 ) -> Result<u32, String> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if let Some(record) = spawn_diagnostics::record_for(session_id) {
+        if let Some(record) = spawn_diagnostics::record_for(session_id, fixture.spawn.as_ref()) {
             if let Some(ChildLiveness::Exited { code, .. }) = record.final_liveness() {
                 return Ok(code);
             }

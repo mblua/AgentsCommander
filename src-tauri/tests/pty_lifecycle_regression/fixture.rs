@@ -359,6 +359,7 @@ pub(crate) fn make_test_app(
         None,
         #[cfg(windows)]
         owners.git_guard.clone(),
+        owners.spawn.clone(),
     )));
 
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
@@ -396,7 +397,9 @@ pub(crate) fn make_test_app(
         .manage(spec_board_state)
         .manage(config_seed_lock)
         .manage(git_watcher)
-        .manage(Arc::new(ResourceMonitorState::new()))
+        .manage(Arc::new(ResourceMonitorState::with_spawn_registry(
+            owners.spawn.clone(),
+        )))
         .manage(Arc::clone(&pty_mgr))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build pty lifecycle test app");

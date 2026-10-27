@@ -296,6 +296,7 @@ agentscommander_lib::app_state -> agentscommander_lib::config::injected_messages
 agentscommander_lib::app_state -> agentscommander_lib::pty::git_watcher
 agentscommander_lib::app_state -> agentscommander_lib::pty::local_backend
 agentscommander_lib::app_state -> agentscommander_lib::pty::remote_watcher
+agentscommander_lib::app_state -> agentscommander_lib::pty::spawn_diagnostics
 agentscommander_lib::capture::catalog -> agentscommander_lib::filesystem
 agentscommander_lib::capture::jev -> agentscommander_lib::capture::catalog
 agentscommander_lib::capture::jev -> agentscommander_lib::network
@@ -2566,6 +2567,7 @@ agentscommander_lib::pty::manager -> agentscommander_lib::pty::local_backend
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::output
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::output_senders
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::response_close
+agentscommander_lib::pty::manager -> agentscommander_lib::pty::spawn_diagnostics
 agentscommander_lib::pty::manager -> agentscommander_lib::pty::watchers
 agentscommander_lib::pty::manager -> agentscommander_lib::shutdown
 agentscommander_lib::pty::manager -> agentscommander_lib::web::broadcast
@@ -2711,6 +2713,7 @@ agentscommander_lib::reader_demand -> agentscommander_lib::commands::session
 agentscommander_lib::reader_demand -> agentscommander_lib::config::co_managed
 agentscommander_lib::reader_demand -> agentscommander_lib::config::settings
 agentscommander_lib::reader_demand -> agentscommander_lib::session::manager
+agentscommander_lib::resource_monitor::registry -> agentscommander_lib::pty::spawn_diagnostics
 agentscommander_lib::resource_monitor::registry -> agentscommander_lib::resource_monitor::types
 agentscommander_lib::resource_monitor::registry::sampling -> agentscommander_lib::resource_monitor::registry
 agentscommander_lib::resource_monitor::registry::sampling -> agentscommander_lib::resource_monitor::types
@@ -2726,6 +2729,7 @@ agentscommander_lib::resource_monitor::watchdog -> agentscommander_lib::resource
 agentscommander_lib::resource_monitor::watchdog -> agentscommander_lib::resource_monitor::types
 agentscommander_lib::resource_monitor::watchdog -> agentscommander_lib::session::selection
 agentscommander_lib::resource_monitor::watchdog -> agentscommander_lib::shutdown
+agentscommander_lib::resource_monitor::windows -> agentscommander_lib::pty::spawn_diagnostics
 agentscommander_lib::resource_monitor::windows -> agentscommander_lib::resource_monitor::registry
 agentscommander_lib::resource_monitor::windows -> agentscommander_lib::resource_monitor::types
 agentscommander_lib::resource_monitor::windows::platform -> agentscommander_lib::resource_monitor::windows

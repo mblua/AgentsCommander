@@ -790,6 +790,7 @@ fn git_guard_sequence_shared_unique_and_noop() {
         GitWatcher::new_headless_for_tests(sessions),
         None,
         owners.git_guard.clone(),
+        owners.spawn.clone(),
     );
     assert!(Arc::ptr_eq(&backend.git_guard, &owners.git_guard));
     assert!(Arc::ptr_eq(&backend.clone().git_guard, &owners.git_guard));

@@ -205,6 +205,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         Some(selection_coordinator_for_setup.container_lifecycle_sender()),
         #[cfg(windows)]
         _owners.git_guard.clone(),
+        _owners.spawn,
     )));
     pty_mgr
         .lock()

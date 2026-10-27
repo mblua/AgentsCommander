@@ -229,6 +229,7 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
         None,
         #[cfg(windows)]
         owners.git_guard.clone(),
+        owners.spawn.clone(),
     )));
 
     let detached: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
@@ -260,7 +261,9 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
         .manage(spec_board)
         .manage(config_seed_lock)
         .manage(Arc::clone(&git_watcher))
-        .manage(Arc::new(ResourceMonitorState::new()))
+        .manage(Arc::new(ResourceMonitorState::with_spawn_registry(
+            owners.spawn.clone(),
+        )))
         .manage(Arc::clone(&pty_mgr))
         .manage(Arc::clone(&idle))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))

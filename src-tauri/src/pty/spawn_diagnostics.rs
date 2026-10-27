@@ -956,9 +956,23 @@ struct Registry {
     recent: VecDeque<(Instant, Option<CodingAgentKind>)>,
 }
 
-fn registry() -> &'static Mutex<Registry> {
-    static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(Registry::default()))
+pub struct SpawnRegistry {
+    registry: OnceLock<Mutex<Registry>>,
+}
+
+#[allow(clippy::new_without_default)]
+impl SpawnRegistry {
+    pub fn new() -> Self {
+        Self {
+            registry: OnceLock::new(),
+        }
+    }
+}
+
+fn registry(owner: &SpawnRegistry) -> &Mutex<Registry> {
+    owner
+        .registry
+        .get_or_init(|| Mutex::new(Registry::default()))
 }
 
 mod registry;
