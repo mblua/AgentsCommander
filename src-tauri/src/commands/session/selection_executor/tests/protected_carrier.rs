@@ -566,6 +566,13 @@ impl PollView {
             coordinator: coord,
         });
         let app = tauri::test::mock_builder()
+            .manage(
+                f.native
+                    .app
+                    .state::<crate::app_state::AppOwners>()
+                    .inner()
+                    .clone(),
+            )
             .manage(f.native.manager.clone())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
@@ -716,6 +723,16 @@ pub(crate) async fn response_close_case(case: u8) {
         _ => unreachable!(),
     };
     let view = PollView::new(&f, log.clone(), tracker, bound, coord);
+    assert!(Arc::ptr_eq(
+        &view
+            .app
+            .state::<crate::app_state::AppOwners>()
+            .response_effects,
+        &f.native
+            .app
+            .state::<crate::app_state::AppOwners>()
+            .response_effects,
+    ));
     if case == 3 {
         let release = view.gate();
         let app = view.app.handle().clone();
@@ -726,6 +743,15 @@ pub(crate) async fn response_close_case(case: u8) {
             .await
             .unwrap();
         assert!(!task.is_finished());
+        assert_eq!(f.native.backend.kill_count(f.native.source), 0);
+        assert!(f
+            .native
+            .app
+            .state::<crate::app_state::AppOwners>()
+            .response_effects
+            .snapshot()
+            .unwrap()
+            .is_empty());
         let logs = log.lock().unwrap().clone();
         assert_eq!(logs.iter().filter(|l| *l == "completed").count(), 0);
         assert!(!logs
@@ -810,6 +836,13 @@ pub(crate) async fn response_close_case(case: u8) {
         assert_eq!(status, crate::session::session::SessionStatus::Exited(0));
         assert_eq!(n.backend.kill_count(n.source), 1);
         assert!(crate::session::selection::response_close_registration(n.source).is_none());
+        assert!(n
+            .app
+            .state::<crate::app_state::AppOwners>()
+            .response_effects
+            .snapshot()
+            .unwrap()
+            .is_empty());
         crate::commands::session::selection_executor::poll_response_close(n.app.handle()).await;
         n.coordinator.snapshot().await.unwrap();
         assert_eq!(n.backend.kill_count(n.source), 1);

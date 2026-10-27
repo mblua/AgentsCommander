@@ -17,6 +17,28 @@ const COALESCE_SECS: i64 = 10;
 /// (auto-close tick + off-tick workgroup-remove saves) never share a temp path.
 static SAVE_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// (#2413) Orders close-marker changes made by coordinator creates with their
+/// events. The create's clear and a failed create's restore each hold it from
+/// the clocks change through their emits, so the UI receives their events in
+/// the same order as the clock changes. Taken before the clocks lock, never
+/// held across an `.await`.
+pub struct CoordinatorCreateOrder {
+    order: Mutex<()>,
+}
+
+impl CoordinatorCreateOrder {
+    pub(crate) fn new() -> Self {
+        Self {
+            order: Mutex::new(()),
+        }
+    }
+
+    pub(crate) fn with_order<T>(&self, operation: impl FnOnce() -> T) -> T {
+        let _order = self.order.lock().unwrap_or_else(|error| error.into_inner());
+        operation()
+    }
+}
+
 /// Persisted per-coordinator state, keyed by the coordinator FQN
 /// (`<project>:<wg>/<agent>`). One entry holds the persisted facts behind the
 /// unified idle counter (#580): the user-message clock (`last_user_message_at`),
