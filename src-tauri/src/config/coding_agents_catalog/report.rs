@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::seed_manifest::{has_catalog_publication, SEED_MANIFEST_FILENAME};
 use crate::config::settings::AppSettings;
+use crate::filesystem::config_seed;
 
 use super::{
     manifest_path, primary_project_root, read_catalog_snapshot, resolve_catalog_snapshot,
@@ -199,7 +200,7 @@ pub(crate) fn read_optional_regular_file(
     path: &Path,
     what: &str,
 ) -> Result<Option<Vec<u8>>, String> {
-    match std::fs::symlink_metadata(path) {
+    match config_seed::inspect_seed_destination(path) {
         Ok(meta) => {
             if meta.file_type().is_symlink() || is_reparse_point(&meta) {
                 return Err(format!(
@@ -214,7 +215,7 @@ pub(crate) fn read_optional_regular_file(
                     path.display()
                 ));
             }
-            std::fs::read(path)
+            config_seed::read_seed_file(path)
                 .map(Some)
                 .map_err(|e| format!("the {what} at {} could not be read ({e})", path.display()))
         }
@@ -231,7 +232,7 @@ pub(crate) fn read_optional_regular_file(
 /// default applies, exactly like the pre-#1968 seed rule. A regular file that
 /// cannot be read is an error, never a silent reset.
 pub(crate) fn read_instance_legacy_source(path: &Path) -> Result<Option<Vec<u8>>, String> {
-    match std::fs::symlink_metadata(path) {
+    match config_seed::inspect_seed_destination(path) {
         Ok(meta) => {
             if meta.file_type().is_symlink()
                 || is_reparse_point(&meta)
@@ -239,7 +240,7 @@ pub(crate) fn read_instance_legacy_source(path: &Path) -> Result<Option<Vec<u8>>
             {
                 return Ok(None);
             }
-            std::fs::read(path).map(Some).map_err(|e| {
+            config_seed::read_seed_file(path).map(Some).map_err(|e| {
                 format!(
                     "the instance catalog at {} could not be read ({e})",
                     path.display()
@@ -255,20 +256,7 @@ pub(crate) fn read_instance_legacy_source(path: &Path) -> Result<Option<Vec<u8>>
 }
 
 pub(crate) fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    }
-    #[cfg(not(windows))]
-    {
-        // Reparse points are a Windows attribute; this parameter is only read
-        // on Windows, so bind it explicitly to stay lint-clean under the
-        // Linux/macOS clippy runs (`-D warnings`).
-        let _ = metadata;
-        false
-    }
+    config_seed::seed_metadata_is_reparse(metadata)
 }
 
 /// Which surface asked for a catalog report. The wire shape never changes;
