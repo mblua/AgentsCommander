@@ -1,6 +1,118 @@
 use super::*;
 
 #[test]
+fn root_self_handoff_skill_is_seeded_and_customized_bytes_survive() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+    ensure_root_agent_dir_at(&root).unwrap();
+    let path = root.join("skills/self-handoff/SKILL.md");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        SELF_HANDOFF_SKILL_CONTENT.as_bytes()
+    );
+    assert_eq!(
+        default_root_skill("self-handoff").content,
+        SELF_HANDOFF_SKILL_CONTENT
+    );
+    std::fs::write(&path, "USER CUSTOMIZATION\n").unwrap();
+    ensure_default_root_agent_skills_at(&root).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        "USER CUSTOMIZATION\n"
+    );
+}
+
+#[test]
+fn project_and_root_skill_publisher_repairs_only_known_prior_versions() {
+    const PRIOR_VERSION: &str = "# Fixture of an earlier handoff skill\n";
+    let skill = DefaultRootSkill {
+        legacy_snapshots: &[PRIOR_VERSION],
+        ..SELF_HANDOFF_DEFAULT_SKILL
+    };
+    let temp = tempfile::tempdir().unwrap();
+    for leaf in ["project-skills", "skills"] {
+        let root = temp.path().join(leaf);
+        let skills_root = root.join(leaf);
+        let path = skills_root.join("self-handoff/SKILL.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, PRIOR_VERSION).unwrap();
+        crate::config::root_agent::provisioning::ensure_default_root_skill_file(
+            &root,
+            &skills_root,
+            &skill,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), skill.content.as_bytes());
+        let edited = format!("{PRIOR_VERSION}User addition\n");
+        std::fs::write(&path, &edited).unwrap();
+        crate::config::root_agent::provisioning::ensure_default_root_skill_file(
+            &root,
+            &skills_root,
+            &skill,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), edited.as_bytes());
+    }
+}
+
+#[test]
+fn self_handoff_skill_pins_structure_exclusions_and_shortening_contract() {
+    let content = SELF_HANDOFF_SKILL_CONTENT;
+    let mut previous = 0;
+    for heading in [
+        "1. **First action**",
+        "2. **Active task**",
+        "3. **Where the work is**",
+        "4. **In flight**",
+        "5. **Coordination**",
+        "6. **Pending decisions and temporary holds**",
+        "7. **Next**",
+    ] {
+        let position = content.find(heading).expect(heading);
+        assert!(position > previous);
+        previous = position;
+    }
+    for required in [
+        "The clear erases only the conversation.",
+        "context file, `Role.md` and skill index reload",
+        "## Never include",
+        "Identity, role, language or answer rules.",
+        "Skill procedures: name the skill instead.",
+        "anything already in `SELF-FORGET.md`",
+        "Round history, hash lists or status revision numbers",
+        "Credentials.",
+        "Durable lessons:",
+        "Pending to save:",
+        "Count the words.",
+        "Rewrite to half or fewer.",
+        "Never cut a fact",
+        "no glued words, no invented abbreviations",
+        "Words: draft <N>, final <M>.",
+        "self-handoff-and-clear",
+        "self-handoff-and-switch",
+        "self-handoff-and-restart",
+    ] {
+        assert!(
+            content.contains(required),
+            "missing skill contract: {required}"
+        );
+    }
+}
+
+#[test]
+fn root_template_before_self_handoff_skill_snapshot_is_byte_exact() {
+    use sha2::{Digest, Sha256};
+    let content =
+        crate::config::root_agent::legacy_contexts::ROOT_CONTEXT_BEFORE_SELF_HANDOFF_SKILL_MD;
+    assert_eq!(content.len(), 19433);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(content.as_bytes())),
+        "188a11f923edc180b5d90c99d4c0a88b3b5d48464b84233367a6f9e5cbf19803"
+    );
+    assert!(is_known_generated_root_context_template(content));
+}
+
+#[test]
 fn missing_role_seed_uses_minimal_role_without_copying_custom_template() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().join(ROOT_AGENT_DIR_NAME);

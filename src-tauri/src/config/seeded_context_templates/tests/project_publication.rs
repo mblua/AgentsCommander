@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn self_handoff_skill_is_seeded_on_every_project_bootstrap_and_preserves_user_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let ac = temp.path().join(".ac");
+    let path = ac.join("project-skills/self-handoff/SKILL.md");
+    let shipped = crate::config::root_agent::SELF_HANDOFF_SKILL_CONTENT;
+    ensure_project_context_templates(&ac).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), shipped.as_bytes());
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    ensure_project_context_templates(&ac).unwrap();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().modified().unwrap(),
+        modified
+    );
+
+    // An existing project bootstrapped by an older binary receives the missing skill too.
+    std::fs::remove_file(&path).unwrap();
+    ensure_project_context_templates(&ac).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), shipped.as_bytes());
+    for custom in [b"# User handoff rules\n".as_slice(), b"\xff\x00", b""] {
+        std::fs::write(&path, custom).unwrap();
+        ensure_project_context_templates(&ac).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), custom);
+    }
+}
+
+#[test]
+fn occupied_default_handoff_skill_path_is_preserved_without_breaking_bootstrap() {
+    let temp = tempfile::tempdir().unwrap();
+    let ac = temp.path().join(".ac");
+    let occupied = ac.join("project-skills/self-handoff");
+    std::fs::create_dir_all(occupied.parent().unwrap()).unwrap();
+    std::fs::write(&occupied, "USER FILE").unwrap();
+    ensure_project_context_templates(&ac).unwrap();
+    assert_eq!(std::fs::read_to_string(occupied).unwrap(), "USER FILE");
+    assert!(ac.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME).is_file());
+}
+
+#[test]
 fn windows_platform_defaults_and_historical_recognition_are_byte_exact() {
     let approved = concat!(
         r#"## Host Platform Rules

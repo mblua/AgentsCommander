@@ -1,6 +1,6 @@
 use super::*;
 
-fn assert_minimal_self_handoff_contract(content: &str) {
+fn assert_self_handoff_skill_contract(content: &str) {
     let step = content
         .split("1. Write `SELF-HANDOFF.md`")
         .nth(1)
@@ -8,24 +8,8 @@ fn assert_minimal_self_handoff_contract(content: &str) {
         .split("2. Run:")
         .next()
         .unwrap();
-    for required in [
-        "minimal, action-first resume notes: first action",
-        "open or in-progress work",
-        "blockers and pending decisions",
-        "live state",
-        "exact pointers needed to resume",
-        "Rely on context automatically injected when the session restarts.",
-        "Do not repeat identity, basic AgentsCommander operation",
-        "instructions already injected through `AGENTS.md` or `CLAUDE.md`",
-        "`Role.md` content, procedures available in skills",
-        "closed work, or any topic already listed in `SELF-FORGET.md`",
-        "This file is REQUIRED; the command refuses to clear without it.",
-    ] {
-        assert!(
-            step.contains(required),
-            "missing handoff contract: {required}"
-        );
-    }
+    assert!(step.contains("following the `self-handoff` skill"));
+    assert!(step.contains("This file is REQUIRED; the command refuses to clear without it."));
     for obsolete in [
         "who you are",
         "ZERO memory",
@@ -40,10 +24,10 @@ fn assert_minimal_self_handoff_contract(content: &str) {
 }
 
 #[test]
-fn minimal_self_handoff_contract_is_shared_by_constant_and_root_template() {
-    assert_minimal_self_handoff_contract(SELF_MAINTENANCE_AUTO_SECTION);
+fn self_handoff_skill_contract_is_shared_by_constant_and_root_template() {
+    assert_self_handoff_skill_contract(SELF_MAINTENANCE_AUTO_SECTION);
     let template = crate::config::root_agent::default_root_context_template();
-    assert_minimal_self_handoff_contract(template);
+    assert_self_handoff_skill_contract(template);
     let constant_step = SELF_MAINTENANCE_AUTO_SECTION
         .split("1. Write `SELF-HANDOFF.md`")
         .nth(1)
@@ -62,18 +46,43 @@ fn minimal_self_handoff_contract_is_shared_by_constant_and_root_template() {
 }
 
 #[test]
-fn root_template_before_minimal_handoff_remains_recognized() {
+fn root_template_before_self_handoff_skill_remains_recognized() {
     let current = crate::config::root_agent::default_root_context_template().replace("\r\n", "\n");
-    let start = current.find("minimal, action-first resume notes").unwrap();
+    let start = current.find("following the `self-handoff` skill").unwrap();
     let end = current[start..].find("\n2. Run:").unwrap() + start;
     let old_step = concat!(
-        "standalone, action-first resume notes (who you are, your open and in-progress work, how ",
-        "to resume, and the FIRST thing to do on return), EXCLUDING everything already in `SELF-F",
-        "ORGET.md`. After the clear you have ZERO memory, so make it self-sufficient. This file i",
-        "s REQUIRED; the command refuses to clear without it.",
+        "minimal, action-first resume notes: first action, open or in-progress work, blockers",
+        " and pending decisions, live state, and exact pointers needed to resume. Rely on con",
+        "text automatically injected when the session restarts. Do not repeat identity, basic",
+        " AgentsCommander operation, instructions already injected through `AGENTS.md` or `CL",
+        "AUDE.md`, `Role.md` content, procedures available in skills, closed work, or any top",
+        "ic already listed in `SELF-FORGET.md`. This file is REQUIRED; the command refuses to",
+        " clear without it.",
     );
     let previous = format!("{}{}{}", &current[..start], old_step, &current[end..]);
     assert!(crate::config::root_agent::is_known_generated_root_context_template(&previous));
+}
+
+#[test]
+fn bootstrap_self_handoff_skill_is_indexed_in_replica_context() {
+    let temp = tempfile::tempdir().unwrap();
+    let (ac, _, replica, _) = make_valid_replica(temp.path());
+    crate::config::seeded_context_templates::ensure_project_context_templates(&ac).unwrap();
+    let context = materialize_agent_context_file_with_filename(
+        &path_string(&replica),
+        "AGENTS.md",
+        &[],
+        false,
+        true,
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    let content = std::fs::read_to_string(context).unwrap();
+    assert!(content.contains("## Project Skills"));
+    assert!(content.contains("`project:self-handoff`"));
+    assert!(content.contains("Structure, write and shorten SELF-HANDOFF.md."));
+    assert_self_handoff_skill_contract(&content);
 }
 
 /// #1369 (C4) AC-3: the #664 heuristic's verdict is invariant across the
@@ -388,7 +397,7 @@ fn materialized_context_gates_self_maintenance_directive_by_flag() {
     assert!(on_content.contains("reaches 3 such lines"));
     assert!(on_content.contains("max 240 char forgotten summary"));
     assert!(on_content.contains("closed background"));
-    assert_minimal_self_handoff_contract(&on_content);
+    assert_self_handoff_skill_contract(&on_content);
 
     let off =
         materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, false, None)
@@ -398,7 +407,7 @@ fn materialized_context_gates_self_maintenance_directive_by_flag() {
     assert_eq!(off_content.matches("## Manual context clear").count(), 1);
     assert!(!off_content.contains("## Self-Maintenance"));
     assert!(!off_content.contains("max 240 char forgotten summary"));
-    assert!(!off_content.contains("minimal, action-first resume notes"));
+    assert!(!off_content.contains("following the `self-handoff` skill"));
 }
 
 /// #2031: a rendered replica context file carries the Answering section once.
@@ -493,12 +502,12 @@ fn root_materialized_context_gates_self_maintenance_by_flag() {
     assert_eq!(on.matches("## Manual context clear").count(), 1);
     assert!(on.contains("max 240 char forgotten summary"));
     assert!(on.contains("closed background"));
-    assert_minimal_self_handoff_contract(&on);
+    assert_self_handoff_skill_contract(&on);
     assert!(on.contains("ROOT BASE CONTEXT"));
     let off = issue_2832_combined(&root, temp.path(), false);
     assert_eq!(off.matches("## Manual context clear").count(), 1);
     assert!(!off.contains("## Self-Maintenance"));
-    assert!(!off.contains("minimal, action-first resume notes"));
+    assert!(!off.contains("following the `self-handoff` skill"));
     assert!(off.contains("ROOT BASE CONTEXT"));
 }
 
