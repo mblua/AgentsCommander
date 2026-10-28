@@ -1,6 +1,8 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+use crate::filesystem::agent_files;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreatedAgentFolder {
     pub agent_dir: PathBuf,
@@ -30,7 +32,7 @@ pub fn create_agent_folder_on_disk(
     }
 
     let agent_dir = parent.join(agent_name);
-    match std::fs::create_dir(&agent_dir) {
+    match agent_files::create_agent_directory(&agent_dir) {
         Ok(()) => {}
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {
             return Err(format!("Folder already exists: {}", agent_dir.display()));
@@ -46,7 +48,7 @@ pub fn create_agent_folder_on_disk(
 
     let claude_md = format!("You are the agent {}", display_name);
     let claude_path = agent_dir.join("CLAUDE.md");
-    std::fs::write(&claude_path, &claude_md)
+    agent_files::write_agent_prompt(&claude_path, &claude_md)
         .map_err(|e| format!("Failed to write CLAUDE.md: {}", e))?;
 
     // TODO: When replica creation is added (for __agent_* dirs inside workgroups),
