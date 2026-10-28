@@ -12,6 +12,7 @@ pub(crate) mod agent_files;
 pub(crate) mod agent_settings;
 pub(crate) mod attachments;
 pub(crate) mod catalog;
+pub(crate) mod coding_agent_requests;
 pub(crate) mod config_locations;
 pub(crate) mod config_seed;
 pub(crate) mod context_skills;
