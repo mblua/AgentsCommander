@@ -15,7 +15,10 @@ fn repair_tree(root: &Path) -> std::collections::BTreeMap<PathBuf, Option<Vec<u8
             } else {
                 Some(std::fs::read(&path).expect("snapshot bytes"))
             };
-            entries.insert(path.strip_prefix(root).expect("fixture path").to_path_buf(), bytes);
+            entries.insert(
+                path.strip_prefix(root).expect("fixture path").to_path_buf(),
+                bytes,
+            );
         }
     }
     let mut entries = std::collections::BTreeMap::new();
@@ -52,7 +55,11 @@ fn reserve_repair_pair(replica: &Path) {
 
 #[test]
 fn repair_location_precedes_nonpending_cleanup_and_invalid_config() {
-    for config in [None, Some("{invalid"), Some(r#"{"tooling":{"lastCodingAgent":"x"}}"#)] {
+    for config in [
+        None,
+        Some("{invalid"),
+        Some(r#"{"tooling":{"lastCodingAgent":"x"}}"#),
+    ] {
         let temp = tempfile::tempdir().expect("fixture");
         let root = temp.path().join("workspace");
         let replica = root.join("room-2-dev-team").join("__agent_tech-lead");
@@ -75,6 +82,19 @@ fn repair_location_precedes_nonpending_cleanup_and_invalid_config() {
 }
 
 #[test]
+fn repair_missing_authoritative_root_does_not_create_it() {
+    let temp = tempfile::tempdir().expect("fixture");
+    let replica = temp.path().join(".ac/room-2-dev-team/__agent_tech-lead");
+    let before = repair_tree(temp.path());
+    let error = read_and_repair_wg_replica_config(&replica, &[]).expect_err("missing root");
+    assert_eq!(
+        error,
+        format!("project '{}' has no Project AC Root directory", temp.path().display())
+    );
+    assert_eq!(repair_tree(temp.path()), before);
+}
+
+#[test]
 fn repair_location_precedes_pending_binding_and_sidecars() {
     for existing_ignore in [false, true] {
         let temp = setup_replica(".ac");
@@ -82,8 +102,11 @@ fn repair_location_precedes_pending_binding_and_sidecars() {
         let root = project.join(".ac");
         let relative = Path::new("wg-2-dev-team").join("__agent_tech-lead");
         let replica = root.join(&relative);
-        std::fs::write(replica.join("config.json"), r#"{"identity":"../../_agent_tech-lead"}"#)
-            .expect("config");
+        std::fs::write(
+            replica.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead"}"#,
+        )
+        .expect("config");
         reserve_repair_pair(&replica);
         // Retain the real packet, but remove setup sidecars to expose writer entry.
         for entry in std::fs::read_dir(&replica).expect("replica entries") {
