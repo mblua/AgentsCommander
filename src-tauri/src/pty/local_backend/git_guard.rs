@@ -1,7 +1,8 @@
-use std::io::Write;
-
 #[cfg(windows)]
 use std::path::Path;
+
+#[cfg(windows)]
+use crate::filesystem::{directories, documents};
 #[cfg(windows)]
 use std::time::Duration;
 
@@ -41,7 +42,7 @@ pub(super) fn ensure_git_guard_wrapper(
     let config_dir = crate::config::config_dir()
         .ok_or_else(|| AppError::Other("Could not resolve app config directory".to_string()))?;
     let guard_dir = config_dir.join(GIT_GUARD_DIR_NAME);
-    std::fs::create_dir_all(&guard_dir)
+    directories::ensure_git_guard_directory(&guard_dir)
         .map_err(|e| AppError::Other(format!("Failed to create git-guard dir: {}", e)))?;
 
     let cmd_path = guard_dir.join("git.cmd");
@@ -135,7 +136,7 @@ pub(super) fn write_git_guard_file_if_changed(
     sequence: &GitGuardTempSequence,
 ) -> Result<(), String> {
     let desired = content.as_bytes();
-    match std::fs::read(path) {
+    match documents::read_git_guard_file(path) {
         Ok(existing) if existing == desired => return Ok(()),
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -161,11 +162,7 @@ pub(super) fn write_git_guard_file_atomic(
     let (temp, mut file) = loop {
         let counter = sequence.next();
         let temp = parent.join(format!(".{name}.{}.{counter}.tmp", std::process::id()));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-        {
+        match documents::create_git_guard_stage(&temp) {
             Ok(file) => break (temp, file),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(format!("create temp {}: {}", temp.display(), e)),
@@ -174,17 +171,17 @@ pub(super) fn write_git_guard_file_atomic(
 
     if let Err(e) = file.write_all(content) {
         drop(file);
-        let _ = std::fs::remove_file(&temp);
+        let _ = documents::remove_git_guard_stage(&temp);
         return Err(format!("write temp {}: {}", temp.display(), e));
     }
     if let Err(e) = file.flush() {
         drop(file);
-        let _ = std::fs::remove_file(&temp);
+        let _ = documents::remove_git_guard_stage(&temp);
         return Err(format!("flush temp {}: {}", temp.display(), e));
     }
     if let Err(e) = file.sync_all() {
         drop(file);
-        let _ = std::fs::remove_file(&temp);
+        let _ = documents::remove_git_guard_stage(&temp);
         return Err(format!("sync temp {}: {}", temp.display(), e));
     }
     drop(file);
@@ -206,7 +203,7 @@ pub(super) fn publish_git_guard_temp_with_retry(
 
     for (attempt, delay) in attempts.enumerate() {
         if git_guard_file_matches(path, content) {
-            let _ = std::fs::remove_file(temp);
+            let _ = documents::remove_git_guard_stage(temp);
             return Ok(());
         }
 
@@ -214,12 +211,12 @@ pub(super) fn publish_git_guard_temp_with_retry(
             Ok(()) => return Ok(()),
             Err(e) => {
                 if git_guard_file_matches(path, content) {
-                    let _ = std::fs::remove_file(temp);
+                    let _ = documents::remove_git_guard_stage(temp);
                     return Ok(());
                 }
 
                 let Some(delay) = delay else {
-                    let _ = std::fs::remove_file(temp);
+                    let _ = documents::remove_git_guard_stage(temp);
                     return Err(format!(
                         "publish {} from {} failed after {} attempts: {}",
                         path.display(),
@@ -238,7 +235,7 @@ pub(super) fn publish_git_guard_temp_with_retry(
 
 #[cfg(windows)]
 pub(super) fn git_guard_file_matches(path: &Path, content: &[u8]) -> bool {
-    match std::fs::read(path) {
+    match documents::read_git_guard_file(path) {
         Ok(existing) => existing == content,
         Err(_) => false,
     }
