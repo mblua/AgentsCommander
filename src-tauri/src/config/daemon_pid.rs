@@ -6,6 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::filesystem::daemon_pid as pid_io;
+
 fn pid_path() -> Option<PathBuf> {
     super::config_dir().map(|d| d.join("daemon.pid"))
 }
@@ -17,9 +19,9 @@ pub fn write_pid_file() {
         // Best-effort write. If the daemon can't write the pid file (perms?),
         // log it but do not abort startup — the CLI just won't get its warning.
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            let _ = pid_io::ensure_pid_parent(parent);
         }
-        if let Err(e) = std::fs::write(&path, std::process::id().to_string()) {
+        if let Err(e) = pid_io::write_pid_document(&path, std::process::id().to_string()) {
             log::warn!("[daemon-pid] Failed to write pid file at {:?}: {}", path, e);
         } else {
             log::info!(
@@ -34,7 +36,7 @@ pub fn write_pid_file() {
 /// Remove the pid file on graceful shutdown. Best-effort.
 pub fn remove_pid_file() {
     if let Some(path) = pid_path() {
-        let _ = std::fs::remove_file(&path);
+        let _ = pid_io::remove_pid_document(&path);
     }
 }
 
@@ -72,7 +74,7 @@ pub fn detect_daemon_state() -> DaemonState {
 /// rest of its lifetime, race parallel test runs, and pollute the developer's
 /// home dir on machines where AC is not installed).
 pub fn detect_daemon_state_at(path: &Path) -> DaemonState {
-    let contents = match std::fs::read_to_string(path) {
+    let contents = match pid_io::read_pid_document(path) {
         Ok(s) => s,
         Err(_) => return DaemonState::NoPidFile,
     };

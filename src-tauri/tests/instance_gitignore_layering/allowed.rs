@@ -1,17 +1,11 @@
 /// Every `(file, child)` reference the guarded module is allowed to make under
 /// `crate::`, sorted.
 ///
-/// **Empty, and the emptiness is the contract.** Before #1273 this module
-/// contained no `crate::` path at all, and it still does not: everything it
-/// needs is one level up and is written `super::`. An empty equality therefore
-/// refuses **every** `crate::`-anchored reference, not merely a reference to
-/// `config::root_agent`, and that breadth is the point. The module's exposure is
-/// that it may name any other knot member and fall straight back
-/// in; `root_agent` is only today's spelling.
-///
-/// Adding the first row here is a decision about the crate's shape and must be
-/// argued in the commit, not slipped in to get green.
-pub(crate) const ALLOWED_GUARDED_CRATE_REFERENCES: [(&str, &str); 0] = [];
+/// #3327 permits only instance_gitignore -> filesystem for physical ignore IO.
+/// The instance_ignore leaf uses std/OS bindings with no app path back.
+/// Equality still rejects every other crate reference.
+pub(crate) const ALLOWED_GUARDED_CRATE_REFERENCES: [(&str, &str); 1] =
+    [("src/config/instance_gitignore.rs", "filesystem")];
 
 /// Every `(file, child)` reference the guarded module is allowed to make under
 /// `super::`, sorted.

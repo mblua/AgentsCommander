@@ -13,6 +13,8 @@
 
 use std::path::Path;
 
+use crate::filesystem::remote_activity;
+
 use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -141,8 +143,8 @@ pub(crate) fn write_snapshot_to_dir(
 /// version 1, an unparseable `generatedAt`, and an empty path entry: each is a
 /// reason to report `unknown`, never a reason to guess.
 pub(crate) fn read_snapshot(path: &Path) -> Result<RemoteActivitySnapshot, String> {
-    let bytes =
-        std::fs::read(path).map_err(|e| format!("remote activity snapshot is unreadable: {e}"))?;
+    let bytes = remote_activity::read_activity_snapshot(path)
+        .map_err(|e| format!("remote activity snapshot is unreadable: {e}"))?;
     let dto: SnapshotDto = serde_json::from_slice(&bytes)
         .map_err(|e| format!("remote activity snapshot is malformed: {e}"))?;
     if dto.schema_version != REMOTE_ACTIVITY_SNAPSHOT_SCHEMA_VERSION {
