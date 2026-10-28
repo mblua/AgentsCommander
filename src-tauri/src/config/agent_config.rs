@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
+mod discovery;
+pub(crate) use discovery::{
+    discovery_replica_config_exists, read_discovery_replica_context, read_discovery_replica_json,
+};
+
 // ── Agent Identity ──────────────────────────────────────────────────────────
 /// What the agent IS: name, role, memory location.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
