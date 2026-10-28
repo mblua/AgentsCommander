@@ -266,3 +266,84 @@ pub(crate) fn read_cli_message_archive_source(path: &Path) -> io::Result<Vec<u8>
 pub(crate) fn cli_outbox_delivery_is_file(path: &Path) -> io::Result<bool> {
     std::fs::metadata(path).map(|metadata| metadata.is_file())
 }
+
+pub(crate) fn container_credential_is_reparse(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => crate::path_identity::is_link_or_reparse(&metadata),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(_) => true,
+    }
+}
+
+pub(crate) fn copy_container_credential(source: &Path, dest: &Path) -> io::Result<u64> {
+    std::fs::copy(source, dest)
+}
+
+#[cfg(unix)]
+pub(crate) fn set_container_credential_private(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+pub(crate) fn remove_container_credential_artifact(path: &Path) -> io::Result<()> {
+    std::fs::remove_file(path)
+}
+
+pub(crate) fn read_container_first_run_state(path: &Path) -> io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+pub(crate) fn write_container_first_run_stage(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+pub(crate) fn rename_container_first_run_stage(source: &Path, dest: &Path) -> io::Result<()> {
+    std::fs::rename(source, dest)
+}
+
+pub(crate) fn read_container_repo_config(path: &Path) -> io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+#[cfg(windows)]
+pub(crate) fn read_git_guard_file(path: &Path) -> io::Result<Vec<u8>> {
+    std::fs::read(path)
+}
+
+#[cfg(windows)]
+pub(crate) struct GitGuardStage(std::fs::File);
+
+#[cfg(windows)]
+impl GitGuardStage {
+    pub(crate) fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        use std::io::Write;
+        self.0.write_all(bytes)
+    }
+
+    pub(crate) fn flush(&mut self) -> io::Result<()> {
+        use std::io::Write;
+        self.0.flush()
+    }
+
+    pub(crate) fn sync_all(&self) -> io::Result<()> {
+        self.0.sync_all()
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn create_git_guard_stage(path: &Path) -> io::Result<GitGuardStage> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map(GitGuardStage)
+}
+
+#[cfg(windows)]
+pub(crate) fn remove_git_guard_stage(path: &Path) -> io::Result<()> {
+    std::fs::remove_file(path)
+}
+
+pub(crate) fn write_pty_response(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    std::fs::write(path, bytes)
+}
