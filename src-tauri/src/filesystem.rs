@@ -13,6 +13,7 @@ pub(crate) mod attachments;
 pub(crate) mod capture_state;
 pub(crate) mod catalog;
 pub(crate) mod co_managed_config;
+pub(crate) mod co_managed_queue;
 pub(crate) mod config_locations;
 pub(crate) mod config_seed;
 pub(crate) mod context_skills;
@@ -37,6 +38,7 @@ pub(crate) mod seed_manifest;
 pub(crate) mod session_context;
 pub(crate) mod spec_board;
 pub(crate) mod tasks;
+pub(crate) mod telegram_logs;
 pub(crate) mod terminal_snapshots;
 pub(crate) mod transcripts;
 
