@@ -616,3 +616,37 @@ impl resource_monitor::watchdog::ResourceWatchdogTaskScope for ShutdownSignal {
         tauri::async_runtime::spawn(future);
     }
 }
+
+impl TauriQuitHost {
+    pub fn new(app: tauri::AppHandle) -> Self {
+        use tauri::Manager;
+        let emit_app = app.clone();
+        let windows = app.clone();
+        Self::from_callbacks(
+            Box::new(move |label, event, payload| {
+                events::quit_gate::emit_to(&emit_app, label, event, payload)
+            }),
+            Box::new(move || {
+                // Never touches `was_detached`: restore reads the session flag, not
+                // the live window set, so detached sessions restore detached.
+                let mut closed = Vec::new();
+                for (label, window) in windows.webview_windows() {
+                    if !label.starts_with("terminal-") {
+                        continue;
+                    }
+                    if let Err(e) = window.destroy() {
+                        log::warn!("[shutdown] detached window destroy failed: {label}: {e}");
+                    }
+                    closed.push(label);
+                }
+                closed
+            }),
+            Box::new(move |code| {
+                // SINGLE production exit site for the quit gate. Everything else routes
+                // its Exiting decision through quit_gate_run, which calls this once
+                // per terminal Exiting (see try_claim_exit).
+                app.exit(code);
+            }),
+        )
+    }
+}

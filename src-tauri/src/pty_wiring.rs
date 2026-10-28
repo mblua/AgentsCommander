@@ -20,9 +20,8 @@ use crate::pty::watchers::{
     WatcherBackendSource, WatcherEventSink, WatcherPatternSource,
 };
 use crate::session::manager::SessionManager;
-use tauri::{Emitter, Manager};
 
-use crate::{commands, config};
+use crate::config;
 
 // ---- #1032/#1056: the four narrow scrape adapters ---------------------------------
 //
@@ -118,13 +117,13 @@ impl ContextPatternSource for ScraperPatterns {
 
 /// The sink. `PtyOutputTarget` (`output.rs`) already wraps an `AppHandle` behind a plain
 /// `Fn` for the same reason.
-pub(crate) struct ScraperSink {
-    pub(crate) app_handle: tauri::AppHandle,
+pub(crate) struct ScraperSink<H: ContextEventSink> {
+    pub(crate) app_handle: H,
 }
 
-impl ContextEventSink for ScraperSink {
+impl<H: ContextEventSink> ContextEventSink for ScraperSink<H> {
     fn emit(&self, payload: ContextUsagePayload) {
-        let _ = self.app_handle.emit("session_context", payload);
+        self.app_handle.emit(payload);
     }
 }
 
@@ -288,13 +287,13 @@ impl QuotaSourceProvider for QuotaSources {
 
 /// The sink. Emitted UNSCOPED, exactly like `session_context`, so a detached terminal window
 /// receives it too.
-pub(crate) struct QuotaSink {
-    pub(crate) app_handle: tauri::AppHandle,
+pub(crate) struct QuotaSink<H: QuotaEventSink> {
+    pub(crate) app_handle: H,
 }
 
-impl QuotaEventSink for QuotaSink {
+impl<H: QuotaEventSink> QuotaEventSink for QuotaSink<H> {
     fn emit(&self, payload: AgentQuotaPayload) {
-        let _ = self.app_handle.emit("agent_quota", payload);
+        self.app_handle.emit(payload);
     }
 }
 
@@ -529,24 +528,6 @@ pub(crate) struct WatcherDelivery {
 }
 
 impl WatcherDelivery {
-    pub(crate) fn to_watchers_window(app_handle: tauri::AppHandle) -> Self {
-        let present = app_handle.clone();
-        Self {
-            window_present: Arc::new(move || {
-                present
-                    .get_webview_window(commands::window::WATCHERS_WINDOW_LABEL)
-                    .is_some()
-            }),
-            emit: Arc::new(move |batch| {
-                let _ = app_handle.emit_to(
-                    commands::window::WATCHERS_WINDOW_LABEL,
-                    "watcher_matches",
-                    batch,
-                );
-            }),
-        }
-    }
-
     fn deliver(&self, batch: crate::pty::watchers::WatcherMatchBatch) {
         if !(self.window_present)() {
             return;
