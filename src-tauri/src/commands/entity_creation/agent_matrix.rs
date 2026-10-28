@@ -13,6 +13,7 @@ use super::workgroup::{
     acquire_lifecycle_project_gate, prune_agent_component_scope, prune_replica_config_scope,
 };
 use super::CreatedEntityResult;
+use crate::config::entity_creation::{directories, teams};
 use crate::config::seed_manifest::{ManifestActivationToken, ProjectSeedManifestGuard};
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::session::manager::SessionManager;
@@ -246,7 +247,7 @@ pub(super) fn run_agent_delete_transaction(
     // staged set on failure, so no targets remain staged on Err.
     let staged = match stage_agent_delete_targets_with_rename(
         plan,
-        |from: &Path, to: &Path| std::fs::rename(from, to),
+        directories::stage_agent_target,
         session_mgr,
     ) {
         Ok(staged) => staged,
@@ -360,7 +361,9 @@ pub(super) fn rollback_staged_targets_reporting(
 ) -> Vec<StagedAgentDeleteTarget> {
     let mut still_staged = Vec::new();
     for target in staged.iter().rev() {
-        if let Err(e) = std::fs::rename(&target.staged_path, &target.original_path) {
+        if let Err(e) =
+            directories::restore_agent_target(&target.staged_path, &target.original_path)
+        {
             log::warn!(
                 "[entity_creation] agent-delete rollback left '{}' [{}] staged: {}",
                 target.label,
@@ -404,7 +407,7 @@ pub(super) fn prune_still_staged_targets(
 
 /// Read a team `config.json`'s exact current bytes for the #1063 pre-write precheck.
 pub(super) fn read_team_config_bytes(config_path: &Path) -> Result<Vec<u8>, String> {
-    std::fs::read(config_path).map_err(|e| format!("{}: {}", config_path.display(), e))
+    teams::read_team_config_bytes(config_path)
 }
 
 /// Blocking Agent Matrix metadata commit under the reacquired project→team guards
@@ -417,6 +420,22 @@ pub(super) fn persist_agent_delete_metadata_blocking(
     settings: &SettingsState,
     team_guard: &TeamConfigMutationGuard,
     save_settings_fn: impl Fn(&AppSettings) -> Result<AppSettings, String>,
+) -> Result<(), String> {
+    persist_agent_delete_metadata_blocking_with_writer(
+        metadata,
+        settings,
+        team_guard,
+        save_settings_fn,
+        |path, bytes| write_team_config_json_atomic(&metadata.ac_root, team_guard, path, bytes),
+    )
+}
+
+pub(super) fn persist_agent_delete_metadata_blocking_with_writer(
+    metadata: &PreparedAgentDeleteMetadata,
+    settings: &SettingsState,
+    team_guard: &TeamConfigMutationGuard,
+    save_settings_fn: impl Fn(&AppSettings) -> Result<AppSettings, String>,
+    mut writer: impl FnMut(&Path, &[u8]) -> Result<(), String>,
 ) -> Result<(), String> {
     team_guard.require_ac_root(&metadata.ac_root)?;
     metadata.settings_changed.store(false, Ordering::SeqCst);
@@ -438,13 +457,13 @@ pub(super) fn persist_agent_delete_metadata_blocking(
     // Write each planned config, journaling only successful writes for reverse restore.
     let mut journal: Vec<usize> = Vec::new();
     for (index, mutation) in metadata.team_mutations.iter().enumerate() {
-        if let Err(e) = write_team_config_json_atomic(
-            &metadata.ac_root,
-            team_guard,
-            &mutation.config_path,
-            &mutation.after_json,
-        ) {
-            let restore = restore_journaled_team_configs(metadata, team_guard, &journal);
+        if let Err(e) = writer(&mutation.config_path, &mutation.after_json) {
+            let restore = restore_journaled_team_configs_with_writer(
+                metadata,
+                team_guard,
+                &journal,
+                &mut writer,
+            );
             return Err(format!(
                 "Failed to write team '{}' config during agent delete: {}{}",
                 mutation.team_name,
@@ -500,7 +519,8 @@ pub(super) fn persist_agent_delete_metadata_blocking(
         }
     };
     if let Err(e) = settings_result {
-        let restore = restore_journaled_team_configs(metadata, team_guard, &journal);
+        let restore =
+            restore_journaled_team_configs_with_writer(metadata, team_guard, &journal, &mut writer);
         return Err(format!("{}{}", e, format_restore_suffix(restore)));
     }
     Ok(())
@@ -509,10 +529,11 @@ pub(super) fn persist_agent_delete_metadata_blocking(
 /// Restore journaled team configs once, in reverse order, only when the current
 /// bytes still equal our written `after_json` (else a lock-unaware writer changed
 /// it after our write; leave the newer content and report a typed conflict).
-pub(super) fn restore_journaled_team_configs(
+fn restore_journaled_team_configs_with_writer(
     metadata: &PreparedAgentDeleteMetadata,
     team_guard: &TeamConfigMutationGuard,
     journal: &[usize],
+    writer: &mut impl FnMut(&Path, &[u8]) -> Result<(), String>,
 ) -> Result<(), String> {
     team_guard.require_ac_root(&metadata.ac_root)?;
     let mut errors = Vec::new();
@@ -520,12 +541,7 @@ pub(super) fn restore_journaled_team_configs(
         let mutation = &metadata.team_mutations[index];
         match read_team_config_bytes(&mutation.config_path) {
             Ok(current) if current == mutation.after_json => {
-                if let Err(e) = write_team_config_json_atomic(
-                    &metadata.ac_root,
-                    team_guard,
-                    &mutation.config_path,
-                    &mutation.before_json,
-                ) {
+                if let Err(e) = writer(&mutation.config_path, &mutation.before_json) {
                     errors.push(format!("{}: {}", mutation.config_path.display(), e));
                 }
             }
@@ -569,11 +585,8 @@ pub(super) async fn stage_agent_delete_targets(
     plan: &AgentDeletePlan,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
 ) -> Result<Vec<StagedAgentDeleteTarget>, String> {
-    match stage_agent_delete_targets_with_rename(
-        plan,
-        |from: &Path, to: &Path| std::fs::rename(from, to),
-        session_mgr,
-    ) {
+    match stage_agent_delete_targets_with_rename(plan, directories::stage_agent_target, session_mgr)
+    {
         Ok(staged) => Ok(staged),
         Err(AgentDeleteStageError::Blocked { target, raw_error }) => {
             log::info!(
@@ -672,7 +685,7 @@ pub(super) fn rollback_staged_agent_delete_targets(
     staged: &[StagedAgentDeleteTarget],
 ) -> Result<(), String> {
     rollback_staged_agent_delete_targets_with_rename(staged, |from: &Path, to: &Path| {
-        std::fs::rename(from, to)
+        directories::restore_agent_target(from, to)
     })
 }
 
@@ -712,7 +725,7 @@ pub(super) fn remove_staged_agent_delete_targets(
 ) -> Result<(), String> {
     let mut errors = Vec::new();
     for target in staged {
-        if let Err(e) = std::fs::remove_dir_all(&target.staged_path) {
+        if let Err(e) = directories::remove_staged_agent_target(&target.staged_path) {
             errors.push(format!(
                 "{} [{}] {}: {}",
                 target.label,

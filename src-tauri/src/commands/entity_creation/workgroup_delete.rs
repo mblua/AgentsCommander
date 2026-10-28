@@ -1,6 +1,5 @@
 use super::delete_guard::{
-    ensure_no_live_sessions_under_manager, is_rename_blocked_by_handle,
-    validate_delete_root_not_link_or_reparse,
+    ensure_no_live_sessions_under_manager, validate_delete_root_not_link_or_reparse,
 };
 use super::matrix_layout::{selected_ac_root, validate_existing_name};
 use super::team_update::emit_coordinator_refresh;
@@ -212,23 +211,14 @@ pub(crate) fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, S
             .to_string_lossy()
             .to_string();
 
-        let entries = match std::fs::read_dir(wg_dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let dir_name = entry.file_name();
+        crate::config::projects::visit_discovery_project_children(wg_dir, |path| {
+            let dir_name = path.file_name().unwrap_or_default();
             let dir_name_str = dir_name.to_string_lossy();
             if !dir_name_str.starts_with("repo-") {
-                continue;
+                return;
             }
             if !crate::repos::working_tree_marker_exists(&path.join(".git")) {
-                continue;
+                return;
             }
 
             let display = format!("{}/{}", wg_name, dir_name_str);
@@ -259,115 +249,24 @@ pub(crate) fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, S
             if !reasons.is_empty() {
                 dirty.push((display, reasons.join(", ")));
             }
-        }
+        });
     }
 
     dirty
 }
 
-/// Result of a preflight-rename `delete_workgroup` attempt.
-///
-/// `pub(crate)` so the unit tests can pattern-match on the variants.
-pub(crate) enum WgDeleteOutcome {
-    /// Rename succeeded and the renamed dir was removed.
-    Deleted,
-    /// Rename succeeded, but deleting the renamed orphan failed. The
-    /// user-visible workgroup name is gone, but callers must report this as a
-    /// partial failure and skip refresh.
-    Partial {
-        orphan_path: PathBuf,
-        error: std::io::Error,
-    },
-    /// Rename failed with a Windows file-in-use error. Tree is intact; caller
-    /// should run the blocker diagnostic and return `BLOCKERS:` to the frontend.
-    Blocked(std::io::Error),
-    /// Rename failed with any other error (NotFound, permission, invalid path,
-    /// …). Caller passes the raw error through unchanged.
-    Other(std::io::Error),
-}
+pub(crate) use crate::config::entity_creation::directories::WgDeleteOutcome;
 
-impl WgDeleteOutcome {
-    /// Whether the original user-visible workgroup path is gone (#1063, plan
-    /// section 5.4). `true` for `Deleted` and `Partial` (the atomic rename moved
-    /// the original path away, so its replica config rows are no longer active
-    /// even when hidden-orphan cleanup failed); `false` for `Blocked`/`Other`,
-    /// which leave the path intact and must preserve rows.
-    pub(crate) fn logical_path_removed(&self) -> bool {
-        matches!(
-            self,
-            WgDeleteOutcome::Deleted | WgDeleteOutcome::Partial { .. }
-        )
-    }
-}
-
-/// Atomically detect blockers before deleting a workgroup directory.
-///
-/// Strategy: rename the WG dir to a unique sentinel name in the same parent
-/// (NTFS metadata-only operation, fails atomically if any handle blocks it),
-/// then `remove_dir_all` the renamed dir. If rename fails with a file-in-use
-/// error the WG is still intact, so the caller can run the diagnostic over the
-/// original tree and surface a `BLOCKERS:` report.
-///
-/// Suffix scheme: `.deleting-<wg_name>-<uuid>` — leading `.` keeps any orphan
-/// (rare race: rename succeeds but remove_dir_all fails) invisible to the
-/// `entity_prefix::has_entity_prefix` filters in `ac_discovery` and
-/// `cli::list_peers`, so an orphan won't surface as a ghost room. UUID is
-/// used (already in `Cargo.toml`) to guarantee uniqueness across rapid retries.
-///
-/// `pub(crate)` so unit tests can drive it directly.
 pub(crate) fn try_atomic_delete_wg(wg_dir: &Path) -> WgDeleteOutcome {
-    try_atomic_delete_wg_with_remove(wg_dir, |path| std::fs::remove_dir_all(path))
+    try_atomic_delete_wg_with_remove(
+        wg_dir,
+        crate::config::entity_creation::directories::remove_room_orphan,
+    )
 }
 
 pub(crate) fn try_atomic_delete_wg_with_remove(
     wg_dir: &Path,
-    remove_dir_all: impl FnOnce(&Path) -> std::io::Result<()>,
+    remove: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> WgDeleteOutcome {
-    let parent = match wg_dir.parent() {
-        Some(p) => p,
-        None => {
-            return WgDeleteOutcome::Other(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "room directory has no parent",
-            ));
-        }
-    };
-    let original_name = match wg_dir.file_name().and_then(|n| n.to_str()) {
-        Some(n) => n,
-        None => {
-            return WgDeleteOutcome::Other(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "room directory has no filename",
-            ));
-        }
-    };
-    let temp_name = format!(".deleting-{}-{}", original_name, uuid::Uuid::new_v4());
-    let temp_path = parent.join(&temp_name);
-
-    match std::fs::rename(wg_dir, &temp_path) {
-        Ok(()) => {
-            if let Err(e) = remove_dir_all(&temp_path) {
-                log::warn!(
-                    "[entity_creation] Renamed workgroup '{}' to '{}' but remove_dir_all \
-                     failed: {}. \
-                     User-visible WG is gone; orphan remains on disk.",
-                    wg_dir.display(),
-                    temp_path.display(),
-                    e
-                );
-                return WgDeleteOutcome::Partial {
-                    orphan_path: temp_path,
-                    error: e,
-                };
-            }
-            WgDeleteOutcome::Deleted
-        }
-        Err(e) => {
-            if is_rename_blocked_by_handle(&e) {
-                WgDeleteOutcome::Blocked(e)
-            } else {
-                WgDeleteOutcome::Other(e)
-            }
-        }
-    }
+    crate::config::entity_creation::directories::rename_room_for_delete(wg_dir, remove)
 }

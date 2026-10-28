@@ -33,6 +33,17 @@
         "files": 1,
         "sites": 2
       }
+    },
+    {
+      "id": "TeamCreation/Config",
+      "name": "config.json",
+      "scope": "src-tauri/src/config/entity_creation/teams/",
+      "owner": "src-tauri/src/config/entity_creation/teams/store.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
     }
   ]
 }

@@ -14,6 +14,7 @@ pub(crate) mod coding_agents_catalog;
 pub(crate) mod config_seed;
 pub(crate) mod coordinator_clocks;
 pub(crate) mod daemon_pid;
+pub(crate) mod entity_creation;
 pub(crate) mod entity_prefix;
 pub(crate) mod environment;
 pub(crate) mod injected_messages;

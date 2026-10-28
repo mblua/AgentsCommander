@@ -880,3 +880,69 @@ fn issue_3298_visit_is_immediate_and_stops_at_break() {
     assert_eq!(actual.to_string(), expected.to_string());
     assert_eq!(actual.raw_os_error(), expected.raw_os_error());
 }
+
+#[test]
+fn issue_3329_cli_reads_preserve_text_and_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("master-token.txt");
+    for text in [
+        "\u{2003}fixture-token\r\n".to_owned(),
+        "\u{feff}fixture-token".to_owned(),
+        String::new(),
+        "x".repeat(16 * 1024),
+    ] {
+        std::fs::write(&path, text.as_bytes()).unwrap();
+        let native = std::fs::read_to_string(&path).unwrap();
+        let actual = documents::read_cli_outbox_text(&path).unwrap();
+        assert_eq!(actual, native);
+        assert_eq!(
+            actual.trim() == "fixture-token",
+            native.trim() == "fixture-token"
+        );
+    }
+    std::fs::write(&path, [0xff]).unwrap();
+    let classify = |e: std::io::Error| (e.kind(), e.raw_os_error(), e.to_string());
+    for path in [path, dir.path().join("missing"), dir.path().to_path_buf()] {
+        let native = std::fs::read_to_string(&path).unwrap_err();
+        let actual = documents::read_cli_outbox_text(&path).unwrap_err();
+        assert_eq!(classify(actual), classify(native));
+    }
+}
+
+#[test]
+fn issue_3329_plain_clear_ports_preserve_native_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let outbox = dir.path().join("nested/outbox");
+    directories::ensure_cli_outbox(&outbox).unwrap();
+    assert!(outbox.is_dir());
+    directories::ensure_cli_outbox(&outbox).unwrap();
+    let request = outbox.join("request.json");
+    documents::write_cli_outbox_message(&request, b"longer payload").unwrap();
+    documents::write_cli_outbox_message(&request, b"ok").unwrap();
+    assert_eq!(std::fs::read(&request).unwrap(), b"ok");
+    let classify = |e: std::io::Error| (e.kind(), e.raw_os_error(), e.to_string());
+    let native = std::fs::create_dir_all(&request).unwrap_err();
+    let actual = directories::ensure_cli_outbox(&request).unwrap_err();
+    assert_eq!(classify(actual), classify(native));
+    for path in [outbox.clone(), request.join("child")] {
+        let native = std::fs::write(&path, b"data").unwrap_err();
+        let actual = documents::write_cli_outbox_message(&path, b"data").unwrap_err();
+        assert_eq!(classify(actual), classify(native));
+    }
+    for path in [
+        request.clone(),
+        outbox,
+        dir.path().join("missing"),
+        request.join("child"),
+    ] {
+        let native = std::fs::metadata(&path)
+            .map(|m| m.is_file())
+            .map_err(classify);
+        let actual = documents::cli_outbox_delivery_is_file(&path).map_err(classify);
+        assert_eq!(actual, native);
+        let native = std::fs::canonicalize(&path).map_err(classify);
+        let actual = directories::canonical_cli_discovery_path(&path).map_err(classify);
+        assert_eq!(actual, native);
+        assert_eq!(directories::cli_discovery_is_dir(&path), path.is_dir());
+    }
+}
