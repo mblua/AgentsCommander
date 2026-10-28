@@ -3,7 +3,7 @@ use super::binding::binding_matches;
 use super::{
     CommitDecision, CommitResult, FinalizeMutation, LifecycleMutations, SessionManagerState,
 };
-use crate::session::selection::{SelectionMode, SessionSelection};
+use crate::session::selection::payload::{SelectionMode, SessionSelection};
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -11,6 +11,7 @@ pub(super) fn append_finalized_live_activity(
     state: &SessionManagerState,
     finalized_live_ids: Vec<Uuid>,
     result: &mut CommitResult,
+    owner: &crate::config::activity_log::ActivityCoalescer,
 ) {
     for id in finalized_live_ids {
         if let Some(record) = state.sessions.get(&id) {
@@ -21,6 +22,7 @@ pub(super) fn append_finalized_live_activity(
                         id,
                         record,
                         crate::config::activity_log::BusyReason::SessionStart,
+                        owner,
                     ));
             }
         }

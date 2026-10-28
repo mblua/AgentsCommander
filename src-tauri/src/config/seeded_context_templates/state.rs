@@ -202,7 +202,7 @@ pub(crate) fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
 }
 
 pub(crate) fn validate_existing_dir(path: &Path, label: &str) -> Result<(), String> {
-    let metadata = std::fs::symlink_metadata(path)
+    let metadata = crate::filesystem::context_templates::inspect_template_source(path)
         .map_err(|e| format!("Failed to inspect {} {}: {}", label, path.display(), e))?;
     if is_link_or_reparse(&metadata) || !metadata.is_dir() {
         return Err(format!(
@@ -215,7 +215,7 @@ pub(crate) fn validate_existing_dir(path: &Path, label: &str) -> Result<(), Stri
 }
 
 pub(crate) fn validate_existing_file(path: &Path, label: &str) -> Result<(), String> {
-    let metadata = std::fs::symlink_metadata(path)
+    let metadata = crate::filesystem::context_templates::inspect_template_source(path)
         .map_err(|e| format!("Failed to inspect {} {}: {}", label, path.display(), e))?;
     if is_link_or_reparse(&metadata) || !metadata.is_file() {
         return Err(format!(
@@ -231,7 +231,7 @@ pub(crate) fn read_validated_snapshot(
     path: &Path,
     label: &str,
 ) -> Result<Option<FileSnapshot>, String> {
-    match std::fs::symlink_metadata(path) {
+    match crate::filesystem::context_templates::inspect_template_source(path) {
         Ok(metadata) => {
             if is_link_or_reparse(&metadata) || !metadata.is_file() {
                 return Err(format!(
@@ -252,7 +252,7 @@ pub(crate) fn read_validated_snapshot(
         }
     }
 
-    let bytes = std::fs::read(path)
+    let bytes = crate::filesystem::context_templates::read_template_bytes(path)
         .map_err(|e| format!("Failed to read {} {}: {}", label, path.display(), e))?;
     let sha256 = sha256_hex(&bytes);
     let content = String::from_utf8(bytes.clone())
@@ -266,7 +266,7 @@ pub(crate) fn read_validated_snapshot(
 
 pub(crate) fn load_state(ac_root: &Path, strict: bool) -> Result<LoadedState, String> {
     let path = ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
-    match std::fs::symlink_metadata(&path) {
+    match crate::filesystem::context_templates::inspect_template_source(&path) {
         Ok(metadata) => {
             if is_link_or_reparse(&metadata) || !metadata.is_file() {
                 let message = format!(
@@ -318,7 +318,7 @@ pub(crate) fn load_state(ac_root: &Path, strict: bool) -> Result<LoadedState, St
         }
     }
 
-    let bytes = std::fs::read(&path).map_err(|e| {
+    let bytes = crate::filesystem::context_templates::read_template_bytes(&path).map_err(|e| {
         format!(
             "Failed to read context template state {}: {}",
             path.display(),
@@ -386,7 +386,7 @@ pub(crate) fn unique_state_temp_path(path: &Path) -> PathBuf {
 }
 
 pub(crate) fn cleanup_temp(path: &Path) {
-    if let Err(e) = std::fs::remove_file(path) {
+    if let Err(e) = crate::filesystem::context_templates::remove_template_entry(path) {
         if e.kind() != std::io::ErrorKind::NotFound {
             log::warn!(
                 "[context-templates] failed to remove temporary file {}: {}",
@@ -402,7 +402,7 @@ pub(crate) fn persist_state(
     state: &SeededContextTemplateState,
 ) -> Result<(), String> {
     let path = ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
-    match std::fs::symlink_metadata(&path) {
+    match crate::filesystem::context_templates::inspect_template_source(&path) {
         Ok(metadata) => {
             if is_link_or_reparse(&metadata) || !metadata.is_file() {
                 return Err(format!(
@@ -424,11 +424,8 @@ pub(crate) fn persist_state(
     let content = serde_json::to_vec_pretty(state)
         .map_err(|e| format!("Failed to serialize context template state: {}", e))?;
     let temp = unique_state_temp_path(&path);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(|e| {
+    let mut file =
+        crate::filesystem::context_templates::create_template_stage(&temp).map_err(|e| {
             format!(
                 "Failed to create temporary context template state {}: {}",
                 temp.display(),
@@ -469,7 +466,7 @@ pub(crate) fn persist_state(
         return Err(e);
     }
     if let Some(parent) = path.parent() {
-        if let Ok(dir) = std::fs::File::open(parent) {
+        if let Ok(dir) = crate::filesystem::context_templates::open_template_directory(parent) {
             if let Err(e) = dir.sync_all() {
                 log::warn!(
                     "[context-templates] failed to sync state directory {}: {}",

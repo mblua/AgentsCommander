@@ -7,10 +7,10 @@ use serde::Serialize;
 use crate::cli::create_agent_matrix::{write_project_refresh_request, ProjectRefreshRequest};
 use crate::commands::entity_creation::{
     acquire_lifecycle_project_gate, check_workgroup_repos_dirty, clone_missing_repos_for_workgroup,
-    create_workgroup_on_disk, list_workgroup_dirs, prune_workgroup_config_scope, read_team_config,
-    resolve_agent_ref, sanitize_name, validate_delete_root_not_link_or_reparse,
-    validate_existing_name, RepoAssignment, TeamConfigResult, WgDeleteOutcome,
-    WorkgroupDiskCreateArgs,
+    create_workgroup_on_disk_traced, list_workgroup_dirs, prune_workgroup_config_scope,
+    read_team_config, resolve_agent_ref, sanitize_name, validate_delete_root_not_link_or_reparse,
+    validate_existing_name, CreationTrace, Origin, Outcome, Reason, RepoAssignment, Stage,
+    StageGuard, TeamConfigResult, WgDeleteOutcome, WorkgroupDiskCreateArgs,
 };
 use crate::config::ac_root::existing_ac_root;
 use crate::config::projects::resolve_project_reference;
@@ -21,6 +21,9 @@ use crate::config::remote_activity_cache::{
 };
 #[cfg(test)]
 use crate::config::sessions_persistence::PersistedSession;
+
+#[cfg(test)]
+use crate::commands::entity_creation::create_workgroup_on_disk;
 
 mod activity;
 
@@ -154,10 +157,23 @@ pub(crate) fn resolve_cli_ac_root(project_path: &Path) -> Result<PathBuf, String
 }
 
 pub(crate) fn write_refresh(project_path: &Path, changed_path: &Path, name: &str, reason: &str) {
+    write_refresh_traced(project_path, changed_path, name, reason, None);
+}
+
+fn write_refresh_traced(
+    project_path: &Path,
+    changed_path: &Path,
+    name: &str,
+    reason: &str,
+    mut operation: Option<&mut StageGuard<'_>>,
+) {
+    let mut stage = operation.as_ref().map(|p| p.child(Stage::RefreshPublish));
     let canonical_project_path =
-        std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
+        crate::filesystem::projects::canonical_refresh_project(project_path)
+            .unwrap_or_else(|_| project_path.to_path_buf());
     let canonical_changed_path =
-        std::fs::canonicalize(changed_path).unwrap_or_else(|_| changed_path.to_path_buf());
+        crate::filesystem::directories::canonical_cli_discovery_path(changed_path)
+            .unwrap_or_else(|_| changed_path.to_path_buf());
     let request = ProjectRefreshRequest {
         id: uuid::Uuid::new_v4().to_string(),
         project_path: canonical_project_path.to_string_lossy().to_string(),
@@ -166,14 +182,28 @@ pub(crate) fn write_refresh(project_path: &Path, changed_path: &Path, name: &str
         reason: reason.to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
     };
+    if let Some(stage) = &mut stage {
+        // The request UUID is generated above; this never changes the functional request.
+        stage.refresh_request(uuid::Uuid::parse_str(&request.id).expect("generated UUID"));
+    }
     if let Err(e) = write_project_refresh_request(&request) {
         eprintln!("Warning: failed to request project refresh: {}", e);
+        if let Some(stage) = &mut stage {
+            stage.finish(Outcome::Error, Some(Reason::Failed));
+        }
+        if let Some(operation) = &mut operation {
+            // Keep void publication semantics; the final outcome is carried to add.
+            operation.partial();
+        }
+    } else if let Some(stage) = &mut stage {
+        stage.finish(Outcome::Ok, None);
     }
 }
 
 pub(crate) fn write_project_registration_refresh(project_path: &Path, reason: &str) {
     let canonical_project_path =
-        std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
+        crate::filesystem::directories::canonical_cli_discovery_path(project_path)
+            .unwrap_or_else(|_| project_path.to_path_buf());
     let request = ProjectRefreshRequest {
         id: uuid::Uuid::new_v4().to_string(),
         project_path: canonical_project_path.to_string_lossy().to_string(),
@@ -201,10 +231,12 @@ fn list(args: WorkgroupListArgs) -> Result<(), String> {
                 name,
                 team,
                 path: path.to_string_lossy().to_string(),
-                has_messaging: path
-                    .join(crate::phone::messaging::MESSAGING_DIR_NAME)
-                    .is_dir(),
-                has_task: path.join("TASK.md").is_file(),
+                has_messaging: crate::filesystem::directories::cli_discovery_is_dir(
+                    &path.join(crate::phone::messaging::MESSAGING_DIR_NAME),
+                ),
+                has_task: crate::filesystem::directories::cli_discovery_is_file(
+                    &path.join("TASK.md"),
+                ),
                 replicas,
             })
         })
@@ -213,80 +245,104 @@ fn list(args: WorkgroupListArgs) -> Result<(), String> {
 }
 
 fn add(args: WorkgroupAddArgs) -> Result<(), String> {
-    let project_path = resolve_cli_project(&args.project)?;
-    let ac_root = resolve_cli_ac_root(&project_path)?;
-    let safe_team = sanitize_name(&args.team)?;
-    let has_legacy_team_flags = args.coordinator.is_some()
-        || !args.agents.is_empty()
-        || !args.repos.is_empty()
-        || !args.repo_agents.is_empty()
-        || !args.repo_exclude_agents.is_empty();
-    let team_dir = ac_root.join(format!("_team_{}", safe_team));
-    let config_path = team_dir.join("config.json");
-    let team_config_exists = team_dir.exists() || config_path.exists();
-    let provisioning_config = if team_config_exists {
-        read_team_config(&ac_root, &safe_team)?;
-        if has_legacy_team_flags {
-            return Err(format!(
-                "Team '{}' already exists. \
+    let trace = CreationTrace::new(Origin::Cli);
+    let mut operation = trace.operation();
+    let result = (|| {
+        let preflight = operation.child(Stage::Preflight);
+        let (project_path, safe_team, runtime, coordinator, agents, repos) =
+            preflight.run(|| {
+                let project_path = resolve_cli_project(&args.project)?;
+                let ac_root = resolve_cli_ac_root(&project_path)?;
+                operation.project(&ac_root);
+                let safe_team = sanitize_name(&args.team)?;
+                let has_legacy_team_flags = args.coordinator.is_some()
+                    || !args.agents.is_empty()
+                    || !args.repos.is_empty()
+                    || !args.repo_agents.is_empty()
+                    || !args.repo_exclude_agents.is_empty();
+                let team_dir = ac_root.join(format!("_team_{}", safe_team));
+                let config_path = team_dir.join("config.json");
+                let team_config_exists =
+                    crate::filesystem::directories::cli_discovery_exists(&team_dir)
+                        || crate::filesystem::directories::cli_discovery_exists(&config_path);
+                let provisioning_config = if team_config_exists {
+                    read_team_config(&ac_root, &safe_team)?;
+                    if has_legacy_team_flags {
+                        return Err(format!(
+                            "Team '{}' already exists. \
                  `room add` no longer updates team configuration. \
                  Use `team create` before `room add`, or `team add-member` for membership changes.",
-                safe_team
-            ));
-        }
-        None
-    } else if has_legacy_team_flags {
-        let coordinator = args.coordinator.as_deref().ok_or_else(|| {
-            "--coordinator is required when supplying team details on room add".to_string()
-        })?;
-        eprintln!(
-            "Warning: created missing team configuration from supplied room details. \
+                            safe_team
+                        ));
+                    }
+                    None
+                } else if has_legacy_team_flags {
+                    let coordinator = args.coordinator.as_deref().ok_or_else(|| {
+                        "--coordinator is required when supplying team details on room add"
+                            .to_string()
+                    })?;
+                    eprintln!(
+                        "Warning: created missing team configuration from supplied room details. \
              Prefer creating the team before activating a room."
+                    );
+                    Some(build_new_team_config(
+                        &ac_root,
+                        coordinator,
+                        &args.agents,
+                        &args.repos,
+                        &args.repo_agents,
+                        &args.repo_exclude_agents,
+                    )?)
+                } else {
+                    return Err(format!(
+                        "Team '{}' config not found. Create it first with `team create`.",
+                        safe_team
+                    ));
+                };
+                let runtime = tokio::runtime::Runtime::new()
+                    .map_err(|e| format!("Failed to create async runtime: {}", e))?;
+                let (coordinator, agents, repos) = if let Some(config) = provisioning_config {
+                    (
+                        Some(config.coordinator.clone()),
+                        config.agents.clone(),
+                        config.repos.clone(),
+                    )
+                } else {
+                    (None, Vec::new(), Vec::new())
+                };
+                Ok::<_, String>((project_path, safe_team, runtime, coordinator, agents, repos))
+            })?;
+        let result = runtime.block_on(create_workgroup_on_disk_traced(
+            WorkgroupDiskCreateArgs {
+                project_path: project_path.clone(),
+                team_name: safe_team,
+                task_title: args.title,
+                coordinator,
+                agents,
+                repos,
+            },
+            &mut operation,
+        ))?;
+        let changed_path = PathBuf::from(&result.path);
+        operation.clone_errors(result.clone_errors.len());
+        if !result.clone_errors.is_empty() {
+            operation.partial();
+        }
+        write_refresh_traced(
+            &project_path,
+            &changed_path,
+            changed_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("workgroup"),
+            "workgroupCreated",
+            Some(&mut operation),
         );
-        Some(build_new_team_config(
-            &ac_root,
-            coordinator,
-            &args.agents,
-            &args.repos,
-            &args.repo_agents,
-            &args.repo_exclude_agents,
-        )?)
-    } else {
-        return Err(format!(
-            "Team '{}' config not found. Create it first with `team create`.",
-            safe_team
-        ));
-    };
-    let runtime = tokio::runtime::Runtime::new()
-        .map_err(|e| format!("Failed to create async runtime: {}", e))?;
-    let (coordinator, agents, repos) = if let Some(config) = provisioning_config {
-        (
-            Some(config.coordinator.clone()),
-            config.agents.clone(),
-            config.repos.clone(),
-        )
-    } else {
-        (None, Vec::new(), Vec::new())
-    };
-    let result = runtime.block_on(create_workgroup_on_disk(WorkgroupDiskCreateArgs {
-        project_path: project_path.clone(),
-        team_name: safe_team,
-        task_title: args.title,
-        coordinator,
-        agents,
-        repos,
-    }))?;
-    let changed_path = PathBuf::from(&result.path);
-    write_refresh(
-        &project_path,
-        &changed_path,
-        changed_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("workgroup"),
-        "workgroupCreated",
-    );
-    print_json(&result)
+        operation
+            .child(Stage::JsonOutput)
+            .run(|| print_json(&result))
+    })();
+    operation.result(result)
 }
 
 fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
@@ -368,7 +424,7 @@ fn remove_hooked(
         }
     }
     write_refresh(&project_path, &wg_dir, &args.workgroup, "workgroupRemoved");
-    if std::env::var_os("AC_MACHINE_OUTPUT").is_some() {
+    if crate::config::environment::machine_output_os().is_some() {
         print_json(&serde_json::json!({
             "workgroup": args.workgroup,
             "path": wg_dir.to_string_lossy(),

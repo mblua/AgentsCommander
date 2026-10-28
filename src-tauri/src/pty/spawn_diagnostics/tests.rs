@@ -683,10 +683,11 @@ fn thresholds_from_env_are_clamped() {
 
 #[test]
 fn spawn_window_counts_the_preceding_spawns_by_cli() {
+    let owner = SpawnRegistry::new();
     let thresholds = test_thresholds();
-    let first = note_spawn_attempt(Some(CodingAgentKind::Antigravity), thresholds);
-    let second = note_spawn_attempt(Some(CodingAgentKind::Antigravity), thresholds);
-    let third = note_spawn_attempt(Some(CodingAgentKind::Claude), thresholds);
+    let first = note_spawn_attempt(Some(CodingAgentKind::Antigravity), thresholds, &owner);
+    let second = note_spawn_attempt(Some(CodingAgentKind::Antigravity), thresholds, &owner);
+    let third = note_spawn_attempt(Some(CodingAgentKind::Claude), thresholds, &owner);
 
     assert_eq!(first.same_cli, 0);
     assert_eq!(second.same_cli, 1, "two Antigravitys in the window");
@@ -701,12 +702,13 @@ fn spawn_window_counts_the_preceding_spawns_by_cli() {
 
 #[test]
 fn registry_forgets_a_session() {
-    let record = register(test_init(None));
+    let owner = SpawnRegistry::new();
+    let record = register(test_init(None), &owner);
     let id = record.session_id();
 
-    assert!(mark_ac_stop(id, "session-kill", None).is_some());
-    forget(id);
-    assert!(mark_ac_stop(id, "session-kill", None).is_none());
+    assert!(mark_ac_stop(id, "session-kill", None, &owner).is_some());
+    forget(id, &owner);
+    assert!(mark_ac_stop(id, "session-kill", None, &owner).is_none());
 }
 
 // ---- the monitor thread (grinch N1) ----
@@ -834,9 +836,10 @@ fn monitor_writes_the_startup_verdict_for_a_silent_child_and_keeps_watching() {
 
     let handle = watch_child(Arc::clone(&record), probe.probe());
     assert!(
-        wait_until(Duration::from_secs(2), || record
-            .startup_reported
-            .load(Ordering::Relaxed)),
+        wait_until(Duration::from_secs(2), || {
+            record.startup_reported.load(Ordering::Relaxed)
+                && record.stall_reported.load(Ordering::Relaxed)
+        }),
         "the startup verdict must land at the deadline"
     );
     assert!(record.stall_reported.load(Ordering::Relaxed));

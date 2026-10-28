@@ -88,8 +88,13 @@ pub(crate) fn start(
     app: tauri::AppHandle,
     transitions: mpsc::Receiver<RemoteTransition>,
     shutdown: CancellationToken,
+    messages: Arc<crate::config::injected_messages::MessageWarnings>,
 ) -> tauri::async_runtime::JoinHandle<()> {
-    let ports = Arc::new(ProductionRemoteAlertPorts::new(app, shutdown.clone()));
+    let ports = Arc::new(ProductionRemoteAlertPorts::new(
+        app,
+        shutdown.clone(),
+        messages,
+    ));
     start_with_ports(ports, transitions, shutdown)
 }
 
@@ -501,14 +506,20 @@ fn resolve_orchestrator_blocking(
 // ---------------------------------------------------------------------------
 
 struct ProductionRemoteAlertPorts {
+    messages: Arc<crate::config::injected_messages::MessageWarnings>,
     app: tauri::AppHandle,
     shutdown: CancellationToken,
     warned: Arc<Mutex<HashSet<String>>>,
 }
 
 impl ProductionRemoteAlertPorts {
-    fn new(app: tauri::AppHandle, shutdown: CancellationToken) -> Self {
+    fn new(
+        app: tauri::AppHandle,
+        shutdown: CancellationToken,
+        messages: Arc<crate::config::injected_messages::MessageWarnings>,
+    ) -> Self {
         Self {
+            messages,
             app,
             shutdown,
             warned: Arc::new(Mutex::new(HashSet::new())),
@@ -540,6 +551,7 @@ impl RemoteAlertPorts for ProductionRemoteAlertPorts {
         notice: InternalSystemNotice,
     ) -> BoxFuture<'static, Result<(), String>> {
         let app = self.app.clone();
+        let messages = Arc::clone(&self.messages);
         let cancellation = self.shutdown.child_token();
         Box::pin(async move {
             // The PERMISSIVE guard, built here rather than copied from the
@@ -547,7 +559,7 @@ impl RemoteAlertPorts for ProductionRemoteAlertPorts {
             // re-check, and a purge in progress is already deferred inside the
             // mailbox, so a second check would be a second source of one fact.
             let guard: InternalNoticeGuard = Arc::new(|| Ok(()));
-            MailboxPoller::new()
+            MailboxPoller::new(messages)
                 .deliver_internal_system_notice(&app, target, notice, cancellation, guard)
                 .await
         })

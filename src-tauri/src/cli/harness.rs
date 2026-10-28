@@ -1,16 +1,11 @@
 use clap::Args;
 use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
-use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
-use std::io::Write;
-use std::process::Command;
 
 use crate::config::instance_artifacts::LOGS_DIR_NAME;
 
 const MAX_LOGGED_COMMAND_LEN: usize = 512;
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Args, Debug)]
 #[command(
@@ -114,7 +109,11 @@ pub fn execute(args: HarnessArgs) -> i32 {
         return 0;
     }
 
-    let status = match run_command(&mode) {
+    let result = match &mode {
+        ExecutionMode::Argv(argv) => crate::process::harness::run_argv(argv),
+        ExecutionMode::Raw(raw) => crate::process::harness::run_raw_shell(raw),
+    };
+    let status = match result {
         Ok(status) => status,
         Err(err) => {
             let _ = write_audit_log(&input, &decision, "spawn_failed", Some(1));
@@ -138,67 +137,6 @@ fn parse_mode(args: &HarnessArgs) -> Result<ExecutionMode, String> {
         (None, false) => Ok(ExecutionMode::Argv(args.command.clone())),
         (None, true) => Err("provide a command after -- or pass --raw-command".to_string()),
     }
-}
-
-/// #992 - Does this process own a console?
-///
-/// `GetConsoleWindow()` is NOT this test. It returns NULL for a ConPTY-attached
-/// process, which does own a console. `GetConsoleCP()` fails, returning 0, only when
-/// no console is attached at all. Measured on Windows 11: 437 from a console-owning
-/// parent (ConPTY included), 0 from a GUI-subsystem parent launched without one.
-#[cfg(target_os = "windows")]
-fn process_owns_console() -> bool {
-    use windows_sys::Win32::System::Console::GetConsoleCP;
-    unsafe { GetConsoleCP() != 0 }
-}
-
-fn run_command(mode: &ExecutionMode) -> std::io::Result<std::process::ExitStatus> {
-    match mode {
-        ExecutionMode::Argv(argv) => {
-            let mut command = Command::new(&argv[0]);
-            crate::config::agent_path::apply_search_path_to_std_command(&mut command);
-            command.args(&argv[1..]);
-            // #992 - the release binary is GUI-subsystem, and `attach_parent_console`
-            // deliberately does NOT attach when the std handles are already valid
-            // (inherited pipes, see cli/mod.rs and issue #129). Driven from PowerShell
-            // automation, AC therefore owns no console, and a console-subsystem child
-            // spawned without the flag makes Windows allocate a NEW console for it: a
-            // stray Windows Terminal tab, while the output goes to the inherited pipes
-            // where the caller is actually reading it. When we DO own a console the
-            // child inherits it and the flag is a no-op, so leave it off and keep the
-            // interactive case exactly as it was.
-            #[cfg(target_os = "windows")]
-            if !process_owns_console() {
-                use std::os::windows::process::CommandExt;
-                command.creation_flags(CREATE_NO_WINDOW);
-            }
-            command.status()
-        }
-        ExecutionMode::Raw(raw) => {
-            let mut command = platform_shell_command(raw);
-            command.status()
-        }
-    }
-}
-
-/// #992 - see `run_command`. Same reasoning, same condition.
-#[cfg(target_os = "windows")]
-fn platform_shell_command(raw: &str) -> Command {
-    let mut command = Command::new("cmd.exe");
-    command.args(["/C", raw]);
-    if !process_owns_console() {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    command
-}
-
-#[cfg(not(target_os = "windows"))]
-fn platform_shell_command(raw: &str) -> Command {
-    let mut command = Command::new("sh");
-    crate::config::agent_path::apply_search_path_to_std_command(&mut command);
-    command.args(["-c", raw]);
-    command
 }
 
 pub(crate) fn evaluate_policy(input: &PolicyInput) -> PolicyDecision {
@@ -480,7 +418,7 @@ fn write_audit_log(
     let config_dir = crate::config::config_dir()
         .ok_or_else(|| "could not determine config directory".to_string())?;
     let log_dir = config_dir.join(LOGS_DIR_NAME);
-    std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
+    crate::filesystem::directories::ensure_harness_logs(&log_dir).map_err(|e| e.to_string())?;
     let log_path = log_dir.join("harness.log");
 
     let redacted = redacted_display(input);
@@ -508,12 +446,7 @@ fn write_audit_log(
     };
 
     let line = serde_json::to_string(&entry).map_err(|e| e.to_string())?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| e.to_string())?;
-    writeln!(file, "{}", line).map_err(|e| e.to_string())
+    crate::filesystem::documents::append_harness_audit(&log_path, &line).map_err(|e| e.to_string())
 }
 
 fn decision_parts(decision: &PolicyDecision) -> (&'static str, Vec<String>) {
@@ -525,7 +458,7 @@ fn decision_parts(decision: &PolicyDecision) -> (&'static str, Vec<String>) {
 }
 
 fn derive_identity() -> String {
-    let root = std::env::var("AGENTSCOMMANDER_ROOT").unwrap_or_default();
+    let root = crate::config::environment::harness_root().unwrap_or_default();
     if root.is_empty() {
         return "unidentified_agent".to_string();
     }

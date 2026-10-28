@@ -15,6 +15,17 @@ use pty_input::{
     ExpectedPtyArtifact,
 };
 
+fn validate_send_filename(
+    filename: &str,
+    root_is_root_agent: bool,
+) -> Result<(), crate::phone::messaging::MessagingError> {
+    if root_is_root_agent {
+        crate::phone::messaging::validate_root_notification_filename(filename)
+    } else {
+        crate::phone::messaging::validate_filename_only(filename)
+    }
+}
+
 #[derive(Args)]
 #[group(skip)]
 #[command(group(
@@ -41,6 +52,20 @@ verified Room orchestrator replica names returned by list-peers-lean. \
 Orchestrator --to targets may include the Root Agent canonical name \
 `agentscommander://root-agent`; only identity-verified Room orchestrator \
 replicas may use it.\n\n\
+FILENAME FORMAT: YYYYMMDD-HHMMSS-<from>-to-<to>-<slug>[.N].md. \
+Use exactly 8/6 ASCII digits for date/time (UTC convention); calendar dates and time ranges \
+are not checked. from/to/slug use non-empty [a-z0-9]+ segments joined by hyphens. The literal \
+to separator needs at least one segment before and two after it (recipient and slug). \
+Names do not authenticate identities; routing uses --to and the authenticated sender. \
+Use lowercase .md; no /, backslash, colon, traversal or other dots except optional .N. \
+.N is one/two digits with value 1-99: .1, .01 and .99 pass; .0, .00 and .100 fail. \
+Use a kebab-case slug: sanitize_slug generates up to 50 characters, but existing filenames \
+have no validator slug-length limit. Root senders require root-to immediately after the \
+timestamp; root-agent-to is invalid for Root. Room short names use room21-ac-dev-rust-v5; \
+legacy wg21-ac-dev-rust-v5 remains supported.\n\n\
+EXAMPLES:\n\
+20261022-092418-root-to-room21-ac-tech-lead-v5-fixer-installation-confirmed.md\n\
+20261022-093000-room21-ac-dev-rust-v5-to-room21-ac-tech-lead-v5-status.1.md\n\n\
 PRIVILEGED PTY INPUT: --pty-input and --pty-input-stdin submit validated exact UTF-8 text to one \
 authorized coding-agent PTY. This never directly executes a host or container OS shell command. \
 The caller's shell performs quoting and expansion before AC receives an argument, so prefer stdin \
@@ -54,7 +79,13 @@ durably queued in the outbox and is typically still delivered afterwards (e.g. w
 cold-spawn an idle peer). Exit 1 on confirmation timeout does NOT mean the message was lost; \
 verify the outbox instead of re-sending. --confirm-timeout is distinct from --timeout, which \
 bounds only the --get-output response wait. On enqueue, the CLI prints `Queued: <message-id>` to \
-stdout; a missing `Queued:` line means the message was NOT enqueued.")]
+stdout; a missing `Queued:` line means the message was NOT enqueued. \
+Queued confirms enqueue only, not delivery or a reply. Delivered confirms system delivery, \
+not reading or completed work. Keep the message ID and check delivered/<id>.json, \
+rejected/<id>.json and rejected/<id>.reason.txt in the effective outbox before resending. \
+The effective outbox is --outbox if supplied; otherwise a master token uses the app outbox \
+when available, falling back to <root>/<local-dir>/outbox. Session tokens use \
+<root>/<local-dir>/outbox. local-dir is configured per instance.")]
 pub struct SendArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION
@@ -68,7 +99,9 @@ pub struct SendArgs {
     pub to: String,
 
     /// Filename (not path) of a message file that already exists in
-    /// <room-root>/messaging/. Sender writes the file BEFORE calling send.
+    /// <room-root>/messaging/ or <root-agent-dir>/messaging/ for Root.
+    /// Use YYYYMMDD-HHMMSS-<from>-to-<to>-<slug>[.N].md; Root requires root-to.
+    /// Sender writes the file BEFORE calling send. See FILENAME FORMAT below.
     /// Mutually exclusive with --command and the PTY input forms.
     #[arg(long)]
     pub send: Option<String>,
@@ -233,11 +266,11 @@ fn wait_for_delivery_confirmation(
     let start = std::time::Instant::now();
 
     loop {
-        if delivered_path.exists() {
+        if crate::filesystem::directories::cli_outbox_artifact_exists(&delivered_path) {
             // #1635-2 D4: read the annotated delivered JSON when the daemon
             // wrote one; a foreign/older daemon (or an unparseable file) falls
             // back to the legacy line without failing the confirmation.
-            let delivered = std::fs::read_to_string(&delivered_path)
+            let delivered = crate::filesystem::documents::read_cli_outbox_text(&delivered_path)
                 .ok()
                 .and_then(|raw| serde_json::from_str::<OutboxMessage>(&raw).ok());
             crate::cli_println!(
@@ -246,8 +279,8 @@ fn wait_for_delivery_confirmation(
             );
             return Ok(());
         }
-        if rejected_reason_path.exists() {
-            let reason = std::fs::read_to_string(&rejected_reason_path)
+        if crate::filesystem::directories::cli_outbox_artifact_exists(&rejected_reason_path) {
+            let reason = crate::filesystem::documents::read_cli_outbox_text(&rejected_reason_path)
                 .unwrap_or_else(|_| "unknown reason".to_string());
             return Err(format!("message rejected: {}", reason.trim()));
         }
@@ -276,8 +309,8 @@ fn wait_for_response(
     let resp_start = std::time::Instant::now();
 
     loop {
-        if response_path.exists() {
-            return std::fs::read_to_string(response_path)
+        if crate::filesystem::directories::cli_outbox_artifact_exists(response_path) {
+            return crate::filesystem::documents::read_cli_outbox_text(response_path)
                 .map_err(|e| format!("failed to read response file: {}", e));
         }
         if resp_start.elapsed() >= timeout {
@@ -302,7 +335,9 @@ fn wait_for_response(
 /// targets against the same source `list-peers` reports as `reachable: true`.
 /// See #228 / #726.
 fn derive_root_project_dir(root: &str) -> Result<Option<String>, String> {
-    let Some(canon) = std::fs::canonicalize(root).ok() else {
+    let Some(canon) =
+        crate::filesystem::directories::canonical_cli_discovery_path(Path::new(root)).ok()
+    else {
         return Ok(None);
     };
     match crate::config::ac_root::wg_replica_layout_from_agent_dir(&canon)? {
@@ -328,13 +363,14 @@ fn archive_send_file(
     };
     crate::phone::messaging::ensure_workgroup_root_is_authoritative(&room)?;
     let ac_root = room.parent().ok_or("room has no Project AC Root")?;
-    let snapshot = std::fs::read(source).map_err(|e| {
-        format!(
-            "{} -> {}: {e}",
-            source.display(),
-            ac_root.join("message-archive").display()
-        )
-    })?;
+    let snapshot =
+        crate::filesystem::documents::read_cli_message_archive_source(source).map_err(|e| {
+            format!(
+                "{} -> {}: {e}",
+                source.display(),
+                ac_root.join("message-archive").display()
+            )
+        })?;
     crate::phone::messaging::archive_message_snapshot(ac_root, source, basename, &snapshot)
 }
 
@@ -374,7 +410,7 @@ fn reject_comanaged_queue_outbox(outbox_dir: &Path) -> Result<(), String> {
 
     // A real path that canonicalizes onto the queue (a symlink or an existing
     // alias) is rejected even when its lexical shape differs.
-    let aliased = std::fs::canonicalize(outbox_dir)
+    let aliased = crate::filesystem::directories::canonical_cli_discovery_path(outbox_dir)
         .ok()
         .is_some_and(|canonical| resolved_queue_shape(&canonical) == Some(true));
     if resolved_queue_shape(outbox_dir) != Some(false) || aliased {
@@ -514,13 +550,20 @@ pub fn execute(args: SendArgs) -> i32 {
         // If canonicalizing `root_project` itself fails (rare: it resolved
         // milliseconds ago inside `derive_root_project_dir`), the string check
         // still catches an exact duplicate.
-        let canon_root_project = std::fs::canonicalize(&root_project).ok();
+        let canon_root_project =
+            crate::filesystem::directories::canonical_cli_discovery_path(Path::new(&root_project))
+                .ok();
         let already_present = effective_project_paths.iter().any(|p| {
             if p == &root_project {
                 return true;
             }
             match &canon_root_project {
-                Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+                Some(canon_target) => {
+                    crate::filesystem::directories::canonical_cli_discovery_path(Path::new(p))
+                        .ok()
+                        .as_ref()
+                        == Some(canon_target)
+                }
                 None => false,
             }
         });
@@ -587,7 +630,7 @@ pub fn execute(args: SendArgs) -> i32 {
 
     // Resolve message body from --send (file-based messaging per plan §4.1 [r2])
     let message_body = if let Some(ref filename) = args.send {
-        if let Err(e) = crate::phone::messaging::validate_filename_only(filename) {
+        if let Err(e) = validate_send_filename(filename, root_is_root_agent) {
             eprintln!("Error: {}", e);
             return 1;
         }
@@ -773,10 +816,10 @@ pub fn execute(args: SendArgs) -> i32 {
         // Root/master token: use the app outbox so the MailboxPoller always finds it
         let app_outbox = crate::config::config_dir()
             .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .and_then(|p| crate::filesystem::documents::read_cli_outbox_text(&p).ok())
             .map(|s| PathBuf::from(s.trim()));
         match app_outbox {
-            Some(p) if p.is_dir() => p,
+            Some(p) if crate::filesystem::directories::cli_agent_root_is_dir(&p) => p,
             _ => ac_dir.join("outbox"),
         }
     } else {
@@ -786,7 +829,7 @@ pub fn execute(args: SendArgs) -> i32 {
         eprintln!("Error: {}", reason);
         return 1;
     }
-    if let Err(e) = std::fs::create_dir_all(&outbox_dir) {
+    if let Err(e) = crate::filesystem::directories::ensure_cli_outbox(&outbox_dir) {
         eprintln!("Error: failed to create outbox directory: {}", e);
         return 1;
     }
@@ -800,7 +843,9 @@ pub fn execute(args: SendArgs) -> i32 {
         }
     };
 
-    if let Err(e) = std::fs::write(&outbox_path, json) {
+    if let Err(e) =
+        crate::filesystem::documents::write_cli_outbox_message(&outbox_path, json.as_bytes())
+    {
         eprintln!("Error: failed to write outbox file: {}", e);
         return 1;
     }

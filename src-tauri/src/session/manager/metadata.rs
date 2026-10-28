@@ -4,6 +4,7 @@ use super::carrier::{acquire_carrier_mutation_permit, CarrierMutationPermit};
 use super::{PendingCreateBinding, SessionManager};
 use crate::config::settings::WindowGeometry;
 use crate::errors::AppError;
+use crate::session::selection::authority::{FinalizedOwnedCarry, FinalizedOwnedCarryOutcome};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -271,9 +272,8 @@ impl SessionManager {
     pub(in crate::session) async fn apply_finalized_owned_replacement_carry(
         &self,
         permit: &CarrierMutationPermit,
-        capability: super::super::selection::FinalizedOwnedCarryCapability,
-    ) -> super::super::selection::FinalizedOwnedCarryOutcome {
-        use super::super::selection::FinalizedOwnedCarryOutcome;
+        capability: impl FinalizedOwnedCarry,
+    ) -> FinalizedOwnedCarryOutcome {
         if !capability.bound_operation() {
             return FinalizedOwnedCarryOutcome::Recapture;
         }

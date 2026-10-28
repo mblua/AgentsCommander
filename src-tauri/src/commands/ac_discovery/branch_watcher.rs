@@ -16,6 +16,7 @@ use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
 pub struct DiscoveryBranchWatcher {
+    git_state: Arc<crate::pty::git_watcher::GitState>,
     pub(crate) app_handle: AppHandle,
     pub(crate) session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     /// Keyed by the project directory that directly contains the Project AC Root, not by
@@ -44,11 +45,25 @@ pub struct DiscoveryBranchWatcher {
 }
 
 impl DiscoveryBranchWatcher {
+    #[cfg(test)]
     pub fn new(
         app_handle: AppHandle,
         session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     ) -> Arc<Self> {
+        Self::with_state(
+            app_handle,
+            session_manager,
+            Arc::new(crate::pty::git_watcher::GitState::new()),
+        )
+    }
+
+    pub fn with_state(
+        app_handle: AppHandle,
+        session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
+        git_state: Arc<crate::pty::git_watcher::GitState>,
+    ) -> Arc<Self> {
         Arc::new(Self {
+            git_state,
             app_handle,
             session_manager,
             replicas: Mutex::new(HashMap::new()),
@@ -104,8 +119,8 @@ impl DiscoveryBranchWatcher {
             }
             rooms
         };
-        crate::pty::git_watcher::set_discovery_repo_paths(paths);
-        crate::pty::git_watcher::set_discovery_repo_rooms(rooms);
+        crate::pty::git_watcher::set_discovery_repo_paths(paths, &self.git_state);
+        crate::pty::git_watcher::set_discovery_repo_rooms(rooms, &self.git_state);
         result
     }
 
@@ -136,10 +151,10 @@ impl DiscoveryBranchWatcher {
         // converge to one map slot per project. Without this, the same project can
         // end up with two entries (e.g. from `discover_ac_agents` reading `read_dir`
         // output vs `discover_project` receiving a user-typed path) and emit doubled.
-        let canonical_key = std::fs::canonicalize(project_dir)
-            .ok()
-            .map(|p| projected_path_string(&p))
-            .unwrap_or_else(|| projected_path_string(Path::new(project_dir)));
+        let canonical_key =
+            crate::config::projects::canonical_watch_project(Path::new(project_dir))
+                .map(|p| projected_path_string(&p))
+                .unwrap_or_else(|| projected_path_string(Path::new(project_dir)));
 
         // Invariant: git_repos order = replica.repo_paths order (which follows config.json
         // `repos`).
@@ -288,7 +303,9 @@ impl DiscoveryBranchWatcher {
                 let statuses: Vec<Option<crate::pty::git_watcher::GitStatus>> = entry
                     .repos
                     .iter()
-                    .map(|(_, path)| crate::pty::git_watcher::read_git_status(path))
+                    .map(|(_, path)| {
+                        crate::pty::git_watcher::read_git_status(path, &self.git_state)
+                    })
                     .collect();
 
                 let refreshed: Vec<SessionRepo> = entry
@@ -309,6 +326,7 @@ impl DiscoveryBranchWatcher {
                         dirty: crate::pty::git_watcher::remember_dirty(
                             path,
                             status.as_ref().map(|s| s.dirty),
+                            &self.git_state,
                         ),
                     })
                     .collect();

@@ -1,4 +1,10 @@
+mod discard_diagnostics;
 mod publication;
+#[cfg(test)]
+pub(crate) use discard_diagnostics::poison_discard_slot_for_test;
+pub(crate) use discard_diagnostics::{
+    observe_discard_veto, DiscardVetoObservation, DiscardVetoReason,
+};
 
 pub(super) use self::publication::{
     all_carrier_protections, prepare_protected_publication, probe_publication_directory,
@@ -14,6 +20,41 @@ use crate::session::manager::{CarrierDisposition, CarrierMutationPermit};
 use crate::session::session::SessionStatus;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+
+impl PersistedSession {
+    pub(crate) fn binding_metadata(
+        &self,
+    ) -> Result<Option<crate::session::manager::CodingAgentBinding>, String> {
+        if self.coding_agent_binding_conflict {
+            return Err("duplicate_coding_agent_binding".to_string());
+        }
+        self.coding_agent_binding_id
+            .as_ref()
+            .map(|id| {
+                Uuid::parse_str(id).map_err(|_| "invalid_coding_agent_binding".to_string())?;
+                if let Some(seed) = &self.coding_agent_binding_seed {
+                    seed.validate_source()?;
+                }
+                if self.coding_agent_binding_seed.as_ref().is_some_and(|seed| {
+                    seed.identity_revision.is_empty() || seed.original_agent_id.is_empty()
+                }) {
+                    return Err("invalid_coding_agent_binding_seed".to_string());
+                }
+                let seed = self
+                    .coding_agent_binding_seed
+                    .as_ref()
+                    .map(serde_json::to_value)
+                    .transpose()
+                    .map_err(|e| e.to_string())?;
+                Ok(crate::session::manager::CodingAgentBinding {
+                    id: id.clone(),
+                    seed,
+                    origin: self.coding_agent_binding_origin.clone(),
+                })
+            })
+            .transpose()
+    }
+}
 
 /// Capture the retained current A key for an authenticated upper replacement.
 /// No CWD, recipe, or UUID-only lookup creates replacement authority.
@@ -731,7 +772,7 @@ pub(crate) fn classify_create_carrier_scope(
             publication_epoch: 0,
         };
     }
-    let Ok(canonical) = std::fs::canonicalize(cwd) else {
+    let Ok(canonical) = crate::filesystem::directories::canonical_carrier_cwd(cwd) else {
         return CreateCarrierScope::Waiting;
     };
     classify_lifecycle_carrier_scope(permit, Some(target), &canonical)

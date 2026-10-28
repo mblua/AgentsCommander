@@ -1,3 +1,4 @@
+use crate::app_state::DetachedSessionsState;
 use crate::commands::session::publish_legacy_destroy_outcome;
 #[cfg(test)]
 use crate::commands::session::restart_reader_seam;
@@ -7,13 +8,10 @@ use crate::session::manager::acquire_carrier_mutation_permit;
 use crate::session::manager::CommitDecision;
 use crate::session::manager::LifecycleMutations;
 use crate::session::selection::CriticalAdmissionOutcome;
-use crate::session::selection::SelectionCause;
 use crate::session::selection::SelectionCoordinator;
-use crate::session::selection::SelectionSource;
 use crate::session::selection::SelectionTransaction;
 use crate::session::session::SessionStatus;
 use crate::telegram::manager::TelegramBridgeState;
-use crate::DetachedSessionsState;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::AppHandle;
@@ -58,6 +56,7 @@ pub(crate) async fn destroy_one_legacy_session<R: tauri::Runtime>(
         let permit = acquire_carrier_mutation_permit().await;
         tracker.invalidate_manager_row(session_id, std::time::Instant::now());
         if !crate::config::sessions_persistence::retire_carrier_for_discard(&permit, session_id) {
+            response_close::log_discard_veto(transaction.app(), &permit, session_id);
             outcome
                 .failed
                 .push((session_id, "response_close_deferred".to_owned()));
@@ -205,68 +204,8 @@ pub(crate) async fn teardown_legacy_destroy_runtime<R: tauri::Runtime>(
     Ok(())
 }
 
-/// Core session destruction logic shared by the Tauri command and the MailboxPoller.
-/// Kills PTY, detaches Telegram bridge, removes from SessionManager, persists, and emits events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DestructionSource {
-    ManualClose,
-    AutoClose,
-    SpawnRollback,
-    BackgroundCleanup,
-}
-
-impl DestructionSource {
-    fn cause(self) -> SelectionCause {
-        match self {
-            Self::ManualClose => SelectionCause::ManualClose,
-            Self::AutoClose => SelectionCause::AutoClose,
-            Self::SpawnRollback => SelectionCause::SpawnRollback,
-            Self::BackgroundCleanup => SelectionCause::BackgroundCleanup,
-        }
-    }
-
-    fn selection_source(self) -> SelectionSource {
-        match self {
-            Self::ManualClose => SelectionSource::ManualClose,
-            Self::AutoClose => SelectionSource::AutoClose,
-            Self::SpawnRollback => SelectionSource::SpawnRollback,
-            Self::BackgroundCleanup => SelectionSource::BackgroundCleanup,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct DestroyRequest {
-    pub ids: Vec<Uuid>,
-    pub source: DestructionSource,
-    pub force_destroy_root: bool,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct DestroyOutcome {
-    pub destroyed_ids: Vec<Uuid>,
-    pub retained_exited_ids: Vec<Uuid>,
-    pub failed: Vec<(Uuid, String)>,
-}
-
-impl DestroyOutcome {
-    pub fn succeeded(&self, id: Uuid) -> bool {
-        self.destroyed_ids.contains(&id) || self.retained_exited_ids.contains(&id)
-    }
-
-    fn into_single_result(self, id: Uuid) -> Result<(), String> {
-        if self.succeeded(id) {
-            return Ok(());
-        }
-        let message = self
-            .failed
-            .into_iter()
-            .find(|(failed_id, _)| *failed_id == id)
-            .map(|(_, message)| message)
-            .unwrap_or_else(|| "Session not found".to_string());
-        Err(message)
-    }
-}
+pub use crate::session::selection::DestructionSource;
+pub(crate) use crate::session::selection::{DestroyOutcome, DestroyRequest};
 
 pub async fn destroy_session_inner<R: tauri::Runtime>(
     app: &AppHandle<R>,

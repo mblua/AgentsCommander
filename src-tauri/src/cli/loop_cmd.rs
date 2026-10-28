@@ -261,7 +261,7 @@ fn remove(args: LoopRemoveArgs) -> Result<(), String> {
     let ac_root = resolve_cli_ac_root(&project_path)?;
     let dir = remove_loop_files(&ac_root, &args.loop_id)?;
     write_refresh(&project_path, &dir, &args.loop_id, "loopRemoved");
-    if std::env::var_os("AC_MACHINE_OUTPUT").is_some() {
+    if crate::config::environment::machine_output_os().is_some() {
         print_json(&serde_json::json!({
             "id": args.loop_id,
             "removed": true
@@ -336,7 +336,7 @@ fn resolve_prompt(prompt: Option<&str>, prompt_file: Option<&Path>) -> Result<St
 }
 
 fn read_prompt_file(path: &Path) -> Result<String, String> {
-    let metadata = std::fs::metadata(path)
+    let metadata = crate::filesystem::documents::loop_prompt_metadata(path)
         .map_err(|e| format!("Failed to read prompt file '{}': {}", path.display(), e))?;
     if metadata.len() > MAX_LOOP_PROMPT_FILE_BYTES {
         return Err(format!(
@@ -345,7 +345,7 @@ fn read_prompt_file(path: &Path) -> Result<String, String> {
             MAX_LOOP_PROMPT_FILE_BYTES
         ));
     }
-    let bytes = std::fs::read(path)
+    let bytes = crate::filesystem::documents::read_loop_prompt(path)
         .map_err(|e| format!("Failed to read prompt file '{}': {}", path.display(), e))?;
     let text = String::from_utf8(bytes)
         .map_err(|_| format!("Prompt file '{}' is not valid UTF-8", path.display()))?;

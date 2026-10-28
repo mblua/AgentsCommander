@@ -1,6 +1,5 @@
 use super::updater::{
-    build_update_step_command, output_tail, TargetProcessOwner, TargetSettlement, TargetWait,
-    UpdaterStepOutcome,
+    output_tail, TargetProcessOwner, TargetSettlement, TargetWait, UpdaterStepOutcome,
 };
 #[cfg(test)]
 use super::updater::{with_target_settlement_hook, TARGET_SETTLEMENT_HOOK};
@@ -9,42 +8,59 @@ use crate::config::agent_path::effective_search_path;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::AppHandle;
 
 /// #2736 - resolved install commands with a running install task. Keyed by the
 /// command string, so two catalog keys sharing one command never run it twice.
-static INSTALLS_IN_FLIGHT: std::sync::LazyLock<Mutex<HashSet<String>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+pub struct AgentInstallState {
+    commands: Mutex<HashSet<String>>,
+}
+
+impl AgentInstallState {
+    pub(crate) fn new() -> Self {
+        Self {
+            commands: Mutex::new(HashSet::new()),
+        }
+    }
+}
 
 #[cfg(test)]
-pub(crate) fn contains_install_command(command: &str) -> bool {
-    INSTALLS_IN_FLIGHT
+pub(crate) fn contains_install_command(owner: &AgentInstallState, command: &str) -> bool {
+    owner
+        .commands
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .contains(command)
 }
 
-/// #2736 - RAII entry in `INSTALLS_IN_FLIGHT`; dropping it releases the command.
-pub(crate) struct InstallInFlight(pub(crate) String);
+/// #2736 - RAII entry in `AgentInstallState`; dropping it releases the command.
+pub(crate) struct InstallInFlight {
+    command: String,
+    owner: Arc<AgentInstallState>,
+}
 
 impl InstallInFlight {
-    pub(crate) fn acquire(command: &str) -> Result<Self, String> {
-        let mut in_flight = INSTALLS_IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
+    pub(crate) fn acquire(owner: Arc<AgentInstallState>, command: &str) -> Result<Self, String> {
+        let mut in_flight = owner.commands.lock().unwrap_or_else(|e| e.into_inner());
         if !in_flight.insert(command.to_string()) {
             return Err("an install is already running for that command".to_string());
         }
-        Ok(Self(command.to_string()))
+        Ok(Self {
+            command: command.to_string(),
+            owner: owner.clone(),
+        })
     }
 }
 
 impl Drop for InstallInFlight {
     fn drop(&mut self) {
-        INSTALLS_IN_FLIGHT
+        self.owner
+            .commands
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.0);
+            .remove(&self.command);
     }
 }
 
@@ -54,23 +70,25 @@ impl Drop for InstallInFlight {
 /// first-run install stays silent.
 pub(crate) fn start_agent_install(
     app: &AppHandle,
+    owner: Arc<AgentInstallState>,
     key: String,
     command: String,
     cwd: PathBuf,
 ) -> Result<(), String> {
-    start_agent_install_with_timeout(app, key, command, cwd, UPDATE_STEP_TIMEOUT)
+    start_agent_install_with_timeout(app, owner, key, command, cwd, UPDATE_STEP_TIMEOUT)
 }
 
 /// #2736 - `start_agent_install` with the step timeout injected. Production
 /// always passes `UPDATE_STEP_TIMEOUT`; only tests pass a shorter one.
 pub(crate) fn start_agent_install_with_timeout(
     app: &AppHandle,
+    owner: Arc<AgentInstallState>,
     key: String,
     command: String,
     cwd: PathBuf,
     timeout: Duration,
 ) -> Result<(), String> {
-    let in_flight = InstallInFlight::acquire(&command)?;
+    let in_flight = InstallInFlight::acquire(owner, &command)?;
     let app = app.clone();
     let task = async move {
         log::info!("[agent-install] running '{command}' for {key}");
@@ -128,8 +146,7 @@ pub(crate) async fn run_agent_install(
     cwd: &Path,
     timeout: Duration,
 ) -> AgentInstallRun {
-    let mut cmd = build_update_step_command(command, cwd, &effective_search_path());
-    let run = match TargetProcessOwner::spawn(&mut cmd).await {
+    let run = match TargetProcessOwner::spawn_step(command, cwd, &effective_search_path()).await {
         Ok(mut owner) => {
             // This feature has no cancel verb: the sender is never set.
             let (_cancel_tx, mut cancel) = tokio::sync::watch::channel(false);

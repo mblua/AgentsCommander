@@ -9,7 +9,10 @@
 //! and the body is read locally here (Agency cache or local file).
 
 use std::collections::HashSet;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
+
+use crate::filesystem::{directories, documents};
 
 use crate::config::instance_artifacts::AGENT_TEMPLATES_DIR_NAME;
 
@@ -96,6 +99,42 @@ pub fn agency_manifest_path(config_dir: &Path) -> PathBuf {
     agency_templates_dir(config_dir).join(AGENCY_MANIFEST_FILE)
 }
 
+pub(crate) fn read_staged_agency_manifest(root: &Path) -> Result<AgencyTemplatesManifest, String> {
+    let raw = std::fs::read_to_string(root.join(AGENCY_MANIFEST_FILE))
+        .map_err(|e| format!("Failed to read staged manifest: {}", e))?;
+    serde_json::from_str(&raw).map_err(|e| format!("Failed to parse staged manifest: {}", e))
+}
+
+pub(crate) fn read_cached_agency_manifest(root: &Path) -> Result<AgencyTemplatesManifest, String> {
+    let raw = std::fs::read_to_string(root.join(AGENCY_MANIFEST_FILE))
+        .map_err(|e| format!("Failed to read cached manifest: {}", e))?;
+    serde_json::from_str(&raw).map_err(|e| format!("Failed to parse cached manifest: {}", e))
+}
+
+pub(crate) fn write_staged_agency_manifest(
+    root: &Path,
+    manifest: &AgencyTemplatesManifest,
+) -> Result<(), String> {
+    std::fs::write(
+        root.join(AGENCY_MANIFEST_FILE),
+        serde_json::to_string_pretty(manifest)
+            .map_err(|e| format!("Failed to encode manifest: {}", e))?,
+    )
+    .map_err(|e| format!("Failed to write staged manifest: {}", e))
+}
+
+pub(crate) fn write_normalized_agency_manifest(
+    root: &Path,
+    manifest: &AgencyTemplatesManifest,
+) -> Result<(), String> {
+    std::fs::write(
+        root.join(AGENCY_MANIFEST_FILE),
+        serde_json::to_string_pretty(manifest)
+            .map_err(|e| format!("Failed to encode Agency manifest: {}", e))?,
+    )
+    .map_err(|e| format!("Failed to write Agency manifest: {}", e))
+}
+
 // ---------------------------------------------------------------------------
 // Resolved template (data `create_agent_matrix` needs)
 // ---------------------------------------------------------------------------
@@ -149,7 +188,7 @@ pub fn resolve_local_templates_dir(
     } else {
         config_dir.join(p)
     };
-    if resolved.is_dir() {
+    if directories::local_template_is_dir(&resolved) {
         LocalTemplatesDir::Custom(resolved)
     } else {
         LocalTemplatesDir::InvalidCustom {
@@ -449,6 +488,14 @@ fn lstat_no_links(path: &Path) -> Result<std::fs::Metadata, ()> {
     }
 }
 
+fn local_template_no_links(path: &Path) -> Result<std::fs::Metadata, ()> {
+    match documents::local_template_metadata(path) {
+        Ok(m) if is_link_or_reparse(&m) => Err(()),
+        Ok(m) => Ok(m),
+        Err(_) => Err(()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Agency cache validation + metadata collection
 // ---------------------------------------------------------------------------
@@ -665,38 +712,35 @@ pub fn agency_template_metas_from_cache(config_dir: &Path) -> Vec<RoleTemplateMe
 /// A missing/unreadable `dir` yields `Vec::new()` — a missing templates dir
 /// must not break the picker. Sorted case-insensitively by name on return.
 fn collect_local_templates(dir: &Path) -> Vec<RoleTemplateMeta> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
     let mut out: Vec<RoleTemplateMeta> = Vec::new();
-    for entry in entries.flatten() {
+    let _ = documents::visit_local_template_entries::<()>(dir, |entry| {
+        let Ok((path, file_name, metadata)) = entry else {
+            return ControlFlow::Continue(());
+        };
         // DirEntry::metadata() does NOT follow links — it stats the entry.
-        let Ok(meta) = entry.metadata() else {
-            continue;
+        let Ok(meta) = metadata else {
+            return ControlFlow::Continue(());
         };
         if is_link_or_reparse(&meta) || !meta.is_dir() {
-            continue;
+            return ControlFlow::Continue(());
         }
-        let path = entry.path();
         // Role.md must be a REAL file (not a symlink) for the template to count.
         let role_md = path.join("Role.md");
-        match lstat_no_links(&role_md) {
+        match local_template_no_links(&role_md) {
             Ok(m) if m.is_file() => {}
-            _ => continue,
+            _ => return ControlFlow::Continue(()),
         }
-        let folder = entry.file_name().to_string_lossy().to_string();
+        let folder = file_name.to_string_lossy().to_string();
         let id = format!("local:{}", folder);
-        let raw = std::fs::read_to_string(&role_md).unwrap_or_default();
+        let raw = documents::read_local_role_template(&role_md).unwrap_or_default();
         let (name, description) = parse_template_frontmatter(&raw);
         let name = name
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| folder.clone());
         // skills/ counts only if it is a REAL, non-empty directory.
         let skills = path.join("skills");
-        let has_skills = matches!(lstat_no_links(&skills), Ok(m) if m.is_dir())
-            && std::fs::read_dir(&skills)
-                .map(|mut rd| rd.next().is_some())
-                .unwrap_or(false);
+        let has_skills = matches!(local_template_no_links(&skills), Ok(m) if m.is_dir())
+            && documents::local_template_has_entries(&skills).unwrap_or(false);
         out.push(RoleTemplateMeta {
             id,
             source: "local".into(),
@@ -707,7 +751,8 @@ fn collect_local_templates(dir: &Path) -> Vec<RoleTemplateMeta> {
             emoji: None,
             has_skills,
         });
-    }
+        ControlFlow::Continue(())
+    });
     // read_dir order is filesystem-arbitrary; §3.2 requires local templates
     // sorted by name (mirrors `list_all_agents`).
     out.sort_by_key(|a| a.name.to_lowercase());
@@ -789,62 +834,70 @@ pub fn resolve_role_template(
         // SECURITY: never build a path from the id string. Re-enumerate the
         // resolved dir and match by id — the resolved path is therefore always
         // a real direct child (no `..` / separator traversal possible).
-        let entries = std::fs::read_dir(&dir)
-            .map_err(|e| format!("Cannot read templates directory: {}", e))?;
-        for entry in entries.flatten() {
+        let result = documents::visit_local_template_entries(&dir, |entry| {
+            let Ok((path, file_name, metadata)) = entry else {
+                return ControlFlow::Continue(());
+            };
             // The template folder must be a REAL directory. DirEntry::metadata()
             // does not follow links; `is_link_or_reparse` also rejects Windows
             // junctions. A symlinked entry is skipped.
-            let meta = match entry.metadata() {
+            let meta = match metadata {
                 Ok(m) => m,
-                Err(_) => continue,
+                Err(_) => return ControlFlow::Continue(()),
             };
             if is_link_or_reparse(&meta) || !meta.is_dir() {
-                continue;
+                return ControlFlow::Continue(());
             }
-            let folder = entry.file_name().to_string_lossy().to_string();
+            let folder = file_name.to_string_lossy().to_string();
             if format!("local:{}", folder) != id {
-                continue;
+                return ControlFlow::Continue(());
             }
-            let path = entry.path();
             // Role.md must be a REAL file. A symlinked Role.md could exfiltrate
             // an arbitrary file's contents into the new agent's Role.md.
-            let role_md = path.join("Role.md");
-            let role_meta = lstat_no_links(&role_md).map_err(|()| {
-                format!(
-                    "Template \"{}\" Role.md is missing, unreadable, or a symlink",
-                    folder
-                )
-            })?;
-            if !role_meta.is_file() {
-                return Err(format!(
-                    "Template \"{}\" Role.md is not a regular file",
-                    folder
-                ));
-            }
-            let raw = std::fs::read_to_string(&role_md)
-                .map_err(|e| format!("Template \"{}\" has no readable Role.md: {}", folder, e))?;
-            let body = crate::config::session_context::strip_yaml_frontmatter(&raw)
-                .trim()
-                .to_string();
-            if body.is_empty() {
-                return Err(format!("Template \"{}\" Role.md is empty", folder));
-            }
-            // skills/ is used only if it is a REAL directory. A symlinked or
-            // junctioned skills/ is ignored: skills_src stays None rather than
-            // copying a tree from outside the template folder.
-            let skills = path.join("skills");
-            let skills_src = match lstat_no_links(&skills) {
-                Ok(m) if m.is_dir() => Some(skills),
-                _ => None,
-            };
-            return Ok(ResolvedRoleTemplate {
-                id: id.to_string(),
-                body,
-                skills_src,
-            });
-        }
-        return Err(format!("Unknown local role template: {}", id));
+            let selected = (|| {
+                let role_md = path.join("Role.md");
+                let role_meta = local_template_no_links(&role_md).map_err(|()| {
+                    format!(
+                        "Template \"{}\" Role.md is missing, unreadable, or a symlink",
+                        folder
+                    )
+                })?;
+                if !role_meta.is_file() {
+                    return Err(format!(
+                        "Template \"{}\" Role.md is not a regular file",
+                        folder
+                    ));
+                }
+                let raw = documents::read_local_role_template(&role_md).map_err(|e| {
+                    format!("Template \"{}\" has no readable Role.md: {}", folder, e)
+                })?;
+                let body = crate::config::session_context::strip_yaml_frontmatter(&raw)
+                    .trim()
+                    .to_string();
+                if body.is_empty() {
+                    return Err(format!("Template \"{}\" Role.md is empty", folder));
+                }
+                // skills/ is used only if it is a REAL directory. A symlinked or
+                // junctioned skills/ is ignored: skills_src stays None rather than
+                // copying a tree from outside the template folder.
+                let skills = path.join("skills");
+                let skills_src = match local_template_no_links(&skills) {
+                    Ok(m) if m.is_dir() => Some(skills),
+                    _ => None,
+                };
+                Ok(ResolvedRoleTemplate {
+                    id: id.to_string(),
+                    body,
+                    skills_src,
+                })
+            })();
+            ControlFlow::Break(selected)
+        })
+        .map_err(|e| format!("Cannot read templates directory: {}", e))?;
+        return match result {
+            ControlFlow::Break(selected) => selected,
+            ControlFlow::Continue(()) => Err(format!("Unknown local role template: {}", id)),
+        };
     }
 
     Err(format!("Unrecognized role template id: {}", id))
@@ -866,7 +919,7 @@ pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> Vec<String> {
 
 fn copy_dir_into(src: &Path, dst: &Path, failures: &mut Vec<String>) {
     // Reject a symlinked / reparse-point SOURCE before enumerating it.
-    match std::fs::symlink_metadata(src) {
+    match documents::local_template_metadata(src) {
         Ok(m) if is_link_or_reparse(&m) => {
             failures.push(format!(
                 "{}: source is a symlink/reparse point",
@@ -884,41 +937,38 @@ fn copy_dir_into(src: &Path, dst: &Path, failures: &mut Vec<String>) {
         failures.push(format!("{}: cannot create dir ({})", dst.display(), e));
         return;
     }
-    let entries = match std::fs::read_dir(src) {
-        Ok(e) => e,
-        Err(e) => {
-            failures.push(format!("{}: cannot read dir ({})", src.display(), e));
-            return;
-        }
-    };
-    for entry in entries {
-        let entry = match entry {
+    let result = documents::visit_local_template_entries::<()>(src, |entry| {
+        let (path, file_name, metadata) = match entry {
             Ok(e) => e,
             Err(e) => {
                 failures.push(format!("{}: bad dir entry ({})", src.display(), e));
-                continue;
+                return ControlFlow::Continue(());
             }
         };
         // DirEntry::metadata() does NOT follow links — it stats the entry.
-        let meta = match entry.metadata() {
+        let meta = match metadata {
             Ok(m) => m,
             Err(e) => {
-                failures.push(format!("{}: cannot stat ({})", entry.path().display(), e));
-                continue;
+                failures.push(format!("{}: cannot stat ({})", path.display(), e));
+                return ControlFlow::Continue(());
             }
         };
         if is_link_or_reparse(&meta) {
-            continue; // symlink / junction — never copied (security).
+            return ControlFlow::Continue(()); // symlink / junction — never copied (security).
         }
-        let target = dst.join(entry.file_name());
+        let target = dst.join(file_name);
         if meta.is_dir() {
-            copy_dir_into(&entry.path(), &target, failures);
+            copy_dir_into(&path, &target, failures);
         } else if meta.is_file() {
-            if let Err(e) = std::fs::copy(entry.path(), &target) {
-                failures.push(format!("{}: cannot copy ({})", entry.path().display(), e));
+            if let Err(e) = std::fs::copy(&path, &target) {
+                failures.push(format!("{}: cannot copy ({})", path.display(), e));
             }
         }
         // else: device / fifo / other — skipped.
+        ControlFlow::Continue(())
+    });
+    if let Err(e) = result {
+        failures.push(format!("{}: cannot read dir ({})", src.display(), e));
     }
 }
 

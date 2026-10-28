@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
 use crate::config::sessions_persistence::persist_current_state_result;
@@ -652,26 +651,6 @@ fn extension_to_mime(ext: &str) -> &'static str {
     }
 }
 
-/// True if `meta` describes a symlink or — on Windows — ANY reparse point
-/// (junction, mount point, …). Mirrors the helper in `commands/role_templates.rs`;
-/// keep both in sync. `FileType::is_symlink()` does not flag Windows junctions
-/// or file-typed reparse points, so the raw `FILE_ATTRIBUTE_REPARSE_POINT`
-/// (0x400) bit is checked as well.
-fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
-    if meta.file_type().is_symlink() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return true;
-        }
-    }
-    false
-}
-
 /// Trim leading/trailing whitespace, then truncate to Telegram's 1024
 /// UTF-16-code-unit cap. If the cut lands inside a surrogate pair, drop the
 /// dangling high surrogate so `String::from_utf16_lossy` does not emit
@@ -722,40 +701,9 @@ pub(crate) async fn perform_send_image(
     caption: Option<&str>,
 ) -> Result<(), String> {
     let p = Path::new(path);
-    let lmeta = tokio::fs::symlink_metadata(p)
-        .await
-        .map_err(|e| format!("stat failed: {}", e))?;
-    if is_link_or_reparse(&lmeta) {
-        return Err(format!(
-            "Symlinks and reparse points are not supported in v1: {}",
-            path
-        ));
-    }
-    if !lmeta.is_file() {
-        return Err(format!("Not a regular file: {}", path));
-    }
-    let size = lmeta.len();
-    if size == 0 {
-        return Err(format!("File is empty: {}", path));
-    }
-    if size > SEND_DOCUMENT_MAX_BYTES {
-        return Err(format!(
-            "File exceeds Telegram 50 MB limit ({} bytes): {}",
-            size, path
-        ));
-    }
-
-    let f = tokio::fs::File::open(p)
-        .await
-        .map_err(|e| format!("open failed: {}", e))?;
-    let mut bytes: Vec<u8> = Vec::with_capacity(size as usize);
-    f.take(SEND_DOCUMENT_MAX_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|e| format!("read failed: {}", e))?;
-    if bytes.len() as u64 > SEND_DOCUMENT_MAX_BYTES {
-        return Err(format!("File grew past 50 MB during read: {}", path));
-    }
+    let (bytes, size) =
+        crate::telegram::attachments::prepare_telegram_attachment(path, SEND_DOCUMENT_MAX_BYTES)
+            .await?;
 
     let filename = match p.file_name().and_then(|s| s.to_str()) {
         Some(name) => name.to_string(),

@@ -68,7 +68,10 @@ pub(crate) fn discover_source_inventory(
     let mut candidates = Vec::new();
     for project in &settings.project_paths {
         let base = PathBuf::from(project);
-        if !std::fs::symlink_metadata(&base).map_err(&fail)?.is_dir() {
+        if !crate::filesystem::projects::project_path_symlink_metadata(&base)
+            .map_err(&fail)?
+            .is_dir()
+        {
             return Err(IdentityReferenceError::Conflict);
         }
         witness.parents.push(base.clone());
@@ -81,18 +84,18 @@ pub(crate) fn discover_source_inventory(
         }
         candidates.push(base.join(CANONICAL_AC_ROOT_DIR));
         let mut children = Vec::new();
-        source_discovery_cut("readDir").map_err(&fail)?;
-        for item in std::fs::read_dir(&base).map_err(&fail)? {
-            source_discovery_cut("entry").map_err(&fail)?;
-            let item = item.map_err(&fail)?;
-            source_discovery_cut("fileType").map_err(&fail)?;
-            let kind = item.file_type().map_err(&fail)?;
-            if kind.is_dir() {
-                witness.parents.push(item.path());
-                children.push(item.path());
-                candidates.push(item.path().join(CANONICAL_AC_ROOT_DIR));
-            }
-        }
+        crate::filesystem::projects::visit_source_inventory_children(
+            &base,
+            source_discovery_cut,
+            |path, kind| {
+                if kind.is_dir() {
+                    witness.parents.push(path.clone());
+                    children.push(path.clone());
+                    candidates.push(path.join(CANONICAL_AC_ROOT_DIR));
+                }
+            },
+        )
+        .map_err(&fail)?;
         children.sort();
         witness.membership.push((base, children));
     }

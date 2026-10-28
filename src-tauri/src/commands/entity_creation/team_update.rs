@@ -114,7 +114,7 @@ pub async fn update_team(
 /// between the two writers holds (order and path shape both matter).
 pub(super) fn build_session_repo(replica_dir: &Path, rel: &str) -> Option<SessionRepo> {
     let resolved = replica_dir.join(rel);
-    let abs = std::fs::canonicalize(&resolved).ok()?;
+    let abs = crate::config::projects::canonical_repo_source(&resolved).ok()?;
     let source_path = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&abs);
     let dir = source_path
         .replace('\\', "/")

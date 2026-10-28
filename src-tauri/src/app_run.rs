@@ -24,6 +24,7 @@ use crate::{
 pub(crate) fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
     ui_automation_enabled: bool,
+    owners: crate::AppOwners,
 ) -> Result<(), StartupError> {
     // #1842: FIRST STATEMENT OF run(), deliberately. GTK's Wayland backend
     // calls wl_display_connect(), which unsetenv()s WAYLAND_SOCKET, so a
@@ -41,13 +42,13 @@ pub(crate) fn run(
     #[cfg(target_os = "linux")]
     let display_env = crate::screenshot::display_env_snapshot();
 
-    preflight_config_startup()?;
+    preflight_config_startup(owners.startup_summary.as_ref())?;
 
     // Same backend the CLI path now installs in `main.rs` — see `logging.rs`
     // for the rationale. Idempotent, so a hypothetical second call (or the
     // CLI path having already run in this process) is a no-op.
     crate::logging::init_logger();
-    log_naming_migration_summary();
+    log_naming_migration_summary(owners.startup_summary.as_ref());
 
     // Generate master token — printed to stdout and persisted to master-token.txt for CLI use
     let master_token = MasterToken::new(uuid::Uuid::new_v4().to_string());
@@ -131,7 +132,7 @@ pub(crate) fn run(
     let response_close = crate::pty::manager::ResponseCloseState::default();
     let response_close_for_setup = response_close.clone();
     let session_mgr = Arc::new(tokio::sync::RwLock::new(
-        SessionManager::with_response_close(response_close.clone()),
+        SessionManager::with_response_close(response_close.clone(), owners.activity.clone()),
     ));
     let shutdown_signal = ShutdownSignal::new();
     let terminal_snapshot_state =
@@ -146,7 +147,8 @@ pub(crate) fn run(
     // #2232 phase 7: the Co-managed supervisor. Created before the idle
     // detector so its callback can read the armed flag synchronously and hand
     // the edge over without touching settings, disk or a session lookup.
-    let (co_managed_supervisor, co_managed_triggers) = CoManagedSupervisorHandle::new();
+    let (co_managed_supervisor, co_managed_triggers) =
+        CoManagedSupervisorHandle::with_capture_state(owners.capture.clone());
     let co_managed_supervisor_for_idle = co_managed_supervisor.clone();
     let co_managed_supervisor_for_setup = co_managed_supervisor.clone();
 
@@ -291,7 +293,9 @@ pub(crate) fn run(
         &startup_project_paths,
     );
     let coordinator_clocks_for_exit = Arc::clone(&coordinator_clocks);
-    let resource_monitor_state = Arc::new(resource_monitor::ResourceMonitorState::new());
+    let resource_monitor_state = Arc::new(
+        resource_monitor::ResourceMonitorState::with_spawn_registry(owners.spawn.clone()),
+    );
     // #714 screenshot capture lifecycle + global-hotkey registration state.
     let screenshot_capture_state: screenshot::ScreenshotCaptureState = Arc::new(
         tokio::sync::Mutex::new(screenshot::ScreenshotCaptureLifecycle::Idle),
@@ -384,7 +388,10 @@ pub(crate) fn run(
     #[cfg(target_os = "linux")]
     let builder = builder.manage(display_env);
 
+    let builder = crate::commands::session::selection_executor::install(builder);
+
     builder
+        .manage(owners.clone())
         .manage(master_token)
         .manage(app_outbox)
         .manage(session_mgr)
@@ -431,6 +438,7 @@ pub(crate) fn run(
             setup::setup(
                 app,
                 setup::SetupCtx {
+                    owners: owners.clone(),
                     test_window_placement,
                     app_handle_lock,
                     co_managed_supervisor_for_setup,

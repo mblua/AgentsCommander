@@ -1,16 +1,20 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::process::github::{self, QueryError};
+
 use super::{
-    build_gh_command_spec, command_from_spec, corroborate_ci_run, failure_kind, git_command,
-    merge_ci_observations, parse_ci_response, parse_compare_response, CiCompletionDecision,
-    CiCompletionState, CiState, FailureKind, GhCallOutput, GhCommandSpec, GhQuery, GhSpawner,
-    KeyOutcome, KeyPlan, QueryKey, CALL_TIMEOUT,
+    build_gh_command_spec, corroborate_ci_run, failure_kind, merge_ci_observations,
+    parse_ci_response, parse_compare_response, CiCompletionDecision, CiCompletionState, CiState,
+    FailureKind, GhCallOutput, GhCommandSpec, GhQuery, GhSpawner, KeyOutcome, KeyPlan, QueryKey,
+    CALL_TIMEOUT,
 };
 
-pub(crate) fn room_map() -> HashMap<String, Vec<String>> {
+pub(crate) fn room_map(
+    git_state: &crate::pty::git_watcher::GitState,
+) -> HashMap<String, Vec<String>> {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
-    for (repo_path, room_dir) in crate::pty::git_watcher::discovery_repo_rooms() {
+    for (repo_path, room_dir) in crate::pty::git_watcher::discovery_repo_rooms(git_state) {
         let rooms = map.entry(repo_path).or_default();
         if !rooms.contains(&room_dir) {
             rooms.push(room_dir);
@@ -197,26 +201,20 @@ where
 /// The production spawner. `CALL_TIMEOUT` plus `kill_on_drop(true)` is the same
 /// mechanism as INV-1: the timeout drops `output()`, and the drop kills `gh.exe`.
 pub(crate) async fn spawn_gh(spec: GhCommandSpec) -> Result<GhCallOutput, FailureKind> {
-    let mut command = command_from_spec(spec);
-    match tokio::time::timeout(CALL_TIMEOUT, command.output()).await {
-        Ok(Ok(output)) => Ok(GhCallOutput {
+    match github::query(spec, CALL_TIMEOUT).await {
+        Ok(output) => Ok(GhCallOutput {
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             success: output.status.success(),
         }),
-        Ok(Err(_)) => Err(FailureKind::Other),
-        Err(_) => Err(FailureKind::Timeout),
+        Err(QueryError::Spawn(error)) => {
+            let _ = error;
+            Err(FailureKind::Other)
+        }
+        Err(QueryError::Timeout) => Err(FailureKind::Timeout),
     }
 }
 
 pub(crate) async fn run_local_git(path: String, args: Vec<String>) -> Result<String, String> {
-    let mut command = git_command(&path, &args);
-    match tokio::time::timeout(CALL_TIMEOUT, command.output()).await {
-        Ok(Ok(output)) if output.status.success() => {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        }
-        Ok(Ok(output)) => Err(String::from_utf8_lossy(&output.stderr).to_string()),
-        Ok(Err(error)) => Err(error.to_string()),
-        Err(_) => Err("timeout".to_string()),
-    }
+    crate::process::git::remote::run_local_git(path, args, CALL_TIMEOUT).await
 }

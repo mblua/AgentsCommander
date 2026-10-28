@@ -46,7 +46,7 @@ pub struct PlaceholderContext {
 }
 
 pub fn placeholder_context_for_launch_root(path: &Path) -> Result<PlaceholderContext, String> {
-    let metadata = std::fs::symlink_metadata(path)
+    let metadata = crate::filesystem::directories::launch_root_metadata(path)
         .map_err(|e| format!("Launch root '{}' is not readable: {}", path.display(), e))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(format!(
@@ -54,7 +54,7 @@ pub fn placeholder_context_for_launch_root(path: &Path) -> Result<PlaceholderCon
             path.display()
         ));
     }
-    let canonical = std::fs::canonicalize(path)
+    let canonical = crate::filesystem::directories::canonical_launch_root(path)
         .map(strip_extended_prefix)
         .map_err(|e| {
             format!(

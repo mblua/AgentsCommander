@@ -7,6 +7,7 @@ pub(crate) mod entity_creation;
 pub(crate) mod ipc_blackbox;
 pub(crate) mod loops;
 pub(crate) mod non_stop;
+pub(crate) mod phone;
 pub(crate) mod project_settings;
 pub mod pty;
 pub(crate) mod quit_gate;

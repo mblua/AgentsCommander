@@ -525,6 +525,7 @@ fn project_interrupted_instance_journal_fallback_consumes_neither_patch() {
 
 #[test]
 fn project_bytes_and_registered_snapshot_survive_initialization_refresh_recovery() {
+    let owner = CatalogReseedState::new();
     for contents in [LOCAL_STUB_BYTES, b"<<<<<<< malformed project".as_slice()] {
         let dir = seed_dir();
         std::fs::create_dir_all(catalog_dir(dir.path())).unwrap();
@@ -533,7 +534,7 @@ fn project_bytes_and_registered_snapshot_survive_initialization_refresh_recovery
         let registered_bytes = b"{\"agents\":[{\"id\":\"registered-snapshot\"}]}";
         std::fs::write(&registered, registered_bytes).unwrap();
         ensure_seeded(dir.path(), None);
-        reseed_master_for_command(dir.path(), "claude").unwrap();
+        reseed_master_for_command(&owner, dir.path(), "claude").unwrap();
         assert_eq!(
             std::fs::read(local_catalog_path(dir.path())).unwrap(),
             LOCAL_STUB_BYTES

@@ -2,37 +2,18 @@
 // Reduces a Rust dependency graph to its unique module-to-module arc set and writes that
 // set to src-tauri/module-arcs.txt, for issue #1249.
 //
-// INPUT: a graph emitted by 01-rust_module-dependency-cycles.mjs 1.1.0, which lives outside
-// this repository in the user's ObsidianVault. This script never analyses Rust, never spawns
-// a process and never reads a .rs file. It is a projection of that graph, not a verdict on
-// it, which is why it has no exit code 1.
+// INPUT: graph from the in-repo 01-rust_module-dependency-cycles.mjs detector1.1.1.
+// This script projects the graph; it does not analyse Rust or decide cycle policy.
+// Output is UTF-8, sorted unique non-self "from -> to" pairs, LF only.
+// Empty arcs produce zero bytes. The default record is ignored local review material.
 //
-// WHY THIS FILE EXISTS: the minimum feedback arc set is not unique, so diffing a levelizer's
-// findings between two commits reports arcs as resolved and regressed when the graph did not
-// change. Measured between 1b0e934 and 87514dfd over agentscommander_lib::config: the
-// findings diff claimed 4 resolved and 3 regressions, while the arc set had changed by
-// exactly one arc. Aggregate counters are no better: two commits with different graphs both
-// reported 182 modules and 3 504 sites. The arc set is the comparison base that does not lie.
-//
-// RECORD FORMAT: one arc per line, "<from> -> <to>", UTF-8, LF only, one trailing LF, sorted
-// ascending by the whole line, duplicates collapsed, self-arcs excluded, no header and no
-// counters. An empty arc set is a zero-byte file. The separator's leading space is load
-// bearing: it sorts below ':' (0x3A), the lowest character a module id can contain, so
-// sorting the rendered lines is the same as sorting the (from, to) pairs. A '>' separator
-// would invert every parent/descendant pair.
-//
-// src-tauri/module-arcs.txt is pinned to LF in .gitattributes. Without that pin,
-// core.autocrlf=true checks it out as CRLF and every run rewrites all 972 lines.
-//
-// REGENERATING (manual; `check:arcs` in the test-debt CI job fails when it is stale). From the repo root, with
-// <VAULT> = repo-personal/ObsidianVault/Coding Agents/IA-Programming/rust:
-//
-//   node "<VAULT>/01-rust_module-dependency-cycles.mjs" src-tauri --emit-graph graph.json --quiet
+// REGENERATING from the repo root:
+//   npm run check:arcs
+// Or project an explicitly generated graph:
+//   node scripts/01-rust_module-dependency-cycles.mjs src-tauri --emit-graph graph.json --quiet
 //   npm run record:arcs -- --graph graph.json
-//
-// then delete graph.json. It is gitignored and must never be committed: it carries the
-// absolute path of the machine that produced it. The detector EXITS 1 when it finds cycles
-// and writes the graph anyway; only exit 3 means no graph was written.
+// Neither graph.json nor src-tauri/module-arcs.txt may be committed.
+// Run check:cycles for the independent cycle verdict; CI publishes an artifact/receipt.
 //
 // Every flag of that command is part of the measurement, so this script gates on
 // target.rootPath, target.crateDiscovery, target.includeTests and target.excludes rather
@@ -108,9 +89,9 @@ const USAGE = [
   '  header and no counters. An empty arc set is a zero-byte file.',
   '',
   'REGENERATING THE RECORD',
-  '  From the repository root, with <VAULT> the directory holding the instrument:',
+  '  From the repository root (in-repo detector1.1.1):',
   '',
-  '    node "<VAULT>/01-rust_module-dependency-cycles.mjs" src-tauri --emit-graph graph.json --quiet',
+  '    node scripts/01-rust_module-dependency-cycles.mjs src-tauri --emit-graph graph.json --quiet',
   '    npm run record:arcs -- --graph graph.json',
   '',
   '  Then delete graph.json. It is gitignored and must never be committed: it',
@@ -122,8 +103,8 @@ const USAGE = [
   '  Every flag of that command is part of the measurement, so this script refuses',
   '  a graph whose target, crate discovery, includeTests or excludes differ.',
   '',
-  '  Did this commit change the structure?',
-  '    git diff -- src-tauri/module-arcs.txt',
+  '  The default record is ignored local review material. Never commit it.',
+  '  Run npm run check:cycles separately; CI publishes tested-tree arcs and receipt.',
 ];
 
 // ---------------------------------------------------------------------------
@@ -350,7 +331,7 @@ function renderBody(lines) {
 }
 
 // Sibling temp plus rename, never os.tmpdir(): a cross-device rename fails. The destination is
-// a tracked file and a half-written commit candidate is worse than one extra rename.
+// local review material; the prior final stays intact if publication fails.
 function writeRecord(file, body) {
   const tmp = `${file}.${process.pid}.tmp`;
   try {

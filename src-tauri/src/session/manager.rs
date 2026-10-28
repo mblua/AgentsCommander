@@ -1,8 +1,8 @@
 use super::session::{Session, SessionCommunicationKind, SessionInfo, SessionStatus};
 use crate::pty::backend_kind::SessionBackendKind;
-use crate::session::selection::{
-    CommitCapability, DormantRuntimeWitness, LiveRuntimeWitness, SelectionCause, SelectionMode,
-    SessionSelection,
+use crate::session::selection::authority::CommitCapability;
+use crate::session::selection::payload::{
+    DormantRuntimeWitness, LiveRuntimeWitness, SelectionCause, SelectionMode, SessionSelection,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -82,6 +82,7 @@ impl PendingCreateBinding {
 
 #[derive(Clone)]
 pub struct SessionManager {
+    activity: Arc<crate::config::activity_log::ActivityCoalescer>,
     response_close: crate::pty::response_close::ResponseCloseState,
     state: Arc<RwLock<SessionManagerState>>,
     pub(crate) prompt_initialization: Arc<tokio::sync::OnceCell<()>>,
@@ -209,6 +210,7 @@ pub(crate) struct CommitResult {
     pub activity: Vec<crate::config::activity_log::ActivityRecord>,
 }
 
+#[cfg(test)]
 impl Default for SessionManager {
     fn default() -> Self {
         Self::new()
@@ -252,6 +254,7 @@ impl SessionManager {
                     id,
                     s,
                     crate::config::activity_log::IdleReason::MarkIdle,
+                    &self.activity,
                 ))
             } else {
                 None
@@ -306,6 +309,7 @@ impl SessionManager {
                     id,
                     s,
                     crate::config::activity_log::BusyReason::MarkBusy,
+                    &self.activity,
                 ))
             } else {
                 None
@@ -483,6 +487,7 @@ impl SessionManager {
                 id,
                 session,
                 crate::config::activity_log::BusyReason::PtyInputBoundary,
+                &self.activity,
             );
             let (mut route_guard, was_idle) = prepared;
             route_guard.retain_authority_guard(authority_route_guard);
@@ -713,7 +718,7 @@ impl SessionManager {
         // reads back as absent or `Exited`, so `is_working` is false and nothing
         // is recorded. Such a session was never observably working. One promoted
         // to `Active` still reads as working and is recorded.
-        append_finalized_live_activity(&state, finalized_live_ids, &mut result);
+        append_finalized_live_activity(&state, finalized_live_ids, &mut result, &self.activity);
 
         Ok(result)
     }

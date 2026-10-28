@@ -203,9 +203,6 @@ pub(crate) async fn delete_workgroup_dir_backend_with_outcome(
 /// Check all repo-* dirs inside the given workgroup dirs for dirty git state.
 /// Returns a list of (repo_display_name, reason) for repos with pending work.
 pub(crate) fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, String)> {
-    #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
     let mut dirty: Vec<(String, String)> = Vec::new();
 
     for wg_dir in wg_dirs {
@@ -230,7 +227,7 @@ pub(crate) fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, S
             if !dir_name_str.starts_with("repo-") {
                 continue;
             }
-            if !path.join(".git").exists() {
+            if !crate::repos::working_tree_marker_exists(&path.join(".git")) {
                 continue;
             }
 
@@ -238,20 +235,7 @@ pub(crate) fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, S
             let mut reasons: Vec<&str> = Vec::new();
 
             // Check for uncommitted changes (staged + unstaged + untracked)
-            let mut cmd = std::process::Command::new("git");
-            crate::pty::credentials::scrub_credentials_from_std_command(&mut cmd);
-            crate::config::agent_path::apply_search_path_to_std_command(&mut cmd);
-            cmd.args(["status", "--porcelain"])
-                .current_dir(&path)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null());
-            #[cfg(windows)]
-            {
-                #[allow(unused_imports)]
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(CREATE_NO_WINDOW);
-            }
-            if let Ok(output) = cmd.output() {
+            if let Ok(output) = crate::process::git::mutation::workgroup_status(&path) {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 if !stdout.trim().is_empty() {
                     reasons.push("uncommitted changes");
@@ -259,20 +243,7 @@ pub(crate) fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, S
             }
 
             // Check for unpushed commits
-            let mut cmd2 = std::process::Command::new("git");
-            crate::pty::credentials::scrub_credentials_from_std_command(&mut cmd2);
-            crate::config::agent_path::apply_search_path_to_std_command(&mut cmd2);
-            cmd2.args(["log", "@{upstream}..HEAD", "--oneline"])
-                .current_dir(&path)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null());
-            #[cfg(windows)]
-            {
-                #[allow(unused_imports)]
-                use std::os::windows::process::CommandExt;
-                cmd2.creation_flags(CREATE_NO_WINDOW);
-            }
-            match cmd2.output() {
+            match crate::process::git::mutation::workgroup_unpushed(&path) {
                 Ok(output) if output.status.success() => {
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     if !stdout.trim().is_empty() {

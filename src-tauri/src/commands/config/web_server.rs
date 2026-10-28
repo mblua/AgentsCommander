@@ -758,3 +758,9 @@ pub(crate) async fn is_tcp_socket_listening(addr: SocketAddr) -> bool {
 pub(crate) async fn is_tcp_listening(addr: SocketAddr) -> bool {
     is_tcp_socket_listening(addr).await
 }
+
+impl crate::api::ApiMessageWarnings for tauri::AppHandle {
+    fn message_warnings(&self) -> Arc<crate::config::injected_messages::MessageWarnings> {
+        Arc::clone(&self.state::<crate::app_state::AppOwners>().messages)
+    }
+}

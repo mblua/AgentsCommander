@@ -223,16 +223,20 @@ async fn e2992_p51_invalid_no_co_managed_budget() {
     // Deliberately omit network and manager state: denied settings must return
     // before touching either service, the detector, or any commit path.
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&denied))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
     let id = uuid::Uuid::new_v4();
     let record = co_managed_candidate(&id.to_string(), "leak AKIAIOSFODNN7EXAMPLE");
     let slot = CaptureSlot::new();
     slot.offer(Arc::clone(&record), 0);
     let seq = slot.snapshot().seq;
-    let budget = crate::capture::state::budget(&fixture.room_root);
+    let budget = crate::capture::state::budget(&fixture.room_root, &fixture.owners.capture);
     for _ in 0..2 {
         let outcome = super::co_managed_cycle(
             app.handle(),
@@ -252,7 +256,10 @@ async fn e2992_p51_invalid_no_co_managed_budget() {
     }
     assert_eq!(slot.snapshot().seq, seq);
     assert_eq!(hits.load(Ordering::SeqCst), 0);
-    assert_eq!(crate::capture::state::budget(&fixture.room_root), budget);
+    assert_eq!(
+        crate::capture::state::budget(&fixture.room_root, &fixture.owners.capture),
+        budget
+    );
     assert!(messaging_files(&fixture.room_root).is_empty());
     assert!(queue_files(&fixture.room_root).is_empty());
     assert_eq!(
@@ -274,6 +281,9 @@ async fn e2992_p51_invalid_no_co_managed_budget() {
     assert!(holds_room_reader_demand(demand_harness.app.handle(), demand_id).await);
     let epoch = room_demand_epoch(demand_harness.app.handle(), demand_id).await;
     let demand_app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&denied))
         .manage(Arc::clone(
             demand_harness
@@ -324,7 +334,10 @@ async fn e2992_p51_invalid_no_co_managed_budget() {
     .await;
     let (slot, record) = install_candidate(&registry, id, "leak AKIAIOSFODNN7EXAMPLE");
     let hooks = Arc::new(CoManagedTestHooks::default());
-    let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+    let (handle, _rx) = CoManagedSupervisorHandle::with_capture_state_and_test_hooks(
+        fixture.owners.capture.clone(),
+        Arc::clone(&hooks),
+    );
     let outcome = super::co_managed_cycle(
         app.handle(),
         &handle,
@@ -393,6 +406,9 @@ async fn p51_restore_lifecycle_case(mode: &'static str) {
         tokio_util::sync::CancellationToken::new(),
     );
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(Arc::clone(&manager))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();

@@ -4,8 +4,9 @@
 //! `<workgroup-root>/messaging/`. The recipient reads the file via filesystem,
 //! bypassing PTY truncation for arbitrarily-sized payloads.
 
+use crate::filesystem::phone_messaging;
 use chrono::{DateTime, Utc};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::{Component, Path, PathBuf};
 
 pub const MESSAGING_DIR_NAME: &str = "messaging";
@@ -142,7 +143,12 @@ pub enum MessagingError {
     EmptySlug,
     #[error("filename '{0}' contains path separators or traversal")]
     InvalidFilename(String),
-    #[error("filename '{0}' does not match the required shape")]
+    #[error(
+        "filename '{0}' does not match the required shape: \
+         YYYYMMDD-HHMMSS-<from>-to-<to>-<slug>[.N].md; \
+         if the sender is Root: require root-to immediately after the timestamp, e.g. \
+         20261022-092418-root-to-room21-ac-tech-lead-v5-fixer-installation-confirmed.md"
+    )]
     InvalidShape(String),
     #[error("message file not found: {0}")]
     FileNotFound(String),
@@ -174,13 +180,13 @@ pub fn workgroup_root(agent_root: &Path) -> Result<PathBuf, MessagingError> {
 /// Messaging directory for a workgroup root. Creates the directory if missing.
 pub fn messaging_dir(wg_root: &Path) -> Result<PathBuf, MessagingError> {
     let dir = wg_root.join(MESSAGING_DIR_NAME);
-    std::fs::create_dir_all(&dir)?;
+    phone_messaging::ensure_message_directory(&dir)?;
     Ok(dir)
 }
 
 pub fn root_messaging_dir(root_agent_dir: &Path) -> Result<PathBuf, MessagingError> {
     let dir = root_agent_dir.join(MESSAGING_DIR_NAME);
-    std::fs::create_dir_all(&dir)?;
+    phone_messaging::ensure_message_directory(&dir)?;
     Ok(dir)
 }
 
@@ -336,35 +342,33 @@ fn archive_message_snapshot_with(
     snapshot: &[u8],
     mut before: impl FnMut(&str, &Path) -> std::io::Result<()>,
 ) -> Result<PathBuf, String> {
-    use std::io::Write;
-
     validate_filename_only(basename).map_err(|e| e.to_string())?;
-    let root = std::fs::canonicalize(ac_root).map_err(|e| e.to_string())?;
+    let root = phone_messaging::canonical_message_path(ac_root).map_err(|e| e.to_string())?;
     let day = &basename[..8];
     let mut dir = root.clone();
     for component in ["message-archive", day] {
         dir.push(component);
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        dir = std::fs::canonicalize(&dir).map_err(|e| e.to_string())?;
+        phone_messaging::ensure_message_directory(&dir).map_err(|e| e.to_string())?;
+        dir = phone_messaging::canonical_message_path(&dir).map_err(|e| e.to_string())?;
         if !dir.starts_with(&root) {
             return Err("archive directory escapes Project AC Root".into());
         }
     }
     let final_path = dir.join(basename);
     fn compare(path: &Path, snapshot: &[u8]) -> Result<(), String> {
-        if !std::fs::symlink_metadata(path)
+        if !phone_messaging::message_symlink_metadata(path)
             .map_err(|e| e.to_string())?
             .is_file()
         {
             return Err("existing archive is not a regular file".into());
         }
-        if std::fs::read(path).map_err(|e| e.to_string())? != snapshot {
+        if phone_messaging::read_message_snapshot(path).map_err(|e| e.to_string())? != snapshot {
             return Err("archive conflict: archive filename already has different bytes".into());
         }
         Ok(())
     }
     let mut publish = || -> Result<PathBuf, String> {
-        match std::fs::symlink_metadata(&final_path) {
+        match phone_messaging::message_symlink_metadata(&final_path) {
             Ok(_) => return compare(&final_path, snapshot).map(|()| final_path.clone()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.to_string()),
@@ -372,7 +376,7 @@ fn archive_message_snapshot_with(
         let mut owned = None;
         for _ in 0..3 {
             let temp = dir.join(format!(".archive-{}.tmp", uuid::Uuid::new_v4()));
-            match OpenOptions::new().write(true).create_new(true).open(&temp) {
+            match phone_messaging::create_message_stage(&temp) {
                 Ok(file) => {
                     owned = Some((temp, file));
                     break;
@@ -384,14 +388,14 @@ fn archive_message_snapshot_with(
         let (temp, mut file) = owned.ok_or("archive temporary name collisions exhausted")?;
         let written = (|| -> Result<(), String> {
             before("write", &final_path).map_err(|e| e.to_string())?;
-            file.write_all(snapshot).map_err(|e| e.to_string())?;
+            phone_messaging::write_message_stage(&mut file, snapshot).map_err(|e| e.to_string())?;
             before("flush", &final_path).map_err(|e| e.to_string())?;
-            file.flush().map_err(|e| e.to_string())
+            phone_messaging::flush_message_stage(&mut file).map_err(|e| e.to_string())
         })();
         drop(file);
         let result = written.and_then(|()| {
             before("link", &final_path).map_err(|e| e.to_string())?;
-            match std::fs::hard_link(&temp, &final_path) {
+            match phone_messaging::link_message_archive(&temp, &final_path) {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     compare(&final_path, snapshot)
@@ -399,7 +403,8 @@ fn archive_message_snapshot_with(
                 Err(e) => Err(e.to_string()),
             }
         });
-        let cleanup = before("cleanup", &final_path).and_then(|()| std::fs::remove_file(&temp));
+        let cleanup = before("cleanup", &final_path)
+            .and_then(|()| phone_messaging::remove_message_stage(&temp));
         match (result, cleanup) {
             (Ok(()), Ok(())) => Ok(final_path.clone()),
             (Err(e), Ok(())) => Err(e),
@@ -438,7 +443,7 @@ pub fn create_message_file(
             format!("{}.{}.md", stem, n)
         };
         let path = messaging_dir.join(&filename);
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
+        match phone_messaging::create_message_stage(&path) {
             Ok(file) => return Ok((path, file)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(MessagingError::Io(e)),
@@ -475,12 +480,12 @@ pub fn resolve_existing_message(
     validate_filename_only(filename)?;
 
     let candidate = messaging_dir.join(filename);
-    if !candidate.exists() {
+    if !phone_messaging::message_path_exists(&candidate) {
         return Err(MessagingError::FileNotFound(filename.to_string()));
     }
 
-    let abs = std::fs::canonicalize(&candidate)?;
-    let canon_dir = std::fs::canonicalize(messaging_dir)?;
+    let abs = phone_messaging::canonical_message_path(&candidate)?;
+    let canon_dir = phone_messaging::canonical_message_path(messaging_dir)?;
 
     let abs_parent = abs
         .parent()
@@ -489,7 +494,7 @@ pub fn resolve_existing_message(
         return Err(MessagingError::InvalidFilename(filename.to_string()));
     }
 
-    if !abs.metadata()?.is_file() {
+    if !phone_messaging::message_metadata(&abs)?.is_file() {
         return Err(MessagingError::NotAFile(abs.display().to_string()));
     }
 

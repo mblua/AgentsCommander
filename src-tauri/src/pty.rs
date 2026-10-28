@@ -3,6 +3,7 @@ pub mod backend;
 pub(crate) mod backend_kind;
 pub(crate) mod container_backend;
 pub(crate) mod container_credentials;
+pub(crate) mod container_lifecycle;
 pub mod container_paths;
 pub(crate) mod container_repos;
 pub(crate) mod container_runtime;

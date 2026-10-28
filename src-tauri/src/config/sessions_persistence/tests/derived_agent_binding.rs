@@ -143,6 +143,9 @@ async fn e2432_source_seed_roundtrip_decoy() {
     let coordinator =
         SelectionCoordinator::new(manager.clone(), tokio_util::sync::CancellationToken::new());
     let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
         .manage(manager.clone())
         .manage(crate::DetachedSessionsState::default())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))

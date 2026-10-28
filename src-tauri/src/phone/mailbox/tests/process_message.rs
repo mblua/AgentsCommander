@@ -38,7 +38,7 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
     }
     seed_self_handoff(&fixture.replica);
     let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
-    pending.0.lock().unwrap().insert(source_id);
+    pending.seed_legacy(source_id);
 
     let persist_calls = Arc::new(Mutex::new(0usize));
     let persist_seen = persist_calls.clone();
@@ -188,7 +188,7 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
         *boundaries.lock().unwrap(),
         vec![(target_id, SelfClearBoundary::ContentInjected)]
     );
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
 }
 
 /// #1632 - mutual exclusion over the shared, NON-msg-id-scoped names in the process-global
@@ -342,7 +342,7 @@ async fn process_message_root_self_clear_with_canonical_sender_queues() {
         Some(token.to_string()),
         &canonical_from,
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .process_message(&app, &path, OutboxOrigin::Replica)
         .await
@@ -420,7 +420,7 @@ async fn process_message_root_self_clear_with_buggy_sender_is_rejected() {
         Some(token.to_string()),
         &buggy_from,
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .process_message(&app, &path, OutboxOrigin::Replica)
         .await
@@ -520,7 +520,7 @@ async fn process_message_root_self_restart_with_canonical_sender_queues() {
         Some(token.to_string()),
         &canonical_from,
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     // `false` is the real agent-outbox path, so BOTH anti-spoof gates run.
     poller
         .process_message(&app, &path, OutboxOrigin::Replica)
@@ -599,7 +599,7 @@ async fn process_message_root_self_restart_with_buggy_sender_is_rejected() {
         Some(token.to_string()),
         &buggy_from,
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .process_message(&app, &path, OutboxOrigin::Replica)
         .await

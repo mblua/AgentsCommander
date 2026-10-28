@@ -89,18 +89,43 @@ impl PtyManager {
     pub(crate) fn response_close_state(&self) -> ResponseCloseState {
         self.response_close.clone()
     }
+    #[cfg(test)]
     pub fn new(
         output_senders: OutputSenderMap,
         idle_detector: Arc<IdleDetector>,
         git_watcher: Arc<GitWatcher>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
-        lifecycle_sender: Option<crate::session::selection::ContainerLifecycleSender>,
+        lifecycle_sender: Option<crate::pty::container_lifecycle::ContainerLifecycleSender>,
     ) -> Self {
-        let local_backend: Arc<dyn PtyBackend> = Arc::new(LocalProcessBackend::new(
+        Self::with_owners(
+            output_senders,
+            idle_detector,
+            git_watcher,
+            ws_broadcaster,
+            lifecycle_sender,
+            #[cfg(windows)]
+            Arc::new(crate::pty::local_backend::GitGuardTempSequence::new()),
+            Arc::new(crate::pty::spawn_diagnostics::SpawnRegistry::new()),
+        )
+    }
+
+    pub fn with_owners(
+        output_senders: OutputSenderMap,
+        idle_detector: Arc<IdleDetector>,
+        git_watcher: Arc<GitWatcher>,
+        ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
+        lifecycle_sender: Option<crate::pty::container_lifecycle::ContainerLifecycleSender>,
+        #[cfg(windows)] git_guard: Arc<crate::pty::local_backend::GitGuardTempSequence>,
+        spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>,
+    ) -> Self {
+        let local_backend: Arc<dyn PtyBackend> = Arc::new(LocalProcessBackend::with_owners(
             output_senders.clone(),
             idle_detector.clone(),
             git_watcher,
             ws_broadcaster.clone(),
+            #[cfg(windows)]
+            git_guard,
+            spawn,
         ));
         let container_backend = Arc::new(ContainerTransportBackend::with_runtime(
             output_senders,

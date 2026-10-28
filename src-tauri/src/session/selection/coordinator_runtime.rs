@@ -24,10 +24,21 @@ use super::response_close::{
 use super::transaction::SelectionTransaction;
 use super::turn::IN_SELECTION_WORKER;
 use super::worker::worker_loop;
-use super::{ConditionalResponseClose, CoordinatorInner, CoordinatorJob, SelectionCoordinator};
+use super::{
+    ConditionalResponseClose, CoordinatorInner, CoordinatorJob, LifecycleAdmission,
+    LifecycleExecutor, RestartJobRequest, RootJobRequest, SelectionCoordinator,
+};
 
 impl SelectionCoordinator {
-    pub fn start<R: Runtime>(&self, app: AppHandle<R>) -> Result<(), SelectionCoordinatorError> {
+    pub(crate) fn start_with_executor<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
+    ) -> Result<(), SelectionCoordinatorError> {
+        let Some(executor) = executor else {
+            log::error!("[selection] lifecycle executor binding missing at coordinator start");
+            return Err(SelectionCoordinatorError::Unavailable);
+        };
         if let Some(pty) = app.try_state::<Arc<Mutex<PtyManager>>>() {
             let container_backend = pty
                 .inner()
@@ -56,7 +67,7 @@ impl SelectionCoordinator {
             .ok_or(SelectionCoordinatorError::Unavailable)?;
         let inner = Arc::clone(&self.inner);
         let handle = tauri::async_runtime::spawn(IN_SELECTION_WORKER.scope((), async move {
-            worker_loop(app, inner, receiver).await;
+            worker_loop(app, inner, receiver, executor).await;
         }));
         let mut worker = self
             .inner
@@ -254,28 +265,43 @@ impl SelectionCoordinator {
         Ok(())
     }
 
-    pub(crate) async fn restart_lifecycle<R: Runtime>(
+    pub(crate) async fn restart_lifecycle_with_executor<R: Runtime>(
         &self,
         app: AppHandle<R>,
-        request: crate::commands::session::RestartJobRequest,
+        request: RestartJobRequest,
+        executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
     ) -> Result<SessionInfo, String> {
-        self.submit_lifecycle_entry(app, OwnedReplacementDescriptor::EntryRestart(request))
-            .await
+        let executor =
+            executor.ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
+        self.submit_lifecycle_entry(
+            app,
+            OwnedReplacementDescriptor::EntryRestart(request),
+            executor,
+        )
+        .await
     }
 
-    pub(crate) async fn root_lifecycle<R: Runtime>(
+    pub(crate) async fn root_lifecycle_with_executor<R: Runtime>(
         &self,
         app: AppHandle<R>,
-        request: crate::commands::session::RootJobRequest,
+        request: RootJobRequest,
+        executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
     ) -> Result<SessionInfo, String> {
-        self.submit_lifecycle_entry(app, OwnedReplacementDescriptor::EntryRoot(request))
-            .await
+        let executor =
+            executor.ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
+        self.submit_lifecycle_entry(
+            app,
+            OwnedReplacementDescriptor::EntryRoot(request),
+            executor,
+        )
+        .await
     }
 
     async fn submit_lifecycle_entry<R: Runtime>(
         &self,
         app: AppHandle<R>,
         descriptor: OwnedReplacementDescriptor,
+        executor: Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>,
     ) -> Result<SessionInfo, String> {
         // Original real capacity probe precedes acceptance and validation.
         let (admission, slot) = self
@@ -289,7 +315,7 @@ impl SelectionCoordinator {
         let coordinator = self.clone();
         crate::config::sessions_persistence::run_owned_persist_core(async move {
             let execution = coordinator
-                .execute_accepted_entry(&app, owner.clone(), executor_nonce)
+                .execute_accepted_entry(&app, owner.clone(), executor_nonce, executor)
                 .await;
             coordinator
                 .finish_lifecycle_entry(&owner, executor_nonce, execution, publication)
@@ -306,10 +332,13 @@ impl SelectionCoordinator {
         app: &AppHandle<R>,
         owner: Arc<ReplacementOwner>,
         executor_nonce: Uuid,
+        executor: Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>,
     ) -> (Result<SessionInfo, String>, bool) {
         if let Err(error) = self.wait_for_restore_release().await {
             return (Err(error), true);
         }
+        let transaction = SelectionTransaction::new(app.clone(), Weak::new())
+            .with_lifecycle_executor(Arc::clone(&executor));
         if matches!(&owner.descriptor, OwnedReplacementDescriptor::EntryRoot(_)) {
             let effect = {
                 owner.state.lock().ok().and_then(|mut state| {
@@ -332,7 +361,7 @@ impl SelectionCoordinator {
             let Some(effect) = effect else {
                 return std::future::pending().await;
             };
-            if let Err(error) = crate::commands::session::ensure_owned_root_directory(effect) {
+            if let Err(error) = executor.ensure_root_directory(effect) {
                 return (Err(error), true);
             }
         }
@@ -365,19 +394,18 @@ impl SelectionCoordinator {
                 _ = self.inner.shutdown.cancelled() => {
                     return (Err(SelectionCoordinatorError::Unavailable.to_string()), true);
                 }
-                admission = crate::commands::session::prepare_lifecycle_entry_authority(
-                    app, owner.operation, requested, root_request, root_directory.as_deref(),
+                admission = executor.prepare(
+                    &transaction, owner.operation, requested, root_request,
+                    root_directory.as_deref(),
                 ) => admission,
             };
             match admission {
-                Ok(crate::commands::session::LifecycleAuthorityAdmission::Ready(authority)) => {
-                    break authority
-                }
-                Ok(crate::commands::session::LifecycleAuthorityAdmission::Waiting) => {
+                Ok(LifecycleAdmission::Ready(authority)) => break authority,
+                Ok(LifecycleAdmission::Waiting) => {
                     // Every failed probe has dropped its own stripe/exact/claim.
                     tokio::task::yield_now().await;
                 }
-                Ok(crate::commands::session::LifecycleAuthorityAdmission::NeedsRootDirectory) => {
+                Ok(LifecycleAdmission::NeedsRootDirectory) => {
                     let effect = owner.state.lock().ok().and_then(|mut state| {
                         if state.executor_nonce != executor_nonce
                             || !matches!(
@@ -400,7 +428,7 @@ impl SelectionCoordinator {
                     let Some(effect) = effect else {
                         return std::future::pending().await;
                     };
-                    match crate::commands::session::ensure_owned_root_directory(effect) {
+                    match executor.ensure_root_directory(effect) {
                         Ok(path) => root_directory = Some(path),
                         Err(error) => return (Err(error), true),
                     }
@@ -409,12 +437,12 @@ impl SelectionCoordinator {
             }
         };
         if let Ok(mut state) = owner.state.lock() {
-            state.claim_reached = authority.has_owned_claim();
+            state.claim_reached = executor.has_claim(&authority);
         }
         let (admission, slot) = match self.try_reserve_envelope() {
             Ok(capacity) => capacity,
             Err(error) => {
-                let released = authority.release();
+                let released = executor.release(authority);
                 if let Ok(mut state) = owner.state.lock() {
                     state.sidecar_released = released;
                 }

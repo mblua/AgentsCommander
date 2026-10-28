@@ -1,3 +1,4 @@
+use super::creation_trace::{CreationTrace, Origin, Outcome, Reason, Stage, StageGuard};
 use super::matrix_layout::{
     agent_matches, create_agent_replica_layout, repo_dir_name_from_url, sanitize_name,
     selected_ac_root, validate_existing_name,
@@ -77,82 +78,142 @@ pub(crate) fn agent_ref_bare_name(agent_ref: &str) -> String {
         .to_string()
 }
 
+// Compatibility entry point for callers without an existing operation.
+#[allow(dead_code)]
 pub(crate) async fn create_workgroup_on_disk(
     args: WorkgroupDiskCreateArgs,
 ) -> Result<WorkgroupCloneResult, String> {
-    let safe_team = sanitize_name(&args.team_name)?;
-    let task_title = args.task_title.trim().to_string();
-    validate_task_title(&task_title)?;
-    let base = selected_ac_root(&args.project_path)?;
-
-    if let Err(e) = crate::commands::ac_discovery::ensure_ac_root_gitignore(&base) {
-        log::warn!(
-            "[create_workgroup] Failed to ensure Project AC Root .gitignore: {}",
-            e
-        );
+    let trace = CreationTrace::new(Origin::OnDisk);
+    let mut operation = trace.operation();
+    let result = create_workgroup_on_disk_traced(args, &mut operation).await;
+    if let Ok(created) = &result {
+        operation.clone_errors(created.clone_errors.len());
+        operation.finish(Outcome::clones(created.clone_errors.len()), None);
     }
+    operation.result(result)
+}
 
-    let team_config =
-        if !args.agents.is_empty() || args.coordinator.is_some() || !args.repos.is_empty() {
-            let coordinator = args.coordinator.clone().ok_or_else(|| {
-                "Orchestrator is required when provisioning team config".to_string()
-            })?;
-            if !args.agents.contains(&coordinator) {
-                return Err("Orchestrator must be one of the selected agents".to_string());
+pub(crate) async fn create_workgroup_on_disk_traced(
+    args: WorkgroupDiskCreateArgs,
+    operation: &mut StageGuard<'_>,
+) -> Result<WorkgroupCloneResult, String> {
+    let mut physical = operation.child(Stage::Physical);
+    let result = async {
+        let mut prepare = physical.child(Stage::Prepare);
+        let prepared = async {
+            let safe_team = sanitize_name(&args.team_name)?;
+            let task_title = args.task_title.trim().to_string();
+            validate_task_title(&task_title)?;
+            let base = selected_ac_root(&args.project_path)?;
+            prepare.project(&base);
+            physical.project(&base);
+            operation.project(&base);
+
+            if let Err(e) = crate::commands::ac_discovery::ensure_ac_root_gitignore(&base) {
+                log::warn!(
+                    "[create_workgroup] Failed to ensure Project AC Root .gitignore: {}",
+                    e
+                );
             }
-            let config = TeamConfigResult {
-                agents: args.agents.clone(),
-                coordinator,
-                repos: args.repos.clone(),
-                context_alert_percentages: Vec::new(),
+
+            let team_config = if !args.agents.is_empty()
+                || args.coordinator.is_some()
+                || !args.repos.is_empty()
+            {
+                let coordinator = args.coordinator.clone().ok_or_else(|| {
+                    "Orchestrator is required when provisioning team config".to_string()
+                })?;
+                if !args.agents.contains(&coordinator) {
+                    return Err("Orchestrator must be one of the selected agents".to_string());
+                }
+                let config = TeamConfigResult {
+                    agents: args.agents.clone(),
+                    coordinator,
+                    repos: args.repos.clone(),
+                    context_alert_percentages: Vec::new(),
+                };
+                let config = normalize_team_config_for_project(&base, &config)?;
+                let guard = prepare
+                    .child(Stage::TeamGuard)
+                    .run_async(acquire_team_config_mutation_guard_async(&base))
+                    .await?;
+                create_new_team_config_on_disk_guarded(&base, &safe_team, &config, &guard)?;
+                drop(guard);
+                config
+            } else {
+                read_team_config(&base, &safe_team)?
             };
-            let config = normalize_team_config_for_project(&base, &config)?;
-            let guard = acquire_team_config_mutation_guard_async(&base).await?;
-            create_new_team_config_on_disk_guarded(&base, &safe_team, &config, &guard)?;
-            drop(guard);
-            config
-        } else {
-            read_team_config(&base, &safe_team)?
-        };
 
-    let wg_number = determine_next_wg_number(&base);
-    let wg_name = room_dir_name(wg_number, &safe_team, room_number_pad_width());
-    let wg_dir = base.join(&wg_name);
-    if wg_dir.exists() {
-        return Err(format!("Room directory already exists: {}", wg_name));
-    }
-    std::fs::create_dir_all(&wg_dir)
-        .map_err(|e| format!("Failed to create room directory: {}", e))?;
-    std::fs::create_dir_all(wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME))
-        .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
-    // #1795: `room-shared/` is a sibling of `messaging/` and `TASK.md`, and it is
-    // created with the same hard `?` they use. A half-created room must not be
-    // reported as created.
-    crate::config::shared_locations::create_room_shared_dir(&wg_dir)
-        .map_err(|e| format!("Failed to create room shared directory: {}", e))?;
-    std::fs::write(wg_dir.join("TASK.md"), build_task_content(&task_title))
-        .map_err(|e| format!("Failed to write TASK.md: {}", e))?;
+            Ok::<_, String>((safe_team, task_title, base, team_config))
+        }
+        .await;
+        let (safe_team, task_title, base, team_config) = prepare.result(prepared)?;
 
-    for agent_path in &team_config.agents {
-        create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
-            ac_root: base.clone(),
-            wg_dir: wg_dir.clone(),
-            agent_path: agent_path.clone(),
-            team_repos: team_config.repos.clone(),
+        let allocate = physical.child(Stage::Allocate);
+        let (wg_dir, wg_number) = allocate.run(|| {
+            let wg_number = determine_next_wg_number(&base);
+            let wg_name = room_dir_name(wg_number, &safe_team, room_number_pad_width());
+            let wg_dir = base.join(&wg_name);
+            if wg_dir.exists() {
+                return Err(format!("Room directory already exists: {}", wg_name));
+            }
+            std::fs::create_dir_all(&wg_dir)
+                .map_err(|e| format!("Failed to create room directory: {}", e))?;
+            std::fs::create_dir_all(wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME))
+                .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
+            // #1795: `room-shared/` is a sibling of `messaging/` and `TASK.md`, and it is
+            // created with the same hard `?` they use. A half-created room must not be
+            // reported as created.
+            crate::config::shared_locations::create_room_shared_dir(&wg_dir)
+                .map_err(|e| format!("Failed to create room shared directory: {}", e))?;
+            std::fs::write(wg_dir.join("TASK.md"), build_task_content(&task_title))
+                .map_err(|e| format!("Failed to write TASK.md: {}", e))?;
+
+            Ok::<_, String>((wg_dir, wg_number))
         })?;
-    }
+        physical.room(wg_number);
+        operation.room(wg_number);
 
-    let clone_errors = clone_missing_repos_for_workgroup(&wg_dir, &team_config.repos).await;
-    let result_path = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&wg_dir);
-    log::info!(
-        "[entity_creation] Created workgroup: {} ({} clone errors)",
-        result_path,
-        clone_errors.len()
-    );
-    Ok(WorkgroupCloneResult {
-        path: result_path,
-        clone_errors,
-    })
+        let mut replicas = physical.child(Stage::Replicas);
+        replicas.count(team_config.agents.len());
+        let replica_result = (|| {
+            for (index, agent_path) in team_config.agents.iter().enumerate() {
+                let replica = replicas.indexed_child(Stage::Replica, index + 1);
+                replica.run(|| {
+                    create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
+                        ac_root: base.clone(),
+                        wg_dir: wg_dir.clone(),
+                        agent_path: agent_path.clone(),
+                        team_repos: team_config.repos.clone(),
+                    })
+                    .map(|_| ())
+                })?;
+            }
+            Ok::<_, String>(())
+        })();
+        replicas.result(replica_result)?;
+
+        let clone_errors =
+            clone_missing_repos_for_workgroup_traced(&wg_dir, &team_config.repos, Some(&physical))
+                .await;
+        let result_path =
+            crate::path_utils::path_to_string_without_windows_verbatim_prefix(&wg_dir);
+        log::info!(
+            "[entity_creation] Created workgroup: {} ({} clone errors)",
+            result_path,
+            clone_errors.len()
+        );
+        Ok(WorkgroupCloneResult {
+            path: result_path,
+            clone_errors,
+        })
+    }
+    .await;
+    if let Ok(created) = &result {
+        physical.clone_errors(created.clone_errors.len());
+        physical.finish(Outcome::clones(created.clone_errors.len()), None);
+    }
+    physical.result(result)
 }
 
 pub(crate) fn create_or_update_replica_on_disk(
@@ -252,31 +313,66 @@ pub(super) fn initialize_replica_config_on_disk(
 /// #1939 - the GUI workgroup replica loop. Kept as one function so the GUI path
 /// and the on-disk path provably share the same guarded initializer instead of
 /// a second destructive writer.
+// Compatibility entry point for callers without creation diagnostics.
+#[allow(dead_code)]
 pub(super) fn initialize_workgroup_replicas_on_disk(
     ac_root: &Path,
     wg_dir: &Path,
     agents: &[String],
     repos: &[RepoAssignment],
 ) -> Result<(), String> {
-    for agent_path in agents {
-        let agent_ref = resolve_agent_ref(ac_root, agent_path)?;
-        let agent_name = agent_ref_bare_name(&agent_ref);
-        let replica_dir = wg_dir.join(format!("__agent_{}", agent_name));
-        create_agent_replica_layout(&replica_dir).map_err(|(sub, error)| match sub {
-            "replica_dir" => format!("Failed to create replica dir for {}: {}", agent_name, error),
-            _ => format!("Failed to create {} for {}: {}", sub, agent_name, error),
-        })?;
-        let assigned_repos: Vec<String> = repos
-            .iter()
-            .filter(|repo| repo.agents.iter().any(|a| agent_matches(a, &agent_name)))
-            .map(|repo| {
-                let dir_name = format!("repo-{}", repo_dir_name_from_url(&repo.url));
-                format!("../{}", dir_name)
-            })
-            .collect();
-        initialize_replica_config_on_disk(&replica_dir, &assigned_repos)?;
+    initialize_workgroup_replicas_on_disk_traced(ac_root, wg_dir, agents, repos, None)
+}
+
+pub(super) fn initialize_workgroup_replicas_on_disk_traced(
+    ac_root: &Path,
+    wg_dir: &Path,
+    agents: &[String],
+    repos: &[RepoAssignment],
+    parent: Option<&StageGuard<'_>>,
+) -> Result<(), String> {
+    let mut replicas = parent.map(|p| p.child(Stage::Replicas));
+    if let Some(stage) = &mut replicas {
+        stage.count(agents.len());
     }
-    Ok(())
+    let result = (|| {
+        for (index, agent_path) in agents.iter().enumerate() {
+            let replica = replicas
+                .as_ref()
+                .map(|p| p.indexed_child(Stage::Replica, index + 1));
+            let result = (|| {
+                let agent_ref = resolve_agent_ref(ac_root, agent_path)?;
+                let agent_name = agent_ref_bare_name(&agent_ref);
+                let replica_dir = wg_dir.join(format!("__agent_{}", agent_name));
+                create_agent_replica_layout(&replica_dir).map_err(|(sub, error)| match sub {
+                    "replica_dir" => {
+                        format!("Failed to create replica dir for {}: {}", agent_name, error)
+                    }
+                    _ => format!("Failed to create {} for {}: {}", sub, agent_name, error),
+                })?;
+                let assigned_repos: Vec<String> = repos
+                    .iter()
+                    .filter(|repo| repo.agents.iter().any(|a| agent_matches(a, &agent_name)))
+                    .map(|repo| {
+                        let dir_name = format!("repo-{}", repo_dir_name_from_url(&repo.url));
+                        format!("../{}", dir_name)
+                    })
+                    .collect();
+                initialize_replica_config_on_disk(&replica_dir, &assigned_repos)
+            })();
+            if let Some(stage) = replica {
+                stage.result(result)?;
+            } else {
+                result?;
+            }
+        }
+        Ok(())
+    })();
+    if let Some(stage) = replicas {
+        stage.result(result)
+    } else {
+        result
+    }
 }
 
 /// Typed outcome of removing one replica directory (#1063, plan section 5.4).
@@ -478,18 +574,47 @@ pub(crate) async fn clone_missing_repos_for_workgroup(
     wg_dir: &Path,
     repos: &[RepoAssignment],
 ) -> Vec<CloneError> {
+    clone_missing_repos_for_workgroup_traced(wg_dir, repos, None).await
+}
+
+async fn clone_missing_repos_for_workgroup_traced(
+    wg_dir: &Path,
+    repos: &[RepoAssignment],
+    parent: Option<&StageGuard<'_>>,
+) -> Vec<CloneError> {
+    let mut repos_stage = parent.map(|p| p.child(Stage::Repos));
+    if let Some(stage) = &mut repos_stage {
+        stage.count(repos.len());
+    }
     let mut clone_errors = Vec::new();
     let mut seen_urls = HashSet::new();
-    for repo in repos {
+    for (index, repo) in repos.iter().enumerate() {
         if !seen_urls.insert(repo.url.clone()) {
+            if let Some(stage) = &repos_stage {
+                stage.skip_repo(index + 1, Reason::DuplicateUrl);
+            }
             continue;
         }
         let dir_name = format!("repo-{}", repo_dir_name_from_url(&repo.url));
         let target = wg_dir.join(&dir_name);
         if target.exists() {
+            if let Some(stage) = &repos_stage {
+                stage.skip_repo(index + 1, Reason::TargetExists);
+            }
             continue;
         }
-        match git_clone_async(&repo.url, &target).await {
+        let mut repo_stage = repos_stage
+            .as_ref()
+            .map(|p| p.indexed_child(Stage::Repo, index + 1));
+        let result = git_clone_async(&repo.url, &target, repo_stage.as_ref()).await;
+        if let Some(stage) = &mut repo_stage {
+            if result.is_ok() {
+                stage.finish(Outcome::Ok, None);
+            } else {
+                stage.finish(Outcome::Error, Some(Reason::Failed));
+            }
+        }
+        match result {
             Ok(_) => log::info!(
                 "[entity_creation] Cloned {} -> {}",
                 repo.url,
@@ -503,6 +628,10 @@ pub(crate) async fn clone_missing_repos_for_workgroup(
                 });
             }
         }
+    }
+    if let Some(stage) = &mut repos_stage {
+        stage.clone_errors(clone_errors.len());
+        stage.finish(Outcome::clones(clone_errors.len()), None);
     }
     clone_errors
 }

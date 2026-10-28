@@ -84,7 +84,8 @@ async fn p4_co_managed_logs_never_carry_candidate_text_or_the_api_key() {
     let mut big = "x".repeat(50 * 1024);
     big.replace_range(100..100 + CANDIDATE_MARKER.len(), CANDIDATE_MARKER);
     install_candidate(&registry, session_id, &big);
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
 
     let before = p4_tee_len();
     super::handle_co_managed_trigger(
@@ -176,7 +177,8 @@ async fn p4_co_managed_logs_never_carry_candidate_text_or_the_api_key() {
         )
         .await;
         install_candidate(&registry, id_session, "candidate text");
-        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        let (handle, _rx) =
+            CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
         let before = p4_tee_len();
         let trigger = CoManagedTrigger::IdleEdge(id_session);
         super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
@@ -282,7 +284,8 @@ async fn p4_discovery_tick_logs_nothing_for_a_steady_state() {
     )
     .await;
     install_candidate(&registry, session_id, "candidate text");
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
 
     let before = p4_tee_len();
     let mut ticks = 0_usize;
@@ -327,7 +330,8 @@ async fn p4_eight_trigger_drops_log_eight_distinct_reasons() {
     crate::logging::test_install_logger();
     let fixture = make_co_managed_fixture();
     let endpoint = "http://127.0.0.1:9/".to_string();
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
     let mut reasons = Vec::new();
 
     // 1. No capture registry in state.
@@ -428,7 +432,8 @@ async fn p4_classify_lines_carry_the_session_tag_and_the_dry_run_tag() {
     )
     .await;
     install_candidate(&registry, session_id, "candidate text");
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
     let before = p4_tee_len();
     super::handle_co_managed_trigger(
         app.handle(),
@@ -477,7 +482,8 @@ async fn p4_send_once_logs_the_status_attempt_and_latency() {
     )
     .await;
     install_candidate(&registry, ok_id, "candidate text");
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
     let before = p4_tee_len();
     let trigger = CoManagedTrigger::IdleEdge(ok_id);
     super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
@@ -495,7 +501,8 @@ async fn p4_send_once_logs_the_status_attempt_and_latency() {
     )
     .await;
     install_candidate(&registry, bad_id, "candidate text");
-    let (handle, _rx) = CoManagedSupervisorHandle::new();
+    let (handle, _rx) =
+        CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
     let before = p4_tee_len();
     let trigger = CoManagedTrigger::IdleEdge(bad_id);
     super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
@@ -537,7 +544,8 @@ async fn p4_cycle_start_names_the_trigger_kind() {
         )
         .await;
         install_candidate(&registry, session_id, "candidate text");
-        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        let (handle, _rx) =
+            CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
         let before = p4_tee_len();
         super::handle_co_managed_trigger(
             app.handle(),
@@ -594,7 +602,8 @@ async fn p4_route_line_names_the_variant_and_kind() {
         )
         .await;
         install_candidate(&registry, session_id, "candidate text");
-        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        let (handle, _rx) =
+            CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
         let before = p4_tee_len();
         let trigger = CoManagedTrigger::IdleEdge(session_id);
         super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;

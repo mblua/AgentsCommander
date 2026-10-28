@@ -15,6 +15,7 @@ use crate::session::session::SessionInfo;
 use crate::DetachedSessionsState;
 
 use super::admission::CoordinatorPhase;
+use super::authority::CommitCapability;
 use super::payload::{
     DormantRuntimeWitness, LiveRuntimeWitness, RuntimeSelectionSnapshot, SelectionCause,
     SelectionCoordinatorError, SelectionSource,
@@ -24,7 +25,7 @@ use super::replacement::{
     LifecycleEffectSlot, OwnedEffectState, OwnedLifecycleEntry, OwnedReplacementDescriptor,
     ReplacementOwner, ReplacementStage,
 };
-use super::CoordinatorInner;
+use super::{CoordinatorInner, LifecycleExecutor};
 
 pub(crate) struct SelectionTransaction<R: Runtime> {
     pub(super) app: AppHandle<R>,
@@ -32,6 +33,7 @@ pub(crate) struct SelectionTransaction<R: Runtime> {
     pub(super) lifecycle_entry: Option<(Arc<ReplacementOwner>, Uuid)>,
     pub(super) coordinator: Weak<CoordinatorInner>,
     pub(super) restore_nonce: Option<Uuid>,
+    executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
 }
 
 impl<R: Runtime> Clone for SelectionTransaction<R> {
@@ -42,19 +44,8 @@ impl<R: Runtime> Clone for SelectionTransaction<R> {
             lifecycle_entry: self.lifecycle_entry.clone(),
             coordinator: self.coordinator.clone(),
             restore_nonce: self.restore_nonce,
+            executor: self.executor.clone(),
         }
-    }
-}
-
-#[derive(Clone)]
-pub(in crate::session) struct CommitCapability {
-    pub(super) _private: (),
-}
-
-#[cfg(test)]
-impl CommitCapability {
-    pub(in crate::session) fn for_test() -> Self {
-        Self { _private: () }
     }
 }
 
@@ -62,11 +53,26 @@ impl<R: Runtime> SelectionTransaction<R> {
     pub(super) fn new(app: AppHandle<R>, coordinator: Weak<CoordinatorInner>) -> Self {
         Self {
             app,
-            capability: CommitCapability { _private: () },
+            capability: CommitCapability {
+                _private: super::seal::Token,
+            },
             lifecycle_entry: None,
             coordinator,
             restore_nonce: None,
+            executor: None,
         }
+    }
+
+    pub(crate) fn with_lifecycle_executor(
+        mut self,
+        executor: Arc<dyn LifecycleExecutor<Self>>,
+    ) -> Self {
+        self.executor = Some(executor);
+        self
+    }
+
+    pub(super) fn lifecycle_executor(&self) -> Option<Arc<dyn LifecycleExecutor<Self>>> {
+        self.executor.clone()
     }
 
     #[cfg(test)]
@@ -77,6 +83,7 @@ impl<R: Runtime> SelectionTransaction<R> {
             lifecycle_entry: None,
             coordinator: Weak::new(),
             restore_nonce: None,
+            executor: None,
         }
     }
 

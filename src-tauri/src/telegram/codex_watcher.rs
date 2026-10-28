@@ -8,7 +8,6 @@
 // Uses Kernel A (offset-based append-only JSONL) from `jsonl_kernel.rs` once
 // `find_session_file` selects the right rollout.
 
-use std::io::{Read as IoRead, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -27,7 +26,7 @@ use crate::capture::turn_codex::{TurnAccumulator, TurnEvent, TurnFragment};
 use crate::commands::codex_resolver::canonicalize_cwd_for_codex;
 use crate::network::OutboundNetwork;
 use crate::telegram::jsonl_kernel::{
-    read_new_lines_with_starts, read_preamble_for_race, POLL_INTERVAL_MS, PREAMBLE_MAX_BYTES,
+    self, read_new_lines_with_starts, read_preamble_for_race, POLL_INTERVAL_MS, PREAMBLE_MAX_BYTES,
     RACE_GRACE_SECS, ROTATION_STALE_SECS,
 };
 use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger};
@@ -102,12 +101,7 @@ fn read_preamble_with_starts(
     path: &Path,
     attach_time: DateTime<Utc>,
 ) -> std::io::Result<Vec<(u64, String)>> {
-    let initial_len = std::fs::metadata(path)?.len();
-    let window_start = initial_len.saturating_sub(PREAMBLE_MAX_BYTES);
-    let mut file = std::fs::File::open(path)?;
-    file.seek(SeekFrom::Start(window_start))?;
-    let mut buf: Vec<u8> = Vec::new();
-    file.read_to_end(&mut buf)?;
+    let (buf, window_start) = jsonl_kernel::read_live_preamble_window(path, PREAMBLE_MAX_BYTES)?;
 
     // Drop everything before the first `\n` unless the window starts at 0: the
     // seek point almost certainly lands mid-line. `base` is the absolute file
@@ -443,16 +437,7 @@ fn capture_preamble_bodies(
 /// `session_meta` header without slurping the full rollout (a 2 MB file would
 /// be ~30 ms of blocking I/O per candidate otherwise).
 fn read_first_line(path: &Path) -> Option<String> {
-    let mut f = std::fs::File::open(path).ok()?;
-    let mut buf = vec![0u8; 64 * 1024];
-    let n = f.read(&mut buf).ok()?;
-    let bytes = &buf[..n];
-    let end = bytes
-        .iter()
-        .position(|&b| b == b'\n')
-        .unwrap_or(bytes.len());
-    let line = String::from_utf8_lossy(&bytes[..end]).into_owned();
-    Some(line)
+    jsonl_kernel::read_transcript_header(path)
 }
 
 /// Walk today + last 7 UTC days of `search_root`, open each candidate
@@ -486,56 +471,36 @@ fn find_session_file(
             .join(format!("{:04}", day.format("%Y")))
             .join(format!("{:02}", day.format("%m")))
             .join(format!("{:02}", day.format("%d")));
-        let read = match std::fs::read_dir(&dir) {
-            Ok(r) => r,
-            Err(_) => continue, // partition missing — normal for days with no codex usage
-        };
-        for entry in read.flatten() {
-            let path = entry.path();
-            let fname = match path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n,
-                None => continue,
-            };
-            if !fname.starts_with("rollout-") || !fname.ends_with(".jsonl") {
-                continue;
-            }
-            let meta = match entry.metadata() {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            let mtime = match meta.modified() {
-                Ok(m) => m,
-                Err(_) => continue, // can't compare without mtime
-            };
+        jsonl_kernel::visit_codex_rollout_candidates(&dir, |path, mtime| {
             // Skip files modified more than 5 min before attach (stale).
             if mtime < mtime_cutoff_st {
-                continue;
+                return;
             }
             let first = match read_first_line(&path) {
                 Some(l) => l,
-                None => continue,
+                None => return,
             };
             let v: serde_json::Value = match serde_json::from_str(&first) {
                 Ok(v) => v,
-                Err(_) => continue,
+                Err(_) => return,
             };
             let payload = match v.get("payload") {
                 Some(p) => p,
-                None => continue,
+                None => return,
             };
             let candidate_cwd = match payload.get("cwd").and_then(|c| c.as_str()) {
                 Some(c) => c,
-                None => continue,
+                None => return,
             };
             if canonicalize_cwd_for_codex(candidate_cwd) != normalized_expected {
-                continue;
+                return;
             }
             match &best {
                 Some((_, best_mtime)) if mtime > *best_mtime => best = Some((path, mtime)),
                 None => best = Some((path, mtime)),
                 _ => {}
             }
-        }
+        });
     }
 
     best.map(|(p, _)| p)
@@ -704,7 +669,7 @@ async fn watch_loop<R: tauri::Runtime>(
                 // file's current mtime grow.
                 let need_rescan = match &current_file {
                     None => true,
-                    Some(p) if !p.exists() => true,
+                    Some(p) if !jsonl_kernel::transcript_exists(p) => true,
                     Some(_) => last_mtime_advance.elapsed().as_secs() >= ROTATION_STALE_SECS,
                 };
 
@@ -767,7 +732,7 @@ async fn watch_loop<R: tauri::Runtime>(
                                             "CODEX_ERR",
                                             &format!("preamble scan failed: {}", e)
                                         );
-                                        file_offset = std::fs::metadata(&found)
+                                        file_offset = jsonl_kernel::transcript_metadata(&found)
                                             .ok()
                                             .map(|m| m.len())
                                             .unwrap_or(0);
@@ -776,7 +741,7 @@ async fn watch_loop<R: tauri::Runtime>(
                             } else {
                                 // Different path: existing EOF rotation policy.
                                 line_remainder.clear();
-                                file_offset = std::fs::metadata(&found)
+                                file_offset = jsonl_kernel::transcript_metadata(&found)
                                     .ok()
                                     .map(|m| m.len())
                                     .unwrap_or(0);
@@ -792,7 +757,7 @@ async fn watch_loop<R: tauri::Runtime>(
                             current_file = Some(found);
                         }
                         let new_mtime = current_file.as_ref()
-                            .and_then(|p| std::fs::metadata(p).ok())
+                            .and_then(|p| jsonl_kernel::transcript_metadata(p).ok())
                             .and_then(|m| m.modified().ok());
                         if new_mtime != current_file_mtime {
                             last_mtime_advance = Instant::now();
@@ -831,7 +796,7 @@ async fn watch_loop<R: tauri::Runtime>(
                                     last_buffer_add = Instant::now();
                                 }
                             }
-                            let new_mtime = std::fs::metadata(path).ok()
+                            let new_mtime = jsonl_kernel::transcript_metadata(path).ok()
                                 .and_then(|m| m.modified().ok());
                             if new_mtime != current_file_mtime {
                                 last_mtime_advance = Instant::now();

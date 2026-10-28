@@ -15,6 +15,7 @@ fn marker_unit_app() -> (
     std::sync::mpsc::Receiver<(String, String)>,
 ) {
     let app = tauri::test::mock_builder()
+        .manage(crate::app_state::AppOwners::new())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
     let clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
@@ -29,9 +30,17 @@ fn marker_unit_app() -> (
 fn marker_events(
     app: &tauri::App<tauri::test::MockRuntime>,
 ) -> std::sync::mpsc::Receiver<(String, String)> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    record_marker_events(app, sender);
+    receiver
+}
+
+fn record_marker_events(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    sender: std::sync::mpsc::Sender<(String, String)>,
+) {
     use tauri::Listener;
 
-    let (sender, receiver) = std::sync::mpsc::channel();
     for (event_name, field) in [
         ("coordinator_auto_close_changed", "autoClosedAt"),
         ("coordinator_manual_close_changed", "manuallyClosedAt"),
@@ -47,7 +56,6 @@ fn marker_events(
             let _ = sender.send((event_name.to_string(), value));
         });
     }
-    receiver
 }
 
 fn drain(events: &std::sync::mpsc::Receiver<(String, String)>) -> Vec<(String, String)> {
@@ -216,7 +224,15 @@ fn fenced_ticket_never_restores() {
 fn restore_emit_never_lands_after_newer_create_clear() {
     // The process-wide seam is keyed by FQN; other marker tests must not hit it.
     const CWD: &str = "C:/ac-test/project/.ac/wg-2413-restore-emit/__agent_tech-lead";
-    let (app, clocks, events) = marker_unit_app();
+    let (app, clocks, _events) = marker_unit_app();
+    let other = tauri::test::mock_builder()
+        .manage(app.state::<crate::app_state::AppOwners>().inner().clone())
+        .manage(clocks.clone())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("second facade sharing the root");
+    let (sender, events) = std::sync::mpsc::channel();
+    record_marker_events(&app, sender.clone());
+    record_marker_events(&other, sender);
     let fqn = crate::config::teams::agent_fqn_from_path(CWD);
     let t = marker_ts(0);
     assert!(clocks.lock().unwrap().mark_auto_closed(&fqn, t));
@@ -230,7 +246,7 @@ fn restore_emit_never_lands_after_newer_create_clear() {
     // The clock holds the restored marker; its event is not out yet.
     assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), Some(t));
 
-    let handle = app.handle().clone();
+    let handle = other.handle().clone();
     let (newer_done_tx, newer_done_rx) = std::sync::mpsc::channel();
     let newer = std::thread::spawn(move || {
         super::super::note_coordinator_create_on_app(&handle, CWD)
@@ -265,30 +281,16 @@ fn restore_emit_never_lands_after_newer_create_clear() {
 /// on a spawn `Err` without a launch.
 #[test]
 fn create_session_inner_fences_marker_ticket_around_spawn() {
-    let source = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/commands/session.rs"
-    ))
-    .expect("read session.rs");
-    let production = source
-        .split("#[cfg(test)]\nmod tests")
-        .next()
-        .expect("production session source");
-    let normalized = production.split_whitespace().collect::<String>();
-    let fence = "t.session_may_exist=true;";
-    let spawn = "letspawn_result=PtyManager::spawn(";
-    let unfence = "if!launch_witness.launched(){";
-    assert_eq!(normalized.matches(fence).count(), 1);
-    assert_eq!(normalized.matches(spawn).count(), 1);
-    assert_eq!(normalized.matches(unfence).count(), 1);
-    let fence_at = normalized.find(fence).unwrap();
-    let spawn_at = normalized.find(spawn).unwrap();
-    let unfence_at = normalized.find(unfence).unwrap();
-    assert!(fence_at < spawn_at, "fence must precede the spawn await");
-    assert!(spawn_at < unfence_at, "unfence only after the spawn result");
-    assert_eq!(normalized.matches("has_backend_session").count(), 0);
-    assert!(normalized
-        .contains("letpending_result=mgr.create_pending_session_with_binding_and_carrier_permit("));
+    let sources = super::support::session_sources();
+    use super::support::{source_chain, source_effect, source_fence, source_mark, source_pending};
+    assert!(super::support::source_map_complete(&sources));
+    assert!(
+        source_fence(&sources)
+            && source_pending(&sources)
+            && source_mark(&sources)
+            && source_effect(&sources)
+            && source_chain(&sources)
+    );
 }
 
 struct MarkerCreateFixture {
@@ -708,45 +710,37 @@ async fn create_session_inner_keeps_markers_cleared_when_spawn_fails_after_launc
 /// exactly once (source guard, same pattern as the archive-gate test below).
 #[test]
 fn create_session_inner_calls_note_coordinator_create_once() {
-    let source = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/commands/session.rs"
-    ))
-    .expect("read session.rs");
-    let production = source
-        .split("#[cfg(test)]\nmod tests")
-        .next()
-        .expect("production session source");
-    let normalized = production.split_whitespace().collect::<String>();
-    assert_eq!(
-        normalized
-            .matches("note_coordinator_create_on_app(app,&cwd)")
-            .count(),
-        1,
-        "create_session_inner_impl must call note_coordinator_create_on_app once"
-    );
+    let sources = super::support::session_sources();
+    use super::support::source_budgets;
+    assert!(super::support::source_map_complete(&sources));
+    assert!(source_budgets(&sources));
 }
 
 #[test]
 fn create_session_inner_keeps_both_archive_activation_gates() {
-    let source = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/commands/session.rs"
-    ))
-    .expect("read session.rs");
-    let production = source
-        .split("#[cfg(test)]\nmod tests")
-        .next()
-        .expect("production session source");
-    let normalized = production.split_whitespace().collect::<String>();
-    let gate_call = concat!(
-        "enforce_owned_unarchived_for_spawn(app,&cwd,&session_label,&create_owner,",
-        "&create_manager,lifecycle_domain,inline_transaction,)"
-    );
-    let count = normalized.matches(gate_call).count();
+    let sources = super::support::session_sources();
+    use super::support::{source_archive, source_restart};
+    assert!(super::support::source_map_complete(&sources));
+    assert!(source_archive(&sources) && source_restart(&sources));
+}
 
+#[test]
+fn coordinator_order_recovers_poison_for_clear_and_restore() {
+    let (app, clocks, events) = marker_unit_app();
+    let owner = app
+        .state::<crate::app_state::AppOwners>()
+        .coordinator_order
+        .clone();
+    assert!(std::panic::catch_unwind(|| owner.with_order(|| panic!("poison order"))).is_err());
+    let fqn = crate::config::teams::agent_fqn_from_path(MARKER_CWD);
+    let timestamp = marker_ts(0);
+    assert!(clocks.lock().unwrap().mark_auto_closed(&fqn, timestamp));
+    super::super::note_coordinator_create_on_app(app.handle(), MARKER_CWD)
+        .expect("ticket after poison")
+        .failed();
+    assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), Some(timestamp));
     assert_eq!(
-        count, 2,
-        "create_session_inner must keep both archive activation gates"
+        drain(&events),
+        vec![auto_event("null"), auto_event(&timestamp.to_rfc3339())]
     );
 }

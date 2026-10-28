@@ -48,13 +48,19 @@ pub struct ReseedArgs {
     pub all: bool,
 }
 
-pub fn execute(args: InjectedMessagesArgs) -> i32 {
+pub fn execute(
+    args: InjectedMessagesArgs,
+    warnings: &crate::config::injected_messages::MessageWarnings,
+) -> i32 {
     match args.cmd {
-        InjectedMessagesCmd::Reseed(args) => execute_reseed(args),
+        InjectedMessagesCmd::Reseed(args) => execute_reseed(args, warnings),
     }
 }
 
-fn execute_reseed(args: ReseedArgs) -> i32 {
+fn execute_reseed(
+    args: ReseedArgs,
+    warnings: &crate::config::injected_messages::MessageWarnings,
+) -> i32 {
     let target = if args.all {
         ReseedTarget::All
     } else {
@@ -75,7 +81,7 @@ fn execute_reseed(args: ReseedArgs) -> i32 {
         return 1;
     };
 
-    match reseed(&dir, target) {
+    match reseed(&dir, target, warnings) {
         Ok(ids) => {
             cli_println!(
                 "Reset {} in {}",

@@ -7,16 +7,38 @@ use super::{
 };
 use crate::errors::AppError;
 use crate::pty::backend::SessionBackendKind;
-use crate::session::selection::{CommitCapability, SelectionCause, SessionSelection};
+use crate::session::selection::authority::{CommitCapability, CreateBindingTicket};
+use crate::session::selection::payload::{SelectionCause, SessionSelection};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
 impl SessionManager {
+    #[cfg(test)]
     pub fn new() -> Self {
+        Self::with_activity_coalescer(Arc::new(
+            crate::config::activity_log::ActivityCoalescer::new(),
+        ))
+    }
+
+    pub(crate) fn with_response_close(
+        state: crate::pty::response_close::ResponseCloseState,
+        owner: Arc<crate::config::activity_log::ActivityCoalescer>,
+    ) -> Self {
+        state.bind_publisher(crate::pty::response_close::ResponseClosePublisher::Manager);
+        Self {
+            response_close: state,
+            ..Self::with_activity_coalescer(owner)
+        }
+    }
+
+    pub fn with_activity_coalescer(
+        activity: Arc<crate::config::activity_log::ActivityCoalescer>,
+    ) -> Self {
         let epoch = Uuid::new_v4();
         Self {
+            activity,
             response_close: crate::pty::response_close::ResponseCloseState::default(),
             prompt_initialization: Arc::new(tokio::sync::OnceCell::new()),
             state: Arc::new(RwLock::new(SessionManagerState {
@@ -53,9 +75,9 @@ impl SessionManager {
             reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
         )
     )]
-    pub(crate) async fn create_pending_session(
+    pub(crate) async fn create_pending_session<T: CreateBindingTicket<PendingCreateBinding>>(
         &self,
-        ticket: &mut crate::session::selection::CreateFinalizationTicket,
+        ticket: &mut T,
         shell: String,
         shell_args: Vec<String>,
         working_directory: String,

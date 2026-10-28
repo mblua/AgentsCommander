@@ -57,17 +57,29 @@ use liveness::{
 };
 
 #[cfg(windows)]
-pub(super) static GIT_GUARD_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+pub struct GitGuardTempSequence(AtomicU64);
 
 #[cfg(windows)]
-fn build_git_guard_env() -> Result<Option<GitGuardEnv>, AppError> {
+#[allow(clippy::new_without_default)]
+impl GitGuardTempSequence {
+    pub fn new() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    fn next(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+#[cfg(windows)]
+fn build_git_guard_env(sequence: &GitGuardTempSequence) -> Result<Option<GitGuardEnv>, AppError> {
     let Some(real_git) = resolve_real_git_path() else {
         log::warn!("[pty] git.exe not found; skipping PATH git guard wrapper");
         return Ok(None);
     };
 
-    let guard_dir = ensure_git_guard_wrapper()?;
-    let current_path = std::env::var_os("PATH").unwrap_or_default();
+    let guard_dir = ensure_git_guard_wrapper(sequence)?;
+    let current_path = crate::config::environment::inherited_path().unwrap_or_default();
     let mut path_entries: Vec<std::path::PathBuf> = vec![guard_dir];
     path_entries.extend(std::env::split_paths(&current_path));
     let path = std::env::join_paths(path_entries.iter())
@@ -83,6 +95,9 @@ fn build_git_guard_env() -> Result<Option<GitGuardEnv>, AppError> {
 }
 
 pub struct LocalProcessBackend {
+    spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>,
+    #[cfg(windows)]
+    git_guard: Arc<GitGuardTempSequence>,
     ptys: Arc<Mutex<HashMap<Uuid, PtyInstance>>>,
     fanout: SessionIoFanout,
     git_watcher: Arc<GitWatcher>,
@@ -131,6 +146,9 @@ fn remove_local_pty(ptys: &Mutex<HashMap<Uuid, PtyInstance>>, id: Uuid) -> Optio
 impl Clone for LocalProcessBackend {
     fn clone(&self) -> Self {
         Self {
+            spawn: Arc::clone(&self.spawn),
+            #[cfg(windows)]
+            git_guard: Arc::clone(&self.git_guard),
             ptys: Arc::clone(&self.ptys),
             fanout: self.fanout.clone(),
             git_watcher: Arc::clone(&self.git_watcher),
@@ -143,13 +161,36 @@ impl Clone for LocalProcessBackend {
 }
 
 impl LocalProcessBackend {
+    #[cfg(test)]
     pub fn new(
         output_senders: OutputSenderMap,
         idle_detector: Arc<IdleDetector>,
         git_watcher: Arc<GitWatcher>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
     ) -> Self {
+        Self::with_owners(
+            output_senders,
+            idle_detector,
+            git_watcher,
+            ws_broadcaster,
+            #[cfg(windows)]
+            Arc::new(GitGuardTempSequence::new()),
+            Arc::new(crate::pty::spawn_diagnostics::SpawnRegistry::new()),
+        )
+    }
+
+    pub fn with_owners(
+        output_senders: OutputSenderMap,
+        idle_detector: Arc<IdleDetector>,
+        git_watcher: Arc<GitWatcher>,
+        ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
+        #[cfg(windows)] git_guard: Arc<GitGuardTempSequence>,
+        spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>,
+    ) -> Self {
         Self {
+            spawn,
+            #[cfg(windows)]
+            git_guard,
             ptys: Arc::new(Mutex::new(HashMap::new())),
             fanout: SessionIoFanout::new(output_senders, idle_detector, ws_broadcaster),
             git_watcher,
@@ -201,7 +242,11 @@ impl LocalProcessBackend {
         // Keyed on the CLI, never on the profile id: several profiles run the same
         // codex binary against the same ~/.codex. Counting only, no behavior change.
         let diag_thresholds = spawn_diagnostics::Thresholds::from_env();
-        let spawn_window = spawn_diagnostics::note_spawn_attempt(coding_agent, diag_thresholds);
+        let spawn_window = spawn_diagnostics::note_spawn_attempt(
+            coding_agent,
+            diag_thresholds,
+            self.spawn.as_ref(),
+        );
         // #1271 - accepted spawns only: the increment sits immediately before
         // `native_pty_system()`, so every invalid-input rejection above left the
         // per-instance observer at zero.
@@ -250,7 +295,7 @@ impl LocalProcessBackend {
                 {
                     None
                 } else {
-                    std::env::var("CODEX_HOME").ok()
+                    crate::config::environment::codex_home().ok()
                 }
             });
 
@@ -291,7 +336,7 @@ impl LocalProcessBackend {
             );
 
             #[cfg(windows)]
-            if let Some(git_guard_env) = build_git_guard_env()? {
+            if let Some(git_guard_env) = build_git_guard_env(&self.git_guard)? {
                 command.env("PATH", &git_guard_env.path);
                 command.env("PATHEXT", &git_guard_env.pathext);
                 command.env("AC_REAL_GIT", &git_guard_env.real_git);
@@ -408,21 +453,24 @@ impl LocalProcessBackend {
 
         // #942 - emits `[pty] spawn-record` (argv, cwd, CLI, profile, CODEX_HOME,
         // concurrency).
-        let record = spawn_diagnostics::register(SpawnRecordInit {
-            session_id: id,
-            pid: child_pid,
-            argv: exec_argv,
-            cwd: spawn_cwd,
-            cli: coding_agent,
-            agent_profile_id: agent_id,
-            codex_home,
-            configured_env_count: configured_env.len(),
-            removed_env_count: env_remove_keys.len(),
-            redact,
-            window: spawn_window,
-            started: spawn_started,
-            thresholds: diag_thresholds,
-        });
+        let record = spawn_diagnostics::register(
+            SpawnRecordInit {
+                session_id: id,
+                pid: child_pid,
+                argv: exec_argv,
+                cwd: spawn_cwd,
+                cli: coding_agent,
+                agent_profile_id: agent_id,
+                codex_home,
+                configured_env_count: configured_env.len(),
+                removed_env_count: env_remove_keys.len(),
+                redact,
+                window: spawn_window,
+                started: spawn_started,
+                thresholds: diag_thresholds,
+            },
+            self.spawn.as_ref(),
+        );
 
         // #942 - the startup verdict at the deadline and exit attribution. The PTY
         // reader alone cannot carry either: ConPTY holds the pipe open past the death of
@@ -621,8 +669,12 @@ impl PtyBackend for LocalProcessBackend {
         // for a child that had died on its own and for one our own job kill had just
         // taken down; this is what tells the two apart.
         let child_at_stop = self.probe_child(id);
-        let record =
-            spawn_diagnostics::mark_ac_stop(id, "session-kill", Some(child_at_stop.clone()));
+        let record = spawn_diagnostics::mark_ac_stop(
+            id,
+            "session-kill",
+            Some(child_at_stop.clone()),
+            self.spawn.as_ref(),
+        );
 
         let instance = remove_local_pty(&self.ptys, id);
 
@@ -703,7 +755,7 @@ impl PtyBackend for LocalProcessBackend {
 
         self.fanout.remove_session(id);
         self.git_watcher.remove_session(id);
-        spawn_diagnostics::forget(id);
+        spawn_diagnostics::forget(id, self.spawn.as_ref());
 
         Ok(())
     }
@@ -715,7 +767,7 @@ impl PtyBackend for LocalProcessBackend {
     /// kill and its evidence dropped.
     fn publish_stop_witness(&self, id: Uuid, source: &str) {
         let child_at_stop = self.probe_child(id);
-        spawn_diagnostics::mark_ac_stop(id, source, Some(child_at_stop));
+        spawn_diagnostics::mark_ac_stop(id, source, Some(child_at_stop), self.spawn.as_ref());
     }
 
     fn terminate_job_for_session(&self, id: Uuid) -> bool {
@@ -724,7 +776,12 @@ impl PtyBackend for LocalProcessBackend {
         // FAIL (a Quarantined resource-monitor kill leaves the instance intact), which
         // is why the tag only owns exits that follow it inside the attribution window.
         let child_at_stop = self.probe_child(id);
-        spawn_diagnostics::mark_ac_stop(id, "job-terminate", Some(child_at_stop));
+        spawn_diagnostics::mark_ac_stop(
+            id,
+            "job-terminate",
+            Some(child_at_stop),
+            self.spawn.as_ref(),
+        );
         let ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
         match ptys.get(&id).and_then(|inst| inst.job.as_ref()) {
             Some(job) => {
@@ -748,7 +805,12 @@ impl PtyBackend for LocalProcessBackend {
                 Some(child) => probe_child_contained(child),
                 None => ChildLiveness::Gone,
             };
-            spawn_diagnostics::mark_ac_stop(*id, "app-shutdown", Some(child_at_stop));
+            spawn_diagnostics::mark_ac_stop(
+                *id,
+                "app-shutdown",
+                Some(child_at_stop),
+                self.spawn.as_ref(),
+            );
             match instance.job.as_ref() {
                 Some(job) => {
                     job.terminate();

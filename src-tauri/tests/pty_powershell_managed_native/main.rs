@@ -100,7 +100,8 @@ fn configured_powershell_launches_bare_agent_via_cmd_shim() {
         fixture.track_session(id);
 
         // Provenance: the configured PowerShell path, not cmd.exe.
-        let record = spawn_diagnostics::record_for(id).expect("spawn record exists");
+        let record =
+            spawn_diagnostics::record_for(id, fixture.spawn.as_ref()).expect("spawn record exists");
         let argv = record.argv();
         assert_eq!(
             argv.first().map(String::as_str),
@@ -215,7 +216,8 @@ fn configured_powershell_managed_native_reporter_argv_and_pty_io() {
         let id = parse_session_id(&created);
         fixture.track_session(id);
 
-        let record = spawn_diagnostics::record_for(id).expect("spawn record exists");
+        let record =
+            spawn_diagnostics::record_for(id, fixture.spawn.as_ref()).expect("spawn record exists");
         let argv = record.argv();
         assert_eq!(
             argv.first().map(String::as_str),
@@ -534,7 +536,8 @@ fn configured_cmd_host_shim_argv_and_pre_pty_rejections() {
         let id = parse_session_id(&created);
         fixture.track_session(id);
 
-        let record = spawn_diagnostics::record_for(id).expect("spawn record exists");
+        let record =
+            spawn_diagnostics::record_for(id, fixture.spawn.as_ref()).expect("spawn record exists");
         let argv = record.argv();
         assert_eq!(
             argv.first().map(String::as_str),
@@ -704,7 +707,8 @@ fn configured_powershell_host_shutdown_reaps_agent() {
             .await
             .expect("long-running shim must start");
 
-        let record = spawn_diagnostics::record_for(id).expect("spawn record exists");
+        let record =
+            spawn_diagnostics::record_for(id, fixture.spawn.as_ref()).expect("spawn record exists");
         let host_pid = record.pid().expect("the tracked host pid is available");
         assert!(process_exists(host_pid), "PowerShell host must be running");
 
@@ -797,7 +801,8 @@ fn configured_missing_host_and_incompatible_host_cleanup() {
         fixture.track_session(id);
         // The host started: provenance names the configured cmd with the
         // adapter suffix.
-        let record = spawn_diagnostics::record_for(id).expect("spawn record exists");
+        let record =
+            spawn_diagnostics::record_for(id, fixture.spawn.as_ref()).expect("spawn record exists");
         let argv = record.argv();
         assert_eq!(
             argv.first().map(String::as_str),

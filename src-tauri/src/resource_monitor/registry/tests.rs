@@ -424,3 +424,117 @@ fn quarantined_group(
     assert_eq!(first.state, ResourceGroupState::Quarantined);
     (root, child)
 }
+
+#[test]
+fn spawn_owner_cross_component_stop_preserves_record_identity() {
+    use crate::pty::spawn_diagnostics::{self as diagnostics, SpawnRecord, SpawnRegistry};
+    struct StopBackend {
+        inner: Arc<FakeProcessTreeBackend>,
+        spawn: Arc<SpawnRegistry>,
+        record: Arc<SpawnRecord>,
+        seen: AtomicUsize,
+    }
+    impl ProcessTreeBackend for StopBackend {
+        fn observe_tree(
+            &self,
+            root: ProcessIdentity,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            self.inner.observe_tree(root)
+        }
+        fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+            self.inner.observe_identity(pid)
+        }
+        fn terminate_verified(
+            &self,
+            process: &ObservedProcess,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            let found = diagnostics::record_for(self.record.session_id(), &self.spawn).unwrap();
+            assert!(Arc::ptr_eq(&found, &self.record));
+            assert!(
+                found.stop_requested(),
+                "annotation must precede process termination"
+            );
+            self.seen.fetch_add(1, Ordering::SeqCst);
+            self.inner.terminate_verified(process)
+        }
+        fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
+            self.inner.current_process_memory()
+        }
+    }
+    let spawn = Arc::new(SpawnRegistry::new());
+    let backend_owner = Arc::clone(&spawn);
+    let id = Uuid::new_v4();
+    let root = identity(4242, 42);
+    let inner = Arc::new(FakeProcessTreeBackend::default());
+    inner.add_tree(root, vec![observed(root.pid, 42, None, 0)]);
+    let thresholds = diagnostics::Thresholds {
+        stall_timeout: Duration::from_secs(1),
+        paint_floor: 1,
+        head_bytes: 32,
+        concurrency_window: Duration::from_secs(60),
+        stop_attribution: Duration::from_secs(1),
+        teardown_suppression: Duration::from_millis(50),
+        startup_poll: Duration::from_millis(5),
+        steady_poll: Duration::from_millis(10),
+    };
+    let window = diagnostics::note_spawn_attempt(None, thresholds, &spawn);
+    assert_eq!(window.total, 0);
+    let record = diagnostics::register(
+        diagnostics::SpawnRecordInit {
+            session_id: id,
+            pid: Some(root.pid),
+            argv: vec!["test-child".into()],
+            cwd: "test".into(),
+            cli: None,
+            agent_profile_id: None,
+            codex_home: None,
+            configured_env_count: 0,
+            removed_env_count: 0,
+            redact: Vec::new(),
+            window,
+            started: Instant::now(),
+            thresholds,
+        },
+        &spawn,
+    );
+    assert!(Arc::ptr_eq(
+        &record,
+        &diagnostics::record_for(id, &backend_owner).unwrap()
+    ));
+    let backend = Arc::new(StopBackend {
+        inner,
+        spawn: Arc::clone(&backend_owner),
+        record: Arc::clone(&record),
+        seen: AtomicUsize::new(0),
+    });
+    let monitor =
+        ResourceMonitorState::with_backend_and_spawn_registry(backend.clone(), Arc::clone(&spawn));
+    let permit = monitor.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+    monitor
+        .register_group(
+            permit,
+            id,
+            "child".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            root,
+        )
+        .unwrap();
+    assert!(!record.stop_requested());
+    monitor.kill_group(id, ResourceKillReason::User).unwrap();
+    assert_eq!(backend.seen.load(Ordering::SeqCst), 1);
+    assert!(Arc::ptr_eq(
+        &record,
+        &diagnostics::record_for(id, &backend_owner).unwrap()
+    ));
+    assert!(record.stop_requested());
+    diagnostics::forget(id, &backend_owner);
+    assert!(diagnostics::record_for(id, &spawn).is_none());
+    assert_eq!(
+        diagnostics::note_spawn_attempt(None, thresholds, &backend_owner).total,
+        1
+    );
+}

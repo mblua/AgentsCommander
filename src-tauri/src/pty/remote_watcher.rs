@@ -17,7 +17,7 @@
 //! this module invokes the real `gh` or the network: queries go through the
 //! injected `GhSpawner`, local git reads through the injected `LocalGitRunner`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -57,9 +57,7 @@ use ci_parse::{
 };
 #[cfg(test)]
 use ci_parse::{parse_ci_jobs_response, parse_ci_run_response, CiAnswer, CiRunObservation};
-use gh_command::{
-    build_gh_command_spec, command_from_spec, git_command, is_sha40, GhCommandSpec, GhQuery,
-};
+use gh_command::{build_gh_command_spec, is_sha40, GhCommandSpec, GhQuery};
 #[cfg(test)]
 use outcome::persisted_failure_reason;
 use outcome::{activity_for, persisted_repo_ci};
@@ -236,10 +234,47 @@ pub(crate) struct RemoteTransition {
 ///
 /// `.unwrap_or_else(|e| e.into_inner())` is required, not stylistic: one
 /// poisoning with `.unwrap()` takes the sweeper down forever.
-static REMOTE_ACTIVITY_SNAPSHOT: OnceLock<Mutex<HashMap<String, RemoteActivity>>> = OnceLock::new();
+pub struct RemoteActivityState {
+    snapshot: OnceLock<Mutex<HashMap<String, RemoteActivity>>>,
+}
 
-fn remote_activity_snapshot() -> &'static Mutex<HashMap<String, RemoteActivity>> {
-    REMOTE_ACTIVITY_SNAPSHOT.get_or_init(|| Mutex::new(HashMap::new()))
+#[allow(clippy::new_without_default)]
+impl RemoteActivityState {
+    pub fn new() -> Self {
+        Self {
+            snapshot: OnceLock::new(),
+        }
+    }
+
+    fn read_snapshot<T>(&self, read: impl FnOnce(&HashMap<String, RemoteActivity>) -> T) -> T {
+        let snapshot = self
+            .snapshot
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        read(&snapshot)
+    }
+
+    fn publish<'a>(
+        &self,
+        entries: impl Iterator<Item = (&'a String, &'a RemoteActivity)>,
+        live: &HashSet<String>,
+    ) {
+        let mut snapshot = self
+            .snapshot
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for (path, activity) in entries {
+            snapshot.insert(path.clone(), activity.clone());
+        }
+        // GC runs UNCONDITIONALLY, including on an EMPTY work list: an empty
+        // list means every repo went away, and the correct chip state for a
+        // repo that went away is `Unknown`, which is what an emptied snapshot
+        // produces. A `if !paths.is_empty()` guard would leave the last
+        // colours on screen forever after the last room closes.
+        snapshot.retain(|path, _| live.contains(path));
+    }
 }
 
 #[cfg(test)]

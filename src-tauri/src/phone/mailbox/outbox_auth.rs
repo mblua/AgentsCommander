@@ -8,6 +8,7 @@ use super::notice::{
     validate_root_sender_payload, validate_root_sender_route, OutboxOrigin,
 };
 use super::poller::{MailboxPoller, OutboxAuthenticationFacts, OutboxStage, ValidatedWake};
+use super::pty_observation::PtyReadinessState;
 use super::settle::session_has_current_pty_submission_provenance;
 use crate::config::settings::SettingsState;
 use crate::config::teams;
@@ -16,22 +17,20 @@ use crate::phone::mailbox::classify_outbox_document;
 #[cfg(test)]
 use crate::phone::mailbox::OutboxClassification;
 use crate::phone::types::OutboxMessage;
-use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
 use crate::MasterToken;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::Mutex;
 use tauri::Manager;
 use uuid::Uuid;
 
 impl MailboxPoller {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn wait_for_pty_input_ready<R: tauri::Runtime>(
+    pub(crate) async fn wait_for_pty_input_ready<S: PtyReadinessState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         claimed: &crate::api::message_store::ClaimedPtyInputOperation,
         verified_target: &crate::config::teams::VerifiedPtyInputIdentity,
         session_id: Uuid,
@@ -56,18 +55,18 @@ impl MailboxPoller {
                 return Err(C::Expired);
             }
             if app
-                .try_state::<Arc<crate::RestoreInProgress>>()
+                .pty_restore()
                 .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
             {
                 return Err(C::RestoreInProgress);
             }
             if app
-                .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+                .pty_purge()
                 .is_some_and(|guard| guard.blocks_agent(&claimed.target_fqn))
             {
                 return Err(C::PurgeInProgress);
             }
-            let menu_guard = app.try_state::<Arc<crate::pty::menu_guard::MenuGuard>>();
+            let menu_guard = app.pty_menu();
             if menu_guard
                 .as_ref()
                 .is_some_and(|g| g.is_blocked(session_id))
@@ -92,7 +91,7 @@ impl MailboxPoller {
                 return Err(C::AuthorityChanged);
             }
             let session = {
-                let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let manager = app.pty_sessions();
                 let guard = manager.read().await;
                 guard.get_session(session_id).await
             }
@@ -101,7 +100,7 @@ impl MailboxPoller {
                 &session.working_directory,
             ))
             .map_err(|_| C::AuthorityChanged)?;
-            let settings = app.state::<SettingsState>().read().await.clone();
+            let settings = app.pty_settings().read().await.clone();
             if current_target.canonical_fqn != claimed.target_fqn
                 || current_target.authority_fingerprint != verified_target.authority_fingerprint
                 || !crate::path_identity::same_object(
@@ -117,7 +116,7 @@ impl MailboxPoller {
                 return Err(C::SessionRace);
             }
             let route_valid = {
-                let manager = app.state::<Arc<Mutex<PtyManager>>>();
+                let manager = app.pty_routes();
                 let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
                 manager.has_session(session_id)
                     && manager.backend_kind(session_id) == Some(session.backend_kind)
@@ -141,7 +140,7 @@ impl MailboxPoller {
                 return Err(C::SessionRace);
             }
             let readiness = app
-                .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+                .pty_readiness()
                 .purge_readiness(&[session_id])
                 .into_iter()
                 .next()
@@ -400,10 +399,15 @@ impl MailboxPoller {
                 c.project_paths.clone()
             };
             if let Some(root_project) = outbox_project.as_ref() {
-                let canon_root_project = std::fs::canonicalize(root_project).ok();
+                let canon_root_project =
+                    crate::filesystem::projects::canonical_refresh_project(Path::new(root_project))
+                        .ok();
                 let already_present = paths.iter().any(|p| match &canon_root_project {
                     Some(canon_target) => {
-                        std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
+                        crate::filesystem::projects::canonical_refresh_project(Path::new(p))
+                            .ok()
+                            .as_ref()
+                            == Some(canon_target)
                     }
                     None => p == root_project,
                 });
@@ -617,7 +621,10 @@ impl MailboxPoller {
         // "can A reach B" team rules. Routing it through can_communicate would wrongly
         // reject valid callers in no shared team. close-session stays in the
         // post-routing action block because it IS a cross-agent operation.
-        if msg.action.as_deref() == Some(SELF_CLEAR_ACTION) {
+        if matches!(
+            msg.action.as_deref(),
+            Some(SELF_CLEAR_ACTION | super::PLAIN_SELF_CLEAR_ACTION)
+        ) {
             return Ok(std::ops::ControlFlow::Break(
                 self.handle_self_clear(app, path, msg, is_app_outbox).await,
             ));

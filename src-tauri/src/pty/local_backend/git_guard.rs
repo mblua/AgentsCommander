@@ -1,5 +1,4 @@
 use std::io::Write;
-use std::sync::atomic::Ordering;
 
 #[cfg(windows)]
 use std::path::Path;
@@ -10,7 +9,7 @@ use std::time::Duration;
 use crate::config::instance_artifacts::GIT_GUARD_DIR_NAME;
 use crate::errors::AppError;
 
-use super::GIT_GUARD_TEMP_COUNTER;
+use super::GitGuardTempSequence;
 
 #[cfg(windows)]
 pub(super) struct GitGuardEnv {
@@ -32,26 +31,13 @@ pub(super) const GIT_GUARD_PUBLISH_RETRY_DELAYS: &[Duration] = &[
 
 #[cfg(windows)]
 pub(super) fn resolve_real_git_path() -> Option<String> {
-    use std::os::windows::process::CommandExt;
-
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let mut cmd = std::process::Command::new("where.exe");
-    crate::pty::credentials::scrub_credentials_from_std_command(&mut cmd);
-    cmd.arg("git.exe").creation_flags(CREATE_NO_WINDOW);
-    let output = cmd.output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(|line| line.to_string())
+    crate::process::git::watcher::resolve_real_git_path()
 }
 
 #[cfg(windows)]
-pub(super) fn ensure_git_guard_wrapper() -> Result<std::path::PathBuf, AppError> {
+pub(super) fn ensure_git_guard_wrapper(
+    sequence: &GitGuardTempSequence,
+) -> Result<std::path::PathBuf, AppError> {
     let config_dir = crate::config::config_dir()
         .ok_or_else(|| AppError::Other("Could not resolve app config directory".to_string()))?;
     let guard_dir = config_dir.join(GIT_GUARD_DIR_NAME);
@@ -134,16 +120,20 @@ exit $LASTEXITCODE
 "#,
     );
 
-    write_git_guard_file_if_changed(&cmd_path, cmd_content)
+    write_git_guard_file_if_changed(&cmd_path, cmd_content, sequence)
         .map_err(|e| AppError::Other(format!("Failed to write git.cmd guard: {}", e)))?;
-    write_git_guard_file_if_changed(&ps1_path, ps1_content)
+    write_git_guard_file_if_changed(&ps1_path, ps1_content, sequence)
         .map_err(|e| AppError::Other(format!("Failed to write git-guard.ps1: {}", e)))?;
 
     Ok(guard_dir)
 }
 
 #[cfg(windows)]
-pub(super) fn write_git_guard_file_if_changed(path: &Path, content: &str) -> Result<(), String> {
+pub(super) fn write_git_guard_file_if_changed(
+    path: &Path,
+    content: &str,
+    sequence: &GitGuardTempSequence,
+) -> Result<(), String> {
     let desired = content.as_bytes();
     match std::fs::read(path) {
         Ok(existing) if existing == desired => return Ok(()),
@@ -152,11 +142,15 @@ pub(super) fn write_git_guard_file_if_changed(path: &Path, content: &str) -> Res
         Err(e) => return Err(format!("read existing {}: {}", path.display(), e)),
     }
 
-    write_git_guard_file_atomic(path, desired)
+    write_git_guard_file_atomic(path, desired, sequence)
 }
 
 #[cfg(windows)]
-pub(super) fn write_git_guard_file_atomic(path: &Path, content: &[u8]) -> Result<(), String> {
+pub(super) fn write_git_guard_file_atomic(
+    path: &Path,
+    content: &[u8],
+    sequence: &GitGuardTempSequence,
+) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("target {} has no parent", path.display()))?;
@@ -164,14 +158,19 @@ pub(super) fn write_git_guard_file_atomic(path: &Path, content: &[u8]) -> Result
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(GIT_GUARD_DIR_NAME);
-    let counter = GIT_GUARD_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let temp = parent.join(format!(".{name}.{}.{counter}.tmp", std::process::id()));
-
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(|e| format!("create temp {}: {}", temp.display(), e))?;
+    let (temp, mut file) = loop {
+        let counter = sequence.next();
+        let temp = parent.join(format!(".{name}.{}.{counter}.tmp", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+        {
+            Ok(file) => break (temp, file),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("create temp {}: {}", temp.display(), e)),
+        }
+    };
 
     if let Err(e) = file.write_all(content) {
         drop(file);

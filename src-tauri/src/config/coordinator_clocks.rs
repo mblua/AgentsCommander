@@ -17,6 +17,28 @@ const COALESCE_SECS: i64 = 10;
 /// (auto-close tick + off-tick workgroup-remove saves) never share a temp path.
 static SAVE_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// (#2413) Orders close-marker changes made by coordinator creates with their
+/// events. The create's clear and a failed create's restore each hold it from
+/// the clocks change through their emits, so the UI receives their events in
+/// the same order as the clock changes. Taken before the clocks lock, never
+/// held across an `.await`.
+pub struct CoordinatorCreateOrder {
+    order: Mutex<()>,
+}
+
+impl CoordinatorCreateOrder {
+    pub(crate) fn new() -> Self {
+        Self {
+            order: Mutex::new(()),
+        }
+    }
+
+    pub(crate) fn with_order<T>(&self, operation: impl FnOnce() -> T) -> T {
+        let _order = self.order.lock().unwrap_or_else(|error| error.into_inner());
+        operation()
+    }
+}
+
 /// Persisted per-coordinator state, keyed by the coordinator FQN
 /// (`<project>:<wg>/<agent>`). One entry holds the persisted facts behind the
 /// unified idle counter (#580): the user-message clock (`last_user_message_at`),
@@ -431,7 +453,21 @@ pub fn save_map_to(path: &Path, map: &HashMap<String, ClockEntry>) -> Result<(),
         std::process::id(),
         SAVE_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    let write_result = (|| -> std::io::Result<()> {
+        use std::io::Write;
+
+        let mut file = file;
+        file.write_all(json.as_bytes())?;
+        #[cfg(all(test, windows))]
+        let file = tests::issue_3278_sync_handle(&tmp, file)?;
+        file.sync_all()
+    })();
+    if let Err(error) = write_result {
+        // The closure dropped the handle before cleanup, including on Windows.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error.to_string());
+    }
     // Reuse sessions_persistence::rename_with_retry for the Windows AV/indexer
     // hold retry (#280/#291). Discard the rich diagnostics on error.
     crate::config::sessions_persistence::rename_with_retry(&tmp, path)

@@ -41,7 +41,7 @@ pub(super) const ORPHAN_ARCHIVE_KEEP: u32 = 3;
 /// resolved once; no repeated WARN every 25 s"). Each AC process keeps its own
 /// registry, so multi-instance setups warn at most once per orphan per run.
 /// Tests reset it via `#[cfg(test)]` helpers.
-pub(super) fn orphan_warned_registry() -> &'static Mutex<HashSet<String>> {
+fn orphan_warned_registry() -> &'static Mutex<HashSet<String>> {
     static REGISTRY: std::sync::OnceLock<Mutex<HashSet<String>>> = std::sync::OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
 }
@@ -79,7 +79,7 @@ pub(super) fn note_orphan_cwd(cwd: &str) -> bool {
 /// the steady prune site removes it from RAM) is suppressed so no recipe is
 /// appended twice. A row that is still LIVE is never archived at all, so this
 /// registry tracks only ids that were actually archived.
-pub(super) fn orphan_archived_registry() -> &'static Mutex<HashSet<Uuid>> {
+fn orphan_archived_registry() -> &'static Mutex<HashSet<Uuid>> {
     static REGISTRY: std::sync::OnceLock<Mutex<HashSet<Uuid>>> = std::sync::OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
 }
@@ -124,7 +124,7 @@ pub(crate) struct OrphanSweepCounts {
 // drives, and reads its own thread's counters deterministically.
 #[cfg(test)]
 thread_local! {
-    pub(super) static ORPHAN_SWEEP_COUNTERS: std::cell::Cell<OrphanSweepCounts> = const {
+    static ORPHAN_SWEEP_COUNTERS: std::cell::Cell<OrphanSweepCounts> = const {
         std::cell::Cell::new(OrphanSweepCounts {
             archived: 0,
             reaped: 0,
@@ -132,7 +132,7 @@ thread_local! {
             suppressed_repeat: 0,
         })
     };
-    pub(super) static ORPHAN_WARNED_COUNT: std::cell::Cell<usize> =
+    static ORPHAN_WARNED_COUNT: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
 }
 
@@ -184,7 +184,7 @@ pub(super) fn accumulate_orphan_counters(counts: OrphanSweepCounts) {
 /// tiny cap (test 8). Process-global but only mutated under `ORPHAN_TEST_LOCK`,
 /// which serializes every archive-sweep counter test.
 #[cfg(test)]
-pub(super) static TEST_ORPHAN_ARCHIVE_CAP: std::sync::OnceLock<Mutex<Option<u64>>> =
+static TEST_ORPHAN_ARCHIVE_CAP: std::sync::OnceLock<Mutex<Option<u64>>> =
     std::sync::OnceLock::new();
 
 #[cfg(test)]
@@ -381,7 +381,9 @@ pub(crate) async fn prepare_persist_snapshot(
         let roots = normalize_project_roots(&project_paths);
         let (kept, mut drops) = partition_orphaned_sessions(snapshot, &roots);
         for drop in &mut drops {
-            drop.cwd_exists = Path::new(&drop.session.working_directory).exists();
+            drop.cwd_exists = crate::filesystem::directories::persisted_session_cwd_exists(
+                Path::new(&drop.session.working_directory),
+            );
         }
         PersistPreparation { kept, drops }
     })

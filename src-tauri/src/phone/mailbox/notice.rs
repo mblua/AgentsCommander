@@ -18,6 +18,7 @@ use crate::config::injected_messages::TOKEN_SINCE;
 use crate::config::injected_messages::TOKEN_THRESHOLDS;
 use crate::config::injected_messages::TOKEN_WORKGROUP;
 use crate::config::settings::AgentConfig;
+use crate::filesystem::phone_mailbox;
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::inject::LogicalPtyCommand;
@@ -101,7 +102,7 @@ pub(crate) struct InternalSystemTarget {
 
 impl InternalSystemTarget {
     pub(crate) fn for_context_alert(fqn: String, replica_dir: PathBuf) -> Result<Self, String> {
-        let metadata = std::fs::symlink_metadata(&replica_dir).map_err(|e| {
+        let metadata = phone_mailbox::mailbox_path_symlink_metadata(&replica_dir).map_err(|e| {
             format!(
                 "Internal system target replica '{}' is not readable: {}",
                 replica_dir.display(),
@@ -116,7 +117,7 @@ impl InternalSystemTarget {
                 replica_dir.display()
             ));
         }
-        let canonical = std::fs::canonicalize(&replica_dir)
+        let canonical = phone_mailbox::canonical_mailbox_path(&replica_dir)
             .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
             .map_err(|e| {
                 format!(
@@ -372,7 +373,10 @@ impl InternalSystemNotice {
     /// #1157 - the wording now lives in the operator-editable injected-message
     /// registry. This function keeps its signature and its threshold formatting;
     /// the only embedded copy of the text is `DEFAULT_CONTEXT_ALERT_TEMPLATE`.
-    pub(crate) fn line(&self) -> String {
+    pub(crate) fn line(
+        &self,
+        warnings: &crate::config::injected_messages::MessageWarnings,
+    ) -> String {
         match self {
             Self::ContextAlert {
                 member,
@@ -396,6 +400,7 @@ impl InternalSystemNotice {
                         (TOKEN_THRESHOLDS, thresholds.as_str()),
                         (TOKEN_OBSERVED, observed.as_str()),
                     ],
+                    warnings,
                 )
             }
             Self::RemoteActivity {
@@ -444,13 +449,14 @@ impl InternalSystemNotice {
                         ],
                     ),
                 };
-                let mut rendered = render(id, &values);
+                let mut rendered = render(id, &values, warnings);
                 if let Some((gap, since)) = blind_gap {
                     // A SUFFIX id, not twin ids: the blindness clause is edited
                     // once and applies to every notice, present and future.
                     rendered.push_str(&render(
                         NOTICE_BLIND_GAP_MESSAGE_ID,
                         &[(TOKEN_GAP, gap.as_str()), (TOKEN_SINCE, since.as_str())],
+                        warnings,
                     ));
                 }
                 truncate_to_rendered_cap(rendered)
@@ -471,7 +477,10 @@ pub(crate) enum WakeContent<'a> {
         /// exact FQN and is the credential.
         comanaged: bool,
     },
-    InternalSystem(&'a InternalSystemNotice),
+    InternalSystem(
+        &'a InternalSystemNotice,
+        &'a crate::config::injected_messages::MessageWarnings,
+    ),
 }
 
 pub(crate) fn format_wake_content(content: WakeContent<'_>) -> String {
@@ -491,7 +500,7 @@ pub(crate) fn format_wake_content(content: WakeContent<'_>) -> String {
                 crate::phone::messaging::format_pty_wrap(from, body)
             }
         }
-        WakeContent::InternalSystem(notice) => format!("\n{}\n\r", notice.line()),
+        WakeContent::InternalSystem(notice, warnings) => format!("\n{}\n\r", notice.line(warnings)),
     }
 }
 
@@ -551,7 +560,7 @@ pub(crate) fn canonical_cwd_owned_by_replica(
         (lexical_workgroup, "room"),
         (lexical_ac_root, "Project AC Root"),
     ] {
-        let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        let metadata = phone_mailbox::mailbox_path_symlink_metadata(path).map_err(|error| {
             format!(
                 "Failed to inspect recipient {} '{}': {}",
                 label,
@@ -565,7 +574,7 @@ pub(crate) fn canonical_cwd_owned_by_replica(
             return Ok(false);
         }
     }
-    let canonical_replica = std::fs::canonicalize(lexical_replica)
+    let canonical_replica = phone_mailbox::canonical_mailbox_path(lexical_replica)
         .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
         .map_err(|error| {
             format!(
@@ -577,7 +586,7 @@ pub(crate) fn canonical_cwd_owned_by_replica(
     if canonical_replica != replica_dir {
         return Ok(false);
     }
-    let canonical = std::fs::canonicalize(cwd)
+    let canonical = phone_mailbox::canonical_mailbox_path(Path::new(cwd))
         .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
         .map_err(|e| format!("Failed to canonicalize recipient CWD '{}': {}", cwd, e))?;
     Ok(canonical == replica_dir || canonical.starts_with(replica_dir))
@@ -621,9 +630,9 @@ pub(crate) fn inline_body_from_file_notification(
         .map_err(|e| format!("sender room could not be resolved: {}", e))?;
     let allowed_messaging_dir = crate::phone::messaging::messaging_dir(&wg_root)
         .map_err(|e| format!("sender messaging directory could not be resolved: {}", e))?;
-    let canon_allowed = std::fs::canonicalize(&allowed_messaging_dir)
+    let canon_allowed = phone_mailbox::canonical_mailbox_path(&allowed_messaging_dir)
         .map_err(|e| format!("sender messaging directory not readable: {}", e))?;
-    let canon_parent = std::fs::canonicalize(parent)
+    let canon_parent = phone_mailbox::canonical_mailbox_path(parent)
         .map_err(|e| format!("file notification parent not readable: {}", e))?;
     if canon_parent != canon_allowed {
         return Err("file notification parent is outside sender messaging directory".to_string());
@@ -631,7 +640,7 @@ pub(crate) fn inline_body_from_file_notification(
 
     let abs = crate::phone::messaging::resolve_existing_message(&allowed_messaging_dir, filename)
         .map_err(|e| format!("message file not readable for container delivery: {}", e))?;
-    let bytes = std::fs::read(&abs)
+    let bytes = phone_mailbox::read_mailbox_message(&abs)
         .map_err(|e| format!("message file not readable for container delivery: {}", e))?;
     if bytes.len() > crate::api::message_store::INLINE_BODY_MAX_BYTES {
         return Err(format!(
@@ -672,7 +681,7 @@ pub(crate) struct ProjectRefreshPollBatch {
 }
 
 pub(crate) fn canonical_project_refresh_path(path: &str) -> String {
-    std::fs::canonicalize(path)
+    phone_mailbox::canonical_mailbox_path(Path::new(path))
         .unwrap_or_else(|_| PathBuf::from(path))
         .to_string_lossy()
         .to_string()
@@ -861,10 +870,9 @@ pub(crate) fn validate_root_sender_payload_with_root_dir(
     if !notification_path.is_absolute() {
         return Err("Root Agent file notification must use an absolute path".into());
     }
-    let canon_file = std::fs::canonicalize(notification_path)
+    let canon_file = phone_mailbox::canonical_mailbox_path(notification_path)
         .map_err(|e| format!("Root Agent file notification target is not readable: {}", e))?;
-    if !canon_file
-        .metadata()
+    if !phone_mailbox::mailbox_path_metadata(&canon_file)
         .map_err(|e| format!("Root Agent file notification target is not readable: {}", e))?
         .is_file()
     {
@@ -872,13 +880,14 @@ pub(crate) fn validate_root_sender_payload_with_root_dir(
     }
 
     let root_messaging_dir = root_agent_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME);
-    let canon_root_messaging_dir = std::fs::canonicalize(&root_messaging_dir).map_err(|e| {
-        format!(
-            "Root Agent messaging directory is not readable at {}: {}",
-            root_messaging_dir.display(),
-            e
-        )
-    })?;
+    let canon_root_messaging_dir = phone_mailbox::canonical_mailbox_path(&root_messaging_dir)
+        .map_err(|e| {
+            format!(
+                "Root Agent messaging directory is not readable at {}: {}",
+                root_messaging_dir.display(),
+                e
+            )
+        })?;
     if canon_file.parent() != Some(canon_root_messaging_dir.as_path()) {
         return Err(
             "Root Agent file notification must point inside ac-root-agent/messaging".into(),
@@ -913,7 +922,7 @@ pub(crate) fn validate_root_sender_payload_with_root_dir(
 pub(crate) fn derive_project_from_outbox_path(
     outbox_file: &Path,
 ) -> Result<Option<String>, String> {
-    let Some(canon) = std::fs::canonicalize(outbox_file).ok() else {
+    let Some(canon) = phone_mailbox::canonical_mailbox_path(outbox_file).ok() else {
         return Ok(None);
     };
     // canon = <project>/<workspace>/wg-*/__agent_*/<local-dir>/outbox/<file>.json

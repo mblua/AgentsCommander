@@ -156,7 +156,7 @@ pub(super) fn resolve_agent_path(ac_root: &Path, agent_ref: &str) -> Option<Path
     // Check if it's an absolute path
     if trimmed.contains(':') || trimmed.starts_with('/') {
         let p = PathBuf::from(trimmed);
-        if p.is_dir() {
+        if crate::filesystem::projects::project_path_is_dir(&p) {
             return Some(p);
         }
         return None;

@@ -20,12 +20,12 @@ use tauri::Manager;
 
 impl MailboxPoller {
     /// (#1399) A delivery-only poller for a detached worker. `deliver_wake` and
-    /// its whole `&self` callee chain read only `app.state::<...>()` (see the
-    /// #791 note at the top of `deliver_wake`), so a fresh instance is
-    /// equivalent to `&self` for the tail. Test hooks are carried across
-    /// because `MailboxTestHooks` is `Arc`-based and `Clone`.
+    /// its whole `&self` callee chain read `app.state::<...>()` (see the
+    /// #791 note at the top of `deliver_wake`), so a fresh instance sharing
+    /// the same message warnings is equivalent to `&self` for the tail. Test hooks
+    /// are carried across because `MailboxTestHooks` is `Arc`-based and `Clone`.
     pub(crate) fn delivery_poller(&self) -> Self {
-        let mut poller = Self::delivery_only();
+        let mut poller = Self::delivery_only(Arc::clone(&self.messages));
         poller.response_sources = self.response_sources.clone();
         #[cfg(test)]
         let poller = Self {

@@ -30,8 +30,8 @@ async fn next_install_frame(
     }
 }
 
-fn install_in_flight(command: &str) -> bool {
-    contains_install_command(command)
+fn install_in_flight(owner: &AgentInstallState, command: &str) -> bool {
+    contains_install_command(owner, command)
 }
 
 /// A shell command valid under the host shell: `windows` for cmd.exe /C,
@@ -75,6 +75,7 @@ const TRUNCATION_MARKER: &str =
 
 #[tokio::test]
 async fn agent_install_2736_success_logs_full_output_and_emits_ok_true() {
+    let owner = Arc::new(AgentInstallState::new());
     let (app, mut rx) = app_with_broadcaster();
     let dir = tempfile::tempdir().expect("tempdir");
     let command = shell(
@@ -114,6 +115,7 @@ async fn agent_install_2736_success_logs_full_output_and_emits_ok_true() {
 
     start_agent_install(
         app.handle(),
+        owner.clone(),
         "claude".to_string(),
         command.clone(),
         dir.path().to_path_buf(),
@@ -127,6 +129,7 @@ async fn agent_install_2736_success_logs_full_output_and_emits_ok_true() {
 
 #[tokio::test]
 async fn agent_install_2736_non_zero_exit_emits_ok_false_and_logs_stderr() {
+    let owner = Arc::new(AgentInstallState::new());
     let (app, mut rx) = app_with_broadcaster();
     let dir = tempfile::tempdir().expect("tempdir");
     let command = shell("echo boom-2736 1>&2 & exit 3", "echo boom-2736 >&2; exit 3");
@@ -156,6 +159,7 @@ async fn agent_install_2736_non_zero_exit_emits_ok_false_and_logs_stderr() {
 
     start_agent_install(
         app.handle(),
+        owner.clone(),
         "claude".to_string(),
         command,
         dir.path().to_path_buf(),
@@ -172,6 +176,7 @@ async fn agent_install_2736_non_zero_exit_emits_ok_false_and_logs_stderr() {
 
 #[tokio::test]
 async fn agent_install_2736_timeout_kills_the_tree_and_emits_ok_false() {
+    let owner = Arc::new(AgentInstallState::new());
     let app = build_mock_app(crate::test_support::test_builder());
     let dir = tempfile::tempdir().expect("tempdir");
     let started = Instant::now();
@@ -197,6 +202,7 @@ async fn agent_install_2736_timeout_kills_the_tree_and_emits_ok_false() {
     let command = long_sleep("timeout-frame-2736");
     start_agent_install_with_timeout(
         app.handle(),
+        owner.clone(),
         "claude".to_string(),
         command.clone(),
         dir.path().to_path_buf(),
@@ -215,11 +221,13 @@ async fn agent_install_2736_timeout_kills_the_tree_and_emits_ok_false() {
 
 #[tokio::test]
 async fn agent_install_2736_second_install_for_the_same_command_is_refused() {
+    let owner = Arc::new(AgentInstallState::new());
     let (app, mut rx) = app_with_broadcaster();
     let dir = tempfile::tempdir().expect("tempdir");
     let command = short_sleep("refused-2736");
     start_agent_install(
         app.handle(),
+        owner.clone(),
         "claude".to_string(),
         command.clone(),
         dir.path().to_path_buf(),
@@ -227,6 +235,7 @@ async fn agent_install_2736_second_install_for_the_same_command_is_refused() {
     .expect("first install accepted");
     let second = start_agent_install(
         app.handle(),
+        owner.clone(),
         "other-key".to_string(),
         command.clone(),
         dir.path().to_path_buf(),
@@ -247,6 +256,7 @@ async fn agent_install_2736_second_install_for_the_same_command_is_refused() {
 
 #[tokio::test]
 async fn agent_install_2736_in_flight_entry_is_released_on_every_outcome() {
+    let owner = Arc::new(AgentInstallState::new());
     let (app, mut rx) = app_with_broadcaster();
     let dir = tempfile::tempdir().expect("tempdir");
     let cases = [
@@ -266,22 +276,27 @@ async fn agent_install_2736_in_flight_entry_is_released_on_every_outcome() {
     for (command, ok) in cases {
         start_agent_install_with_timeout(
             app.handle(),
+            owner.clone(),
             "claude".to_string(),
             command.clone(),
             dir.path().to_path_buf(),
             Duration::from_millis(500),
         )
         .expect("install accepted");
-        assert!(install_in_flight(&command));
+        assert!(install_in_flight(&owner, &command));
         let frame = next_install_frame(&mut rx, &mut Vec::new()).await;
         assert_eq!(frame["payload"]["ok"], json!(ok), "{command}");
-        assert!(!install_in_flight(&command), "{command} leaked its entry");
-        drop(InstallInFlight::acquire(&command).expect("a retry is accepted"));
+        assert!(
+            !install_in_flight(&owner, &command),
+            "{command} leaked its entry"
+        );
+        drop(InstallInFlight::acquire(owner.clone(), &command).expect("a retry is accepted"));
     }
 }
 
 #[tokio::test]
 async fn agent_install_2736_two_different_commands_run_concurrently() {
+    let owner = Arc::new(AgentInstallState::new());
     let (app, mut rx) = app_with_broadcaster();
     let dir = tempfile::tempdir().expect("tempdir");
     let first = short_sleep("concurrent-a-2736");
@@ -289,13 +304,14 @@ async fn agent_install_2736_two_different_commands_run_concurrently() {
     for command in [&first, &second] {
         start_agent_install(
             app.handle(),
+            owner.clone(),
             "claude".to_string(),
             command.clone(),
             dir.path().to_path_buf(),
         )
         .expect("install accepted");
     }
-    assert!(install_in_flight(&first) && install_in_flight(&second));
+    assert!(install_in_flight(&owner, &first) && install_in_flight(&owner, &second));
     let mut seen = Vec::new();
     next_install_frame(&mut rx, &mut seen).await;
     next_install_frame(&mut rx, &mut seen).await;
@@ -311,10 +327,12 @@ async fn agent_install_2736_two_different_commands_run_concurrently() {
 
 #[tokio::test]
 async fn agent_install_2736_emits_exactly_one_frame_per_run() {
+    let owner = Arc::new(AgentInstallState::new());
     let (app, mut rx) = app_with_broadcaster();
     let dir = tempfile::tempdir().expect("tempdir");
     start_agent_install(
         app.handle(),
+        owner.clone(),
         "claude".to_string(),
         shell("echo one-frame-2736", "echo one-frame-2736"),
         dir.path().to_path_buf(),
@@ -329,6 +347,7 @@ async fn agent_install_2736_emits_exactly_one_frame_per_run() {
 
 #[tokio::test]
 async fn agent_install_2736_never_emits_an_agent_update_event() {
+    let owner = Arc::new(AgentInstallState::new());
     let broadcaster = WsBroadcaster::new();
     let mut rx = broadcaster.subscribe();
     let gate = Arc::new(AgentUpdateGate::new());
@@ -349,6 +368,7 @@ async fn agent_install_2736_never_emits_an_agent_update_event() {
     ] {
         start_agent_install(
             app.handle(),
+            owner.clone(),
             "claude".to_string(),
             command,
             dir.path().to_path_buf(),
@@ -381,13 +401,16 @@ fn agent_install_2736_runner_uses_the_contained_silent_spawn() {
             .find("\n}\n")
             .expect("end of run_agent_install");
     let body = &src[start..end];
-    assert!(body.contains("build_update_step_command("));
-    assert!(body.contains("TargetProcessOwner::spawn("));
+    assert!(body.contains("TargetProcessOwner::spawn_step("));
+    assert!(body.contains("effective_search_path()"));
+    assert!(!body.contains("build_update_step_command("));
+    assert!(!body.contains("TargetProcessOwner::spawn("));
     assert!(!body.contains("Command::new"));
 }
 
 #[tokio::test]
 async fn agent_install_2736_cleanup_defects_make_a_zero_exit_not_ok() {
+    let owner = Arc::new(AgentInstallState::new());
     let app = build_mock_app(crate::test_support::test_builder());
     let dir = tempfile::tempdir().expect("tempdir");
     let defect_hook = || TargetSettlementHook {
@@ -433,6 +456,7 @@ async fn agent_install_2736_cleanup_defects_make_a_zero_exit_not_ok() {
     with_target_settlement_hook(defect_hook(), async {
         start_agent_install(
             app.handle(),
+            owner.clone(),
             "claude".to_string(),
             command.clone(),
             dir.path().to_path_buf(),

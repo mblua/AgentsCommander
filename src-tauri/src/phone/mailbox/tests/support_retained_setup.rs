@@ -167,7 +167,7 @@ pub(super) async fn retire_retained_fixture_member(
             },
         )
     );
-    crate::session::selection::poll_response_close(app).await;
+    crate::commands::session::selection_executor::poll_response_close(app).await;
     coordinator.snapshot().await.unwrap();
     let row = manager.get_session(previous).await.unwrap();
     assert_eq!(row.status, SessionStatus::Exited(0));

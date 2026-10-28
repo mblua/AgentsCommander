@@ -546,7 +546,8 @@ pub(super) fn copy_agent_matrix_strict_with_hooks(
     hooks: &mut MatrixCopyHooks<'_>,
 ) -> Result<OwnedCopyArtifacts, String> {
     use std::io::Write;
-    let project = source_project.canonicalize().map_err(|e| e.to_string())?;
+    let project = crate::config::projects::canonical_source_project(source_project)
+        .map_err(|e| e.to_string())?;
     let ac = selected_ac_root(&project)?
         .canonicalize()
         .map_err(|e| e.to_string())?;

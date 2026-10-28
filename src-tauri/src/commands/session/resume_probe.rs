@@ -1,6 +1,7 @@
-use super::{
+use super::agent_command::executable_basename;
+use super::resume_args::{
     antigravity_tokens_have_resume, codex_has_explicit_subcommand, codex_tokens_have_resume,
-    executable_basename, expand_env_var_refs, pi_has_explicit_session_control,
+    expand_env_var_refs, pi_has_explicit_session_control,
 };
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::pty::backend::SessionBackendKind;
@@ -75,15 +76,7 @@ pub(crate) fn resolve_claude_projects_dir_in(
     }
 
     fn parse_config_dir_from_wrapper(path: &Path) -> Option<PathBuf> {
-        // Cap read at 64 KiB; real wrappers are < 1 KiB. Refusing larger
-        // files protects against accidentally treating an exe-renamed-as-cmd
-        // as a wrapper.
-        const MAX: u64 = 64 * 1024;
-        let metadata = std::fs::metadata(path).ok()?;
-        if metadata.len() > MAX {
-            return None;
-        }
-        let bytes = std::fs::read(path).ok()?;
+        let bytes = crate::config::agent_command::read_claude_resume_wrapper(path)?;
         // Strip UTF-8 BOM if present; tolerate non-UTF-8 by lossy decode.
         let text_bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
         let text = String::from_utf8_lossy(text_bytes);
@@ -229,14 +222,15 @@ pub(crate) struct ContainerPathContext {
 }
 
 pub(crate) fn container_path_context_for_cwd(cwd: &str) -> Result<ContainerPathContext, String> {
-    let canonical_host_root = std::fs::canonicalize(cwd)
-        .map(|path| crate::path_utils::path_to_string_without_windows_verbatim_prefix(&path))
-        .map_err(|err| {
-            format!(
-                "failed to canonicalize container mount source '{}': {}",
-                cwd, err
-            )
-        })?;
+    let canonical_host_root =
+        crate::filesystem::projects::canonical_project_path(std::path::Path::new(cwd))
+            .map(|path| crate::path_utils::path_to_string_without_windows_verbatim_prefix(&path))
+            .map_err(|err| {
+                format!(
+                    "failed to canonicalize container mount source '{}': {}",
+                    cwd, err
+                )
+            })?;
     if let Some(reason) = crate::pty::container_paths::container_mount_source_rejection(
         std::path::Path::new(&canonical_host_root),
     ) {

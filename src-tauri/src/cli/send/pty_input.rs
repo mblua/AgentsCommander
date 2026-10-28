@@ -50,98 +50,14 @@ fn publish_pty_request(
         Uuid::new_v4()
     ));
     let final_path = outbox.join(format!("{injection_id}.json"));
-    match std::fs::symlink_metadata(&final_path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        _ => return Err("publish_ambiguous"),
-    }
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(0x0002_0000);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        };
-        options
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let mut file = options.open(&temp).map_err(|_| "publish_failed")?;
-    if file.write_all(&sensitive.0).is_err() || file.flush().is_err() || file.sync_all().is_err() {
-        drop(file);
-        if let Err(error) = std::fs::remove_file(&temp) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err("publish_ambiguous");
-            }
-        }
-        return Err("publish_failed");
-    }
-    let temp_identity = match crate::path_identity::verify_opened_regular_file(&temp, &file, false)
-    {
-        Ok(identity) => identity,
-        Err(_) => {
-            drop(file);
-            if let Err(error) = std::fs::remove_file(&temp) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    return Err("publish_ambiguous");
-                }
-            }
-            return Err("publish_failed");
-        }
-    };
-    drop(file);
-
-    let prepublication_safe = (|| {
-        let current_outbox = crate::path_identity::verify_directory(outbox)?;
-        let current_temp = crate::path_identity::verify_regular_file(&temp)?;
-        if !crate::path_identity::same_object(&outbox_identity, &current_outbox)
-            || !crate::path_identity::same_object(&temp_identity, &current_temp)
-        {
-            return Err("unsafe_path".to_string());
-        }
-        match std::fs::symlink_metadata(&final_path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            _ => Err("unsafe_path".to_string()),
-        }
-    })();
-    if prepublication_safe.is_err() {
-        if let Err(error) = std::fs::remove_file(&temp) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err("publish_ambiguous");
-            }
-        }
-        return Err("publish_ambiguous");
-    }
-    if crate::path_identity::publish_new_file_atomic(&temp, &final_path).is_err() {
-        if let Err(error) = std::fs::remove_file(&temp) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err("publish_ambiguous");
-            }
-        }
-        return Err("publish_ambiguous");
-    }
-    let (published, _) = crate::path_identity::read_bounded_regular(
-        &final_path,
+    crate::filesystem::publish_cli_pty_request(
+        outbox,
+        temp,
+        final_path,
+        &sensitive.0,
+        outbox_identity,
         crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
     )
-    .map_err(|_| "publish_ambiguous")?;
-    if published != sensitive.0 {
-        return Err("publish_ambiguous");
-    }
-    let published_outbox =
-        crate::path_identity::verify_directory(outbox).map_err(|_| "publish_ambiguous")?;
-    if !crate::path_identity::same_object(&outbox_identity, &published_outbox) {
-        return Err("publish_ambiguous");
-    }
-    if let Ok(parent) = std::fs::File::open(outbox) {
-        parent.sync_all().map_err(|_| "publish_ambiguous")?;
-    }
-    Ok(final_path)
 }
 
 pub(super) struct ExpectedPtyArtifact<'a> {
@@ -212,7 +128,7 @@ pub(super) fn find_pty_input_terminal_artifact(
         let path = outbox
             .join(directory)
             .join(format!("{}.json", expected.injection_id));
-        if path.exists() {
+        if crate::filesystem::directories::cli_outbox_artifact_exists(&path) {
             let artifact = validate_pty_artifact(&path, expected)?;
             if artifact.result.status != status || !artifact.result.terminal {
                 return Err("invalid_artifact");
@@ -244,11 +160,17 @@ fn pty_effective_project_paths(root: &str) -> Result<Vec<String>, String> {
     let mut paths =
         crate::config::settings::read_pty_input_project_paths_strict()?.unwrap_or_default();
     if let Some(project) = derive_root_project_dir(root)? {
-        let canonical = std::fs::canonicalize(&project).ok();
+        let canonical =
+            crate::filesystem::directories::canonical_cli_discovery_path(Path::new(&project)).ok();
         if !paths.iter().any(|candidate| {
             candidate == &project
                 || canonical.as_ref().is_some_and(|value| {
-                    std::fs::canonicalize(candidate).ok().as_ref() == Some(value)
+                    crate::filesystem::directories::canonical_cli_discovery_path(Path::new(
+                        candidate,
+                    ))
+                    .ok()
+                    .as_ref()
+                        == Some(value)
                 })
         }) {
             paths.push(project);
@@ -398,7 +320,9 @@ pub(super) fn execute_pty_input(args: SendArgs, root: String, text: String) -> i
         return 1;
     }
     let outbox = local_dir.join("outbox");
-    if !outbox.exists() && std::fs::create_dir(&outbox).is_err() {
+    if !crate::filesystem::directories::cli_outbox_artifact_exists(&outbox)
+        && crate::filesystem::directories::create_cli_outbox(&outbox).is_err()
+    {
         eprintln!("Error: publish_failed operation={injection_id}");
         return 1;
     }

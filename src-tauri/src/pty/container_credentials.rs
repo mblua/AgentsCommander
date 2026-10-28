@@ -55,7 +55,7 @@ pub fn resolve_plan(
     // Host config dir: an absolute env override wins, else ~/<host_dir>.
     let host_dir: PathBuf = source
         .host_dir_env
-        .and_then(|k| std::env::var(k).ok())
+        .and_then(|k| crate::config::environment::container_credential_override(k).ok())
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         // F6 - only honor an ABSOLUTE override; a relative/marker value cleanly
@@ -65,7 +65,7 @@ pub fn resolve_plan(
         .or_else(|| dirs::home_dir().map(|h| h.join(source.host_dir)))?;
 
     let src = host_dir.join(source.file);
-    if !src.is_file() {
+    if !crate::filesystem::directories::credential_source_is_file(&src) {
         log::info!(
             "[container-cred] no host credential at {}; container will start without host login",
             src.display()

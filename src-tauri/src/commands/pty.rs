@@ -213,8 +213,9 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
     // reach this function, so they cannot recharge.
     if recharges_capture_budget(substantive, &source) {
         if let Some(room_root) = room_root_of_orchestrator(app, session_id).await {
-            crate::capture::state::recharge_in_memory(&room_root);
-            crate::capture::state::schedule_flush(&room_root);
+            let owners = app.state::<crate::app_state::AppOwners>();
+            crate::capture::state::recharge_in_memory(&room_root, &owners.capture);
+            crate::capture::state::schedule_flush(&room_root, &owners.capture);
         }
     }
 

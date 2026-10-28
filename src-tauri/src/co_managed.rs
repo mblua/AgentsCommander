@@ -117,6 +117,7 @@ impl CoManagedTestHooks {
 /// flags, the contention state and the single trigger channel.
 #[derive(Clone)]
 pub(crate) struct CoManagedSupervisorHandle {
+    capture: Arc<capture::state::CaptureState>,
     pub(crate) armed: Arc<capture::armed::ArmedFlags>,
     state: Arc<Mutex<CoManagedSupervisorState>>,
     triggers: tokio::sync::mpsc::UnboundedSender<CoManagedTrigger>,
@@ -125,10 +126,18 @@ pub(crate) struct CoManagedSupervisorHandle {
 }
 
 impl CoManagedSupervisorHandle {
+    #[cfg(test)]
     pub(crate) fn new() -> (Self, tokio::sync::mpsc::UnboundedReceiver<CoManagedTrigger>) {
+        Self::with_capture_state(Arc::new(capture::state::CaptureState::new()))
+    }
+
+    pub(crate) fn with_capture_state(
+        capture: Arc<capture::state::CaptureState>,
+    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<CoManagedTrigger>) {
         let (triggers, rx) = tokio::sync::mpsc::unbounded_channel();
         (
             Self {
+                capture,
                 armed: Arc::new(capture::armed::ArmedFlags::new()),
                 state: Arc::new(Mutex::new(CoManagedSupervisorState::default())),
                 triggers,
@@ -143,7 +152,18 @@ impl CoManagedSupervisorHandle {
     pub(crate) fn with_test_hooks(
         hooks: Arc<CoManagedTestHooks>,
     ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<CoManagedTrigger>) {
-        let (mut handle, rx) = Self::new();
+        Self::with_capture_state_and_test_hooks(
+            Arc::new(capture::state::CaptureState::new()),
+            hooks,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_capture_state_and_test_hooks(
+        capture: Arc<capture::state::CaptureState>,
+        hooks: Arc<CoManagedTestHooks>,
+    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<CoManagedTrigger>) {
+        let (mut handle, rx) = Self::with_capture_state(capture);
         handle.test_hooks = Some(hooks);
         (handle, rx)
     }

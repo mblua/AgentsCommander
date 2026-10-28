@@ -299,7 +299,12 @@ fn with_replicas_mut_pushes_repo_rooms_alongside_paths() {
     let _guard = crate::pty::git_watcher::DISCOVERY_TEST_LOCK.blocking_lock();
     let (app, _settings, _receiver, session_mgr, _pty_mgr) =
         archive_command_app(AppSettings::default());
-    let watcher = DiscoveryBranchWatcher::new(app.handle().clone(), Arc::clone(&session_mgr));
+    let git_state = Arc::new(crate::pty::git_watcher::GitState::new());
+    let watcher = DiscoveryBranchWatcher::with_state(
+        app.handle().clone(),
+        Arc::clone(&session_mgr),
+        git_state.clone(),
+    );
 
     let replica_path = "C:/proj/.ac/wg-1-team/__agent_coord";
     let repos = vec![
@@ -317,7 +322,7 @@ fn with_replicas_mut_pushes_repo_rooms_alongside_paths() {
     });
 
     assert_eq!(
-        crate::pty::git_watcher::discovery_repo_paths(),
+        crate::pty::git_watcher::discovery_repo_paths(&git_state),
         vec![
             "C:/wg/repo-AgentsCommander".to_string(),
             "C:/wg/repo-webpage".to_string(),
@@ -325,7 +330,7 @@ fn with_replicas_mut_pushes_repo_rooms_alongside_paths() {
         "the existing path push is unchanged"
     );
     assert_eq!(
-        crate::pty::git_watcher::discovery_repo_rooms(),
+        crate::pty::git_watcher::discovery_repo_rooms(&git_state),
         vec![
             (
                 "C:/wg/repo-AgentsCommander".to_string(),

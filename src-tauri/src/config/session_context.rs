@@ -278,11 +278,11 @@ fn ensure_session_context_with_config(
     let config_dir =
         super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
     let context_dir = config_dir.join(CONTEXT_CACHE_DIR_NAME);
-    std::fs::create_dir_all(&context_dir)
+    crate::filesystem::session_context::ensure_context_directory(&context_dir)
         .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
 
     // Canonicalize path for consistent display in the GOLDEN RULE text
-    let canonical_root = std::fs::canonicalize(agent_root)
+    let canonical_root = crate::filesystem::session_context::canonical_context_source(agent_root)
         .map(|p| display_path(&p))
         .unwrap_or_else(|_| agent_root.to_string());
     let matrix_root = resolve_replica_matrix_root(agent_root)?;
@@ -318,7 +318,7 @@ fn ensure_session_context_with_config(
     )?;
     content.push_str(&project_section);
     content.push_str(&team_skills_for_session(agent_root, matrix_root.as_deref()));
-    std::fs::write(&file_path, content)
+    crate::filesystem::session_context::write_context_cache(&file_path, content)
         .map_err(|e| format!("Failed to write per-agent AgentsCommanderContext.md: {}", e))?;
     log::info!(
         "Refreshed per-agent AgentsCommanderContext.md for {} → {:?}",
@@ -439,7 +439,8 @@ fn resolve_replica_matrix_root(replica_root: &str) -> Result<Option<String>, Str
 }
 
 fn canonical_or_original(path: &std::path::Path) -> std::path::PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    crate::filesystem::session_context::canonical_context_source(path)
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn find_ac_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -841,31 +842,7 @@ thread_local! {
 
 /// Detect git branch for a given directory path.
 fn detect_git_branch(dir: &str) -> Option<String> {
-    #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-    let mut cmd = std::process::Command::new("git");
-    crate::pty::credentials::scrub_credentials_from_std_command(&mut cmd);
-    crate::config::agent_path::apply_search_path_to_std_command(&mut cmd);
-    cmd.args(["-C", dir, "branch", "--show-current"]);
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    match cmd.output() {
-        Ok(out) if out.status.success() => {
-            let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if branch.is_empty() || branch == "HEAD" {
-                None
-            } else {
-                Some(branch)
-            }
-        }
-        _ => None,
-    }
+    crate::process::git::context::detect_session_branch(dir)
 }
 
 #[cfg(test)]

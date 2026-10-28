@@ -512,7 +512,7 @@ fn p03_real_readers_hold_shared_lock_and_retry_sidecar_without_managed_writes() 
         let remote_root = fixture.config.join("ac-root-agent");
         std::fs::create_dir_all(remote_root.join("messaging")).unwrap();
         std::fs::write(
-            remote_root.join("messaging").join(P05_MESSAGE),
+            remote_root.join("messaging").join(P05_ROOT_MESSAGE),
             "P03 message",
         )
         .unwrap();
@@ -556,7 +556,7 @@ fn p03_real_readers_hold_shared_lock_and_retry_sidecar_without_managed_writes() 
                 "--to",
                 "RegisteredRemote:room-01-devs/coord",
                 "--send",
-                P05_MESSAGE,
+                P05_ROOT_MESSAGE,
                 "--mode",
                 "wake",
                 "--confirm-timeout",

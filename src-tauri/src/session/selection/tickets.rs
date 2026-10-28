@@ -1,9 +1,13 @@
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Weak;
 
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit};
 use uuid::Uuid;
 
+use crate::pty::container_lifecycle::ContainerLifecycle;
+pub use crate::pty::container_lifecycle::ContainerLifecycleSender;
 use crate::session::manager::PendingCreateBinding;
 use crate::session::session::SessionInfo;
 use crate::session::warnings::SessionWarning;
@@ -26,7 +30,7 @@ impl AutoCloseBatchTicket {
     pub async fn finalize(
         mut self,
         ids: Vec<Uuid>,
-    ) -> Result<crate::commands::session::DestroyOutcome, String> {
+    ) -> Result<crate::session::selection::DestroyOutcome, String> {
         let slot = self
             .slot
             .take()
@@ -38,9 +42,9 @@ impl AutoCloseBatchTicket {
         let (response, receiver) = oneshot::channel();
         drop(slot.send(CoordinatorEnvelope {
             job: CoordinatorJob::Destroy {
-                request: crate::commands::session::DestroyRequest {
+                request: crate::session::selection::DestroyRequest {
                     ids,
-                    source: crate::commands::session::DestructionSource::AutoClose,
+                    source: crate::session::selection::DestructionSource::AutoClose,
                     force_destroy_root: false,
                 },
                 response,
@@ -148,13 +152,6 @@ impl CreateFinalizationTicket {
         Ok(())
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
-        )
-    )]
     pub(in crate::session) fn bind(
         &mut self,
         session_id: Uuid,
@@ -252,6 +249,14 @@ impl CreateFinalizationTicket {
     }
 }
 
+impl super::seal::Sealed for CreateFinalizationTicket {}
+
+impl super::authority::CreateBindingTicket<PendingCreateBinding> for CreateFinalizationTicket {
+    fn bind(&mut self, session_id: Uuid) -> Result<PendingCreateBinding, String> {
+        CreateFinalizationTicket::bind(self, session_id)
+    }
+}
+
 impl Drop for CreateFinalizationTicket {
     fn drop(&mut self) {
         // A dropped waiter/task is never explicit stopped-executor authority.
@@ -288,23 +293,28 @@ impl Drop for CreateFinalizationTicket {
     }
 }
 
-#[derive(Clone)]
-pub struct ContainerLifecycleSender {
-    pub(super) inner: Weak<CoordinatorInner>,
+pub(crate) struct WeakContainerLifecycle {
+    pub(crate) inner: Weak<CoordinatorInner>,
 }
 
-impl ContainerLifecycleSender {
-    pub async fn route_lost(
+impl ContainerLifecycle for WeakContainerLifecycle {
+    fn route_lost(
         &self,
         session_id: Uuid,
         exit_code: i32,
-    ) -> Result<CriticalAdmissionOutcome<()>, String> {
-        let inner = self
-            .inner
-            .upgrade()
-            .ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
-        SelectionCoordinator { inner }
-            .submit_route_loss(session_id, exit_code)
-            .await
+    ) -> Pin<Box<dyn Future<Output = Result<CriticalAdmissionOutcome<()>, String>> + Send + '_>>
+    {
+        Box::pin(async move {
+            let inner = self
+                .inner
+                .upgrade()
+                .ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
+            SelectionCoordinator { inner }
+                .submit_route_loss(session_id, exit_code)
+                .await
+        })
     }
 }
+
+#[cfg(test)]
+mod tests;

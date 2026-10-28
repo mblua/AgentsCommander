@@ -146,14 +146,16 @@ pub(crate) fn execute_matrix_project_create(
     let agent_path = created.agent_dir.to_string_lossy().to_string();
     let role_path = created.role_path.to_string_lossy().to_string();
 
-    let project_path_for_refresh = std::fs::canonicalize(&resolved_project.path)
-        .unwrap_or_else(|_| resolved_project.path.clone())
-        .to_string_lossy()
-        .to_string();
-    let agent_path_for_refresh = std::fs::canonicalize(&created.agent_dir)
-        .unwrap_or_else(|_| created.agent_dir.clone())
-        .to_string_lossy()
-        .to_string();
+    let project_path_for_refresh =
+        crate::filesystem::projects::canonical_refresh_project(&resolved_project.path)
+            .unwrap_or_else(|_| resolved_project.path.clone())
+            .to_string_lossy()
+            .to_string();
+    let agent_path_for_refresh =
+        crate::filesystem::directories::canonical_created_agent(&created.agent_dir)
+            .unwrap_or_else(|_| created.agent_dir.clone())
+            .to_string_lossy()
+            .to_string();
     let refresh_request = ProjectRefreshRequest {
         id: uuid::Uuid::new_v4().to_string(),
         project_path: project_path_for_refresh,
@@ -271,7 +273,7 @@ pub(crate) fn write_project_refresh_request(request: &ProjectRefreshRequest) -> 
     let config_dir =
         crate::config::config_dir().ok_or("Cannot determine config directory".to_string())?;
     let requests_dir = config_dir.join(PROJECT_REFRESH_REQUESTS_DIR_NAME);
-    std::fs::create_dir_all(&requests_dir)
+    crate::filesystem::directories::ensure_project_refresh_requests(&requests_dir)
         .map_err(|e| format!("Failed to create project-refresh-requests dir: {}", e))?;
 
     let final_path = requests_dir.join(format!("{}.json", request.id));
@@ -279,12 +281,10 @@ pub(crate) fn write_project_refresh_request(request: &ProjectRefreshRequest) -> 
     let json = serde_json::to_string_pretty(request)
         .map_err(|e| format!("Failed to serialize project refresh request: {}", e))?;
 
-    std::fs::write(&tmp_path, json)
+    crate::filesystem::documents::write_refresh_request_stage(&tmp_path, json.as_bytes())
         .map_err(|e| format!("Failed to write project refresh request: {}", e))?;
-    std::fs::rename(&tmp_path, &final_path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp_path);
-        format!("Failed to finalize project refresh request: {}", e)
-    })?;
+    crate::filesystem::documents::finalize_refresh_request(&tmp_path, &final_path)
+        .map_err(|e| format!("Failed to finalize project refresh request: {}", e))?;
     log::info!(
         "[project-refresh-requests] Wrote request: dir='{}' project='{}' reason='{}'",
         requests_dir.display(),

@@ -36,7 +36,7 @@ async fn self_switch_established_source_to_pi_target_remains_supported() {
         Some("A"),
         "proj-a:wg-1-dev-team/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
 
     poller
         .handle_self_handoff_switch(&app, &path, &message, false)
@@ -196,7 +196,7 @@ async fn self_switch_established_source_to_pi_target_remains_supported() {
     assert_eq!(target.agent_id.as_deref(), Some("pi"));
     assert_eq!(target.requested_profile.as_deref(), Some("A"));
     assert_eq!(target.effective_profile.as_deref(), Some("A"));
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
     let saved: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(fixture.replica.join("config.json")).unwrap(),
     )
@@ -233,7 +233,7 @@ async fn handle_self_switch_pi_source_queues_with_resolved_targets() {
         Some("c"),
         "proj-a:wg-1-dev-team/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_handoff_switch(&app, &path, &msg, false)
         .await
@@ -279,7 +279,7 @@ async fn self_switch_pi_source_to_established_target_completes() {
         Some("A"),
         "proj-a:wg-1-dev-team/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
 
     poller
         .handle_self_handoff_switch(&app, &path, &message, false)
@@ -435,7 +435,7 @@ async fn self_switch_pi_source_to_established_target_completes() {
     let target = manager.get_session(target_id).await.unwrap();
     assert_eq!(target.shell, "codex");
     assert_eq!(target.agent_id.as_deref(), Some("codex"));
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
     let saved: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(fixture.replica.join("config.json")).unwrap(),
     )
@@ -484,7 +484,7 @@ async fn self_switch_pi_source_omitted_target_hard_resets_to_pi() {
         None,
         "proj-a:wg-1-dev-team/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
 
     poller
         .handle_self_handoff_switch(&app, &path, &message, false)
@@ -640,7 +640,7 @@ async fn self_switch_pi_source_omitted_target_hard_resets_to_pi() {
     let target = manager.get_session(target_id).await.unwrap();
     assert_eq!(target.shell, "pi");
     assert_eq!(target.agent_id.as_deref(), Some("pi"));
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
     let saved: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(fixture.replica.join("config.json")).unwrap(),
     )
@@ -687,7 +687,7 @@ async fn self_switch_pi_source_none_agent_id_omitted_target_resolves_pi_via_repl
         None,
         "proj-a:wg-1-dev-team/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
 
     poller
         .handle_self_handoff_switch(&app, &path, &message, false)
@@ -717,11 +717,7 @@ async fn handle_self_switch_pending_alias_reports_already_queued() {
     std::fs::write(fixture.replica.join("SELF-FORGET.md"), "new topic").unwrap();
     {
         let pending = app.state::<Arc<crate::PendingSelfClear>>();
-        pending
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(session_id);
+        pending.seed_legacy(session_id);
     }
 
     let (path, msg) = build_self_switch_message(
@@ -733,7 +729,7 @@ async fn handle_self_switch_pending_alias_reports_already_queued() {
         None,
         "proj-a:wg-1-dev-team/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_handoff_switch(&app, &path, &msg, false)
         .await
@@ -773,7 +769,7 @@ async fn handle_self_switch_rejects_origin_before_handoff_gate() {
         None,
         "proj-a/dev-rust",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_handoff_switch(&app, &path, &msg, false)
         .await
@@ -804,7 +800,7 @@ async fn handle_self_switch_rejects_fake_replica_before_handoff_gate() {
         None,
         "proj-a:wg-1-dev-team/fake",
     );
-    let poller = MailboxPoller::new();
+    let poller = MailboxPoller::default();
     poller
         .handle_self_handoff_switch(&app, &path, &msg, false)
         .await
@@ -814,4 +810,83 @@ async fn handle_self_switch_rejects_fake_replica_before_handoff_gate() {
     assert!(reason.contains("configured Room replica"), "{reason}");
     assert!(!reason.contains("SELF-HANDOFF"), "{reason}");
     assert_eq!(pending_self_clear_len(&app).await, 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn p22_scan_order_first_hit() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().join("p22-first");
+    let replica = base.join(".ac").join("wg-22-p22").join("__agent_p22-agent");
+    std::fs::create_dir_all(&replica).unwrap();
+    for child in ["child-a", "child-z"] {
+        std::fs::create_dir(base.join(child)).unwrap();
+    }
+    let app_struct = make_mailbox_app(temp.path());
+    let app = app_handle(&app_struct);
+    app.state::<SettingsState>().write().await.project_paths =
+        vec![base.to_string_lossy().into_owned()];
+    let poller = MailboxPoller::default();
+    assert_eq!(
+        poller.resolve_repo_path("wg-22-p22/p22-agent", &app).await,
+        Some(replica.to_string_lossy().into_owned())
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn p22_qualified_project() {
+    let temp = tempfile::tempdir().unwrap();
+    let alpha = temp.path().join("p22-alpha");
+    let beta = temp.path().join("p22-beta");
+    let relative = PathBuf::from(".ac")
+        .join("wg-22-p22")
+        .join("__agent_p22-agent");
+    std::fs::create_dir_all(alpha.join(&relative)).unwrap();
+    std::fs::create_dir_all(beta.join(&relative)).unwrap();
+    let app_struct = make_mailbox_app(temp.path());
+    let app = app_handle(&app_struct);
+    app.state::<SettingsState>().write().await.project_paths = vec![
+        beta.to_string_lossy().into_owned(),
+        temp.path().to_string_lossy().into_owned(),
+    ];
+    let poller = MailboxPoller::default();
+    assert_eq!(
+        poller
+            .resolve_repo_path("p22-alpha:wg-22-p22/p22-agent", &app)
+            .await,
+        Some(alpha.join(&relative).to_string_lossy().into_owned())
+    );
+    assert_eq!(
+        poller
+            .resolve_repo_path("p22-beta:wg-22-p22/p22-agent", &app)
+            .await,
+        Some(beta.join(&relative).to_string_lossy().into_owned())
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn p22_cross_project_ambiguity() {
+    let temp = tempfile::tempdir().unwrap();
+    let alpha = temp.path().join("p22-alpha");
+    let beta = temp.path().join("p22-beta");
+    for project in [&alpha, &beta] {
+        std::fs::create_dir_all(
+            project
+                .join(".ac")
+                .join("wg-22-p22")
+                .join("__agent_p22-agent"),
+        )
+        .unwrap();
+    }
+    let app_struct = make_mailbox_app(temp.path());
+    let app = app_handle(&app_struct);
+    app.state::<SettingsState>().write().await.project_paths = vec![
+        alpha.to_string_lossy().into_owned(),
+        beta.to_string_lossy().into_owned(),
+    ];
+    assert_eq!(
+        MailboxPoller::default()
+            .resolve_repo_path("wg-22-p22/p22-agent", &app)
+            .await,
+        None
+    );
 }

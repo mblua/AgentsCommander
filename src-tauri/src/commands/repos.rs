@@ -1,74 +1,14 @@
-use serde::Serialize;
 use std::path::Path;
 use tauri::State;
 
 use crate::config::settings::SettingsState;
+// Preserve existing command-module import paths after moving the implementation.
+#[allow(unused_imports)]
 pub(crate) use crate::repos::derive_repo_name;
 use crate::repos::strip_userinfo;
 
-/// Agent detection: label + list of possible markers (files or dirs)
-/// An agent is detected if ANY of its markers exist in the repo.
-const AGENT_DETECTORS: &[(&str, &[&str])] = &[
-    ("Claude", &[".claude", "CLAUDE.md"]),
-    ("Codex", &[".codex"]),
-    ("OpenCode", &[".opencode", "opencode.json"]),
-    ("Cursor", &[".cursor", ".cursorrules"]),
-];
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RepoMatch {
-    pub name: String,
-    pub path: String,
-    /// Which agent tools are detected in this repo (e.g. ["Claude", "Codex"])
-    pub agents: Vec<String>,
-}
-
-/// Detect which agent tools are configured in a repo directory
-fn detect_agents(repo_path: &Path) -> Vec<String> {
-    AGENT_DETECTORS
-        .iter()
-        .filter(|(_, markers)| markers.iter().any(|m| repo_path.join(m).exists()))
-        .map(|(label, _)| label.to_string())
-        .collect()
-}
-
-/// Add a repo to results if it matches the query and hasn't been seen yet
-pub fn try_add_repo(
-    path: &Path,
-    query_lower: &str,
-    seen_paths: &mut std::collections::HashSet<String>,
-    results: &mut Vec<RepoMatch>,
-) {
-    let file_name = match path.file_name().and_then(|n| n.to_str()) {
-        Some(n) => n,
-        None => return,
-    };
-
-    // Skip DEPRECATED (check on repo dir name only, not extended name)
-    if file_name.to_uppercase().starts_with("DEPRECATED") {
-        return;
-    }
-
-    let name = match derive_repo_name(path) {
-        Some(n) => n,
-        None => return,
-    };
-
-    if !query_lower.is_empty() && !name.to_lowercase().contains(query_lower) {
-        return;
-    }
-
-    let path_str = path.to_string_lossy().to_string();
-    if seen_paths.insert(path_str.clone()) {
-        let agents = detect_agents(path);
-        results.push(RepoMatch {
-            name,
-            path: path_str,
-            agents,
-        });
-    }
-}
+#[allow(unused_imports)]
+pub use crate::repos::{try_add_repo, RepoMatch};
 
 /// Scan configured paths for potential agents.
 /// Each configured path is treated as both:
@@ -85,48 +25,7 @@ pub async fn search_repos(
         .current_read()
         .await
         .map_err(|error| error.to_string())?;
-    let query_lower = query.to_lowercase();
-    let mut results: Vec<RepoMatch> = Vec::new();
-    let mut seen_paths = std::collections::HashSet::new();
-
-    for base_path in &cfg.project_paths {
-        let base = Path::new(base_path);
-        if !base.is_dir() {
-            continue;
-        }
-
-        // The folder itself is a potential agent
-        try_add_repo(base, &query_lower, &mut seen_paths, &mut results);
-
-        // Its children are also potential agents
-        let entries = match std::fs::read_dir(base) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-
-            let name = match path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n.to_string(),
-                None => continue,
-            };
-
-            // Skip hidden directories
-            if name.starts_with('.') {
-                continue;
-            }
-
-            try_add_repo(&path, &query_lower, &mut seen_paths, &mut results);
-        }
-    }
-
-    // Sort alphabetically
-    results.sort_by_key(|a| a.name.to_lowercase());
-
+    let results = crate::repos::search_repositories(&cfg.project_paths, &query);
     Ok(results)
 }
 
@@ -156,9 +55,6 @@ pub async fn git_remote_url_inner(path: &str) -> Option<String> {
 }
 
 async fn run_git_remote_get_url(working_dir: &str) -> Option<String> {
-    #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
     // #943 - require a work tree ROOT, do not let git discover a repo by walking
     // up. `git remote get-url` climbs to the nearest ancestor `.git`, so a
     // sourcePath that exists but is not a repo (failed clone, deleted `.git`, a
@@ -176,24 +72,11 @@ async fn run_git_remote_get_url(working_dir: &str) -> Option<String> {
     // async fn cannot be cancelled by `tokio::time::timeout`: on a dead network
     // share it would wedge a runtime worker for the SMB timeout and make the 2s
     // cap a lie.
-    if tokio::fs::metadata(Path::new(working_dir).join(".git"))
-        .await
-        .is_err()
-    {
+    if !crate::repos::git_root_present(Path::new(working_dir)).await {
         return None;
     }
 
-    let mut cmd = tokio::process::Command::new("git");
-    crate::pty::credentials::scrub_credentials_from_tokio_command(&mut cmd);
-    crate::config::agent_path::apply_search_path_to_tokio_command(&mut cmd);
-    cmd.args(["remote", "get-url", "origin"])
-        .current_dir(working_dir)
-        .kill_on_drop(true);
-
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-
-    match cmd.output().await {
+    match crate::process::git::read::remote_origin_output(working_dir).await {
         Ok(out) if out.status.success() => {
             let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if url.is_empty() {

@@ -718,7 +718,7 @@ fn git_guard_writer_skips_unchanged_readonly_file() {
     permissions.set_readonly(true);
     fs::set_permissions(&path, permissions).expect("set readonly");
 
-    let result = write_git_guard_file_if_changed(&path, "same");
+    let result = write_git_guard_file_if_changed(&path, "same", &GitGuardTempSequence::new());
 
     let mut permissions = fs::metadata(&path).expect("metadata").permissions();
     permissions.set_readonly(false);
@@ -735,7 +735,8 @@ fn git_guard_writer_replaces_changed_file_without_temp_leftover() {
     let path = dir.path().join("git.cmd");
     fs::write(&path, "old").expect("write fixture");
 
-    write_git_guard_file_if_changed(&path, "new").expect("replace changed file");
+    write_git_guard_file_if_changed(&path, "new", &GitGuardTempSequence::new())
+        .expect("replace changed file");
 
     assert_eq!(fs::read_to_string(&path).expect("read file"), "new");
     assert_no_temp_files(dir.path());
@@ -757,7 +758,7 @@ fn git_guard_writer_retries_in_use_destination_until_released() {
 
     let writer = std::thread::spawn(move || {
         writer_barrier.wait();
-        write_git_guard_file_if_changed(&writer_path, "new")
+        write_git_guard_file_if_changed(&writer_path, "new", &GitGuardTempSequence::new())
     });
 
     barrier.wait();
@@ -770,4 +771,117 @@ fn git_guard_writer_retries_in_use_destination_until_released() {
         .expect("retry should publish after held handle is released");
     assert_eq!(fs::read_to_string(&path).expect("read file"), "new");
     assert_no_temp_files(dir.path());
+}
+
+#[allow(clippy::permissions_set_readonly_false)]
+#[test]
+fn git_guard_sequence_shared_unique_and_noop() {
+    let owners = crate::AppOwners::new();
+    let clone = owners.clone();
+    let independent = crate::AppOwners::new();
+    assert!(Arc::ptr_eq(&owners.git_guard, &clone.git_guard));
+    assert!(!Arc::ptr_eq(&owners.git_guard, &independent.git_guard));
+    let sessions = Arc::new(tokio::sync::RwLock::new(
+        crate::session::manager::SessionManager::new(),
+    ));
+    let backend = LocalProcessBackend::with_owners(
+        Arc::new(Mutex::new(HashMap::new())),
+        IdleDetector::new(|_| {}, |_| {}),
+        GitWatcher::new_headless_for_tests(sessions),
+        None,
+        owners.git_guard.clone(),
+        owners.spawn.clone(),
+    );
+    assert!(Arc::ptr_eq(&backend.git_guard, &owners.git_guard));
+    assert!(Arc::ptr_eq(&backend.clone().git_guard, &owners.git_guard));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("git.cmd");
+    let barrier = Arc::new(Barrier::new(5));
+    let writers: Vec<_> = (0..4)
+        .map(|_| {
+            let sequence = clone.git_guard.clone();
+            let barrier = barrier.clone();
+            let path = path.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                write_git_guard_file_if_changed(&path, "shared", &sequence).unwrap();
+            })
+        })
+        .collect();
+    barrier.wait();
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    let used = owners.git_guard.0.load(Ordering::Relaxed);
+    assert!((1..=4).contains(&used));
+    assert_eq!(independent.git_guard.0.load(Ordering::Relaxed), 0);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "shared");
+    assert_no_temp_files(dir.path());
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&path, permissions).unwrap();
+    let result = write_git_guard_file_if_changed(&path, "shared", &clone.git_guard);
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    permissions.set_readonly(false);
+    fs::set_permissions(&path, permissions).unwrap();
+    result.unwrap();
+    assert_eq!(owners.git_guard.0.load(Ordering::Relaxed), used);
+
+    // Independent zero-start roots collide with a preserved reservation sentinel.
+    let path = dir.path().join("independent.cmd");
+    let sentinel = dir
+        .path()
+        .join(format!(".independent.cmd.{}.0.tmp", std::process::id()));
+    fs::write(&sentinel, "sentinel").unwrap();
+    let barrier = Arc::new(Barrier::new(3));
+    let roots = [crate::AppOwners::new(), crate::AppOwners::new()];
+    let writers: Vec<_> = roots
+        .iter()
+        .map(|root| {
+            let sequence = root.git_guard.clone();
+            let barrier = barrier.clone();
+            let path = path.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                write_git_guard_file_if_changed(&path, "complete", &sequence).unwrap();
+            })
+        })
+        .collect();
+    barrier.wait();
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    assert_eq!(fs::read_to_string(&sentinel).unwrap(), "sentinel");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "complete");
+    assert!(roots
+        .iter()
+        .any(|root| root.git_guard.0.load(Ordering::Relaxed) >= 2));
+    fs::remove_file(&sentinel).unwrap();
+    assert_no_temp_files(dir.path());
+    let sequence = GitGuardTempSequence::new();
+    let error = git_guard::write_git_guard_file_atomic(
+        &dir.path().join("missing").join("git.cmd"),
+        b"bytes",
+        &sequence,
+    )
+    .unwrap_err();
+    assert!(error.starts_with("create temp "), "{error}");
+    assert_eq!(sequence.0.load(Ordering::Relaxed), 1);
+    assert_no_temp_files(dir.path());
+
+    let barrier = Arc::new(Barrier::new(5));
+    let values: Vec<_> = (0..4)
+        .map(|_| {
+            let sequence = owners.git_guard.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                sequence.next()
+            })
+        })
+        .collect();
+    barrier.wait();
+    let mut values: Vec<_> = values.into_iter().map(|t| t.join().unwrap()).collect();
+    values.sort_unstable();
+    assert_eq!(values, (used..used + 4).collect::<Vec<_>>());
 }

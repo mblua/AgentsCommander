@@ -24,7 +24,7 @@ function extraChecks(path, m, before, violation) {
 }
 function measure(path, scan) {
   const m = metric(), ts = scan.productionTokens;
-  const launchOwner = /^src-tauri\/src\/(?:process\.rs$|process\/|pty\/)/.test(path);
+  const launchOwner = /^src-tauri\/src\/(?:process\.rs$|process\/)/.test(path);
   const readOwner = /^src-tauri\/src\/(?:config\.rs$|config\/|main\.rs$|lib\.rs$)/.test(path);
   const writeOwner = path === 'src-tauri/src/main.rs';
   const record = (rule, t) => hit(m,rule,t.line,occurrenceIdentity(scan,t));

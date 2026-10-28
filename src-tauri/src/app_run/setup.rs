@@ -21,8 +21,8 @@ use crate::{
     WEB_SERVER_START_CANCELLED,
 };
 
-/// Locals `run()` builds before the event loop and hands to the hook.
 pub(super) struct SetupCtx {
+    pub(super) owners: crate::AppOwners,
     pub(super) test_window_placement:
         Option<crate::testability::window_placement::TestWindowPlacement>,
     pub(super) app_handle_lock: Arc<OnceLock<tauri::AppHandle>>,
@@ -53,17 +53,17 @@ pub(super) struct SetupCtx {
     pub(super) resource_monitor_for_setup: Arc<resource_monitor::ResourceMonitorState>,
     pub(super) ui_automation_state_for_setup: crate::testability::ui_automation::UiAutomationState,
 }
-
 pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn std::error::Error>> {
     let SetupCtx {
+        owners: _owners,
         test_window_placement,
         app_handle_lock,
         co_managed_supervisor_for_setup,
         co_managed_triggers,
         response_close_for_setup,
-        session_mgr_for_git,
-        session_mgr_for_git_sweeper,
-        session_mgr_for_discovery,
+        session_mgr_for_git: git_rows,
+        session_mgr_for_git_sweeper: sweep_rows,
+        session_mgr_for_discovery: rows,
         session_mgr_for_web,
         session_mgr_for_api,
         session_mgr_for_scraper,
@@ -85,9 +85,12 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         resource_monitor_for_setup,
         ui_automation_state_for_setup,
     } = ctx;
+    use crate::config::injected_messages as injected;
+    use crate::pty::git_watcher::GitSweeper;
+    use crate::pty::remote_watcher::RemoteSweeper;
     use tauri::WebviewUrl;
+    let messages = _owners.messages;
     use tauri::WebviewWindowBuilder;
-
     // Make AppHandle available to idle detector callbacks
     let _ = app_handle_lock.set(app.handle().clone());
 
@@ -142,42 +145,36 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     // self-healing: live agents re-write their cache every launch.
     crate::config::session_context::sweep_context_cache_at_startup();
     // Git branch watcher: polls git branch for each session every 5s
-    let git_watcher = GitWatcher::new(session_mgr_for_git, app.handle().clone());
-    // Register for Tauri commands that take `State<'_, Arc<GitWatcher>>`
-    // (e.g. `update_team`). Must happen BEFORE the
-    // `PtyManager::new(..., git_watcher, ...)` move below.
+    let git = _owners.git;
+    let settings = app.state::<SettingsState>().inner().clone();
+    let ui = app.handle().clone();
+    let git_watcher = GitWatcher::with_state(git_rows.clone(), ui.clone(), git.clone());
+    // Register for Tauri commands that take `State<'_, Arc<GitWatcher>>` (e.g. `update_team`). Must
+    // happen BEFORE the `PtyManager::new(..., git_watcher, ...)` move below.
     app.manage(Arc::clone(&git_watcher));
     // Discovery branch watcher: polls git branch for discovered replicas every 15s
-    let discovery_branch_watcher =
-        DiscoveryBranchWatcher::new(app.handle().clone(), session_mgr_for_discovery);
+    let discovery_branch_watcher = DiscoveryBranchWatcher::with_state(ui, rows, git.clone());
     app.manage(Arc::clone(&discovery_branch_watcher));
-    // #1298 - the single global POLLING producer of per-repo git state. Both
-    // watchers read its published snapshot instead of spawning `git` themselves.
+    // #1298 - the single global POLLING producer of per-repo git state. Both watchers read its
+    // published snapshot instead of spawning `git` themselves.
     //
-    // Started HERE and not inside `restore_observer_barrier` for exactly one
-    // reason: that barrier gates observers which mutate session metadata or
-    // persistence, and this one mutates neither, it only publishes into
-    // process-local maps. The construction point buys no head start by itself,
-    // because at this point there is nothing to sweep (sessions are restored
-    // below, discovery is frontend-driven). Cold start is governed by the
-    // empty-round floor instead (plan D3). Do not move this under the barrier, and
-    // do not "restore" a head-start rationale that was never true.
-    let git_sweeper = crate::pty::git_watcher::GitSweeper::new(
-        session_mgr_for_git_sweeper,
-        app.state::<SettingsState>().inner().clone(),
-    );
+    // Started HERE and not inside `restore_observer_barrier` for exactly one reason: that barrier
+    // gates observers which mutate session metadata or persistence, and this one mutates neither,
+    // it only publishes into process-local maps. The construction point buys no head start by
+    // itself, because at this point there is nothing to sweep (sessions are restored below,
+    // discovery is frontend-driven). Cold start is governed by the empty-round floor instead (plan
+    // D3). Do not move this under the barrier, and do not "restore" a head-start rationale that was
+    // never true.
+    let git_sweeper = GitSweeper::with_state(sweep_rows, settings.clone(), git.clone());
     git_sweeper.start(shutdown_for_setup.clone());
-    // #2064 - the remote activity producer: asks GitHub, through `gh`,
-    // whether CI runs on each room repo's exact HEAD and whether the
-    // default branch is ahead. Beside `GitSweeper` for the same reason it
-    // sits there: it mutates no session metadata, it only publishes into
-    // process-local maps. Phase B consumes the transition stream: the
-    // notifier started below is its only consumer.
-    let (remote_sweeper, remote_transitions) = crate::pty::remote_watcher::RemoteSweeper::new(
-        app.state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .inner()
-            .clone(),
-        app.state::<SettingsState>().inner().clone(),
+    // #2064 - the remote activity producer: asks GitHub, through `gh`, whether CI runs on each room
+    // repo's exact HEAD and whether the default branch is ahead. Beside `GitSweeper` for the same
+    // reason it sits there: it mutates no session metadata, it only publishes into process-local
+    // maps. Phase B consumes the transition stream: the notifier started below is its only
+    // consumer.
+    let (remote_sweeper, remote_transitions) = RemoteSweeper::with_state(
+        git_rows,
+        settings,
         Box::new({
             let app_for_remote_activity = app.handle().clone();
             move |payload: &crate::pty::remote_watcher::RemoteActivityPayload| {
@@ -185,27 +182,30 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
             }
         }),
         crate::remote_sweeper_seams(),
+        git,
+        _owners.remote,
     );
     let _ = remote_sweeper.start(shutdown_for_setup.clone());
-    // #2064 Phase B - the transition stream's consumer. Started beside the
-    // sweeper that produces it, in this same setup closure, and handed a
-    // child of the same shutdown token, so the notifier stops when the app
-    // does. It injects only into a room orchestrator, and only when both
-    // its feature dial and its notify dial are on.
-    // The JoinHandle is dropped on purpose: the monitor's lifecycle is its
-    // shutdown token and the sweeper's channel, not a join at exit.
+    // #2064 Phase B - the transition stream's consumer. Started beside the sweeper that produces
+    // it, in this same setup closure, and handed a child of the same shutdown token, so the
+    // notifier stops when the app does. It injects only into a room orchestrator, and only when
+    // both its feature dial and its notify dial are on. The JoinHandle is dropped on purpose: the
+    // monitor's lifecycle is its shutdown token and the sweeper's channel, not a join at exit.
     drop(crate::session::remote_alerts::start(
         app.handle().clone(),
         remote_transitions,
         shutdown_for_setup.token().child_token(),
+        messages.clone(),
     ));
-    // PtyManager needs GitWatcher for cleanup on session kill
-    let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
+    let pty_mgr = Arc::new(Mutex::new(PtyManager::with_owners(
         output_senders_for_pty,
         idle_detector_for_pty,
         Arc::clone(&git_watcher),
         Some(broadcaster_for_pty),
         Some(selection_coordinator_for_setup.container_lifecycle_sender()),
+        #[cfg(windows)]
+        _owners.git_guard.clone(),
+        _owners.spawn,
     )));
     pty_mgr
         .lock()
@@ -244,6 +244,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     let context_alert_monitor = crate::session::context_alerts::ContextAlertMonitor::start(
         app.handle().clone(),
         shutdown_for_setup.token().child_token(),
+        messages.clone(),
     );
     app.manage(Arc::clone(&context_alert_monitor));
     // #1032 context scrape. Must be after `.manage(settings)` above, since the
@@ -489,23 +490,21 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         );
     }
 
-    // #1157 - seed and reconcile the operator-editable injected-message
-    // templates. Best effort, never fatal, matching the block above.
+    // #1157 - seed and reconcile the operator-editable injected-message templates. Best effort,
+    // never fatal, matching the block above.
     //
-    // The ordering is NOT load-bearing: `render` resolves from the
-    // registry or the embedded default and never fails, so an alert
-    // firing before this point still renders correctly. The cost is
-    // bounded and small (one read plus at most three small atomic
-    // writes on the setup thread), not "non-blocking"; moving it to
-    // tokio::spawn would buy nothing and would race the registry load.
+    // The ordering is NOT load-bearing: `render` resolves from the registry or the embedded default
+    // and never fails, so an alert firing before this point still renders correctly. The cost is
+    // bounded and small (one read plus at most three small atomic writes on the setup thread), not
+    // "non-blocking"; moving it to tokio::spawn would buy nothing and would race the registry load.
     if let Some(dir) = crate::config::config_dir() {
-        if let Err(e) = crate::config::injected_messages::ensure_injected_messages(&dir) {
+        if let Err(e) = injected::ensure_injected_messages(&dir, messages.as_ref()) {
             log::warn!("[injected-messages] provisioning failed: {}", e);
         }
     }
     // Force the registry once, so the first alert - whose line() runs
     // on a tokio worker - never performs a blocking read there.
-    let _ = crate::config::injected_messages::registry();
+    let _ = injected::registry(messages.as_ref());
 
     // §224 A.2.5 / G-IMPL-1 — Set restore_in_progress=TRUE BEFORE the
     // mailbox poller starts. The restore task now also owns the root-agent
@@ -993,6 +992,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
             non_stop_state_for_setup,
             ui_automation_state_for_setup,
             shutdown_for_setup,
+            messages,
         );
     }
 

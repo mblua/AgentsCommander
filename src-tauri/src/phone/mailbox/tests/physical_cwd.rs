@@ -118,7 +118,10 @@ async fn response_request_physical_cwd_boundary() {
         let app = fixture.app.handle();
         let tracker = crate::pty::manager::ResponseCloseState::default();
         let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        *managers.write().await = SessionManager::with_response_close(tracker.clone());
+        *managers.write().await = SessionManager::with_response_close(
+            tracker.clone(),
+            app.state::<crate::app_state::AppOwners>().activity.clone(),
+        );
         let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
         pty.lock().unwrap().bind_response_close(tracker.clone());
         app.manage(tracker.clone());
@@ -352,7 +355,10 @@ async fn response_pair_physical_cwd_boundary() {
         let app = fixture.app.handle();
         let tracker = crate::pty::manager::ResponseCloseState::default();
         let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        *managers.write().await = SessionManager::with_response_close(tracker.clone());
+        *managers.write().await = SessionManager::with_response_close(
+            tracker.clone(),
+            app.state::<crate::app_state::AppOwners>().activity.clone(),
+        );
         let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
         pty.lock().unwrap().bind_response_close(tracker.clone());
         app.manage(tracker.clone());

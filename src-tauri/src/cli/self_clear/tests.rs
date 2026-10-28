@@ -99,23 +99,30 @@ fn self_clear_args_parse_explicit_timeout() {
     }
 }
 
-/// #626 rename: the old `self-clear` subcommand name no longer exists. clap must
-/// REJECT it (the variant is renamed via `#[command(name = "self-handoff-and-clear")]`),
-/// so a stale invocation fails loudly rather than silently doing nothing.
+/// Plain self-clear and the existing handoff command coexist with distinct actions.
 #[test]
-fn old_self_clear_subcommand_name_is_rejected() {
+fn plain_and_legacy_clear_names_parse_as_distinct_variants() {
     use clap::Parser;
-    let parsed = crate::cli::Cli::try_parse_from([
-        "agentscommander",
-        "self-clear",
-        "--token",
-        "11111111-1111-1111-1111-111111111111",
-        "--root",
-        "anything",
-    ]);
-    assert!(
-        parsed.is_err(),
-        "the old `self-clear` name must be rejected after the #626 rename"
+    for (name, plain) in [("self-clear", true), ("self-handoff-and-clear", false)] {
+        let parsed = crate::cli::Cli::try_parse_from([
+            "agentscommander",
+            name,
+            "--token",
+            "11111111-1111-1111-1111-111111111111",
+            "--root",
+            "anything",
+        ])
+        .unwrap();
+        assert!(matches!(
+            (parsed.command.unwrap(), plain),
+            (crate::cli::Commands::PlainSelfClear(_), true)
+                | (crate::cli::Commands::SelfClear(_), false)
+        ));
+    }
+    assert_eq!(crate::phone::mailbox::PLAIN_SELF_CLEAR_ACTION, "self-clear");
+    assert_eq!(
+        crate::phone::mailbox::SELF_CLEAR_ACTION,
+        "self-handoff-and-clear"
     );
 }
 

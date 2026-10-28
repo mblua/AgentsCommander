@@ -1,11 +1,10 @@
 use super::*;
 use crate::capture::record::{CaptureProvider, CapturedRecord, RecordOrigin};
-use std::sync::Arc;
 
-fn room(temp: &tempfile::TempDir) -> PathBuf {
+fn room(temp: &tempfile::TempDir, capture: &CaptureState) -> PathBuf {
     let room = temp.path().join("room-1-dev-team");
     std::fs::create_dir_all(&room).expect("room dir");
-    forget_room_for_tests(&room);
+    forget_room_for_tests(&room, capture);
     room
 }
 
@@ -74,43 +73,43 @@ fn the_lock_wait_is_strictly_below_the_staleness_bound() {
 // the same truncation does not advance it again.
 #[test]
 fn truncation_advances_the_epoch_exactly_once() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
-
-    assert_eq!(observe(&root, &file, obs(100, b"head-aaaa")), 0);
-    assert_eq!(observe(&root, &file, obs(10, b"head-aaaa")), 1);
+    assert_eq!(observe(&root, &file, obs(100, b"head-aaaa"), &capture), 0);
+    assert_eq!(observe(&root, &file, obs(10, b"head-aaaa"), &capture), 1);
     // A second observer sees the same truncation already recorded.
-    assert_eq!(observe(&root, &file, obs(10, b"head-aaaa")), 1);
-    assert_eq!(epoch_of(&root, &file), 1);
+    assert_eq!(observe(&root, &file, obs(10, b"head-aaaa"), &capture), 1);
+    assert_eq!(epoch_of(&root, &file, &capture), 1);
 }
 
 #[test]
 fn appending_never_advances_the_epoch() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
-    assert_eq!(observe(&root, &file, obs(100, b"aaaa")), 0);
-    assert_eq!(observe(&root, &file, obs(110, b"aaaa")), 0);
-    assert_eq!(observe(&root, &file, obs(4096, b"aaaa")), 0);
+    assert_eq!(observe(&root, &file, obs(100, b"aaaa"), &capture), 0);
+    assert_eq!(observe(&root, &file, obs(110, b"aaaa"), &capture), 0);
+    assert_eq!(observe(&root, &file, obs(4096, b"aaaa"), &capture), 0);
 }
 
 // Test 10: reading file B and returning to file A recovers A's watermark,
 // and A's epoch is unchanged.
 #[test]
 fn returning_to_a_file_recovers_its_watermark_and_epoch() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let a = temp.path().join("a.jsonl");
     let b = temp.path().join("b.jsonl");
     std::fs::write(&a, b"a").expect("write a");
     std::fs::write(&b, b"b").expect("write b");
-
-    observe(&root, &a, obs(100, b"aaaa"));
-    observe(&root, &a, obs(40, b"aaaa")); // truncation: epoch 1
-    let epoch_a = epoch_of(&root, &a);
+    observe(&root, &a, obs(100, b"aaaa"), &capture);
+    observe(&root, &a, obs(40, b"aaaa"), &capture); // truncation: epoch 1
+    let epoch_a = epoch_of(&root, &a, &capture);
     assert_eq!(epoch_a, 1);
-
     let slot = CaptureSlot::new();
     let record_a = record(&a, "from a", Some(30), 0);
     let (seq, key_a) = arm(&slot, record_a, epoch_a);
@@ -120,35 +119,36 @@ fn returning_to_a_file_recovers_its_watermark_and_epoch() {
         seq,
         &key_a,
         &preconditions(EffectKind::Automatic),
+        &capture,
     )
     .expect("committed");
-    assert_eq!(watermark(&root, &a), Some(30));
-
+    assert_eq!(watermark(&root, &a, &capture), Some(30));
     // Read B in between; it neither moves A's epoch nor its watermark.
-    observe(&root, &b, obs(10, b"bbbb"));
-    observe(&root, &b, obs(1, b"bbbb"));
-    assert_eq!(epoch_of(&root, &a), epoch_a);
-    assert_eq!(watermark(&root, &a), Some(30));
-
+    observe(&root, &b, obs(10, b"bbbb"), &capture);
+    observe(&root, &b, obs(1, b"bbbb"), &capture);
+    assert_eq!(epoch_of(&root, &a, &capture), epoch_a);
+    assert_eq!(watermark(&root, &a, &capture), Some(30));
     // Back to A: an appending observation keeps the epoch.
-    assert_eq!(observe(&root, &a, obs(50, b"aaaa")), epoch_a);
+    assert_eq!(observe(&root, &a, obs(50, b"aaaa"), &capture), epoch_a);
 }
 
 // Test 9: watermark `None` plus a record at offset 0 acts.
 #[test]
 fn an_unconsumed_file_acts_on_offset_zero() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
     let key = ConsumptionKey::from_record(&record(&file, "first", Some(0), 0), 0);
-    assert_eq!(watermark(&root, &file), None);
-    assert!(is_actionable(&root, "session-a", &key, Some(0)));
+    assert_eq!(watermark(&root, &file, &capture), None);
+    assert!(is_actionable(&root, "session-a", &key, Some(0), &capture));
 }
 
 #[test]
 fn a_record_at_or_below_the_watermark_and_out_of_the_recent_set_abstains() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
     let slot = CaptureSlot::new();
     let (seq, key) = arm(&slot, record(&file, "first", Some(120), 0), 0);
@@ -158,34 +158,52 @@ fn a_record_at_or_below_the_watermark_and_out_of_the_recent_set_abstains() {
         seq,
         &key,
         &preconditions(EffectKind::Automatic),
+        &capture,
     )
     .expect("committed");
-
     // In the recent set: known-consumed, not actionable.
-    assert!(!is_actionable(&root, "session-a", &key, Some(120)));
+    assert!(!is_actionable(
+        &root,
+        "session-a",
+        &key,
+        Some(120),
+        &capture
+    ));
     // A different record below the watermark: consumed and pruned, abstain.
     let older = ConsumptionKey::from_record(&record(&file, "older", Some(30), 1), 0);
-    assert!(!is_actionable(&root, "session-a", &older, Some(30)));
+    assert!(!is_actionable(
+        &root,
+        "session-a",
+        &older,
+        Some(30),
+        &capture
+    ));
     // Above the watermark: new, act.
     let newer = ConsumptionKey::from_record(&record(&file, "newer", Some(400), 2), 0);
-    assert!(is_actionable(&root, "session-a", &newer, Some(400)));
+    assert!(is_actionable(
+        &root,
+        "session-a",
+        &newer,
+        Some(400),
+        &capture
+    ));
 }
 
 #[test]
 fn only_missing_paths_are_pruned() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let alive = temp.path().join("alive.jsonl");
     let gone = temp.path().join("gone.jsonl");
     std::fs::write(&alive, b"x").expect("write");
     std::fs::write(&gone, b"x").expect("write");
-    observe(&root, &alive, obs(1, b"x"));
-    observe(&root, &gone, obs(1, b"x"));
+    observe(&root, &alive, obs(1, b"x"), &capture);
+    observe(&root, &gone, obs(1, b"x"), &capture);
     std::fs::remove_file(&gone).expect("remove");
-
-    prune_missing_paths(&root);
-    assert_eq!(epoch_of(&root, &alive), 0);
-    assert!(with_room(&root, |room| room
+    prune_missing_paths(&root, &capture);
+    assert_eq!(epoch_of(&root, &alive, &capture), 0);
+    assert!(with_room(&capture, &root, |room| room
         .epochs
         .keys()
         .all(|path| path != gone.as_path())));
@@ -194,12 +212,13 @@ fn only_missing_paths_are_pruned() {
 // Test 12 (state half): an advanced epoch drops the recorded cut.
 #[test]
 fn an_advanced_epoch_supersedes_the_recorded_cut() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
     std::fs::write(&file, b"x").expect("write");
     let slot = CaptureSlot::new();
-    observe(&root, &file, obs(500, b"aaaa"));
+    observe(&root, &file, obs(500, b"aaaa"), &capture);
     register_cut(
         &root,
         &slot,
@@ -209,18 +228,23 @@ fn an_advanced_epoch_supersedes_the_recorded_cut() {
             len: 500,
             reader_seq: Some(9),
         },
+        &capture,
     );
-    assert!(cut(&root).is_some());
-    observe(&root, &file, obs(10, b"aaaa"));
-    assert!(cut(&root).is_none(), "truncation must supersede the cut");
+    assert!(cut(&root, &capture).is_some());
+    observe(&root, &file, obs(10, b"aaaa"), &capture);
+    assert!(
+        cut(&root, &capture).is_none(),
+        "truncation must supersede the cut"
+    );
 }
 
 // Test 15: three automatic actions with no human input leave the fourth
 // refused.
 #[test]
 fn the_fourth_automatic_action_is_refused() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
     let slot = CaptureSlot::new();
     for i in 0..3u64 {
@@ -235,6 +259,7 @@ fn the_fourth_automatic_action_is_refused() {
             seq,
             &key,
             &preconditions(EffectKind::Automatic),
+            &capture,
         )
         .expect("committed");
         assert_eq!(committed.budget_remaining, 2 - u32::try_from(i).unwrap());
@@ -247,22 +272,23 @@ fn the_fourth_automatic_action_is_refused() {
             &slot,
             seq,
             &key,
-            &preconditions(EffectKind::Automatic)
+            &preconditions(EffectKind::Automatic),
+            &capture
         ),
         Err(AbstainReason::BudgetExhausted)
     );
-    assert_eq!(budget(&root), 0);
-
+    assert_eq!(budget(&root, &capture), 0);
     // Substantive human input recharges to the cap.
-    recharge_in_memory(&root);
-    assert_eq!(budget(&root), BUDGET_CAP);
+    recharge_in_memory(&root, &capture);
+    assert_eq!(budget(&root, &capture), BUDGET_CAP);
     let (seq, key) = arm(&slot, record(&file, "turn 4", Some(50), 4), 0);
     assert!(commit_effect(
         &root,
         &slot,
         seq,
         &key,
-        &preconditions(EffectKind::Automatic)
+        &preconditions(EffectKind::Automatic),
+        &capture
     )
     .is_ok());
 }
@@ -270,8 +296,9 @@ fn the_fourth_automatic_action_is_refused() {
 // Test 16: a text-to-user action does not decrement.
 #[test]
 fn a_text_to_user_action_does_not_decrement() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
     let slot = CaptureSlot::new();
     for i in 0..5u64 {
@@ -286,32 +313,33 @@ fn a_text_to_user_action_does_not_decrement() {
             seq,
             &key,
             &preconditions(EffectKind::TextToUser),
+            &capture,
         )
         .expect("committed");
         assert_eq!(committed.budget_remaining, BUDGET_CAP);
         slot.try_consume(seq, &key, 0);
     }
-    assert_eq!(budget(&root), BUDGET_CAP);
+    assert_eq!(budget(&root, &capture), BUDGET_CAP);
 }
 
 // Test 18: flipping `enabled` to false between the snapshot and the commit
 // yields zero effects.
 #[test]
 fn a_room_turned_off_after_the_snapshot_commits_nothing() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
     let slot = CaptureSlot::new();
     let (seq, key) = arm(&slot, record(&file, "turn", Some(10), 0), 0);
-
     let mut pre = preconditions(EffectKind::Automatic);
     pre.effective_ready = false;
     assert_eq!(
-        commit_effect(&root, &slot, seq, &key, &pre),
+        commit_effect(&root, &slot, seq, &key, &pre, &capture),
         Err(AbstainReason::PreconditionsRejected)
     );
-    assert_eq!(budget(&root), BUDGET_CAP);
-    assert_eq!(watermark(&root, &file), None);
+    assert_eq!(budget(&root, &capture), BUDGET_CAP);
+    assert_eq!(watermark(&root, &file, &capture), None);
     assert!(matches!(
         slot.snapshot().value,
         crate::capture::sink::SlotValue::Valid(_)
@@ -323,20 +351,20 @@ fn a_room_turned_off_after_the_snapshot_commits_nothing() {
 // acquisition.
 #[test]
 fn an_aged_snapshot_abstains_before_touching_the_lock() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
     let slot = CaptureSlot::new();
     let (seq, key) = arm(&slot, record(&file, "turn", Some(10), 0), 0);
-
     let mut pre = preconditions(EffectKind::Automatic);
     pre.observed_at = Instant::now() - STALE_PRECONDITIONS - Duration::from_millis(10);
     assert_eq!(
-        commit_effect(&root, &slot, seq, &key, &pre),
+        commit_effect(&root, &slot, seq, &key, &pre, &capture),
         Err(AbstainReason::PreconditionsStale)
     );
-    assert_eq!(budget(&root), BUDGET_CAP);
-    assert_eq!(watermark(&root, &file), None);
+    assert_eq!(budget(&root, &capture), BUDGET_CAP);
+    assert_eq!(watermark(&root, &file, &capture), None);
     assert!(
         !lock_path(&root).exists(),
         "the staleness check must run before the lock is opened"
@@ -348,8 +376,9 @@ fn an_aged_snapshot_abstains_before_touching_the_lock() {
 // and the budget decremented: at-most-once, no double action.
 #[test]
 fn a_crash_after_the_commit_cannot_double_act() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
     let slot = CaptureSlot::new();
     let (seq, key) = arm(&slot, record(&file, "turn", Some(10), 0), 0);
@@ -359,22 +388,23 @@ fn a_crash_after_the_commit_cannot_double_act() {
         seq,
         &key,
         &preconditions(EffectKind::Automatic),
+        &capture,
     )
     .expect("committed");
     assert_eq!(committed.budget_remaining, BUDGET_CAP - 1);
-
     // The supervisor dies here: the effect never happens. Simulate the
     // restart by dropping the in-memory room and reloading `state.json`.
-    forget_room_for_tests(&root);
-    assert_eq!(budget(&root), BUDGET_CAP - 1);
-    assert!(!is_actionable(&root, "session-a", &key, Some(10)));
+    forget_room_for_tests(&root, &capture);
+    assert_eq!(budget(&root, &capture), BUDGET_CAP - 1);
+    assert!(!is_actionable(&root, "session-a", &key, Some(10), &capture));
     assert_eq!(
         commit_effect(
             &root,
             &slot,
             seq,
             &key,
-            &preconditions(EffectKind::Automatic)
+            &preconditions(EffectKind::Automatic),
+            &capture
         ),
         Err(AbstainReason::AlreadyConsumed),
         "the orphan is reported, never retried into a second action"
@@ -385,8 +415,9 @@ fn a_crash_after_the_commit_cannot_double_act() {
 // current-thread runtime with no reactor work drives it to completion.
 #[test]
 fn commit_effect_completes_on_a_current_thread_runtime() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -400,6 +431,7 @@ fn commit_effect_completes_on_a_current_thread_runtime() {
             seq,
             &key,
             &preconditions(EffectKind::Automatic),
+            &capture,
         );
         assert!(outcome.is_ok());
     });
@@ -436,22 +468,20 @@ fn hold_lock(
 // written, because it never took contention.
 #[test]
 fn contention_is_lock_busy_and_bounded() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
     let slot = CaptureSlot::new();
     let (seq, key) = arm(&slot, record(&file, "turn", Some(10), 0), 0);
-
     let (ready, holder) = hold_lock(&root, Duration::from_millis(300));
     ready.recv().expect("holder ready");
-
     let pre = preconditions(EffectKind::Automatic); // a fresh snapshot
     let started = Instant::now();
-    let outcome = commit_effect(&root, &slot, seq, &key, &pre);
+    let outcome = commit_effect(&root, &slot, seq, &key, &pre, &capture);
     let elapsed = started.elapsed();
     let snapshot_age = pre.observed_at.elapsed();
     holder.join().expect("holder");
-
     assert_eq!(outcome, Err(AbstainReason::LockBusy));
     assert!(
         elapsed <= LOCK_WAIT_BUDGET + Duration::from_millis(150),
@@ -462,8 +492,8 @@ fn contention_is_lock_busy_and_bounded() {
         "the snapshot was still fresh when the call gave up: \
          age {snapshot_age:?}, elapsed {elapsed:?}"
     );
-    assert_eq!(budget(&root), BUDGET_CAP);
-    assert_eq!(watermark(&root, &file), None);
+    assert_eq!(budget(&root, &capture), BUDGET_CAP);
+    assert_eq!(watermark(&root, &file, &capture), None);
 }
 
 // Test 25: the staleness window is not consumed by the lock wait. Together
@@ -473,22 +503,20 @@ fn contention_is_lock_busy_and_bounded() {
 // not the same result as the staleness check consuming the lock wait.
 #[test]
 fn a_short_lock_wait_still_leaves_the_snapshot_fresh() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
     let slot = CaptureSlot::new();
     let (seq, key) = arm(&slot, record(&file, "turn", Some(10), 0), 0);
-
     let (ready, holder) = hold_lock(&root, Duration::from_millis(25));
     ready.recv().expect("holder ready");
-
     let mut pre = preconditions(EffectKind::Automatic);
     pre.observed_at = Instant::now() - Duration::from_millis(75);
-    let outcome = commit_effect(&root, &slot, seq, &key, &pre);
+    let outcome = commit_effect(&root, &slot, seq, &key, &pre, &capture);
     let held = holder.join().expect("holder");
-
     match outcome {
-        Ok(_) => assert_eq!(watermark(&root, &file), Some(10)),
+        Ok(_) => assert_eq!(watermark(&root, &file, &capture), Some(10)),
         // Slop is the runner's, not the code's: accept LockBusy only when
         // the measured hold really did outlive the budget.
         Err(AbstainReason::LockBusy) => assert!(
@@ -507,19 +535,19 @@ fn a_short_lock_wait_still_leaves_the_snapshot_fresh() {
 // intact, and a later flush after release writes the recharged budget.
 #[test]
 fn a_held_lock_bounds_the_flush_and_the_next_one_writes() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
-    recharge_in_memory(&root);
-    with_room(&root, |room| {
+    let root = room(&temp, &capture);
+    recharge_in_memory(&root, &capture);
+    with_room(&capture, &root, |room| {
         room.spends_since_recharge = 2;
         room.dirty = true;
     });
-    recharge_in_memory(&root);
-
+    recharge_in_memory(&root, &capture);
     let (ready, holder) = hold_lock(&root, Duration::from_millis(300));
     ready.recv().expect("holder ready");
     let started = Instant::now();
-    let outcome = flush_room(&root);
+    let outcome = flush_room(&root, &capture);
     let elapsed = started.elapsed();
 
     assert_eq!(outcome, FlushOutcome::LockBusy);
@@ -528,22 +556,23 @@ fn a_held_lock_bounds_the_flush_and_the_next_one_writes() {
         "the flush blocked for {elapsed:?}"
     );
     assert!(
-        with_room(&root, |room| room.dirty),
+        with_room(&capture, &root, |room| room.dirty),
         "a busy lock must leave the room dirty for the next flush"
     );
     assert!(!state_path(&root).exists());
 
     holder.join().expect("holder");
-    assert_eq!(flush_room(&root), FlushOutcome::Written);
-    assert!(!with_room(&root, |room| room.dirty));
+    assert_eq!(flush_room(&root, &capture), FlushOutcome::Written);
+    assert!(!with_room(&capture, &root, |room| room.dirty));
     let persisted = read_persisted(&root);
     assert_eq!(persisted.budget, Some(BUDGET_CAP));
 }
 
 #[test]
 fn a_recharge_survives_a_state_file_written_by_another_instance() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
 
     // Another instance leaves an exhausted budget on disk.
@@ -559,8 +588,8 @@ fn a_recharge_survives_a_state_file_written_by_another_instance() {
     .expect("seed");
 
     // This instance observes substantive human input.
-    assert_eq!(budget(&root), 0);
-    recharge_in_memory(&root);
+    assert_eq!(budget(&root, &capture), 0);
+    recharge_in_memory(&root, &capture);
 
     let slot = CaptureSlot::new();
     let (seq, key) = arm(&slot, record(&file, "turn", Some(10), 0), 0);
@@ -570,6 +599,7 @@ fn a_recharge_survives_a_state_file_written_by_another_instance() {
         seq,
         &key,
         &preconditions(EffectKind::Automatic),
+        &capture,
     )
     .expect("the recharge must not be lost under the lock");
     assert_eq!(committed.budget_remaining, BUDGET_CAP - 1);
@@ -577,14 +607,15 @@ fn a_recharge_survives_a_state_file_written_by_another_instance() {
 
 #[test]
 fn the_recent_set_is_bounded_at_its_capacity() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
     for i in 0..(RECENT_CAPACITY as u64 + 10) {
         let key = ConsumptionKey::from_record(&record(&file, &format!("t{i}"), Some(i), i), 0);
-        with_room(&root, |room| room.remember("session-a", key));
+        with_room(&capture, &root, |room| room.remember("session-a", key));
     }
-    let held = with_room(&root, |room| room.recent["session-a"].len());
+    let held = with_room(&capture, &root, |room| room.recent["session-a"].len());
     assert_eq!(held, RECENT_CAPACITY);
 }
 
@@ -593,8 +624,9 @@ fn the_recent_set_is_bounded_at_its_capacity() {
 // would be acted on automatically, which is the case section 8.3 forbids.
 #[test]
 fn a_baseline_is_consumed_but_never_routed() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
     let slot = CaptureSlot::new();
 
@@ -612,7 +644,7 @@ fn a_baseline_is_consumed_but_never_routed() {
         let committed = loop {
             attempts += 1;
             let pre = preconditions(EffectKind::Automatic);
-            match commit_effect(&root, &slot, seq, &key, &pre) {
+            match commit_effect(&root, &slot, seq, &key, &pre, &capture) {
                 Err(AbstainReason::PreconditionsStale)
                     if attempts < 5 && pre.observed_at.elapsed() > STALE_PRECONDITIONS => {}
                 result => {
@@ -630,11 +662,11 @@ fn a_baseline_is_consumed_but_never_routed() {
             "{origin:?} must not spend budget"
         );
         // Consumed: the key is remembered, so a re-delivery abstains.
-        assert!(!is_actionable(&root, "session-a", &key, start));
+        assert!(!is_actionable(&root, "session-a", &key, start, &capture));
         slot.try_consume(seq, &key, 0);
     }
 
-    assert_eq!(budget(&root), BUDGET_CAP);
+    assert_eq!(budget(&root, &capture), BUDGET_CAP);
     assert!(is_baseline(&record_with_origin(
         &file,
         "p",
@@ -656,8 +688,9 @@ fn a_baseline_is_consumed_but_never_routed() {
 /// pins the gate rather than a blanket refusal.
 #[test]
 fn a_live_record_is_still_routable_after_a_baseline() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
     let slot = CaptureSlot::new();
 
@@ -669,6 +702,7 @@ fn a_live_record_is_still_routable_after_a_baseline() {
         seq,
         &key,
         &preconditions(EffectKind::Automatic),
+        &capture,
     )
     .expect("baseline committed");
     slot.try_consume(seq, &key, 0);
@@ -680,6 +714,7 @@ fn a_live_record_is_still_routable_after_a_baseline() {
         seq,
         &key,
         &preconditions(EffectKind::Automatic),
+        &capture,
     )
     .expect("committed");
     assert!(committed.routable);
@@ -694,14 +729,15 @@ fn a_live_record_is_still_routable_after_a_baseline() {
 /// it.
 #[test]
 fn the_authoritative_epoch_is_the_persisted_one_not_the_records_field() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
 
     // The room has already seen this file truncated once.
-    observe(&root, &file, obs(100, b"head"));
-    observe(&root, &file, obs(10, b"head"));
-    assert_eq!(epoch_of(&root, &file), 1);
+    observe(&root, &file, obs(100, b"head"), &capture);
+    observe(&root, &file, obs(10, b"head"), &capture);
+    assert_eq!(epoch_of(&root, &file, &capture), 1);
 
     // A reader that started after that restart stamps its own epoch 0.
     let mut fresh = record(&file, "turn", Some(20), 0);
@@ -711,7 +747,7 @@ fn the_authoritative_epoch_is_the_persisted_one_not_the_records_field() {
         .expect("sole owner")
         .observed_prefix = b"head".to_vec();
 
-    let authoritative = consumption_key(&root, &fresh);
+    let authoritative = consumption_key(&root, &fresh, &capture);
     assert_eq!(
         authoritative.epoch, 1,
         "the persisted epoch survives the reader that produced the record"
@@ -731,6 +767,7 @@ fn the_authoritative_epoch_is_the_persisted_one_not_the_records_field() {
         seq,
         &authoritative,
         &preconditions(EffectKind::Automatic),
+        &capture,
     )
     .expect("committed");
 
@@ -738,7 +775,13 @@ fn the_authoritative_epoch_is_the_persisted_one_not_the_records_field() {
     // same record through a second time.
     let advisory = ConsumptionKey::from_record(&fresh, fresh.epoch);
     assert_ne!(advisory, authoritative);
-    assert!(!is_actionable(&root, "session-a", &authoritative, Some(20)));
+    assert!(!is_actionable(
+        &root,
+        "session-a",
+        &authoritative,
+        Some(20),
+        &capture
+    ));
 }
 
 /// Grinch finding: a cut restored from `state.json` must not keep the
@@ -747,8 +790,9 @@ fn the_authoritative_epoch_is_the_persisted_one_not_the_records_field() {
 /// produces — exactly the bug section 7 paragraph 2 closes.
 #[test]
 fn a_cut_restored_from_disk_loses_its_sequence_tie_break() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
     std::fs::write(&file, b"x").expect("write");
     let slot = CaptureSlot::new();
@@ -762,21 +806,22 @@ fn a_cut_restored_from_disk_loses_its_sequence_tie_break() {
             len: 0,
             reader_seq: Some(42),
         },
+        &capture,
     );
     assert_eq!(
-        flush_room(&root),
+        flush_room(&root, &capture),
         FlushOutcome::Written,
         "the cut has to reach disk for this test to mean anything"
     );
     assert_eq!(
-        cut(&root).and_then(|c| c.reader_seq),
+        cut(&root, &capture).and_then(|c| c.reader_seq),
         Some(42),
         "the live cut keeps its tie-break within one reader lifetime"
     );
 
     // Restart.
-    forget_room_for_tests(&root);
-    let restored = cut(&root).expect("the cut is persisted");
+    forget_room_for_tests(&root, &capture);
+    let restored = cut(&root, &capture).expect("the cut is persisted");
     assert_eq!(restored.path, crate::capture::key::normalise_path(&file));
     assert_eq!(restored.len, 0);
     assert_eq!(
@@ -798,12 +843,13 @@ fn a_cut_restored_from_disk_loses_its_sequence_tie_break() {
 /// through the spend count, so neither side's work is discarded.
 #[test]
 fn a_second_instances_decrement_is_not_lost_by_reconciliation() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     let file = temp.path().join("a.jsonl");
 
     // This instance recharges, so generation 1 is current, and spends one.
-    recharge_in_memory(&root);
+    recharge_in_memory(&root, &capture);
     let slot = CaptureSlot::new();
     let (seq, key) = arm(&slot, record(&file, "mine", Some(10), 0), 0);
     commit_effect(
@@ -812,10 +858,11 @@ fn a_second_instances_decrement_is_not_lost_by_reconciliation() {
         seq,
         &key,
         &preconditions(EffectKind::Automatic),
+        &capture,
     )
     .expect("committed");
     slot.try_consume(seq, &key, 0);
-    assert_eq!(budget(&root), BUDGET_CAP - 1);
+    assert_eq!(budget(&root, &capture), BUDGET_CAP - 1);
 
     // A second instance, in the SAME generation, spends two more.
     let mut disk = read_persisted(&root);
@@ -831,12 +878,13 @@ fn a_second_instances_decrement_is_not_lost_by_reconciliation() {
             &slot,
             seq,
             &key,
-            &preconditions(EffectKind::Automatic)
+            &preconditions(EffectKind::Automatic),
+            &capture
         ),
         Err(AbstainReason::BudgetExhausted),
         "the other instance's decrements must not vanish"
     );
-    assert_eq!(budget(&root), 0);
+    assert_eq!(budget(&root, &capture), 0);
 }
 
 /// The other direction, already covered by
@@ -844,8 +892,9 @@ fn a_second_instances_decrement_is_not_lost_by_reconciliation() {
 /// superseded generation on disk does not undo this instance's recharge.
 #[test]
 fn a_superseded_generation_on_disk_does_not_undo_a_recharge() {
+    let capture = CaptureState::new();
     let temp = tempfile::tempdir().expect("temp");
-    let root = room(&temp);
+    let root = room(&temp, &capture);
     std::fs::create_dir_all(co_managed_dir(&root)).expect("dir");
     write_state_atomic(
         &root,
@@ -857,9 +906,9 @@ fn a_superseded_generation_on_disk_does_not_undo_a_recharge() {
         },
     )
     .expect("seed");
-    assert_eq!(budget(&root), 0);
+    assert_eq!(budget(&root, &capture), 0);
 
-    recharge_in_memory(&root);
+    recharge_in_memory(&root, &capture);
     let mut room_snapshot = RoomState {
         recharge_stamp: 1,
         ..Default::default()
@@ -902,4 +951,50 @@ fn prefix_source_is_the_reconstruction_only() {
         crate::capture::key::ObservationVerdict::Replaced,
         "mixing a true-bytes prefix with the reconstruction is forbidden"
     );
+}
+
+#[tokio::test]
+async fn capture_owner_clones_share_and_flush_survives_drop() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("room");
+    std::fs::create_dir_all(co_managed_dir(&root)).unwrap();
+    let capture = Arc::new(CaptureState::new());
+    let clone = capture.clone();
+    assert!(capture.rooms.get().is_none());
+    write_state_atomic(
+        &root,
+        &PersistedRoomState {
+            budget: Some(0),
+            ..PersistedRoomState::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        capture.rooms.get().is_none(),
+        "construction must not load disk"
+    );
+    assert_eq!(
+        budget(&root, &clone),
+        0,
+        "first access loads persisted budget"
+    );
+    let file = root.join("a.jsonl");
+    assert_eq!(observe(&root, &file, obs(100, b"head"), &capture), 0);
+    assert_eq!(observe(&root, &file, obs(10, b"head"), &capture), 1);
+    assert_eq!(epoch_of(&root, &file, &clone), 1);
+    recharge_in_memory(&root, &clone);
+    assert_eq!(budget(&root, &capture), BUDGET_CAP);
+    let weak = Arc::downgrade(&capture);
+    schedule_flush(&root, &clone);
+    drop(clone);
+    drop(capture);
+    assert!(weak.upgrade().is_some(), "queued flush owns the state");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while weak.upgrade().is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("flush finishes after caller drop");
+    assert_eq!(read_persisted(&root).budget, Some(BUDGET_CAP));
 }

@@ -634,7 +634,7 @@ export const SESSION_WARNING_KINDS = [
   "container-path-in-host-field",
   "outside-mount",
   "no-value",
-  "protocol-mismatch",
+  "protocol-mismatch", "self-handoff-failed",
 ] as const;
 
 export type SessionWarningKind = (typeof SESSION_WARNING_KINDS)[number];

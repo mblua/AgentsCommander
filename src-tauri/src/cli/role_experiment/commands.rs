@@ -65,6 +65,7 @@ use crate::commands::entity_creation::create_agent_matrix_from_role;
 use crate::commands::entity_creation::resolve_agent_ref;
 use crate::commands::entity_creation::validate_existing_name;
 use crate::commands::entity_creation::CreateAgentMatrixFromRoleArgs;
+use crate::filesystem::{directories, documents};
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
@@ -101,7 +102,7 @@ pub(super) fn init_for_project_path(
     let source_role = source_matrix.join("Role.md");
     reject_link_or_reparse(&source_matrix, "source_role_link_or_reparse", None)?;
     reject_link_or_reparse(&source_role, "source_role_link_or_reparse", None)?;
-    if !source_role.is_file() {
+    if !directories::experiment_path_is_file(&source_role) {
         return Err(vec![err(
             "source_role_missing",
             format!("Source Role.md not found at {}", source_role.display()),
@@ -139,7 +140,7 @@ pub(super) fn init_for_project_path(
             continue;
         }
         let target = variant_matrix_path(&ac_root, &source_agent, variant);
-        if target.exists() {
+        if directories::experiment_path_exists(&target) {
             if is_link_path(&target) {
                 preflight_errors.push(err(
                     "variant_role_link_or_reparse",
@@ -162,7 +163,7 @@ pub(super) fn init_for_project_path(
 
     let experiment_dir = experiments_dir(&ac_root).join(&args.name);
     reject_link_or_reparse(&experiment_dir, "experiment_metadata_link_or_reparse", None)?;
-    if experiment_dir.exists() {
+    if directories::experiment_path_exists(&experiment_dir) {
         preflight_errors.push(err(
             "experiment_exists",
             format!("Experiment '{}' already exists", args.name),
@@ -173,7 +174,11 @@ pub(super) fn init_for_project_path(
         return Err(preflight_errors);
     }
 
-    let role_bytes = map_err(std::fs::read(&source_role), "source_role_read_failed", None)?;
+    let role_bytes = map_err(
+        documents::read_experiment_role(&source_role),
+        "source_role_read_failed",
+        None,
+    )?;
     if std::str::from_utf8(&role_bytes).is_err() {
         return Err(vec![err(
             "source_role_not_utf8",
@@ -184,12 +189,12 @@ pub(super) fn init_for_project_path(
     let role_sha = sha256_hex(&role_bytes);
     let now = chrono::Utc::now().to_rfc3339();
     map_err(
-        std::fs::create_dir_all(experiment_dir.join("variants")),
+        directories::ensure_experiment_directory(&experiment_dir.join("variants")),
         "experiment_metadata_write_failed",
         None,
     )?;
     map_err(
-        std::fs::create_dir_all(experiment_dir.join("runs")),
+        directories::ensure_experiment_directory(&experiment_dir.join("runs")),
         "experiment_metadata_write_failed",
         None,
     )?;
@@ -282,27 +287,33 @@ pub(super) fn list(args: ProjectArgs) -> Result<CommandOutput, Vec<CliError>> {
     let root = experiments_dir(&ac_root);
     let mut warnings = Vec::new();
     let mut experiments = Vec::new();
-    if root.is_dir() {
-        let entries = map_err(std::fs::read_dir(&root), "experiment_list_failed", None)?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            match read_json::<ExperimentMetadata>(&path.join("experiment.json")) {
-                Ok(meta) => experiments.push(serde_json::json!({
-                    "name": meta.name,
-                    "sourceAgent": meta.source_agent,
-                    "variantCount": meta.variants.len(),
-                    "path": path.to_string_lossy(),
-                })),
-                Err(e) => warnings.push(warn(
-                    "experiment_metadata_unreadable",
-                    e,
-                    entry.file_name().to_str().map(str::to_string),
-                )),
-            }
-        }
+    if directories::experiment_path_is_dir(&root) {
+        let _ = map_err(
+            directories::visit_experiment_entries(&root, |entry| {
+                let Ok((path, name)) = entry else {
+                    return std::ops::ControlFlow::<()>::Continue(());
+                };
+                if !directories::experiment_path_is_dir(&path) {
+                    return std::ops::ControlFlow::Continue(());
+                }
+                match read_json::<ExperimentMetadata>(&path.join("experiment.json")) {
+                    Ok(meta) => experiments.push(serde_json::json!({
+                        "name": meta.name,
+                        "sourceAgent": meta.source_agent,
+                        "variantCount": meta.variants.len(),
+                        "path": path.to_string_lossy(),
+                    })),
+                    Err(e) => warnings.push(warn(
+                        "experiment_metadata_unreadable",
+                        e,
+                        name.to_str().map(str::to_string),
+                    )),
+                }
+                std::ops::ControlFlow::Continue(())
+            }),
+            "experiment_list_failed",
+            None,
+        )?;
     }
     Ok(CommandOutput {
         data: serde_json::json!({ "experiments": experiments }),
@@ -366,7 +377,7 @@ pub(super) fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<Cli
         Some(args.variant.as_str()),
     )?;
     let role_input = map_err(
-        std::fs::canonicalize(&role_input),
+        crate::filesystem::documents::canonical_experiment_role(&role_input),
         "role_file_missing",
         Some(args.variant.as_str()),
     )?;
@@ -378,7 +389,7 @@ pub(super) fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<Cli
         )]);
     }
     let meta = map_err(
-        std::fs::metadata(&role_input),
+        crate::filesystem::documents::experiment_role_metadata(&role_input),
         "role_file_missing",
         Some(args.variant.as_str()),
     )?;
@@ -417,7 +428,7 @@ pub(super) fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<Cli
     )?;
 
     let bytes = map_err(
-        std::fs::read(&role_input),
+        crate::filesystem::documents::read_experiment_role(&role_input),
         "role_file_read_failed",
         Some(args.variant.as_str()),
     )?;
@@ -429,7 +440,7 @@ pub(super) fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<Cli
         )]);
     }
     map_err(
-        std::fs::write(&expected_role, &bytes),
+        documents::write_experiment_document(&expected_role, &bytes),
         "variant_role_write_failed",
         Some(args.variant.as_str()),
     )?;
@@ -519,12 +530,12 @@ pub(super) fn variant_diff_loaded(
     )
     .join("Role.md");
     let left_text = map_err(
-        std::fs::read_to_string(&left_role),
+        documents::read_experiment_document(&left_role),
         "variant_role_missing",
         Some(args.against.as_str()),
     )?;
     let right_text = map_err(
-        std::fs::read_to_string(&right_role),
+        documents::read_experiment_document(&right_role),
         "variant_role_missing",
         Some(args.variant.as_str()),
     )?;
@@ -664,7 +675,7 @@ fn validate_run_mode(args: &RunArgs) -> Result<(), Vec<CliError>> {
 
 fn fake_executor_available() -> bool {
     cfg!(test)
-        || std::env::var("AGENTSCOMMANDER_ROLE_EXPERIMENT_TEST_FAKE_EXECUTOR")
+        || crate::config::environment::role_experiment_fake_executor()
             .is_ok_and(|value| value == "1")
 }
 
@@ -827,7 +838,7 @@ pub(super) fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
     }
     let dir = run_dir(&loaded, &args.run_id);
     reject_link_or_reparse(&dir, "run_artifact_link_or_reparse", None)?;
-    if !dir.is_dir() {
+    if !directories::experiment_path_is_dir(&dir) {
         return Err(vec![err_at_path(
             "run_artifact_missing",
             format!("Run directory not found: {}", dir.display()),
@@ -840,7 +851,7 @@ pub(super) fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
     let markdown_path = dir.join("report.md");
     for path in [&run_path, &attempts_path, &report_path, &markdown_path] {
         reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
-        if !path.is_file() {
+        if !directories::experiment_path_is_file(path) {
             return Err(vec![err_at_path(
                 "run_artifact_missing",
                 format!("Run artifact not found: {}", path.display()),
@@ -876,7 +887,7 @@ pub(super) fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
             errors: Vec::new(),
         })
     } else {
-        let markdown = std::fs::read_to_string(&markdown_path).map_err(|e| {
+        let markdown = documents::read_experiment_document(&markdown_path).map_err(|e| {
             vec![err_at_path(
                 "run_artifact_read_failed",
                 format!("Failed to read {}: {}", markdown_path.display(), e),

@@ -10,9 +10,12 @@ mod pty_artifact;
 mod pty_authority;
 mod pty_claim;
 mod pty_dispatch;
+pub(crate) mod pty_observation;
 mod pty_validation;
 mod request_polling;
+pub(crate) mod response_observation;
 mod response_source;
+mod self_clear;
 mod self_handoff;
 mod self_switch;
 mod session_lookup;
@@ -123,6 +126,7 @@ use pty_claim::{
     InternalSystemBookkeeping, MailboxSpawnCall, MailboxTestEvent, MailboxTestHooks,
     PtyClaimRefresh, PtyReacquireGoal, ResponseWakeWork,
 };
+pub(crate) use self_clear::PLAIN_SELF_CLEAR_ACTION;
 pub(crate) use settle::is_deferred_internal_delivery_error;
 #[cfg(test)]
 use settle::{

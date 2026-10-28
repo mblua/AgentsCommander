@@ -192,7 +192,10 @@ struct HarnessCtx {
 /// so signals 1 and 2 read the real detector directly.
 fn make_ctx(repo_root: &Path) -> HarnessCtx {
     let temp = tempfile::TempDir::new().expect("temp");
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let owners = agentscommander_lib::AppOwners::new();
+    let session_mgr = Arc::new(tokio::sync::RwLock::new(
+        SessionManager::with_activity_coalescer(owners.activity.clone()),
+    ));
     let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
     let tg_mgr: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
         TelegramBridgeManager::new(Arc::clone(&output_senders)),
@@ -209,17 +212,24 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
         s
     });
     let git_app = Box::leak(Box::new(
-        agentscommander_lib::test_support::test_builder()
+        agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("git handle app"),
     ));
-    let git_watcher = GitWatcher::new(Arc::clone(&session_mgr), git_app.handle().clone());
-    let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
+    let git_watcher = GitWatcher::with_state(
+        Arc::clone(&session_mgr),
+        git_app.handle().clone(),
+        owners.git.clone(),
+    );
+    let pty_mgr = Arc::new(Mutex::new(PtyManager::with_owners(
         Arc::clone(&output_senders),
         Arc::clone(&idle),
         Arc::clone(&git_watcher),
         None,
         None,
+        #[cfg(windows)]
+        owners.git_guard.clone(),
+        owners.spawn.clone(),
     )));
 
     let detached: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
@@ -232,7 +242,7 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
     let selection_coordinator =
         SelectionCoordinator::new(Arc::clone(&session_mgr), shutdown.token().clone());
 
-    let app = agentscommander_lib::test_support::test_builder()
+    let app = agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
         .manage(MasterToken::new("wake-consume-master".into()))
         .manage(AppOutbox::new(
             repo_root.join(".app-outbox").to_string_lossy().to_string(),
@@ -251,7 +261,9 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
         .manage(spec_board)
         .manage(config_seed_lock)
         .manage(Arc::clone(&git_watcher))
-        .manage(Arc::new(ResourceMonitorState::new()))
+        .manage(Arc::new(ResourceMonitorState::with_spawn_registry(
+            owners.spawn.clone(),
+        )))
         .manage(Arc::clone(&pty_mgr))
         .manage(Arc::clone(&idle))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))

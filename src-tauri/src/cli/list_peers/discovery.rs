@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use super::status::{build_session_index, compute_peer_status, CandidateSession};
@@ -24,7 +25,8 @@ pub(super) struct WgReplicaInfo {
 /// see #726). This caller keeps the project FOLDER NAME (`my_project`), the LHS
 /// of a WG replica's canonical FQN, rather than the full project path.
 pub(super) fn detect_wg_replica(root: &str) -> Result<Option<WgReplicaInfo>, String> {
-    let canon = match std::fs::canonicalize(root) {
+    let canon = match crate::filesystem::directories::canonical_cli_discovery_path(Path::new(root))
+    {
         Ok(c) => c,
         Err(_) => return Ok(None),
     };
@@ -73,7 +75,7 @@ pub(super) fn read_wg_role(replica_dir: &Path) -> String {
         }
     };
     let role_path = matrix_dir.join("Role.md");
-    match std::fs::read_to_string(&role_path) {
+    match crate::filesystem::documents::read_repository_role(&role_path) {
         Ok(content) => extract_role_section(&content, 3, "Room replica agent."),
         Err(_) => read_role(&matrix_dir.to_string_lossy()),
     }
@@ -91,8 +93,8 @@ pub(super) fn build_wg_peer(
     session_index: &HashMap<String, Vec<CandidateSession>>,
 ) -> PeerInfo {
     let replica_ac = agent_path.join(crate::config::agent_local_dir_name());
-    let _ = std::fs::create_dir_all(replica_ac.join("inbox"));
-    let _ = std::fs::create_dir_all(replica_ac.join("outbox"));
+    let _ = crate::filesystem::directories::ensure_cli_peer_mailbox(&replica_ac.join("inbox"));
+    let _ = crate::filesystem::directories::ensure_cli_peer_mailbox(&replica_ac.join("outbox"));
 
     // #2786 (C1) - through the shared loader: state file first, key-wise.
     let peer_config = read_agent_local_config(&replica_ac).unwrap_or_default();
@@ -142,7 +144,7 @@ pub(super) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> 
     let i_am_coordinator = coordinator.as_deref() == Some(wg.my_agent_name.as_str());
 
     if coordinator.is_none() {
-        if std::env::var("AC_MACHINE_OUTPUT").is_err() {
+        if crate::config::environment::machine_output_string().is_err() {
             eprintln!(
                 "Warning: no orchestrator found for Room '{}', showing all replicas",
                 wg.my_wg_name
@@ -156,19 +158,24 @@ pub(super) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> 
     }
 
     // Collect all replicas in my WG
-    let replicas: Vec<(String, PathBuf)> = std::fs::read_dir(&wg.my_wg_dir)
-        .into_iter()
-        .flat_map(|rd| rd.flatten())
-        .filter_map(|e| {
-            let p = e.path();
-            if !p.is_dir() {
-                return None;
-            }
-            let name = p.file_name()?.to_str()?;
-            let agent = name.strip_prefix("__agent_")?.to_string();
-            Some((agent, p))
-        })
-        .collect();
+    let mut replicas: Vec<(String, PathBuf)> = Vec::new();
+    let _ = crate::filesystem::directories::visit_cli_discovery_entries(&wg.my_wg_dir, |entry| {
+        let Ok((p, _)) = entry else {
+            return ControlFlow::<()>::Continue(());
+        };
+        if !crate::filesystem::directories::cli_discovery_is_dir(&p) {
+            return ControlFlow::Continue(());
+        }
+        let agent = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_prefix("__agent_"))
+            .map(str::to_string);
+        if let Some(agent) = agent {
+            replicas.push((agent, p));
+        }
+        ControlFlow::Continue(())
+    });
 
     for (agent_name, agent_path) in &replicas {
         if *agent_name == wg.my_agent_name {
@@ -190,47 +197,45 @@ pub(super) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> 
     // Coordinator also sees coordinators of other WGs in the same Project AC Root
     // (same project, different WG — still qualified with `wg.my_project`).
     if i_am_coordinator {
-        if let Ok(entries) = std::fs::read_dir(&wg.ac_root) {
-            for entry in entries.flatten() {
-                let other_wg_dir = entry.path();
-                if !other_wg_dir.is_dir() {
-                    continue;
-                }
-                let other_wg_name = match other_wg_dir.file_name().and_then(|n| n.to_str()) {
-                    Some(n)
-                        if crate::config::entity_prefix::has_entity_prefix(n)
-                            && n != wg.my_wg_name =>
-                    {
-                        n.to_string()
-                    }
-                    _ => continue,
-                };
-
-                if let Some(other_coord) = resolve_wg_coordinator(&wg.ac_root, &other_wg_dir) {
-                    let coord_dir = other_wg_dir.join(format!("__agent_{}", other_coord));
-                    if !coord_dir.is_dir() {
-                        continue;
-                    }
-                    let peer_name = format!("{}:{}/{}", wg.my_project, other_wg_name, other_coord);
-                    if peers.iter().any(|p| p.name == peer_name) {
-                        continue;
-                    }
-                    let reachable = crate::config::teams::can_communicate(
-                        &my_full_name,
-                        &peer_name,
-                        &discovered,
-                    );
-                    peers.push(build_wg_peer(
-                        &wg.my_project,
-                        &other_coord,
-                        &other_wg_name,
-                        &coord_dir,
-                        reachable,
-                        &session_index,
-                    ));
-                }
+        let _ = crate::filesystem::directories::visit_cli_discovery_entries(&wg.ac_root, |entry| {
+            let Ok((other_wg_dir, _)) = entry else {
+                return ControlFlow::<()>::Continue(());
+            };
+            if !crate::filesystem::directories::cli_discovery_is_dir(&other_wg_dir) {
+                return ControlFlow::Continue(());
             }
-        }
+            let other_wg_name = match other_wg_dir.file_name().and_then(|n| n.to_str()) {
+                Some(n)
+                    if crate::config::entity_prefix::has_entity_prefix(n) && n != wg.my_wg_name =>
+                {
+                    n.to_string()
+                }
+                _ => return ControlFlow::Continue(()),
+            };
+
+            if let Some(other_coord) = resolve_wg_coordinator(&wg.ac_root, &other_wg_dir) {
+                let coord_dir = other_wg_dir.join(format!("__agent_{}", other_coord));
+                if !crate::filesystem::directories::cli_discovery_is_dir(&coord_dir) {
+                    return ControlFlow::Continue(());
+                }
+                let peer_name = format!("{}:{}/{}", wg.my_project, other_wg_name, other_coord);
+                if peers.iter().any(|p| p.name == peer_name) {
+                    return ControlFlow::Continue(());
+                }
+                let reachable =
+                    crate::config::teams::can_communicate(&my_full_name, &peer_name, &discovered);
+                peers.push(build_wg_peer(
+                    &wg.my_project,
+                    &other_coord,
+                    &other_wg_name,
+                    &coord_dir,
+                    reachable,
+                    &session_index,
+                ));
+            }
+
+            ControlFlow::Continue(())
+        });
     }
 
     // #293 — synthetic Root Agent reply peer (identity-verified coordinators
@@ -243,9 +248,15 @@ pub(super) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> 
     if let Some(project_dir) = wg.ac_root.parent() {
         if let Some(project_str) = project_dir.to_str() {
             let p = project_str.to_string();
-            let canon_p = std::fs::canonicalize(&p).ok();
+            let canon_p =
+                crate::filesystem::projects::canonical_refresh_project(Path::new(&p)).ok();
             let already_present = effective_paths.iter().any(|x| match &canon_p {
-                Some(c) => std::fs::canonicalize(x).ok().as_ref() == Some(c),
+                Some(c) => {
+                    crate::filesystem::projects::canonical_refresh_project(Path::new(x))
+                        .ok()
+                        .as_ref()
+                        == Some(c)
+                }
                 None => x == &p,
             });
             if !already_present {
@@ -371,22 +382,17 @@ pub(super) fn discover_origin_peers(root: &str, project_paths: &[String]) -> Vec
     // Scan project_paths for Project AC Root wg-*/__agent_* replicas
     for base_path in project_paths {
         let base = Path::new(base_path);
-        if !base.is_dir() {
+        if !crate::filesystem::projects::project_path_is_dir(base) {
             continue;
         }
         // Check base and its immediate children (same pattern as ac_discovery)
         let mut dirs_to_check = vec![base.to_path_buf()];
-        if let Ok(entries) = std::fs::read_dir(base) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    if !name.starts_with('.') {
-                        dirs_to_check.push(p);
-                    }
-                }
+        crate::filesystem::projects::visit_discovery_project_children(base, |p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !name.starts_with('.') {
+                dirs_to_check.push(p);
             }
-        }
+        });
         for repo_dir in dirs_to_check {
             let Some(ac_root) = existing_ac_root(&repo_dir) else {
                 continue;
@@ -396,68 +402,78 @@ pub(super) fn discover_origin_peers(root: &str, project_paths: &[String]) -> Vec
                 Some(n) => n.to_string(),
                 None => continue,
             };
-            let wg_entries = match std::fs::read_dir(&ac_root) {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            for wg_entry in wg_entries.flatten() {
-                let wg_path = wg_entry.path();
-                if !wg_path.is_dir() {
-                    continue;
-                }
-                let wg_name = match wg_path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) if crate::config::entity_prefix::has_entity_prefix(n) => n.to_string(),
-                    _ => continue,
-                };
-                // Derive team name from the entity name: "room-1-ac-devs" or
-                // the legacy "wg-1-ac-devs" → "ac-devs"
-                let wg_team = crate::config::entity_prefix::strip_entity_prefix(&wg_name)
-                    .and_then(|s| s.split_once('-').map(|(_, rest)| rest))
-                    .unwrap_or(&wg_name)
-                    .to_string();
-
-                let agent_entries = match std::fs::read_dir(&wg_path) {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-                for agent_entry in agent_entries.flatten() {
-                    let agent_path = agent_entry.path();
-                    if !agent_path.is_dir() {
-                        continue;
-                    }
-                    let agent_dir = match agent_path.file_name().and_then(|n| n.to_str()) {
-                        Some(n) if n.starts_with("__agent_") => n.to_string(),
-                        _ => continue,
+            let _ =
+                crate::filesystem::directories::visit_cli_discovery_entries(&ac_root, |entry| {
+                    let Ok((wg_path, _)) = entry else {
+                        return ControlFlow::<()>::Continue(());
                     };
-                    let agent_short = agent_dir
-                        .strip_prefix("__agent_")
-                        .unwrap_or(&agent_dir)
+                    if !crate::filesystem::directories::cli_discovery_is_dir(&wg_path) {
+                        return ControlFlow::Continue(());
+                    }
+                    let wg_name = match wg_path.file_name().and_then(|n| n.to_str()) {
+                        Some(n) if crate::config::entity_prefix::has_entity_prefix(n) => {
+                            n.to_string()
+                        }
+                        _ => return ControlFlow::Continue(()),
+                    };
+                    // Derive team name from the entity name: "room-1-ac-devs" or
+                    // the legacy "wg-1-ac-devs" → "ac-devs"
+                    let wg_team = crate::config::entity_prefix::strip_entity_prefix(&wg_name)
+                        .and_then(|s| s.split_once('-').map(|(_, rest)| rest))
+                        .unwrap_or(&wg_name)
                         .to_string();
-                    let peer_name = format!("{}:{}/{}", project_folder, wg_name, agent_short);
 
-                    // Skip self
-                    if peer_name == my_name {
-                        continue;
-                    }
-                    // Skip duplicates
-                    if peers.iter().any(|p| p.name == peer_name) {
-                        continue;
-                    }
+                    let _ = crate::filesystem::directories::visit_cli_discovery_entries(
+                        &wg_path,
+                        |entry| {
+                            let Ok((agent_path, _)) = entry else {
+                                return ControlFlow::<()>::Continue(());
+                            };
+                            if !crate::filesystem::directories::cli_discovery_is_dir(&agent_path) {
+                                return ControlFlow::Continue(());
+                            }
+                            let agent_dir = match agent_path.file_name().and_then(|n| n.to_str()) {
+                                Some(n) if n.starts_with("__agent_") => n.to_string(),
+                                _ => return ControlFlow::Continue(()),
+                            };
+                            let agent_short = agent_dir
+                                .strip_prefix("__agent_")
+                                .unwrap_or(&agent_dir)
+                                .to_string();
+                            let peer_name =
+                                format!("{}:{}/{}", project_folder, wg_name, agent_short);
 
-                    let reachable =
-                        crate::config::teams::can_communicate(&my_name, &peer_name, &discovered);
-                    let mut peer = build_wg_peer(
-                        &project_folder,
-                        &agent_short,
-                        &wg_name,
-                        &agent_path,
-                        reachable,
-                        &session_index,
+                            // Skip self
+                            if peer_name == my_name {
+                                return ControlFlow::Continue(());
+                            }
+                            // Skip duplicates
+                            if peers.iter().any(|p| p.name == peer_name) {
+                                return ControlFlow::Continue(());
+                            }
+
+                            let reachable = crate::config::teams::can_communicate(
+                                &my_name,
+                                &peer_name,
+                                &discovered,
+                            );
+                            let mut peer = build_wg_peer(
+                                &project_folder,
+                                &agent_short,
+                                &wg_name,
+                                &agent_path,
+                                reachable,
+                                &session_index,
+                            );
+                            peer.teams = vec![wg_team.clone()];
+                            peers.push(peer);
+
+                            ControlFlow::Continue(())
+                        },
                     );
-                    peer.teams = vec![wg_team.clone()];
-                    peers.push(peer);
-                }
-            }
+
+                    ControlFlow::Continue(())
+                });
         }
     }
 
@@ -476,63 +492,59 @@ pub(super) fn discover_root_coordinator_peers_from_project_paths(
 
     for base_path in project_paths {
         let base = Path::new(base_path);
-        if !base.is_dir() {
+        if !crate::filesystem::projects::project_path_is_dir(base) {
             continue;
         }
 
         let mut dirs_to_check = vec![base.to_path_buf()];
-        if let Ok(entries) = std::fs::read_dir(base) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if !p.is_dir() {
-                    continue;
-                }
-                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !name.starts_with('.') {
-                    dirs_to_check.push(p);
-                }
+        crate::filesystem::projects::visit_discovery_project_children(base, |p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !name.starts_with('.') {
+                dirs_to_check.push(p);
             }
-        }
+        });
 
         for repo_dir in dirs_to_check {
             let Some(ac_root) = existing_ac_root(&repo_dir) else {
                 continue;
             };
 
-            let wg_entries = match std::fs::read_dir(&ac_root) {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            for wg_entry in wg_entries.flatten() {
-                let wg_path = wg_entry.path();
-                if !wg_path.is_dir() {
-                    continue;
-                }
-                match wg_path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) if crate::config::entity_prefix::has_entity_prefix(n) => {}
-                    _ => continue,
-                }
+            let _ =
+                crate::filesystem::directories::visit_cli_discovery_entries(&ac_root, |entry| {
+                    let Ok((wg_path, _)) = entry else {
+                        return ControlFlow::<()>::Continue(());
+                    };
+                    if !crate::filesystem::directories::cli_discovery_is_dir(&wg_path) {
+                        return ControlFlow::Continue(());
+                    }
+                    match wg_path.file_name().and_then(|n| n.to_str()) {
+                        Some(n) if crate::config::entity_prefix::has_entity_prefix(n) => {}
+                        _ => return ControlFlow::Continue(()),
+                    }
 
-                let Some(coord) =
-                    crate::config::teams::resolve_wg_coordinator_replica(&ac_root, &wg_path)
-                else {
-                    continue;
-                };
-                let peer_name = format!("{}:{}/{}", coord.project, coord.wg_name, coord.agent_name);
-                if peers.iter().any(|p| p.name == peer_name) {
-                    continue;
-                }
-                let mut peer = build_wg_peer(
-                    &coord.project,
-                    &coord.agent_name,
-                    &coord.wg_name,
-                    &coord.replica_dir,
-                    true,
-                    &session_index,
-                );
-                peer.teams = vec![coord.team];
-                peers.push(peer);
-            }
+                    let Some(coord) =
+                        crate::config::teams::resolve_wg_coordinator_replica(&ac_root, &wg_path)
+                    else {
+                        return ControlFlow::Continue(());
+                    };
+                    let peer_name =
+                        format!("{}:{}/{}", coord.project, coord.wg_name, coord.agent_name);
+                    if peers.iter().any(|p| p.name == peer_name) {
+                        return ControlFlow::Continue(());
+                    }
+                    let mut peer = build_wg_peer(
+                        &coord.project,
+                        &coord.agent_name,
+                        &coord.wg_name,
+                        &coord.replica_dir,
+                        true,
+                        &session_index,
+                    );
+                    peer.teams = vec![coord.team];
+                    peers.push(peer);
+
+                    ControlFlow::Continue(())
+                });
         }
     }
 

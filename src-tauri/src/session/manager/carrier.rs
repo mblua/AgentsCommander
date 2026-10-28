@@ -2,7 +2,7 @@ use super::super::session::{Session, SessionCommunication, SessionStatus};
 use super::{PendingCreateBinding, RetainedPrompt, SessionManager, SessionManagerState};
 use crate::errors::AppError;
 use crate::pty::backend::SessionBackendKind;
-use crate::session::selection::SessionSelection;
+use crate::session::selection::payload::SessionSelection;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -365,16 +365,6 @@ impl Drop for CarrierStateWrite<'_> {
 }
 
 impl SessionManager {
-    pub(crate) fn with_response_close(
-        state: crate::pty::response_close::ResponseCloseState,
-    ) -> Self {
-        state.bind_publisher(crate::pty::response_close::ResponseClosePublisher::Manager);
-        Self {
-            response_close: state,
-            ..Self::new()
-        }
-    }
-
     pub(crate) fn response_close_state(&self) -> crate::pty::response_close::ResponseCloseState {
         self.response_close.clone()
     }
