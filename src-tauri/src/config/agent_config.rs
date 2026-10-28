@@ -1,6 +1,7 @@
 pub(super) use crate::config::local_config_io::ConfigPublisher;
 #[cfg(test)]
 pub(super) use crate::config::local_config_io::{publish_temp_config, temp_config_path};
+use crate::filesystem::{config_locations, documents};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -188,7 +189,7 @@ pub fn set_last_coding_agent(
     // Write to per-instance config dir
     let local_dir_name = crate::config::agent_local_dir_name();
     let instance_dir = Path::new(repo_path).join(local_dir_name.as_str());
-    std::fs::create_dir_all(&instance_dir)
+    config_locations::ensure_shared_directories(&instance_dir)
         .map_err(|e| format!("Failed to create {} dir: {}", local_dir_name, e))?;
     upsert_config(
         &instance_dir.join("config.json"),
@@ -225,7 +226,7 @@ pub fn set_last_agent_message_at(repo_path: &str, at_rfc3339: &str) -> Result<bo
         .map_err(|_| "invalidActivityTimestamp: expected RFC3339".to_string())?;
     let local_dir_name = crate::config::agent_local_dir_name();
     let instance_dir = Path::new(repo_path).join(local_dir_name.as_str());
-    std::fs::create_dir_all(&instance_dir)
+    config_locations::ensure_shared_directories(&instance_dir)
         .map_err(|e| format!("Failed to create {} dir: {}", local_dir_name, e))?;
     let path = instance_dir.join("config.json");
 
@@ -280,7 +281,7 @@ pub fn read_last_agent_message_at(repo_path: &str) -> Option<String> {
     // intent must never be advertised before its state publish.
     let mut maximum: Option<(chrono::DateTime<chrono::FixedOffset>, String)> = None;
     for path in [dir.join("config.json"), state_file_path(&dir)] {
-        let value = std::fs::read(&path)
+        let value = documents::read_agent_activity_bytes(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
             .and_then(|value| {
@@ -387,7 +388,7 @@ fn state_file_path(dir: &Path) -> std::path::PathBuf {
 }
 
 fn read_config_text(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path).ok()
+    documents::read_config_document(path).ok()
 }
 
 /// Merge the two texts. `config.json` that is not JSON is an error; a state
@@ -502,7 +503,7 @@ where
         production_journal_dir().as_deref(),
         &|_: &str| {},
         |d, s| {
-            if !decisions.exists() {
+            if !documents::config_document_exists(decisions) {
                 return Err(format!(
                     "Local config {} does not exist",
                     decisions.display()
@@ -780,10 +781,9 @@ fn nearest_ac_root(decisions: &Path) -> Option<&Path> {
 /// lacks. An appending write, never a rewrite, so no line another writer added
 /// can be lost.
 fn ensure_config_state_ignore_rows(ac_root: &Path) -> Result<(), String> {
-    use std::io::Write as _;
     let path = ac_root.join(".gitignore");
     let io = |what: &str, e: std::io::Error| format!("failed to {what} {}: {e}", path.display());
-    let content = match std::fs::read_to_string(&path) {
+    let content = match documents::read_config_document(&path) {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(io("read", e)),
@@ -816,12 +816,7 @@ fn ensure_config_state_ignore_rows(ac_root: &Path) -> Result<(), String> {
     } else {
         "\n"
     };
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .and_then(|mut file| file.write_all(format!("{separator}{blocks}").as_bytes()))
-        .map_err(|e| io("append to", e))
+    documents::append_config_ignore_rows(&path, separator, &blocks).map_err(|e| io("append to", e))
 }
 
 /// #2807 (C2) 3.3 - the cleanup of the pair, and the write-side twin of
@@ -893,7 +888,8 @@ fn stamp_split_marker(state: &mut JsonMap) {
 /// write still succeeded, because both files are already consistent.
 fn note_moved_state_keys(decisions: &Path, journal_dir: Option<&Path>, moved: &[&str]) {
     use crate::config::naming_migration;
-    let canonical = std::fs::canonicalize(decisions).unwrap_or_else(|_| decisions.to_path_buf());
+    let canonical =
+        documents::canonical_config_document(decisions).unwrap_or_else(|_| decisions.to_path_buf());
     let scope = format!("config-state:{}", canonical.display());
     let note = format!("moved to the state file: {}", moved.join(", "));
     let noted = naming_migration::update_journal(journal_dir, |journal| {

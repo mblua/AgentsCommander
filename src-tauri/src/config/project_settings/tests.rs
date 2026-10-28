@@ -591,3 +591,40 @@ fn project_settings_file_is_the_layer_50_settings_name() {
     assert_eq!(PROJECT_SETTINGS_TARGET_NAME, SETTINGS_LOCAL_TARGET_NAME);
     assert_eq!(PROJECT_SETTINGS_FILE, "settings.50.personal.no-git.json");
 }
+
+#[test]
+fn issue_3361_settings_ignore_rows_preserve_prefix_and_errors() {
+    for prefix in [None, Some("sentinel\n"), Some("sentinel")] {
+        let temp = project_with_ac_root();
+        let ac_root = temp.path().join(".ac");
+        let path = ac_root.join(".gitignore");
+        if let Some(prefix) = prefix {
+            std::fs::write(&path, prefix).unwrap();
+        }
+        ensure_project_settings_ignore_rows(&ac_root).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let expected_prefix = if prefix.is_some() { "sentinel\n" } else { "" };
+        assert!(
+            content.starts_with(expected_prefix),
+            "prefix lost: {content:?}"
+        );
+        for (row, _) in naming_migration::project_settings_ignore_rows() {
+            assert!(content.lines().any(|line| line == row));
+        }
+        ensure_project_settings_ignore_rows(&ac_root).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+    }
+    let temp = project_with_ac_root();
+    let ac_root = temp.path().join(".ac");
+    let path = ac_root.join(".gitignore");
+    std::fs::create_dir(&path).unwrap();
+    let refusal = ensure_project_settings_ignore_rows(&ac_root).unwrap_err();
+    match refusal {
+        naming_migration::Refusal::Io(message) => {
+            assert!(message.starts_with(&format!("failed to read {}:", path.display())));
+        }
+        other => panic!("unexpected refusal: {other:?}"),
+    }
+    assert!(path.is_dir());
+    assert!(!settings_path(temp.path()).exists());
+}
