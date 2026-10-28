@@ -1,6 +1,9 @@
 mod carrier;
 #[cfg(test)]
+pub(crate) use carrier::poison_discard_slot_for_test;
+#[cfg(test)]
 pub(crate) use carrier::restore_test_carrier_scopes_are_empty;
+pub(crate) use carrier::{observe_discard_veto, DiscardVetoObservation, DiscardVetoReason};
 mod live_update;
 mod operation;
 mod orphan;

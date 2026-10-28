@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::Path;
 
 /// Scan the selected Project AC Root for existing `room-<N>-{team_name}/` dirs and return the
@@ -49,33 +48,5 @@ pub(crate) fn room_number_pad_width() -> usize {
 }
 
 pub(crate) fn determine_next_wg_number(ac_root: &Path) -> u32 {
-    let mut taken: HashSet<u32> = HashSet::new();
-
-    if let Ok(entries) = std::fs::read_dir(ac_root) {
-        for entry in entries.flatten() {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if let Some(rest) = name_str.strip_prefix(crate::config::entity_prefix::ROOM_DIR_PREFIX)
-            {
-                if let Some((middle, team)) = rest.split_once('-') {
-                    if team.is_empty() {
-                        continue;
-                    }
-                    if let Ok(n) = middle.parse::<u32>() {
-                        taken.insert(n);
-                    }
-                }
-            }
-        }
-    }
-
-    // Lowest free positive integer ≥ 1. The bounded `..=u32::MAX` form avoids
-    // any iterator-overflow footgun in debug builds; `find` short-circuits at
-    // the first miss so the actual cost is O(taken.len() + 1) in practice.
-    // A `0` may end up in `taken` (from a stray `wg-0-{team}`) but is never
-    // tested here — the search starts at 1, so slot 1 is always reachable.
-    (1u32..=u32::MAX).find(|n| !taken.contains(n)).unwrap_or(1)
+    crate::config::entity_creation::directories::determine_next_wg_number(ac_root)
 }

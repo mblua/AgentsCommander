@@ -8,9 +8,7 @@ use super::{
 #[cfg(windows)]
 use super::{WindowsNamespaceOperation, WindowsPathState, WindowsReplacePartial};
 #[cfg(windows)]
-use std::fs::{File, OpenOptions};
-#[cfg(windows)]
-use std::io;
+use crate::filesystem::seed_manifest::{self as manifest_disk, ManifestFile as File};
 #[cfg(not(unix))]
 use std::path::Path;
 
@@ -338,36 +336,11 @@ impl ProjectSeedManifestGuard {
             return hook(operation, _temp, _canonical);
         }
 
-        use windows_sys::Win32::Foundation::GetLastError;
-        use windows_sys::Win32::Storage::FileSystem::{
-            MoveFileExW, ReplaceFileW, MOVEFILE_WRITE_THROUGH,
-        };
-
-        let success = match operation {
-            WindowsNamespaceOperation::MoveFileEx => unsafe {
-                MoveFileExW(
-                    temp_wide.as_ptr(),
-                    canonical_wide.as_ptr(),
-                    MOVEFILE_WRITE_THROUGH,
-                )
-            },
-            WindowsNamespaceOperation::ReplaceFile => unsafe {
-                ReplaceFileW(
-                    canonical_wide.as_ptr(),
-                    temp_wide.as_ptr(),
-                    std::ptr::null(),
-                    0,
-                    std::ptr::null(),
-                    std::ptr::null(),
-                )
-            },
-        };
-        if success == 0 {
-            let raw_error = unsafe { GetLastError() };
-            Err(raw_error)
-        } else {
-            Ok(())
-        }
+        manifest_disk::publish_windows_manifest_namespace(
+            matches!(operation, WindowsNamespaceOperation::ReplaceFile),
+            temp_wide,
+            canonical_wide,
+        )
     }
 }
 
@@ -409,29 +382,13 @@ pub(crate) fn reopen_windows_zero_access(
     writer: &File,
     path: &Path,
 ) -> Result<OpenedRegularFile, SeedManifestError> {
-    use std::os::windows::io::{AsRawHandle, FromRawHandle};
-    use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Storage::FileSystem::{
-        ReOpenFile, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE,
-    };
-
-    let handle = unsafe {
-        ReOpenFile(
-            writer.as_raw_handle() as HANDLE,
-            0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            FILE_FLAG_OPEN_REPARSE_POINT,
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(SeedManifestError::TempFile {
+    let file = manifest_disk::reopen_windows_zero_access(writer).map_err(|source| {
+        SeedManifestError::TempFile {
             operation: "ReOpenFile zero-access witness",
             path: path.to_path_buf(),
-            source: io::Error::last_os_error(),
-        });
-    }
-    let file = unsafe { File::from_raw_handle(handle as _) };
+            source,
+        }
+    })?;
     OpenedRegularFile::from_file(path, file)
 }
 
@@ -534,19 +491,7 @@ pub(crate) fn open_validated_windows_final(
 }
 
 #[cfg(windows)]
-pub(crate) fn open_windows_delete_handle(path: &Path) -> io::Result<File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Foundation::GENERIC_READ;
-    use windows_sys::Win32::Storage::FileSystem::{
-        DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-
-    OpenOptions::new()
-        .access_mode(GENERIC_READ | DELETE)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
-}
+use crate::filesystem::seed_manifest::open_windows_delete_handle;
 
 #[cfg(windows)]
 pub(crate) fn cleanup_current_owned_temp(
@@ -563,13 +508,6 @@ pub(crate) fn cleanup_windows_temp_with_witness(
     expected_identity: FileIdentity,
     expected_bytes: Option<&[u8]>,
 ) -> Result<(), SeedManifestError> {
-    use std::mem::size_of;
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Foundation::{GetLastError, HANDLE};
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
-    };
-
     let witness_facts =
         handle_facts(&witness.file).map_err(|source| SeedManifestError::TempFile {
             operation: "inspect current-owned temp witness",
@@ -627,23 +565,13 @@ pub(crate) fn cleanup_windows_temp_with_witness(
         }
     }
 
-    let disposition = FILE_DISPOSITION_INFO { DeleteFile: 1 };
-    let success = unsafe {
-        SetFileInformationByHandle(
-            delete_opened.file.as_raw_handle() as HANDLE,
-            FileDispositionInfo,
-            (&disposition as *const FILE_DISPOSITION_INFO).cast(),
-            u32::try_from(size_of::<FILE_DISPOSITION_INFO>()).unwrap_or(u32::MAX),
-        )
-    };
-    if success == 0 {
-        let raw_error = unsafe { GetLastError() };
-        return Err(SeedManifestError::TempFile {
+    manifest_disk::mark_windows_manifest_temp_deleted(&delete_opened.file).map_err(|source| {
+        SeedManifestError::TempFile {
             operation: "SetFileInformationByHandle(FileDispositionInfo)",
             path: path.to_path_buf(),
-            source: io::Error::from_raw_os_error(i32::try_from(raw_error).unwrap_or(i32::MAX)),
-        });
-    }
+            source,
+        }
+    })?;
     drop(delete_opened);
     Ok(())
 }
@@ -652,75 +580,24 @@ pub(crate) fn cleanup_windows_temp_with_witness(
 pub(crate) fn verify_windows_temp_has_only_unnamed_stream(
     path: &Path,
 ) -> Result<(), SeedManifestError> {
-    use std::mem::MaybeUninit;
-    use windows_sys::Win32::Foundation::{GetLastError, ERROR_HANDLE_EOF, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Storage::FileSystem::{
-        FindClose, FindFirstStreamW, FindNextStreamW, FindStreamInfoStandard,
-        WIN32_FIND_STREAM_DATA,
-    };
-
-    struct FindStreamHandle(windows_sys::Win32::Foundation::HANDLE);
-    impl Drop for FindStreamHandle {
-        fn drop(&mut self) {
-            if unsafe { FindClose(self.0) } == 0 {
-                log::warn!(
-                    "[seed_manifest] FindClose failed after bounded temp stream inventory: {}",
-                    io::Error::last_os_error()
-                );
-            }
-        }
-    }
-
     let wide = absolute_verbatim_utf16(path)?;
-    let mut data = MaybeUninit::<WIN32_FIND_STREAM_DATA>::zeroed();
-    let raw_handle = unsafe {
-        FindFirstStreamW(
-            wide.as_ptr(),
-            FindStreamInfoStandard,
-            data.as_mut_ptr().cast(),
-            0,
-        )
-    };
-    if raw_handle == INVALID_HANDLE_VALUE {
-        let raw_error = unsafe { GetLastError() };
-        return Err(SeedManifestError::TempFile {
-            operation: "FindFirstStreamW",
+    let ordinary = manifest_disk::manifest_temp_has_only_unnamed_stream(&wide).map_err(
+        |error| match error {
+            manifest_disk::ManifestStreamError::Io { operation, source } => {
+                SeedManifestError::TempFile {
+                    operation,
+                    path: path.to_path_buf(),
+                    source,
+                }
+            }
+        },
+    )?;
+    if !ordinary {
+        return Err(SeedManifestError::UnsafePath {
             path: path.to_path_buf(),
-            source: io::Error::from_raw_os_error(i32::try_from(raw_error).unwrap_or(i32::MAX)),
+            reason: "manifest temp contains a named data stream".to_string(),
         });
     }
-    let handle = FindStreamHandle(raw_handle);
-    let mut data = unsafe { data.assume_init() };
-    loop {
-        let end = data
-            .cStreamName
-            .iter()
-            .position(|unit| *unit == 0)
-            .unwrap_or(data.cStreamName.len());
-        let expected = "::$DATA".encode_utf16().collect::<Vec<_>>();
-        if data.cStreamName[..end] != expected {
-            return Err(SeedManifestError::UnsafePath {
-                path: path.to_path_buf(),
-                reason: "manifest temp contains a named data stream".to_string(),
-            });
-        }
-
-        let next =
-            unsafe { FindNextStreamW(handle.0, (&mut data as *mut WIN32_FIND_STREAM_DATA).cast()) };
-        if next != 0 {
-            continue;
-        }
-        let raw_error = unsafe { GetLastError() };
-        if raw_error == ERROR_HANDLE_EOF {
-            break;
-        }
-        return Err(SeedManifestError::TempFile {
-            operation: "FindNextStreamW",
-            path: path.to_path_buf(),
-            source: io::Error::from_raw_os_error(i32::try_from(raw_error).unwrap_or(i32::MAX)),
-        });
-    }
-    drop(handle);
     Ok(())
 }
 
@@ -730,10 +607,12 @@ pub(crate) fn atomic_publish_manifest(
     canonical: &Path,
     _had_canonical: bool,
 ) -> Result<(), SeedManifestError> {
-    std::fs::rename(temp, canonical).map_err(|source| SeedManifestError::AtomicReplace {
-        operation: "rename",
-        temp: temp.to_path_buf(),
-        canonical: canonical.to_path_buf(),
-        source,
+    crate::filesystem::seed_manifest::rename_manifest_temp(temp, canonical).map_err(|source| {
+        SeedManifestError::AtomicReplace {
+            operation: "rename",
+            temp: temp.to_path_buf(),
+            canonical: canonical.to_path_buf(),
+            source,
+        }
     })
 }

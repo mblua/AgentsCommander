@@ -1,7 +1,7 @@
 // Initial finite inventory: literals identify only registered, scoped containers.
 // Writer calls are syntactic observations, never proof of a container's identity.
 import { gateCli, isMain, GateError, codeOrder } from './sanitizing_baseline.mjs';
-import { scanRust } from './sanitizing_rust_scan.mjs';
+import { scanRust, createRustScanner } from './sanitizing_rust_scan.mjs';
 import { qualified } from './sanitizing_gate_support.mjs';
 
 const registryPath = 'scripts/containers.json';
@@ -30,8 +30,8 @@ export function parseRegistry(text) {
   return doc.containers;
 }
 
-export function measureSource(path, text) {
-  const scan = scanRust(path, text), ts = scan.productionTokens, writers = [];
+export function measureSource(path, text, scan = scanRust(path, text)) {
+  const ts = scan.productionTokens, writers = [];
   for (let i = 0; i < ts.length; i++) {
     const t = ts[i];
     if (t.kind !== 'ident' || ts[i - 1]?.text === '.' ||
@@ -55,8 +55,9 @@ export function runGate(snapshot) {
     for (const c of containers) if (!snapshot.headTree.has(c.owner))
       throw new GateError('containers.json: owner missing: ' + c.owner);
     const measurements = new Map();
+    const scan = createRustScanner(snapshot.headTree, snapshot.readBlob);
     for (const p of [...snapshot.headTree.keys()].filter(rustSource).sort(codeOrder)) {
-      const m = measureSource(p, snapshot.readBlob(snapshot.headTree.get(p)));
+      const m = measureSource(p, snapshot.readBlob(snapshot.headTree.get(p)), scan(p));
       measurements.set(p, m);
       if (m.writers.length) { inventory.files++; inventory.sites += m.writers.length; }
     }

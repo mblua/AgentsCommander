@@ -24,6 +24,7 @@ use std::io::Write as _;
 
 mod clean;
 mod flow;
+mod initialization;
 mod status;
 
 #[cfg(test)]
@@ -32,6 +33,9 @@ use clean::recover_clean_pair_locked;
 #[cfg(test)]
 use clean::{backup_names, CleanJournal};
 use flow::perform_inner;
+pub(crate) use initialization::{
+    build_task_content, initialize_new_room, prepare_new_room_task_content, validate_task_title,
+};
 pub use status::StatusReceipt;
 pub use status::StatusRecord;
 pub use status::TaskSnapshot;

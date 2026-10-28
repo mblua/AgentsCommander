@@ -5,17 +5,36 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+pub(crate) mod activity_log;
+pub(crate) mod agency_templates;
+pub(crate) mod agent_files;
 pub(crate) mod attachments;
+pub(crate) mod catalog;
+pub(crate) mod config_locations;
+pub(crate) mod config_seed;
+pub(crate) mod context_skills;
+pub(crate) mod context_templates;
+pub(crate) mod coordinator_clocks;
+pub(crate) mod daemon_pid;
 pub(crate) mod debug_logs;
 pub(crate) mod directories;
 pub(crate) mod documents;
+pub(crate) mod injected_documents;
+pub(crate) mod instance_ignore;
+pub(crate) mod naming_journal;
+pub(crate) mod phone_mailbox;
+pub(crate) mod phone_messaging;
 pub(crate) mod processes;
 pub(crate) mod profile_targets;
 pub(crate) mod projects;
+pub(crate) mod remote_activity;
 pub(crate) mod repositories;
 pub(crate) mod room_diagnostics;
+pub(crate) mod seed_manifest;
+pub(crate) mod session_context;
 pub(crate) mod spec_board;
 pub(crate) mod tasks;
+pub(crate) mod terminal_snapshots;
 pub(crate) mod transcripts;
 
 /// Read the capture catalog without changing the platform's file semantics.

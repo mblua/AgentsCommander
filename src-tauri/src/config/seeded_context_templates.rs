@@ -189,7 +189,7 @@ fn ensure_project_context_templates_with_clock(
     clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
     on_publication: &mut dyn FnMut(&'static str, ContextPublication),
 ) -> Result<(), String> {
-    std::fs::create_dir_all(ac_root).map_err(|e| {
+    crate::filesystem::context_templates::ensure_template_directory(ac_root).map_err(|e| {
         format!(
             "failed to create context templates directory {}: {}",
             ac_root.display(),
@@ -401,7 +401,7 @@ fn sync_project_context_template_for_read_with_clock(
 }
 
 pub fn ensure_root_context_template(config_dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(config_dir).map_err(|e| {
+    crate::filesystem::context_templates::ensure_template_directory(config_dir).map_err(|e| {
         format!(
             "Failed to create root agent config directory {}: {}",
             config_dir.display(),
