@@ -1,5 +1,134 @@
 use super::*;
 
+// Include directories as well as file bytes: absence, sidecars and mkdir are observable.
+fn repair_tree(root: &Path) -> std::collections::BTreeMap<PathBuf, Option<Vec<u8>>> {
+    fn visit(
+        root: &Path,
+        dir: &Path,
+        entries: &mut std::collections::BTreeMap<PathBuf, Option<Vec<u8>>>,
+    ) {
+        for entry in std::fs::read_dir(dir).expect("snapshot directory") {
+            let path = entry.expect("snapshot entry").path();
+            let bytes = if path.is_dir() {
+                visit(root, &path, entries);
+                None
+            } else {
+                Some(std::fs::read(&path).expect("snapshot bytes"))
+            };
+            entries.insert(path.strip_prefix(root).expect("fixture path").to_path_buf(), bytes);
+        }
+    }
+    let mut entries = std::collections::BTreeMap::new();
+    visit(root, root, &mut entries);
+    entries
+}
+
+fn reserve_repair_pair(replica: &Path) {
+    use crate::config::local_config_io::{
+        protected_config_pair_revision, read_config_pair_physical, PairReservationRequest,
+    };
+    let decisions = replica.join("config.json");
+    let state = replica.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
+    let before = [
+        read_config_pair_physical(&decisions).expect("decisions image"),
+        read_config_pair_physical(&state).expect("state image"),
+    ];
+    let request = PairReservationRequest {
+        operation_id: "repair-authority".into(),
+        source_physical_key: "repair-source".into(),
+        mappings_digest: "a".repeat(64),
+        before_protected: protected_config_pair_revision(&before).expect("protected revision"),
+    };
+    crate::config::agent_config::prepare_and_reserve_identity_reference_pair(
+        &decisions,
+        &request,
+        |config, _| {
+            config.insert("reservedChange".into(), Value::Bool(true));
+            Ok(())
+        },
+    )
+    .expect("reserve repair pair");
+}
+
+#[test]
+fn repair_location_precedes_nonpending_cleanup_and_invalid_config() {
+    for config in [None, Some("{invalid"), Some(r#"{"tooling":{"lastCodingAgent":"x"}}"#)] {
+        let temp = tempfile::tempdir().expect("fixture");
+        let root = temp.path().join("workspace");
+        let replica = root.join("room-2-dev-team").join("__agent_tech-lead");
+        if let Some(config) = config {
+            std::fs::create_dir_all(&replica).expect("replica");
+            std::fs::write(replica.join("config.json"), config).expect("config");
+            std::fs::write(root.join(".gitignore"), "# keep bytes").expect("ignore");
+        }
+        let before = repair_tree(temp.path());
+        let error = read_and_repair_wg_replica_config(&replica, &[]).expect_err("location");
+        assert_eq!(
+            error,
+            format!(
+                "Room replica directory '{}' is not inside a Project AC Root",
+                display_path(&replica)
+            )
+        );
+        assert_eq!(repair_tree(temp.path()), before);
+    }
+}
+
+#[test]
+fn repair_location_precedes_pending_binding_and_sidecars() {
+    for existing_ignore in [false, true] {
+        let temp = setup_replica(".ac");
+        let project = temp.path().join("AgentsCommander_ac");
+        let root = project.join(".ac");
+        let relative = Path::new("wg-2-dev-team").join("__agent_tech-lead");
+        let replica = root.join(&relative);
+        std::fs::write(replica.join("config.json"), r#"{"identity":"../../_agent_tech-lead"}"#)
+            .expect("config");
+        reserve_repair_pair(&replica);
+        // Retain the real packet, but remove setup sidecars to expose writer entry.
+        for entry in std::fs::read_dir(&replica).expect("replica entries") {
+            let path = entry.expect("entry").path();
+            if path.extension().is_some_and(|extension| extension == "lock") {
+                std::fs::remove_file(path).expect("remove setup lock");
+            }
+        }
+        std::fs::remove_file(root.join(".gitignore")).expect("remove generated ignore");
+        if existing_ignore {
+            std::fs::write(root.join(".gitignore"), "# exact user bytes").expect("ignore");
+        }
+        let invalid_root = project.join("workspace");
+        std::fs::rename(&root, &invalid_root).expect("move own fixture root");
+        let replica = invalid_root.join(relative);
+        let before = repair_tree(temp.path());
+        let error = read_and_repair_wg_replica_config(&replica, &[]).expect_err("location");
+        assert_eq!(
+            error,
+            format!(
+                "Room replica directory '{}' is not inside a Project AC Root",
+                display_path(&replica)
+            )
+        );
+        assert_eq!(repair_tree(temp.path()), before);
+    }
+}
+
+#[test]
+fn repair_valid_pending_pair_refuses_structural_repair_without_changing_bytes() {
+    let temp = setup_replica(".ac");
+    let replica = temp.path().join("AgentsCommander_ac/.ac/wg-2-dev-team/__agent_tech-lead");
+    std::fs::write(
+        replica.join("config.json"),
+        r#"{"identity":"../../../../old/.ac/_agent_tech-lead","context":["notes.md"]}"#,
+    )
+    .expect("stale config");
+    reserve_repair_pair(&replica);
+    let before = repair_tree(temp.path());
+    let error = read_and_repair_wg_replica_config(&replica, WG_REPLICA_REQUIRED_CONTEXT)
+        .expect_err("pending structural repair");
+    assert_eq!(error, "targetTransitionPending: PAIR is reserved");
+    assert_eq!(repair_tree(temp.path()), before);
+}
+
 #[test]
 #[cfg(windows)]
 fn replica_identity_path_helpers_convert_verbatim_unc() {
