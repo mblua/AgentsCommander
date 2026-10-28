@@ -7,6 +7,7 @@ use crate::config::seed_manifest::{
     acquire_project_gate_soft, has_catalog_publication, ManifestActivationToken,
     ManifestPathIdentity, ProjectSeedManifestGuard, PublishedManifestRow, SoftProjectGate,
 };
+use crate::filesystem::{catalog, config_seed};
 
 use super::{
     acquire_catalog_lock, analyze_base_bytes, catalog_diagnostic, catalog_dir, ensure_catalog_dir,
@@ -45,7 +46,7 @@ pub(crate) fn initialize_catalog_under_lock(
     // config dir, so a journal or backup beside an instance catalog cannot be
     // ours. Leave any such sidecar untouched and never resume it.
     if scope == InitScope::Project {
-        let journal_exists = match std::fs::symlink_metadata(&paths.journal) {
+        let journal_exists = match config_seed::inspect_seed_destination(&paths.journal) {
             Ok(_) => true,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(error) => {
@@ -57,7 +58,7 @@ pub(crate) fn initialize_catalog_under_lock(
                 return outcome;
             }
         };
-        let backup_exists = match std::fs::symlink_metadata(&paths.backup) {
+        let backup_exists = match config_seed::inspect_seed_destination(&paths.backup) {
             Ok(_) => true,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(error) => {
@@ -382,7 +383,7 @@ pub(crate) fn naming_refusal_reason(refusal: naming_migration::Refusal) -> Strin
 }
 
 pub(crate) fn catalog_path_present(path: &Path) -> Result<bool, CatalogDiagnostic> {
-    match std::fs::symlink_metadata(path) {
+    match config_seed::inspect_seed_destination(path) {
         Ok(_) => Ok(true),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(catalog_diagnostic(
@@ -550,7 +551,7 @@ pub(crate) fn migrate_legacy_catalog_scope(
             ),
         )
     };
-    let dir = match std::fs::canonicalize(legacy_catalog_dir) {
+    let dir = match catalog::canonical_catalog_path(legacy_catalog_dir) {
         Ok(dir) => dir,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(conflict(error.to_string())),
