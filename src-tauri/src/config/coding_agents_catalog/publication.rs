@@ -1,8 +1,9 @@
 use std::fs::File;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
+
+use crate::filesystem::{catalog, config_seed};
 
 #[cfg(test)]
 use super::take_catalog_path_fault;
@@ -59,7 +60,7 @@ pub(crate) fn ensure_catalog_dir(ac_dir: &Path) -> Result<PathBuf, String> {
         ));
     }
     let dir = catalog_dir(ac_dir);
-    match std::fs::symlink_metadata(&dir) {
+    match config_seed::inspect_seed_destination(&dir) {
         Ok(meta) => {
             if meta.file_type().is_symlink() || is_reparse_point(&meta) {
                 return Err(format!(
@@ -78,7 +79,7 @@ pub(crate) fn ensure_catalog_dir(ac_dir: &Path) -> Result<PathBuf, String> {
             // `.ac` itself may be absent (a direct caller owns the path); an
             // EXISTING `.ac` must be a real directory, never a link, and the
             // catalog directory is created inside it.
-            if let Ok(parent) = std::fs::symlink_metadata(ac_dir) {
+            if let Ok(parent) = config_seed::inspect_seed_destination(ac_dir) {
                 if parent.file_type().is_symlink() || is_reparse_point(&parent) || !parent.is_dir()
                 {
                     return Err(format!(
@@ -88,7 +89,7 @@ pub(crate) fn ensure_catalog_dir(ac_dir: &Path) -> Result<PathBuf, String> {
                     ));
                 }
             }
-            std::fs::create_dir_all(&dir).map_err(|e| {
+            config_seed::ensure_seed_directory(&dir).map_err(|e| {
                 format!(
                     "failed to create the catalog directory {} ({e})",
                     dir.display()
@@ -102,7 +103,7 @@ pub(crate) fn ensure_catalog_dir(ac_dir: &Path) -> Result<PathBuf, String> {
             ))
         }
     }
-    std::fs::canonicalize(&dir).map_err(|e| {
+    catalog::canonical_catalog_path(&dir).map_err(|e| {
         format!(
             "failed to canonicalize the catalog directory {} ({e})",
             dir.display()
@@ -111,36 +112,11 @@ pub(crate) fn ensure_catalog_dir(ac_dir: &Path) -> Result<PathBuf, String> {
 }
 
 pub(crate) fn sync_parent_directory(path: &Path) {
-    #[cfg(unix)]
-    if let Some(parent) = path.parent() {
-        if let Ok(directory) = File::open(parent) {
-            let _ = directory.sync_all();
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = path;
+    catalog::sync_parent_directory(path);
 }
 
 pub(crate) fn write_synced_temp(temp: &Path, bytes: &[u8]) -> Result<(), String> {
-    let result = (|| -> Result<(), String> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(temp)
-            .map_err(|e| format!("create temp {} ({e})", temp.display()))?;
-        file.write_all(bytes)
-            .map_err(|e| format!("write temp {} ({e})", temp.display()))?;
-        file.flush()
-            .map_err(|e| format!("flush temp {} ({e})", temp.display()))?;
-        file.sync_all()
-            .map_err(|e| format!("sync temp {} ({e})", temp.display()))?;
-        drop(file);
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(temp);
-    }
-    result
+    catalog::write_synced_temp(temp, bytes)
 }
 
 /// The hard-link publication boundary. Production compiles to exactly
@@ -154,7 +130,7 @@ pub(crate) fn publish_hard_link(source: &Path, destination: &Path) -> std::io::R
     if let Some(kind) = take_catalog_path_fault("hard_link", destination) {
         return Err(std::io::Error::new(kind, "injected hard-link failure"));
     }
-    std::fs::hard_link(source, destination)
+    catalog::link_catalog_temp(source, destination)
 }
 
 pub(crate) fn publication_temp_path(parent: &Path, destination_file_name: &str) -> PathBuf {
@@ -183,7 +159,7 @@ pub(crate) fn publish_exclusive(path: &Path, bytes: &[u8]) -> Result<(), String>
     write_synced_temp(&temp, bytes)?;
     inject_catalog_failure("publication_temp_synced")?;
     let result = publish_hard_link(&temp, path);
-    let _ = std::fs::remove_file(&temp);
+    let _ = catalog::remove_catalog_temp(&temp);
     match result {
         Ok(()) => {
             sync_parent_directory(path);
@@ -213,7 +189,7 @@ pub(crate) fn publish_replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
     write_synced_temp(&temp, bytes)?;
     inject_catalog_failure("publication_temp_synced")?;
     if let Err(error) = crate::config::root_agent::atomic_replace_existing(&temp, path) {
-        let _ = std::fs::remove_file(&temp);
+        let _ = catalog::remove_catalog_temp(&temp);
         return Err(error);
     }
     sync_parent_directory(path);
@@ -234,7 +210,7 @@ pub(crate) struct CatalogLockGuard {
 /// message: a filesystem without lock support must not silently degrade to
 /// process-only exclusion.
 pub(crate) fn acquire_catalog_lock(paths: &CatalogPaths) -> Result<CatalogLockGuard, String> {
-    match std::fs::symlink_metadata(&paths.lock) {
+    match config_seed::inspect_seed_destination(&paths.lock) {
         Ok(meta) if meta.file_type().is_symlink() || is_reparse_point(&meta) || !meta.is_file() => {
             return Err(format!(
                 "the coding-agent catalog lock {} must be a regular non-symlink file",
@@ -250,19 +226,13 @@ pub(crate) fn acquire_catalog_lock(paths: &CatalogPaths) -> Result<CatalogLockGu
             ))
         }
     }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&paths.lock)
-        .map_err(|e| {
-            format!(
-                "failed to open the coding-agent catalog lock {} ({e})",
-                paths.lock.display()
-            )
-        })?;
-    if !file.metadata().map(|meta| meta.is_file()).unwrap_or(false) {
+    let file = catalog::open_catalog_lock(&paths.lock).map_err(|e| {
+        format!(
+            "failed to open the coding-agent catalog lock {} ({e})",
+            paths.lock.display()
+        )
+    })?;
+    if !catalog::catalog_lock_is_regular(&file) {
         return Err(format!(
             "the coding-agent catalog lock {} must be a regular file",
             paths.lock.display()
@@ -271,9 +241,9 @@ pub(crate) fn acquire_catalog_lock(paths: &CatalogPaths) -> Result<CatalogLockGu
     let timeout = catalog_lock_timeout();
     let started = Instant::now();
     loop {
-        match file.try_lock() {
+        match catalog::try_catalog_lock(&file) {
             Ok(()) => return Ok(CatalogLockGuard { _file: file }),
-            Err(std::fs::TryLockError::WouldBlock) if started.elapsed() >= timeout => {
+            Err(catalog::TryLockError::WouldBlock) if started.elapsed() >= timeout => {
                 return Err(format!(
                     "catalogLockTimeout: timed out after {} ms waiting for the coding-agent \
                         catalog lock '{}'",
@@ -281,11 +251,11 @@ pub(crate) fn acquire_catalog_lock(paths: &CatalogPaths) -> Result<CatalogLockGu
                     paths.lock.display()
                 ))
             }
-            Err(std::fs::TryLockError::WouldBlock) => {
+            Err(catalog::TryLockError::WouldBlock) => {
                 let remaining = timeout.saturating_sub(started.elapsed());
                 std::thread::sleep(CATALOG_LOCK_POLL_INTERVAL.min(remaining));
             }
-            Err(std::fs::TryLockError::Error(error)) => {
+            Err(catalog::TryLockError::Error(error)) => {
                 return Err(format!(
                     "the coding-agent catalog lock {} could not be acquired ({error}); this \
                         filesystem does not support the lock and no process-only fallback is used",

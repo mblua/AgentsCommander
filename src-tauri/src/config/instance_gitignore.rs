@@ -18,9 +18,13 @@
 //! are transparent to that detection, so a user-authored pattern counts as
 //! present and never has a comment retrofitted onto it.
 
-use std::fs::{File, Metadata, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+#[cfg(test)]
+use std::fs::OpenOptions;
+use std::fs::{File, Metadata};
+use std::io;
 use std::path::Path;
+
+use crate::filesystem::instance_ignore;
 
 use super::instance_artifacts::{ArtifactKind, Disposition, InstanceArtifact};
 
@@ -47,7 +51,7 @@ pub(crate) fn ensure_instance_gitignore() -> Result<(), String> {
         "cannot seed the instance .gitignore because the config directory is unavailable"
             .to_string()
     })?;
-    std::fs::create_dir_all(&config_dir).map_err(|error| {
+    instance_ignore::ensure_ignore_parent(&config_dir).map_err(|error| {
         format!(
             "failed to create instance config directory {}: {error}",
             config_dir.display()
@@ -63,7 +67,7 @@ fn ensure_instance_gitignore_at(config_dir: &Path, agent_local_dir: &str) -> Res
     let mut retried = false;
 
     loop {
-        let result = match std::fs::symlink_metadata(&path) {
+        let result = match instance_ignore::ignore_leaf_metadata(&path) {
             Ok(metadata) => {
                 validate_regular_metadata(&path, &metadata, "named target")?;
                 ensure_existing_file(&path, &rules)?
@@ -179,7 +183,7 @@ fn create_fresh_file(path: &Path, rules: &[RenderedRule]) -> Result<AttemptResul
     validate_opened_regular_file(path, &file, "locked newly created target")?;
 
     let bytes = fresh_file_bytes(rules);
-    file.write_all(&bytes).map_err(|error| {
+    instance_ignore::write_ignore_bytes(&mut file, &bytes).map_err(|error| {
         format!(
             "failed to write new instance .gitignore at {}: {error}",
             path.display()
@@ -237,7 +241,7 @@ fn ensure_existing_file(path: &Path, rules: &[RenderedRule]) -> Result<AttemptRe
     }
 
     let suffix = append_buffer(&locked_bytes, rules, &missing);
-    append_file.write_all(&suffix).map_err(|error| {
+    instance_ignore::write_ignore_bytes(&mut append_file, &suffix).map_err(|error| {
         format!(
             "failed to append instance .gitignore rules at {}: {error}",
             path.display()
@@ -328,10 +332,9 @@ fn rewrite_retired_file(path: &Path, rules: &[RenderedRule]) -> Result<AttemptRe
     }
     let mut body = kept.to_vec();
     body.extend(append_buffer(kept, rules, &missing));
-    let written = file
-        .seek(SeekFrom::Start(0))
-        .and_then(|_| file.set_len(0))
-        .and_then(|()| file.write_all(&body));
+    let written = instance_ignore::seek_ignore_start(&mut file)
+        .and_then(|_| instance_ignore::truncate_ignore(&file))
+        .and_then(|()| instance_ignore::write_ignore_bytes(&mut file, &body));
     written.map_err(|error| {
         format!(
             "failed to rewrite instance .gitignore for rule retirement at {}: {error}",
@@ -398,14 +401,14 @@ fn append_buffer(existing: &[u8], rules: &[RenderedRule], missing: &[usize]) -> 
 }
 
 fn read_all(path: &Path, file: &mut File) -> Result<Vec<u8>, String> {
-    file.seek(SeekFrom::Start(0)).map_err(|error| {
+    instance_ignore::seek_ignore_start(file).map_err(|error| {
         format!(
             "failed to seek instance .gitignore at {}: {error}",
             path.display()
         )
     })?;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|error| {
+    instance_ignore::read_ignore_bytes(file, &mut bytes).map_err(|error| {
         if is_lock_contention_error(&error) {
             format!(
                 "instance .gitignore lock contention while reading at {}: {error}",
@@ -422,7 +425,7 @@ fn read_all(path: &Path, file: &mut File) -> Result<Vec<u8>, String> {
 }
 
 fn acquire_nonblocking_lock(path: &Path, file: &File) -> Result<(), String> {
-    file.try_lock().map_err(|error| {
+    instance_ignore::try_lock_ignore(file).map_err(|error| {
         let error: io::Error = error.into();
         if is_lock_contention_error(&error) {
             format!("instance .gitignore lock contention at {}", path.display())
@@ -467,7 +470,7 @@ fn validate_regular_metadata(
 }
 
 fn validate_opened_regular_file(path: &Path, file: &File, context: &str) -> Result<(), String> {
-    let opened_metadata = file.metadata().map_err(|error| {
+    let opened_metadata = instance_ignore::opened_ignore_metadata(file).map_err(|error| {
         format!(
             "failed to inspect opened instance .gitignore at {}: {error}",
             path.display()
@@ -475,7 +478,7 @@ fn validate_opened_regular_file(path: &Path, file: &File, context: &str) -> Resu
     })?;
     validate_regular_metadata(path, &opened_metadata, context)?;
 
-    let leaf_metadata = std::fs::symlink_metadata(path).map_err(|error| {
+    let leaf_metadata = instance_ignore::ignore_leaf_metadata(path).map_err(|error| {
         format!(
             "instance .gitignore target changed during validation at {}: {error}",
             path.display()
@@ -516,54 +519,20 @@ fn is_link_or_reparse(metadata: &Metadata) -> bool {
     }
 }
 
-fn apply_safe_open_flags(options: &mut OpenOptions) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        };
-        options
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = options;
-    }
-}
-
 fn open_new_no_follow(path: &Path) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.create_new(true).write(true);
-    apply_safe_open_flags(&mut options);
-    options.open(path)
+    instance_ignore::open_new_ignore(path)
 }
 
 fn open_read_no_follow(path: &Path) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    apply_safe_open_flags(&mut options);
-    options.open(path)
+    instance_ignore::open_read_ignore(path)
 }
 
 fn open_read_write_no_follow(path: &Path) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.read(true).write(true);
-    apply_safe_open_flags(&mut options);
-    options.open(path)
+    instance_ignore::open_read_write_ignore(path)
 }
 
 fn open_append_no_follow(path: &Path) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.read(true).append(true);
-    apply_safe_open_flags(&mut options);
-    options.open(path)
+    instance_ignore::open_append_ignore(path)
 }
 
 #[cfg(test)]

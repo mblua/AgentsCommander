@@ -308,7 +308,11 @@ async fn process_message_root_self_clear_with_canonical_sender_queues() {
     let root_cwd =
         PathBuf::from(crate::config::root_agent::root_agent_dir().expect("resolve root agent dir"));
     std::fs::create_dir_all(&root_cwd).unwrap();
-    clear_root_self_clear_artifacts(&root_cwd, "msg-sc-root-e2e-pos", "rid-sc-root-e2e-pos");
+    clear_root_self_clear_artifacts(
+        &root_cwd,
+        "msg-sc-root-e2e-pos",
+        "33180001-0000-4000-8000-000000000001",
+    );
     // #626 existence gate: seed SELF-HANDOFF.md so the positive path still queues. The guard
     // taken above, not an ownership convention, is what makes the seed-to-remove window
     // exclusive against the other Root seeder. NOTE: deliberately do NOT seed SELF-FORGET.md
@@ -338,7 +342,7 @@ async fn process_message_root_self_clear_with_canonical_sender_queues() {
     let (path, _msg) = build_self_clear_message_with_from(
         &root_cwd,
         "msg-sc-root-e2e-pos",
-        "rid-sc-root-e2e-pos",
+        "33180001-0000-4000-8000-000000000001",
         Some(token.to_string()),
         &canonical_from,
     );
@@ -351,7 +355,8 @@ async fn process_message_root_self_clear_with_canonical_sender_queues() {
     // Enqueued: the queue-ack response is "queued", exactly one id is pending, and
     // no reject reason file was written by either anti-spoof gate.
     assert_eq!(
-        read_self_clear_response_status(&root_cwd, "rid-sc-root-e2e-pos").as_deref(),
+        read_self_clear_response_status(&root_cwd, "33180001-0000-4000-8000-000000000001")
+            .as_deref(),
         Some("queued")
     );
     assert!(
@@ -392,7 +397,11 @@ async fn process_message_root_self_clear_with_buggy_sender_is_rejected() {
     let root_cwd =
         PathBuf::from(crate::config::root_agent::root_agent_dir().expect("resolve root agent dir"));
     std::fs::create_dir_all(&root_cwd).unwrap();
-    clear_root_self_clear_artifacts(&root_cwd, "msg-sc-root-e2e-neg", "rid-sc-root-e2e-neg");
+    clear_root_self_clear_artifacts(
+        &root_cwd,
+        "msg-sc-root-e2e-neg",
+        "33180001-0000-4000-8000-000000000002",
+    );
 
     let temp = tempfile::TempDir::new().unwrap();
     let app_struct = make_mailbox_app(temp.path());
@@ -416,7 +425,7 @@ async fn process_message_root_self_clear_with_buggy_sender_is_rejected() {
     let (path, _msg) = build_self_clear_message_with_from(
         &root_cwd,
         "msg-sc-root-e2e-neg",
-        "rid-sc-root-e2e-neg",
+        "33180001-0000-4000-8000-000000000002",
         Some(token.to_string()),
         &buggy_from,
     );
@@ -488,7 +497,11 @@ async fn process_message_root_self_restart_with_canonical_sender_queues() {
     let root_cwd =
         PathBuf::from(crate::config::root_agent::root_agent_dir().expect("resolve root agent dir"));
     std::fs::create_dir_all(&root_cwd).unwrap();
-    clear_root_self_clear_artifacts(&root_cwd, "msg-sr-root-e2e-pos", "rid-sr-root-e2e-pos");
+    clear_root_self_clear_artifacts(
+        &root_cwd,
+        "msg-sr-root-e2e-pos",
+        "33180001-0000-4000-8000-000000000003",
+    );
     // Existence gate. Deliberately do NOT seed SELF-FORGET.md: the archive stays a no-op so
     // the shared root dir gains no timestamped litter.
     seed_self_handoff(&root_cwd);
@@ -516,7 +529,7 @@ async fn process_message_root_self_restart_with_canonical_sender_queues() {
     let (path, _msg) = build_self_restart_message_with_from(
         &root_cwd,
         "msg-sr-root-e2e-pos",
-        "rid-sr-root-e2e-pos",
+        "33180001-0000-4000-8000-000000000003",
         Some(token.to_string()),
         &canonical_from,
     );
@@ -528,7 +541,8 @@ async fn process_message_root_self_restart_with_canonical_sender_queues() {
         .expect("process_message should succeed");
 
     assert_eq!(
-        read_self_clear_response_status(&root_cwd, "rid-sr-root-e2e-pos").as_deref(),
+        read_self_clear_response_status(&root_cwd, "33180001-0000-4000-8000-000000000003")
+            .as_deref(),
         Some("queued")
     );
     assert!(
@@ -571,7 +585,11 @@ async fn process_message_root_self_restart_with_buggy_sender_is_rejected() {
     let root_cwd =
         PathBuf::from(crate::config::root_agent::root_agent_dir().expect("resolve root agent dir"));
     std::fs::create_dir_all(&root_cwd).unwrap();
-    clear_root_self_clear_artifacts(&root_cwd, "msg-sr-root-e2e-neg", "rid-sr-root-e2e-neg");
+    clear_root_self_clear_artifacts(
+        &root_cwd,
+        "msg-sr-root-e2e-neg",
+        "33180001-0000-4000-8000-000000000004",
+    );
 
     let temp = tempfile::TempDir::new().unwrap();
     let app_struct = make_mailbox_app(temp.path());
@@ -595,7 +613,7 @@ async fn process_message_root_self_restart_with_buggy_sender_is_rejected() {
     let (path, _msg) = build_self_restart_message_with_from(
         &root_cwd,
         "msg-sr-root-e2e-neg",
-        "rid-sr-root-e2e-neg",
+        "33180001-0000-4000-8000-000000000004",
         Some(token.to_string()),
         &buggy_from,
     );

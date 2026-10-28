@@ -1,3 +1,4 @@
+use crate::filesystem::documents;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -164,12 +165,11 @@ fn sweep_pause_hook(stage: &str, dir: &Path) {
 /// writer added can be lost; retirement of the old row stays with the writer
 /// at registration.
 fn ensure_project_settings_ignore_rows(ac_root: &Path) -> Result<(), naming_migration::Refusal> {
-    use std::io::Write as _;
     let path = ac_root.join(".gitignore");
     let io = |what: &str, e: std::io::Error| {
         naming_migration::Refusal::Io(format!("failed to {what} {}: {e}", path.display()))
     };
-    let content = match std::fs::read_to_string(&path) {
+    let content = match documents::read_config_document(&path) {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(io("read", e)),
@@ -187,12 +187,7 @@ fn ensure_project_settings_ignore_rows(ac_root: &Path) -> Result<(), naming_migr
     } else {
         "\n"
     };
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .and_then(|mut file| file.write_all(format!("{separator}{blocks}").as_bytes()))
-        .map_err(|e| io("append to", e))
+    documents::append_config_ignore_rows(&path, separator, &blocks).map_err(|e| io("append to", e))
 }
 
 fn project_settings_scope_key(ac_root: &Path) -> String {
@@ -245,7 +240,7 @@ fn migrate_project_settings_name(
     ) {
         return Err(refused(refusal));
     }
-    let lock_left = ac_root.join(LEGACY_PROJECT_SETTINGS_LOCK).exists();
+    let lock_left = documents::config_document_exists(&ac_root.join(LEGACY_PROJECT_SETTINGS_LOCK));
     naming_migration::update_journal(journal_dir, |j| {
         if lock_left {
             j.note(
@@ -353,11 +348,11 @@ fn load_workgroup_groups_in(
     journal_dir: Option<&Path>,
 ) -> Result<WorkgroupGroupsConfig, String> {
     let path = project_settings_path_in(project_path, journal_dir)?;
-    if !path.exists() {
+    if !documents::config_document_exists(&path) {
         return Ok(WorkgroupGroupsConfig::default());
     }
 
-    let content = std::fs::read_to_string(&path)
+    let content = documents::read_config_document(&path)
         .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
     let root: Value = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;

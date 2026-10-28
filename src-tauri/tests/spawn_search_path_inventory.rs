@@ -119,6 +119,18 @@ type Row = (&'static str, usize, usize, &'static [(Reason, usize)]);
 
 const INVENTORY: &[Row] = &[
     (
+        "src-tauri/src/commands/session/destroy/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/phone/mailbox/tests/test_settle/root_protection.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
         "crates/session-bridge/src/bin/agentscommander-api-helper/filesystem/tests.rs",
         1,
         0,
@@ -280,6 +292,12 @@ const INVENTORY: &[Row] = &[
         2,
         0,
         &[(TestOnly, 2)],
+    ),
+    (
+        "src-tauri/src/config/entity_creation/teams/sources/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
     ),
     ("src-tauri/src/process/git/mutation.rs", 4, 4, &[]),
     ("src-tauri/src/process/git/read.rs", 3, 3, &[]),
@@ -691,7 +709,8 @@ fn every_production_spawn_site_is_covered_or_classified() {
     let stale: Vec<&&str> = inventory_keys.difference(&scanned_keys).collect();
     assert!(
         unlisted.is_empty() && stale.is_empty(),
-        "spawn census out of date.\nunlisted files (open each, classify every site, add a row):\n  {}\n\
+        "spawn census out of date.\nunlisted files (open each, classify every site, add a row):\
+         \n  {}\n\
          listed files with no constructor left: {stale:?}\nreasons: {REASON_VOCABULARY}",
         unlisted.join("\n  ")
     );

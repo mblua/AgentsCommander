@@ -137,7 +137,7 @@ pub(crate) fn agent_help_local_path(settings_path: &Path) -> PathBuf {
 /// once and yields an empty layer plus the reason, which P4 hands to the UI.
 pub(crate) fn load_local_agent_help_file(settings_path: &Path) -> (AgentHelpFile, Option<String>) {
     let path = agent_help_local_path(settings_path);
-    let contents = match std::fs::read_to_string(&path) {
+    let contents = match crate::filesystem::agent_settings::read_agent_help_text(&path) {
         Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return (AgentHelpFile::default(), None)
@@ -186,7 +186,10 @@ pub(crate) fn refresh_shipped_agent_help_file_with_publish(
     let Ok(canonical) = pretty_json_bytes(shipped_agent_help()) else {
         return false;
     };
-    if matches!(std::fs::read(&path), Ok(existing) if existing == canonical) {
+    if matches!(
+        crate::filesystem::agent_settings::read_agent_help_bytes(&path),
+        Ok(existing) if existing == canonical
+    ) {
         return false;
     }
     match crate::config::local_config_io::write_file_atomic_with_publish(&path, &canonical, publish)
@@ -333,7 +336,7 @@ pub(crate) fn agent_help_remote_path(settings_path: &Path) -> PathBuf {
 /// one warning; a missing cache is silent.
 pub(crate) fn load_remote_agent_help_file(settings_path: &Path) -> AgentHelpFile {
     let path = agent_help_remote_path(settings_path);
-    let contents = match std::fs::read_to_string(&path) {
+    let contents = match crate::filesystem::agent_settings::read_agent_help_text(&path) {
         Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return AgentHelpFile::default(),
         Err(e) => {
@@ -390,7 +393,10 @@ pub(crate) struct RemoteAgentHelpCheckStamp {
 pub(crate) fn read_remote_agent_help_check_stamp(
     settings_path: &Path,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
-    let bytes = std::fs::read(agent_help_remote_check_path(settings_path)).ok()?;
+    let bytes = crate::filesystem::agent_settings::read_agent_help_bytes(
+        &agent_help_remote_check_path(settings_path),
+    )
+    .ok()?;
     let stamp: RemoteAgentHelpCheckStamp = serde_json::from_slice(&bytes).ok()?;
     Some(stamp.last_checked_at)
 }

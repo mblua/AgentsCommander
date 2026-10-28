@@ -28,16 +28,11 @@ fn prepare_new_room_task_content_preserves_title_validation() {
     assert!(validate_task_title("").is_err());
 }
 
-#[test]
-fn create_workgroup_prepares_task_once_before_mutation() {
-    let source = include_str!("../team_create.rs");
-    let command = source
-        .split_once("pub async fn create_workgroup(")
-        .unwrap()
-        .1;
-    let body_start = command.find('{').unwrap();
+fn function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+    let command = source.split_once(signature).unwrap().1;
+    let start = command.find('{').unwrap();
     let mut depth = 0;
-    let body_end = command[body_start..]
+    let end = command[start..]
         .char_indices()
         .find_map(|(offset, ch)| {
             match ch {
@@ -45,14 +40,20 @@ fn create_workgroup_prepares_task_once_before_mutation() {
                 '}' => depth -= 1,
                 _ => {}
             }
-            (depth == 0).then_some(body_start + offset)
+            (depth == 0).then_some(start + offset)
         })
         .unwrap();
-    let body = &command[body_start..=body_end];
+    &command[start..=end]
+}
+
+#[test]
+fn create_workgroup_prepares_task_once_before_mutation() {
+    let source = include_str!("../team_create.rs");
+    let body = function_body(source, "pub async fn create_workgroup(");
     let preparation = "let task_content = prepare_new_room_task_content(&task_title)?;";
     assert_eq!(body.matches("prepare_new_room_task_content(").count(), 1);
     assert!(body.find(preparation).unwrap() < body.find("ensure_ac_root_gitignore(").unwrap());
-    assert!(body.find(preparation).unwrap() < body.find("std::fs::create_dir_all(").unwrap());
+    assert!(body.find(preparation).unwrap() < body.find("allocate_gui_room(").unwrap());
     for forbidden in [
         "build_task_content(",
         "validate_task_title(",
@@ -62,17 +63,182 @@ fn create_workgroup_prepares_task_once_before_mutation() {
         assert!(!body.contains(forbidden), "unexpected {forbidden}");
     }
     assert_eq!(body.matches("let task_content =").count(), 1);
-    assert!(body.contains("std::fs::write(wg_dir.join(\"TASK.md\"), &task_content)"));
-
-    // CLI/on-disk creation still validates before generating task content.
-    let cli = include_str!("../workgroup.rs")
-        .split_once("pub(crate) async fn create_workgroup_on_disk(")
-        .unwrap()
-        .1;
     assert!(
-        cli.find("validate_task_title(&task_title)?;").unwrap()
-            < cli.find("build_task_content(&task_title)").unwrap()
+        body.contains("allocate_gui_room(&base, &safe_team, &task_content, initialize_new_room)")
     );
+    let helper = function_body(source, "pub(super) fn allocate_gui_room(");
+    assert_eq!(helper.matches("write_task(").count(), 1);
+    assert!(helper.contains("write_task(&wg_dir, task_content)"));
+    assert!(helper.find("create_room_directory(").unwrap() < helper.find("write_task(").unwrap());
+    assert!(!helper.contains("build_task_content("));
+    assert!(!helper.contains("validate_task_title("));
+    assert!(!helper.contains(".trim()"));
+}
+
+#[test]
+fn create_workgroup_on_disk_preserves_task_creation_order() {
+    let disk_source = include_str!("../workgroup.rs");
+    let disk = function_body(
+        disk_source,
+        "pub(crate) async fn create_workgroup_on_disk_traced(",
+    );
+    assert!(
+        disk.find("validate_task_title(&task_title)?;").unwrap()
+            < disk.find("allocate_disk_room(").unwrap()
+    );
+    assert!(
+        disk.contains("allocate_disk_room(&base, &safe_team, &task_title, initialize_new_room)")
+    );
+    let helper = function_body(disk_source, "pub(super) fn allocate_disk_room(");
+    assert!(
+        helper.find("create_room_shared_dir(").unwrap()
+            < helper.find("build_task_content(").unwrap()
+    );
+    assert!(helper.find("build_task_content(").unwrap() < helper.find("write_task(").unwrap());
+    assert_eq!(helper.matches("build_task_content(").count(), 1);
+    assert_eq!(helper.matches("write_task(").count(), 1);
+    assert!(helper.contains("write_task(&wg_dir, &task_content)"));
+}
+
+#[test]
+fn room_allocation_precedes_reporting_and_initialization() {
+    let source = include_str!("../team_create.rs");
+    let body = function_body(source, "pub async fn create_workgroup(");
+    let disk_source = include_str!("../workgroup.rs");
+    let disk = function_body(
+        disk_source,
+        "pub(crate) async fn create_workgroup_on_disk_traced(",
+    );
+
+    for (entry, helper, input, replicas, clones) in [
+        (
+            body,
+            "allocate_gui_room(",
+            "task_content",
+            "initialize_workgroup_replicas_on_disk_traced(",
+            "git_clone_async(",
+        ),
+        (
+            disk,
+            "allocate_disk_room(",
+            "task_title",
+            "let mut replicas =",
+            "clone_missing_repos_for_workgroup_traced(",
+        ),
+    ] {
+        assert_eq!(entry.matches(helper).count(), 1);
+        let compact: String = entry.chars().filter(|c| !c.is_whitespace()).collect();
+        let routing = format!(".run(||{helper}&base,&safe_team,&{input},initialize_new_room))?;");
+        assert_eq!(compact.matches(&routing).count(), 1);
+        let after = compact.find(&routing).unwrap() + routing.len();
+        for reporting in [
+            "physical.room(",
+            "operation.room(",
+            replicas,
+            clones,
+            "Ok(WorkgroupCloneResult",
+        ] {
+            let reporting: String = reporting.chars().filter(|c| !c.is_whitespace()).collect();
+            assert!(
+                after <= compact.find(&reporting).unwrap(),
+                "order: {reporting}"
+            );
+        }
+    }
+}
+
+fn initial_room_entries(root: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<_> = std::fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn issue_3294_initial_task_positive_control() {
+    use super::super::room_task::initialize_new_room;
+    use super::super::team_create::allocate_gui_room;
+    use super::super::workgroup::allocate_disk_room;
+    use std::io;
+
+    let cases = [
+        ("", "---\ntitle: 'Clean'\n---\n"),
+        ("Clean", "---\ntitle: 'USER: Clean'\n---\n"),
+        ("USER: Existing", "---\ntitle: 'USER: Existing'\n---\n"),
+        ("Ana's task", "---\ntitle: 'USER: Ana''s task'\n---\n"),
+    ];
+    for disk in [false, true] {
+        for (title, expected) in cases {
+            if disk && title.is_empty() {
+                continue; // Standalone validation rejects empty input before allocation.
+            }
+            if disk {
+                validate_task_title(title).unwrap();
+            }
+            let prepared = prepare_new_room_task_content(title).unwrap();
+            for fail in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let mut calls = 0;
+                let mut allocated = None;
+                let writer = |root: &std::path::Path, content: &str| {
+                    calls += 1;
+                    allocated = Some(root.to_path_buf());
+                    assert_eq!(content.as_bytes(), expected.as_bytes());
+                    assert!(root.is_dir());
+                    assert!(root.join("messaging").is_dir());
+                    assert_eq!(root.join("room-shared").is_dir(), disk);
+                    let mut names = vec!["messaging"];
+                    if disk {
+                        names.push("room-shared");
+                    }
+                    assert_eq!(initial_room_entries(root), names);
+                    if fail {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "task write denied",
+                        ));
+                    }
+                    // Preserve write's truncation when a file appears at the write point.
+                    std::fs::write(root.join("TASK.md"), "old bytes".repeat(100)).unwrap();
+                    initialize_new_room(root, content)
+                };
+                let result = if disk {
+                    allocate_disk_room(temp.path(), "dev", title, writer)
+                } else {
+                    allocate_gui_room(temp.path(), "dev", &prepared, writer)
+                };
+                assert_eq!(calls, 1);
+                let root = allocated.unwrap();
+                assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+                if fail {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        "Failed to write TASK.md: task write denied"
+                    );
+                    let mut names = vec!["messaging"];
+                    if disk {
+                        names.push("room-shared");
+                    }
+                    assert_eq!(initial_room_entries(&root), names);
+                } else {
+                    let (created, number) = result.unwrap();
+                    assert_eq!(created, root);
+                    assert_eq!(number, 1);
+                    assert_eq!(
+                        std::fs::read(root.join("TASK.md")).unwrap(),
+                        expected.as_bytes()
+                    );
+                    let mut names = vec!["TASK.md", "messaging"];
+                    if disk {
+                        names.push("room-shared");
+                    }
+                    assert_eq!(initial_room_entries(&root), names);
+                }
+            }
+        }
+    }
 }
 
 // ── #738: build_task_content marks creation titles as user-owned ──

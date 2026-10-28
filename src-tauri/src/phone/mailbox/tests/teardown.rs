@@ -355,11 +355,12 @@ async fn unrelated_progress(
     sender: &Path,
 ) {
     let token = sender_token(fixture, sender).await;
-    let (raise, _) = build_raise_hand_message(sender, "p01-raise", "p01-raise", Some(token));
+    let raise_id = Uuid::new_v4().to_string();
+    let (raise, _) = build_raise_hand_message(sender, "p01-raise", &raise_id, Some(token));
     pump(poller, fixture).await;
     assert!(!raise.exists(), "raise-hand delivered while teardown held");
     assert_eq!(
-        read_response_json(sender, "p01-raise").unwrap()["status"],
+        read_response_json(sender, &raise_id).unwrap()["status"],
         "raised"
     );
     let other = fixture._temp.path().join("proj-a/other");
@@ -387,7 +388,7 @@ async fn unrelated_progress(
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     message.from = "proj-a:wg-1-dev-team/tech-lead".into();
     message.to = "proj-a/other".into();
-    message.request_id = Some("p01-wake".into());
+    message.request_id = Some(Uuid::new_v4().to_string());
     std::fs::write(&path, serde_json::to_vec(&message).unwrap()).unwrap();
     timeout(Duration::from_secs(8), async {
         loop {
@@ -430,7 +431,8 @@ async fn native_timeout_case(purge: bool, graceful: bool) {
     } else {
         "close-session"
     };
-    let path = request(&sender, "p01-blocked", action, token);
+    let blocked_id = Uuid::new_v4().to_string();
+    let path = request(&sender, &blocked_id, action, token);
     if graceful {
         let mut message: OutboxMessage =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -456,7 +458,7 @@ async fn native_timeout_case(purge: bool, graceful: bool) {
     }
     let response_path = sender
         .join(crate::config::agent_local_dir_name())
-        .join("responses/p01-blocked.json");
+        .join(format!("responses/{blocked_id}.json"));
     let before = std::fs::read(&response_path).unwrap();
     let response: serde_json::Value = serde_json::from_slice(&before).unwrap();
     assert_eq!(
@@ -510,10 +512,11 @@ async fn p01_purge_native_timeout_keeps_mailbox_progress() {
 async fn p01_purge_success_releases_before_response() {
     let (fixture, sender, _peer, sid) = native_fixture().await;
     let token = sender_token(&fixture, &sender).await;
-    request(&sender, "p01-success", PURGE_WG_ACTION, token);
+    let success_id = Uuid::new_v4().to_string();
+    request(&sender, &success_id, PURGE_WG_ACTION, token);
     let mut poller = MailboxPoller::default();
     pump(&mut poller, &fixture).await;
-    let response = read_response_json(&sender, "p01-success").expect("purge response exists");
+    let response = read_response_json(&sender, &success_id).expect("purge response exists");
     assert_eq!(response["status"], "purged", "{response}");
     assert_eq!(response["purged"], 1);
     let guard = fixture.app.state::<Arc<PurgeGuard>>();
@@ -556,9 +559,10 @@ async fn p01_pending_duplicate_purge_waits_for_key_even_without_public_row() {
         &format!("destroy:{sid}"),
     );
     let token = sender_token(&fixture, &sender).await;
+    let first_close_id = Uuid::new_v4().to_string();
     request(
         &sender,
-        "p01-first-close",
+        &first_close_id,
         "close-session",
         MAILBOX_MASTER_TOKEN.into(),
     );
@@ -576,10 +580,11 @@ async fn p01_pending_duplicate_purge_waits_for_key_even_without_public_row() {
             .unwrap();
     }
     assert_eq!(
-        read_response_json(&sender, "p01-first-close").unwrap()["status"],
+        read_response_json(&sender, &first_close_id).unwrap()["status"],
         "timeout"
     );
-    request(&sender, "p01-duplicate", PURGE_WG_ACTION, token);
+    let duplicate_id = Uuid::new_v4().to_string();
+    request(&sender, &duplicate_id, PURGE_WG_ACTION, token);
     let guard = app.state::<Arc<PurgeGuard>>().inner().clone();
     {
         let observation = poller.poll(app);
@@ -605,7 +610,7 @@ async fn p01_pending_duplicate_purge_waits_for_key_even_without_public_row() {
         "row absence alone must not release protection"
     );
     assert_eq!(
-        read_response_json(&sender, "p01-duplicate").unwrap()["status"],
+        read_response_json(&sender, &duplicate_id).unwrap()["status"],
         "partial_failure"
     );
     assert!(coordinator.background_destroy_is_pending(sid).unwrap());
@@ -663,10 +668,11 @@ async fn p01_close_immediate_destroy_error_duplicate_missing_and_root() {
     let app = fixture.app.handle();
     let token = MAILBOX_MASTER_TOKEN.to_string();
     fixture.backend.fail_kill_once.store(true, Ordering::SeqCst);
-    request(&sender, "p01-error", "close-session", token.clone());
+    let error_id = Uuid::new_v4().to_string();
+    request(&sender, &error_id, "close-session", token.clone());
     let mut poller = MailboxPoller::default();
     pump(&mut poller, &fixture).await;
-    let error = read_response_json(&sender, "p01-error").unwrap();
+    let error = read_response_json(&sender, &error_id).unwrap();
     assert_eq!(error["status"], "timeout");
     assert!(error["reason"].as_str().unwrap().contains("destroy_failed"));
     assert_eq!(error["sessions_closed"], 0);
@@ -681,19 +687,21 @@ async fn p01_close_immediate_destroy_error_duplicate_missing_and_root() {
     )
     .await;
     register_mock_pty_route(app, second);
-    request(&sender, "p01-two", "close-session", token.clone());
+    let two_id = Uuid::new_v4().to_string();
+    request(&sender, &two_id, "close-session", token.clone());
     pump(&mut poller, &fixture).await;
-    let response = read_response_json(&sender, "p01-two").unwrap();
+    let response = read_response_json(&sender, &two_id).unwrap();
     assert_eq!(response["status"], "closed");
     assert_eq!(response["sessions_closed"], 2);
     assert!(response["session_ids"]
         .as_array()
         .unwrap()
         .contains(&serde_json::json!(sid)));
-    request(&sender, "p01-empty", "close-session", token);
+    let empty_id = Uuid::new_v4().to_string();
+    request(&sender, &empty_id, "close-session", token);
     pump(&mut poller, &fixture).await;
     assert_eq!(
-        read_response_json(&sender, "p01-empty").unwrap()["status"],
+        read_response_json(&sender, &empty_id).unwrap()["status"],
         "no_match"
     );
     let absent = poller
@@ -739,16 +747,20 @@ async fn p01_close_immediate_destroy_error_duplicate_missing_and_root() {
 #[tokio::test]
 async fn p01_close_auth_rejected_without_destroy() {
     let (fixture, sender, _peer, sid) = native_fixture().await;
+    let auth_id = Uuid::new_v4().to_string();
     let path = request(
         &sender,
-        "p01-auth",
+        &auth_id,
         "close-session",
         Uuid::new_v4().to_string(),
     );
     let mut poller = MailboxPoller::default();
     pump(&mut poller, &fixture).await;
     assert!(!path.exists());
-    let rejected = path.parent().unwrap().join("rejected/p01-auth.reason.txt");
+    let rejected = path
+        .parent()
+        .unwrap()
+        .join(format!("rejected/{auth_id}.reason.txt"));
     assert!(rejected.exists(), "invalid token rejected");
     assert_eq!(fixture.backend.kill_attempts.load(Ordering::SeqCst), 0);
     assert!(fixture.backend.has_session(sid));

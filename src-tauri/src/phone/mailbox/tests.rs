@@ -13,6 +13,7 @@ mod process_message;
 mod project_refresh;
 mod raise_hand;
 mod remote_activity;
+mod request_id;
 mod retain_unarchived;
 mod retained_exited;
 mod retry_prune;

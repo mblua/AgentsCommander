@@ -7,6 +7,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::config::settings::SettingsState;
+use crate::filesystem::co_managed_queue::{
+    canonical_co_managed_message, create_co_managed_queue_entry, ensure_co_managed_queue,
+    flush_co_managed_queue_file, read_co_managed_message_snapshot, remove_co_managed_message,
+    write_co_managed_queue_bytes,
+};
 use crate::session::manager::SessionManager;
 use tauri::Manager;
 
@@ -457,18 +462,17 @@ pub(crate) fn write_co_managed_message_file(
         crate::phone::messaging::build_filename(chrono::Utc::now(), &from_short, &to_short, &slug);
     let (path, mut file) =
         crate::phone::messaging::create_message_file(&dir, &base).map_err(|e| e.to_string())?;
-    use std::io::Write;
     let written = (|| -> Result<(), String> {
-        file.write_all(content.as_bytes())
+        write_co_managed_queue_bytes(&mut file, content.as_bytes())
             .map_err(|e| format!("message file write failed: {e}"))?;
-        file.flush()
+        flush_co_managed_queue_file(&mut file)
             .map_err(|e| format!("message file flush failed: {e}"))
     })();
     if let Err(error) = written {
-        let _ = std::fs::remove_file(&path);
+        let _ = remove_co_managed_message(&path);
         return Err(error);
     }
-    let abs = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    let abs = canonical_co_managed_message(&path).map_err(|e| e.to_string())?;
     // UNC-strip at the single emission site, exactly as `cli/send` does.
     let abs_str = abs.to_string_lossy();
     let abs_display = abs_str.trim_start_matches(r"\\?\");
@@ -486,7 +490,7 @@ pub(crate) fn write_co_managed_queue_message(
     pointer: &str,
 ) -> Result<PathBuf, String> {
     let dir = crate::config::co_managed::queue_dir(room_root);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("queue dir create failed: {e}"))?;
+    ensure_co_managed_queue(&dir).map_err(|e| format!("queue dir create failed: {e}"))?;
     let envelope = crate::phone::types::OutboxMessage {
         id: uuid::Uuid::new_v4().to_string(),
         token: None,
@@ -519,15 +523,11 @@ pub(crate) fn write_co_managed_queue_message(
     let bytes = serde_json::to_vec_pretty(&envelope)
         .map_err(|e| format!("queue envelope serialize failed: {e}"))?;
     let path = dir.join(format!("{}.json", envelope.id));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    let mut file = options
-        .open(&path)
+    let mut file = create_co_managed_queue_entry(&path)
         .map_err(|e| format!("queue envelope create failed: {}", e))?;
-    use std::io::Write;
-    file.write_all(&bytes)
+    write_co_managed_queue_bytes(&mut file, &bytes)
         .map_err(|e| format!("queue envelope write failed: {e}"))?;
-    file.flush()
+    flush_co_managed_queue_file(&mut file)
         .map_err(|e| format!("queue envelope flush failed: {e}"))?;
     Ok(path)
 }
@@ -551,7 +551,7 @@ pub(crate) fn route_co_managed_wake(
     if pointer.len() + overhead > crate::phone::messaging::PTY_SAFE_MAX {
         // Nothing was delivered; the file was only just created by us, so it is
         // removed rather than left as a never-referenced orphan.
-        let _ = std::fs::remove_file(&path);
+        let _ = remove_co_managed_message(&path);
         return Err(format!(
             "notification exceeds PTY-safe length (body {} + overhead {} > {}); shorten slug or \
                 move the room to a shallower path",
@@ -561,8 +561,8 @@ pub(crate) fn route_co_managed_wake(
         ));
     }
     let archive_warning = (|| -> Result<(), String> {
-        let source = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
-        let snapshot = std::fs::read(&source).map_err(|e| e.to_string())?;
+        let source = canonical_co_managed_message(&path).map_err(|e| e.to_string())?;
+        let snapshot = read_co_managed_message_snapshot(&source).map_err(|e| e.to_string())?;
         let basename = source
             .file_name()
             .and_then(|s| s.to_str())

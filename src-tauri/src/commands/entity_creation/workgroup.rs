@@ -5,7 +5,7 @@ use super::matrix_layout::{
 };
 use super::repo_clone::git_clone_async;
 use super::room_number::{determine_next_wg_number, room_dir_name, room_number_pad_width};
-use super::room_task::{build_task_content, validate_task_title};
+use super::room_task::{build_task_content, initialize_new_room, validate_task_title};
 use super::team_config::{
     acquire_team_config_mutation_guard_async, create_new_team_config_on_disk_guarded,
     normalize_team_config_for_project, read_team_config, resolve_agent_ref,
@@ -17,6 +17,9 @@ use super::{
 use crate::config::coding_agent_profiles::{
     apply_replica_selection_default, read_replica_selection_default,
 };
+use crate::config::entity_creation::directories::{
+    self, clone_target_present, replica_role_present,
+};
 use crate::config::replica_identity::{
     normalize_wg_replica_context_entries, repair_wg_replica_config_value, ROLE_MD_FILENAME,
     WG_REPLICA_REQUIRED_CONTEXT,
@@ -27,44 +30,41 @@ use crate::config::seed_manifest::{
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-pub(crate) fn list_workgroup_dirs(ac_root: &Path) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(ac_root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if parse_team_from_workgroup_name(name).is_ok() {
-                dirs.push(path);
-            }
-        }
+pub(super) fn allocate_disk_room(
+    base: &Path,
+    safe_team: &str,
+    task_title: &str,
+    write_task: impl FnOnce(&Path, &str) -> std::io::Result<()>,
+) -> Result<(PathBuf, u32), String> {
+    let wg_number = determine_next_wg_number(base);
+    let wg_name = room_dir_name(wg_number, safe_team, room_number_pad_width());
+    let wg_dir = base.join(&wg_name);
+    if directories::room_directory_present(&wg_dir) {
+        return Err(format!("Room directory already exists: {}", wg_name));
     }
-    dirs.sort_by(|a, b| {
-        a.file_name()
-            .unwrap_or_default()
-            .cmp(b.file_name().unwrap_or_default())
-    });
-    dirs
+    directories::create_room_directory(&wg_dir)
+        .map_err(|e| format!("Failed to create room directory: {}", e))?;
+    directories::create_room_messaging_directory(
+        &wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME),
+    )
+    .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
+    // #1795: `room-shared/` is a sibling of `messaging/` and `TASK.md`, and it is
+    // created with the same hard `?` they use. A half-created room must not be
+    // reported as created.
+    crate::config::shared_locations::create_room_shared_dir(&wg_dir)
+        .map_err(|e| format!("Failed to create room shared directory: {}", e))?;
+    let task_content = build_task_content(task_title);
+    write_task(&wg_dir, &task_content).map_err(|e| format!("Failed to write TASK.md: {}", e))?;
+
+    Ok::<_, String>((wg_dir, wg_number))
+}
+
+pub(crate) fn list_workgroup_dirs(ac_root: &Path) -> Vec<PathBuf> {
+    crate::config::entity_creation::directories::workgroup_candidates(ac_root)
 }
 
 pub(crate) fn parse_team_from_workgroup_name(workgroup_name: &str) -> Result<String, String> {
-    let rest = crate::config::entity_prefix::strip_entity_prefix(workgroup_name)
-        .ok_or_else(|| format!("Invalid room name '{}'", workgroup_name))?;
-    let Some((number, team)) = rest.split_once('-') else {
-        return Err(format!("Invalid room name '{}'", workgroup_name));
-    };
-    let parsed = number
-        .parse::<u32>()
-        .map_err(|_| format!("Invalid room number in '{}'", workgroup_name))?;
-    if parsed == 0 || team.is_empty() {
-        return Err(format!("Invalid room name '{}'", workgroup_name));
-    }
-    validate_existing_name(team, "Team")?;
-    Ok(team.to_string())
+    crate::config::entity_creation::directories::parse_team_from_workgroup_name(workgroup_name)
 }
 
 pub(crate) fn agent_ref_bare_name(agent_ref: &str) -> String {
@@ -150,27 +150,8 @@ pub(crate) async fn create_workgroup_on_disk_traced(
         let (safe_team, task_title, base, team_config) = prepare.result(prepared)?;
 
         let allocate = physical.child(Stage::Allocate);
-        let (wg_dir, wg_number) = allocate.run(|| {
-            let wg_number = determine_next_wg_number(&base);
-            let wg_name = room_dir_name(wg_number, &safe_team, room_number_pad_width());
-            let wg_dir = base.join(&wg_name);
-            if wg_dir.exists() {
-                return Err(format!("Room directory already exists: {}", wg_name));
-            }
-            std::fs::create_dir_all(&wg_dir)
-                .map_err(|e| format!("Failed to create room directory: {}", e))?;
-            std::fs::create_dir_all(wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME))
-                .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
-            // #1795: `room-shared/` is a sibling of `messaging/` and `TASK.md`, and it is
-            // created with the same hard `?` they use. A half-created room must not be
-            // reported as created.
-            crate::config::shared_locations::create_room_shared_dir(&wg_dir)
-                .map_err(|e| format!("Failed to create room shared directory: {}", e))?;
-            std::fs::write(wg_dir.join("TASK.md"), build_task_content(&task_title))
-                .map_err(|e| format!("Failed to write TASK.md: {}", e))?;
-
-            Ok::<_, String>((wg_dir, wg_number))
-        })?;
+        let (wg_dir, wg_number) = allocate
+            .run(|| allocate_disk_room(&base, &safe_team, &task_title, initialize_new_room))?;
         physical.room(wg_number);
         operation.room(wg_number);
 
@@ -291,7 +272,7 @@ pub(super) fn initialize_replica_config_on_disk(
             &existing_context,
             &["$AGENTSCOMMANDER_CONTEXT"],
             &identity.identity,
-            identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
+            replica_role_present(&identity.matrix_dir.join(ROLE_MD_FILENAME)),
         ));
         if !had_config {
             if let Some(default) = read_replica_selection_default(&identity.matrix_dir)? {
@@ -375,40 +356,10 @@ pub(super) fn initialize_workgroup_replicas_on_disk_traced(
     }
 }
 
-/// Typed outcome of removing one replica directory (#1063, plan section 5.4).
-///
-/// Replaces the prior bare `Ok(())` so lifecycle callers can distinguish a real
-/// removal from a proven absence and prune manifest rows only for `Removed` or an
-/// explicit `AlreadyAbsent`. `AlreadyAbsent` is constructed only from an exact
-/// `symlink_metadata`/remove `ErrorKind::NotFound`; it never uses `Path::exists`,
-/// which collapses access and other inspection errors to false. A plain
-/// discovery `NotFound` observed elsewhere never reaches this typed path and
-/// therefore never prunes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ReplicaRemovalOutcome {
-    Removed,
-    AlreadyAbsent,
-    Failed(String),
-}
+pub(crate) use crate::config::entity_creation::directories::ReplicaRemovalOutcome;
 
 pub(crate) fn remove_replica_dir(replica_dir: &Path) -> ReplicaRemovalOutcome {
-    match std::fs::symlink_metadata(replica_dir) {
-        Ok(_) => match std::fs::remove_dir_all(replica_dir) {
-            Ok(()) => ReplicaRemovalOutcome::Removed,
-            // A concurrent removal between the no-follow probe and the delete is
-            // proven absent, not a failure.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                ReplicaRemovalOutcome::AlreadyAbsent
-            }
-            Err(e) => {
-                ReplicaRemovalOutcome::Failed(format!("Failed to delete replica directory: {}", e))
-            }
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => ReplicaRemovalOutcome::AlreadyAbsent,
-        Err(e) => {
-            ReplicaRemovalOutcome::Failed(format!("Failed to inspect replica directory: {}", e))
-        }
-    }
+    crate::config::entity_creation::directories::remove_replica_directory(replica_dir)
 }
 
 // ===========================================================================
@@ -597,7 +548,7 @@ async fn clone_missing_repos_for_workgroup_traced(
         }
         let dir_name = format!("repo-{}", repo_dir_name_from_url(&repo.url));
         let target = wg_dir.join(&dir_name);
-        if target.exists() {
+        if clone_target_present(&target) {
             if let Some(stage) = &repos_stage {
                 stage.skip_repo(index + 1, Reason::TargetExists);
             }

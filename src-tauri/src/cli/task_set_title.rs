@@ -8,6 +8,7 @@
 //! issue is recommended to bind tokens to issued sessions, closing the hole
 //! for all CLI verbs simultaneously.
 
+use crate::filesystem::documents;
 use clap::Args;
 use std::path::Path;
 
@@ -80,7 +81,7 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
         if let Some(ref token_str) = args.token {
             crate::config::config_dir()
                 .map(|d| d.join("master-token.txt"))
-                .and_then(|p| std::fs::read_to_string(&p).ok())
+                .and_then(|p| documents::read_cli_outbox_text(&p).ok())
                 .map(|m| m.trim() == token_str)
                 .unwrap_or(false)
         } else {

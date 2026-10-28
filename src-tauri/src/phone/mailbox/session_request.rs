@@ -191,7 +191,9 @@ impl MailboxPoller {
             for s in &matched {
                 // Guard B (root): corrupted-state assertion (F-12).
                 if s.is_root_agent
-                    || crate::config::root_agent::is_root_agent_path(&s.working_directory)
+                    || crate::config::root_agent::root_agent_path_requires_protection(
+                        &s.working_directory,
+                    )
                 {
                     let response = serde_json::json!({
                         "action": PURGE_WG_ACTION,

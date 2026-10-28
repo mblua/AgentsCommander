@@ -12,6 +12,11 @@ use std::collections::HashSet;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
+use crate::filesystem::agency_templates::{
+    agency_entries, agency_metadata, agency_path_exists, copy_agency_file, ensure_agency_directory,
+    read_agency_text, write_agency_text,
+};
+
 use crate::filesystem::{directories, documents};
 
 use crate::config::instance_artifacts::AGENT_TEMPLATES_DIR_NAME;
@@ -100,13 +105,13 @@ pub fn agency_manifest_path(config_dir: &Path) -> PathBuf {
 }
 
 pub(crate) fn read_staged_agency_manifest(root: &Path) -> Result<AgencyTemplatesManifest, String> {
-    let raw = std::fs::read_to_string(root.join(AGENCY_MANIFEST_FILE))
+    let raw = read_agency_text(&root.join(AGENCY_MANIFEST_FILE))
         .map_err(|e| format!("Failed to read staged manifest: {}", e))?;
     serde_json::from_str(&raw).map_err(|e| format!("Failed to parse staged manifest: {}", e))
 }
 
 pub(crate) fn read_cached_agency_manifest(root: &Path) -> Result<AgencyTemplatesManifest, String> {
-    let raw = std::fs::read_to_string(root.join(AGENCY_MANIFEST_FILE))
+    let raw = read_agency_text(&root.join(AGENCY_MANIFEST_FILE))
         .map_err(|e| format!("Failed to read cached manifest: {}", e))?;
     serde_json::from_str(&raw).map_err(|e| format!("Failed to parse cached manifest: {}", e))
 }
@@ -115,9 +120,9 @@ pub(crate) fn write_staged_agency_manifest(
     root: &Path,
     manifest: &AgencyTemplatesManifest,
 ) -> Result<(), String> {
-    std::fs::write(
-        root.join(AGENCY_MANIFEST_FILE),
-        serde_json::to_string_pretty(manifest)
+    write_agency_text(
+        &root.join(AGENCY_MANIFEST_FILE),
+        &serde_json::to_string_pretty(manifest)
             .map_err(|e| format!("Failed to encode manifest: {}", e))?,
     )
     .map_err(|e| format!("Failed to write staged manifest: {}", e))
@@ -127,9 +132,9 @@ pub(crate) fn write_normalized_agency_manifest(
     root: &Path,
     manifest: &AgencyTemplatesManifest,
 ) -> Result<(), String> {
-    std::fs::write(
-        root.join(AGENCY_MANIFEST_FILE),
-        serde_json::to_string_pretty(manifest)
+    write_agency_text(
+        &root.join(AGENCY_MANIFEST_FILE),
+        &serde_json::to_string_pretty(manifest)
             .map_err(|e| format!("Failed to encode Agency manifest: {}", e))?,
     )
     .map_err(|e| format!("Failed to write Agency manifest: {}", e))
@@ -256,11 +261,11 @@ the template is selected.
 /// overwritten. `config_dir` is a parameter for testability.
 pub fn ensure_default_templates_dir(config_dir: &Path) -> Result<(), String> {
     let dir = config_dir.join(AGENT_TEMPLATES_DIR_NAME);
-    std::fs::create_dir_all(&dir)
+    ensure_agency_directory(&dir)
         .map_err(|e| format!("Failed to create agent-templates dir: {}", e))?;
     let readme = dir.join("README.md");
-    if !readme.exists() {
-        std::fs::write(&readme, AGENT_TEMPLATES_README)
+    if !agency_path_exists(&readme) {
+        write_agency_text(&readme, AGENT_TEMPLATES_README)
             .map_err(|e| format!("Failed to write agent-templates README.md: {}", e))?;
     }
     Ok(())
@@ -481,7 +486,7 @@ fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
 /// `symlink_metadata` (no link traversal) + reparse-point rejection. `Err(())`
 /// means "missing, unreadable, or a link/reparse point" — callers skip/reject.
 fn lstat_no_links(path: &Path) -> Result<std::fs::Metadata, ()> {
-    match std::fs::symlink_metadata(path) {
+    match agency_metadata(path) {
         Ok(m) if is_link_or_reparse(&m) => Err(()),
         Ok(m) => Ok(m),
         Err(_) => Err(()),
@@ -506,7 +511,7 @@ fn is_valid_commit_sha(commit: &str) -> bool {
 
 pub fn read_agency_manifest(config_dir: &Path) -> Result<Option<AgencyTemplatesManifest>, String> {
     let root = agency_templates_dir(config_dir);
-    if !root.exists() {
+    if !agency_path_exists(&root) {
         return Ok(None);
     }
     let meta = lstat_no_links(&root).map_err(|()| "cacheInvalid".to_string())?;
@@ -514,7 +519,7 @@ pub fn read_agency_manifest(config_dir: &Path) -> Result<Option<AgencyTemplatesM
         return Err("cacheInvalid".into());
     }
     let manifest_path = agency_manifest_path(config_dir);
-    if !manifest_path.exists() {
+    if !agency_path_exists(&manifest_path) {
         return Err("manifestMissing".into());
     }
     let manifest_meta =
@@ -522,8 +527,7 @@ pub fn read_agency_manifest(config_dir: &Path) -> Result<Option<AgencyTemplatesM
     if !manifest_meta.is_file() {
         return Err("manifestMissing".into());
     }
-    let raw =
-        std::fs::read_to_string(&manifest_path).map_err(|_| "manifestMalformed".to_string())?;
+    let raw = read_agency_text(&manifest_path).map_err(|_| "manifestMalformed".to_string())?;
     let manifest: AgencyTemplatesManifest =
         serde_json::from_str(&raw).map_err(|_| "manifestMalformed".to_string())?;
     if !is_valid_commit_sha(&manifest.commit) {
@@ -589,7 +593,7 @@ pub(crate) fn collect_agency_templates_from_dir(
     let mut templates = Vec::new();
     let mut ids = HashSet::new();
     let mut paths_ci = HashSet::new();
-    let entries = std::fs::read_dir(root).map_err(|_| "cacheInvalid".to_string())?;
+    let entries = agency_entries(root).map_err(|_| "cacheInvalid".to_string())?;
     for entry in entries {
         let entry = entry.map_err(|_| "cacheInvalid".to_string())?;
         let name = entry.file_name().to_string_lossy().to_string();
@@ -609,7 +613,7 @@ pub(crate) fn collect_agency_templates_from_dir(
         if division_slug != name {
             return Err("cacheInvalid".into());
         }
-        for stem_entry in std::fs::read_dir(entry.path()).map_err(|_| "cacheInvalid".to_string())? {
+        for stem_entry in agency_entries(&entry.path()).map_err(|_| "cacheInvalid".to_string())? {
             let stem_entry = stem_entry.map_err(|_| "cacheInvalid".to_string())?;
             let stem_name = stem_entry.file_name().to_string_lossy().to_string();
             let stem_meta =
@@ -623,7 +627,7 @@ pub(crate) fn collect_agency_templates_from_dir(
             }
             let mut role_seen = false;
             for child in
-                std::fs::read_dir(stem_entry.path()).map_err(|_| "cacheInvalid".to_string())?
+                agency_entries(&stem_entry.path()).map_err(|_| "cacheInvalid".to_string())?
             {
                 let child = child.map_err(|_| "cacheInvalid".to_string())?;
                 let child_name = child.file_name().to_string_lossy().to_string();
@@ -638,8 +642,7 @@ pub(crate) fn collect_agency_templates_from_dir(
                 return Err("cacheInvalid".into());
             }
             let role_path = stem_entry.path().join("Role.md");
-            let raw =
-                std::fs::read_to_string(&role_path).map_err(|_| "cacheInvalid".to_string())?;
+            let raw = read_agency_text(&role_path).map_err(|_| "cacheInvalid".to_string())?;
             let fm = parse_agency_template_frontmatter(&raw);
             let body = crate::config::session_context::strip_yaml_frontmatter(&raw)
                 .trim()
@@ -933,7 +936,7 @@ fn copy_dir_into(src: &Path, dst: &Path, failures: &mut Vec<String>) {
             return;
         }
     }
-    if let Err(e) = std::fs::create_dir_all(dst) {
+    if let Err(e) = ensure_agency_directory(dst) {
         failures.push(format!("{}: cannot create dir ({})", dst.display(), e));
         return;
     }
@@ -960,7 +963,7 @@ fn copy_dir_into(src: &Path, dst: &Path, failures: &mut Vec<String>) {
         if meta.is_dir() {
             copy_dir_into(&path, &target, failures);
         } else if meta.is_file() {
-            if let Err(e) = std::fs::copy(&path, &target) {
+            if let Err(e) = copy_agency_file(&path, &target) {
                 failures.push(format!("{}: cannot copy ({})", path.display(), e));
             }
         }

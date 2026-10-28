@@ -13,35 +13,42 @@
 //! issue is recommended to bind tokens to issued sessions, closing the hole
 //! for all CLI verbs simultaneously.
 
-use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[cfg(test)]
 use chrono::DateTime;
 use chrono::Utc;
-use std::io::Write as _;
 
 mod clean;
 mod flow;
+mod initialization;
 mod status;
 
+use crate::filesystem::tasks::{
+    io_boundary, open_status_append, open_task_sync, read_description_snapshot, TaskLock,
+    TaskLockError,
+};
+#[cfg(test)]
+use crate::filesystem::tasks::{IO_FAULT, IO_MUTATION};
 #[cfg(test)]
 use clean::recover_clean_pair;
 use clean::recover_clean_pair_locked;
 #[cfg(test)]
 use clean::{backup_names, CleanJournal};
 use flow::perform_inner;
+pub(crate) use initialization::{
+    build_task_content, initialize_new_room, prepare_new_room_task_content, validate_task_title,
+};
 pub use status::StatusReceipt;
 pub use status::StatusRecord;
 pub use status::TaskSnapshot;
 use status::{
-    io_boundary, read_latest_status_locked, repair_partial_locked, status_invalid, sync_file,
-    valid_author, valid_revision, validate_status_text, write_failed, MAX_SEQUENCE, STATUS_LIMIT,
-    STATUS_NAME, TASK_LIMIT,
+    read_latest_status_locked, repair_partial_locked, status_invalid, valid_author, valid_revision,
+    validate_status_text, write_failed, MAX_SEQUENCE, STATUS_LIMIT, STATUS_NAME, TASK_LIMIT,
 };
 #[cfg(test)]
-use status::{validate_record, IO_FAULT, IO_MUTATION, JOURNAL_NAME, STATUS_WINDOW};
+use status::{validate_record, JOURNAL_NAME, STATUS_WINDOW};
 
 /// Timeout for the cooperative lock. Mirrors the issue acceptance criterion
 /// "concurrent writes from two coordinators don't corrupt the file" — first
@@ -494,7 +501,7 @@ pub(crate) fn title_value_of(parsed: &ParsedTask) -> Option<String> {
 /// Stable kernel lock. Each acquisition opens a separate handle; the kernel
 /// releases ownership on process death. Never unlink or replace this file.
 pub(crate) struct LockGuard {
-    _file: std::fs::File,
+    _lock: TaskLock,
 }
 impl LockGuard {
     pub(crate) fn acquire(
@@ -502,33 +509,15 @@ impl LockGuard {
         timeout: Duration,
         _stale_after: Duration,
     ) -> Result<Self, TaskOpError> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-            .map_err(|e| TaskOpError::LockIo(path.to_path_buf(), e))?;
-        let start = Instant::now();
-        loop {
-            match file.try_lock() {
-                Ok(()) => return Ok(Self { _file: file }),
-                Err(std::fs::TryLockError::WouldBlock) => {
-                    if start.elapsed() >= timeout {
-                        return Err(TaskOpError::LockTimeout);
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                Err(std::fs::TryLockError::Error(e)) => {
-                    return Err(TaskOpError::LockIo(path.to_path_buf(), e))
-                }
-            }
+        match TaskLock::acquire(path, timeout) {
+            Ok(lock) => Ok(Self { _lock: lock }),
+            Err(TaskLockError::Timeout) => Err(TaskOpError::LockTimeout),
+            Err(TaskLockError::Io(e)) => Err(TaskOpError::LockIo(path.to_path_buf(), e)),
         }
     }
 }
 
 pub fn read_snapshot(root: &Path) -> Result<TaskSnapshot, TaskOpError> {
-    use std::io::Read;
     let _lock = LockGuard::acquire(
         &root.join("TASK.md.lock"),
         LOCK_TIMEOUT_5S,
@@ -536,12 +525,8 @@ pub fn read_snapshot(root: &Path) -> Result<TaskSnapshot, TaskOpError> {
     )?;
     recover_clean_pair_locked(root)?;
     let path = root.join("TASK.md");
-    let task = match std::fs::File::open(&path) {
-        Ok(file) => {
-            let mut bytes = Vec::new();
-            file.take(TASK_LIMIT + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|e| TaskOpError::ReadFailed(path.clone(), e))?;
+    let task = match read_description_snapshot(&path, TASK_LIMIT) {
+        Ok(Some(bytes)) => {
             if bytes.len() as u64 > TASK_LIMIT {
                 return Err(TaskOpError::SnapshotTooLarge);
             }
@@ -552,7 +537,7 @@ pub fn read_snapshot(root: &Path) -> Result<TaskSnapshot, TaskOpError> {
                 )
             })?)
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Ok(None) => None,
         Err(e) => return Err(TaskOpError::ReadFailed(path, e)),
     };
     let parsed = parse_task(task.as_deref().unwrap_or(""));
@@ -591,12 +576,8 @@ pub fn append_status(
             {
                 return Err(TaskOpError::RequestIdConflict);
             }
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(root.join(STATUS_NAME))
-                .map_err(write_failed)?;
-            sync_file(&file, "append_sync").map_err(write_failed)?;
+            let file = open_task_sync(&root.join(STATUS_NAME)).map_err(write_failed)?;
+            file.sync_at("append_sync").map_err(write_failed)?;
             return Ok(StatusReceipt {
                 revision: tail.revision(),
                 record: last.clone(),
@@ -640,19 +621,8 @@ pub fn append_status(
     }
     repair_partial_locked(root, &tail)?;
     io_boundary("append_open").map_err(write_failed)?;
-    let mut file = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(root.join(STATUS_NAME))
-        .map_err(write_failed)?;
-    #[cfg(test)]
-    if IO_FAULT.with(|f| f.borrow().0.as_deref() == Some("append_partial")) {
-        file.write_all(&bytes[..20]).map_err(write_failed)?;
-        return Err(write_failed(std::io::Error::other("fixture partial")));
-    }
-    io_boundary("append_write").map_err(write_failed)?;
-    file.write_all(&bytes).map_err(write_failed)?;
-    sync_file(&file, "append_sync").map_err(write_failed)?;
+    let mut file = open_status_append(&root.join(STATUS_NAME)).map_err(write_failed)?;
+    file.append_status_bytes(&bytes).map_err(write_failed)?;
     Ok(StatusReceipt {
         revision: format!("{}:{}", record.topic_id, record.sequence),
         record,
