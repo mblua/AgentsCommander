@@ -1,5 +1,7 @@
 use super::*;
 
+mod root_protection;
+
 #[test]
 fn gate_accepts_peer_after_resize_settles() {
     let quiet = Duration::from_millis(3000);
@@ -169,7 +171,7 @@ async fn process_message_purge_wg_without_token_is_rejected() {
     let path = build_purge_wg_message(
         &sender_cwd,
         "msg-purge-notoken",
-        "rid-purge-notoken",
+        "33180001-0000-4000-8000-000000000010",
         "proj-a:wg-1-dev-team/tech-lead",
         Some(MAILBOX_MASTER_TOKEN),
         false,
@@ -253,7 +255,7 @@ async fn process_message_purge_wg_with_master_token_and_forged_from_is_rejected(
     let path = build_purge_wg_message(
         &sender_cwd,
         "msg-purge-forged",
-        "rid-purge-forged",
+        "33180001-0000-4000-8000-000000000011",
         "proj-a:wg-1-other-team/tech-lead", // forged: a different WG
         Some(MAILBOX_MASTER_TOKEN),
         false,
@@ -290,6 +292,7 @@ async fn process_message_purge_wg_with_master_token_and_forged_from_is_rejected(
 /// purge with `failed_root_guard` and destroy nothing.
 #[tokio::test]
 async fn root_guard_aborts_purge() {
+    std::fs::create_dir_all(crate::config::root_agent::root_agent_dir().unwrap()).unwrap();
     let temp = tempfile::TempDir::new().unwrap();
     let (sender_cwd, peer_cwd) = setup_purge_fixture(&temp, "dev-team");
 
@@ -336,7 +339,7 @@ async fn root_guard_aborts_purge() {
     let path = build_purge_wg_message(
         &sender_cwd,
         "msg-purge-rootguard",
-        "rid-purge-rootguard",
+        "33180001-0000-4000-8000-000000000012",
         "proj-a:wg-1-dev-team/tech-lead",
         Some(&token),
         false,
@@ -352,7 +355,7 @@ async fn root_guard_aborts_purge() {
     let responses_dir = sender_cwd
         .join(crate::config::agent_local_dir_name())
         .join("responses");
-    let response_path = responses_dir.join("rid-purge-rootguard.json");
+    let response_path = responses_dir.join("33180001-0000-4000-8000-000000000012.json");
     assert!(
         response_path.exists(),
         "root guard response must be written"
@@ -376,6 +379,7 @@ async fn root_guard_aborts_purge() {
 /// gate is actually exercised, not vacuously passed.
 #[tokio::test]
 async fn quiet_period_is_clamped_to_floor() {
+    std::fs::create_dir_all(crate::config::root_agent::root_agent_dir().unwrap()).unwrap();
     let temp = tempfile::TempDir::new().unwrap();
     let (sender_cwd, peer_cwd) = setup_purge_fixture(&temp, "dev-team");
 
@@ -409,7 +413,7 @@ async fn quiet_period_is_clamped_to_floor() {
     let path = build_purge_wg_message(
         &sender_cwd,
         "msg-purge-clamp",
-        "rid-purge-clamp",
+        "33180001-0000-4000-8000-000000000013",
         "proj-a:wg-1-dev-team/tech-lead",
         Some(&token),
         true, // dry-run
@@ -424,7 +428,7 @@ async fn quiet_period_is_clamped_to_floor() {
     let responses_dir = sender_cwd
         .join(crate::config::agent_local_dir_name())
         .join("responses");
-    let response_path = responses_dir.join("rid-purge-clamp.json");
+    let response_path = responses_dir.join("33180001-0000-4000-8000-000000000013.json");
     assert!(response_path.exists(), "dry-run response must be written");
     let body: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&response_path).unwrap()).unwrap();
