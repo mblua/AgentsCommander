@@ -347,3 +347,50 @@ pub(crate) fn remove_git_guard_stage(path: &Path) -> io::Result<()> {
 pub(crate) fn write_pty_response(path: &Path, bytes: &[u8]) -> io::Result<()> {
     std::fs::write(path, bytes)
 }
+
+pub(crate) fn read_ui_automation_text(path: &Path) -> io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+pub(crate) struct UiAutomationStage(std::fs::File);
+
+impl io::Write for UiAutomationStage {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        io::Write::write(&mut self.0, bytes)
+    }
+
+    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        io::Write::write_all(&mut self.0, bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        io::Write::flush(&mut self.0)
+    }
+}
+
+pub(crate) fn create_ui_automation_stage(
+    path: &Path,
+    replace: bool,
+) -> io::Result<UiAutomationStage> {
+    let file = if replace {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)?
+    } else {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?
+    };
+    Ok(UiAutomationStage(file))
+}
+
+pub(crate) fn rename_ui_automation_file(from: &Path, to: &Path) -> io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+pub(crate) fn remove_ui_automation_file(path: &Path) -> io::Result<()> {
+    std::fs::remove_file(path)
+}

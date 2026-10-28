@@ -281,3 +281,31 @@ pub(crate) fn ensure_git_guard_directory(path: &Path) -> io::Result<()> {
 pub(crate) fn ensure_pty_response_directory(path: &Path) -> io::Result<()> {
     std::fs::create_dir_all(path)
 }
+
+pub(crate) fn test_reset_candidate_exists(path: &Path) -> bool {
+    path.exists()
+}
+
+pub(crate) fn remove_test_reset_candidate(path: &Path) -> io::Result<()> {
+    std::fs::remove_dir_all(path)
+}
+
+pub(crate) fn inspect_test_reset_candidate(path: &Path) -> io::Result<std::fs::Metadata> {
+    std::fs::symlink_metadata(path)
+}
+
+pub(crate) fn canonical_test_reset_path(path: &Path) -> io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+pub(crate) fn ensure_ui_automation_directory(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+pub(crate) fn ui_automation_path_exists(path: &Path) -> bool {
+    path.exists()
+}
+
+pub(crate) fn remove_ui_automation_directory(path: &Path) -> io::Result<()> {
+    std::fs::remove_dir_all(path)
+}
