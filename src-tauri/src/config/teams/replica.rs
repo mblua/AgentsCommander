@@ -5,6 +5,7 @@ use crate::config::ac_root::existing_ac_root;
 use crate::config::replica_identity::agent_bare_name_from_ref;
 use crate::config::replica_identity::read_and_repair_wg_replica_config;
 use crate::config::replica_identity::WG_REPLICA_REQUIRED_CONTEXT;
+use crate::filesystem::ac_discovery;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -130,21 +131,18 @@ pub fn resolve_wg_coordinator_replica(
         .and_then(|s| s.split_once('-').map(|(_, rest)| rest.to_string()))?;
 
     let team_dir = ac_root.join(format!("_team_{}", team));
-    let team_config: serde_json::Value = std::fs::read_to_string(team_dir.join("config.json"))
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())?;
+    let team_config: serde_json::Value =
+        ac_discovery::read_team_discovery_config(&team_dir.join("config.json"))
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())?;
     let coordinator_ref = team_config.get("coordinator").and_then(|c| c.as_str())?;
     let coordinator_name = agent_bare_name_from_ref(coordinator_ref).ok()?;
-    if !ac_root
-        .join(format!("_agent_{}", coordinator_name))
-        .is_dir()
-    {
+    if !ac_discovery::discovery_path_is_dir(&ac_root.join(format!("_agent_{}", coordinator_name))) {
         return None;
     }
 
-    for replica_entry in std::fs::read_dir(wg_dir).ok()?.flatten() {
-        let replica_dir = replica_entry.path();
-        if !replica_dir.is_dir() {
+    for (replica_dir, _) in ac_discovery::team_discovery_entries(wg_dir).ok()?.flatten() {
+        if !ac_discovery::discovery_path_is_dir(&replica_dir) {
             continue;
         }
         let _dir_name = match replica_dir.file_name().and_then(|n| n.to_str()) {
@@ -190,7 +188,7 @@ pub fn verified_wg_coordinator_target(
             continue;
         };
         let wg_dir = ac_root.join(wg_name);
-        if !wg_dir.is_dir() {
+        if !ac_discovery::discovery_path_is_dir(&wg_dir) {
             continue;
         }
         if let Some(resolved) = resolve_wg_coordinator_replica(&ac_root, &wg_dir) {
