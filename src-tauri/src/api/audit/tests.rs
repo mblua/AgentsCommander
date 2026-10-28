@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Write;
 
 #[test]
 fn sanitize_strips_newlines_and_tabs() {

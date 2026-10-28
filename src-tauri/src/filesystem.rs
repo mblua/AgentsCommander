@@ -15,6 +15,7 @@ pub(crate) mod capture_state;
 pub(crate) mod catalog;
 pub(crate) mod co_managed_config;
 pub(crate) mod co_managed_queue;
+pub(crate) mod coding_agent_profiles;
 pub(crate) mod config_locations;
 pub(crate) mod config_seed;
 pub(crate) mod context_skills;
