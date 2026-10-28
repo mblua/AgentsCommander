@@ -1,4 +1,4 @@
-use super::handoff::resolve_remote_pty_command;
+use super::handoff::{resolve_remote_pty_command, ERR_OWNED_WAKE_RETAINED};
 use super::notice::{
     internal_system_envelope, parse_remote_pty_command, sender_name_for_session_cwd_with_root_flag,
     OutboxOrigin, WakeDeliveryOrigin, ERR_INVALID_DISPATCH_PROFILE,
@@ -347,7 +347,21 @@ impl MailboxPoller {
                             tokio::task::yield_now().await;
                             continue;
                         }
-                        OwnedPeerWakeStep::Retained => return std::future::pending().await,
+                        OwnedPeerWakeStep::Retained(stage) => {
+                            log::warn!(
+                                "[mailbox] retained wake id={} target={} stage={}",
+                                msg.id,
+                                msg.to,
+                                stage
+                            );
+                            return Err(format!(
+                                concat!(
+                                    "{} id={} target={} stage={}: incomplete/uncertain; ",
+                                    "automatic replay disabled"
+                                ),
+                                ERR_OWNED_WAKE_RETAINED, msg.id, msg.to, stage
+                            ));
+                        }
                     }
                 }
             }
@@ -659,7 +673,7 @@ impl MailboxPoller {
         if plan.configured_spawn.as_ref().is_some_and(|spawn| {
             SessionBackendKind::from(&spawn.backend) != SessionBackendKind::LocalProcess
         }) {
-            return Ok(OwnedPeerWakeStep::Retained);
+            return Ok(OwnedPeerWakeStep::Retained("unsupported_backend"));
         }
         let request = crate::commands::session::OwnedReplacementCreateRequest {
             shell: plan.spawn_shell,
@@ -740,19 +754,20 @@ impl MailboxPoller {
         let result = crate::config::sessions_persistence::run_owned_persist_core(async move {
             let mut source = crate::session::selection::SourceExecutorGuard::unbound();
             if !source.bind(&execution.continuation) {
-                return Ok(OwnedPeerWakeStep::Retained);
+                return Ok(OwnedPeerWakeStep::Retained("source_bind_refused"));
             }
             let result = delivery
                 .execute_owned_peer_replacement(&app, &mut execution)
                 .await;
-            source.returned(result.is_err());
+            source
+                .returned(result.is_err() || matches!(&result, Ok(OwnedPeerWakeStep::Retained(_))));
             result
         })
         .await;
         #[cfg(test)]
-        if matches!(&result, Ok(OwnedPeerWakeStep::Retained)) {
+        if matches!(&result, Ok(OwnedPeerWakeStep::Retained(_))) {
             // The accepted core has actually returned; its public wake caller
-            // intentionally remains pending below. This is observation only.
+            // returns a finite uncertainty rejection below. This is observation only.
             let _ = completion
                 .fixture_reached(
                     crate::session::selection::ReplacementFixtureCut::SourceRetainedReturn,

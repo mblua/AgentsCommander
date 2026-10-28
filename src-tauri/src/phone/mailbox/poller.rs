@@ -1,4 +1,4 @@
-use super::handoff::release_wake_claim;
+use super::handoff::{release_wake_claim, ERR_OWNED_WAKE_RETAINED};
 use super::notice::{
     canonical_project_refresh_path, project_refresh_priority, ProjectRefreshEventPayload,
     ProjectRefreshPollBatch, ResolvedWakeAgentCommand, RetryState, WakeDeliveryOrigin,
@@ -112,9 +112,9 @@ pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRe
 }
 
 /// (#1399) The detached delivery tail: deliver, archive on success, and on
-/// any failure rename the claim back before the outcome is sent, so by the
-/// time the scanner drains it the origin path is valid again and the
-/// retry/reject block sees a real file.
+/// ordinary failure rename the claim back before the outcome is sent. Retained
+/// uncertainty keeps its non-actionable claim for terminal settlement. Ordinary
+/// failures restore the origin before the scanner drains their retry/reject report.
 pub(crate) async fn deliver_claimed_wake<R: tauri::Runtime>(
     delivery: &MailboxPoller,
     app: &tauri::AppHandle<R>,
@@ -138,7 +138,9 @@ pub(crate) async fn deliver_claimed_wake<R: tauri::Runtime>(
             }
         },
         Err(error) => {
-            release_wake_claim(claim, origin);
+            if !error.starts_with(ERR_OWNED_WAKE_RETAINED) {
+                release_wake_claim(claim, origin);
+            }
             Err(error)
         }
     }
@@ -420,7 +422,7 @@ pub(crate) type SpawnedPeerWake = (
 pub(crate) enum OwnedPeerWakeStep {
     Delivered(OutboxMessage),
     Relist,
-    Retained,
+    Retained(&'static str),
 }
 
 pub(crate) struct OwnedPeerWakeExecution {

@@ -708,3 +708,277 @@ async fn poll_split_counts_transient_attempts_across_cycles() {
     assert!(poller.live_claims.is_empty());
     assert_eq!(hooks.inject_calls.lock().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn issue_3263_minimal_retained_worker_rejects() {
+    use super::support_retained_cells::{assert_minimal_retired, minimal_retained_worker};
+    assert_eq!(
+        super::super::handoff::ERR_OWNED_WAKE_RETAINED,
+        "ownedWakeRetained:"
+    );
+    assert!(is_permanent_delivery_error("ownedWakeRetained: stage=test"));
+    for reason in [
+        "xownedWakeRetained:",
+        "ownedWakeRetained",
+        "OwnedWakeRetained:",
+    ] {
+        assert!(!is_permanent_delivery_error(reason));
+    }
+    let mut worker = minimal_retained_worker(false).await;
+    assert_minimal_retired(&mut worker).await;
+    let dir = worker.origin.parent().unwrap().join("rejected");
+    let id = worker.origin.file_stem().unwrap().to_str().unwrap();
+    let message: OutboxMessage =
+        serde_json::from_slice(&std::fs::read(dir.join(format!("{id}.json"))).unwrap()).unwrap();
+    assert!(message.token.is_none());
+    let reason = std::fs::read_to_string(dir.join(format!("{id}.reason.txt"))).unwrap();
+    assert!(reason.contains("fixture_source_core_refused") && reason.contains("uncertain"));
+    assert!(!worker.origin.exists());
+}
+
+#[tokio::test]
+async fn issue_3263_minimal_retained_input_error_no_replay() {
+    use super::support_retained_cells::{assert_minimal_retired, minimal_retained_worker};
+    let mut worker = minimal_retained_worker(true).await;
+    assert_minimal_retired(&mut worker).await;
+    // Backend failure returns before recording bytes; stage/failed receipt proves the attempt.
+    assert!(!worker.origin.exists());
+}
+
+#[tokio::test]
+async fn issue_3263_minimal_retained_reject_io_pending() {
+    use super::super::handoff::wake_claim_path;
+    use super::support_retained_cells::{assert_minimal_retired, minimal_retained_worker};
+    super::support_retained_cells::minimal_retained_missing_eight().await;
+    for case in [
+        "absent",
+        "mismatch",
+        "mismatch-delete",
+        "collision",
+        "absent-collision",
+        "json",
+        "utf8",
+        "bom",
+        "raw-blocked",
+        "reason-only",
+        "payload-delete",
+        "raw-reason",
+    ] {
+        let mut worker = minimal_retained_worker(false).await;
+        worker.poller.retry_tracker.insert(
+            worker.origin.clone(),
+            super::super::notice::RetryState {
+                attempt_count: 2,
+                logged: true,
+            },
+        );
+        let claim = wake_claim_path(&worker.origin);
+        let dir = worker.origin.parent().unwrap().join("rejected");
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = worker
+            .origin
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let bytes = std::fs::read(&claim).unwrap();
+        let corrupt: &[u8] = match case {
+            "json" => b"{invalid",
+            "utf8" | "raw-blocked" | "raw-reason" => &[0x80],
+            "bom" => &[0xEF, 0xBB, 0xBF, 0x80],
+            _ => &bytes,
+        };
+        std::fs::write(&claim, corrupt).unwrap();
+        if case.contains("absent") {
+            std::fs::remove_file(&claim).unwrap();
+        }
+        if case.contains("collision") {
+            std::fs::write(&worker.origin, b"foreign origin").unwrap();
+        }
+        if case.starts_with("mismatch") {
+            let mut message: OutboxMessage = serde_json::from_slice(&bytes).unwrap();
+            message.id = "different-id".into();
+            std::fs::write(&claim, serde_json::to_vec(&message).unwrap()).unwrap();
+        }
+        let raw = dir.join(claim.file_name().unwrap());
+        let payload = dir.join(format!("{id}.json"));
+        let reason = dir.join(format!("{id}.reason.txt"));
+        if case == "raw-blocked" {
+            std::fs::create_dir(&raw).unwrap();
+        }
+        if case == "reason-only" {
+            std::fs::write(&reason, "partial").unwrap();
+            std::fs::create_dir(&payload).unwrap();
+        }
+        let protected = if cfg!(windows) {
+            &claim
+        } else {
+            worker.origin.parent().unwrap()
+        };
+        let permissions = case
+            .ends_with("-delete")
+            .then(|| std::fs::metadata(protected).unwrap().permissions());
+        if let Some(permissions) = &permissions {
+            let mut readonly = permissions.clone();
+            readonly.set_readonly(true);
+            std::fs::set_permissions(protected, readonly).unwrap();
+        }
+        if case == "raw-reason" {
+            let stem = claim.file_stem().unwrap().to_str().unwrap();
+            let raw_reason = dir.join(format!("{stem}.reason.txt"));
+            std::fs::create_dir(raw_reason).unwrap();
+        }
+        let receipts = worker.control.receipts.lock().unwrap().len();
+        worker.poller.drain_wake_outcomes().await;
+        if [
+            "raw-blocked",
+            "reason-only",
+            "payload-delete",
+            "mismatch-delete",
+        ]
+        .contains(&case)
+        {
+            assert_eq!(worker.poller.live_claims.len(), 1);
+            assert!(worker
+                .poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .contains_key(&worker.origin));
+            assert!(claim.exists());
+            assert!(!worker.origin.exists());
+            worker.poller.drain_wake_outcomes().await;
+            assert_eq!(worker.poller.live_claims.len(), 1);
+            assert_eq!(worker.control.receipts.lock().unwrap().len(), receipts);
+            if case.ends_with("-delete") {
+                let receipt = if case == "mismatch-delete" {
+                    dir.join("different-id.json")
+                } else {
+                    payload.clone()
+                };
+                assert!(receipt.is_file());
+                std::fs::set_permissions(protected, permissions.unwrap()).unwrap();
+            } else {
+                std::fs::remove_dir(if case == "raw-blocked" {
+                    &raw
+                } else {
+                    &payload
+                })
+                .unwrap();
+            }
+        }
+        if case.contains("collision") {
+            worker.poller.drain_wake_outcomes().await;
+            assert!(worker.poller.live_claims.is_empty());
+            assert!(worker.poller.retry_tracker.is_empty());
+            assert!(worker.poller.response_sources.lock().unwrap().is_empty());
+            assert_eq!(std::fs::read(&worker.origin).unwrap(), b"foreign origin");
+        }
+        assert_minimal_retired(&mut worker).await;
+        if ["json", "utf8", "bom", "raw-blocked", "raw-reason"].contains(&case) {
+            assert_eq!(std::fs::read(raw).unwrap(), corrupt);
+            assert!(!payload.exists());
+            if case != "raw-reason" {
+                let stem = claim.file_stem().unwrap().to_str().unwrap();
+                let reason =
+                    std::fs::read_to_string(dir.join(format!("{stem}.reason.txt"))).unwrap();
+                assert!(reason.contains("fixture_source_core_refused"));
+                assert!(!reason.contains(WAKE_BODY) && !reason.contains(MAILBOX_MASTER_TOKEN));
+            }
+        }
+        if case.starts_with("mismatch") {
+            assert!(dir.join("different-id.json").exists());
+            assert!(!payload.exists());
+        }
+    }
+}
+
+#[tokio::test]
+async fn issue_3263_minimal_retained_followup_eligibility() {
+    {
+        use super::support_retained_cells::{assert_minimal_retired, minimal_retained_worker};
+        let mut worker = minimal_retained_worker(false).await;
+        assert_minimal_retired(&mut worker).await;
+        let app = worker.fixture.app.handle();
+        let coordinator = app.state::<crate::session::selection::SelectionCoordinator>();
+        let roots = coordinator.fixture_root_count();
+        assert_eq!(roots, Some(1));
+        let mut followup = wake_message_to_target();
+        followup.id = "retained-root-followup".into();
+        followup.token = Some(MAILBOX_MASTER_TOKEN.into());
+        // Observe actual blockage, never clear the accepted retained root to get a success.
+        let observation = tokio::time::timeout(
+            Duration::from_millis(50),
+            worker.poller.deliver_wake(app, &followup),
+        )
+        .await;
+        assert!(
+            observation.is_err(),
+            "retained accepted root still blocks new source"
+        );
+        assert_eq!(coordinator.fixture_root_count(), roots);
+    }
+    let fixture = make_mailbox_fixture();
+    let app = fixture.app.handle();
+    let (coordinator, _, _, _) = prepare_retained_exited_respawn(&fixture).await;
+    {
+        let state = app.state::<SettingsState>();
+        let mut settings = state.write().await;
+        settings
+            .project_paths
+            .push(fixture.sender_cwd.to_string_lossy().to_string());
+        let agent = settings
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == "codex")
+            .unwrap();
+        agent.backend.kind = SessionBackendKind::ContainerTransport;
+        agent.backend.image = Some("agentscommander/ac-codex:latest".into());
+    }
+    let hooks = MailboxTestHooks::default();
+    let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+    let old = write_wake_message(&fixture.sender_cwd, "unsupported", "2026-07-15T00:00:01Z");
+    poller.poll(app).await.unwrap();
+    poller.settle_wake_workers().await;
+    let rejected = old
+        .parent()
+        .unwrap()
+        .join("rejected/unsupported.reason.txt");
+    assert!(std::fs::read_to_string(rejected)
+        .unwrap()
+        .contains("unsupported_backend"));
+    assert_eq!(coordinator.fixture_root_count(), Some(0));
+    assert!(poller.live_claims.is_empty());
+    {
+        let state = app.state::<SettingsState>();
+        let mut settings = state.write().await;
+        let agent = settings
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == "codex")
+            .unwrap();
+        agent.backend.kind = SessionBackendKind::LocalProcess;
+        agent.backend.image = None;
+    }
+    let session = add_mailbox_session(
+        app,
+        &fixture.target_cwd,
+        "corrected-live",
+        SessionStatus::Idle,
+        None,
+    )
+    .await;
+    hooks.pty_presence.lock().unwrap().insert(session, true);
+    hooks.inject_results.lock().unwrap().push_back(Ok(()));
+    let origin = write_wake_message(&fixture.sender_cwd, "followup", "2026-07-15T00:00:02Z");
+    poller.poll(app).await.unwrap();
+    poller.settle_wake_workers().await;
+    assert!(!origin.exists());
+    assert_eq!(hooks.inject_calls.lock().unwrap().as_slice(), &[session]);
+    assert!(origin
+        .parent()
+        .unwrap()
+        .join("delivered/followup.json")
+        .exists());
+}

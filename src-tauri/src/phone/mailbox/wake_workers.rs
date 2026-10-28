@@ -1,7 +1,7 @@
 use super::handoff::{
     dedup_outbox_dirs_by_object_id, is_permanent_delivery_error, outbox_message_send_time,
     prune_retry_tracker, wake_claim_has_settled_receipt, wake_claim_origin, wake_claim_path,
-    WakeHandoff, WakeOutcomeReport, WAKE_CLAIM_EXTENSION,
+    WakeHandoff, WakeOutcomeReport, ERR_OWNED_WAKE_RETAINED, WAKE_CLAIM_EXTENSION,
 };
 use super::notice::{
     retain_unarchived_session_dirs, OutboxOrigin, RetryState, MAX_DELIVERY_ATTEMPTS,
@@ -310,6 +310,46 @@ impl MailboxPoller {
         }
     }
 
+    async fn settle_retained_wake_rejection(
+        &self,
+        origin: &Path,
+        reason: &str,
+    ) -> Result<(), String> {
+        let claim = wake_claim_path(origin);
+        let claim_present = claim.try_exists().map_err(|error| error.to_string())?;
+        let origin_present = origin.try_exists().map_err(|error| error.to_string())?;
+        if origin_present {
+            log::warn!(
+                "[mailbox] retained origin collision {:?}: {}",
+                origin,
+                reason
+            );
+        }
+        if !claim_present {
+            log::warn!(
+                "[mailbox] missing_owned_claim origin={:?} origin_present={} reason={}",
+                origin,
+                origin_present,
+                reason
+            );
+            return Ok(());
+        }
+        let message = match read_text_bom_tolerant(&claim) {
+            Ok(content) => serde_json::from_str::<OutboxMessage>(&content).ok(),
+            Err(_) => None,
+        };
+        let Some(message) = message else {
+            return Self::reject_raw_file(&claim, reason);
+        };
+        // Inspection only: use the parsed ID, as reject_message does, even if
+        // the original claim stem differs. Never materialize this sibling.
+        let receipt_origin = claim.with_file_name(format!("{}.json", message.id));
+        if wake_claim_has_settled_receipt(&receipt_origin)? {
+            return std::fs::remove_file(&claim).map_err(|error| error.to_string());
+        }
+        self.reject_message(&claim, &message, reason).await
+    }
+
     /// (#1399) Settle one finite snapshot of worker reports. Ownership ends only
     /// after the corresponding on-disk state is settled and the outcome can be
     /// recorded without racing reclamation or an absent terminal-rejection input.
@@ -321,6 +361,29 @@ impl MailboxPoller {
 
         for (path, outcome) in reports {
             let claim = wake_claim_path(&path);
+            if let Err(reason) = &outcome {
+                if reason.starts_with(ERR_OWNED_WAKE_RETAINED) {
+                    match self.settle_retained_wake_rejection(&path, reason).await {
+                        Ok(()) => {
+                            self.settle_response_source(&path, false);
+                            self.live_claims.remove(&claim);
+                            self.retry_tracker.remove(&path);
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "[mailbox] rejection_pending origin={:?} reason={} error={}",
+                                path,
+                                reason,
+                                error
+                            );
+                            if self.wake_outcomes_tx.send((path, outcome)).is_err() {
+                                log::error!("[mailbox] retained rejection report send failed");
+                            }
+                        }
+                    }
+                    continue;
+                }
+            }
             // Observation is part of settlement. `Path::exists()` would turn every
             // metadata/access failure into `false`, release the ledger, and either
             // count against an absent origin or resurrect an unreadable receipt.

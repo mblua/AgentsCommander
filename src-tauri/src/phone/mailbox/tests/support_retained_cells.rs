@@ -233,14 +233,19 @@ pub(super) async fn retained_fixture_ordinary_wake(
     message: &OutboxMessage,
     control: &crate::session::selection::ReplacementFixtureControl,
 ) -> Option<Result<OutboxMessage, String>> {
-    tokio::select! {
-        biased;
-        actual = poller.deliver_wake(app, message) => Some(actual),
-        _ = retained_source_wait_cut(control,
-            crate::session::selection::ReplacementFixtureCut::SourceRetainedReturn) => None,
+    let actual = poller.deliver_wake(app, message).await;
+    if let Err(reason) = &actual {
+        if reason.starts_with(super::super::handoff::ERR_OWNED_WAKE_RETAINED) {
+            assert!(reason.contains("stage="));
+            assert!(control.receipts.lock().unwrap().iter().any(|receipt| {
+                receipt.cut
+                    == crate::session::selection::ReplacementFixtureCut::SourceRetainedReturn
+            }));
+            // Observation-only compatibility: the actual finite result was awaited.
+            return None;
+        }
     }
-    // None means only that the real core returned Retained and its public
-    // pending waiter was dropped. It is never a product result or success.
+    Some(actual)
 }
 
 pub(super) async fn retained_source_wait_cut(
@@ -770,4 +775,219 @@ pub(super) async fn retained_exited_respawn_root_full_cell(pty: bool, inline: bo
         Some(65),
         "no fake completion/reset during seal"
     );
+}
+
+pub(super) struct MinimalRetainedWorker {
+    pub(super) fixture: MailboxFixture,
+    pub(super) poller: MailboxPoller,
+    pub(super) control: Arc<crate::session::selection::ReplacementFixtureControl>,
+    pub(super) origin: std::path::PathBuf,
+}
+
+pub(super) async fn minimal_retained_worker(input_failure: bool) -> MinimalRetainedWorker {
+    use crate::session::selection::{
+        ReplacementFixtureAction as Action, ReplacementFixtureControl, ReplacementFixtureCut as Cut,
+    };
+    let fixture = make_mailbox_fixture();
+    let app = fixture.app.handle();
+    let (coordinator, _, _, _) = prepare_retained_exited_respawn(&fixture).await;
+    let control = Arc::new(ReplacementFixtureControl::default());
+    control.mock_backend.store(true, Ordering::Release);
+    if input_failure {
+        set_mock_pty_write_failure(app, true);
+    } else {
+        let (sender, resume) = tokio::sync::oneshot::channel();
+        drop(sender);
+        control.actions.lock().unwrap().push(Action::Pause {
+            cut: Cut::SourceCoreEntered,
+            resume,
+        });
+    }
+    let hooks = MailboxTestHooks::default();
+    *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+    let mut poller = MailboxPoller::new_with_test_hooks(hooks);
+    app.state::<SettingsState>()
+        .write()
+        .await
+        .project_paths
+        .push(fixture.sender_cwd.to_string_lossy().to_string());
+    let mut message = wake_message_to_target();
+    message.id = format!("minimal-retained-{}", Uuid::new_v4());
+    message.token = Some(MAILBOX_MASTER_TOKEN.to_string());
+    let outbox = fixture
+        .sender_cwd
+        .join(crate::config::agent_local_dir_name())
+        .join("outbox");
+    std::fs::create_dir_all(&outbox).unwrap();
+    let origin = outbox.join(format!("{}.json", message.id));
+    std::fs::write(&origin, serde_json::to_vec(&message).unwrap()).unwrap();
+    poller.poll(app).await.unwrap();
+    retained_source_wait_cut(&control, Cut::SourceRetainedReturn).await;
+    // The bound starts only AFTER the real core's retained-return observation.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(result) = poller.wake_workers.join_next().await {
+            result.unwrap();
+        }
+    })
+    .await
+    .expect("finite actual worker after Retained");
+    assert!(poller.wake_workers.is_empty());
+    assert_eq!(poller.wake_lanes.len(), 0);
+    assert!(poller.wake_lanes.try_reserve(&message.to).is_some());
+    let (path, outcome) = poller
+        .wake_outcomes_rx
+        .try_recv()
+        .expect("actual RAII report");
+    let reason = outcome.as_ref().unwrap_err();
+    assert!(reason.starts_with(super::super::handoff::ERR_OWNED_WAKE_RETAINED));
+    let stage = if input_failure {
+        "input_result_uncertain"
+    } else {
+        "fixture_source_core_refused"
+    };
+    assert!(reason.contains(stage), "{reason}");
+    assert!(reason.contains(&message.id) && reason.contains(&message.to));
+    assert!(
+        reason.contains("incomplete/uncertain") && reason.contains("automatic replay disabled")
+    );
+    assert_eq!(
+        control
+            .observe_owner(&coordinator)
+            .unwrap()
+            .source_returned_failed,
+        Some(true)
+    );
+    poller.wake_outcomes_tx.send((path, outcome)).unwrap();
+    assert!(!origin.exists());
+    assert_eq!(poller.live_claims.len(), 1);
+    assert!(poller
+        .response_sources
+        .lock()
+        .unwrap()
+        .contains_key(&origin));
+    MinimalRetainedWorker {
+        fixture,
+        poller,
+        control,
+        origin,
+    }
+}
+
+pub(super) async fn assert_minimal_retired(worker: &mut MinimalRetainedWorker) {
+    let receipts = worker.control.receipts.lock().unwrap().len();
+    let app = worker.fixture.app.handle();
+    let binding = worker
+        .control
+        .receipts
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|r| r.binding);
+    let writes = binding.map(|binding| shared_engine_writes(app, binding.session_id()));
+    worker.poller.drain_wake_outcomes().await;
+    assert!(worker.poller.live_claims.is_empty());
+    assert!(worker.poller.retry_tracker.is_empty());
+    assert!(worker.poller.response_sources.lock().unwrap().is_empty());
+    assert!(!super::super::handoff::wake_claim_path(&worker.origin).exists());
+    assert!(!worker.origin.parent().unwrap().join("delivered").exists());
+    for _ in 0..2 {
+        worker.poller.poll(app).await.unwrap();
+    }
+    assert_eq!(worker.control.receipts.lock().unwrap().len(), receipts);
+    if let Some(binding) = binding {
+        assert_eq!(
+            Some(shared_engine_writes(app, binding.session_id())),
+            writes
+        );
+    }
+}
+
+pub(super) async fn minimal_retained_missing_eight() {
+    use crate::session::selection::{
+        ReplacementFixtureAction as Action, ReplacementFixtureControl, ReplacementFixtureCut as Cut,
+    };
+    let fixture = make_mailbox_fixture();
+    let members: Vec<_> = (0..9)
+        .map(|i| provision_retained_fixture_member(&fixture, &format!("missing-{i}")))
+        .collect();
+    let app = fixture.app.handle();
+    let (coordinator, _, sender, _) = prepare_retained_exited_respawn(&fixture).await;
+    for (replica, target) in &members {
+        prepare_additional_retained_member(&fixture, &coordinator, sender, replica, target).await;
+    }
+    let mut poller = MailboxPoller::new_with_test_hooks(MailboxTestHooks::default());
+    app.state::<SettingsState>()
+        .write()
+        .await
+        .project_paths
+        .push(fixture.sender_cwd.to_string_lossy().to_string());
+    let outbox = fixture
+        .sender_cwd
+        .join(crate::config::agent_local_dir_name())
+        .join("outbox");
+    std::fs::create_dir_all(&outbox).unwrap();
+    for (i, (_, target)) in members.iter().enumerate() {
+        let control = Arc::new(ReplacementFixtureControl::default());
+        let hooks = MailboxTestHooks::default();
+        *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+        poller.test_hooks = Some(hooks);
+        let (tx, resume) = tokio::sync::oneshot::channel();
+        drop(tx);
+        control.actions.lock().unwrap().push(Action::Pause {
+            cut: Cut::SourceCoreEntered,
+            resume,
+        });
+        let mut message = wake_message_to_target();
+        message.id = format!("missing-{i}");
+        message.to = target.clone();
+        message.token = Some(MAILBOX_MASTER_TOKEN.into());
+        let origin = outbox.join(format!("{}.json", message.id));
+        std::fs::write(&origin, serde_json::to_vec(&message).unwrap()).unwrap();
+        let content = std::fs::read_to_string(&origin).unwrap();
+        let mut validated = None;
+        poller
+            .process_message_content(
+                app,
+                &origin,
+                OutboxOrigin::Replica,
+                &content,
+                Some(&mut validated),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            poller.claim_and_spawn_validated_wake(app, &origin, validated.unwrap()),
+            super::super::handoff::WakeHandoff::Spawned
+        ));
+        loop {
+            let count = control
+                .receipts
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.cut == Cut::SourceRetainedReturn)
+                .count();
+            if count == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        tokio::time::timeout(Duration::from_secs(3), async {
+            poller.wake_workers.join_next().await.unwrap().unwrap();
+        })
+        .await
+        .unwrap();
+        assert_eq!(poller.wake_lanes.len(), 0);
+        std::fs::remove_file(super::super::handoff::wake_claim_path(&origin)).unwrap();
+        if i == 7 {
+            assert_eq!(poller.live_claims.len(), 8);
+            assert_eq!(poller.response_sources.lock().unwrap().len(), 8);
+            poller.drain_wake_outcomes().await;
+            assert!(poller.live_claims.is_empty());
+            assert!(poller.retry_tracker.is_empty());
+            assert!(poller.response_sources.lock().unwrap().is_empty());
+        }
+    }
+    poller.drain_wake_outcomes().await;
+    assert!(poller.live_claims.is_empty());
 }

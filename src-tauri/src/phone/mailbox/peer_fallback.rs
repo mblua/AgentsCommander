@@ -49,7 +49,7 @@ impl MailboxPoller {
             .fixture_reached(crate::session::selection::ReplacementFixtureCut::SourceCoreEntered)
             .await
         {
-            return Ok(OwnedPeerWakeStep::Retained);
+            return Ok(OwnedPeerWakeStep::Retained("fixture_source_core_refused"));
         }
         let manager = app
             .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
@@ -58,18 +58,18 @@ impl MailboxPoller {
             .clone();
         let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
         if !continuation.validate_source().await {
-            return Ok(OwnedPeerWakeStep::Retained);
+            return Ok(OwnedPeerWakeStep::Retained("source_validation"));
         }
         if let Some(spawn) = execution.request.resolved_spawn.as_ref() {
             if !continuation
                 .validate_pre_effect_region(&manager, &pty)
                 .await
             {
-                return Ok(OwnedPeerWakeStep::Retained);
+                return Ok(OwnedPeerWakeStep::Retained("pre_effect_validation"));
             }
             let Some(effect) = continuation.start_effect(LifecycleEffectSlot::ContextPreparation)
             else {
-                return Ok(OwnedPeerWakeStep::Retained);
+                return Ok(OwnedPeerWakeStep::Retained("context_effect_denied"));
             };
             let prepared = crate::config::agent_command::prepare_agent_spawn_command(spawn);
             effect.complete(prepared.as_ref().map(|_| None).map_err(Clone::clone));
@@ -80,7 +80,7 @@ impl MailboxPoller {
                 return Err(error);
             }
             if !continuation.preserve_context_prerequisite() {
-                return Ok(OwnedPeerWakeStep::Retained);
+                return Ok(OwnedPeerWakeStep::Retained("prerequisite_retained"));
             }
         }
         #[cfg(test)]
@@ -93,12 +93,12 @@ impl MailboxPoller {
         let fixture_created = if let Some(control) = fixture {
             let (Some(exact), Some(stripe)) = (execution.exact.take(), execution.stripe.take())
             else {
-                return Ok(OwnedPeerWakeStep::Retained);
+                return Ok(OwnedPeerWakeStep::Retained("fixture_lease_missing"));
             };
             let Some(coordinator) =
                 app.try_state::<crate::session::selection::SelectionCoordinator>()
             else {
-                return Ok(OwnedPeerWakeStep::Retained);
+                return Ok(OwnedPeerWakeStep::Retained("fixture_coordinator_missing"));
             };
             let input = crate::commands::session::FixtureReplacementInput {
                 request: execution.request.clone(),
@@ -116,13 +116,15 @@ impl MailboxPoller {
                 .submit_inline_replacement_fixture(input, control)
                 .await
             else {
-                return Ok(OwnedPeerWakeStep::Retained);
+                return Ok(OwnedPeerWakeStep::Retained("fixture_submit_refused"));
             };
             let Some(lease) = result.ordinary_lease else {
-                return Ok(OwnedPeerWakeStep::Retained);
+                return Ok(OwnedPeerWakeStep::Retained(
+                    "fixture_returned_lease_missing",
+                ));
             };
             if !Arc::ptr_eq(&lease.gate, &execution.gate) || lease.target != execution.message.to {
-                return Ok(OwnedPeerWakeStep::Retained);
+                return Ok(OwnedPeerWakeStep::Retained("fixture_lease_mismatch"));
             }
             execution.exact = Some(lease.exact);
             execution.stripe = Some(lease.stripe);
@@ -172,21 +174,21 @@ impl MailboxPoller {
         match created {
             Ok(crate::commands::session::OwnedReplacementCreateStep::Finalized(_)) => {}
             Ok(crate::commands::session::OwnedReplacementCreateStep::Retained) => {
-                return Ok(OwnedPeerWakeStep::Retained)
+                return Ok(OwnedPeerWakeStep::Retained("create_retained"))
             }
             Err(error) => return Err(error),
         }
         let Some(info) = continuation.refresh_completion_info(&manager, &pty).await else {
-            return Ok(OwnedPeerWakeStep::Retained);
+            return Ok(OwnedPeerWakeStep::Retained("completion_missing"));
         };
         let id = continuation.binding().map(|binding| binding.session_id());
         let Some(id) = id else {
-            return Ok(OwnedPeerWakeStep::Retained);
+            return Ok(OwnedPeerWakeStep::Retained("binding_missing"));
         };
         // Start the work receipt only after its initial current-B checks. A
         // failed preflight has reached no bridge, settle or input effect.
         let Some(effect) = continuation.start_effect(LifecycleEffectSlot::WorkTransfer) else {
-            return Ok(OwnedPeerWakeStep::Retained);
+            return Ok(OwnedPeerWakeStep::Retained("work_transfer_denied"));
         };
         if info.telegram_bot_id.is_some() {
             self.attach_persisted_telegram_for_wake(app, id, info.telegram_bot_id.as_deref())
@@ -196,8 +198,14 @@ impl MailboxPoller {
             Ok(settle) => settle,
             Err(error) => {
                 effect.complete(Err(error.clone()));
+                log::warn!(
+                    "[mailbox] retained work id={} target={} cause={}",
+                    execution.message.id,
+                    execution.message.to,
+                    error
+                );
                 continuation.note_retained_work(error);
-                return Ok(OwnedPeerWakeStep::Retained);
+                return Ok(OwnedPeerWakeStep::Retained("idle_wait_failed"));
             }
         };
         if continuation
@@ -208,7 +216,9 @@ impl MailboxPoller {
             // The bridge/settle calls returned; no input was attempted. Keep
             // their known incomplete-work result instead of an unwind receipt.
             effect.complete(Err("replacement work stopped before input".into()));
-            return Ok(OwnedPeerWakeStep::Retained);
+            return Ok(OwnedPeerWakeStep::Retained(
+                "completion_before_input_missing",
+            ));
         }
         let injected = self
             .inject_wake_into_pty(
@@ -222,8 +232,14 @@ impl MailboxPoller {
             .await;
         if let Err(error) = injected {
             effect.complete(Err(error.clone()));
+            log::warn!(
+                "[mailbox] retained work id={} target={} cause={}",
+                execution.message.id,
+                execution.message.to,
+                error
+            );
             continuation.note_retained_work(error);
-            return Ok(OwnedPeerWakeStep::Retained);
+            return Ok(OwnedPeerWakeStep::Retained("input_result_uncertain"));
         }
         drop(execution.exact.take());
         drop(execution.stripe.take());

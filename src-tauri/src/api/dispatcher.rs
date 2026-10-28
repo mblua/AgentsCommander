@@ -347,12 +347,17 @@ where
                 crate::api::audit::record("-", &row.sender_fqn, "send-dispatch", deferred_by);
             }
             Err(reason) => {
+                let failure_limit = if reason.starts_with("ownedWakeRetained:") {
+                    1
+                } else {
+                    config.max_attempts
+                };
                 let status = store
                     .mark_delivery_failed_offloaded(
                         row.message_id.clone(),
                         reason,
                         chrono::Utc::now(),
-                        config.max_attempts,
+                        failure_limit,
                     )
                     .await?;
                 crate::api::audit::record("-", &row.sender_fqn, "send-dispatch", &status);

@@ -27,8 +27,11 @@ pub(crate) fn resolve_remote_pty_command(
     Ok(ResolvedRemotePtyCommand { logical, text })
 }
 
+pub(crate) const ERR_OWNED_WAKE_RETAINED: &str = "ownedWakeRetained:";
+
 pub(crate) fn is_permanent_delivery_error(error: &str) -> bool {
-    error.contains(ERR_UNRESOLVABLE_AGENT)
+    error.starts_with(ERR_OWNED_WAKE_RETAINED)
+        || error.contains(ERR_UNRESOLVABLE_AGENT)
         || error.starts_with(ERR_UNSUPPORTED_LOGICAL_REMOTE_COMMAND)
         || error.starts_with(ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND)
         || error.starts_with(ERR_INVALID_DISPATCH_PROFILE)

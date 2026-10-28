@@ -252,3 +252,56 @@ async fn test_dispatcher_typing_hold_deferred_releases_lease() {
     assert_eq!(messages[0].message_id, message_id);
     assert_eq!(messages[0].attempt, 0);
 }
+
+#[tokio::test]
+async fn issue_3263_minimal_retained_db_poisoned_no_replay() {
+    let store = store();
+    enqueue(&store, "retained", "hello");
+    let config = DispatcherConfig {
+        max_attempts: 10,
+        ..DispatcherConfig::default()
+    };
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    for (offset, expected) in [(0, 1), (3600, 0)] {
+        let processed = dispatch_due_with(
+            &store,
+            chrono::Utc::now() + chrono::Duration::seconds(offset),
+            &config,
+            |_| async {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err("ownedWakeRetained: stage=input_result_uncertain".to_string())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(processed, expected);
+    }
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let later = chrono::Utc::now() + chrono::Duration::hours(2);
+    assert!(store
+        .lease_due(later, 10, Duration::from_secs(1), "test")
+        .unwrap()
+        .is_empty());
+    assert_eq!(store.reap_terminal_before(later).unwrap(), 1);
+    // Similar-looking generic failures keep the normal retry budget.
+    for reason in [
+        "xownedWakeRetained:",
+        "ownedWakeRetained",
+        "OwnedWakeRetained:",
+    ] {
+        enqueue(&store, reason, "retry");
+        dispatch_due_with(&store, chrono::Utc::now(), &config, |_| async {
+            Err(reason.to_string())
+        })
+        .await
+        .unwrap();
+        let leased = store
+            .lease_due(later, 10, Duration::from_secs(1), "negative")
+            .unwrap();
+        assert_eq!(leased.len(), 1);
+        assert_eq!(leased[0].attempt, 1);
+        store
+            .mark_delivery_failed(&leased[0].message_id, "cleanup", later, 1)
+            .unwrap();
+    }
+}
