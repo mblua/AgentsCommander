@@ -31,6 +31,30 @@ pub fn is_root_agent_path(cwd: &str) -> bool {
     paths_equivalent(Path::new(cwd), Path::new(&root_dir))
 }
 
+/// Refusal-only guard: unresolved identity never permits removal.
+pub(crate) fn root_agent_path_requires_protection(cwd: &str) -> bool {
+    let Some(config_dir) = crate::config::config_dir() else {
+        return true;
+    };
+    root_agent_path_requires_protection_at(cwd, &config_dir)
+}
+
+pub(crate) fn root_agent_path_requires_protection_at(cwd: &str, config_dir: &Path) -> bool {
+    let (Ok(supplied), Ok(configured)) = (
+        std::fs::canonicalize(cwd),
+        std::fs::canonicalize(config_dir.join(ROOT_AGENT_DIR_NAME)),
+    ) else {
+        return true;
+    };
+    match (
+        crate::path_identity::verify_directory(&supplied),
+        crate::path_identity::verify_directory(&configured),
+    ) {
+        (Ok(supplied), Ok(configured)) => supplied.object_id == configured.object_id,
+        _ => true,
+    }
+}
+
 /// Isolated context fixtures use the same canonical path comparison as live
 /// Root routing, with an explicit configuration directory and existing roots.
 #[cfg(test)]

@@ -1,13 +1,14 @@
 use super::*;
 
 /// Test 11 (pure): `validate_session_creation_cwd` accepts a root-agent
-/// path (even when missing) and an archived-root path (existence waived).
+/// path with verified Root identity and an archived-root path (existence waived).
 #[test]
 fn validate_session_creation_cwd_accepts_root_agent_and_archived_roots() {
     let root = crate::config::root_agent::root_agent_dir().expect("root dir resolves");
+    std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
     assert!(
         validate_session_creation_cwd(&root, &[], &[]).is_ok(),
-        "root-agent path allowed even when missing"
+        "root-agent path allowed with verified Root identity"
     );
     let temp = tempfile::tempdir().unwrap();
     let archived_root = temp.path().to_string_lossy().to_string();
