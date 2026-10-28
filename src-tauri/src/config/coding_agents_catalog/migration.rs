@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::config::settings::{CodingAgentEnv, ConfigSeedConfig};
+use crate::filesystem::config_seed;
 
 use super::{
     analyze_base_bytes, build_managed_base_bytes, build_managed_base_bytes_with_original,
@@ -539,7 +540,7 @@ pub(crate) fn migrate_legacy(
     publish_exclusive(&paths.journal, &journal_bytes)?;
     inject_catalog_failure("after_journal")?;
     publish_exclusive(&paths.local, &local_bytes)?;
-    let written = std::fs::read(&paths.local)
+    let written = config_seed::read_seed_file(&paths.local)
         .map_err(|e| format!("the published local layer could not be re-read ({e})"))?;
     if written.len() as u64 != journal.local_byte_length
         || sha256_hex(&written) != journal.local_sha256
@@ -558,7 +559,7 @@ pub(crate) fn migrate_legacy(
                     .to_string(),
             );
         }
-        let current = std::fs::read(source_path)
+        let current = config_seed::read_seed_file(source_path)
             .map_err(|e| format!("the instance source could not be re-read ({e})"))?;
         if current != source_bytes {
             return Err(
@@ -567,7 +568,7 @@ pub(crate) fn migrate_legacy(
             );
         }
     } else {
-        let current = std::fs::read(&paths.base)
+        let current = config_seed::read_seed_file(&paths.base)
             .map_err(|e| format!("the project base could not be re-read ({e})"))?;
         if current != source_bytes {
             return Err(
@@ -598,10 +599,10 @@ pub(crate) fn migrate_legacy(
 pub(crate) fn recover_interrupted_migration(
     paths: &CatalogPaths,
 ) -> Result<Option<DateTime<Utc>>, String> {
-    let journal_bytes = std::fs::read(&paths.journal)
+    let journal_bytes = config_seed::read_seed_file(&paths.journal)
         .map_err(|e| format!("the migration journal could not be read ({e})"))?;
     let journal = parse_migration_journal(&journal_bytes)?;
-    let backup = std::fs::read(&paths.backup).map_err(|e| {
+    let backup = config_seed::read_seed_file(&paths.backup).map_err(|e| {
         format!(
             "the migration backup is missing or unreadable ({e}); recovery is blocked and every \
                 byte is preserved"
@@ -741,7 +742,7 @@ pub(crate) fn resume_backup_only_migration(
     paths: &CatalogPaths,
     legacy_catalog_dir: Option<&Path>,
 ) -> Result<Option<DateTime<Utc>>, String> {
-    let backup = std::fs::read(&paths.backup)
+    let backup = config_seed::read_seed_file(&paths.backup)
         .map_err(|e| format!("the migration backup could not be read ({e})"))?;
     if read_optional_regular_file(&paths.local, "local coding-agent catalog")?.is_some() {
         return Err(
@@ -836,7 +837,7 @@ pub(crate) fn fresh_initialize_catalog(
             ),
         ))
     };
-    let stub_warning = match std::fs::symlink_metadata(&paths.local) {
+    let stub_warning = match config_seed::inspect_seed_destination(&paths.local) {
         Ok(_) => None,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             match publish_exclusive(&paths.local, LOCAL_STUB_BYTES) {

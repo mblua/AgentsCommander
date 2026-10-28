@@ -9,6 +9,8 @@
 
 use std::path::Path;
 
+use crate::filesystem::config_locations;
+
 /// Shared directories created directly under a project's `.ac` root. Every agent in
 /// the project may read and write inside them. The order here is the render order of
 /// Golden Rule entry 5.
@@ -29,7 +31,7 @@ pub(crate) fn ensure_team_skills_dir(team_root: &Path) -> std::io::Result<()> {
 }
 
 fn inspect_ordinary_directory(path: &Path) -> std::io::Result<()> {
-    let metadata = std::fs::symlink_metadata(path)?;
+    let metadata = config_locations::shared_directory_metadata(path)?;
     let linked = metadata.file_type().is_symlink();
     #[cfg(windows)]
     let linked = {
@@ -52,7 +54,7 @@ fn ensure_skills_leaf(parent: &Path, name: &str) -> std::io::Result<()> {
     match inspect_ordinary_directory(&path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            match std::fs::create_dir(&path) {
+            match config_locations::create_shared_directory(&path) {
                 Ok(()) => inspect_ordinary_directory(&path),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     inspect_ordinary_directory(&path)
@@ -68,13 +70,13 @@ pub(crate) const ROOM_SHARED_DIR: &str = "room-shared";
 
 pub(crate) fn create_project_shared_dirs(ac_root: &Path) -> std::io::Result<()> {
     for sub in PROJECT_SHARED_DIRS {
-        std::fs::create_dir_all(ac_root.join(sub))?;
+        config_locations::ensure_shared_directories(&ac_root.join(sub))?;
     }
     Ok(())
 }
 
 pub(crate) fn create_room_shared_dir(room_root: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(room_root.join(ROOM_SHARED_DIR))
+    config_locations::ensure_shared_directories(&room_root.join(ROOM_SHARED_DIR))
 }
 
 #[cfg(test)]
