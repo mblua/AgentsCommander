@@ -262,3 +262,7 @@ pub(crate) fn read_cli_room_task(path: &Path) -> io::Result<Vec<u8>> {
 pub(crate) fn read_cli_message_archive_source(path: &Path) -> io::Result<Vec<u8>> {
     std::fs::read(path)
 }
+
+pub(crate) fn cli_outbox_delivery_is_file(path: &Path) -> io::Result<bool> {
+    std::fs::metadata(path).map(|metadata| metadata.is_file())
+}
