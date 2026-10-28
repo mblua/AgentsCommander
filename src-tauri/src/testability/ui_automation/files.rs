@@ -2,14 +2,14 @@ use super::{
     FS_RETRY_COUNT, FS_RETRY_DELAY_MS, REQUESTS_DIR, RESPONSES_DIR, SESSION_READ_RETRY_COUNT,
     SESSION_READ_RETRY_DELAY_MS,
 };
+use crate::filesystem::{directories, documents};
 use serde::Serialize;
-use std::fs::OpenOptions;
+use std::io;
 use std::io::Write;
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
 use std::time::Duration;
-use std::{fs, io};
 
 pub(super) fn write_json_atomic_new<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     write_json_atomic(path, value, false)
@@ -81,7 +81,7 @@ pub(super) fn observe_session_read_not_found(path: &Path) {
 pub(super) fn read_session_file_with_retry(path: &Path) -> io::Result<String> {
     let mut last_not_found = None;
     for attempt in 0..SESSION_READ_RETRY_COUNT {
-        match fs::read_to_string(path) {
+        match documents::read_ui_automation_text(path) {
             Ok(raw) => return Ok(raw),
             Err(e)
                 if e.kind() == io::ErrorKind::NotFound
@@ -109,10 +109,10 @@ pub(super) fn write_json_atomic<T: Serialize>(
     replace: bool,
 ) -> io::Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        directories::ensure_ui_automation_directory(parent)?;
     }
 
-    if !replace && path.exists() {
+    if !replace && directories::ui_automation_path_exists(path) {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!("destination already exists: {}", path.display()),
@@ -120,25 +120,14 @@ pub(super) fn write_json_atomic<T: Serialize>(
     }
 
     let tmp_path = path.with_extension("tmp");
-    let mut file = if replace {
-        OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp_path)?
-    } else {
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp_path)?
-    };
+    let mut file = documents::create_ui_automation_stage(&tmp_path, replace)?;
     serde_json::to_writer(&mut file, value)?;
     file.flush()?;
     drop(file);
 
     if replace {
         let _ = retry_remove_file(path);
-    } else if path.exists() {
+    } else if directories::ui_automation_path_exists(path) {
         let _ = retry_remove_file(&tmp_path);
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -149,21 +138,21 @@ pub(super) fn write_json_atomic<T: Serialize>(
 }
 
 pub(super) fn retry_rename(from: &Path, to: &Path) -> io::Result<()> {
-    retry_fs(|| fs::rename(from, to))
+    retry_fs(|| documents::rename_ui_automation_file(from, to))
 }
 
 pub(super) fn retry_remove_file(path: &Path) -> io::Result<()> {
-    if !path.exists() {
+    if !directories::ui_automation_path_exists(path) {
         return Ok(());
     }
-    retry_fs(|| fs::remove_file(path))
+    retry_fs(|| documents::remove_ui_automation_file(path))
 }
 
 pub(super) fn retry_remove_dir_all(path: &Path) -> io::Result<()> {
-    if !path.exists() {
+    if !directories::ui_automation_path_exists(path) {
         return Ok(());
     }
-    retry_fs(|| fs::remove_dir_all(path))
+    retry_fs(|| directories::remove_ui_automation_directory(path))
 }
 
 pub(super) fn retry_fs(mut op: impl FnMut() -> io::Result<()>) -> io::Result<()> {
@@ -188,10 +177,10 @@ pub(super) fn is_transient_fs_error(e: &io::Error) -> bool {
 pub(super) fn cleanup_stale_automation_files(automation_dir: &Path) -> io::Result<()> {
     let requests = automation_dir.join(REQUESTS_DIR);
     let responses = automation_dir.join(RESPONSES_DIR);
-    if requests.exists() {
+    if directories::ui_automation_path_exists(&requests) {
         retry_remove_dir_all(&requests)?;
     }
-    if responses.exists() {
+    if directories::ui_automation_path_exists(&responses) {
         retry_remove_dir_all(&responses)?;
     }
     Ok(())
