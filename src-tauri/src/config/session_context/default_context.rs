@@ -174,7 +174,7 @@ pub(crate) const SELF_CLEAR_MANUAL_SECTION: &str = "\n\n## Manual context clear\
 /// #640 Auto self-handoff-and-clear directive. Appended to a coding-agent
 /// session's context ONLY when the resolved `auto_self_clear` flag is true.
 /// Single source for coordinator, root, and specialists (the per-template
-/// copies were removed in #640). Self-contained: no SKILL.md ships.
+/// copies were removed in #640). The shipped self-handoff skill owns the resume format.
 /// Threshold 3 is hardcoded (plan C). Prohibition-first (grinch H1/H2).
 pub(crate) const SELF_MAINTENANCE_AUTO_SECTION: &str = "\n\n## Self-Maintenance (auto \
     self-handoff-and-clear)\n\nTreat this as a background hygiene habit, never an interrupt. Hard \
@@ -189,12 +189,7 @@ pub(crate) const SELF_MAINTENANCE_AUTO_SECTION: &str = "\n\n## Self-Maintenance 
     batch-log, or count headers or blank lines.\n\nWhen `SELF-FORGET.md` reaches 3 such lines, \
     treat that as a CANDIDATE to refresh your context, acted on ONLY at a safe resting point (none \
     of the in-flight cases above). At that point:\n1. Write `SELF-HANDOFF.md` in your own root: \
-    minimal, action-first resume notes: first action, open or in-progress work, blockers and \
-    pending decisions, live state, and exact pointers needed to resume. Rely on context \
-    automatically injected when the session restarts. Do not repeat identity, basic \
-    AgentsCommander operation, instructions already injected through `AGENTS.md` or \
-    `CLAUDE.md`, `Role.md` content, procedures available in skills, closed work, or any \
-    topic already listed in `SELF-FORGET.md`. This file is REQUIRED; the command refuses to \
+    following the `self-handoff` skill. This file is REQUIRED; the command refuses to \
     clear without it.\n2. Run: \
     `\"<AGENTSCOMMANDER_BINARY_PATH>\" self-handoff-and-clear --token <AGENTSCOMMANDER_TOKEN> \
     --root \"<AGENTSCOMMANDER_ROOT>\"`\n3. Go idle. The clear fires only after 30s of continuous \

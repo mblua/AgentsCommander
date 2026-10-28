@@ -208,9 +208,12 @@ fn ensure_project_context_templates_with_clock(
             e
         )
     })?;
-    if let Err(error) = crate::config::shared_locations::ensure_project_skills_dir(ac_root) {
+    let skills_result = crate::config::shared_locations::ensure_project_skills_dir(ac_root)
+        .map_err(|error| error.to_string())
+        .and_then(|()| crate::config::root_agent::ensure_project_self_handoff_skill_at(ac_root));
+    if let Err(error) = skills_result {
         log::warn!(
-            "[project-skills] unavailable at {}: {}; continuing without project skill discovery",
+            "[project-skills] unavailable at {}: {}; continuing without default project skills",
             ac_root
                 .join(crate::config::shared_locations::PROJECT_SKILLS_DIR)
                 .display(),

@@ -126,6 +126,11 @@ fn self_switch_help_documents_forgotten_summary_behavior() {
         .expect("self-handoff-and-switch subcommand")
         .clone();
     let help = subcommand.render_long_help().to_string();
+    let normalized = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(normalized.contains("following the self-handoff skill"));
+    assert!(normalized.contains("If SELF-HANDOFF.md is missing"));
+    assert!(!normalized.contains("who you are"));
+    assert!(!normalized.contains("ZERO memory"));
 
     assert!(help.contains("SELF-FORGET.md"), "{help}");
     assert!(help.contains("240"), "{help}");

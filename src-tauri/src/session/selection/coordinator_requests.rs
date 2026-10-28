@@ -529,6 +529,18 @@ impl SelectionCoordinator {
         Ok(CriticalAdmissionOutcome::Completed(result))
     }
 
+    pub(crate) fn background_destroy_is_pending(&self, session_id: Uuid) -> Result<bool, String> {
+        let keys = self
+            .inner
+            .critical_keys
+            .lock()
+            .map_err(|_| "background cleanup registry poisoned".to_string())?;
+        Ok(keys.contains(&CriticalAdmissionKey {
+            session_id,
+            kind: CriticalAdmissionKind::BackgroundCleanup,
+        }))
+    }
+
     #[cfg(test)]
     pub(crate) fn critical_key_registered_for_test(
         &self,

@@ -407,14 +407,34 @@ impl MailboxPoller {
         }
 
         let mut closed_ids: Vec<String> = Vec::new();
+        let mut failure = None;
+        let mut outcome_unknown = false;
+        let mut actively_closed = false;
+        let mut may_complete_later = false;
+        let budget = super::teardown::observation_budget(force, timeout_secs)
+            .ok_or_else(|| "close observation budget overflow".to_string())?;
         for sid in &session_ids {
-            let success = if force {
-                self.force_close_session(app, *sid).await
-            } else {
-                self.graceful_close_session(app, *sid, timeout_secs).await
-            };
-            if success {
+            let accepted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let outcome = super::teardown::observe_close_attempt(
+                budget,
+                accepted.clone(),
+                self.close_session_attempt(app, *sid, force, timeout_secs, accepted),
+            )
+            .await;
+            if outcome.confirmed() {
+                actively_closed |= matches!(outcome, super::teardown::TeardownOutcome::Closed);
                 closed_ids.push(sid.to_string());
+            } else {
+                failure = outcome.reason().map(str::to_string);
+                if let super::teardown::TeardownOutcome::Uncertain {
+                    may_complete_later: pending,
+                    ..
+                } = outcome
+                {
+                    may_complete_later = pending;
+                    outcome_unknown = true;
+                }
+                break;
             }
         }
 
@@ -476,11 +496,13 @@ impl MailboxPoller {
         //                           destroy (race).
         //   "closed"              — at least one was actively killed.
         if let Some(ref rid) = msg.request_id {
-            let status = if restore_in_progress_result {
+            let status = if failure.is_some() {
+                "timeout"
+            } else if restore_in_progress_result {
                 "restore_in_progress"
             } else if session_ids.is_empty() {
                 "no_match"
-            } else if closed_ids.is_empty() {
+            } else if !actively_closed {
                 "already_closed"
             } else {
                 "closed"
@@ -490,6 +512,9 @@ impl MailboxPoller {
                 "target": target,
                 "status": status,
                 "sessions_closed": closed_ids.len(),
+                "reason": failure,
+                "outcome_unknown": outcome_unknown,
+                "may_complete_later": may_complete_later,
                 "session_ids": closed_ids,
                 "requested_by": msg.from,
             });
