@@ -7,12 +7,12 @@
 //! logged via `log::warn!` and swallowed, so a full disk cannot take the API
 //! down.
 
-use std::io::Write;
 use std::path::PathBuf;
 
 use serde::Serialize;
 
 use crate::config::instance_artifacts::API_AUDIT_LOG_FILE_NAME;
+use crate::filesystem::activity_log;
 
 /// Max audit-log size before rotation (10 MB).
 const AUDIT_MAX_BYTES: u64 = 10 * 1024 * 1024;
@@ -305,17 +305,13 @@ fn sanitize(field: &str) -> String {
 }
 
 fn append(path: &std::path::Path, line: &str) -> std::io::Result<()> {
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    f.write_all(line.as_bytes())
+    activity_log::append_activity(path, line)
 }
 
 /// If the log is at/over `AUDIT_MAX_BYTES`, move it to `<name>.1` (replacing any
 /// prior `.1`) so the live file restarts empty. Best-effort.
 fn rotate_if_needed(path: &std::path::Path) {
-    let size = match std::fs::metadata(path) {
+    let size = match activity_log::activity_metadata(path) {
         Ok(m) => m.len(),
         Err(_) => return, // no file yet, or unreadable: nothing to rotate
     };
@@ -323,7 +319,7 @@ fn rotate_if_needed(path: &std::path::Path) {
         return;
     }
     let rotated = path.with_extension("log.1");
-    if let Err(e) = std::fs::rename(path, &rotated) {
+    if let Err(e) = activity_log::rename_activity(path, &rotated) {
         log::warn!("[api-audit] rotation failed (continuing): {}", e);
     }
 }

@@ -905,3 +905,42 @@ fn error_emit_loop_coalesces_orders_drains_and_wakes() {
     assert!(future.as_mut().poll(&mut context).is_pending());
     assert_eq!(events.deliveries.borrow().len(), 2);
 }
+
+#[test]
+fn rotate_active_rename_failure_keeps_handle_and_counter() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let state = build_app_log(tmp.path(), APP_LOG_MAX_BYTES);
+    std::fs::write(&state.path, b"ACTIVE").expect("seed active");
+    for i in 1..=APP_LOG_KEEP {
+        let directory = tmp.path().join(format!("app.log.{i}"));
+        std::fs::create_dir(&directory).expect("block numbered destination");
+        std::fs::write(directory.join("marker"), b"BLOCK").expect("nonempty blocker");
+    }
+
+    rotate(&state);
+
+    assert_eq!(state.path, tmp.path().join("app.log"));
+    assert_eq!(state.bytes.load(Ordering::Relaxed), APP_LOG_MAX_BYTES);
+    assert_eq!(read_marker(tmp.path(), "app.log").as_deref(), Some("ACTIVE"));
+    state.file.lock().unwrap().write_all(b"_AFTER").unwrap();
+    assert_eq!(
+        read_marker(tmp.path(), "app.log").as_deref(),
+        Some("ACTIVE_AFTER")
+    );
+    for i in 1..=APP_LOG_KEEP {
+        let marker = tmp.path().join(format!("app.log.{i}/marker"));
+        assert_eq!(std::fs::read(marker).unwrap(), b"BLOCK");
+    }
+}
+
+#[test]
+fn fresh_app_log_collision_preserves_bytes_with_append_fallback() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let path = tmp.path().join("app.log");
+    std::fs::write(&path, b"SEEDED").expect("seed active");
+    let error = debug_logs::create_app_log(&path).expect_err("existing active file");
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    let mut file = debug_logs::open_app_log_append(&path).expect("append fallback");
+    debug_logs::append_app_log(&mut file, b"_AFTER").expect("append bytes");
+    assert_eq!(std::fs::read(&path).unwrap(), b"SEEDED_AFTER");
+}
