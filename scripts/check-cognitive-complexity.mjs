@@ -2077,6 +2077,44 @@ function defaultRunGit(args) {
   return String(result.stdout ?? '');
 }
 
+// #3319 is a historical shrink only, never an exception to baseline growth.
+const HISTORICAL_3319_FILE = 'src-tauri/src/phone/mailbox/self_switch.rs';
+const HISTORICAL_3319_ID = 'rust:' + HISTORICAL_3319_FILE
+  + '::impl:MailboxPoller::resolve_repo_path';
+const HISTORICAL_3319_ANCHOR = '81f48c31ba89';
+const HISTORICAL_3319_BASELINE = '461937d898eaa388f0e4bb102d479be1fe462e87';
+const HISTORICAL_3319_SOURCE = '735d686ea90efeb7248ed2b07ad4b7adadd24cc6';
+
+function historical3319Shrink({ baseRef, baseDocument, headDocument, diffSet,
+  additions, removals, runGit, readWorkspace, existsWorkspace }) {
+  if (additions.length !== 0 || baseDocument.toolchain !== '1.98.1'
+      || headDocument.toolchain !== '1.98.1' || diffSet.has(HISTORICAL_3319_FILE)) return false;
+  const entry = baseDocument.entries.find((e) => e.id === HISTORICAL_3319_ID);
+  if (entry === undefined || headDocument.entries.some((e) => e.id === HISTORICAL_3319_ID)) {
+    return false;
+  }
+  const platforms = ['windows', 'linux', 'macos'];
+  if (Object.keys(entry.sites).length !== 3 || !platforms.every((platform) => {
+    const sites = entry.sites[platform];
+    return sites?.length === 1 && sites[0] === HISTORICAL_3319_ANCHOR;
+  })) return false;
+  if (removals.filter((r) => r.id === HISTORICAL_3319_ID).length !== 3) return false;
+  try {
+    if (!existsWorkspace(HISTORICAL_3319_FILE)) return false;
+    readWorkspace(HISTORICAL_3319_FILE);
+    return runGit(['rev-parse', baseRef + ':' + BASELINE_FILE]).trim()
+        === HISTORICAL_3319_BASELINE
+      && runGit(['rev-parse', baseRef + ':' + HISTORICAL_3319_FILE]).trim()
+        === HISTORICAL_3319_SOURCE
+      && runGit(['rev-parse', 'HEAD:' + HISTORICAL_3319_FILE]).trim()
+        === HISTORICAL_3319_SOURCE
+      && runGit(['hash-object', '--path=' + HISTORICAL_3319_FILE,
+        HISTORICAL_3319_FILE]).trim() === HISTORICAL_3319_SOURCE;
+  } catch {
+    return false;
+  }
+}
+
 /** The `--baseline-diff` mode, in the order of phase 4 section 3. */
 export function runBaselineDiff(options, io = {}) {
   const baseRef = options.baseRef;
@@ -2182,8 +2220,11 @@ export function runBaselineDiff(options, io = {}) {
     return 1;
   }
 
-  // 6. A removal must touch its file or name one that is gone.
+  // 6. Ordinary removals need touched/gone proof; #3319 has exact historical pins.
+  const historical = historical3319Shrink({ baseRef, baseDocument, headDocument, diffSet,
+    additions, removals, runGit, readWorkspace, existsWorkspace });
   const blocked = removals.filter((removal) => {
+    if (historical && removal.id === HISTORICAL_3319_ID) return false;
     const file = filePathOfId(removal.id);
     return !diffSet.has(file) && existsWorkspace(file);
   });
@@ -2197,6 +2238,9 @@ export function runBaselineDiff(options, io = {}) {
 
   // 7. Every accepted shrink is printed for the record.
   for (const removal of removals) {
+    if (historical && removal.id === HISTORICAL_3319_ID) {
+      stdout(`historical-cleanup#3319: ${removal.id}#${removal.anchor} (${removal.platform})`);
+    }
     stdout(`baseline removal accepted: ${removal.id}#${removal.anchor} (${removal.platform})`);
   }
   return 0;
@@ -2733,11 +2777,21 @@ function baselineDiffFixture({
   baseRef = 'origin/main',
   showFailure = null,
   workingFiles = [],
+  historical = null,
 } = {}) {
   const stdoutLines = [];
   const stderrLines = [];
   const working = new Set(workingFiles);
   const runGit = (args) => {
+    if (args[0] === 'rev-parse' || args[0] === 'hash-object') {
+      if (historical === null) throw new Error('unexpected historical Git invocation');
+      if (historical.gitError) throw new GitError('historical Git failure', false);
+      const key = args[0] === 'hash-object' ? 'workspaceBlob'
+        : args[1] === baseRef + ':' + BASELINE_FILE ? 'baselineBlob'
+          : args[1].startsWith('HEAD:') ? 'headBlob' : 'baseBlob';
+      return historical[key] ?? (key === 'baselineBlob'
+        ? HISTORICAL_3319_BASELINE : HISTORICAL_3319_SOURCE);
+    }
     if (args[0] === 'show') {
       if (showFailure !== null) throw showFailure;
       if (base === null) {
@@ -2754,6 +2808,10 @@ function baselineDiffFixture({
     runGit,
     readWorkspace: (file) => {
       if (file === BASELINE_FILE && head !== null) return head;
+      if (file === HISTORICAL_3319_FILE && historical !== null) {
+        if (historical.readError) throw new Error('historical source read failure');
+        return 'unchanged historical source';
+      }
       const error = new Error(`ENOENT: no such baseline in the fixture head: ${file}`);
       error.code = 'ENOENT';
       throw error;
@@ -4014,6 +4072,70 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       if (!stderrText(fixture).includes('Baseline grew without a toolchain refresh:')) {
         throw new Error(`expected the addition message, got ${stderrText(fixture)}`);
       }
+    }],
+    ['case 3319: only the pinned three-platform historical cleanup passes', () => {
+      const entry = { id: HISTORICAL_3319_ID, sites: {
+        windows: [HISTORICAL_3319_ANCHOR], linux: [HISTORICAL_3319_ANCHOR],
+        macos: [HISTORICAL_3319_ANCHOR],
+      } };
+      const document = (entries, toolchain = '1.98.1') => baselineJson(entries, { toolchain });
+      const options = { base: document([entry]), head: document([]),
+        workingFiles: [HISTORICAL_3319_FILE], historical: {} };
+      const positive = baselineDiffFixture(options);
+      expectEqual(positive.run(), 0, 'exact historical cleanup');
+      expectEqual(positive.state.stdout.filter((l) => l.startsWith('historical-cleanup#3319:'))
+        .length, 3, 'three explicit historical tuples');
+      const negatives = [
+        ['one platform', { base: document([{ ...entry, sites: { windows: entry.sites.windows } }]) }],
+        ['two platforms', { base: document([{ ...entry, sites: {
+          windows: entry.sites.windows, linux: entry.sites.linux,
+        } }]) }],
+        ['partial removal', { head: document([{ ...entry, sites: { macos: entry.sites.macos } }]) }],
+        ['wrong id', { base: document([{ ...entry, id: entry.id + '_other' }]) }],
+        ['wrong anchor', { base: document([{ ...entry, sites: { ...entry.sites,
+          linux: [A12],
+        } }]) }],
+        ['wrong count', { base: document([{ ...entry, sites: { ...entry.sites,
+          linux: [HISTORICAL_3319_ANCHOR, HISTORICAL_3319_ANCHOR],
+        } }]) }],
+        ['baseline pin', { historical: { baselineBlob: '0'.repeat(40) } }],
+        ['base source pin', { historical: { baseBlob: '0'.repeat(40) } }],
+        ['head source pin', { historical: { headBlob: '0'.repeat(40) } }],
+        ['dirty workspace', { historical: { workspaceBlob: '0'.repeat(40) } }],
+        ['read failure', { historical: { readError: true } }],
+        ['Git failure', { historical: { gitError: true } }],
+        ['base toolchain', { base: document([entry], '1.98.0'),
+          diffPaths: ['src/unrelated.rs'] }],
+        ['head toolchain', { head: document([], '1.98.0') }],
+        ['addition', { head: document([{ id: 'rust:src/other.rs::new',
+          sites: { windows: [A12] } }]) }],
+        ['equal-size swap', { head: document([{ ...entry, sites: {
+          windows: [A12], linux: [A12], macos: [A12],
+        } }]) }],
+        ['returned anchor', { head: document([{ ...entry, sites: {
+          ...entry.sites, windows: [HISTORICAL_3319_ANCHOR, A12],
+        } }]) }],
+        ['unrelated untouched removal', { base: document([entry,
+          { id: 'rust:src/other.rs::old', sites: { windows: [A12] } }]),
+          workingFiles: [HISTORICAL_3319_FILE, 'src/other.rs'] }],
+      ];
+      for (const [name, override] of negatives) {
+        expectEqual(baselineDiffFixture({ ...options, ...override }).run(), 1, name);
+      }
+      const changed = baselineDiffFixture({ ...options,
+        diffPaths: [HISTORICAL_3319_FILE], historical: { gitError: true } });
+      expectEqual(changed.run(), 0, 'ordinary touched shrink still works without historical proof');
+      if (stdoutText(changed).includes('historical-cleanup#3319:')) {
+        throw new Error('touched source must never receive historical exemption');
+      }
+      const gone = baselineDiffFixture({ ...options, workingFiles: [] });
+      expectEqual(gone.run(), 0, 'ordinary gone shrink still works');
+      if (stdoutText(gone).includes('historical-cleanup#3319:')) {
+        throw new Error('missing source must never receive historical exemption');
+      }
+      const dormant = baselineDiffFixture({ ...options, base: document([]), head: document([]),
+        historical: { gitError: true } });
+      expectEqual(dormant.run(), 0, 'predicate dormant after cleanup leaves base');
     }],
     ['case 40: removals are credible only when their file is touched or gone', () => {
       const id = 'rust:src/a.rs::heavy';

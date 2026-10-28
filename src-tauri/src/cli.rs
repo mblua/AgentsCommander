@@ -441,6 +441,7 @@ pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), Stri
 pub fn handle_cli(
     cmd: Commands,
     warnings: &crate::config::injected_messages::MessageWarnings,
+    history: &terminal_snapshot::SnapshotStageHistory,
 ) -> i32 {
     let code = match cmd {
         Commands::Send(args) => send::execute(args),
@@ -474,7 +475,7 @@ pub fn handle_cli(
         Commands::CodingAgent(args) => coding_agent::execute(args),
         Commands::InjectedMessages(args) => injected_messages::execute(args, warnings),
         Commands::ApiClient(args) => api_client::execute(args),
-        Commands::TerminalSnapshot(args) => terminal_snapshot::execute(args),
+        Commands::TerminalSnapshot(args) => terminal_snapshot::execute(args, history),
         Commands::TestReset(args) => crate::testability::reset::execute(args),
         Commands::WindowInfo(args) => crate::testability::window_info::execute(args),
         Commands::UiQuery(args) => crate::testability::ui_automation::execute_query(args),

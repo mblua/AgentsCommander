@@ -665,17 +665,33 @@ fn git_owner_shared_producers_preserve_unknown_and_prune() {
     let first = GitSweeper::with_state(sessions.clone(), settings.clone(), owner.clone());
     let second = GitSweeper::with_state(sessions, settings, owner.clone());
     assert!(Arc::ptr_eq(&first.git_state, &second.git_state));
-    assert!(owner.timeout_counts.get().is_none());
-    assert!(owner.last_dirty.get().is_none());
-    assert!(owner.snapshot.get().is_none());
-    assert!(owner.discovery_paths.get().is_none());
-    assert!(owner.discovery_rooms.get().is_none());
+    assert_git_owner_lazy(&owner);
 
     let path = "shared-repo";
     let status = GitStatus {
         branch: Some("main".into()),
         dirty: true,
     };
+    assert_git_shared_publication(&first, &second, path, status);
+
+    assert_git_poisoned_maps(&owner, &first, &second, path);
+    assert_git_discovery(&owner, &first, &second, path);
+}
+
+fn assert_git_owner_lazy(owner: &GitState) {
+    assert!(owner.timeout_counts.get().is_none());
+    assert!(owner.last_dirty.get().is_none());
+    assert!(owner.snapshot.get().is_none());
+    assert!(owner.discovery_paths.get().is_none());
+    assert!(owner.discovery_rooms.get().is_none());
+}
+
+fn assert_git_shared_publication(
+    first: &GitSweeper,
+    second: &GitSweeper,
+    path: &str,
+    status: GitStatus,
+) {
     publish_git_status(path, Some(status.clone()), &first.git_state);
     assert_eq!(read_git_status(path, &second.git_state), Some(status));
     assert_eq!(
@@ -691,17 +707,19 @@ fn git_owner_shared_producers_preserve_unknown_and_prune() {
     retain_swept_paths(&HashSet::new(), &second.git_state);
     assert!(read_git_status(path, &first.git_state).is_none());
     assert_eq!(remember_dirty(path, None, &first.git_state), None);
+}
 
+fn assert_git_poisoned_maps(owner: &GitState, first: &GitSweeper, second: &GitSweeper, path: &str) {
     assert_eq!(note_timeout(path, &first.git_state), 1);
     poison_git_mutex(owner.timeout_counts.get().unwrap());
     assert_eq!(note_timeout(path, &second.git_state), 2);
-    poison_git_mutex(last_dirty_map(&owner));
+    poison_git_mutex(last_dirty_map(owner));
     assert_eq!(
         remember_dirty(path, Some(false), &first.git_state),
         Some(false)
     );
     assert_eq!(remember_dirty(path, None, &second.git_state), Some(false));
-    poison_git_mutex(git_status_snapshot(&owner));
+    poison_git_mutex(git_status_snapshot(owner));
     publish_git_status(
         path,
         Some(GitStatus {
@@ -711,14 +729,17 @@ fn git_owner_shared_producers_preserve_unknown_and_prune() {
         &first.git_state,
     );
     assert!(!read_git_status(path, &second.git_state).unwrap().dirty);
+}
+
+fn assert_git_discovery(owner: &GitState, first: &GitSweeper, second: &GitSweeper, path: &str) {
     set_discovery_repo_paths(vec![path.into(), path.into()], &first.git_state);
-    poison_git_mutex(discovery_repo_paths_cell(&owner));
+    poison_git_mutex(discovery_repo_paths_cell(owner));
     assert_eq!(discovery_repo_paths(&second.git_state), vec![path, path]);
     set_discovery_repo_paths(vec![path.into()], &second.git_state);
     assert_eq!(discovery_repo_paths(&first.git_state), vec![path]);
     let rooms = vec![(path.into(), "room".into())];
     set_discovery_repo_rooms(rooms.clone(), &first.git_state);
-    poison_git_mutex(discovery_repo_rooms_cell(&owner));
+    poison_git_mutex(discovery_repo_rooms_cell(owner));
     assert_eq!(discovery_repo_rooms(&second.git_state), rooms);
     set_discovery_repo_rooms(Vec::new(), &second.git_state);
     assert!(discovery_repo_rooms(&first.git_state).is_empty());

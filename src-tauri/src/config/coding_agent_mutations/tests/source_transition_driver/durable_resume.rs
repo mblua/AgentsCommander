@@ -40,7 +40,7 @@ fn assert_source_durable_cut(cut: (&'static str, usize)) {
         .unwrap()
         .snapshot
         .revision;
-    configure_source_durable_cut(Some(cut));
+    fixture.controls.configure_durable_cut(Some(cut));
     let result = commit_source_candidate_internal(
         &fixture.settings,
         &fixture.context,
@@ -48,12 +48,14 @@ fn assert_source_durable_cut(cut: (&'static str, usize)) {
         "durable-boundary",
         &revision,
         &candidate,
-        &|| Ok(()),
+        (&|| Ok(()), &fixture.controls),
     );
     assert!(result.is_err(), "unreached cut: {cut:?}");
-    SOURCE_DURABLE_CUT
-        .with(|state| assert!(state.borrow().0.is_none(), "cut was not reached: {cut:?}"));
-    configure_source_durable_cut(None);
+    assert!(
+        fixture.controls.durable_cut_state().0.is_none(),
+        "cut was not reached: {cut:?}"
+    );
+    fixture.controls.configure_durable_cut(None);
     let original = read_own_source_journal(&fixture.context).unwrap().1;
     if cut.0 == "beforeIntent" {
         assert!(original.intents.is_empty());
@@ -79,7 +81,7 @@ fn assert_source_durable_cut(cut: (&'static str, usize)) {
             "new-after-before-intent",
             &fresh_revision,
             &candidate,
-            &|| Ok(()),
+            (&|| Ok(()), &fixture.controls),
         )
         .unwrap();
         return;
@@ -106,7 +108,7 @@ fn assert_source_durable_cut(cut: (&'static str, usize)) {
             revision
         );
     }
-    let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+    let uuids = fixture.controls.uuid_count();
     fixture.resume_at(&fixture.context, &operation).unwrap();
     let recovered = read_own_source_journal(&fixture.context).unwrap().1;
     assert_eq!(recovered.intents[&operation], original.intents[&operation]);
@@ -116,7 +118,7 @@ fn assert_source_durable_cut(cut: (&'static str, usize)) {
     );
     assert_eq!(recovered.progress[&operation].packets.len(), 2);
     assert!(recovered.progress[&operation].receipt.is_some());
-    assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+    assert_eq!(fixture.controls.uuid_count(), uuids);
     for root in [&target, &second] {
         assert!(!root
             .join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME)
@@ -162,10 +164,13 @@ fn single_editor_driver_metadata_only_keeps_refs_bytes_and_runs_full_barrier() {
         "metadata-only",
         &before,
         &candidate,
-        &|| {
-            reloads.set(reloads.get() + 1);
-            Ok(())
-        },
+        (
+            &|| {
+                reloads.set(reloads.get() + 1);
+                Ok(())
+            },
+            &fixture.controls,
+        ),
     )
     .unwrap();
     let journal = read_own_source_journal(&fixture.context).unwrap().1;
@@ -217,7 +222,7 @@ fn single_editor_all_authority_context_source_target_cas_failures() {
             .unwrap()
             .snapshot
             .revision;
-        configure_source_durable_cut(Some(("packet", 1)));
+        fixture.controls.configure_durable_cut(Some(("packet", 1)));
         assert!(commit_source_candidate_internal(
             &fixture.settings,
             &fixture.context,
@@ -225,10 +230,10 @@ fn single_editor_all_authority_context_source_target_cas_failures() {
             "authority-drift",
             &revision,
             &candidate,
-            &|| Ok(())
+            (&|| Ok(()), &fixture.controls),
         )
         .is_err());
-        configure_source_durable_cut(None);
+        fixture.controls.configure_durable_cut(None);
         let operation = fixture.operation();
         let original = read_own_source_journal(&fixture.context).unwrap().1;
         let path = match drift {
@@ -309,7 +314,9 @@ fn single_editor_all_authority_context_source_target_cas_failures() {
 fn single_editor_resume_each_stale_physical_cas_rejects_before_effect() {
     for stale in ["source", "journal"] {
         let fixture = DriverFixture::new();
-        configure_source_durable_cut(Some(("intentInventory", 1)));
+        fixture
+            .controls
+            .configure_durable_cut(Some(("intentInventory", 1)));
         assert!(commit_source_candidate_internal(
             &fixture.settings,
             &fixture.context,
@@ -317,13 +324,13 @@ fn single_editor_resume_each_stale_physical_cas_rejects_before_effect() {
             "prefence-CAS",
             &fixture.initial_revision,
             &DriverFixture::candidate(),
-            &|| Ok(())
+            (&|| Ok(()), &fixture.controls),
         )
         .is_err());
-        configure_source_durable_cut(None);
+        fixture.controls.configure_durable_cut(None);
         let operation = fixture.operation();
         let journal = read_own_source_journal(&fixture.context).unwrap().1;
-        let uuid_count = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+        let uuid_count = fixture.controls.uuid_count();
         assert!(matches!(
             commit_source_candidate_internal(
                 &fixture.settings,
@@ -332,14 +339,11 @@ fn single_editor_resume_each_stale_physical_cas_rejects_before_effect() {
                 "different-prefence-request",
                 &fixture.initial_revision,
                 &DriverFixture::candidate(),
-                &|| Ok(())
+                (&|| Ok(()), &fixture.controls),
             ),
             Err(SourceTransitionError::Interrupted { .. })
         ));
-        assert_eq!(
-            SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get),
-            uuid_count
-        );
+        assert_eq!(fixture.controls.uuid_count(), uuid_count);
         let mut expected = fixture.expectation();
         let wrong = SourceRevision::Bytes {
             sha256: "0".repeat(64),
@@ -357,7 +361,8 @@ fn single_editor_resume_each_stale_physical_cas_rejects_before_effect() {
                 &fixture.source,
                 &operation,
                 &expected,
-                &|| Ok(())
+                &|| Ok(()),
+                &fixture.controls,
             ),
             Err(SourceTransitionError::Coordination(
                 SourceCoordinationError::Stale
@@ -452,7 +457,9 @@ fn single_editor_registered_source_after_restores_original_groups_two_targets() 
         .unwrap();
         drop(lease);
         drop(identity);
-        configure_source_durable_cut(Some(("sourceAfter", 1)));
+        fixture
+            .controls
+            .configure_durable_cut(Some(("sourceAfter", 1)));
         assert!(commit_source_candidate_internal(
             &fixture.settings,
             &fixture.context,
@@ -460,10 +467,10 @@ fn single_editor_registered_source_after_restores_original_groups_two_targets() 
             "registered-source-after",
             &snapshot.snapshot.revision,
             &candidate,
-            &|| Ok(())
+            (&|| Ok(()), &fixture.controls),
         )
         .is_err());
-        configure_source_durable_cut(None);
+        fixture.controls.configure_durable_cut(None);
         let operation = fixture.operation();
         let original = read_own_source_journal(&fixture.context).unwrap().1;
         assert_eq!(original.inventories[&operation].targets.len(), 2);
@@ -511,7 +518,9 @@ fn single_editor_missing_corrupt_original_evidence_never_reconstructs_candidate(
             .unwrap()
             .snapshot
             .revision;
-        configure_source_durable_cut(Some(("intentInventory", 1)));
+        fixture
+            .controls
+            .configure_durable_cut(Some(("intentInventory", 1)));
         assert!(commit_source_candidate_internal(
             &fixture.settings,
             &fixture.context,
@@ -519,10 +528,10 @@ fn single_editor_missing_corrupt_original_evidence_never_reconstructs_candidate(
             "missing-original",
             &before,
             &candidate,
-            &|| Ok(())
+            (&|| Ok(()), &fixture.controls),
         )
         .is_err());
-        configure_source_durable_cut(None);
+        fixture.controls.configure_durable_cut(None);
         let operation = fixture.operation();
         let path = fixture
             ._root
@@ -558,7 +567,8 @@ fn single_editor_missing_corrupt_original_evidence_never_reconstructs_candidate(
             &fixture.source,
             &operation,
             &expected,
-            &|| Ok(())
+            &|| Ok(()),
+            &fixture.controls,
         )
         .is_err());
         assert_eq!(source_transition_effect_counts().1, publications);
@@ -594,10 +604,13 @@ fn single_editor_thread_oracles_require_worker_owned_observation() {
             "worker-local",
             &fixture.initial_revision,
             &DriverFixture::candidate(),
-            &|| {
-                assert_eq!(std::thread::current().id(), owning_thread);
-                Ok(())
-            },
+            (
+                &|| {
+                    assert_eq!(std::thread::current().id(), owning_thread);
+                    Ok(())
+                },
+                &fixture.controls,
+            ),
         )
         .unwrap();
         let after = source_transition_effect_counts();
@@ -615,7 +628,9 @@ fn single_editor_thread_oracles_require_worker_owned_observation() {
 fn single_editor_original_slot_parser_rejects_omitted_extra_and_changed_saved_slots() {
     let (fixture, candidate, _, _) = DriverFixture::with_reference_targets();
     let revision = fixture.expectation().source;
-    configure_source_durable_cut(Some(("intentInventory", 1)));
+    fixture
+        .controls
+        .configure_durable_cut(Some(("intentInventory", 1)));
     assert!(commit_source_candidate_internal(
         &fixture.settings,
         &fixture.context,
@@ -623,10 +638,10 @@ fn single_editor_original_slot_parser_rejects_omitted_extra_and_changed_saved_sl
         "slot-completeness",
         &revision,
         &candidate,
-        &|| Ok(())
+        (&|| Ok(()), &fixture.controls),
     )
     .is_err());
-    configure_source_durable_cut(None);
+    fixture.controls.configure_durable_cut(None);
     let operation = fixture.operation();
     let inventory = read_own_source_journal(&fixture.context)
         .unwrap()
@@ -681,7 +696,8 @@ fn single_editor_production_save_and_resume_effect_guard_reject_actual_external_
         let worker_barrier = barrier.clone();
         let worker = std::thread::spawn(move || {
             let revision = fixture.expectation().source;
-            SOURCE_FENCE_EFFECT_BARRIER.with(|slot| *slot.borrow_mut() = Some(worker_barrier));
+            let controls = IdentityTransitionTestControls::default();
+            controls.set_fence_effect_barrier(worker_barrier);
             let result = commit_source_candidate_internal(
                 &fixture.settings,
                 &fixture.context,
@@ -689,7 +705,7 @@ fn single_editor_production_save_and_resume_effect_guard_reject_actual_external_
                 "real-fence-drift",
                 &revision,
                 &candidate,
-                &|| Ok(()),
+                (&|| Ok(()), &controls),
             );
             let error = result.unwrap_err().to_string();
             if uncertain_target {
@@ -727,9 +743,10 @@ fn single_editor_production_save_and_resume_effect_guard_reject_actual_external_
         let worker_barrier = barrier.clone();
         let resume_operation = operation.clone();
         let worker = std::thread::spawn(move || {
-            SOURCE_FENCE_EFFECT_BARRIER.with(|slot| *slot.borrow_mut() = Some(worker_barrier));
+            let controls = IdentityTransitionTestControls::default();
+            controls.set_fence_effect_barrier(worker_barrier);
             let error = fixture
-                .resume_at(&fixture.context, &resume_operation)
+                .resume_at_with_controls(&fixture.context, &resume_operation, &controls)
                 .unwrap_err()
                 .to_string();
             if uncertain_target {
@@ -762,7 +779,9 @@ fn single_editor_production_save_and_resume_effect_guard_reject_actual_external_
 fn single_editor_production_save_resume_before_fence_drift_preserves_original() {
     let (fixture, candidate, target, _) = DriverFixture::with_reference_targets();
     let revision = fixture.expectation().source;
-    configure_source_durable_cut(Some(("beforeFence", 1)));
+    fixture
+        .controls
+        .configure_durable_cut(Some(("beforeFence", 1)));
     assert!(commit_source_candidate_internal(
         &fixture.settings,
         &fixture.context,
@@ -770,11 +789,11 @@ fn single_editor_production_save_resume_before_fence_drift_preserves_original() 
         "production-before-fence",
         &revision,
         &candidate,
-        &|| Ok(())
+        (&|| Ok(()), &fixture.controls),
     )
     .is_err());
-    SOURCE_DURABLE_CUT.with(|state| assert!(state.borrow().0.is_none()));
-    configure_source_durable_cut(None);
+    assert!(fixture.controls.durable_cut_state().0.is_none());
+    fixture.controls.configure_durable_cut(None);
     let operation = fixture.operation();
     let original = read_own_source_journal(&fixture.context).unwrap().1;
     let path = target.join("config.json");
@@ -792,10 +811,12 @@ fn single_editor_production_save_resume_before_fence_drift_preserves_original() 
     );
     std::fs::write(&path, &before).unwrap();
     // Actual Resume reaches its own production beforeFence boundary.
-    configure_source_durable_cut(Some(("beforeFence", 1)));
+    fixture
+        .controls
+        .configure_durable_cut(Some(("beforeFence", 1)));
     assert!(fixture.resume_at(&fixture.context, &operation).is_err());
-    SOURCE_DURABLE_CUT.with(|state| assert!(state.borrow().0.is_none()));
-    configure_source_durable_cut(None);
+    assert!(fixture.controls.durable_cut_state().0.is_none());
+    fixture.controls.configure_durable_cut(None);
     assert_eq!(
         read_own_source_journal(&fixture.context).unwrap().1,
         original
@@ -812,7 +833,9 @@ fn single_editor_production_save_resume_before_fence_drift_preserves_original() 
 #[test]
 fn single_editor_backend_primary_context_drift_preserves_original_no_next_effect() {
     let mut fixture = DriverFixture::new();
-    configure_source_durable_cut(Some(("intentInventory", 1)));
+    fixture
+        .controls
+        .configure_durable_cut(Some(("intentInventory", 1)));
     assert!(commit_source_candidate_internal(
         &fixture.settings,
         &fixture.context,
@@ -820,10 +843,10 @@ fn single_editor_backend_primary_context_drift_preserves_original_no_next_effect
         "primary-context",
         &fixture.initial_revision,
         &DriverFixture::candidate(),
-        &|| Ok(())
+        (&|| Ok(()), &fixture.controls),
     )
     .is_err());
-    configure_source_durable_cut(None);
+    fixture.controls.configure_durable_cut(None);
     let operation = fixture.operation();
     let original = read_own_source_journal(&fixture.context).unwrap().1;
     let expected = fixture.expectation();
@@ -845,7 +868,8 @@ fn single_editor_backend_primary_context_drift_preserves_original_no_next_effect
         &fixture.source,
         &operation,
         &expected,
-        &|| Ok(())
+        &|| Ok(()),
+        &fixture.controls,
     )
     .is_err());
     assert_eq!(source_transition_effect_counts().1, publishers);

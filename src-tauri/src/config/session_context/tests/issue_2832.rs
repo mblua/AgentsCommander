@@ -324,7 +324,7 @@ fn issue_2832_modified_snapshots_survive_provisioning_and_final_materialization(
             }
         }
     }
-    assert_eq!(cases, 176);
+    assert_eq!(cases, 208);
     println!("issue_2832 custom-byte/state materialization cases: {cases}");
 }
 

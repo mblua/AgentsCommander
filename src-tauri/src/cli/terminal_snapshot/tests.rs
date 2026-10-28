@@ -228,6 +228,7 @@ fn rejection_vocabulary_is_closed_and_literal() {
 
 #[test]
 fn execute_inner_attributes_argument_rejections() {
+    let history = SnapshotStageHistory::default();
     use TerminalSnapshotField as F;
     use TerminalSnapshotReasonCode as C;
     use TerminalSnapshotRejectionReason as R;
@@ -299,7 +300,7 @@ fn execute_inner_attributes_argument_rejections() {
     ];
 
     for (name, args, expected) in cases {
-        let rejection = execute_inner(args).expect_err("case must be rejected");
+        let rejection = execute_inner(args, &history).expect_err("case must be rejected");
         assert_eq!(rejection, expected, "wrong attribution for {name}");
     }
 }
@@ -519,6 +520,7 @@ fn timeout_cancellation_claims_and_removes_only_the_original_request() {
 
 #[test]
 fn malformed_corrupt_and_late_responses_are_removed_after_rejection() {
+    let history = SnapshotStageHistory::default();
     let directory = tempfile::TempDir::new().unwrap();
     let target = "project:wg-1-team/member";
     let tag = "a".repeat(64);
@@ -535,6 +537,7 @@ fn malformed_corrupt_and_late_responses_are_removed_after_rejection() {
             target,
             TerminalSnapshotFormat::Json,
             deadline,
+            &history,
         )
         .unwrap_err(),
         "response_unavailable"
@@ -558,6 +561,7 @@ fn malformed_corrupt_and_late_responses_are_removed_after_rejection() {
             target,
             TerminalSnapshotFormat::Json,
             deadline,
+            &history,
         )
         .unwrap_err(),
         "response_unavailable"
@@ -580,6 +584,7 @@ fn malformed_corrupt_and_late_responses_are_removed_after_rejection() {
         target,
         TerminalSnapshotFormat::Json,
         deadline,
+        &history,
     )
     .unwrap();
     assert_eq!(
@@ -592,6 +597,7 @@ fn malformed_corrupt_and_late_responses_are_removed_after_rejection() {
             "project:wg-1-team/coordinator",
             target,
             deadline,
+            &history,
         )
         .unwrap_err(),
         "response_unavailable"
@@ -601,6 +607,7 @@ fn malformed_corrupt_and_late_responses_are_removed_after_rejection() {
 
 #[test]
 fn expired_deadline_wins_before_response_read_or_output_handoff() {
+    let history = SnapshotStageHistory::default();
     let missing = std::env::temp_dir().join(format!("ac-snapshot-missing-{}.json", Uuid::new_v4()));
     let error = read_response(
         &missing,
@@ -609,6 +616,7 @@ fn expired_deadline_wins_before_response_read_or_output_handoff() {
         "project:wg-1-team/member",
         TerminalSnapshotFormat::Json,
         Instant::now(),
+        &history,
     )
     .unwrap_err();
     assert_eq!(error, "snapshot_timeout");
@@ -743,6 +751,7 @@ fn p04_snapshot_publication_preserves_bytes_stages_and_collisions() {
 
 #[test]
 fn p04_snapshot_response_accepts_private_valid_body() {
+    let history = SnapshotStageHistory::default();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("response.json");
     let request_id = Uuid::new_v4().to_string();
@@ -763,6 +772,7 @@ fn p04_snapshot_response_accepts_private_valid_body() {
             "project:wg-1-team/member",
             TerminalSnapshotFormat::Json,
             Instant::now() + Duration::from_secs(30),
+            &history,
         )
     };
     assert!(read().is_ok());
@@ -772,4 +782,121 @@ fn p04_snapshot_response_accepts_private_valid_body() {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(read().unwrap_err(), "response_unavailable");
     }
+}
+
+#[test]
+fn stage_history_shares_root_and_retains_prior_request() {
+    let owners = crate::AppOwners::new();
+    let shared = owners.clone();
+    let isolated = crate::AppOwners::new();
+    assert!(std::sync::Arc::ptr_eq(
+        &owners.snapshot_stage,
+        &shared.snapshot_stage,
+    ));
+    assert!(isolated.snapshot_stage.current.lock().unwrap().is_none());
+    assert_eq!(isolated.snapshot_stage.current_stage(), "none");
+    enter_stage("prior_request", &owners.snapshot_stage);
+    let args = snapshot_args(
+        VALID_TOKEN,
+        "project:wg-1-team/member",
+        SnapshotFormatArg::Json,
+        None,
+        0,
+    );
+    let rejection = execute_inner(args, &shared.snapshot_stage).unwrap_err();
+    assert_eq!(
+        rejection,
+        TerminalSnapshotRejection::new(
+            TerminalSnapshotReasonCode::InvalidRequest,
+            Some(TerminalSnapshotField::Timeout),
+            TerminalSnapshotRejectionReason::TimeoutOutOfRange,
+        )
+    );
+    assert_eq!(
+        rejection_line(rejection),
+        format!(
+            "terminal_snapshot_error code=invalid_request field=timeout \
+             reason=timeout_out_of_range detail={}",
+            TerminalSnapshotReasonCode::InvalidRequest.detail()
+        )
+    );
+    assert_eq!(owners.snapshot_stage.current_stage(), "prior_request");
+    enter_stage("next_request", &shared.snapshot_stage);
+    assert_eq!(owners.snapshot_stage.current_stage(), "next_request");
+    assert_eq!(isolated.snapshot_stage.current_stage(), "none");
+}
+
+#[test]
+fn stage_history_marks_deadline_before_failure() {
+    let history = SnapshotStageHistory::default();
+    let directory = tempfile::tempdir().unwrap();
+    let result = read_response(
+        &directory.path().join("absent.json"),
+        VALID_TOKEN,
+        &"a".repeat(64),
+        "project:wg-1-team/member",
+        TerminalSnapshotFormat::Json,
+        Instant::now() - Duration::from_secs(1),
+        &history,
+    );
+    assert_eq!(result.unwrap_err(), "snapshot_timeout");
+    assert_eq!(history.current_stage(), "read_response.entry_deadline");
+}
+
+#[test]
+fn stage_history_poison_ignores_sets_and_reads_none() {
+    let history = std::sync::Arc::new(SnapshotStageHistory::default());
+    enter_stage("before_poison", &history);
+    let shared = std::sync::Arc::clone(&history);
+    assert!(std::thread::spawn(move || {
+        let _guard = shared.current.lock().unwrap();
+        panic!("poison snapshot stage history");
+    })
+    .join()
+    .is_err());
+    enter_stage("after_poison", &history);
+    assert_eq!(history.current_stage(), "none");
+    assert!(history.current.is_poisoned());
+}
+
+#[test]
+fn stage_history_publish_request_updates_explicit_owner() {
+    let history = SnapshotStageHistory::default();
+    let directory = tempfile::tempdir().unwrap();
+    let destination = directory.path().join("request.json");
+    assert_eq!(history.current_stage(), "none");
+    publish_request(
+        directory.path(),
+        &destination,
+        Uuid::new_v4(),
+        "first-nonce",
+        b"private request",
+        &history,
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&destination).unwrap(), b"private request");
+    assert_eq!(history.current_stage(), "publish_request.verify_published");
+
+    let request_id = Uuid::new_v4();
+    let nonce = "second-nonce";
+    let temporary = directory.path().join(format!(
+        ".{request_id}.{nonce}.terminal-snapshot-request-tmp"
+    ));
+    std::fs::write(&temporary, b"keep temporary").unwrap();
+    let absent = directory.path().join("absent.json");
+    assert_eq!(
+        publish_request(
+            directory.path(),
+            &absent,
+            request_id,
+            nonce,
+            b"replacement",
+            &history,
+        )
+        .unwrap_err(),
+        "response_unavailable"
+    );
+    assert_eq!(std::fs::read(&temporary).unwrap(), b"keep temporary");
+    assert!(!absent.exists());
+    assert_eq!(history.current_stage(), "publish_request.open_temporary");
 }

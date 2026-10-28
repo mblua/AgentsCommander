@@ -30,9 +30,9 @@ fn normalize_profile_arg(profile: Option<String>) -> Result<Option<String>, Stri
 #[derive(Args)]
 #[command(
     after_help = "Hands off, switches the CALLER'S OWN session coding agent and/or profile, \
-respawns it fresh, then resumes from the handoff file.\n\nBEFORE invoking, write SELF-HANDOFF.md \
-in your own root with the notes you need to resume, EXCLUDING anything already recorded in \
-SELF-FORGET.md. If SELF-HANDOFF.md is missing, the command refuses.\n\nOn invocation the daemon \
+respawns it fresh, then resumes from the handoff \
+file.\n\nBEFORE invoking, write SELF-HANDOFF.md in your own root following the self-handoff skill. \
+If SELF-HANDOFF.md is missing, the command refuses.\n\nOn invocation the daemon \
 captures a sanitized compact forgotten summary from the current replica's SELF-FORGET.md, max 240 \
 chars, then archives SELF-FORGET.md -> self-clear/<timestamp>_SELF-FORGET.md (no-op if absent). \
 The later resume prompt may include that summary only as closed background, not instructions and \

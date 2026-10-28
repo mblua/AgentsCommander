@@ -179,7 +179,7 @@ See [Inter-agent messaging](../agents/inter-agent-messaging.md) for the ordinary
 
 ### `self-handoff-and-clear`
 
-`self-handoff-and-clear` is a token-authorized operation on the caller's own session. Write `SELF-HANDOFF.md` first. Phase 1 waits for 30 seconds of continuous idle, then injects provider-resolved logical-clear text: `/new` for an exact-stem direct Pi shell or `/clear` for direct Claude/Codex/Antigravity-family and Cursor `agent` shells. Phase 2 starts only after the full phase-1 injection returns, waits for a fresh 30 seconds of sustained idle, archives the handoff into `self-clear/`, and injects a resume prompt naming that archive.
+`self-handoff-and-clear` is a token-authorized operation on the caller's own session. Write `SELF-HANDOFF.md` first, following the `self-handoff` skill. Phase 1 waits for 30 seconds of continuous idle, then injects provider-resolved logical-clear text: `/new` for an exact-stem direct Pi shell or `/clear` for direct Claude/Codex/Antigravity-family and Cursor `agent` shells. Phase 2 starts only after the full phase-1 injection returns, waits for a fresh 30 seconds of sustained idle, archives the handoff into `self-clear/`, and injects a resume prompt naming that archive.
 
 Both phases are best-effort. A busy transition resets the current sustained-idle window, and a daemon restart or failed phase-1 injection abandons the cycle. Outer `cmd`/`pwsh` wrappers remain unsupported.
 
@@ -206,7 +206,7 @@ agentscommander self-handoff-and-switch --list-coding-agents
 | `--list-coding-agents` | No | Print valid coding-agent ids and profile letters, then exit. Requires neither token nor root. |
 | `--timeout` | No | Seconds to wait for the daemon's queue acknowledgement. Default 15. |
 
-Before invoking, write `SELF-HANDOFF.md` in your own root with the notes you need to resume; if it is missing the daemon rejects the request (exit 1). If `SELF-FORGET.md` exists, the daemon captures a sanitized compact forgotten summary (max 240 chars), archives it into `self-clear/`, and the later resume prompt may include it only as closed background, never as instructions or work to resume. Scope is Room replicas only (`__agent_*` under a `room-*` room); Root Agent and origin matrix agents are rejected. Exit codes: `0` queued or already queued, `1` auth/IO/rejection, `2` delivered but no queue acknowledgement within the timeout.
+Before invoking, write `SELF-HANDOFF.md` in your own root following the `self-handoff` skill; if it is missing the daemon rejects the request (exit 1). If `SELF-FORGET.md` exists, the daemon captures a sanitized compact forgotten summary (max 240 chars), archives it into `self-clear/`, and the later resume prompt may include it only as closed background, never as instructions or work to resume. Scope is Room replicas only (`__agent_*` under a `room-*` room); Root Agent and origin matrix agents are rejected. Exit codes: `0` queued or already queued, `1` auth/IO/rejection, `2` delivered but no queue acknowledgement within the timeout.
 
 ### `self-handoff-and-restart`
 
@@ -226,7 +226,7 @@ agentscommander self-handoff-and-restart \
 
 There is no `--coding-agent` and no `--profile`: there is nothing to choose.
 
-Before invoking, write `SELF-HANDOFF.md` in your own root with the notes you need to resume; if it is missing the daemon rejects the request (exit 1). If `SELF-FORGET.md` exists, the daemon captures a sanitized compact forgotten summary (max 240 chars), archives it into `self-clear/`, and the later resume prompt may include it only as closed background, never as instructions or work to resume.
+Before invoking, write `SELF-HANDOFF.md` in your own root following the `self-handoff` skill; if it is missing the daemon rejects the request (exit 1). If `SELF-FORGET.md` exists, the daemon captures a sanitized compact forgotten summary (max 240 chars), archives it into `self-clear/`, and the later resume prompt may include it only as closed background, never as instructions or work to resume.
 
 Scope is every session that owns a token and runs a configured coding agent: Room replicas (`__agent_*`), origin Agent Matrix agents (`_agent_*`), and the Root Agent. A session with **no configured coding-agent identity** is rejected, because there is no recipe to respawn; run the command from a coding-agent session.
 
