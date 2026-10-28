@@ -1,7 +1,8 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::Duration;
+
+use crate::filesystem::agency_templates::ensure_agency_directory;
 
 use crate::config::role_templates::AGENCY_TEMPLATES_DIR;
 
@@ -70,7 +71,7 @@ pub(super) fn fetch_repo_with_git(
         AGENCY_TEMPLATES_DIR,
         uuid::Uuid::new_v4()
     ));
-    fs::create_dir_all(&temp).map_err(|e| {
+    ensure_agency_directory(&temp).map_err(|e| {
         format!(
             "Failed to create Agency download dir {}: {}",
             temp.display(),

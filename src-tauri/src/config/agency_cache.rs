@@ -1,11 +1,18 @@
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+#[cfg(test)]
+use std::fs;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Args;
 use serde::Serialize;
+
+use crate::filesystem::agency_templates::{
+    agency_entries, agency_metadata, agency_path_exists, create_agency_lock,
+    ensure_agency_directory, read_agency_text, remove_agency_file, remove_agency_tree,
+    rename_agency_path, write_agency_lock, write_agency_text,
+};
 
 use crate::config::role_templates::{
     agency_template_metas_from_cache, agency_templates_dir, agency_templates_status,
@@ -82,7 +89,7 @@ impl TempCacheDir {
 
 impl Drop for TempCacheDir {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        let _ = remove_agency_tree(&self.path);
     }
 }
 
@@ -95,7 +102,7 @@ struct CacheLockInfo {
 
 impl CacheLock {
     fn acquire(config_dir: &Path) -> Result<Self, String> {
-        fs::create_dir_all(config_dir).map_err(|e| {
+        ensure_agency_directory(config_dir).map_err(|e| {
             format!(
                 "Failed to create config dir {}: {}",
                 config_dir.display(),
@@ -104,7 +111,7 @@ impl CacheLock {
         })?;
         let path = config_dir.join(format!("{}.lock", AGENCY_TEMPLATES_DIR));
         loop {
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
+            match create_agency_lock(&path) {
                 Ok(mut file) => {
                     let created_unix_secs = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -114,11 +121,10 @@ impl CacheLock {
                         pid: process::id(),
                         created_unix_secs,
                     };
-                    writeln!(
-                        file,
-                        "{}",
-                        serde_json::to_string(&info)
-                            .map_err(|e| format!("Failed to encode Agency cache lock: {}", e))?
+                    write_agency_lock(
+                        &mut file,
+                        &serde_json::to_string(&info)
+                            .map_err(|e| format!("Failed to encode Agency cache lock: {}", e))?,
                     )
                     .map_err(|e| {
                         format!(
@@ -154,7 +160,7 @@ impl CacheLock {
 
 impl Drop for CacheLock {
     fn drop(&mut self) {
-        if let Err(e) = fs::remove_file(&self.path) {
+        if let Err(e) = remove_agency_file(&self.path) {
             eprintln!(
                 "Warning: failed to remove Agency template cache lock {}: {}",
                 self.path.display(),
@@ -165,7 +171,7 @@ impl Drop for CacheLock {
 }
 
 fn recover_stale_lock_if_possible(config_dir: &Path, path: &Path) -> Result<bool, String> {
-    let raw = fs::read_to_string(path).unwrap_or_default();
+    let raw = read_agency_text(path).unwrap_or_default();
     let pid = serde_json::from_str::<serde_json::Value>(&raw)
         .ok()
         .and_then(|value| value.get("pid").and_then(|pid| pid.as_u64()))
@@ -177,7 +183,7 @@ fn recover_stale_lock_if_possible(config_dir: &Path, path: &Path) -> Result<bool
     if !stale {
         return Ok(false);
     }
-    fs::remove_file(path).map_err(|e| {
+    remove_agency_file(path).map_err(|e| {
         format!(
             "Failed to remove stale Agency template cache lock {}: {}",
             path.display(),
@@ -189,10 +195,10 @@ fn recover_stale_lock_if_possible(config_dir: &Path, path: &Path) -> Result<bool
 
 fn live_missing_with_one_valid_previous_cache(config_dir: &Path) -> bool {
     let live = agency_templates_dir(config_dir);
-    if live.exists() {
+    if agency_path_exists(&live) {
         return false;
     }
-    let Ok(entries) = fs::read_dir(config_dir) else {
+    let Ok(entries) = agency_entries(config_dir) else {
         return false;
     };
     let mut valid_prev = 0usize;
@@ -310,7 +316,7 @@ pub fn update_cache_at(
         AGENCY_TEMPLATES_DIR,
         uuid::Uuid::new_v4()
     ));
-    if staging.exists() {
+    if agency_path_exists(&staging) {
         return Err(format!(
             "Staging path already exists: {}",
             staging.display()
@@ -380,15 +386,15 @@ pub(crate) fn normalize_extracted_repo_to_cache(
     staging: &Path,
     mut manifest: AgencyTemplatesManifest,
 ) -> Result<(), String> {
-    if staging.exists() {
-        fs::remove_dir_all(staging)
+    if agency_path_exists(staging) {
+        remove_agency_tree(staging)
             .map_err(|e| format!("Failed to remove existing staging dir: {}", e))?;
     }
-    fs::create_dir_all(staging)
+    ensure_agency_directory(staging)
         .map_err(|e| format!("Failed to create staging dir {}: {}", staging.display(), e))?;
     let mut ids = std::collections::HashSet::new();
     let mut paths_ci = std::collections::HashSet::new();
-    for division in fs::read_dir(extracted_root)
+    for division in agency_entries(extracted_root)
         .map_err(|e| format!("Failed to read extracted Agency repo: {}", e))?
     {
         let division = division.map_err(|e| format!("Failed to read Agency division: {}", e))?;
@@ -434,7 +440,7 @@ fn normalize_agency_role_tree(
     ids: &mut std::collections::HashSet<String>,
     paths_ci: &mut std::collections::HashSet<String>,
 ) -> Result<(), String> {
-    for entry in fs::read_dir(current_dir).map_err(|e| {
+    for entry in agency_entries(current_dir).map_err(|e| {
         format!(
             "Failed to read Agency role directory {}: {}",
             current_dir.display(),
@@ -531,7 +537,7 @@ fn normalize_agency_role_file(
             division_slug, role_slug
         ));
     }
-    let raw = fs::read_to_string(path)
+    let raw = read_agency_text(path)
         .map_err(|e| format!("Failed to read Agency role file {}: {}", path.display(), e))?;
     let fm = parse_agency_template_frontmatter(&raw);
     let stripped = strip_yaml_frontmatter_for_role_template(&raw);
@@ -554,10 +560,10 @@ fn normalize_agency_role_file(
     normalized.push('\n');
     let role_path = staging.join(division_slug).join(&role_slug).join("Role.md");
     if let Some(parent) = role_path.parent() {
-        fs::create_dir_all(parent)
+        ensure_agency_directory(parent)
             .map_err(|e| format!("Failed to create normalized role dir: {}", e))?;
     }
-    fs::write(&role_path, normalized)
+    write_agency_text(&role_path, &normalized)
         .map_err(|e| format!("Failed to write normalized Role.md: {}", e))?;
     Ok(())
 }
@@ -584,7 +590,7 @@ fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
 }
 
 fn lstat_no_links(path: &Path, label: &str) -> Result<std::fs::Metadata, String> {
-    let meta = fs::symlink_metadata(path)
+    let meta = agency_metadata(path)
         .map_err(|e| format!("Failed to stat {} {}: {}", label, path.display(), e))?;
     if is_link_or_reparse(&meta) {
         return Err(format!(
@@ -621,9 +627,9 @@ fn publish_staging(config_dir: &Path, staging: &Path) -> Result<(), String> {
         AGENCY_TEMPLATES_DIR,
         uuid::Uuid::new_v4()
     ));
-    let had_live = live.exists();
+    let had_live = agency_path_exists(&live);
     if had_live {
-        fs::rename(&live, &previous).map_err(|e| {
+        rename_agency_path(&live, &previous).map_err(|e| {
             format!(
                 "Failed to move live Agency cache {} to {}: {}",
                 live.display(),
@@ -632,9 +638,9 @@ fn publish_staging(config_dir: &Path, staging: &Path) -> Result<(), String> {
             )
         })?;
     }
-    if let Err(publish_err) = fs::rename(staging, &live) {
+    if let Err(publish_err) = rename_agency_path(staging, &live) {
         if had_live {
-            if let Err(rollback_err) = fs::rename(&previous, &live) {
+            if let Err(rollback_err) = rename_agency_path(&previous, &live) {
                 return Err(format!(
                     "Failed to publish Agency cache: {}; rollback also failed: {}",
                     publish_err, rollback_err
@@ -644,20 +650,20 @@ fn publish_staging(config_dir: &Path, staging: &Path) -> Result<(), String> {
         return Err(format!("Failed to publish Agency cache: {}", publish_err));
     }
     if had_live {
-        let _ = fs::remove_dir_all(previous);
+        let _ = remove_agency_tree(&previous);
     }
     Ok(())
 }
 
 fn recover_interrupted_publish(config_dir: &Path) -> Result<String, String> {
     let live = agency_templates_dir(config_dir);
-    if live.exists() {
+    if agency_path_exists(&live) {
         cleanup_publish_residue(config_dir);
         return Ok("available".into());
     }
     let mut valid_prev = Vec::new();
     for entry in
-        fs::read_dir(config_dir).map_err(|e| format!("Failed to read config dir: {}", e))?
+        agency_entries(config_dir).map_err(|e| format!("Failed to read config dir: {}", e))?
     {
         let entry = entry.map_err(|e| format!("Failed to read config dir entry: {}", e))?;
         let name = entry.file_name().to_string_lossy().to_string();
@@ -670,7 +676,7 @@ fn recover_interrupted_publish(config_dir: &Path) -> Result<String, String> {
     match valid_prev.len() {
         0 => Ok("missing".into()),
         1 => {
-            fs::rename(&valid_prev[0], &live).map_err(|e| {
+            rename_agency_path(&valid_prev[0], &live).map_err(|e| {
                 format!(
                     "cacheInvalid: failed to restore Agency cache {} to {}: {}",
                     valid_prev[0].display(),
@@ -685,15 +691,15 @@ fn recover_interrupted_publish(config_dir: &Path) -> Result<String, String> {
 }
 
 fn cleanup_publish_residue(config_dir: &Path) {
-    if let Ok(entries) = fs::read_dir(config_dir) {
+    if let Ok(entries) = agency_entries(config_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with(&format!("{}.next-", AGENCY_TEMPLATES_DIR))
                 || name.starts_with(&format!("{}.download-", AGENCY_TEMPLATES_DIR))
-                || (agency_templates_dir(config_dir).exists()
+                || (agency_path_exists(&agency_templates_dir(config_dir))
                     && name.starts_with(&format!("{}.prev-", AGENCY_TEMPLATES_DIR)))
             {
-                let _ = fs::remove_dir_all(entry.path());
+                let _ = remove_agency_tree(&entry.path());
             }
         }
     }

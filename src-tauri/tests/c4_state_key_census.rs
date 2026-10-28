@@ -214,7 +214,7 @@ fn assert_frozen(id: &str, hits: &[Hit], pin: &Pin) {
 #[test]
 fn the_inventory_is_the_certified_file_set() {
     let sources = rust_sources();
-    assert_eq!(sources.len(), 1406, "inventory count");
+    assert_eq!(sources.len(), 1407, "inventory count");
     for (path, text) in &sources {
         assert!(path.starts_with("src-tauri/src/"), "path form: {path}");
         assert!(!path.contains('\\'), "path separator: {path}");
