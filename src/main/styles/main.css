@@ -544,3 +544,61 @@ html.light-theme .home-status-error,
 html.light-theme .error-modal-title {
   color: #b91c1c;
 }
+
+/* #3367 — embedded web browser. The page is a native window laid over
+ * .web-browser-viewport by the backend; the DOM only draws the toolbar. */
+.main-web-browser-pane > .web-browser {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
+.web-browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-bottom: 1px solid var(--sidebar-border);
+  flex-shrink: 0;
+}
+
+.web-browser-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.web-browser-btn:hover { background: var(--sidebar-hover); color: var(--sidebar-fg); }
+.web-browser-btn.loading { color: var(--sidebar-fg); }
+
+.web-browser-url {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 var(--spacing-sm);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--sidebar-fg);
+  font-size: 13px;
+}
+.web-browser-url:focus { outline: none; border-color: var(--sidebar-fg-dim); }
+
+.web-browser-error {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  color: #f87171;
+  font-size: 12px;
+  border-bottom: 1px solid var(--sidebar-border);
+  flex-shrink: 0;
+}
+
+.web-browser-viewport {
+  flex: 1;
+  min-height: 0;
+}

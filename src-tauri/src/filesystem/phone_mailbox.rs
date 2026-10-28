@@ -40,6 +40,10 @@ pub(crate) fn ensure_mailbox_archive_directory(path: &Path) -> io::Result<()> {
     std::fs::create_dir_all(path)
 }
 
+pub(crate) fn write_mailbox_response(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
 pub(crate) fn rename_mailbox_document(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::rename(from, to)
 }
