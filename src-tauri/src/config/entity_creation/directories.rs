@@ -13,6 +13,10 @@ pub(crate) use crate::filesystem::projects::entities::deletion::{
     WgDeleteOutcome,
 };
 
+pub(crate) use crate::filesystem::projects::entities::publication::{
+    create_room_directory, create_room_messaging_directory, room_directory_present,
+};
+
 use super::names::validate_existing_name;
 use crate::filesystem::projects::entities::directories as disk;
 use std::collections::HashSet;

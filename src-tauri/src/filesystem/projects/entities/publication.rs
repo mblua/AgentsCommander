@@ -51,3 +51,19 @@ pub(crate) fn link_owned_team_config(temporary: &Path, config: &Path) -> io::Res
 pub(crate) fn unlink_owned_team_temporary(temporary: &Path) -> io::Result<()> {
     std::fs::remove_file(temporary)
 }
+
+pub(crate) fn room_directory_present(path: &Path) -> bool {
+    path.exists()
+}
+
+pub(crate) fn create_room_directory(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+pub(crate) fn create_room_messaging_directory(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+pub(crate) fn write_initial_room_task(path: &Path, prepared_content: &str) -> io::Result<()> {
+    std::fs::write(path, prepared_content)
+}

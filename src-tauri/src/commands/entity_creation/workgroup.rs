@@ -5,7 +5,7 @@ use super::matrix_layout::{
 };
 use super::repo_clone::git_clone_async;
 use super::room_number::{determine_next_wg_number, room_dir_name, room_number_pad_width};
-use super::room_task::{build_task_content, validate_task_title};
+use super::room_task::{build_task_content, initialize_new_room, validate_task_title};
 use super::team_config::{
     acquire_team_config_mutation_guard_async, create_new_team_config_on_disk_guarded,
     normalize_team_config_for_project, read_team_config, resolve_agent_ref,
@@ -17,7 +17,9 @@ use super::{
 use crate::config::coding_agent_profiles::{
     apply_replica_selection_default, read_replica_selection_default,
 };
-use crate::config::entity_creation::directories::{clone_target_present, replica_role_present};
+use crate::config::entity_creation::directories::{
+    self, clone_target_present, replica_role_present,
+};
 use crate::config::replica_identity::{
     normalize_wg_replica_context_entries, repair_wg_replica_config_value, ROLE_MD_FILENAME,
     WG_REPLICA_REQUIRED_CONTEXT,
@@ -27,6 +29,35 @@ use crate::config::seed_manifest::{
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+pub(super) fn allocate_disk_room(
+    base: &Path,
+    safe_team: &str,
+    task_title: &str,
+    write_task: impl FnOnce(&Path, &str) -> std::io::Result<()>,
+) -> Result<(PathBuf, u32), String> {
+    let wg_number = determine_next_wg_number(base);
+    let wg_name = room_dir_name(wg_number, safe_team, room_number_pad_width());
+    let wg_dir = base.join(&wg_name);
+    if directories::room_directory_present(&wg_dir) {
+        return Err(format!("Room directory already exists: {}", wg_name));
+    }
+    directories::create_room_directory(&wg_dir)
+        .map_err(|e| format!("Failed to create room directory: {}", e))?;
+    directories::create_room_messaging_directory(
+        &wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME),
+    )
+    .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
+    // #1795: `room-shared/` is a sibling of `messaging/` and `TASK.md`, and it is
+    // created with the same hard `?` they use. A half-created room must not be
+    // reported as created.
+    crate::config::shared_locations::create_room_shared_dir(&wg_dir)
+        .map_err(|e| format!("Failed to create room shared directory: {}", e))?;
+    let task_content = build_task_content(task_title);
+    write_task(&wg_dir, &task_content).map_err(|e| format!("Failed to write TASK.md: {}", e))?;
+
+    Ok::<_, String>((wg_dir, wg_number))
+}
 
 pub(crate) fn list_workgroup_dirs(ac_root: &Path) -> Vec<PathBuf> {
     crate::config::entity_creation::directories::workgroup_candidates(ac_root)
@@ -119,27 +150,8 @@ pub(crate) async fn create_workgroup_on_disk_traced(
         let (safe_team, task_title, base, team_config) = prepare.result(prepared)?;
 
         let allocate = physical.child(Stage::Allocate);
-        let (wg_dir, wg_number) = allocate.run(|| {
-            let wg_number = determine_next_wg_number(&base);
-            let wg_name = room_dir_name(wg_number, &safe_team, room_number_pad_width());
-            let wg_dir = base.join(&wg_name);
-            if wg_dir.exists() {
-                return Err(format!("Room directory already exists: {}", wg_name));
-            }
-            std::fs::create_dir_all(&wg_dir)
-                .map_err(|e| format!("Failed to create room directory: {}", e))?;
-            std::fs::create_dir_all(wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME))
-                .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
-            // #1795: `room-shared/` is a sibling of `messaging/` and `TASK.md`, and it is
-            // created with the same hard `?` they use. A half-created room must not be
-            // reported as created.
-            crate::config::shared_locations::create_room_shared_dir(&wg_dir)
-                .map_err(|e| format!("Failed to create room shared directory: {}", e))?;
-            std::fs::write(wg_dir.join("TASK.md"), build_task_content(&task_title))
-                .map_err(|e| format!("Failed to write TASK.md: {}", e))?;
-
-            Ok::<_, String>((wg_dir, wg_number))
-        })?;
+        let (wg_dir, wg_number) = allocate
+            .run(|| allocate_disk_room(&base, &safe_team, &task_title, initialize_new_room))?;
         physical.room(wg_number);
         operation.room(wg_number);
 

@@ -5,7 +5,7 @@ use super::matrix_layout::{
 };
 use super::repo_clone::git_clone_async;
 use super::room_number::{determine_next_wg_number, room_dir_name, room_number_pad_width};
-use super::room_task::prepare_new_room_task_content;
+use super::room_task::{initialize_new_room, prepare_new_room_task_content};
 use super::team_config::{read_team_config, resolve_context_alert_argument, ContextAlertWriteMode};
 use super::team_update::emit_coordinator_refresh;
 use super::workgroup::initialize_workgroup_replicas_on_disk_traced;
@@ -23,6 +23,33 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
+
+pub(super) fn allocate_gui_room(
+    base: &Path,
+    safe_team: &str,
+    task_content: &str,
+    write_task: impl FnOnce(&Path, &str) -> std::io::Result<()>,
+) -> Result<(PathBuf, u32), String> {
+    // Determine next WG number
+    let wg_number = determine_next_wg_number(base);
+
+    let wg_name = room_dir_name(wg_number, safe_team, room_number_pad_width());
+    let wg_dir = base.join(&wg_name);
+    if directories::room_directory_present(&wg_dir) {
+        return Err(format!("Room directory already exists: {}", wg_name));
+    }
+    directories::create_room_directory(&wg_dir)
+        .map_err(|e| format!("Failed to create room directory: {}", e))?;
+    directories::create_room_messaging_directory(
+        &wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME),
+    )
+    .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
+
+    // Write the prepared Clean or user-owned task before replicas and clones.
+    write_task(&wg_dir, task_content).map_err(|e| format!("Failed to write TASK.md: {}", e))?;
+
+    Ok::<_, String>((wg_dir, wg_number))
+}
 
 /// List all agent matrices across multiple project paths.
 /// Scans {project}/.ac/_agent_*/ and reads Role.md frontmatter.
@@ -185,26 +212,8 @@ pub async fn create_workgroup(
         })?;
 
         let allocate = physical.child(Stage::Allocate);
-        let (wg_dir, wg_number) = allocate.run(|| {
-            // Determine next WG number
-            let wg_number = determine_next_wg_number(&base);
-
-            let wg_name = room_dir_name(wg_number, &safe_team, room_number_pad_width());
-            let wg_dir = base.join(&wg_name);
-            if wg_dir.exists() {
-                return Err(format!("Room directory already exists: {}", wg_name));
-            }
-            std::fs::create_dir_all(&wg_dir)
-                .map_err(|e| format!("Failed to create room directory: {}", e))?;
-            std::fs::create_dir_all(wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME))
-                .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
-
-            // Write the prepared Clean or user-owned task before replicas and clones.
-            std::fs::write(wg_dir.join("TASK.md"), &task_content)
-                .map_err(|e| format!("Failed to write TASK.md: {}", e))?;
-
-            Ok::<_, String>((wg_dir, wg_number))
-        })?;
+        let (wg_dir, wg_number) = allocate
+            .run(|| allocate_gui_room(&base, &safe_team, &task_content, initialize_new_room))?;
         physical.room(wg_number);
         operation.room(wg_number);
 
