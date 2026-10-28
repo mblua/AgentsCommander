@@ -1,6 +1,7 @@
 //! Filesystem probes for registered project directories.
 
 pub(crate) mod discovery;
+pub(crate) mod entities;
 
 use std::fs::{FileType, Metadata};
 use std::io;

@@ -12,9 +12,11 @@ use super::agent_delete_plan::{
     PreparedAgentDeleteMetadata,
 };
 use super::agent_matrix::{
-    persist_agent_delete_metadata_blocking, rollback_staged_agent_delete_targets,
+    persist_agent_delete_metadata_blocking, persist_agent_delete_metadata_blocking_with_writer,
+    rollback_staged_agent_delete_targets, rollback_staged_targets_reporting,
     run_agent_delete_transaction, stage_agent_delete_targets,
-    stage_agent_delete_targets_with_rename, AgentDeleteStageError, AgentDeleteTransactionOutcome,
+    stage_agent_delete_targets_with_rename, still_staged_suffix, AgentDeleteStageError,
+    AgentDeleteTransactionOutcome, StagedAgentDeleteTarget,
 };
 use super::delete_guard::{
     ensure_no_live_sessions_under_manager, is_rename_blocked_by_handle,
@@ -66,6 +68,7 @@ use std::time::Duration;
 mod agent_delete;
 mod agent_delete_blockers;
 mod copy_cleanup;
+mod disk_contracts;
 mod matrix_copy;
 mod matrix_layout;
 mod replica_config;

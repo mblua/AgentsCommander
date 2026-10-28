@@ -26,29 +26,7 @@ pub(super) struct TeamDeleteReport {
 /// directories owned by `team_name`. Deleting a team removes both kinds, which
 /// is the only coherent meaning of deleting a team (#1614).
 pub(super) fn collect_team_workgroup_dirs(base: &Path, team_name: &str) -> Vec<PathBuf> {
-    let wg_suffix = format!("-{}", team_name);
-    let mut wg_dirs: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(base) {
-        for entry in entries.flatten() {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            // #1614: the middle segment comes from the STRIPPED remainder, never
-            // from an index. The literal 3 was "wg-".len(); "room-".len() is 5,
-            // so an index form would mis-slice every Room name and, for a team
-            // name long enough, panic on a reversed range.
-            if let Some(rest) = crate::config::entity_prefix::strip_entity_prefix(&name_str) {
-                if let Some(middle) = rest.strip_suffix(&wg_suffix) {
-                    if middle.parse::<u32>().is_ok() {
-                        wg_dirs.push(entry.path());
-                    }
-                }
-            }
-        }
-    }
-    wg_dirs
+    crate::config::entity_creation::directories::team_room_candidates(base, team_name)
 }
 
 /// Delete a team directory from {project_path}/.ac/_team_{name}/
@@ -96,7 +74,7 @@ where
     validate_existing_name(team_name, "Team")?;
     let base = selected_ac_root(Path::new(project_path))?;
     let team_dir = base.join(format!("_team_{}", team_name));
-    if !team_dir.exists() {
+    if !crate::config::entity_creation::directories::team_directory_present(&team_dir) {
         return Err(format!("Team '{}' not found", team_name));
     }
 
@@ -132,8 +110,10 @@ where
             team_guard.require_ac_root(&base_owned)?;
 
             // Revalidate the team directory under both guards before the commit.
-            match std::fs::symlink_metadata(&team_dir_owned) {
-                Ok(_) => {}
+            match crate::config::entity_creation::directories::inspect_team_for_delete(
+                &team_dir_owned,
+            ) {
+                Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     drop(team_guard);
                     drop(project_gate);
@@ -148,8 +128,7 @@ where
 
             // Commit: remove the team directory, then attempt each workgroup while
             // both guards remain held.
-            std::fs::remove_dir_all(&team_dir_owned)
-                .map_err(|e| format!("Failed to delete team directory: {}", e))?;
+            crate::config::entity_creation::directories::remove_team_directory(&team_dir_owned)?;
             let mut removed_workgroups = Vec::new();
             let mut failed_workgroups = Vec::new();
             for wg in &wg_dirs_owned {
