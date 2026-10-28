@@ -1,10 +1,8 @@
 use super::apply_clean;
 use super::parse_task;
 use super::render;
-use super::status::io_boundary;
 use super::status::read_latest_status_locked;
 use super::status::status_invalid;
-use super::status::sync_file;
 use super::status::write_failed;
 use super::status::StatusRecord;
 use super::status::JOURNAL_NAME;
@@ -18,13 +16,13 @@ use super::TaskOpError;
 use super::LOCK_STALE_AFTER_5M;
 #[cfg(test)]
 use super::LOCK_TIMEOUT_5S;
+use crate::filesystem::tasks::{
+    create_task_artifact, io_boundary, open_task_sync, read_clean_journal, read_task_artifact,
+    remove_task_artifact, rename_task_artifact_with_retry, task_artifact_exists, task_source_state,
+};
 use chrono::DateTime;
 use chrono::Utc;
-use std::fs::OpenOptions;
-use std::io::Write as _;
 use std::path::Path;
-use std::time::Duration;
-use std::time::SystemTime;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -45,70 +43,10 @@ pub(super) struct CleanJournal {
     pub(super) task: CleanSide,
     pub(super) status: CleanSide,
 }
-#[derive(PartialEq)]
-struct SourceState {
-    hash: Option<String>,
-    len: u64,
-    modified: Option<SystemTime>,
-}
-
 fn hash_bytes(bytes: &[u8]) -> String {
     use sha2::Digest;
     format!("{:x}", sha2::Sha256::digest(bytes))
 }
-fn source_state(path: &Path) -> std::io::Result<SourceState> {
-    use sha2::Digest;
-    use std::io::Read;
-    let mut file = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(SourceState {
-                hash: None,
-                len: 0,
-                modified: None,
-            })
-        }
-        Err(e) => return Err(e),
-    };
-    let meta = file.metadata()?;
-    let mut hash = sha2::Sha256::new();
-    let mut buf = [0u8; 65536];
-    let mut len = 0;
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hash.update(&buf[..n]);
-        len += n as u64;
-    }
-    if len != meta.len() {
-        return Err(std::io::Error::other("source changed while hashing"));
-    }
-    Ok(SourceState {
-        hash: Some(format!("{:x}", hash.finalize())),
-        len,
-        modified: meta.modified().ok(),
-    })
-}
-
-fn rename_retry(source: &Path, target: &Path) -> std::io::Result<()> {
-    for attempt in 0..3 {
-        match std::fs::rename(source, target) {
-            Ok(()) => return Ok(()),
-            Err(e)
-                if attempt < 2
-                    && (e.kind() == std::io::ErrorKind::PermissionDenied
-                        || matches!(e.raw_os_error(), Some(5) | Some(32))) =>
-            {
-                std::thread::sleep(Duration::from_millis(100))
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    unreachable!()
-}
-
 fn clean_conflict(reason: impl Into<String>) -> TaskOpError {
     TaskOpError::CleanRecoveryConflict(reason.into())
 }
@@ -167,8 +105,8 @@ fn validate_journal(j: &CleanJournal) -> Result<(), TaskOpError> {
 }
 
 fn cleanup_owned(path: &Path, hash: &str) {
-    if source_state(path).ok().and_then(|s| s.hash).as_deref() == Some(hash) {
-        let _ = std::fs::remove_file(path);
+    if task_source_state(path).ok().and_then(|s| s.hash).as_deref() == Some(hash) {
+        let _ = remove_task_artifact(path);
     }
 }
 
@@ -183,21 +121,12 @@ pub(super) fn recover_clean_pair(root: &Path) -> Result<(), TaskOpError> {
 }
 
 pub(super) fn recover_clean_pair_locked(root: &Path) -> Result<(), TaskOpError> {
-    use std::io::Read;
     let journal_path = root.join(JOURNAL_NAME);
-    let file = match OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&journal_path)
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+    let bytes = match read_clean_journal(&journal_path) {
+        Ok(None) => return Ok(()),
+        Ok(Some(bytes)) => bytes,
         Err(e) => return Err(clean_pending(e)),
     };
-    let mut bytes = Vec::new();
-    file.take(16_385)
-        .read_to_end(&mut bytes)
-        .map_err(clean_pending)?;
     if bytes.len() > 16_384 {
         return Err(clean_conflict("oversized journal"));
     }
@@ -218,12 +147,10 @@ pub(super) fn recover_clean_pair_locked(root: &Path) -> Result<(), TaskOpError> 
     let journal: CleanJournal =
         serde_json::from_value(value).map_err(|e| clean_conflict(e.to_string()))?;
     validate_journal(&journal)?;
-    let journal_file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&journal_path)
+    let journal_file = open_task_sync(&journal_path).map_err(clean_pending)?;
+    journal_file
+        .sync_at("journal_sync")
         .map_err(clean_pending)?;
-    sync_file(&journal_file, "journal_sync").map_err(clean_pending)?;
     drop(journal_file);
     finish_clean_locked(root, &journal, &bytes)
 }
@@ -235,7 +162,7 @@ fn finish_clean_locked(
 ) -> Result<(), TaskOpError> {
     // Validate the entire pair before replacing either target.
     for (side, target) in [(&journal.task, "TASK.md"), (&journal.status, STATUS_NAME)] {
-        let current = source_state(&root.join(target)).map_err(clean_pending)?;
+        let current = task_source_state(&root.join(target)).map_err(clean_pending)?;
         if current.hash.as_deref() != Some(&side.target_hash) && current.hash != side.original_hash
         {
             return Err(clean_conflict(format!("external edit: {target}")));
@@ -245,7 +172,7 @@ fn finish_clean_locked(
                 .original_hash
                 .clone()
                 .unwrap_or_else(|| hash_bytes(&[]));
-            if source_state(&root.join(backup))
+            if task_source_state(&root.join(backup))
                 .map_err(|e| clean_conflict(e.to_string()))?
                 .hash
                 .as_deref()
@@ -255,7 +182,7 @@ fn finish_clean_locked(
             }
         }
         if current.hash.as_deref() != Some(&side.target_hash)
-            && source_state(&root.join(&side.stage))
+            && task_source_state(&root.join(&side.stage))
                 .map_err(|e| clean_conflict(e.to_string()))?
                 .hash
                 .as_deref()
@@ -269,7 +196,7 @@ fn finish_clean_locked(
         (&journal.status, STATUS_NAME, "status_rename"),
     ] {
         let path = root.join(target);
-        let current = source_state(&path).map_err(clean_pending)?;
+        let current = task_source_state(&path).map_err(clean_pending)?;
         if current.hash.as_deref() == Some(&side.target_hash) {
             continue;
         }
@@ -279,12 +206,12 @@ fn finish_clean_locked(
             )));
         }
         io_boundary(boundary).map_err(clean_pending)?;
-        if source_state(&path).map_err(clean_pending)?.hash != side.original_hash {
+        if task_source_state(&path).map_err(clean_pending)?.hash != side.original_hash {
             return Err(clean_conflict(
                 "external edit immediately before replacement",
             ));
         }
-        if source_state(&root.join(&side.stage))
+        if task_source_state(&root.join(&side.stage))
             .map_err(|e| clean_conflict(e.to_string()))?
             .hash
             .as_deref()
@@ -294,7 +221,7 @@ fn finish_clean_locked(
                 "stage changed immediately before replacement",
             ));
         }
-        rename_retry(&root.join(&side.stage), &path).map_err(clean_pending)?;
+        rename_task_artifact_with_retry(&root.join(&side.stage), &path).map_err(clean_pending)?;
         io_boundary(&format!("after_{boundary}")).map_err(clean_pending)?;
     }
     // Even an already-new pair requires fresh sync attempts for BOTH targets.
@@ -305,12 +232,17 @@ fn finish_clean_locked(
         (&journal.status, STATUS_NAME, "status_target_sync"),
     ] {
         let path = root.join(target);
-        if source_state(&path).map_err(clean_pending)?.hash.as_deref() != Some(&side.target_hash) {
+        if task_source_state(&path)
+            .map_err(clean_pending)?
+            .hash
+            .as_deref()
+            != Some(&side.target_hash)
+        {
             return Err(clean_conflict("target hash changed"));
         }
         let attempt = io_boundary(&format!("{boundary}_open")).and_then(|()| {
-            let file = OpenOptions::new().read(true).write(true).open(path)?;
-            sync_file(&file, boundary)
+            let file = open_task_sync(&path)?;
+            file.sync_at(boundary)
         });
         if let Err(e) = attempt {
             if sync_error.is_none() {
@@ -322,7 +254,7 @@ fn finish_clean_locked(
         return Err(clean_pending(e));
     }
     for (side, target) in [(&journal.task, "TASK.md"), (&journal.status, STATUS_NAME)] {
-        if source_state(&root.join(target))
+        if task_source_state(&root.join(target))
             .map_err(clean_pending)?
             .hash
             .as_deref()
@@ -331,51 +263,15 @@ fn finish_clean_locked(
             return Err(clean_conflict("target changed after sync"));
         }
     }
-    if std::fs::read(root.join(JOURNAL_NAME)).map_err(clean_pending)? != journal_bytes {
+    if read_task_artifact(&root.join(JOURNAL_NAME)).map_err(clean_pending)? != journal_bytes {
         return Err(clean_conflict("journal changed"));
     }
     io_boundary("journal_remove").map_err(clean_pending)?;
-    std::fs::remove_file(root.join(JOURNAL_NAME)).map_err(clean_pending)?;
+    remove_task_artifact(&root.join(JOURNAL_NAME)).map_err(clean_pending)?;
     for side in [&journal.task, &journal.status] {
         cleanup_owned(&root.join(&side.stage), &side.target_hash);
     }
     Ok(())
-}
-
-fn copy_backup(
-    source: &Path,
-    dest: &mut std::fs::File,
-    exists: bool,
-    boundary: &str,
-    owned_hash: &mut String,
-) -> std::io::Result<()> {
-    use sha2::Digest;
-    use std::io::Read;
-    let mut hash = sha2::Sha256::new();
-    io_boundary(&format!("{boundary}_copy"))?;
-    if exists {
-        let mut source = std::fs::File::open(source)?;
-        let mut buffer = [0u8; 65536];
-        loop {
-            let count = source.read(&mut buffer)?;
-            if count == 0 {
-                break;
-            }
-            let mut offset = 0;
-            while offset < count {
-                io_boundary(&format!("{boundary}_write"))?;
-                let written = dest.write(&buffer[offset..count])?;
-                if written == 0 {
-                    return Err(std::io::ErrorKind::WriteZero.into());
-                }
-                hash.update(&buffer[offset..offset + written]);
-                *owned_hash = format!("{:x}", hash.clone().finalize());
-                offset += written;
-                io_boundary(&format!("{boundary}_after_write"))?;
-            }
-        }
-    }
-    sync_file(dest, &format!("{boundary}_sync"))
 }
 
 pub(super) fn clean_pair_locked(
@@ -398,8 +294,8 @@ pub(super) fn clean_pair_locked(
                         && tail.complete_len == tail.bytes_read as u64
                         && tail.bytes_read <= STATUS_LIMIT
                         && {
-                            let bytes =
-                                std::fs::read(root.join(STATUS_NAME)).map_err(write_failed)?;
+                            let bytes = read_task_artifact(&root.join(STATUS_NAME))
+                                .map_err(write_failed)?;
                             bytes.iter().filter(|b| **b == b'\n').count() == 1
                         })
             {
@@ -409,8 +305,8 @@ pub(super) fn clean_pair_locked(
     }
     let task_path = root.join("TASK.md");
     let status_path = root.join(STATUS_NAME);
-    let original_task = source_state(&task_path).map_err(write_failed)?;
-    let original_status = source_state(&status_path).map_err(write_failed)?;
+    let original_task = task_source_state(&task_path).map_err(write_failed)?;
+    let original_status = task_source_state(&status_path).map_err(write_failed)?;
     // The caller's description must still be the description being archived.
     if original_task
         .hash
@@ -460,21 +356,13 @@ pub(super) fn clean_pair_locked(
         for n in 0..=99 {
             let (task_name, status_name) = backup_names(&stamp, n);
             io_boundary("task_backup_create").map_err(write_failed)?;
-            let task_file = match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(root.join(&task_name))
-            {
+            let task_file = match create_task_artifact(&root.join(&task_name)) {
                 Ok(f) => f,
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(write_failed(e)),
             };
-            let status_file = io_boundary("status_backup_create").and_then(|()| {
-                OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(root.join(&status_name))
-            });
+            let status_file = io_boundary("status_backup_create")
+                .and_then(|()| create_task_artifact(&root.join(&status_name)));
             match status_file {
                 Ok(f) => {
                     reserved = Some((n, task_name, status_name, task_file, f));
@@ -501,18 +389,16 @@ pub(super) fn clean_pair_locked(
         // foreign replacement. Successfully synced archives stay immutable.
         let mut task_owned_hash = hash_bytes(&[]);
         let mut status_owned_hash = hash_bytes(&[]);
-        let task_result = copy_backup(
+        let task_result = task_file.copy_archive_from(
             &task_path,
-            &mut task_file,
             journal.task.existed,
             "task_backup",
             &mut task_owned_hash,
         );
         let task_finished = task_result.is_ok();
         let copied = task_result.and_then(|()| {
-            copy_backup(
+            status_file.copy_archive_from(
                 &status_path,
-                &mut status_file,
                 journal.status.existed,
                 "status_backup",
                 &mut status_owned_hash,
@@ -531,7 +417,7 @@ pub(super) fn clean_pair_locked(
             (&journal.task, &original_task),
             (&journal.status, &original_status),
         ] {
-            let backup_hash = source_state(&root.join(side.backup.as_ref().unwrap()))
+            let backup_hash = task_source_state(&root.join(side.backup.as_ref().unwrap()))
                 .map_err(write_failed)?
                 .hash;
             if backup_hash != Some(expected.hash.clone().unwrap_or_else(|| hash_bytes(&[]))) {
@@ -544,47 +430,39 @@ pub(super) fn clean_pair_locked(
         (&journal.status, seed_bytes.as_slice(), "status_stage"),
     ] {
         io_boundary(&format!("{boundary}_create")).map_err(write_failed)?;
-        let mut stage = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(root.join(&side.stage))
-            .map_err(write_failed)?;
+        let mut stage = create_task_artifact(&root.join(&side.stage)).map_err(write_failed)?;
         io_boundary(&format!("{boundary}_write")).map_err(write_failed)?;
-        stage.write_all(bytes).map_err(write_failed)?;
-        sync_file(&stage, &format!("{boundary}_sync")).map_err(write_failed)?;
+        stage.write_bytes(bytes).map_err(write_failed)?;
+        stage
+            .sync_at(&format!("{boundary}_sync"))
+            .map_err(write_failed)?;
     }
     io_boundary("before_source_recheck").map_err(write_failed)?;
-    if source_state(&task_path).map_err(write_failed)? != original_task
-        || source_state(&status_path).map_err(write_failed)? != original_status
+    if task_source_state(&task_path).map_err(write_failed)? != original_task
+        || task_source_state(&status_path).map_err(write_failed)? != original_status
     {
         return Err(clean_conflict("source changed before journal"));
     }
     let journal_bytes = serde_json::to_vec(&journal).map_err(|e| clean_conflict(e.to_string()))?;
     let tmp = root.join(format!("{JOURNAL_NAME}.tmp.{tx}"));
     io_boundary("journal_create").map_err(write_failed)?;
-    let mut journal_file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&tmp)
-        .map_err(write_failed)?;
+    let mut journal_file = create_task_artifact(&tmp).map_err(write_failed)?;
     io_boundary("journal_write").map_err(write_failed)?;
     journal_file
-        .write_all(&journal_bytes)
+        .write_bytes(&journal_bytes)
         .map_err(write_failed)?;
-    sync_file(&journal_file, "journal_stage_sync").map_err(write_failed)?;
+    journal_file
+        .sync_at("journal_stage_sync")
+        .map_err(write_failed)?;
     drop(journal_file);
-    if root.join(JOURNAL_NAME).exists() {
+    if task_artifact_exists(&root.join(JOURNAL_NAME)) {
         return Err(clean_conflict("foreign journal appeared"));
     }
     io_boundary("journal_publish").map_err(write_failed)?;
-    rename_retry(&tmp, &root.join(JOURNAL_NAME)).map_err(write_failed)?;
+    rename_task_artifact_with_retry(&tmp, &root.join(JOURNAL_NAME)).map_err(write_failed)?;
     io_boundary("after_journal_publish").map_err(clean_pending)?;
-    let published = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(root.join(JOURNAL_NAME))
-        .map_err(clean_pending)?;
-    sync_file(&published, "journal_sync").map_err(clean_pending)?;
+    let published = open_task_sync(&root.join(JOURNAL_NAME)).map_err(clean_pending)?;
+    published.sync_at("journal_sync").map_err(clean_pending)?;
     drop(published);
     finish_clean_locked(root, &journal, &journal_bytes)?;
     Ok(EditOutcome::Wrote {
