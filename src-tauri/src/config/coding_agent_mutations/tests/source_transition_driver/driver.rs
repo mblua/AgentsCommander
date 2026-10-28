@@ -11,10 +11,13 @@ fn single_editor_complete_without_participants() {
         "request-empty",
         &fixture.initial_revision,
         &DriverFixture::candidate(),
-        &|| {
-            reloads.set(reloads.get() + 1);
-            Ok(())
-        },
+        (
+            &|| {
+                reloads.set(reloads.get() + 1);
+                Ok(())
+            },
+            &fixture.controls,
+        ),
     )
     .unwrap();
     let operation = fixture.operation();
@@ -35,6 +38,7 @@ fn single_editor_complete_without_participants() {
         &operation,
         &expected,
         &|| Ok(()),
+        &fixture.controls,
     )
     .unwrap();
     assert_eq!(source_transition_effect_counts().1, publishers);
@@ -45,7 +49,7 @@ fn single_editor_driver_request_lookup_before_uuid_and_new_click_has_new_identit
     let fixture = DriverFixture::new();
     fixture.start("request-1");
     let operation = fixture.operation();
-    let count = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+    let count = fixture.controls.uuid_count();
     commit_source_candidate_internal(
         &fixture.settings,
         &fixture.context,
@@ -53,10 +57,10 @@ fn single_editor_driver_request_lookup_before_uuid_and_new_click_has_new_identit
         "request-1",
         &fixture.initial_revision,
         &DriverFixture::candidate(),
-        &|| Ok(()),
+        (&|| Ok(()), &fixture.controls),
     )
     .unwrap();
-    assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), count);
+    assert_eq!(fixture.controls.uuid_count(), count);
     assert!(matches!(
         commit_source_candidate_internal(
             &fixture.settings,
@@ -65,7 +69,7 @@ fn single_editor_driver_request_lookup_before_uuid_and_new_click_has_new_identit
             "request-1",
             &fixture.initial_revision,
             &serde_json::Value::Null,
-            &|| Ok(())
+            (&|| Ok(()), &fixture.controls),
         ),
         Err(SourceTransitionError::Coordination(
             SourceCoordinationError::Invalid
@@ -75,10 +79,7 @@ fn single_editor_driver_request_lookup_before_uuid_and_new_click_has_new_identit
     let journal = read_own_source_journal(&fixture.context).unwrap().1;
     assert_eq!(journal.intents.len(), 2);
     assert!(journal.intents.contains_key(&operation));
-    assert_eq!(
-        SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get),
-        count + 1
-    );
+    assert_eq!(fixture.controls.uuid_count(), count + 1);
 }
 
 #[test]
@@ -96,7 +97,8 @@ fn single_editor_driver_complete_resume_rejects_source_z_and_root_replacement() 
         &fixture.source,
         &operation,
         &expected,
-        &|| Ok(())
+        &|| Ok(()),
+        &fixture.controls,
     )
     .is_err());
     assert_eq!(
@@ -124,7 +126,7 @@ fn single_editor_driver_actual_guard_cuts_preserve_original_and_resume_without_n
             "request-cut",
             &fixture.initial_revision,
             &DriverFixture::candidate(),
-            &|| Ok(()),
+            (&|| Ok(()), &fixture.controls),
         );
         assert!(
             !source_factory_guard_cut_armed(),
@@ -136,7 +138,7 @@ fn single_editor_driver_actual_guard_cuts_preserve_original_and_resume_without_n
         if let Some((operation, intent)) = original.intents.iter().next() {
             let operation = operation.clone();
             let intent = intent.clone();
-            let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+            let uuids = fixture.controls.uuid_count();
             let expected = fixture.expectation();
             resume_identity_transition_internal(
                 &fixture.settings,
@@ -145,6 +147,7 @@ fn single_editor_driver_actual_guard_cuts_preserve_original_and_resume_without_n
                 &operation,
                 &expected,
                 &|| Ok(()),
+                &fixture.controls,
             )
             .unwrap();
             let recovered = read_own_source_journal(&fixture.context).unwrap().1;
@@ -154,7 +157,7 @@ fn single_editor_driver_actual_guard_cuts_preserve_original_and_resume_without_n
                 original.inventories[&operation]
             );
             assert!(recovered.progress[&operation].receipt.is_some());
-            assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+            assert_eq!(fixture.controls.uuid_count(), uuids);
             let publisher_calls = source_transition_effect_counts().1;
             let expected = fixture.expectation();
             resume_identity_transition_internal(
@@ -164,6 +167,7 @@ fn single_editor_driver_actual_guard_cuts_preserve_original_and_resume_without_n
                 &operation,
                 &expected,
                 &|| Ok(()),
+                &fixture.controls,
             )
             .unwrap();
             assert_eq!(
@@ -211,7 +215,8 @@ fn single_editor_driver_rename_allowed_but_replaced_discovery_object_rejected() 
         &fixture.source,
         &operation,
         &expected,
-        &|| Ok(())
+        &|| Ok(()),
+        &fixture.controls,
     )
     .is_err());
     assert_eq!(source_transition_effect_counts().1, before);
@@ -234,10 +239,13 @@ fn single_editor_driver_actual_packet_changes_only_affected_target_then_releases
         "request-packet",
         &revision,
         &candidate,
-        &|| {
-            reloads.set(reloads.get() + 1);
-            Ok(())
-        },
+        (
+            &|| {
+                reloads.set(reloads.get() + 1);
+                Ok(())
+            },
+            &fixture.controls,
+        ),
     )
     .unwrap();
     let operation = fixture.operation();
@@ -288,6 +296,7 @@ fn single_editor_driver_actual_packet_changes_only_affected_target_then_releases
         &operation,
         &expected,
         &|| Ok(()),
+        &fixture.controls,
     )
     .unwrap();
     assert_eq!(source_transition_effect_counts().1, publishers);
@@ -308,7 +317,7 @@ fn single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets(
         "baseline-packet",
         &revision,
         &candidate,
-        &|| Ok(()),
+        (&|| Ok(()), &baseline.controls),
     )
     .unwrap();
     let cuts = source_factory_guard_calls();
@@ -328,7 +337,7 @@ fn single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets(
             "request-packet-cut",
             &source_before,
             &candidate,
-            &|| Ok(()),
+            (&|| Ok(()), &fixture.controls),
         );
         assert!(
             !source_factory_guard_cut_armed(),
@@ -355,7 +364,7 @@ fn single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets(
         if let Some((operation, intent)) = original.intents.iter().next() {
             let operation = operation.clone();
             let intent = intent.clone();
-            let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+            let uuids = fixture.controls.uuid_count();
             let expected = fixture.expectation();
             resume_identity_transition_internal(
                 &fixture.settings,
@@ -364,6 +373,7 @@ fn single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets(
                 &operation,
                 &expected,
                 &|| Ok(()),
+                &fixture.controls,
             )
             .unwrap();
             let recovered = read_own_source_journal(&fixture.context).unwrap().1;
@@ -376,7 +386,7 @@ fn single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets(
             if let Some(packet) = original.progress[&operation].packets.first() {
                 assert_eq!(&recovered.progress[&operation].packets[0], packet);
             }
-            assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+            assert_eq!(fixture.controls.uuid_count(), uuids);
             assert!(!target
                 .join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME)
                 .exists());
@@ -389,6 +399,7 @@ fn single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets(
                 &operation,
                 &expected,
                 &|| Ok(()),
+                &fixture.controls,
             )
             .unwrap();
             assert_eq!(source_transition_effect_counts().1, calls);
@@ -416,14 +427,17 @@ fn single_editor_driver_failed_reload_retains_pending_and_activity_max_through_r
         "request-reload",
         &revision,
         &candidate,
-        &|| {
-            // Real physical interleaving, outside PAIR and the validation callback.
-            let mut state: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
-            state["tooling"]["lastAgentMessageAt"] = serde_json::json!(activity);
-            std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
-            Err(SourceCoordinationError::Io("reload interrupted".into()))
-        },
+        (
+            &|| {
+                // Real physical interleaving, outside PAIR and the validation callback.
+                let mut state: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+                state["tooling"]["lastAgentMessageAt"] = serde_json::json!(activity);
+                std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+                Err(SourceCoordinationError::Io("reload interrupted".into()))
+            },
+            &fixture.controls,
+        ),
     );
     assert!(matches!(
         failure,
@@ -445,6 +459,7 @@ fn single_editor_driver_failed_reload_retains_pending_and_activity_max_through_r
         &operation,
         &expected,
         &|| Ok(()),
+        &fixture.controls,
     )
     .unwrap();
     let state: serde_json::Value =

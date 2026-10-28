@@ -21,6 +21,7 @@ mod existing_target;
 mod r3_checkpoint;
 
 struct DriverFixture {
+    controls: IdentityTransitionTestControls,
     _root: tempfile::TempDir,
     settings: AppSettings,
     context: SourceReadContext,
@@ -66,6 +67,7 @@ impl DriverFixture {
         assert!(snapshot.snapshot.capabilities.editable_save);
         let initial_revision = snapshot.snapshot.revision;
         Self {
+            controls: IdentityTransitionTestControls::default(),
             _root: root,
             settings,
             context,
@@ -89,7 +91,7 @@ impl DriverFixture {
             request,
             &revision,
             &Self::candidate(),
-            &|| Ok(()),
+            (&|| Ok(()), &self.controls),
         )
         .unwrap()
     }
@@ -189,6 +191,15 @@ impl DriverFixture {
         context: &SourceReadContext,
         operation: &str,
     ) -> Result<IdentityTransitionRead, SourceTransitionError> {
+        self.resume_at_with_controls(context, operation, &self.controls)
+    }
+
+    fn resume_at_with_controls(
+        &self,
+        context: &SourceReadContext,
+        operation: &str,
+        controls: &IdentityTransitionTestControls,
+    ) -> Result<IdentityTransitionRead, SourceTransitionError> {
         let expected = {
             let identity = IdentityWriteLease::acquire(context, std::time::Duration::ZERO).unwrap();
             let lease = SourceWriteContext::acquire(context, &self.source, &identity).unwrap();
@@ -204,6 +215,7 @@ impl DriverFixture {
             operation,
             &expected,
             &|| Ok(()),
+            controls,
         )
     }
 }

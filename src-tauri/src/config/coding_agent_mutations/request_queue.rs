@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::config::settings::{AgentConfig, AppSettings};
+use crate::filesystem::coding_agent_requests;
 
 use super::agent_op::{apply_coding_agent_op, outcome_from_written, CodingAgentOp};
 
@@ -67,16 +68,16 @@ pub enum RequestDisposition {
 /// Atomically write a request into `dir` as `<requestId>.json`. Returns the
 /// final path (used by the CLI to cancel on timeout).
 pub fn write_coding_agent_request(dir: &Path, req: &CodingAgentRequest) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(dir)
+    coding_agent_requests::ensure_queue_directory(dir)
         .map_err(|e| format!("Failed to create coding-agent-requests dir: {e}"))?;
     let final_path = dir.join(format!("{}.json", req.request_id));
     let tmp_path = dir.join(format!("{}.json.tmp", req.request_id));
     let json = serde_json::to_string_pretty(req)
         .map_err(|e| format!("Failed to serialize request: {e}"))?;
-    std::fs::write(&tmp_path, json)
+    coding_agent_requests::write_queue_temporary(&tmp_path, json.as_bytes())
         .map_err(|e| format!("Failed to write request temp file: {e}"))?;
-    std::fs::rename(&tmp_path, &final_path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp_path);
+    coding_agent_requests::rename_queue_file(&tmp_path, &final_path).map_err(|e| {
+        let _ = coding_agent_requests::remove_queue_file(&tmp_path);
         format!("Failed to finalize request file: {e}")
     })?;
     Ok(final_path)
@@ -88,16 +89,16 @@ pub fn write_coding_agent_result(
     results_dir: &Path,
     res: &CodingAgentResult,
 ) -> Result<(), String> {
-    std::fs::create_dir_all(results_dir)
+    coding_agent_requests::ensure_queue_directory(results_dir)
         .map_err(|e| format!("Failed to create results dir: {e}"))?;
     let final_path = results_dir.join(format!("{}.json", res.request_id));
     let tmp_path = results_dir.join(format!("{}.json.tmp", res.request_id));
     let json = serde_json::to_string_pretty(res)
         .map_err(|e| format!("Failed to serialize result: {e}"))?;
-    std::fs::write(&tmp_path, json)
+    coding_agent_requests::write_queue_temporary(&tmp_path, json.as_bytes())
         .map_err(|e| format!("Failed to write result temp file: {e}"))?;
-    std::fs::rename(&tmp_path, &final_path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp_path);
+    coding_agent_requests::rename_queue_file(&tmp_path, &final_path).map_err(|e| {
+        let _ = coding_agent_requests::remove_queue_file(&tmp_path);
         format!("Failed to finalize result file: {e}")
     })?;
     Ok(())
@@ -106,7 +107,7 @@ pub fn write_coding_agent_result(
 /// Read a result file if present (used by the CLI while polling).
 pub fn read_coding_agent_result(results_dir: &Path, request_id: &str) -> Option<CodingAgentResult> {
     let path = results_dir.join(format!("{request_id}.json"));
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = coding_agent_requests::read_queue_result(&path).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -137,7 +138,7 @@ pub fn process_coding_agent_request(
     // Claim: an atomic rename on the same volume. ENOENT means a timed-out CLI
     // already removed the request; never apply it.
     let processing_path = processing_path_for(request_path);
-    if std::fs::rename(request_path, &processing_path).is_err() {
+    if coding_agent_requests::rename_queue_file(request_path, &processing_path).is_err() {
         return RequestDisposition::Skipped;
     }
     // The CLI polls `results/<stem>.json`, where `<stem>` is the request-file
@@ -157,7 +158,7 @@ pub fn process_coding_agent_request(
         save,
     );
     // Delete the claim file LAST, after the result is durably written.
-    let _ = std::fs::remove_file(&processing_path);
+    let _ = coding_agent_requests::remove_queue_file(&processing_path);
     disposition
 }
 
@@ -169,7 +170,7 @@ fn process_claimed(
     settings: &mut AppSettings,
     save: &mut dyn FnMut(&AppSettings) -> Result<AppSettings, String>,
 ) -> RequestDisposition {
-    let content = match std::fs::read_to_string(processing_path) {
+    let content = match coding_agent_requests::read_claimed_request(processing_path) {
         Ok(c) => c,
         Err(e) => {
             write_reject(

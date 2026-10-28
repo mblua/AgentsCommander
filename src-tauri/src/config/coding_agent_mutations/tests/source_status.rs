@@ -27,7 +27,8 @@ fn single_editor_inactive_gate() {
             .into_owned(),
     };
     let before = source_transition_effect_counts();
-    let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+    let controls = IdentityTransitionTestControls::default();
+    let uuids = controls.uuid_count();
     let reloads = std::cell::Cell::new(0);
     let reload = || {
         reloads.set(reloads.get() + 1);
@@ -45,7 +46,7 @@ fn single_editor_inactive_gate() {
                 "request-1",
                 &SourceRevision::Absent {},
                 &candidate,
-                &reload
+                (&reload, &controls),
             ),
             Err(SourceTransitionError::ActivationRequired)
         ));
@@ -56,14 +57,16 @@ fn single_editor_inactive_gate() {
     };
     for operation in ["operation-1", "unknown", ""] {
         assert!(matches!(
-            resume_identity_transition(&settings, &context, &source, operation, &expected, &reload),
+            resume_identity_transition(
+                &settings, &context, &source, operation, &expected, &reload, &controls,
+            ),
             Err(SourceTransitionError::ActivationRequired)
         ));
     }
     let status = get_identity_transition(&context, &source, "unknown").unwrap();
     assert_eq!(status.state, IdentityTransitionReadState::NotFound);
     assert_eq!(source_transition_effect_counts(), before);
-    assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+    assert_eq!(controls.uuid_count(), uuids);
     assert_eq!(reloads.get(), 0);
     assert_eq!(std::fs::read_dir(&config).unwrap().count(), 0);
     assert_eq!(
@@ -97,7 +100,7 @@ fn single_editor_inactive_gate() {
         .iter()
         .any(|agent| agent["id"] == "custom-ordinary"));
     assert_eq!(source_transition_effect_counts(), before);
-    assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+    assert_eq!(controls.uuid_count(), uuids);
     assert!(crate::config::settings::read_own_source_journal(&context)
         .unwrap()
         .1
@@ -163,4 +166,23 @@ fn single_editor_status_invalid_present_journal_preserved_not_empty() {
     ));
     assert_eq!(std::fs::read(&journal).unwrap(), b"{}");
     assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn single_editor_explicit_controls_isolate_uuid_and_preserve_count_when_configuring_cuts() {
+    let controls = IdentityTransitionTestControls::default();
+    let other = IdentityTransitionTestControls::default();
+    assert_eq!(controls.uuid_count(), 0);
+    assert_eq!(other.uuid_count(), 0);
+    let id = new_source_transition_id(&controls);
+    assert!(uuid::Uuid::parse_str(&id).is_ok());
+    assert_eq!(controls.uuid_count(), 1);
+    assert_eq!(other.uuid_count(), 0);
+    controls.configure_durable_cut(Some(("beforeIntent", 1)));
+    assert_eq!(controls.uuid_count(), 1);
+    assert_eq!(controls.durable_cut_state().0, Some(("beforeIntent", 1)));
+    controls.configure_durable_cut(None);
+    assert_eq!(controls.uuid_count(), 1);
+    assert_eq!(*controls.durable_cut_state(), (None, Vec::new()));
+    assert_eq!(other.uuid_count(), 0);
 }
