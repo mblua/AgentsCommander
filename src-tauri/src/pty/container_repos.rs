@@ -16,6 +16,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::filesystem::{directories, documents};
+
 use crate::pty::container_paths::{container_mount_source_rejection, root_key};
 
 /// Container-side root under which each enabled repo is mounted (plan Sec 3.2).
@@ -86,7 +88,7 @@ impl RepoMountResolution {
 /// it itself rather than threading a `serde_json::Value`.
 fn read_repos_array(replica_root: &Path) -> Vec<String> {
     let config_path = replica_root.join("config.json");
-    let Ok(text) = std::fs::read_to_string(&config_path) else {
+    let Ok(text) = documents::read_container_repo_config(&config_path) else {
         return Vec::new();
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
@@ -123,7 +125,7 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
     let Some(parent) = replica_root.parent() else {
         return Ok(RepoMountResolution::default());
     };
-    let Ok(wg_root) = std::fs::canonicalize(parent) else {
+    let Ok(wg_root) = directories::canonical_container_mount(parent) else {
         return Ok(RepoMountResolution::default());
     };
 

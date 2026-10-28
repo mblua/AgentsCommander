@@ -296,3 +296,179 @@ fn is_reparse_path_false_for_plain_file_and_missing() {
         "missing path is not a reparse point"
     );
 }
+
+fn issue_3334_same_io<T: std::fmt::Debug + PartialEq>(
+    native: std::io::Result<T>,
+    port: std::io::Result<T>,
+) {
+    match (native, port) {
+        (Ok(native), Ok(port)) => assert_eq!(native, port),
+        (Err(native), Err(port)) => assert_eq!(
+            (native.kind(), native.raw_os_error(), native.to_string()),
+            (port.kind(), port.raw_os_error(), port.to_string())
+        ),
+        results => panic!("native/port mismatch: {results:?}"),
+    }
+}
+
+#[test]
+fn issue_3334_credential_ports_preserve_native_results() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("nested/credentials");
+    issue_3334_same_io(
+        std::fs::create_dir_all(&dir),
+        directories::ensure_container_credential_directory(&dir),
+    );
+    let source = root.path().join("source");
+    let dest = dir.join("credential");
+    std::fs::write(&source, b"fake-token").unwrap();
+    issue_3334_same_io(
+        std::fs::copy(&source, &dest),
+        documents::copy_container_credential(&source, &dest),
+    );
+    assert_eq!(std::fs::read(&dest).unwrap(), b"fake-token");
+    for path in [source.clone(), dir.clone(), root.path().join("missing")] {
+        issue_3334_same_io(
+            std::fs::read_to_string(&path),
+            documents::read_container_first_run_state(&path),
+        );
+    }
+    for path in [dir.clone(), source.join("child")] {
+        issue_3334_same_io(
+            std::fs::create_dir_all(&path),
+            directories::ensure_container_credential_directory(&path),
+        );
+        issue_3334_same_io(
+            std::fs::copy(&source, &path),
+            documents::copy_container_credential(&source, &path),
+        );
+        issue_3334_same_io(
+            std::fs::write(&path, b"stage"),
+            documents::write_container_first_run_stage(&path, b"stage"),
+        );
+        issue_3334_same_io(
+            std::fs::remove_file(&path),
+            documents::remove_container_credential_artifact(&path),
+        );
+    }
+    let missing = root.path().join("missing");
+    issue_3334_same_io(
+        std::fs::copy(&missing, &dest),
+        documents::copy_container_credential(&missing, &dest),
+    );
+    issue_3334_same_io(
+        std::fs::remove_file(&missing),
+        documents::remove_container_credential_artifact(&missing),
+    );
+    assert!(!documents::container_credential_is_reparse(&missing));
+    assert!(!documents::container_credential_is_reparse(&source));
+}
+
+#[test]
+fn issue_3334_first_run_stage_failure_and_cleanup_preserve_native_results() {
+    let root = tempfile::tempdir().unwrap();
+    let stage = root.path().join("stage");
+    let dest = root.path().join("destination");
+    std::fs::create_dir(&dest).unwrap();
+    issue_3334_same_io(
+        std::fs::write(&stage, b"stage bytes"),
+        documents::write_container_first_run_stage(&stage, b"stage bytes"),
+    );
+    issue_3334_same_io(
+        std::fs::rename(&stage, &dest),
+        documents::rename_container_first_run_stage(&stage, &dest),
+    );
+    assert_eq!(std::fs::read(&stage).unwrap(), b"stage bytes");
+    documents::remove_container_credential_artifact(&stage).unwrap();
+    assert!(!stage.exists(), "stage must be removed");
+    let installed = root.path().join("installed");
+    documents::write_container_first_run_stage(&stage, b"complete").unwrap();
+    documents::rename_container_first_run_stage(&stage, &installed).unwrap();
+    assert_eq!(std::fs::read(&installed).unwrap(), b"complete");
+    assert!(!stage.exists());
+    let plan = plan_for(root.path(), Some(first_run()));
+    ensure_first_run_state(&plan, "/workspace");
+    let dir = plan.dest.parent().unwrap();
+    let value: serde_json::Value = serde_json::from_str(
+        &documents::read_container_first_run_state(&dir.join(".claude.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(value["hasCompletedOnboarding"], true);
+    assert_eq!(
+        std::fs::read_dir(dir).unwrap().count(),
+        1,
+        "no stage remains"
+    );
+}
+
+#[test]
+fn issue_3334_response_ports_preserve_native_results() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("responses");
+    issue_3334_same_io(
+        std::fs::create_dir_all(&dir),
+        directories::ensure_pty_response_directory(&dir),
+    );
+    let file = dir.join("response.json");
+    for bytes in ["{\"content\":\"á 中\"}".as_bytes(), b"{}"] {
+        issue_3334_same_io(
+            std::fs::write(&file, bytes),
+            documents::write_pty_response(&file, bytes),
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+    }
+    for path in [dir, file.join("child"), root.path().join("missing/child")] {
+        issue_3334_same_io(
+            std::fs::write(&path, b"{}"),
+            documents::write_pty_response(&path, b"{}"),
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn issue_3334_git_guard_stage_collision_preserves_existing_bytes() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("stage");
+    std::fs::write(&path, b"prior bytes").unwrap();
+    let error = match documents::create_git_guard_stage(&path) {
+        Ok(_) => panic!("existing guard stage must not open"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read(&path).unwrap(), b"prior bytes");
+}
+
+#[cfg(windows)]
+#[test]
+fn issue_3334_git_guard_stage_preserves_native_results_and_lifetime() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("guard");
+    issue_3334_same_io(
+        std::fs::create_dir_all(&dir),
+        directories::ensure_git_guard_directory(&dir),
+    );
+    let path = dir.join("stage");
+    let mut stage = documents::create_git_guard_stage(&path).unwrap();
+    stage.write_all(b"guard bytes").unwrap();
+    stage.flush().unwrap();
+    stage.sync_all().unwrap();
+    drop(stage);
+    issue_3334_same_io(std::fs::read(&path), documents::read_git_guard_file(&path));
+    documents::remove_git_guard_stage(&path).unwrap();
+    assert!(!path.exists());
+    for path in [dir, root.path().join("missing/child")] {
+        let native = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map(|_| ());
+        let port = documents::create_git_guard_stage(&path).map(|_| ());
+        issue_3334_same_io(native, port);
+        issue_3334_same_io(std::fs::read(&path), documents::read_git_guard_file(&path));
+        issue_3334_same_io(
+            std::fs::remove_file(&path),
+            documents::remove_git_guard_stage(&path),
+        );
+    }
+}

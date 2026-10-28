@@ -269,3 +269,50 @@ fn not_a_workgroup_replica_yields_no_mounts() {
     let resolution = resolve_repo_mounts(&replica).expect("ok");
     assert!(resolution.entries.is_empty());
 }
+
+#[test]
+fn issue_3334_repo_config_preserves_raw_reads_and_empty_fallbacks() {
+    let (_root, _room, replica) = make_workgroup("__agent_self");
+    let path = replica.join("config.json");
+    for bytes in [b"{bad".as_slice(), &[0xff], b"{\"repos\":false}", b""] {
+        std::fs::write(&path, bytes).unwrap();
+        let native = std::fs::read_to_string(&path);
+        let port = documents::read_container_repo_config(&path);
+        match (native, port) {
+            (Ok(native), Ok(port)) => assert_eq!(native, port),
+            (Err(native), Err(port)) => assert_eq!(
+                (native.kind(), native.raw_os_error(), native.to_string()),
+                (port.kind(), port.raw_os_error(), port.to_string())
+            ),
+            results => panic!("native/port mismatch: {results:?}"),
+        }
+        assert!(read_repos_array(&replica).is_empty());
+        assert!(resolve_repo_mounts(&replica).unwrap().entries.is_empty());
+    }
+    std::fs::remove_file(&path).unwrap();
+    assert!(read_repos_array(&replica).is_empty());
+    let native = std::fs::read_to_string(&path).unwrap_err();
+    let port = documents::read_container_repo_config(&path).unwrap_err();
+    assert_eq!(native.kind(), port.kind());
+    assert_eq!(native.raw_os_error(), port.raw_os_error());
+    assert_eq!(native.to_string(), port.to_string());
+}
+
+#[test]
+fn issue_3334_repo_parent_canonicalization_preserves_results() {
+    let (root, room, replica) = make_workgroup("__agent_self");
+    assert_eq!(
+        directories::canonical_container_mount(replica.parent().unwrap()).unwrap(),
+        std::fs::canonicalize(&room).unwrap()
+    );
+    let missing_parent = root.path().join("absent");
+    let native = std::fs::canonicalize(&missing_parent).unwrap_err();
+    let port = directories::canonical_container_mount(&missing_parent).unwrap_err();
+    assert_eq!(native.kind(), port.kind());
+    assert_eq!(native.raw_os_error(), port.raw_os_error());
+    assert_eq!(native.to_string(), port.to_string());
+    assert!(resolve_repo_mounts(&missing_parent.join("replica"))
+        .unwrap()
+        .entries
+        .is_empty());
+}
