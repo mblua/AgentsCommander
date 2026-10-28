@@ -28,12 +28,14 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::filesystem::injected_documents;
+
 // ---------------------------------------------------------------------------
 // Provisioning
 // ---------------------------------------------------------------------------
 
 pub(super) fn read_source(path: &Path) -> Result<Option<String>, String> {
-    match std::fs::symlink_metadata(path) {
+    match injected_documents::source_metadata(path) {
         Ok(metadata) => {
             if is_link_or_reparse(&metadata) || !metadata.is_file() {
                 return Err("the path is not a regular file".to_string());
@@ -43,7 +45,8 @@ pub(super) fn read_source(path: &Path) -> Result<Option<String>, String> {
         Err(e) => return Err(format!("it cannot be inspected: {}", e)),
     }
 
-    let bytes = std::fs::read(path).map_err(|e| format!("it cannot be read: {}", e))?;
+    let bytes = injected_documents::read_source_bytes(path)
+        .map_err(|e| format!("it cannot be read: {}", e))?;
     match String::from_utf8(bytes) {
         Ok(source) => Ok(Some(source)),
         Err(e) => Err(format!("it is not valid UTF-8: {}", e)),
@@ -70,7 +73,7 @@ pub(super) fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
 }
 
 fn load_state(path: &Path) -> InjectedMessagesState {
-    match std::fs::read_to_string(path) {
+    match injected_documents::read_state_text(path) {
         Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
         Err(_) => InjectedMessagesState::default(),
     }
@@ -80,7 +83,7 @@ fn load_state(path: &Path) -> InjectedMessagesState {
 /// every launch forever: mtime churn, pointless fsyncs, extra sharing-violation
 /// surface, and a warning on every launch in a read-only config directory.
 fn write_if_different(path: &Path, contents: &str) -> Result<bool, String> {
-    if let Ok(existing) = std::fs::read(path) {
+    if let Ok(existing) = injected_documents::read_source_bytes(path) {
         if existing == contents.as_bytes() {
             return Ok(false);
         }
