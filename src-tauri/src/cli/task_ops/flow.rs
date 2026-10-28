@@ -4,8 +4,6 @@ use super::clean::recover_clean_pair_locked;
 use super::is_user_owned_title;
 use super::parse_task;
 use super::render;
-#[cfg(test)]
-use super::status::io_boundary;
 use super::title_value_of;
 use super::EditOutcome;
 use super::LockGuard;
@@ -13,12 +11,16 @@ use super::TaskOp;
 use super::TaskOpError;
 use super::LOCK_STALE_AFTER_5M;
 use super::LOCK_TIMEOUT_5S;
+#[cfg(test)]
+use crate::filesystem::tasks::io_boundary;
+use crate::filesystem::tasks::{
+    copy_description_backup, description_sentinel, publish_description_stage, read_task_title_text,
+    remove_task_artifact, reserve_task_backup, write_description_stage,
+};
 use chrono::DateTime;
 use chrono::Utc;
-use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::Duration;
 use std::time::SystemTime;
 
 pub(crate) fn perform_inner<F>(
@@ -40,7 +42,7 @@ where
     recover_clean_pair_locked(wg_root)?;
 
     // ── 2. Read existing content ───────────────────────────────────────────
-    let (existing, file_existed) = match std::fs::read_to_string(&task_path) {
+    let (existing, file_existed) = match read_task_title_text(&task_path) {
         Ok(s) => (s, true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
         Err(e) => return Err(TaskOpError::ReadFailed(task_path, e)),
@@ -57,10 +59,7 @@ where
     // read: that would introduce an unbounded write-between-snapshot-and-read
     // window. The sentinel covers the realistic editor-save case (seconds apart).
     let pre_sentinel: Option<(u64, Option<SystemTime>)> = if file_existed {
-        match std::fs::metadata(&task_path) {
-            Ok(m) => Some((m.len(), m.modified().ok())),
-            Err(_) => None,
-        }
+        description_sentinel(&task_path).ok()
     } else {
         None
     };
@@ -125,13 +124,8 @@ where
             } else {
                 wg_root.join(format!("TASK.{}.{}.bak.md", ts, n))
             };
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&candidate)
-            {
-                Ok(file) => {
-                    drop(file);
+            match reserve_task_backup(&candidate) {
+                Ok(()) => {
                     chosen = Some(candidate);
                     break;
                 }
@@ -142,11 +136,11 @@ where
         let bp = chosen.ok_or_else(|| {
             TaskOpError::BackupExhausted(wg_root.join(format!("TASK.{}.bak.md", ts)))
         })?;
-        match std::fs::copy(&task_path, &bp) {
+        match copy_description_backup(&task_path, &bp) {
             Ok(_) => Some(bp),
             Err(copy_err) => {
                 // §C.1: fs::copy makes NO guarantee of partial-file cleanup.
-                let _ = std::fs::remove_file(&bp);
+                let _ = remove_task_artifact(&bp);
                 return Err(TaskOpError::BackupFailed(bp, copy_err));
             }
         }
@@ -155,14 +149,9 @@ where
     };
 
     // ── 7. Atomic write: tmp + sentinel-check + rename ────────────────────
-    let write_tmp = || {
-        #[cfg(test)]
-        io_boundary("nonclean_tmp_write")?;
-        std::fs::write(&tmp_path, &new_content)
-    };
-    if let Err(e) = write_tmp() {
+    if let Err(e) = write_description_stage(&tmp_path, new_content.as_bytes()) {
         // MED-6 cleanup
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = remove_task_artifact(&tmp_path);
         return Err(TaskOpError::TmpWriteFailed(tmp_path, e));
     }
 
@@ -173,16 +162,15 @@ where
     #[cfg(test)]
     io_boundary("nonclean_before_recheck").expect("mutation-only fixture boundary");
     if let Some((pre_len, pre_mtime)) = pre_sentinel {
-        match std::fs::metadata(&task_path) {
-            Ok(now_meta) => {
-                let now_mtime = now_meta.modified().ok();
-                let len_changed = now_meta.len() != pre_len;
+        match description_sentinel(&task_path) {
+            Ok((now_len, now_mtime)) => {
+                let len_changed = now_len != pre_len;
                 let mtime_changed = match (pre_mtime, now_mtime) {
                     (Some(a), Some(b)) => a != b,
                     _ => false,
                 };
                 if len_changed || mtime_changed {
-                    let _ = std::fs::remove_file(&tmp_path);
+                    let _ = remove_task_artifact(&tmp_path);
                     let bp = backup_path
                         .clone()
                         .expect("file_existed ⇒ backup_path is Some");
@@ -194,7 +182,7 @@ where
                 // rename to a vanished destination silently re-creates the file
                 // (normal create on both Windows MoveFileExW(MOVEFILE_REPLACE_EXISTING)
                 // and Unix), undoing the external delete. Treat as ExternalWrite.
-                let _ = std::fs::remove_file(&tmp_path);
+                let _ = remove_task_artifact(&tmp_path);
                 let bp = backup_path
                     .clone()
                     .expect("file_existed ⇒ backup_path is Some");
@@ -205,33 +193,9 @@ where
     }
 
     // 7b. Rename with retry on Windows AV/Explorer transient holds (MED-4).
-    let do_rename = || -> Result<(), std::io::Error> {
-        for attempt in 0..=2u32 {
-            let rename = || {
-                #[cfg(test)]
-                io_boundary("nonclean_rename")?;
-                std::fs::rename(&tmp_path, &task_path)
-            };
-            match rename() {
-                Ok(_) => return Ok(()),
-                Err(e) => {
-                    let retry = e.kind() == std::io::ErrorKind::PermissionDenied
-                        || e.raw_os_error() == Some(32) // ERROR_SHARING_VIOLATION
-                        || e.raw_os_error() == Some(5); // ERROR_ACCESS_DENIED
-                    if attempt < 2 && retry {
-                        std::thread::sleep(Duration::from_millis(100));
-                        continue;
-                    }
-                    return Err(e);
-                }
-            }
-        }
-        unreachable!("loop body always returns")
-    };
-
-    if let Err(e) = do_rename() {
+    if let Err(e) = publish_description_stage(&tmp_path, &task_path) {
         // MED-1 cleanup — keeps I20's "no TASK.md.tmp.* litter" assertion holding.
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = remove_task_artifact(&tmp_path);
         return Err(TaskOpError::RenameFailed(e, backup_path));
     }
 

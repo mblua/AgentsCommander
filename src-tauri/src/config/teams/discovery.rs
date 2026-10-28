@@ -3,6 +3,7 @@ use super::membership::resolve_agent_ref;
 use super::note_missing_team_config;
 use super::DiscoveredTeam;
 use crate::config::ac_root::existing_ac_root;
+use crate::filesystem::ac_discovery;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -101,22 +102,21 @@ pub(crate) fn discover_teams_in_project_filtered(
         .unwrap_or("unknown")
         .to_string();
 
-    let entries = match std::fs::read_dir(&ac_root) {
+    let entries = match ac_discovery::team_discovery_entries(&ac_root) {
         Ok(e) => e,
         Err(_) => return,
     };
 
-    for entry in entries.flatten() {
+    for (team_dir, entry_name) in entries.flatten() {
         log::trace!(
             "[teams] discover_teams_in_project: inspecting entry — project='{}' entry='{}'",
             project_folder,
-            entry.file_name().to_string_lossy()
+            entry_name.to_string_lossy()
         );
-        let team_dir = entry.path();
         if !accept_team(&team_dir) {
             continue;
         }
-        if !team_dir.is_dir() {
+        if !ac_discovery::discovery_path_is_dir(&team_dir) {
             continue;
         }
 
@@ -131,7 +131,7 @@ pub(crate) fn discover_teams_in_project_filtered(
             .to_string();
 
         let config_path = team_dir.join("config.json");
-        let raw = match std::fs::read_to_string(&config_path) {
+        let raw = match ac_discovery::read_team_discovery_config(&config_path) {
             Ok(s) => s,
             Err(e) => {
                 // #280 §3.4: NotFound is an expected state for half-installed
