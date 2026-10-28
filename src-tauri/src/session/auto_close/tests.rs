@@ -473,6 +473,7 @@ async fn selected_idle_team_closes_as_one_batch_and_clears_selection_once() {
     use tauri::Listener;
 
     let root = crate::config::root_agent::root_agent_dir().expect("resolve root agent dir");
+    let root = std::path::PathBuf::from(root);
     std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
     let temp = tempfile::tempdir().unwrap();
     let team = temp.path().join("myproj/.ac/wg-1-team");
