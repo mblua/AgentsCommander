@@ -431,3 +431,123 @@ fn raw_agent_delete_leaves_unrelated_invalid_alert_config_untouched() {
     assert!(plan.team_mutations.is_empty());
     assert_eq!(std::fs::read(&config_path).expect("config bytes"), before);
 }
+
+#[test]
+fn issue_3294_delete_error_order_positive_control() {
+    use crate::filesystem::projects::entities::validate_delete_root_parts;
+    let removes = std::cell::Cell::new(0);
+    let attempt = |reparse, symlink, directory| {
+        validate_delete_root_parts(reparse, symlink, directory)?;
+        removes.set(removes.get() + 1);
+        Ok::<(), String>(())
+    };
+    assert_eq!(
+        attempt(true, true, false).unwrap_err(),
+        "delete_root_is_reparse_point"
+    );
+    assert_eq!(removes.get(), 0);
+    assert_eq!(
+        attempt(false, true, false).unwrap_err(),
+        "delete_root_is_symlink"
+    );
+    assert_eq!(removes.get(), 0);
+    assert_eq!(
+        attempt(false, false, false).unwrap_err(),
+        "delete_root_not_directory"
+    );
+    assert_eq!(removes.get(), 0);
+    attempt(false, false, true).unwrap();
+    assert_eq!(removes.get(), 1);
+}
+
+#[test]
+fn issue_3294_not_found_positive_control() {
+    use crate::filesystem::projects::entities::remove_replica_directory_with;
+    use std::io::{Error, ErrorKind};
+    let cases = [
+        (
+            Some(ErrorKind::NotFound),
+            None,
+            ReplicaRemovalOutcome::AlreadyAbsent,
+            0,
+        ),
+        (
+            None,
+            Some(ErrorKind::NotFound),
+            ReplicaRemovalOutcome::AlreadyAbsent,
+            1,
+        ),
+        (
+            Some(ErrorKind::PermissionDenied),
+            None,
+            ReplicaRemovalOutcome::Failed(
+                "Failed to inspect replica directory: probe denied".into(),
+            ),
+            0,
+        ),
+        (
+            None,
+            Some(ErrorKind::PermissionDenied),
+            ReplicaRemovalOutcome::Failed(
+                "Failed to delete replica directory: remove denied".into(),
+            ),
+            1,
+        ),
+        (None, None, ReplicaRemovalOutcome::Removed, 1),
+    ];
+    for (probe_error, remove_error, expected, remove_count) in cases {
+        let probes = std::cell::Cell::new(0);
+        let removes = std::cell::Cell::new(0);
+        let actual = remove_replica_directory_with(
+            Path::new("unused-injected-path"),
+            |_| {
+                probes.set(probes.get() + 1);
+                probe_error.map_or(Ok(()), |kind| Err(Error::new(kind, "probe denied")))
+            },
+            |_| {
+                removes.set(removes.get() + 1);
+                remove_error.map_or(Ok(()), |kind| Err(Error::new(kind, "remove denied")))
+            },
+        );
+        assert_eq!(actual, expected);
+        assert_eq!((probes.get(), removes.get()), (1, remove_count));
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    assert_eq!(
+        remove_replica_dir(&tmp.path().join("absent")),
+        ReplicaRemovalOutcome::AlreadyAbsent
+    );
+
+    // Inspect the real consumer, fixing the sole prune branch to the real outcomes.
+    let consumer = include_str!("../../../cli/team.rs");
+    let start = consumer
+        .find("match remove_replica_dir(&replica_dir)")
+        .unwrap();
+    let matched = &consumer[start..];
+    let open = matched.find('{').unwrap();
+    let mut depth = 0;
+    let end = matched[open..]
+        .char_indices()
+        .find_map(|(i, ch)| {
+            match ch {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(open + i)
+        })
+        .unwrap();
+    let body = &matched[open + 1..end];
+    let failed = body.find("ReplicaRemovalOutcome::Failed(error)").unwrap();
+    let success = &body[..failed];
+    assert!(
+        success.contains("ReplicaRemovalOutcome::Removed | ReplicaRemovalOutcome::AlreadyAbsent")
+    );
+    assert_eq!(success.matches("prune_replica_config_scope").count(), 1);
+    let failure = &body[failed..];
+    assert!(!failure.contains("prune_replica_config_scope"));
+    let guard = failure.find("drop(guard)").unwrap();
+    let gate = failure.find("drop(project_gate)").unwrap();
+    let returned = failure.find("return Err(error)").unwrap();
+    assert!(guard < gate && gate < returned);
+}

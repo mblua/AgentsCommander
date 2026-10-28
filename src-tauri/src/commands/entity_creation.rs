@@ -1,4 +1,7 @@
-use serde::{Deserialize, Serialize};
+pub use crate::config::entity_creation::names::{
+    RepoAssignment, TeamAgentSource, TeamConfigResult,
+};
+use serde::Serialize;
 use std::path::PathBuf;
 
 mod agent_delete_plan;
@@ -86,33 +89,6 @@ pub struct AgentInfo {
     pub is_local: Option<bool>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TeamAgentSource {
-    pub agent_ref: String,
-    pub source_project_path: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RepoAssignment {
-    pub url: String,
-    pub agents: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TeamConfigResult {
-    #[serde(default)]
-    pub agents: Vec<String>,
-    #[serde(default)]
-    pub coordinator: String,
-    #[serde(default)]
-    pub repos: Vec<RepoAssignment>,
-    #[serde(default)]
-    pub context_alert_percentages: Vec<u8>,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkgroupCloneResult {
@@ -175,9 +151,8 @@ pub(crate) struct ReplicaDiskCreateArgs {
 // Agent Matrices own canonical state (`memory/`, `plans/`, `skills/`) plus
 // mailboxes. Workgroup replicas own only mailboxes; their config points back
 // to the origin matrix for canonical state.
-pub(crate) const AGENT_MATRIX_DIRS: &[&str] = &["memory", "plans", "skills", "inbox", "outbox"];
-
-pub(crate) const AGENT_REPLICA_DIRS: &[&str] = &["inbox", "outbox"];
+#[allow(unused_imports)]
+pub(crate) use crate::config::entity_creation::matrices::{AGENT_MATRIX_DIRS, AGENT_REPLICA_DIRS};
 
 #[cfg(test)]
 mod tests;
