@@ -7,6 +7,9 @@ use crate::config::ac_root::{
     ensure_authoritative_ac_root, is_ac_root_name, CANONICAL_AC_ROOT_DIR,
 };
 use crate::config::settings::{normalize_profile_letter, AppSettings};
+use crate::filesystem::coding_agent_profiles::{
+    canonical_profile_path, open_profile_directory, profile_path_symlink_metadata,
+};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -29,7 +32,7 @@ pub(crate) fn read_source_selection_target(
     let validated_launch_path = validate_profile_selection_agent_path(settings, agent_path)
         .map_err(IdentityReferenceError::Preparation)?
         .launch_path;
-    let root = std::fs::canonicalize(&validated_launch_path)
+    let root = canonical_profile_path(&validated_launch_path)
         .map_err(|error| IdentityReferenceError::Preparation(error.to_string()))?;
     let (decisions, state, reservation) =
         crate::config::settings::identity_reference_pair_paths(&root);
@@ -103,7 +106,7 @@ pub(crate) fn discover_source_inventory(
     candidates.dedup();
     let mut ac_roots: Vec<PathBuf> = Vec::new();
     for candidate in candidates {
-        match std::fs::symlink_metadata(&candidate) {
+        match profile_path_symlink_metadata(&candidate) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 witness.slots.push((candidate, false))
             }
@@ -132,7 +135,7 @@ pub(crate) fn discover_source_inventory(
         witness.parents.push(root.clone());
         let mut selected = Vec::new();
         source_discovery_cut("readDir").map_err(&fail)?;
-        for item in std::fs::read_dir(&root).map_err(&fail)? {
+        for item in open_profile_directory(&root).map_err(&fail)? {
             source_discovery_cut("entry").map_err(&fail)?;
             let item = item.map_err(&fail)?;
             source_discovery_cut("fileType").map_err(&fail)?;
@@ -155,7 +158,7 @@ pub(crate) fn discover_source_inventory(
                 witness.parents.push(item.path());
                 let mut replicas = Vec::new();
                 source_discovery_cut("readDir").map_err(&fail)?;
-                for replica in std::fs::read_dir(item.path()).map_err(&fail)? {
+                for replica in open_profile_directory(&item.path()).map_err(&fail)? {
                     source_discovery_cut("entry").map_err(&fail)?;
                     let replica = replica.map_err(&fail)?;
                     source_discovery_cut("fileType").map_err(&fail)?;

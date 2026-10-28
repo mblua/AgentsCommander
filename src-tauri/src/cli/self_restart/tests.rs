@@ -136,6 +136,11 @@ fn self_restart_help_documents_scope_recipe_and_no_enter_caveat() {
         .clone();
     let raw = subcommand.render_long_help().to_string();
     let help = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(normalized.contains("following the self-handoff skill"));
+    assert!(normalized.contains("If SELF-HANDOFF.md is missing"));
+    assert!(!normalized.contains("who you are"));
+    assert!(!normalized.contains("ZERO memory"));
 
     assert!(help.contains("SELF-HANDOFF.md"), "{raw}");
     assert!(

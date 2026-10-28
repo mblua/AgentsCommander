@@ -18,6 +18,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::filesystem::debug_logs;
+
 static INIT: OnceLock<()> = OnceLock::new();
 static PAYLOAD_PANIC_HOOK: OnceLock<()> = OnceLock::new();
 
@@ -351,11 +353,11 @@ fn rotate(state: &AppLogFile) {
     if APP_LOG_KEEP >= 2 {
         for i in (1..=APP_LOG_KEEP - 1).rev() {
             let from = numbered(i);
-            if !from.exists() {
+            if !debug_logs::app_log_exists(&from) {
                 continue;
             }
             let to = numbered(i + 1);
-            if let Err(e) = std::fs::rename(&from, &to) {
+            if let Err(e) = debug_logs::rename_app_log(&from, &to) {
                 if !machine_output_enabled() {
                     eprintln!(
                         "[log] rotate: failed to rename {} to {}: {} (continuing)",
@@ -375,7 +377,7 @@ fn rotate(state: &AppLogFile) {
     // Shift the active file into the `.1` slot.
     if APP_LOG_KEEP >= 1 {
         let one = numbered(1);
-        if let Err(e) = std::fs::rename(base, &one) {
+        if let Err(e) = debug_logs::rename_app_log(base, &one) {
             if !machine_output_enabled() {
                 eprintln!(
                     "[log] rotate: failed to rename {} to {}: {}, leaving active file in place",
@@ -388,7 +390,7 @@ fn rotate(state: &AppLogFile) {
             // breached temporarily.
             return;
         }
-    } else if let Err(e) = std::fs::remove_file(base) {
+    } else if let Err(e) = debug_logs::remove_app_log(base) {
         if !machine_output_enabled() {
             eprintln!(
                 "[log] rotate: KEEP=0 and failed to remove {}: {}, leaving active file in place",
@@ -401,25 +403,18 @@ fn rotate(state: &AppLogFile) {
 
     // Open a fresh active file. `create_new(true)` so we don't inherit a
     // stale fd or content if something else raced.
-    let fresh = std::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(base)
-        .or_else(|e| {
-            // Fallback: another process already created it. Open append-mode
-            // so we don't truncate their content. Log to stderr for visibility.
-            if !machine_output_enabled() {
-                eprintln!(
-                    "[log] rotate: create_new failed for {} ({}); falling back to append",
-                    base.display(),
-                    e
-                );
-            }
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(base)
-        });
+    let fresh = debug_logs::create_app_log(base).or_else(|e| {
+        // Fallback: another process already created it. Open append-mode
+        // so we don't truncate their content. Log to stderr for visibility.
+        if !machine_output_enabled() {
+            eprintln!(
+                "[log] rotate: create_new failed for {} ({}); falling back to append",
+                base.display(),
+                e
+            );
+        }
+        debug_logs::open_app_log_append(base)
+    });
 
     match fresh {
         Ok(f) => {
@@ -498,7 +493,7 @@ fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<A
         }
         if let Some(ref state) = *log_state {
             if let Ok(mut f) = state.file.lock() {
-                let _ = f.write_all(line.as_bytes());
+                let _ = debug_logs::append_app_log(&mut f, line.as_bytes());
             }
             let new_total =
                 state.bytes.fetch_add(line.len() as u64, Ordering::Relaxed) + line.len() as u64;
@@ -518,24 +513,19 @@ fn init_logger_inner() {
     }
 
     let log_state: Option<Arc<AppLogFile>> = crate::config::config_dir().and_then(|dir| {
-        let _ = std::fs::create_dir_all(&dir);
+        let _ = debug_logs::ensure_app_log_directory(&dir);
         let path = dir.join("app.log");
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .ok()
-            .map(|f| {
-                if !machine_output_enabled() {
-                    eprintln!("[log] file logging to {}", path.display());
-                }
-                let initial_bytes = f.metadata().map(|m| m.len()).unwrap_or(0);
-                Arc::new(AppLogFile {
-                    file: Mutex::new(f),
-                    bytes: AtomicU64::new(initial_bytes),
-                    path,
-                })
+        debug_logs::open_app_log_append(&path).ok().map(|f| {
+            if !machine_output_enabled() {
+                eprintln!("[log] file logging to {}", path.display());
+            }
+            let initial_bytes = debug_logs::opened_app_log_len(&f).unwrap_or(0);
+            Arc::new(AppLogFile {
+                file: Mutex::new(f),
+                bytes: AtomicU64::new(initial_bytes),
+                path,
             })
+        })
     });
 
     // #280 §2.6 — first-time migration. Existing users may have multi-GB

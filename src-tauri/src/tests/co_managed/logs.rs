@@ -457,6 +457,7 @@ async fn p4_classify_lines_carry_the_session_tag_and_the_dry_run_tag() {
         &crate::capture::catalog::Catalog::missing(),
         "dry text",
         &settings,
+        &fixture.owners.capture.secret_rules,
     )
     .await
     .unwrap();

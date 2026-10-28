@@ -175,14 +175,17 @@ impl From<String> for TerminalSnapshotRejection {
     }
 }
 
-pub fn execute(args: TerminalSnapshotArgs) -> i32 {
-    match execute_inner(args) {
+pub fn execute(args: TerminalSnapshotArgs, history: &SnapshotStageHistory) -> i32 {
+    match execute_inner(args, history) {
         Ok(()) => 0,
-        Err(rejection) => fail(rejection),
+        Err(rejection) => fail(rejection, history),
     }
 }
 
-fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), TerminalSnapshotRejection> {
+fn execute_inner(
+    args: TerminalSnapshotArgs,
+    history: &SnapshotStageHistory,
+) -> Result<(), TerminalSnapshotRejection> {
     use TerminalSnapshotField as F;
     use TerminalSnapshotReasonCode as C;
     use TerminalSnapshotRejectionReason as R;
@@ -305,6 +308,7 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), TerminalSnapshotRejec
         request_id,
         &request.nonce,
         &request_bytes,
+        history,
     )?;
 
     let deadline = Instant::now() + Duration::from_secs(args.timeout);
@@ -329,6 +333,7 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), TerminalSnapshotRejec
                 &request.to,
                 request.format,
                 deadline,
+                history,
             )?;
             finish_response(
                 &response_path,
@@ -339,6 +344,7 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), TerminalSnapshotRejec
                 &request.from,
                 &request.to,
                 deadline,
+                history,
             )?;
             return Ok(());
         }
@@ -457,11 +463,14 @@ fn publish_request(
     request_id: Uuid,
     nonce: &str,
     bytes: &[u8],
+    history: &SnapshotStageHistory,
 ) -> Result<crate::path_identity::VerifiedPathIdentity, String> {
     let temporary = request_directory.join(format!(
         ".{request_id}.{nonce}.terminal-snapshot-request-tmp"
     ));
-    crate::filesystem::publish_terminal_snapshot_request(temporary, destination, bytes, enter_stage)
+    crate::filesystem::publish_terminal_snapshot_request(temporary, destination, bytes, |stage| {
+        enter_stage(stage, history)
+    })
 }
 
 fn cancel_request(
@@ -538,6 +547,7 @@ fn read_response(
     target: &str,
     format: TerminalSnapshotFormat,
     deadline: Instant,
+    history: &SnapshotStageHistory,
 ) -> Result<
     (
         TerminalSnapshotHostResponse,
@@ -545,21 +555,21 @@ fn read_response(
     ),
     String,
 > {
-    enter_stage("read_response.entry_deadline");
+    enter_stage("read_response.entry_deadline", history);
     ensure_client_deadline(deadline)?;
-    enter_stage("read_response.verify_initial");
+    enter_stage("read_response.verify_initial", history);
     let initial = crate::path_identity::verify_regular_file(path)
         .map_err(|_| "response_unavailable".to_string())?;
     #[cfg(unix)]
     {
-        enter_stage("read_response.private_mode");
+        enter_stage("read_response.private_mode", history);
         let private = crate::filesystem::terminal_snapshot_response_is_private(path);
         if !private {
             remove_response(path, &initial);
             return Err("response_unavailable".to_string());
         }
     }
-    enter_stage("read_response.read_bounded");
+    enter_stage("read_response.read_bounded", history);
     let (bytes, identity) =
         match crate::path_identity::read_bounded_regular(path, MAX_TRANSPORT_BYTES) {
             Ok(value) => value,
@@ -568,26 +578,26 @@ fn read_response(
                 return Err("response_unavailable".to_string());
             }
         };
-    enter_stage("read_response.same_object_initial");
+    enter_stage("read_response.same_object_initial", history);
     if !crate::path_identity::same_object(&initial, &identity) {
         return Err("response_unavailable".to_string());
     }
     let outcome = (|| {
-        enter_stage("read_response.pre_decode_deadline");
+        enter_stage("read_response.pre_decode_deadline", history);
         ensure_client_deadline(deadline)?;
-        enter_stage("read_response.decode");
+        enter_stage("read_response.decode", history);
         let response = decode_host_response(&bytes, request_id, confirmation_tag, target, format)
             .map_err(|_| "response_unavailable".to_string())?;
-        enter_stage("read_response.post_decode_deadline");
+        enter_stage("read_response.post_decode_deadline", history);
         ensure_client_deadline(deadline)?;
-        enter_stage("read_response.verify_current");
+        enter_stage("read_response.verify_current", history);
         let current = crate::path_identity::verify_regular_file(path)
             .map_err(|_| "response_unavailable".to_string())?;
-        enter_stage("read_response.same_object_current");
+        enter_stage("read_response.same_object_current", history);
         if !crate::path_identity::same_object(&identity, &current) {
             return Err("response_unavailable".to_string());
         }
-        enter_stage("read_response.exit_deadline");
+        enter_stage("read_response.exit_deadline", history);
         ensure_client_deadline(deadline)?;
         Ok(response)
     })();
@@ -614,21 +624,22 @@ fn finish_response(
     expected_requester: &str,
     expected_target: &str,
     deadline: Instant,
+    history: &SnapshotStageHistory,
 ) -> Result<(), String> {
     let outcome = (|| {
-        enter_stage("finish_response.validate_timestamp");
+        enter_stage("finish_response.validate_timestamp", history);
         let expires_at = terminal_snapshot_renderer::validate_timestamp(&response.expires_at)
             .map_err(|_| "response_unavailable".to_string())?;
         let now = chrono::Utc::now();
         if now >= expires_at {
-            enter_stage("finish_response.expiry_elapsed");
+            enter_stage("finish_response.expiry_elapsed", history);
             return Err("response_unavailable".to_string());
         }
         if expires_at > now + chrono::Duration::seconds(65) {
-            enter_stage("finish_response.expiry_far_future");
+            enter_stage("finish_response.expiry_far_future", history);
             return Err("response_unavailable".to_string());
         }
-        enter_stage("finish_response.deadline");
+        enter_stage("finish_response.deadline", history);
         ensure_client_deadline(deadline)?;
         handle_response(
             response,
@@ -637,6 +648,7 @@ fn finish_response(
             expected_requester,
             expected_target,
             deadline,
+            history,
         )
     })();
     remove_response(path, identity);
@@ -650,55 +662,56 @@ fn handle_response(
     expected_requester: &str,
     expected_target: &str,
     deadline: Instant,
+    history: &SnapshotStageHistory,
 ) -> Result<(), String> {
-    enter_stage("handle_response.entry_deadline");
+    enter_stage("handle_response.entry_deadline", history);
     ensure_client_deadline(deadline)?;
     if let Some(error) = response.error {
-        enter_stage("handle_response.server_error");
+        enter_stage("handle_response.server_error", history);
         return Err(error.as_str().to_string());
     }
-    enter_stage("handle_response.result_present");
+    enter_stage("handle_response.result_present", history);
     let result = response
         .result
         .as_ref()
         .ok_or_else(|| "response_unavailable".to_string())?;
-    enter_stage("handle_response.identity_match");
+    enter_stage("handle_response.identity_match", history);
     if result.requester() != expected_requester || result.target() != expected_target {
         return Err("response_unavailable".to_string());
     }
     match (format, result) {
         (TerminalSnapshotFormat::Json, TerminalSnapshotPayload::Json { snapshot }) => {
-            enter_stage("handle_response.json.validate");
+            enter_stage("handle_response.json.validate", history);
             snapshot
                 .validate()
                 .map_err(|_| "response_unavailable".to_string())?;
-            enter_stage("handle_response.json.encode");
+            enter_stage("handle_response.json.encode", history);
             let bytes = to_ascii_json(snapshot, MAX_TRANSPORT_BYTES)
                 .map_err(|_| "response_unavailable".to_string())?;
-            enter_stage("handle_response.json.stdout");
+            enter_stage("handle_response.json.stdout", history);
             write_stdout_line(&bytes, deadline)
         }
         (TerminalSnapshotFormat::Png, TerminalSnapshotPayload::Png { metadata, png }) => {
-            enter_stage("handle_response.png.output_required");
+            enter_stage("handle_response.png.output_required", history);
             let output = output.ok_or_else(|| "invalid_request".to_string())?;
-            enter_stage("handle_response.png.metadata_validate");
+            enter_stage("handle_response.png.metadata_validate", history);
             metadata
                 .validate()
                 .map_err(|_| "response_unavailable".to_string())?;
-            enter_stage("handle_response.png.metadata_encode");
+            enter_stage("handle_response.png.metadata_encode", history);
             let bytes = to_ascii_json(metadata, MAX_REQUEST_BYTES)
                 .map_err(|_| "output_failed".to_string())?;
-            enter_stage("handle_response.png.pre_output_deadline");
+            enter_stage("handle_response.png.pre_output_deadline", history);
             ensure_client_deadline(deadline)?;
-            enter_stage("handle_response.png.create_output");
+            enter_stage("handle_response.png.create_output", history);
             let file = crate::path_identity::create_terminal_snapshot_output(output)?;
-            enter_stage("handle_response.png.write_png");
+            enter_stage("handle_response.png.write_png", history);
             file.write_all_and_sync(png)?;
-            enter_stage("handle_response.png.stdout");
+            enter_stage("handle_response.png.stdout", history);
             write_stdout_line(&bytes, deadline)
         }
         _ => {
-            enter_stage("handle_response.format_payload_mismatch");
+            enter_stage("handle_response.format_payload_mismatch", history);
             Err("response_unavailable".to_string())
         }
     }
@@ -734,28 +747,37 @@ fn ensure_client_deadline(deadline: Instant) -> Result<(), String> {
 // This is the only instrument that has located a wrong failure code on this
 // path. Without it a `response_unavailable` that should have been
 // `output_failed` is indistinguishable from a genuine server-response problem.
-static CURRENT_STAGE: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+#[derive(Default)]
+pub struct SnapshotStageHistory {
+    current: std::sync::Mutex<Option<&'static str>>,
+}
 
-fn enter_stage(stage: &'static str) {
-    if let Ok(mut current) = CURRENT_STAGE.lock() {
+impl SnapshotStageHistory {
+    fn current_stage(&self) -> &'static str {
+        self.current
+            .lock()
+            .ok()
+            .and_then(|current| *current)
+            .unwrap_or("none")
+    }
+}
+
+fn enter_stage(stage: &'static str, history: &SnapshotStageHistory) {
+    if let Ok(mut current) = history.current.lock() {
         *current = Some(stage);
     }
 }
 
-fn record_stage_side_channel(code: &str) {
+fn record_stage_side_channel(code: &str, history: &SnapshotStageHistory) {
     let Ok(path) = crate::config::environment::terminal_snapshot_stage_file() else {
         return;
     };
-    let stage = CURRENT_STAGE
-        .lock()
-        .ok()
-        .and_then(|current| *current)
-        .unwrap_or("none");
+    let stage = history.current_stage();
     crate::filesystem::append_terminal_snapshot_stage(&path, code, stage);
 }
 
-fn fail(rejection: TerminalSnapshotRejection) -> i32 {
-    record_stage_side_channel(rejection.code.as_str());
+fn fail(rejection: TerminalSnapshotRejection, history: &SnapshotStageHistory) -> i32 {
+    record_stage_side_channel(rejection.code.as_str(), history);
     eprintln!("{}", rejection_line(rejection));
     1
 }

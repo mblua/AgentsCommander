@@ -222,3 +222,59 @@ fn message_owner_shared_healthy_repeat_and_poison() {
     assert!(warn_once("shared".into(), "poisoned repeat", &shared));
     assert!(warn_once("other".into(), "poisoned other", &shared));
 }
+
+#[test]
+fn registry_cache_keeps_first_file_snapshot() {
+    let cache = MessageRegistry::default();
+    let warnings = MessageWarnings::new();
+    let directory = tempdir();
+    assert!(cache.templates.get().is_none());
+    ensure_injected_messages(directory.path(), &warnings).unwrap();
+    let loads = std::cell::Cell::new(0);
+    let first = cache.get_or_init(|| {
+        loads.set(loads.get() + 1);
+        load_registry_from_dir(directory.path(), &warnings)
+    });
+    assert_eq!(loads.get(), 1);
+    let keys: Vec<_> = first.keys().cloned().collect();
+    let mut expected: Vec<_> = KNOWN_MESSAGES
+        .iter()
+        .map(|spec| spec.id.to_string())
+        .collect();
+    expected.sort();
+    assert_eq!(keys, expected);
+    let mut owned = first.get(CONTEXT_ALERT_MESSAGE_ID).unwrap().clone();
+    owned.push_str(" independent edit");
+    assert_eq!(
+        first[CONTEXT_ALERT_MESSAGE_ID],
+        DEFAULT_CONTEXT_ALERT_TEMPLATE
+    );
+    assert_ne!(owned, first[CONTEXT_ALERT_MESSAGE_ID]);
+
+    let path = main_path(directory.path());
+    let source = read(&path);
+    std::fs::write(
+        &path,
+        source.replace(DEFAULT_CONTEXT_ALERT_TEMPLATE, "edited template"),
+    )
+    .unwrap();
+    let cached = cache.get_or_init(|| {
+        loads.set(loads.get() + 1);
+        load_registry_from_dir(directory.path(), &warnings)
+    });
+    assert!(std::ptr::eq(first, cached));
+    assert_eq!(loads.get(), 1);
+    assert_eq!(
+        cached[CONTEXT_ALERT_MESSAGE_ID],
+        DEFAULT_CONTEXT_ALERT_TEMPLATE
+    );
+    let fresh = MessageRegistry::default();
+    assert!(fresh.templates.get().is_none());
+    let edited = fresh.get_or_init(|| {
+        loads.set(loads.get() + 1);
+        load_registry_from_dir(directory.path(), &warnings)
+    });
+    assert_eq!(loads.get(), 2);
+    assert_eq!(edited[CONTEXT_ALERT_MESSAGE_ID], "edited template");
+    assert_eq!(edited.keys().cloned().collect::<Vec<_>>(), keys);
+}

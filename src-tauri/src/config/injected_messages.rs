@@ -310,9 +310,8 @@ pub(crate) enum ReseedTarget {
 /// assertions in `phone::mailbox` hermetic by construction rather than by luck:
 /// under `cargo test` `config_dir()` resolves to a real directory next to the
 /// test binary, and any file left there would make them order-dependent.
-pub(crate) fn registry(_warnings: &MessageWarnings) -> &'static BTreeMap<String, String> {
-    static REGISTRY: OnceLock<BTreeMap<String, String>> = OnceLock::new();
-    REGISTRY.get_or_init(|| {
+pub(crate) fn registry(_warnings: &MessageWarnings) -> &BTreeMap<String, String> {
+    _warnings.registry.get_or_init(|| {
         #[cfg(test)]
         {
             BTreeMap::new()
@@ -546,7 +545,22 @@ fn display_path(path: &Path) -> String {
         .to_string()
 }
 
+#[derive(Default)]
+struct MessageRegistry {
+    templates: OnceLock<BTreeMap<String, String>>,
+}
+
+impl MessageRegistry {
+    fn get_or_init(
+        &self,
+        load: impl FnOnce() -> BTreeMap<String, String>,
+    ) -> &BTreeMap<String, String> {
+        self.templates.get_or_init(load)
+    }
+}
+
 pub struct MessageWarnings {
+    registry: MessageRegistry,
     warned: OnceLock<Mutex<HashSet<String>>>,
 }
 
@@ -554,6 +568,7 @@ pub struct MessageWarnings {
 impl MessageWarnings {
     pub fn new() -> Self {
         Self {
+            registry: MessageRegistry::default(),
             warned: OnceLock::new(),
         }
     }

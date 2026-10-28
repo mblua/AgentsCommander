@@ -31,6 +31,7 @@ pub struct AppOwners {
     pub coordinator_order: Arc<crate::config::coordinator_clocks::CoordinatorCreateOrder>,
     pub spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>,
     pub messages: Arc<crate::config::injected_messages::MessageWarnings>,
+    pub snapshot_stage: Arc<crate::cli::terminal_snapshot::SnapshotStageHistory>,
     pub remote: Arc<crate::pty::remote_watcher::RemoteActivityState>,
     pub git: Arc<crate::pty::git_watcher::GitState>,
     pub activity: Arc<crate::config::activity_log::ActivityCoalescer>,
@@ -56,6 +57,9 @@ impl AppOwners {
             ),
             spawn: Arc::new(crate::pty::spawn_diagnostics::SpawnRegistry::new()),
             messages: Arc::new(crate::config::injected_messages::MessageWarnings::new()),
+            snapshot_stage: Arc::new(
+                crate::cli::terminal_snapshot::SnapshotStageHistory::default(),
+            ),
             remote: Arc::new(crate::pty::remote_watcher::RemoteActivityState::new()),
             git: Arc::new(crate::pty::git_watcher::GitState::new()),
             activity: Arc::new(crate::config::activity_log::ActivityCoalescer::new()),
