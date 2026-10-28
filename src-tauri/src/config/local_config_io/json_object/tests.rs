@@ -120,11 +120,7 @@ fn e2992_p52_r1_a_distinct_members_and_unknown_fields_survive() {
 
 #[test]
 fn e2992_p52_r1_a_malformed_json_keeps_native_parse_error() {
-    for document in [
-        "{ invalid",
-        r#"{"x":1,"x":2,"#,
-        r#"{"x":1,"x":2} trailing"#,
-    ] {
+    for document in ["{ invalid", r#"{"x":1,"x":2,"#, r#"{"x":1,"x":2} trailing"#] {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("input.json");
         std::fs::write(&path, document).unwrap();
