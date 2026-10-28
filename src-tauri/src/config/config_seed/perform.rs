@@ -1,3 +1,4 @@
+use crate::filesystem::config_seed as seed_disk;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -106,14 +107,14 @@ impl ConfigSeedTestHooks {
                 "injected config-seed install failure",
             ));
         }
-        std::fs::rename(staging, dest)
+        seed_disk::rename_seed_tree(staging, dest)
     }
 
     fn before_restore(&self, dest: &Path) {
         #[cfg(test)]
         if self.destination_appears_before_restore {
-            std::fs::create_dir_all(dest).expect("inject replacement destination");
-            std::fs::write(dest.join("foreign.txt"), b"FOREIGN")
+            seed_disk::ensure_seed_directory(dest).expect("inject replacement destination");
+            seed_disk::write_seed_file(dest.join("foreign.txt"), b"FOREIGN")
                 .expect("populate replacement destination");
         }
         #[cfg(not(test))]
@@ -127,7 +128,7 @@ impl ConfigSeedTestHooks {
                 "injected config-seed restore failure",
             ));
         }
-        std::fs::rename(trash, dest)
+        seed_disk::rename_seed_tree(trash, dest)
     }
 
     fn staged_diagnostic(&self, staged: &PinnedDirectory, trash: &Path) -> String {
@@ -300,7 +301,7 @@ pub(super) fn perform_config_seed_with_clock_and_hooks(
     let previous_scope_staged = match pin_seed_destination_if_present(&seed.dest) {
         Ok(None) => None,
         Ok(Some(pinned)) => {
-            if let Err(e) = std::fs::rename(&seed.dest, &trash) {
+            if let Err(e) = seed_disk::rename_seed_tree(&seed.dest, &trash) {
                 log::warn!(
                     "[config-seed] dest {} is in use ({}); keeping existing config, skipping this \
                     seed",
@@ -419,7 +420,7 @@ pub(super) fn perform_config_seed_with_clock_and_hooks(
 }
 
 pub(super) fn destination_absent_no_follow(path: &Path) -> Result<bool, String> {
-    match std::fs::symlink_metadata(path) {
+    match seed_disk::inspect_seed_destination(path) {
         Ok(_) => Ok(false),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
         Err(error) => Err(format!("inspect destination metadata: {error}")),
@@ -438,16 +439,12 @@ pub(super) fn destination_absent_no_follow(path: &Path) -> Result<bool, String> 
 pub(super) fn ensure_pi_bash_shell_path(pi_dir: &Path) -> std::io::Result<()> {
     const PI_SETTINGS_JSON: &[u8] = b"{\"shellPath\": \"C:/Program Files/Git/bin/bash.exe\"}";
     let settings_path = pi_dir.join("settings.json");
-    match std::fs::symlink_metadata(&settings_path) {
+    match seed_disk::inspect_seed_destination(&settings_path) {
         Ok(_) => return Ok(()), // operator-authored or template-shipped: untouched
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&settings_path)
-    {
+    match seed_disk::create_pi_seed_settings(&settings_path) {
         Ok(mut file) => {
             use std::io::Write as _;
             file.write_all(PI_SETTINGS_JSON)
@@ -462,7 +459,7 @@ pub(super) fn ensure_pi_bash_shell_path(pi_dir: &Path) -> std::io::Result<()> {
 pub(super) fn pin_seed_destination_if_present(
     path: &Path,
 ) -> Result<Option<PinnedDirectory>, String> {
-    let metadata = match std::fs::symlink_metadata(path) {
+    let metadata = match seed_disk::inspect_seed_destination(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("inspect destination metadata: {error}")),
@@ -483,7 +480,7 @@ pub(super) fn pin_seed_destination_if_present(
 /// filtered for reparse points during the copy (see [`is_symlink_or_reparse`]).
 pub(super) fn revalidate_seed_owner(seed: &ResolvedConfigSeed) -> Result<(), String> {
     let replica_root = &seed.context.replica_root;
-    let metadata = std::fs::symlink_metadata(replica_root)
+    let metadata = seed_disk::inspect_seed_destination(replica_root)
         .map_err(|error| format!("inspect replica root: {error}"))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata_is_reparse(&metadata) {
         return Err("replica root is not an existing ordinary directory".to_string());
@@ -498,7 +495,7 @@ pub(super) fn revalidate_seed_owner(seed: &ResolvedConfigSeed) -> Result<(), Str
             parent.display()
         ));
     }
-    let parent_metadata = std::fs::symlink_metadata(parent)
+    let parent_metadata = seed_disk::inspect_seed_destination(parent)
         .map_err(|error| format!("inspect destination parent: {error}"))?;
     if !parent_metadata.is_dir()
         || parent_metadata.file_type().is_symlink()
@@ -506,7 +503,7 @@ pub(super) fn revalidate_seed_owner(seed: &ResolvedConfigSeed) -> Result<(), Str
     {
         return Err("destination parent is not an existing ordinary directory".to_string());
     }
-    if let Ok(dest_metadata) = std::fs::symlink_metadata(&seed.dest) {
+    if let Ok(dest_metadata) = seed_disk::inspect_seed_destination(&seed.dest) {
         if dest_metadata.file_type().is_symlink() || metadata_is_reparse(&dest_metadata) {
             return Err("destination is a symlink or reparse point".to_string());
         }
@@ -514,14 +511,4 @@ pub(super) fn revalidate_seed_owner(seed: &ResolvedConfigSeed) -> Result<(), Str
     Ok(())
 }
 
-#[cfg(windows)]
-pub(super) fn metadata_is_reparse(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    metadata.file_attributes() & 0x0400 != 0
-}
-
-#[cfg(not(windows))]
-pub(super) fn metadata_is_reparse(_metadata: &std::fs::Metadata) -> bool {
-    false
-}
+use crate::filesystem::config_seed::seed_metadata_is_reparse as metadata_is_reparse;
