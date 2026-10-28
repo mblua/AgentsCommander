@@ -6,3 +6,4 @@ mod phone;
 mod screenshot;
 mod session;
 mod ui_automation;
+mod update_check;

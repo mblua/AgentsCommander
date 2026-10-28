@@ -591,3 +591,12 @@ impl<R: tauri::Runtime> testability::ui_automation::backend_watchdog::BackendWat
             .map(|state| state.inner().clone())
     }
 }
+
+impl<R: tauri::Runtime> update_check::UpdateCheckHost for tauri::AppHandle<R> {
+    fn update_settings(&self) -> config::settings::SettingsState {
+        Clone::clone(tauri::Manager::state::<SettingsState>(self).inner())
+    }
+    fn outbound_network(&self) -> network::OutboundNetwork {
+        Clone::clone(tauri::Manager::state::<network::OutboundNetwork>(self).inner())
+    }
+}
