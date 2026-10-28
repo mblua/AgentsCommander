@@ -27,6 +27,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::settings::SettingsState;
+use crate::filesystem::session_context;
 use crate::phone::mailbox::{
     InternalNoticeGuard, InternalSystemNotice, InternalSystemTarget, MailboxPoller,
     RemoteNoticeKind,
@@ -351,7 +352,7 @@ fn human_gap(seconds: i64) -> String {
 /// condition forbids, and a faithful copy would have to name two more modules,
 /// each of which is another forbidden arc.
 fn real_canonical_dir(path: &Path) -> Option<PathBuf> {
-    let metadata = std::fs::symlink_metadata(path).ok()?;
+    let metadata = session_context::inspect_context_source(path).ok()?;
     if !metadata.is_dir() {
         return None;
     }
@@ -367,7 +368,7 @@ fn real_canonical_dir(path: &Path) -> Option<PathBuf> {
             return None;
         }
     }
-    std::fs::canonicalize(path).ok()
+    session_context::canonical_context_source(path).ok()
 }
 
 /// BOTH comparands go through [`real_canonical_dir`], so a `..`, a `.` or a case

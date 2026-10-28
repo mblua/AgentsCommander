@@ -202,13 +202,19 @@ fn expected_dependencies() -> BTreeSet<DependencyObservation> {
 // (`telegram-bridge.log`, `diag-raw.log`, `diag-sent.log`) through the
 // registry, so a rename breaks the build instead of silently reopening the
 // instance `.gitignore` coverage gap. The set stays equality-pinned: any
-// sixth dependency still turns this guard red.
+// seventh dependency still turns this guard red.
+// #3346 moves physical log I/O to a std-only sink with no outgoing app arcs:
+// filesystem::telegram_logs adds no return path/cycle or transport/routing rules.
 fn expected_output_dependencies() -> BTreeSet<DependencyObservation> {
     [
         (OUTPUT_SOURCE, "agentscommander_lib::config"),
         (
             OUTPUT_SOURCE,
             "agentscommander_lib::config::instance_artifacts",
+        ),
+        (
+            OUTPUT_SOURCE,
+            "agentscommander_lib::filesystem::telegram_logs",
         ),
         (OUTPUT_SOURCE, "agentscommander_lib::network"),
         (OUTPUT_SOURCE, "agentscommander_lib::telegram::api"),
