@@ -31,7 +31,7 @@ fn reserve_repair_pair(replica: &Path) {
         protected_config_pair_revision, read_config_pair_physical, PairReservationRequest,
     };
     let decisions = replica.join("config.json");
-    let state = replica.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
+    let state = c4_state_path(&decisions);
     let before = [
         read_config_pair_physical(&decisions).expect("decisions image"),
         read_config_pair_physical(&state).expect("state image"),
@@ -55,11 +55,7 @@ fn reserve_repair_pair(replica: &Path) {
 
 #[test]
 fn repair_location_precedes_nonpending_cleanup_and_invalid_config() {
-    for config in [
-        None,
-        Some("{invalid"),
-        Some(r#"{"tooling":{"lastCodingAgent":"x"}}"#),
-    ] {
+    for config in [None, Some("{invalid"), Some(C4_SEEDED_STATE)] {
         let temp = tempfile::tempdir().expect("fixture");
         let root = temp.path().join("workspace");
         let replica = root.join("room-2-dev-team").join("__agent_tech-lead");
