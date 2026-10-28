@@ -29,3 +29,10 @@ pub(crate) fn canonical_discovery_repo(path: &Path) -> std::io::Result<PathBuf> 
 pub(crate) fn read_team_discovery_config(path: &Path) -> std::io::Result<String> {
     std::fs::read_to_string(path)
 }
+
+pub(crate) fn team_discovery_entries(
+    path: &Path,
+) -> std::io::Result<impl Iterator<Item = std::io::Result<(PathBuf, std::ffi::OsString)>>> {
+    std::fs::read_dir(path)
+        .map(|entries| entries.map(|entry| entry.map(|entry| (entry.path(), entry.file_name()))))
+}
