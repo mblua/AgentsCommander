@@ -5,6 +5,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+pub(crate) mod ac_discovery;
 pub(crate) mod activity_log;
 pub(crate) mod agency_templates;
 pub(crate) mod agent_files;

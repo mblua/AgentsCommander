@@ -100,7 +100,7 @@ pub(crate) fn replica_selection_wire_fields(
 }
 
 pub(crate) fn read_replica_config_with_valid_identity(replica_dir: &Path) -> ReplicaIdentityRead {
-    if !replica_dir.join("config.json").exists() {
+    if !crate::config::agent_config::discovery_replica_config_exists(replica_dir) {
         return ReplicaIdentityRead {
             config: None,
             identity: None,
@@ -123,9 +123,7 @@ pub(crate) fn read_replica_config_with_valid_identity(replica_dir: &Path) -> Rep
                 replica_dir.display(),
                 e
             );
-            let config = std::fs::read_to_string(replica_dir.join("config.json"))
-                .ok()
-                .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok());
+            let config = crate::config::agent_config::read_discovery_replica_json(replica_dir);
             ReplicaIdentityRead {
                 config,
                 identity: None,
@@ -232,7 +230,7 @@ pub(crate) type TaskFields = (Option<String>, Option<String>);
 
 pub(crate) fn read_task_fields(wg_path: &Path) -> TaskFields {
     let task_path = wg_path.join("TASK.md");
-    let Ok(content) = std::fs::read_to_string(&task_path) else {
+    let Ok(content) = crate::filesystem::tasks::read_task_title_text(&task_path) else {
         return (None, None);
     };
     let task = extract_task_first_line(&content);
