@@ -921,7 +921,10 @@ fn rotate_active_rename_failure_keeps_handle_and_counter() {
 
     assert_eq!(state.path, tmp.path().join("app.log"));
     assert_eq!(state.bytes.load(Ordering::Relaxed), APP_LOG_MAX_BYTES);
-    assert_eq!(read_marker(tmp.path(), "app.log").as_deref(), Some("ACTIVE"));
+    assert_eq!(
+        read_marker(tmp.path(), "app.log").as_deref(),
+        Some("ACTIVE")
+    );
     state.file.lock().unwrap().write_all(b"_AFTER").unwrap();
     assert_eq!(
         read_marker(tmp.path(), "app.log").as_deref(),
