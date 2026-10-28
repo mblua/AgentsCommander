@@ -364,21 +364,12 @@ pub fn read_last_coding_agent(root_dir: &str) -> Option<String> {
 }
 
 pub(crate) fn paths_equivalent(left: &Path, right: &Path) -> bool {
-    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => normalize_for_compare(&left) == normalize_for_compare(&right),
-        _ => normalize_for_compare(left) == normalize_for_compare(right),
-    }
-}
-
-pub(crate) fn normalize_for_compare(path: &Path) -> String {
-    let mut s = display_path(path).replace('\\', "/");
-    while s.ends_with('/') && s.len() > 1 {
-        s.pop();
-    }
-    if cfg!(windows) {
-        s.to_ascii_lowercase()
-    } else {
-        s
+    match (
+        crate::path_identity::verify_directory(left),
+        crate::path_identity::verify_directory(right),
+    ) {
+        (Ok(left), Ok(right)) => left.object_id == right.object_id,
+        _ => false,
     }
 }
 

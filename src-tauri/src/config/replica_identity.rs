@@ -439,6 +439,7 @@ pub fn read_and_repair_wg_replica_config(
     replica_dir: &Path,
     required_context_prefix: &[&str],
 ) -> Result<(Value, WgReplicaIdentity), String> {
+    expected_wg_replica_identity(replica_dir)?;
     let config_path = replica_dir.join("config.json");
     let mut repaired_identity: Option<WgReplicaIdentity> = None;
     // #2816 (C3) - the returned value is the decisions object as published,
