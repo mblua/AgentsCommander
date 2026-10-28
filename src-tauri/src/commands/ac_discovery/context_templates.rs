@@ -115,27 +115,7 @@ pub async fn overwrite_context_template_with_default(
 /// Returns an empty vec if the field is absent or the file doesn't exist.
 #[tauri::command]
 pub async fn get_replica_context_files(path: String) -> Result<Vec<String>, String> {
-    let config_path = Path::new(&path).join("config.json");
-    if !config_path.exists() {
-        return Ok(vec![]);
-    }
-
-    let content = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("Failed to read config.json: {}", e))?;
-    let parsed: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse config.json: {}", e))?;
-
-    let files = parsed
-        .get("context")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    Ok(files)
+    crate::config::agent_config::read_discovery_replica_context(Path::new(&path))
 }
 
 /// Write the `context` array to a replica's config.json.
