@@ -14,8 +14,8 @@ use super::{
 };
 #[cfg(unix)]
 use super::{atomic_publish_manifest, remove_prior_unix_temp_if_safe};
+use crate::filesystem::seed_manifest::{self as manifest_disk, ManifestFile as File};
 use std::fmt;
-use std::fs::File;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -114,8 +114,8 @@ impl ProjectSeedManifestGuard {
         #[cfg(test)] hooks: TestFilesystemHooks,
     ) -> Result<Self, SeedManifestError> {
         let supplied_project = PinnedDirectory::open(project_root)?;
-        let canonical_project_path =
-            std::fs::canonicalize(project_root).map_err(|source| SeedManifestError::Io {
+        let canonical_project_path = manifest_disk::canonical_manifest_project(project_root)
+            .map_err(|source| SeedManifestError::Io {
                 operation: "canonicalize pinned project root",
                 path: project_root.to_path_buf(),
                 source,
@@ -526,7 +526,7 @@ impl ProjectSeedManifestGuard {
 
     pub(crate) fn inventory_prior_temps(&self) -> TempInventory {
         let mut inventory = TempInventory::default();
-        let mut entries = match std::fs::read_dir(&self.ac_root.path) {
+        let mut entries = match manifest_disk::manifest_temp_entries(&self.ac_root.path) {
             Ok(entries) => entries,
             Err(error) => {
                 inventory.scan_truncated = true;
