@@ -378,12 +378,14 @@ type Rooms = HashMap<PathBuf, RoomState>;
 
 /// Lazy per-process capture state, explicitly shared by the composition root.
 pub struct CaptureState {
+    pub(crate) secret_rules: super::secrets::SecretRules,
     rooms: OnceLock<Mutex<Rooms>>,
 }
 #[allow(clippy::new_without_default)]
 impl CaptureState {
     pub fn new() -> Self {
         Self {
+            secret_rules: super::secrets::SecretRules::default(),
             rooms: OnceLock::new(),
         }
     }

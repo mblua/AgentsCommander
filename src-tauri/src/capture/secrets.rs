@@ -59,8 +59,8 @@ impl Detection {
 /// Scan `text` and return the first rule that matches, in rule order.
 ///
 /// Returns `None` for clean text; no allocation happens on that path.
-pub fn detect(text: &str) -> Option<Detection> {
-    let rules = compiled_rules();
+pub(crate) fn detect(owner: &SecretRules, text: &str) -> Option<Detection> {
+    let rules = compiled_rules(owner);
     let shapes: [(u8, &'static str, &Regex); 8] = [
         (1, "private-key", &rules.private_key),
         (2, "aws-access-key-id", &rules.aws_access_key_id),
@@ -90,6 +90,11 @@ pub fn detect(text: &str) -> Option<Detection> {
     None
 }
 
+#[derive(Default)]
+pub(crate) struct SecretRules {
+    rules: OnceLock<CompiledRules>,
+}
+
 struct CompiledRules {
     private_key: Regex,
     aws_access_key_id: Regex,
@@ -101,9 +106,8 @@ struct CompiledRules {
     env_secret_assignment: Regex,
 }
 
-fn compiled_rules() -> &'static CompiledRules {
-    static RULES: OnceLock<CompiledRules> = OnceLock::new();
-    RULES.get_or_init(|| CompiledRules {
+fn compiled_rules(owner: &SecretRules) -> &CompiledRules {
+    owner.rules.get_or_init(|| CompiledRules {
         // Plan section 7.1 rule 1.
         private_key: Regex::new(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
             .expect("rule 1 is a valid regex"),

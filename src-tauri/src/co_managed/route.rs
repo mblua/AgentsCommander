@@ -347,7 +347,7 @@ pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
     let text = candidate.text.clone();
 
     // (1) The detector runs before any write and before any network call.
-    if let Some(detection) = capture::secrets::detect(&text) {
+    if let Some(detection) = capture::secrets::detect(&handle.capture.secret_rules, &text) {
         let reason = detection.reason();
         let user_message = co_managed_user_message(
             &format!("{reason}; no file was written and nothing was routed"),
