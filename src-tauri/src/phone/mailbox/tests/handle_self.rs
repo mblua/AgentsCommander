@@ -11,7 +11,7 @@ async fn raise_hand_process_message_bad_tokens_are_rejected_not_false() {
         assert!(app.manage(crate::pty::manager::ResponseCloseState::default()));
         write_raise_hand_task_title(&fixture.sender_cwd, "Build the feature");
         let msg_id = format!("msg-rh-bad-token-{idx}");
-        let rid = format!("rid-rh-bad-token-{idx}");
+        let rid = Uuid::from_u128(0x33180001000040008000000000000200 + idx).to_string();
         let (path, _msg) =
             build_raise_hand_message(&fixture.sender_cwd, &msg_id, &rid, Some(token));
         let poller = MailboxPoller::default();

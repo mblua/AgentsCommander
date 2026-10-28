@@ -347,7 +347,7 @@ async fn raise_hand_process_message_coordinator_with_task_title_sets_state_and_e
     let (path, _msg) = build_raise_hand_message(
         &fixture.sender_cwd,
         "msg-rh-1",
-        "rid-rh-1",
+        "33180001-0000-4000-8000-000000000005",
         Some(token.to_string()),
     );
     let poller = MailboxPoller::default();
@@ -356,7 +356,8 @@ async fn raise_hand_process_message_coordinator_with_task_title_sets_state_and_e
         .await
         .expect("raise-hand process_message should succeed");
 
-    let response = read_response_json(&fixture.sender_cwd, "rid-rh-1").unwrap();
+    let response =
+        read_response_json(&fixture.sender_cwd, "33180001-0000-4000-8000-000000000005").unwrap();
     assert_eq!(response["action"], RAISE_HAND_ACTION);
     assert_eq!(response["status"], "raised");
     assert_eq!(response["raised"], true);
@@ -399,7 +400,7 @@ async fn raise_hand_process_message_second_request_reports_already_visible() {
     let (first_path, _first_msg) = build_raise_hand_message(
         &fixture.sender_cwd,
         "msg-rh-2a",
-        "rid-rh-2a",
+        "33180001-0000-4000-8000-000000000006",
         Some(token.to_string()),
     );
     let poller = MailboxPoller::default();
@@ -410,7 +411,7 @@ async fn raise_hand_process_message_second_request_reports_already_visible() {
     let (second_path, _second_msg) = build_raise_hand_message(
         &fixture.sender_cwd,
         "msg-rh-2b",
-        "rid-rh-2b",
+        "33180001-0000-4000-8000-000000000007",
         Some(token.to_string()),
     );
     poller
@@ -418,7 +419,8 @@ async fn raise_hand_process_message_second_request_reports_already_visible() {
         .await
         .expect("second raise-hand should succeed");
 
-    let response = read_response_json(&fixture.sender_cwd, "rid-rh-2b").unwrap();
+    let response =
+        read_response_json(&fixture.sender_cwd, "33180001-0000-4000-8000-000000000007").unwrap();
     assert_eq!(response["raised"], true);
     assert_eq!(response["status"], "already_visible");
     assert_eq!(
@@ -455,7 +457,7 @@ async fn raise_hand_process_message_without_visible_title_slot_returns_false() {
             });
 
         let msg_id = format!("msg-rh-noslot-{idx}");
-        let rid = format!("rid-rh-noslot-{idx}");
+        let rid = Uuid::from_u128(0x33180001000040008000000000000100 + idx).to_string();
         let (path, _msg) =
             build_raise_hand_message(&fixture.sender_cwd, &msg_id, &rid, Some(token.to_string()));
         let poller = MailboxPoller::default();
@@ -493,7 +495,7 @@ async fn raise_hand_process_message_non_coordinator_returns_false() {
     let (path, _msg) = build_raise_hand_message(
         &fixture.sender_cwd,
         "msg-rh-noncoord",
-        "rid-rh-noncoord",
+        "33180001-0000-4000-8000-000000000008",
         Some(token.to_string()),
     );
     let poller = MailboxPoller::default();
@@ -502,7 +504,8 @@ async fn raise_hand_process_message_non_coordinator_returns_false() {
         .await
         .expect("non-coordinator raise-hand should be processed");
 
-    let response = read_response_json(&fixture.sender_cwd, "rid-rh-noncoord").unwrap();
+    let response =
+        read_response_json(&fixture.sender_cwd, "33180001-0000-4000-8000-000000000008").unwrap();
     assert_eq!(response["raised"], false);
     assert_eq!(response["status"], "not_visible");
     let mgr = {
@@ -529,7 +532,7 @@ async fn raise_hand_process_message_exited_coordinator_returns_false() {
     let (path, _msg) = build_raise_hand_message(
         &fixture.sender_cwd,
         "msg-rh-exited",
-        "rid-rh-exited",
+        "33180001-0000-4000-8000-000000000009",
         Some(token.to_string()),
     );
     let poller = MailboxPoller::default();
@@ -538,7 +541,8 @@ async fn raise_hand_process_message_exited_coordinator_returns_false() {
         .await
         .expect("exited coordinator raise-hand should be processed");
 
-    let response = read_response_json(&fixture.sender_cwd, "rid-rh-exited").unwrap();
+    let response =
+        read_response_json(&fixture.sender_cwd, "33180001-0000-4000-8000-000000000009").unwrap();
     assert_eq!(response["raised"], false);
     assert_eq!(response["status"], "not_visible");
     let mgr = {
