@@ -3,6 +3,9 @@ use crate::config::ac_root::{
     ensure_authoritative_ac_root, is_ac_root_name, CANONICAL_AC_ROOT_DIR,
 };
 use crate::config::settings::{normalize_profile_letter, AppSettings};
+use crate::filesystem::coding_agent_profiles::{
+    canonical_profile_path, profile_path_is_dir, profile_path_symlink_metadata,
+};
 use std::path::{Path, PathBuf};
 
 pub(super) fn strip_extended_prefix(path: PathBuf) -> PathBuf {
@@ -10,7 +13,7 @@ pub(super) fn strip_extended_prefix(path: PathBuf) -> PathBuf {
 }
 
 pub(super) fn canonical_existing_dir(path: &Path, label: &str) -> Result<PathBuf, String> {
-    let metadata = std::fs::symlink_metadata(path)
+    let metadata = profile_path_symlink_metadata(path)
         .map_err(|e| format!("{} '{}' is not readable: {}", label, path.display(), e))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(format!(
@@ -19,7 +22,7 @@ pub(super) fn canonical_existing_dir(path: &Path, label: &str) -> Result<PathBuf
             path.display()
         ));
     }
-    std::fs::canonicalize(path)
+    canonical_profile_path(path)
         .map(strip_extended_prefix)
         .map_err(|e| {
             format!(
@@ -43,7 +46,7 @@ pub(super) fn same_canonical_path(left: &Path, right: &Path) -> bool {
 }
 
 pub(super) fn collect_ac_root_candidate(out: &mut Vec<PathBuf>, candidate: &Path) {
-    if !candidate.is_dir() || ensure_authoritative_ac_root(candidate).is_err() {
+    if !profile_path_is_dir(candidate) || ensure_authoritative_ac_root(candidate).is_err() {
         return;
     }
     let Ok(canonical) = canonical_existing_dir(candidate, "Project AC Root") else {
