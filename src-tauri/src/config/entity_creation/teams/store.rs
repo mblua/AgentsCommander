@@ -193,6 +193,13 @@ impl TeamConfigReadError {
     }
 }
 
+pub(crate) fn read_discovery_team_config(team_dir: &Path) -> Option<serde_json::Value> {
+    let config_path = team_dir.join("config.json");
+    crate::filesystem::ac_discovery::read_team_discovery_config(&config_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+}
+
 pub(crate) fn read_team_config_classified(
     ac_root: &Path,
     team_name: &str,
