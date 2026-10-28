@@ -8,12 +8,13 @@ use super::{
     CLI_MAX_AVAILABLE_TARGETS, CLI_MAX_TARGET_TEXT_CHARS, ENV_ENABLE, POLL_MS, REQUESTS_DIR,
     RESPONSES_DIR, SESSION_FILE, UI_AUTOMATION_DIR,
 };
+use crate::filesystem::{directories, documents};
 use crate::testability::window_placement::TESTABLE_EXE_NAME;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use std::{fs, io};
 use uuid::Uuid;
 
 pub(super) fn run_cli_request(input: &CliRequest) -> Result<UiAutomationResponse, Value> {
@@ -24,28 +25,32 @@ pub(super) fn run_cli_request(input: &CliRequest) -> Result<UiAutomationResponse
     let session_path = automation_dir.join(SESSION_FILE);
     let session = load_session_for_cli(&session_path, &input.window)?;
 
-    fs::create_dir_all(automation_dir.join(REQUESTS_DIR)).map_err(|e| {
-        preflight_error(
-            "automation_filesystem_error",
-            "Failed to create automation request directory.",
-            Some(json!({
-                "operation": "create_requests_dir",
-                "path": automation_dir.join(REQUESTS_DIR).to_string_lossy(),
-                "message": e.to_string(),
-            })),
-        )
-    })?;
-    fs::create_dir_all(automation_dir.join(RESPONSES_DIR)).map_err(|e| {
-        preflight_error(
-            "automation_filesystem_error",
-            "Failed to create automation response directory.",
-            Some(json!({
-                "operation": "create_responses_dir",
-                "path": automation_dir.join(RESPONSES_DIR).to_string_lossy(),
-                "message": e.to_string(),
-            })),
-        )
-    })?;
+    directories::ensure_ui_automation_directory(&automation_dir.join(REQUESTS_DIR)).map_err(
+        |e| {
+            preflight_error(
+                "automation_filesystem_error",
+                "Failed to create automation request directory.",
+                Some(json!({
+                    "operation": "create_requests_dir",
+                    "path": automation_dir.join(REQUESTS_DIR).to_string_lossy(),
+                    "message": e.to_string(),
+                })),
+            )
+        },
+    )?;
+    directories::ensure_ui_automation_directory(&automation_dir.join(RESPONSES_DIR)).map_err(
+        |e| {
+            preflight_error(
+                "automation_filesystem_error",
+                "Failed to create automation response directory.",
+                Some(json!({
+                    "operation": "create_responses_dir",
+                    "path": automation_dir.join(RESPONSES_DIR).to_string_lossy(),
+                    "message": e.to_string(),
+                })),
+            )
+        },
+    )?;
 
     let request_id = Uuid::new_v4().to_string();
     let request = UiAutomationRequest {
@@ -83,8 +88,8 @@ pub(super) fn run_cli_request(input: &CliRequest) -> Result<UiAutomationResponse
 
     let deadline = Instant::now() + Duration::from_millis(input.timeout_ms);
     loop {
-        if response_path.exists() {
-            let raw = fs::read_to_string(&response_path).map_err(|e| {
+        if directories::ui_automation_path_exists(&response_path) {
+            let raw = documents::read_ui_automation_text(&response_path).map_err(|e| {
                 response_error_value(
                     &request,
                     "automation_filesystem_error",
@@ -449,10 +454,10 @@ pub(super) fn timeout_phase(
     session_path: &Path,
     window: &str,
 ) -> String {
-    if request_path.exists() {
+    if directories::ui_automation_path_exists(request_path) {
         return "awaiting_gui_poller".to_string();
     }
-    if inflight_path.exists() {
+    if directories::ui_automation_path_exists(inflight_path) {
         if is_backend_automation_window(window) {
             return "awaiting_backend_response".to_string();
         }

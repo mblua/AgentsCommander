@@ -539,3 +539,112 @@ fn c4_sites_1_2_leave_no_state_key_in_the_tracked_file() {
     c4_state_is(&c4_state_path(&tracked), C4_STATE_AFTER_SITE_2, "site 2");
     assert_eq!(stored(&dir2)["repos"], json!(["repo-a"]));
 }
+
+#[test]
+fn issue_3361_agent_ignore_rows_preserve_prefix_and_are_idempotent() {
+    for prefix in [None, Some("sentinel")] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".gitignore");
+        if let Some(prefix) = prefix {
+            std::fs::write(&path, prefix).unwrap();
+        }
+        ensure_config_state_ignore_rows(temp.path()).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        if prefix.is_some() {
+            assert!(
+                content.starts_with("sentinel\n"),
+                "prefix lost: {content:?}"
+            );
+        }
+        assert!(ignore_rows_present(temp.path()));
+        for name in [
+            crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME,
+            crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_LOCK,
+            crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_TMP,
+        ] {
+            assert!(content.lines().any(|line| line == format!("**/{name}")));
+        }
+        ensure_config_state_ignore_rows(temp.path()).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), content);
+    }
+}
+
+#[test]
+fn issue_3361_config_ports_preserve_native_results() {
+    use crate::filesystem::documents as port;
+    use std::io::Write as _;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("config");
+    let error = |e: std::io::Error| (e.kind(), e.raw_os_error(), e.to_string());
+    for text in [
+        String::new(),
+        " \u{feff}λ\n".to_string(),
+        "x".repeat(16 * 1024),
+    ] {
+        std::fs::write(&path, &text).unwrap();
+        assert_eq!(port::read_config_document(&path).unwrap(), text);
+        assert_eq!(
+            port::read_agent_activity_bytes(&path).unwrap(),
+            std::fs::read(&path).unwrap()
+        );
+    }
+    std::fs::write(&path, [0xff, 0, 0xfe]).unwrap();
+    assert_eq!(
+        port::read_agent_activity_bytes(&path).unwrap(),
+        vec![0xff, 0, 0xfe]
+    );
+    for bad in [
+        path.clone(),
+        temp.path().to_path_buf(),
+        path.join("child"),
+        temp.path().join("missing"),
+    ] {
+        assert_eq!(
+            error(port::read_config_document(&bad).unwrap_err()),
+            error(std::fs::read_to_string(&bad).unwrap_err())
+        );
+    }
+    for p in [
+        path.clone(),
+        temp.path().to_path_buf(),
+        path.join("child"),
+        temp.path().join("missing"),
+    ] {
+        assert_eq!(port::config_document_exists(&p), p.exists());
+        assert_eq!(
+            port::canonical_config_document(&p).map_err(error),
+            p.canonicalize().map_err(error)
+        );
+        assert_eq!(
+            port::read_agent_activity_bytes(&p).map_err(error),
+            std::fs::read(&p).map_err(error)
+        );
+    }
+    let native = temp.path().join("native-ignore");
+    let observed = temp.path().join("port-ignore");
+    for (separator, rows) in [("", "prefix"), ("\n", "row1\nrow2\n"), ("", "tail")] {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&native)
+            .and_then(|mut file| file.write_all(format!("{separator}{rows}").as_bytes()))
+            .unwrap();
+        port::append_config_ignore_rows(&observed, separator, rows).unwrap();
+        assert_eq!(
+            std::fs::read(&observed).unwrap(),
+            std::fs::read(&native).unwrap()
+        );
+    }
+    for bad in [temp.path().to_path_buf(), path.join("child")] {
+        let native_error = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&bad)
+            .and_then(|mut file| file.write_all(b"row"))
+            .unwrap_err();
+        assert_eq!(
+            error(port::append_config_ignore_rows(&bad, "", "row").unwrap_err()),
+            error(native_error)
+        );
+    }
+}

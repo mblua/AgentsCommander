@@ -4,7 +4,13 @@ use super::{
     LOOP_DIR_PREFIX, LOOP_STATE_FILE,
 };
 use crate::config::naming_migration;
-use std::io::Write;
+use crate::filesystem::loop_files;
+#[cfg(test)]
+pub(super) use crate::filesystem::loop_files::is_transient_replace_error;
+#[cfg(all(test, windows))]
+pub(super) use crate::filesystem::loop_files::replace_file;
+use crate::filesystem::loop_files::replace_file_with_retry;
+pub(super) use crate::filesystem::loop_files::write_config_via_tmp;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -14,7 +20,7 @@ pub fn loop_dir(ac_root: &Path, id: &str) -> PathBuf {
 
 pub fn read_loop_config(loop_dir: &Path) -> Result<LoopConfigToml, String> {
     let config_path = loop_dir.join(LOOP_CONFIG_FILE);
-    let content = std::fs::read_to_string(&config_path)
+    let content = loop_files::read_loop_document(&config_path)
         .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
     parse_loop_config(&config_path, &content)
 }
@@ -23,7 +29,7 @@ pub fn read_loop_config(loop_dir: &Path) -> Result<LoopConfigToml, String> {
 /// is `Ok(None)` instead of a read error. A malformed file is still an error.
 pub fn read_loop_config_if_present(loop_dir: &Path) -> Result<Option<LoopConfigToml>, String> {
     let config_path = loop_dir.join(LOOP_CONFIG_FILE);
-    match std::fs::read_to_string(&config_path) {
+    match loop_files::read_loop_document(&config_path) {
         Ok(content) => parse_loop_config(&config_path, &content).map(Some),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("Failed to read {}: {}", config_path.display(), e)),
@@ -49,7 +55,9 @@ pub fn revalidate_loop_current(
     loop_dir: &Path,
     expected: &LoopConfigToml,
 ) -> Result<LoopConfigRevalidation, String> {
-    if !loop_dir.is_dir() || !loop_dir.join(LOOP_CONFIG_FILE).is_file() {
+    if !loop_files::loop_path_is_directory(loop_dir)
+        || !loop_files::loop_path_is_file(&loop_dir.join(LOOP_CONFIG_FILE))
+    {
         return Ok(LoopConfigRevalidation::Gone);
     }
     let current = read_loop_config(loop_dir)?;
@@ -80,7 +88,8 @@ pub fn loop_delivery_config_matches(current: &LoopConfigToml, expected: &LoopCon
 pub fn write_loop_config(ac_root: &Path, config: &LoopConfigToml) -> Result<PathBuf, String> {
     validate_loop_id(&config.loop_def.id)?;
     let dir = loop_dir(ac_root, &config.loop_def.id);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create Loop directory: {}", e))?;
+    loop_files::create_loop_directory(&dir)
+        .map_err(|e| format!("Failed to create Loop directory: {}", e))?;
     let content = toml::to_string_pretty(config)
         .map_err(|e| format!("Failed to serialize Loop config: {}", e))?;
     // Write a sibling tmp file and replace, so no reader in any process
@@ -91,21 +100,6 @@ pub fn write_loop_config(ac_root: &Path, config: &LoopConfigToml) -> Result<Path
     Ok(dir)
 }
 
-/// Writes `content` to `tmp_path` and replaces `config_path` with it. On any
-/// failure, including a partial tmp write, the tmp file is removed.
-pub(super) fn write_config_via_tmp(
-    tmp_path: &Path,
-    config_path: &Path,
-    content: &str,
-) -> Result<(), String> {
-    std::fs::write(tmp_path, content)
-        .and_then(|()| replace_file_with_retry(tmp_path, config_path))
-        .map_err(|e| {
-            let _ = std::fs::remove_file(tmp_path);
-            format!("Failed to write Loop config: {}", e)
-        })
-}
-
 pub fn read_loop_state(loop_dir: &Path) -> Result<LoopState, String> {
     read_loop_state_with_raw(loop_dir).map(|(state, _)| state)
 }
@@ -114,10 +108,10 @@ pub fn read_loop_state(loop_dir: &Path) -> Result<LoopState, String> {
 /// expectation `write_loop_state_if_unchanged` compares against.
 pub fn read_loop_state_with_raw(loop_dir: &Path) -> Result<(LoopState, Option<String>), String> {
     let state_path = resolved_loop_state_path(loop_dir);
-    if !state_path.exists() {
+    if !loop_files::loop_path_exists(&state_path) {
         return Ok((LoopState::default(), None));
     }
-    let content = std::fs::read_to_string(&state_path)
+    let content = loop_files::read_loop_document(&state_path)
         .map_err(|e| format!("Failed to read {}: {}", state_path.display(), e))?;
     let state = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse {}: {}", state_path.display(), e))?;
@@ -136,11 +130,11 @@ pub(super) const LEGACY_LOOP_STATE_RENAME: naming_migration::Rename = naming_mig
 /// writers never use it, and the compare-and-swap does not either.
 pub(crate) fn resolved_loop_state_path(loop_dir: &Path) -> PathBuf {
     let new = loop_dir.join(LOOP_STATE_FILE);
-    if new.exists() {
+    if loop_files::loop_path_exists(&new) {
         return new;
     }
     let old = loop_dir.join(LEGACY_LOOP_STATE_RENAME.from);
-    if old.exists() {
+    if loop_files::loop_path_exists(&old) {
         old
     } else {
         new
@@ -163,7 +157,7 @@ pub fn write_loop_state_if_unchanged(
 ) -> Result<LoopStateWrite, String> {
     // #2718 4.5 point 5: resolved once; the compare and the write share it.
     let state_path = resolved_loop_state_path(loop_dir);
-    let current_raw = match std::fs::read_to_string(&state_path) {
+    let current_raw = match loop_files::read_loop_document(&state_path) {
         Ok(content) => Some(content),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(format!("Failed to read {}: {}", state_path.display(), e)),
@@ -197,52 +191,19 @@ pub(super) fn write_loop_state_atomic_at(
     let tmp_path = loop_dir.join(format!("{}.{}.tmp", state_name, Uuid::new_v4()));
     let content = serde_json::to_string_pretty(state)
         .map_err(|e| format!("Failed to serialize Loop state: {}", e))?;
-    std::fs::write(&tmp_path, content)
+    loop_files::write_loop_state_stage(&tmp_path, &content)
         .map_err(|e| format!("Failed to write temporary Loop state: {}", e))?;
     replace_file_with_retry(&tmp_path, state_path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = loop_files::remove_loop_stage(&tmp_path);
         format!("Failed to finalize Loop state: {}", e)
     })
-}
-
-/// Sleeps between replace attempts: 5 attempts, at most 150 ms added.
-pub(super) const REPLACE_RETRY_DELAYS_MS: [u64; 4] = [10, 20, 40, 80];
-
-/// `replace_file`, retried while the destination is transiently held open
-/// (any open handle, even a fully shared reader, fails `MoveFileExW`).
-/// Blocking `std::thread::sleep` on purpose: the callers are synchronous and
-/// the CLI uses them too; 150 ms on an already-failing path is cheaper than
-/// making the write path async.
-pub(super) fn replace_file_with_retry(src: &Path, dst: &Path) -> std::io::Result<()> {
-    let mut delays = REPLACE_RETRY_DELAYS_MS.iter();
-    loop {
-        match replace_file(src, dst) {
-            Err(e) if is_transient_replace_error(&e) => match delays.next() {
-                Some(ms) => std::thread::sleep(std::time::Duration::from_millis(*ms)),
-                None => return Err(e),
-            },
-            result => return result,
-        }
-    }
-}
-
-#[cfg(windows)]
-pub(super) fn is_transient_replace_error(e: &std::io::Error) -> bool {
-    // ERROR_ACCESS_DENIED (what a held destination produces) and
-    // ERROR_SHARING_VIOLATION.
-    matches!(e.raw_os_error(), Some(5) | Some(32))
-}
-
-#[cfg(not(windows))]
-pub(super) fn is_transient_replace_error(e: &std::io::Error) -> bool {
-    e.kind() == std::io::ErrorKind::PermissionDenied
 }
 
 pub fn append_loop_audit_once(loop_dir: &Path, entry: &LoopAuditEntry) -> Result<(), String> {
     ensure_loop_config_present(loop_dir)?;
     let audit_path = loop_dir.join(LOOP_AUDIT_FILE);
-    if audit_path.exists() {
-        let content = std::fs::read_to_string(&audit_path)
+    if loop_files::loop_path_exists(&audit_path) {
+        let content = loop_files::read_loop_document(&audit_path)
             .map_err(|e| format!("Failed to read {}: {}", audit_path.display(), e))?;
         for line in content.lines().filter(|line| !line.trim().is_empty()) {
             match serde_json::from_str::<LoopAuditEntry>(line) {
@@ -266,18 +227,12 @@ pub fn append_loop_audit_once(loop_dir: &Path, entry: &LoopAuditEntry) -> Result
 
     let line = serde_json::to_string(entry)
         .map_err(|e| format!("Failed to serialize Loop audit entry: {}", e))?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&audit_path)
-        .map_err(|e| format!("Failed to open {}: {}", audit_path.display(), e))?;
-    writeln!(file, "{}", line)
-        .map_err(|e| format!("Failed to append {}: {}", audit_path.display(), e))
+    loop_files::append_loop_audit_line(&audit_path, &line)
 }
 
 pub(super) fn ensure_loop_config_present(loop_dir: &Path) -> Result<(), String> {
     let config_path = loop_dir.join(LOOP_CONFIG_FILE);
-    if config_path.is_file() {
+    if loop_files::loop_path_is_file(&config_path) {
         Ok(())
     } else {
         Err(format!(
@@ -285,32 +240,4 @@ pub(super) fn ensure_loop_config_present(loop_dir: &Path) -> Result<(), String> 
             config_path.display()
         ))
     }
-}
-
-#[cfg(windows)]
-pub(super) fn replace_file(src: &Path, dst: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-
-    let src_wide: Vec<u16> = src.as_os_str().encode_wide().chain(Some(0)).collect();
-    let dst_wide: Vec<u16> = dst.as_os_str().encode_wide().chain(Some(0)).collect();
-    let ok = unsafe {
-        MoveFileExW(
-            src_wide.as_ptr(),
-            dst_wide.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if ok == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(not(windows))]
-pub(super) fn replace_file(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::rename(src, dst)
 }
