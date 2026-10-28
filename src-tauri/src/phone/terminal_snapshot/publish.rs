@@ -1,9 +1,9 @@
 use super::MAX_DIRECTORY_ENTRIES;
 use super::RESPONSE_TTL;
+use crate::filesystem::terminal_snapshots;
 use crate::pty::terminal_snapshot::TerminalSnapshotArtifactCleanupOutcome;
 #[cfg(test)]
 use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage;
-use std::io::Write;
 use std::path::Path;
 use terminal_snapshot_renderer::TerminalSnapshotReasonCode;
 use terminal_snapshot_renderer::MAX_TRANSPORT_BYTES;
@@ -41,7 +41,9 @@ pub(super) fn publish_response_bytes(
         Uuid::new_v4()
     ));
     let destination = response_directory.join(format!("{request_id}.json"));
-    if destination.parent() != Some(response_directory) || destination.exists() {
+    if destination.parent() != Some(response_directory)
+        || terminal_snapshots::snapshot_path_exists(&destination)
+    {
         return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
     #[cfg(test)]
@@ -80,21 +82,11 @@ pub(super) fn publish_response_bytes(
         return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if file
-            .set_permissions(std::fs::Permissions::from_mode(0o600))
-            .is_err()
-            || file
-                .metadata()
-                .ok()
-                .is_none_or(|metadata| metadata.permissions().mode() & 0o777 != 0o600)
-        {
-            cleanup_tracked_artifact(state, &temporary, &temporary_identity);
-            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
-        }
+    if !terminal_snapshots::set_private_snapshot_response(&file) {
+        cleanup_tracked_artifact(state, &temporary, &temporary_identity);
+        return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
-    if file.write_all(bytes).and_then(|_| file.flush()).is_err() {
+    if terminal_snapshots::write_snapshot_response(&mut file, bytes).is_err() {
         cleanup_tracked_artifact(state, &temporary, &temporary_identity);
         return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
@@ -104,7 +96,7 @@ pub(super) fn publish_response_bytes(
     );
     #[cfg(not(test))]
     let file_sync_failed = false;
-    if file_sync_failed || file.sync_all().is_err() {
+    if file_sync_failed || terminal_snapshots::sync_snapshot_response(&file).is_err() {
         cleanup_tracked_artifact(state, &temporary, &temporary_identity);
         return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
@@ -308,22 +300,17 @@ pub(super) fn sweep_directory(
     if !crate::path_identity::same_object(retained_directory.identity(), expected_directory) {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(directory) else {
+    let Ok(entries) = terminal_snapshots::snapshot_entries(directory) else {
         return;
     };
-    for entry in entries.take(MAX_DIRECTORY_ENTRIES).filter_map(Result::ok) {
-        let path = entry.path();
+    for (path, _) in entries.take(MAX_DIRECTORY_ENTRIES).filter_map(Result::ok) {
         let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
             continue;
         };
         if !protocol_cleanup_name(name, response_directory) {
             continue;
         }
-        let old = std::fs::symlink_metadata(&path)
-            .ok()
-            .filter(|metadata| metadata.is_file())
-            .and_then(|metadata| metadata.modified().ok())
-            .and_then(|modified| modified.elapsed().ok())
+        let old = terminal_snapshots::snapshot_regular_file_age(&path)
             .is_some_and(|age| age >= RESPONSE_TTL);
         if !old {
             continue;

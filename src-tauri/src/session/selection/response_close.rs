@@ -63,6 +63,8 @@ pub(super) fn response_registration_route(
 }
 
 pub struct ResponseEffectRegistry {
+    #[cfg(test)]
+    forced_session: Mutex<Option<uuid::Uuid>>,
     owners: &'static std::sync::OnceLock<
         Mutex<std::collections::HashMap<uuid::Uuid, Arc<ResponseEffectOwner>>>,
     >,
@@ -71,6 +73,8 @@ pub struct ResponseEffectRegistry {
 impl ResponseEffectRegistry {
     pub(crate) fn new() -> Self {
         Self {
+            #[cfg(test)]
+            forced_session: Mutex::new(None),
             // Retain the former static's owner records for the process lifetime.
             owners: Box::leak(Box::new(std::sync::OnceLock::new())),
         }
@@ -88,6 +92,14 @@ impl ResponseEffectRegistry {
             .map_err(|_| ())?;
         if owners.contains_key(&id) {
             return Ok(false);
+        }
+        #[cfg(test)]
+        {
+            let mut forced = self.forced_session.lock().unwrap();
+            if *forced == Some(id) {
+                owner.forced_settlement.store(true, Ordering::Release);
+                *forced = None;
+            }
         }
         owners.insert(id, owner);
         Ok(true)
@@ -110,6 +122,11 @@ impl ResponseEffectRegistry {
             .ok()
             .map(|owners| owners.values().cloned().collect())
     }
+
+    #[cfg(test)]
+    pub(crate) fn force_next_settlement_for_test(&self, id: uuid::Uuid) {
+        assert!(self.forced_session.lock().unwrap().replace(id).is_none());
+    }
 }
 
 #[derive(Clone)]
@@ -130,6 +147,8 @@ struct ResponseEffectRecord {
 }
 
 pub(crate) struct ResponseEffectOwner {
+    #[cfg(test)]
+    forced_settlement: std::sync::atomic::AtomicBool,
     ticket: crate::pty::manager::ResponseCloseTicket,
     registration: ResponseCloseRegistration,
     backend: Arc<dyn crate::pty::backend::PtyBackend>,
@@ -137,6 +156,38 @@ pub(crate) struct ResponseEffectOwner {
 }
 
 impl ResponseEffectOwner {
+    /// Recorded completion only; this says nothing about native quiescence.
+    pub(crate) fn diagnostic_terminal(&self) -> Option<bool> {
+        let record = self.record.lock().ok()?;
+        Some(
+            record.sealed
+                && record
+                    .stages
+                    .iter()
+                    .all(|(_, s)| matches!(s, ResponseEffectState::Completed(_)))
+                && record
+                    .group
+                    .as_ref()
+                    .is_none_or(|s| matches!(s, ResponseEffectState::Completed(_))),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn forced_settlement_for_test(&self) -> bool {
+        self.forced_settlement.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison_record_for_test(self: &Arc<Self>) {
+        let owner = self.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = owner.record.lock().unwrap();
+            panic!("issue_3248 deliberate owner record poison");
+        })
+        .join()
+        .is_err());
+    }
+
     pub(crate) fn start(&self, name: &'static str) -> Option<usize> {
         let mut record = self.record.lock().ok()?;
         if record.sealed || record.stages.len() == record.stages.capacity() {
@@ -192,6 +243,8 @@ impl ResponseEffectOwner {
         backend: Arc<dyn crate::pty::backend::PtyBackend>,
     ) -> Self {
         Self {
+            #[cfg(test)]
+            forced_settlement: std::sync::atomic::AtomicBool::new(false),
             ticket,
             registration,
             backend,
