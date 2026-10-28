@@ -15,6 +15,7 @@ use super::replica::VerifiedPtyInputRoute;
 use super::replica::VerifiedTerminalSnapshotRoute;
 use super::strict_project_ac_root;
 use super::ProjectOrigin;
+use crate::filesystem::ac_discovery;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -276,15 +277,16 @@ pub(crate) fn discover_verified_terminal_snapshot_targets_counted(
             Ok(None) => return Err("unsafe_path".to_string()),
             Err(error) => return Err(error),
         };
-        let workgroups = std::fs::read_dir(&ac_root).map_err(|_| "unsafe_path".to_string())?;
+        let workgroups = ac_discovery::team_discovery_entries(&ac_root)
+            .map_err(|_| "unsafe_path".to_string())?;
         for workgroup in workgroups {
-            let workgroup = workgroup.map_err(|_| "unsafe_path".to_string())?;
+            let (workgroup_path, workgroup_name) =
+                workgroup.map_err(|_| "unsafe_path".to_string())?;
             scanned_entries = scanned_entries.saturating_add(1);
             if scanned_entries > TARGET_CAP * 4 {
                 return Err("target_limit".to_string());
             }
-            let name = workgroup
-                .file_name()
+            let name = workgroup_name
                 .into_string()
                 .map_err(|_| "unsafe_path".to_string())?;
             if !crate::config::entity_prefix::has_entity_prefix(&name) {
@@ -293,21 +295,20 @@ pub(crate) fn discover_verified_terminal_snapshot_targets_counted(
             // #2228 Site B: a linked or junctioned room entry reaches this
             // call with no metadata gate in front of it. Skip and count it
             // rather than aborting every other target of the scan.
-            let Ok(workgroup_identity) = crate::path_identity::verify_directory(&workgroup.path())
+            let Ok(workgroup_identity) = crate::path_identity::verify_directory(&workgroup_path)
             else {
                 skips.rooms = skips.rooms.saturating_add(1);
                 continue;
             };
-            let replicas = std::fs::read_dir(&workgroup_identity.canonical_path)
+            let replicas = ac_discovery::team_discovery_entries(&workgroup_identity.canonical_path)
                 .map_err(|_| "unsafe_path".to_string())?;
             for replica in replicas {
-                let replica = replica.map_err(|_| "unsafe_path".to_string())?;
+                let (_, replica_name) = replica.map_err(|_| "unsafe_path".to_string())?;
                 scanned_entries = scanned_entries.saturating_add(1);
                 if scanned_entries > TARGET_CAP * 4 {
                     return Err("target_limit".to_string());
                 }
-                let replica_name = replica
-                    .file_name()
+                let replica_name = replica_name
                     .into_string()
                     .map_err(|_| "unsafe_path".to_string())?;
                 let Some(agent) = replica_name.strip_prefix("__agent_") else {
