@@ -2,6 +2,7 @@ use clap::Args;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+use crate::filesystem::self_clear_files;
 use crate::phone::types::OutboxMessage;
 
 use super::send::sender_for_root;
@@ -158,16 +159,16 @@ pub fn execute(args: SelfClearArgs) -> i32 {
     let outbox_dir = if is_root {
         let app_outbox = crate::config::config_dir()
             .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .and_then(|p| self_clear_files::read_self_clear_outbox_pointer(&p).ok())
             .map(|s| PathBuf::from(s.trim()));
         match app_outbox {
-            Some(p) if p.is_dir() => p,
+            Some(p) if self_clear_files::self_clear_path_is_directory(&p) => p,
             _ => ac_dir.join("outbox"),
         }
     } else {
         ac_dir.join("outbox")
     };
-    if let Err(e) = std::fs::create_dir_all(&outbox_dir) {
+    if let Err(e) = self_clear_files::create_self_clear_outbox(&outbox_dir) {
         eprintln!("Error: failed to create outbox directory: {}", e);
         return 1;
     }
@@ -179,7 +180,7 @@ pub fn execute(args: SelfClearArgs) -> i32 {
             return 1;
         }
     };
-    if let Err(e) = std::fs::write(&outbox_path, json) {
+    if let Err(e) = self_clear_files::write_self_clear_outbox_message(&outbox_path, &json) {
         eprintln!("Error: failed to write outbox file: {}", e);
         return 1;
     }
@@ -195,11 +196,11 @@ pub fn execute(args: SelfClearArgs) -> i32 {
     let confirm_poll = std::time::Duration::from_millis(250);
     let start = std::time::Instant::now();
     loop {
-        if delivered_path.exists() {
+        if self_clear_files::self_clear_path_exists(&delivered_path) {
             break;
         }
-        if rejected_reason_path.exists() {
-            let reason = std::fs::read_to_string(&rejected_reason_path)
+        if self_clear_files::self_clear_path_exists(&rejected_reason_path) {
+            let reason = self_clear_files::read_self_clear_reply(&rejected_reason_path)
                 .unwrap_or_else(|_| "unknown reason".to_string());
             eprintln!("Error: self-clear rejected - {}", reason.trim());
             return 1;
@@ -222,8 +223,8 @@ pub fn execute(args: SelfClearArgs) -> i32 {
     let resp_poll = std::time::Duration::from_millis(250);
     let resp_start = std::time::Instant::now();
     loop {
-        if response_path.exists() {
-            match std::fs::read_to_string(&response_path) {
+        if self_clear_files::self_clear_path_exists(&response_path) {
+            match self_clear_files::read_self_clear_reply(&response_path) {
                 Ok(content) => {
                     crate::cli_println!("{}", content);
                     // MED-3: honest, conditional wording - the deferred clear is best-effort,
