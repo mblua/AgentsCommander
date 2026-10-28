@@ -826,26 +826,7 @@ where
     // Supported interactive agent CLIs receive two staggered Enters. The
     // second is nonfatal because the first may already have submitted the text.
     if send_enter {
-        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-        observe_submit_seam(&pty_manager, session_id, "T0", settle, text);
-        log::info!("[inject] sending Enter (1/2) for session {}", session_id);
-        PtyManager::write_with_permit(&permit, b"\r")
-            .map_err(|error| format!("PTY Enter (1/2) write failed: {}", error))?;
-
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        observe_submit_seam(&pty_manager, session_id, "T1", settle, text);
-        log::info!("[inject] sending Enter (2/2) for session {}", session_id);
-        if let Err(error) = PtyManager::write_with_permit(&permit, b"\r") {
-            log::warn!(
-                "[inject] Enter (2/2) failed for session {} (non-fatal): {}",
-                session_id,
-                error
-            );
-        }
-
-        // #2586 D2 - T2: one added wait after the second Enter, observation only.
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-        observe_submit_seam(&pty_manager, session_id, "T2", settle, text);
+        submit_injected_enters(&permit, &pty_manager, session_id, settle, text).await?;
     }
 
     // #1682 - an injected text block is a message to the agent, submitted on
@@ -866,6 +847,37 @@ where
         // nothing submitted. Self-cancelling here, so no caller needs its own site.
         crate::commands::pty::clear_control_write_mark(app, session_id);
     }
+
+    Ok(())
+}
+
+async fn submit_injected_enters(
+    permit: &PtyInputPermit,
+    pty_manager: &Arc<Mutex<PtyManager>>,
+    session_id: Uuid,
+    settle: SettleReadiness,
+    text: &str,
+) -> Result<(), String> {
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    observe_submit_seam(pty_manager, session_id, "T0", settle, text);
+    log::info!("[inject] sending Enter (1/2) for session {}", session_id);
+    PtyManager::write_with_permit(permit, b"\r")
+        .map_err(|error| format!("PTY Enter (1/2) write failed: {}", error))?;
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    observe_submit_seam(pty_manager, session_id, "T1", settle, text);
+    log::info!("[inject] sending Enter (2/2) for session {}", session_id);
+    if let Err(error) = PtyManager::write_with_permit(permit, b"\r") {
+        log::warn!(
+            "[inject] Enter (2/2) failed for session {} (non-fatal): {}",
+            session_id,
+            error
+        );
+    }
+
+    // #2586 D2 - T2: one added wait after the second Enter, observation only.
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    observe_submit_seam(pty_manager, session_id, "T2", settle, text);
 
     Ok(())
 }

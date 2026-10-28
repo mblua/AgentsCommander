@@ -416,7 +416,6 @@ async fn aggregate_persistence_snapshot_never_observes_half_of_removal_and_selec
 
 #[test]
 fn characterize_3254_p03_order() {
-    use sha2::{Digest, Sha256};
     crate::logging::test_install_logger();
     let temp = tempfile::tempdir().unwrap();
     let tag = uuid::Uuid::new_v4().to_string();
@@ -463,63 +462,21 @@ fn characterize_3254_p03_order() {
          git_repos[1]={{label:retained-prefix-{tag}, source:{source}}}"
     );
     assert_eq!(rows.len(), 2);
-    let position = |level, message: &str| {
-        messages
-            .iter()
-            .position(|entry| *entry == (level, message))
-            .unwrap()
-    };
-    assert!(position("WARN", &filtered) < position("WARN", &dropped));
-    assert!(position("WARN", &dropped) < position("INFO", &upgraded));
-    assert!(messages.contains(&("INFO", "[sessions] Deduplicated: 3 → 2 sessions")));
-    assert!(!messages.iter().any(|(_, message)| {
-        message.contains("Upgrading legacy")
-            && (message.contains(&loser_source) || message.contains(&loser_prefix))
-    }));
-    assert_eq!(rows[0].name, duplicate);
-    assert_eq!(rows[0].shell, "winner-shell");
-    assert_eq!(rows[0].shell_args, ["winner-arg"]);
-    assert!(rows[0].was_active);
-    assert_eq!(rows[0].git_repos[0].label, "winner-label");
-    assert_eq!(rows[0].git_repos[0].source_path, "C:/winner-source");
-    assert_eq!(rows[1].name, retained);
-    let expected_path = if cfg!(windows) {
-        format!(r"C:\p03\{tag}\retained")
-    } else {
-        source.clone()
-    };
-    assert_eq!(rows[1].working_directory, expected_path);
-    assert_eq!(rows[1].git_repos[0].source_path, rows[1].working_directory);
-    assert_eq!(rows[1].git_repos[0].label, format!("retained-prefix-{tag}"));
-    for (row, ordinal) in rows.iter().zip([1, 3]) {
-        assert!(row.git_branch_source.is_none());
-        assert!(row.git_branch_prefix.is_none());
-        let origin = row.coding_agent_binding_origin.as_ref().unwrap();
-        assert_eq!(
-            origin["rawFileSHA256"],
-            format!("{:x}", Sha256::digest(&bytes))
-        );
-        assert_eq!(origin["sessionsPath"], path.to_string_lossy().as_ref());
-        assert_eq!(origin["originalOrdinal"], ordinal);
-    }
-    let raw = super::super::load_sessions_raw_from_path(&path);
-    assert_eq!(raw.len(), 4);
-    assert_eq!(raw[0].name, temporary);
-    assert_eq!(
-        raw[2].git_branch_source.as_deref(),
-        Some(loser_source.as_str())
+    assert_p03_log_order(
+        &messages,
+        [&filtered, &dropped, &upgraded],
+        [&loser_source, &loser_prefix],
     );
-    assert_eq!(
-        raw[2].git_branch_prefix.as_deref(),
-        Some(loser_prefix.as_str())
+    assert_p03_normalized(&rows, &duplicate, &retained, &tag, &source);
+    assert_p03_origins(&rows, &bytes, &path);
+    assert_p03_raw(
+        &path,
+        &temporary,
+        &loser_source,
+        &loser_prefix,
+        &source,
+        &tag,
     );
-    assert_eq!(raw[3].working_directory, source);
-    assert_eq!(raw[3].git_branch_source.as_deref(), Some(source.as_str()));
-    assert_eq!(
-        raw[3].git_branch_prefix,
-        Some(format!("retained-prefix-{tag}"))
-    );
-    assert!(raw[3].git_repos.is_empty());
 }
 
 #[test]
@@ -570,4 +527,81 @@ fn characterize_3254_p04_save_errors() {
         format!("Failed to create config directory: {suffix}")
     );
     assert_eq!(std::fs::read(&occupied).unwrap(), b"p04 untouched");
+}
+
+fn assert_p03_log_order(messages: &[(&str, &str)], expected: [&str; 3], loser: [&str; 2]) {
+    let position = |level, message: &str| {
+        messages
+            .iter()
+            .position(|entry| *entry == (level, message))
+            .unwrap()
+    };
+    assert!(position("WARN", expected[0]) < position("WARN", expected[1]));
+    assert!(position("WARN", expected[1]) < position("INFO", expected[2]));
+    assert!(messages.contains(&("INFO", "[sessions] Deduplicated: 3 → 2 sessions")));
+    assert!(!messages.iter().any(|(_, message)| {
+        message.contains("Upgrading legacy")
+            && (message.contains(loser[0]) || message.contains(loser[1]))
+    }));
+}
+
+fn assert_p03_normalized(
+    rows: &[PersistedSession],
+    duplicate: &str,
+    retained: &str,
+    tag: &str,
+    source: &str,
+) {
+    assert_eq!(rows[0].name, duplicate);
+    assert_eq!(rows[0].shell, "winner-shell");
+    assert_eq!(rows[0].shell_args, ["winner-arg"]);
+    assert!(rows[0].was_active);
+    assert_eq!(rows[0].git_repos[0].label, "winner-label");
+    assert_eq!(rows[0].git_repos[0].source_path, "C:/winner-source");
+    assert_eq!(rows[1].name, retained);
+    let expected_path = if cfg!(windows) {
+        format!(r"C:\p03\{tag}\retained")
+    } else {
+        source.to_owned()
+    };
+    assert_eq!(rows[1].working_directory, expected_path);
+    assert_eq!(rows[1].git_repos[0].source_path, rows[1].working_directory);
+    assert_eq!(rows[1].git_repos[0].label, format!("retained-prefix-{tag}"));
+}
+
+fn assert_p03_origins(rows: &[PersistedSession], bytes: &[u8], path: &std::path::Path) {
+    use sha2::{Digest, Sha256};
+    for (row, ordinal) in rows.iter().zip([1, 3]) {
+        assert!(row.git_branch_source.is_none());
+        assert!(row.git_branch_prefix.is_none());
+        let origin = row.coding_agent_binding_origin.as_ref().unwrap();
+        assert_eq!(
+            origin["rawFileSHA256"],
+            format!("{:x}", Sha256::digest(bytes))
+        );
+        assert_eq!(origin["sessionsPath"], path.to_string_lossy().as_ref());
+        assert_eq!(origin["originalOrdinal"], ordinal);
+    }
+}
+
+fn assert_p03_raw(
+    path: &std::path::Path,
+    temporary: &str,
+    loser_source: &str,
+    loser_prefix: &str,
+    source: &str,
+    tag: &str,
+) {
+    let raw = super::super::load_sessions_raw_from_path(path);
+    assert_eq!(raw.len(), 4);
+    assert_eq!(raw[0].name, temporary);
+    assert_eq!(raw[2].git_branch_source.as_deref(), Some(loser_source));
+    assert_eq!(raw[2].git_branch_prefix.as_deref(), Some(loser_prefix));
+    assert_eq!(raw[3].working_directory, source);
+    assert_eq!(raw[3].git_branch_source.as_deref(), Some(source));
+    assert_eq!(
+        raw[3].git_branch_prefix,
+        Some(format!("retained-prefix-{tag}"))
+    );
+    assert!(raw[3].git_repos.is_empty());
 }

@@ -220,20 +220,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/self_switch.rs::impl:MailboxPoller::resolve_repo_path",
-      "sites": {
-        "windows": [
-          "81f48c31ba89"
-        ],
-        "linux": [
-          "81f48c31ba89"
-        ],
-        "macos": [
-          "81f48c31ba89"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/phone/mailbox/session_lookup.rs::impl:MailboxPoller::handle_close_session",
       "sites": {
         "windows": [
