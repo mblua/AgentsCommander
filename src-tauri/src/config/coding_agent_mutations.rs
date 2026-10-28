@@ -45,11 +45,10 @@ use crate::config::settings::{AgentConfig, AppSettings, CodingAgentEnv, ConfigSe
 #[cfg(test)]
 use identity_transition::{
     capture_source_inventory, commit_source_candidate, commit_source_candidate_internal,
-    configure_source_durable_cut, drive_identity_transition, get_identity_transition,
-    new_source_transition_id, resume_identity_transition, resume_identity_transition_internal,
-    source_discovery_evidence, source_original_inventory_slots, IdentityTransitionRead,
-    IdentityTransitionReadState, SourceResumeExpectation, SourceTransitionError,
-    SOURCE_DURABLE_CUT, SOURCE_FENCE_EFFECT_BARRIER, SOURCE_TRANSITION_UUIDS,
+    drive_identity_transition, get_identity_transition, new_source_transition_id,
+    resume_identity_transition, resume_identity_transition_internal, source_discovery_evidence,
+    source_original_inventory_slots, IdentityTransitionRead, IdentityTransitionReadState,
+    IdentityTransitionTestControls, SourceResumeExpectation, SourceTransitionError,
 };
 #[cfg(test)]
 use request_queue::processing_path_for;

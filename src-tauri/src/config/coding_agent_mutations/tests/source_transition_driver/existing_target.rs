@@ -3,7 +3,7 @@ use super::*;
 fn existing_prepared(cut: &'static str) -> (DriverFixture, String, std::path::PathBuf) {
     let (fixture, candidate, target, _) = DriverFixture::with_reference_targets();
     let before = fixture.expectation().source;
-    configure_source_durable_cut(Some((cut, 1)));
+    fixture.controls.configure_durable_cut(Some((cut, 1)));
     let result = commit_source_candidate_internal(
         &fixture.settings,
         &fixture.context,
@@ -11,14 +11,14 @@ fn existing_prepared(cut: &'static str) -> (DriverFixture, String, std::path::Pa
         "existing-original",
         &before,
         &candidate,
-        &|| Ok(()),
+        (&|| Ok(()), &fixture.controls),
     );
     assert!(
         matches!(result, Err(SourceTransitionError::Interrupted { .. })),
         "{result:?}"
     );
-    SOURCE_DURABLE_CUT.with(|state| assert!(state.borrow().0.is_none()));
-    configure_source_durable_cut(None);
+    assert!(fixture.controls.durable_cut_state().0.is_none());
+    fixture.controls.configure_durable_cut(None);
     let operation = fixture.operation();
     assert!(
         read_own_source_journal(&fixture.context).unwrap().1.intents[&operation]
@@ -46,7 +46,7 @@ fn single_editor_existing_after_equivalent_resume() {
             ));
         }
         let before = source_transition_publication_counts()[2];
-        let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+        let uuids = fixture.controls.uuid_count();
         let fresh = SourceReadContext::from_settings(
             &fixture.settings,
             &fixture._root.path().join("C/settings.json"),
@@ -90,7 +90,7 @@ fn single_editor_existing_after_equivalent_resume() {
             before,
             "zero second source publication"
         );
-        assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+        assert_eq!(fixture.controls.uuid_count(), uuids);
         assert_eq!(std::fs::read(path).unwrap(), after);
         assert!(!target
             .join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME)
@@ -153,7 +153,8 @@ fn single_editor_existing_after_divergent_refusal() {
             &|| {
                 reloads.set(reloads.get() + 1);
                 Ok(())
-            }
+            },
+            &fixture.controls,
         )
         .is_err());
         assert_eq!(source_transition_publication_counts(), effects);
@@ -366,7 +367,8 @@ fn single_editor_original_local_journal_immutable_and_missing_inventory_refusal(
         &fixture.source,
         &operation,
         &expected,
-        &|| Ok(())
+        &|| Ok(()),
+        &fixture.controls,
     )
     .is_err());
     assert_eq!(std::fs::read(private).unwrap(), bytes);
@@ -397,7 +399,7 @@ fn single_editor_original_inventory_topology_and_local_fence() {
         "fresh-request-blocked",
         &fixture.expectation().source,
         &DriverFixture::candidate(),
-        &|| Ok(()),
+        (&|| Ok(()), &fixture.controls),
     );
     assert!(matches!(
         result,
@@ -491,7 +493,9 @@ fn single_editor_pending_physical_source_isolation() {
     let mut candidate_b: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&registered_path).unwrap()).unwrap();
     candidate_b["agents"][0]["command"] = serde_json::json!("updated-own-base");
-    configure_source_durable_cut(Some(("intentInventory", 1)));
+    fixture
+        .controls
+        .configure_durable_cut(Some(("intentInventory", 1)));
     assert!(commit_source_candidate_internal(
         &fixture.settings,
         &fixture.context,
@@ -499,10 +503,10 @@ fn single_editor_pending_physical_source_isolation() {
         "personal-prefence",
         &fixture.initial_revision,
         &DriverFixture::candidate(),
-        &|| Ok(())
+        (&|| Ok(()), &fixture.controls),
     )
     .is_err());
-    configure_source_durable_cut(None);
+    fixture.controls.configure_durable_cut(None);
     let original = read_own_source_journal(&fixture.context).unwrap().1;
     let original_a_bytes: Vec<_> = original
         .intents
@@ -522,7 +526,7 @@ fn single_editor_pending_physical_source_isolation() {
         "base-independent",
         &revision,
         &candidate_b,
-        &|| Ok(()),
+        (&|| Ok(()), &fixture.controls),
     )
     .unwrap();
     let after = read_own_source_journal(&fixture.context).unwrap().1;
