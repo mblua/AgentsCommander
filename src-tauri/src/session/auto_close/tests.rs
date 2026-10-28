@@ -472,8 +472,17 @@ async fn selected_idle_team_closes_as_one_batch_and_clears_selection_once() {
     use crate::telegram::manager::{TelegramBridgeManager, TelegramBridgeState};
     use tauri::Listener;
 
-    const COORDINATOR_CWD: &str = "C:\\repos\\myproj\\.ac\\wg-1-team\\__agent_lead";
-    const MEMBER_CWD: &str = "C:\\repos\\myproj\\.ac\\wg-1-team\\__agent_rust";
+    let root = crate::config::root_agent::root_agent_dir().expect("resolve root agent dir");
+    std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
+    let temp = tempfile::tempdir().unwrap();
+    let team = temp.path().join("myproj/.ac/wg-1-team");
+    let coordinator_cwd = team.join("__agent_lead");
+    let member_cwd = team.join("__agent_rust");
+    for cwd in [&coordinator_cwd, &member_cwd] {
+        std::fs::create_dir_all(cwd).unwrap();
+        assert!(cwd.is_dir());
+        assert_ne!(cwd.canonicalize().unwrap(), root.canonicalize().unwrap());
+    }
 
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let coordinator_session = manager
@@ -482,7 +491,7 @@ async fn selected_idle_team_closes_as_one_batch_and_clears_selection_once() {
         .create_session(
             "shell".to_string(),
             Vec::new(),
-            COORDINATOR_CWD.to_string(),
+            coordinator_cwd.to_string_lossy().into_owned(),
             None,
             None,
             Vec::new(),
@@ -497,7 +506,7 @@ async fn selected_idle_team_closes_as_one_batch_and_clears_selection_once() {
         .create_session(
             "shell".to_string(),
             Vec::new(),
-            MEMBER_CWD.to_string(),
+            member_cwd.to_string_lossy().into_owned(),
             Some("codex".to_string()),
             None,
             Vec::new(),

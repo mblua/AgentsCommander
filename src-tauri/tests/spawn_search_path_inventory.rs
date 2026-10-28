@@ -119,6 +119,18 @@ type Row = (&'static str, usize, usize, &'static [(Reason, usize)]);
 
 const INVENTORY: &[Row] = &[
     (
+        "src-tauri/src/commands/session/destroy/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/phone/mailbox/tests/test_settle/root_protection.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
         "crates/session-bridge/src/bin/agentscommander-api-helper/filesystem/tests.rs",
         1,
         0,
