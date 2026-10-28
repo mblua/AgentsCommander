@@ -39,10 +39,16 @@ fn dry_run_settings(endpoint: String) -> JevSettings {
 /// Test 10: an absent catalog is inert and no HTTP request is issued.
 #[tokio::test]
 async fn classify_dry_run_without_a_catalog_issues_no_request() {
+    let owner = secrets::SecretRules::default();
     let (url, hits) = silent_listener().await;
-    let outcome = classify_dry_run(&Catalog::missing(), "candidate", &dry_run_settings(url))
-        .await
-        .expect("a missing catalog is an abstention, not an error");
+    let outcome = classify_dry_run(
+        &Catalog::missing(),
+        "candidate",
+        &dry_run_settings(url),
+        &owner,
+    )
+    .await
+    .expect("a missing catalog is an abstention, not an error");
     match outcome {
         ClassifyOutcome::Abstained { reason } => {
             assert!(reason.contains("NoCatalogFile"), "{reason}")
@@ -61,37 +67,41 @@ async fn classify_dry_run_without_a_catalog_issues_no_request() {
 /// with neither an excerpt nor a path.
 #[tokio::test]
 async fn classify_dry_run_with_a_seeded_secret_creates_no_file_and_issues_no_request() {
+    let owner = secrets::SecretRules::default();
     let scratch = tempfile::tempdir().unwrap();
     let (url, hits) = silent_listener().await;
     let catalog = Catalog::from_json_str(
         r#"{"categories": {"a": {"destination": "user", "question": "is a?"}}}"#,
     );
     let secret = "AKIAIOSFODNN7EXAMPLE";
-    let outcome = classify_dry_run(&catalog, secret, &dry_run_settings(url))
-        .await
-        .expect("a seeded secret is an abstention, not an error");
-    match outcome {
-        ClassifyOutcome::Abstained { reason } => {
-            assert!(reason.contains("secret detected"), "{reason}");
-            assert!(
-                !reason.contains(secret),
-                "the reason must not carry an excerpt"
-            );
-            assert!(!reason.contains('/'), "the reason must not carry a path");
+    let settings = dry_run_settings(url);
+    for _ in 0..2 {
+        let outcome = classify_dry_run(&catalog, secret, &settings, &owner)
+            .await
+            .expect("a seeded secret is an abstention, not an error");
+        match outcome {
+            ClassifyOutcome::Abstained { reason } => {
+                assert!(reason.contains("secret detected"), "{reason}");
+                assert!(
+                    !reason.contains(secret),
+                    "the reason must not carry an excerpt"
+                );
+                assert!(!reason.contains('/'), "the reason must not carry a path");
+            }
+            other => panic!("a seeded secret must abstain, got {other:?}"),
         }
-        other => panic!("a seeded secret must abstain, got {other:?}"),
+        let entries: Vec<_> = std::fs::read_dir(scratch.path())
+            .unwrap()
+            .flatten()
+            .collect();
+        assert!(entries.is_empty(), "no file may be created anywhere");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "a flagged candidate must never reach the network"
+        );
     }
-    let entries: Vec<_> = std::fs::read_dir(scratch.path())
-        .unwrap()
-        .flatten()
-        .collect();
-    assert!(entries.is_empty(), "no file may be created anywhere");
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(
-        hits.load(Ordering::SeqCst),
-        0,
-        "a flagged candidate must never reach the network"
-    );
 }
 
 fn test_app(project_paths: Vec<String>) -> tauri::App<tauri::test::MockRuntime> {
