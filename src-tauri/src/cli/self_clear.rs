@@ -32,9 +32,8 @@ SELF-HANDOFF.md -> self-clear/<timestamp>_SELF-HANDOFF.md in your root, then inj
 naming \
 that exact archived path to resume from. If the archive rename fails, the prompt points at \
 SELF-HANDOFF.md still in your root.\n\n\
-BEFORE invoking, write SELF-HANDOFF.md in your own root with the notes you need to resume \
-(EXCLUDING \
-anything already recorded in SELF-FORGET.md). If SELF-HANDOFF.md is missing, the command \
+BEFORE invoking, write SELF-HANDOFF.md in your own root following the self-handoff skill. \
+If SELF-HANDOFF.md is missing, the command \
 refuses (clearing \
 with nothing to resume from would wipe your context).\n\n\
 On invocation the command archives SELF-FORGET.md -> self-clear/<timestamp>_SELF-FORGET.md in \
