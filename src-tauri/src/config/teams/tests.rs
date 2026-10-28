@@ -291,11 +291,7 @@ fn issue_3349_team_ports_preserve_native_observations() {
                     .err()
                     .expect("open must fail")
             ),
-            error(
-                std::fs::read_dir(&path)
-                    .err()
-                    .expect("native open must fail")
-            )
+            error(std::fs::read_dir(&path).expect_err("native open must fail"))
         );
     }
 }
