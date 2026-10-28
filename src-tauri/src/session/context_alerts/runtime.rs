@@ -9,6 +9,7 @@ use crate::commands::entity_creation::metadata_is_link_or_reparse;
 use crate::commands::entity_creation::parse_team_from_workgroup_name;
 use crate::commands::entity_creation::read_team_config_classified;
 use crate::commands::entity_creation::TeamConfigReadError;
+use crate::filesystem::session_context;
 use crate::phone::mailbox::InternalNoticeGuard;
 use crate::phone::mailbox::InternalSystemNotice;
 use crate::phone::mailbox::InternalSystemTarget;
@@ -275,7 +276,7 @@ pub(super) fn session_matches_policy_snapshot(
 }
 
 fn canonical_real_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
-    let metadata = std::fs::symlink_metadata(path)
+    let metadata = session_context::inspect_context_source(path)
         .map_err(|error| format!("{} '{}' is not readable: {}", label, path.display(), error))?;
     if !metadata.is_dir() || metadata_is_link_or_reparse(&metadata) {
         return Err(format!(
@@ -284,7 +285,7 @@ fn canonical_real_directory(path: &Path, label: &str) -> Result<PathBuf, String>
             path.display()
         ));
     }
-    std::fs::canonicalize(path)
+    session_context::canonical_context_source(path)
         .map(|canonical| crate::path_utils::normalize_windows_verbatim_path_buf(&canonical))
         .map_err(|error| {
             format!(
@@ -323,7 +324,7 @@ pub(super) fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyR
         (lexical_workgroup, "room"),
         (lexical_ac_root, "Project AC Root"),
     ] {
-        let metadata = match std::fs::symlink_metadata(path) {
+        let metadata = match session_context::inspect_context_source(path) {
             Ok(metadata) => metadata,
             Err(error) => {
                 return MemberPolicyResolution::PermanentIneligible(format!(
@@ -342,7 +343,7 @@ pub(super) fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyR
             ));
         }
     }
-    let canonical_lexical_replica = match std::fs::canonicalize(lexical_replica)
+    let canonical_lexical_replica = match session_context::canonical_context_source(lexical_replica)
         .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
     {
         Ok(path) => path,
@@ -355,7 +356,7 @@ pub(super) fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyR
         }
     };
 
-    let canonical_cwd = match std::fs::canonicalize(&session.working_directory)
+    let canonical_cwd = match session_context::canonical_context_source(&session.working_directory)
         .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
     {
         Ok(path) => path,
