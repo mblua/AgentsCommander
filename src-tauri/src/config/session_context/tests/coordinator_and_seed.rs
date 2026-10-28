@@ -42,7 +42,8 @@ fn assert_minimal_self_handoff_contract(content: &str) {
 #[test]
 fn minimal_self_handoff_contract_is_shared_by_constant_and_root_template() {
     assert_minimal_self_handoff_contract(SELF_MAINTENANCE_AUTO_SECTION);
-    assert_minimal_self_handoff_contract(crate::config::root_agent::default_root_context_template());
+    let template = crate::config::root_agent::default_root_context_template();
+    assert_minimal_self_handoff_contract(template);
     let constant_step = SELF_MAINTENANCE_AUTO_SECTION
         .split("1. Write `SELF-HANDOFF.md`")
         .nth(1)
@@ -65,7 +66,12 @@ fn root_template_before_minimal_handoff_remains_recognized() {
     let current = crate::config::root_agent::default_root_context_template().replace("\r\n", "\n");
     let start = current.find("minimal, action-first resume notes").unwrap();
     let end = current[start..].find("\n2. Run:").unwrap() + start;
-    let old_step = "standalone, action-first resume notes (who you are, your open and in-progress work, how to resume, and the FIRST thing to do on return), EXCLUDING everything already in `SELF-FORGET.md`. After the clear you have ZERO memory, so make it self-sufficient. This file is REQUIRED; the command refuses to clear without it.";
+    let old_step = concat!(
+        "standalone, action-first resume notes (who you are, your open and in-progress work, how ",
+        "to resume, and the FIRST thing to do on return), EXCLUDING everything already in `SELF-F",
+        "ORGET.md`. After the clear you have ZERO memory, so make it self-sufficient. This file i",
+        "s REQUIRED; the command refuses to clear without it.",
+    );
     let previous = format!("{}{}{}", &current[..start], old_step, &current[end..]);
     assert!(crate::config::root_agent::is_known_generated_root_context_template(&previous));
 }
