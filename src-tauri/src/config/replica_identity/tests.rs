@@ -89,7 +89,10 @@ fn repair_missing_authoritative_root_does_not_create_it() {
     let error = read_and_repair_wg_replica_config(&replica, &[]).expect_err("missing root");
     assert_eq!(
         error,
-        format!("project '{}' has no Project AC Root directory", temp.path().display())
+        format!(
+            "project '{}' has no Project AC Root directory",
+            temp.path().display()
+        )
     );
     assert_eq!(repair_tree(temp.path()), before);
 }
@@ -111,7 +114,10 @@ fn repair_location_precedes_pending_binding_and_sidecars() {
         // Retain the real packet, but remove setup sidecars to expose writer entry.
         for entry in std::fs::read_dir(&replica).expect("replica entries") {
             let path = entry.expect("entry").path();
-            if path.extension().is_some_and(|extension| extension == "lock") {
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "lock")
+            {
                 std::fs::remove_file(path).expect("remove setup lock");
             }
         }
@@ -138,7 +144,9 @@ fn repair_location_precedes_pending_binding_and_sidecars() {
 #[test]
 fn repair_valid_pending_pair_refuses_structural_repair_without_changing_bytes() {
     let temp = setup_replica(".ac");
-    let replica = temp.path().join("AgentsCommander_ac/.ac/wg-2-dev-team/__agent_tech-lead");
+    let replica = temp
+        .path()
+        .join("AgentsCommander_ac/.ac/wg-2-dev-team/__agent_tech-lead");
     std::fs::write(
         replica.join("config.json"),
         r#"{"identity":"../../../../old/.ac/_agent_tech-lead","context":["notes.md"]}"#,
