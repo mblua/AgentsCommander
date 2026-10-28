@@ -705,11 +705,7 @@ async fn configured_default_shell_invalid_input_leaves_no_session_state_via_web(
         .pending_ids;
     for id in &pending_ids {
         assert!(
-            crate::pty::spawn_diagnostics::record_for(
-                *id,
-                spawn.as_ref()
-            )
-            .is_none(),
+            crate::pty::spawn_diagnostics::record_for(*id, spawn.as_ref()).is_none(),
             "no launch provenance may be recorded for the rejected session"
         );
         assert!(
@@ -790,11 +786,7 @@ async fn configured_default_shell_invalid_payload_leaves_no_session_state_via_we
         .await
         .pending_ids;
     for id in &pending_ids {
-        assert!(crate::pty::spawn_diagnostics::record_for(
-            *id,
-            spawn.as_ref()
-        )
-        .is_none());
+        assert!(crate::pty::spawn_diagnostics::record_for(*id, spawn.as_ref()).is_none());
         assert!(!state.pty_mgr.lock().unwrap().has_session(*id));
         assert!(state.pty_mgr.lock().unwrap().get_pty_size(*id).is_none());
     }
