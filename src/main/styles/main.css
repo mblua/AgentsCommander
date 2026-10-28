@@ -597,6 +597,9 @@ html.light-theme .error-modal-title {
   border-bottom: 1px solid var(--sidebar-border);
   flex-shrink: 0;
 }
+html.light-theme .web-browser-error {
+  color: #b91c1c;
+}
 
 .web-browser-viewport {
   flex: 1;
