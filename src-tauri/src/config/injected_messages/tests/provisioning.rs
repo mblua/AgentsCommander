@@ -480,3 +480,20 @@ fn seeded_file_round_trips_to_pinned_default_without_extra_newline() {
          No action taken; you decide any follow-up.\n\r"
     );
 }
+
+#[test]
+fn registry_owner_shared_empty_and_lazy() {
+    let owners = crate::AppOwners::new();
+    let shared = owners.clone();
+    let isolated = crate::AppOwners::new();
+    assert!(std::sync::Arc::ptr_eq(&owners.messages, &shared.messages));
+    assert!(owners.messages.registry.templates.get().is_none());
+    assert!(isolated.messages.registry.templates.get().is_none());
+    let first = registry(&owners.messages);
+    assert!(first.is_empty());
+    assert!(std::ptr::eq(first, registry(&owners.messages)));
+    assert!(std::ptr::eq(first, registry(&shared.messages)));
+    assert!(isolated.messages.registry.templates.get().is_none());
+    assert!(!std::ptr::eq(first, registry(&isolated.messages)));
+    assert!(registry(&isolated.messages).is_empty());
+}
