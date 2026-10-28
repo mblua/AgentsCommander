@@ -30,6 +30,7 @@ fn open_read_write_temp_handle_conflicts_with_replace_even_with_delete_access() 
                 .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
                 .create_new(true)
                 .open(&temp_path)
+                .map(crate::filesystem::seed_manifest::ManifestFile::from)
                 .unwrap()
         } else {
             open_regular_no_follow(&temp_path, true, true).unwrap()
