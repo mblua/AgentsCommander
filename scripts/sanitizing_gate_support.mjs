@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { codeOrder } from './sanitizing_baseline.mjs';
-import { scanRust } from './sanitizing_rust_scan.mjs';
+import { createRustScanner } from './sanitizing_rust_scan.mjs';
 
 export function resolveAlias(scan, input, scope, relevantPath) {
   const resolved = scan.resolvePath(input,scope);
@@ -100,8 +100,9 @@ export function runMeasuredGate(snapshot, { gate, rules, newFileRules, inUnivers
   try {
     const trees = [snapshot.baseTree, snapshot.headTree], totals = [{}, {}], byPath = [new Map(), new Map()];
     for (const [side, tree] of trees.entries()) {
+      const scan = createRustScanner(tree, snapshot.readBlob);
       for (const path of [...tree.keys()].filter(path => inUniverse(path)).sort(codeOrder)) {
-        const m = measure(path, scanRust(path, snapshot.readBlob(tree.get(path))));
+        const m = measure(path, scan(path));
         byPath[side].set(path, m);
         for (const rule of rules) totals[side][rule] = (totals[side][rule] ?? 0) + (m.counts[rule] ?? 0);
         measurements[side ? 'head' : 'base'].push({ path, counts: m.counts, sites: m.sites });
