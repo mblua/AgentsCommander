@@ -199,8 +199,9 @@ pub(crate) async fn classify_dry_run(
     catalog: &Catalog,
     text: &str,
     settings: &JevSettings,
+    owner: &secrets::SecretRules,
 ) -> Result<ClassifyOutcome, String> {
-    if let Some(detection) = secrets::detect(text) {
+    if let Some(detection) = secrets::detect(owner, text) {
         return Ok(ClassifyOutcome::abstained(detection.reason()));
     }
     let network = OutboundNetwork::new()

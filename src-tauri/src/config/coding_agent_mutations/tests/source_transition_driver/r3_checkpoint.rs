@@ -13,7 +13,7 @@ fn r3_ready_fixture() -> (DriverFixture, String) {
     let publications = source_transition_publication_counts();
     let effects = source_transition_effect_counts().1;
     let native = crate::config::local_config_io::source_checkpoint_native_calls();
-    let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+    let uuids = fixture.controls.uuid_count();
     let journal_before = read_own_source_journal(&fixture.context).unwrap();
     let reloads = std::cell::Cell::new(0);
     assert!(matches!(
@@ -24,10 +24,13 @@ fn r3_ready_fixture() -> (DriverFixture, String) {
             "absent-admission",
             &snapshot.snapshot.revision,
             &DriverFixture::candidate(),
-            &|| {
-                reloads.set(reloads.get() + 1);
-                Ok(())
-            }
+            (
+                &|| {
+                    reloads.set(reloads.get() + 1);
+                    Ok(())
+                },
+                &fixture.controls
+            ),
         ),
         Err(SourceTransitionError::Preparation(
             SourcePreparationError::ReadOnly
@@ -44,7 +47,7 @@ fn r3_ready_fixture() -> (DriverFixture, String) {
         crate::config::local_config_io::source_checkpoint_native_calls(),
         native
     );
-    assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+    assert_eq!(fixture.controls.uuid_count(), uuids);
     assert_eq!(reloads.get(), 0);
     assert!(!target.exists());
 
@@ -75,7 +78,7 @@ fn r3_ready_fixture() -> (DriverFixture, String) {
     .unwrap();
     assert!(capture.original_targets().is_empty());
     capture.classify(Vec::new()).unwrap();
-    let operation = new_source_transition_id();
+    let operation = new_source_transition_id(&fixture.controls);
     let authority = SourceInventoryProof::for_candidate(
         SourceInventoryInputs {
             settings: &fixture.settings,
@@ -124,7 +127,9 @@ fn r3_ready_fixture() -> (DriverFixture, String) {
         &|| authority.validate(&identity, &lease, &fixture.context),
     )
     .unwrap();
-    configure_source_durable_cut(Some(("prepared", 1)));
+    fixture
+        .controls
+        .configure_durable_cut(Some(("prepared", 1)));
     let result = drive_identity_transition(
         &identity,
         &lease,
@@ -132,7 +137,7 @@ fn r3_ready_fixture() -> (DriverFixture, String) {
         &operation,
         &authority,
         &rediscover,
-        &|| Ok(()),
+        (&|| Ok(()), &fixture.controls),
     );
     assert!(
         matches!(&result, Err(SourceTransitionError::Coordination(
@@ -140,8 +145,8 @@ fn r3_ready_fixture() -> (DriverFixture, String) {
         )) if reason == "durable cut: prepared"),
         "r3 readiness result: {result:?}"
     );
-    SOURCE_DURABLE_CUT.with(|cut| assert!(cut.borrow().0.is_none()));
-    configure_source_durable_cut(None);
+    assert!(fixture.controls.durable_cut_state().0.is_none());
+    fixture.controls.configure_durable_cut(None);
     let journal = read_own_source_journal(&fixture.context).unwrap().1;
     assert!(journal.intents[&operation].before_bytes.is_none());
     assert!(journal.progress[&operation].source_publication.is_none());
@@ -294,7 +299,8 @@ fn single_editor_absent_foreign_identical_refusal() {
             &|| {
                 reloads.set(reloads.get() + 1);
                 Ok(())
-            }
+            },
+            &fixture.controls,
         )
         .is_err());
         assert_eq!(reloads.get(), 0);
@@ -381,7 +387,7 @@ fn single_editor_r3_checkpoint_same_stage() {
         &staged,
         &parent.verify_regular_file(&stage).unwrap()
     ));
-    let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+    let uuids = fixture.controls.uuid_count();
     fixture.resume_at(&fixture.context, &operation).unwrap();
     let target = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
     assert!(!stage.exists());
@@ -395,7 +401,7 @@ fn single_editor_r3_checkpoint_same_stage() {
         complete.progress[&operation].source_publication,
         original.progress[&operation].source_publication
     );
-    assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+    assert_eq!(fixture.controls.uuid_count(), uuids);
     assert_eq!(
         crate::config::local_config_io::source_checkpoint_native_calls(),
         native + 1
@@ -423,7 +429,7 @@ fn single_editor_r3_stage_missing_replaced_modified() {
         }
         let before = std::fs::read(&stage).ok();
         let native = crate::config::local_config_io::source_checkpoint_native_calls();
-        let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+        let uuids = fixture.controls.uuid_count();
         for _ in 0..2 {
             assert!(fixture.resume_at(&fixture.context, &operation).is_err());
         }
@@ -436,7 +442,7 @@ fn single_editor_r3_stage_missing_replaced_modified() {
             crate::config::local_config_io::source_checkpoint_native_calls(),
             native
         );
-        assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+        assert_eq!(fixture.controls.uuid_count(), uuids);
         r3_assert_pending(&fixture, &operation);
     }
 }

@@ -1,4 +1,5 @@
 use crate::config::settings::ProfileCellConfig;
+use crate::filesystem::coding_agent_profiles::{profile_path_symlink_metadata, read_profile_text};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -74,7 +75,7 @@ pub struct ProfileSelectionResolution {
 }
 
 fn read_json_object(path: &Path) -> Option<Value> {
-    let content = std::fs::read_to_string(path).ok()?;
+    let content = read_profile_text(path).ok()?;
     serde_json::from_str::<Value>(&content).ok()
 }
 
@@ -102,7 +103,7 @@ fn write_tooling_string(
     key: &str,
     value: Option<&str>,
 ) -> Result<(), String> {
-    let metadata = std::fs::symlink_metadata(agent_dir).map_err(|e| {
+    let metadata = profile_path_symlink_metadata(agent_dir).map_err(|e| {
         format!(
             "Agent config dir '{}' is not readable: {}",
             agent_dir.display(),

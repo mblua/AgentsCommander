@@ -637,24 +637,12 @@ async fn port_native_protected_unknown() {
 
 async fn port_native_protected_unknown_body() {
     use super::protected_carrier::ProtectedFixture;
-    use crate::config::sessions_persistence::{
-        classify_lifecycle_carrier_scope, CreateCarrierScope,
-    };
     let f = ProtectedFixture::new(true).await;
     let n = &f.native;
     let executor = n.executor();
     let t = n.transaction();
     let entry = n.coordinator.port_test_pending_entry(n.request()).unwrap();
-    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-    assert!(matches!(
-        classify_lifecycle_carrier_scope(
-            &permit,
-            Some(&f.route.target.canonical_fqn),
-            &f.route.target.replica_identity.canonical_path,
-        ),
-        CreateCarrierScope::Protected { .. }
-    ));
-    drop(permit);
+    assert_native_protected_scope(&f).await;
     let lease = n.prepare(entry.operation()).await;
     assert!(executor.has_claim(&lease));
     let receipt = native_receipt(&lease);
@@ -663,53 +651,31 @@ async fn port_native_protected_unknown_body() {
     assert!(released);
     let parent = f.route.target.replica_root.parent().unwrap();
     let unknown = f.parent_source.unwrap();
-    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-    let canonical = crate::path_identity::verify_directory(parent)
-        .unwrap()
-        .canonical_path;
-    assert!(!canonical.starts_with(&f.route.target.replica_identity.canonical_path));
-    assert!(matches!(
-        classify_lifecycle_carrier_scope(&permit, None, &canonical),
-        CreateCarrierScope::Waiting
-    ));
-    drop(permit);
+    let canonical =
+        assert_native_waiting_scope(parent, &f.route.target.replica_identity.canonical_path).await;
     let mut request = n.request();
     request.session_id = unknown;
     let unknown_entry = n.coordinator.port_test_pending_entry(request).unwrap();
     n.pty.lock().unwrap().response_close_state().fail_closed();
-    for (source, operation) in [
-        (n.source, entry.operation()),
-        (unknown, unknown_entry.operation()),
-    ] {
-        assert!(matches!(
-            executor
-                .prepare(&t, operation, Some(source), false, None)
-                .await
-                .unwrap(),
-            LifecycleAdmission::Waiting
-        ));
-        assert_eq!(n.backend.kill_count(source), 0);
-        assert!(n.manager.read().await.get_session(source).await.is_some());
-    }
+    assert_native_waiting_pair(
+        n,
+        executor.as_ref(),
+        &t,
+        [
+            (n.source, entry.operation()),
+            (unknown, unknown_entry.operation()),
+        ],
+    )
+    .await;
     drop(f.carrier);
-    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-    assert!(matches!(
-        classify_lifecycle_carrier_scope(&permit, None, &canonical),
-        CreateCarrierScope::Foreign { .. }
-    ));
-    drop(permit);
-    let LifecycleAdmission::Ready(lease) = executor
-        .prepare(&t, unknown_entry.operation(), Some(unknown), false, None)
-        .await
-        .unwrap()
-    else {
-        panic!("same failed tracker Foreign fallback required")
-    };
-    assert!(!executor.has_claim(&lease));
-    let receipt = native_receipt(&lease);
-    let released = executor.release(lease);
-    assert_eq!(receipt.load(Ordering::Acquire), 1);
-    assert!(released);
+    assert_native_foreign_fallback(
+        executor.as_ref(),
+        &t,
+        &canonical,
+        unknown,
+        unknown_entry.operation(),
+    )
+    .await;
     let _report = n.coordinator.close_and_join().await;
     super::protected_carrier::complete_isolated(concat!(
         "commands::session::selection_executor::tests::executor_port::",
@@ -793,4 +759,93 @@ async fn response_close_cancel_before_tick() {
         super::protected_carrier::complete_isolated(name);
     })
     .await;
+}
+
+async fn assert_native_waiting_pair(
+    n: &NativeFixture,
+    executor: &dyn crate::session::selection::LifecycleExecutor<
+        SelectionTransaction<tauri::test::MockRuntime>,
+    >,
+    t: &SelectionTransaction<tauri::test::MockRuntime>,
+    pairs: [(Uuid, Uuid); 2],
+) {
+    for (source, operation) in pairs {
+        assert!(matches!(
+            executor
+                .prepare(t, operation, Some(source), false, None)
+                .await
+                .unwrap(),
+            LifecycleAdmission::Waiting
+        ));
+        assert_eq!(n.backend.kill_count(source), 0);
+        assert!(n.manager.read().await.get_session(source).await.is_some());
+    }
+}
+
+async fn assert_native_foreign_fallback(
+    executor: &dyn crate::session::selection::LifecycleExecutor<
+        SelectionTransaction<tauri::test::MockRuntime>,
+    >,
+    t: &SelectionTransaction<tauri::test::MockRuntime>,
+    canonical: &std::path::Path,
+    unknown: Uuid,
+    operation: Uuid,
+) {
+    use crate::config::sessions_persistence::{
+        classify_lifecycle_carrier_scope, CreateCarrierScope,
+    };
+    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    assert!(matches!(
+        classify_lifecycle_carrier_scope(&permit, None, canonical),
+        CreateCarrierScope::Foreign { .. }
+    ));
+    drop(permit);
+    let LifecycleAdmission::Ready(lease) = executor
+        .prepare(t, operation, Some(unknown), false, None)
+        .await
+        .unwrap()
+    else {
+        panic!("same failed tracker Foreign fallback required")
+    };
+    assert!(!executor.has_claim(&lease));
+    let receipt = native_receipt(&lease);
+    let released = executor.release(lease);
+    assert_eq!(receipt.load(Ordering::Acquire), 1);
+    assert!(released);
+}
+
+async fn assert_native_protected_scope(f: &super::protected_carrier::ProtectedFixture) {
+    use crate::config::sessions_persistence::{
+        classify_lifecycle_carrier_scope, CreateCarrierScope,
+    };
+    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    assert!(matches!(
+        classify_lifecycle_carrier_scope(
+            &permit,
+            Some(&f.route.target.canonical_fqn),
+            &f.route.target.replica_identity.canonical_path,
+        ),
+        CreateCarrierScope::Protected { .. }
+    ));
+    drop(permit);
+}
+
+async fn assert_native_waiting_scope(
+    parent: &std::path::Path,
+    replica: &std::path::Path,
+) -> std::path::PathBuf {
+    use crate::config::sessions_persistence::{
+        classify_lifecycle_carrier_scope, CreateCarrierScope,
+    };
+    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    let canonical = crate::path_identity::verify_directory(parent)
+        .unwrap()
+        .canonical_path;
+    assert!(!canonical.starts_with(replica));
+    assert!(matches!(
+        classify_lifecycle_carrier_scope(&permit, None, &canonical),
+        CreateCarrierScope::Waiting
+    ));
+    drop(permit);
+    canonical
 }

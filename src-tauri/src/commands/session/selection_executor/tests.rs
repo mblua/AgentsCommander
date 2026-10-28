@@ -107,38 +107,9 @@ async fn assert_ordinary_target_released(f: &native_fixture::NativeFixture, sour
 }
 
 async fn public_native_case(root: bool, interrupted: bool) {
-    use crate::pty::backend::PtyBackend;
-    use crate::pty::manager::PtyManager;
-    use crate::session::selection::SelectionPortTestEvent as Event;
     use native_fixture::{root_request, NativeFixture};
     let f = NativeFixture::running().await;
-    if root {
-        f.manager
-            .read()
-            .await
-            .set_is_root_agent(f.source, true)
-            .await;
-        if interrupted {
-            let teardown = crate::commands::session::restart::teardown_old_for_restart(
-                &f.transaction(),
-                f.source,
-                false,
-            )
-            .await;
-            assert!(teardown.is_ok());
-            f.manager.read().await.mark_exited(f.source, 0).await;
-            let row = f.manager.read().await.get_session(f.source).await.unwrap();
-            assert!(matches!(
-                row.status,
-                crate::session::session::SessionStatus::Exited(_)
-            ));
-            assert!(matches!(
-                PtyManager::snapshot_route_proof(&f.pty, f.source),
-                Err(crate::errors::AppError::SessionNotFound(id)) if id == f.source.to_string()
-            ));
-            assert!(!f.backend.has_session(f.source));
-        }
-    }
+    prepare_public_native_root(&f, root, interrupted).await;
     let initial = crate::path_identity::verify_directory(f.cwd.path()).unwrap();
     let spawns = f.backend.spawn_count();
     let (at_a, resume_a) = f.schedule.gate(false);
@@ -180,36 +151,7 @@ async fn public_native_case(root: bool, interrupted: bool) {
             .unwrap(),
         (!interrupted, true, 0)
     );
-    let (receipt, trace, operation) = {
-        let records = f.receipt_records();
-        let matched: Vec<_> = records
-            .iter()
-            .filter(|r| r.source == if root { None } else { Some(f.source) })
-            .collect();
-        assert_eq!(matched.len(), 1);
-        let record = matched[0];
-        assert_eq!(record.outcome, Some((!interrupted, !interrupted)));
-        assert_eq!(record.receipt.load(Ordering::Acquire), 0);
-        assert!(record.claimed);
-        assert!(!record
-            .trace
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|(_, _, event)| matches!(
-                event,
-                Event::TransactionDropped
-                    | Event::EntryDropped
-                    | Event::HoldReleased
-                    | Event::ResponseDropped
-                    | Event::ResponseAttempted
-            )));
-        (
-            record.receipt.clone(),
-            record.trace.clone(),
-            record.operation,
-        )
-    };
+    let (receipt, trace, operation) = public_native_receipts(&f, root, interrupted);
     resume_b.send(()).unwrap();
     let mut caller = Some(caller);
     let result = if interrupted {
@@ -219,112 +161,20 @@ async fn public_native_case(root: bool, interrupted: bool) {
     };
     f.coordinator.snapshot().await.unwrap();
     assert_eq!(receipt.load(Ordering::Acquire), 1);
-    let mut expected = if interrupted {
-        vec![
-            Event::Validate(true),
-            Event::Accepted(true),
-            Event::NativeEntered,
-            Event::NativeOutcome(false, false),
-            Event::TransactionDropped,
-            Event::EntryDropped,
-            Event::HoldReleased,
-            Event::ResponseDropped,
-        ]
-    } else {
-        vec![
-            Event::Validate(true),
-            Event::Accepted(true),
-            Event::NativeEntered,
-            Event::NativeOutcome(true, true),
-            Event::ReleaseAwaitBefore,
-            Event::ReleaseAwaitAfter,
-            Event::TransactionDropped,
-            Event::EntryDropped,
-            Event::HoldReleased,
-            Event::ResponseAttempted,
-        ]
-    };
-    if root {
-        expected.insert(0, Event::RootDirectoryComplete(true));
-    }
-    let events = trace.lock().unwrap().clone();
-    assert_eq!(
-        events.iter().map(|(_, _, e)| *e).collect::<Vec<_>>(),
-        expected
-    );
-    assert!(events
-        .iter()
-        .all(|(op, nonce, _)| *op == operation && *nonce == events[0].1));
-    assert_ne!(events[0].1, Uuid::nil());
+    let events = assert_public_native_trace(&trace, operation, root, interrupted);
     if root || interrupted {
         assert_eq!(f.backend.spawn_count(), spawns);
     }
     if interrupted {
         let caller = caller.take().unwrap();
         assert!(!caller.is_finished());
-        assert!(f.manager.read().await.get_session(f.source).await.is_some());
-        assert_eq!(f.backend.kill_count(f.source), usize::from(root));
-        std::fs::remove_dir(f.cwd.path()).unwrap();
-        std::fs::rename(&backup, f.cwd.path()).unwrap();
-        assert_eq!(
-            initial.object_id,
-            crate::path_identity::verify_directory(f.cwd.path())
-                .unwrap()
-                .object_id
-        );
+        assert_public_native_interrupted(&f, root, &backup, &initial).await;
         caller.abort();
         assert!(caller.await.unwrap_err().is_cancelled());
     } else {
-        let row = result.unwrap();
-        let id = Uuid::parse_str(&row.id).unwrap();
-        assert_eq!(id == f.source, root);
-        assert!(f.backend.has_session(id));
-        if root {
-            assert_eq!(f.backend.kill_count(f.source), 0);
-            assert_eq!(
-                initial.object_id,
-                crate::path_identity::verify_directory(f.cwd.path())
-                    .unwrap()
-                    .object_id
-            );
-        } else {
-            assert!(f.manager.read().await.get_session(f.source).await.is_none());
-            assert_ordinary_target_released(&f, id).await;
-        }
+        assert_public_native_success(&f, root, result.unwrap(), &initial).await;
     }
-    let executor = f.executor();
-    let transaction = f.transaction();
-    if root {
-        let path = {
-            let outcomes = f.schedule.root_outcomes();
-            let matched: Vec<_> = outcomes
-                .iter()
-                .filter(|(op, _, _)| *op == operation)
-                .collect();
-            assert_eq!(matched.len(), 1);
-            assert_eq!(matched[0].1, events[0].1);
-            matched[0].2.clone().unwrap()
-        };
-        let LifecycleAdmission::Ready(lease) = executor
-            .prepare(&transaction, Uuid::new_v4(), None, true, Some(&path))
-            .await
-            .unwrap()
-        else {
-            panic!("original root target must be reacquired")
-        };
-        assert!(executor.has_claim(&lease));
-        let receipt = native_fixture::native_receipt(&lease);
-        let released = executor.release(lease);
-        assert_eq!(receipt.load(Ordering::Acquire), 1);
-        assert!(released);
-    } else {
-        let source = if interrupted {
-            f.source
-        } else {
-            f.create_source().await
-        };
-        assert_ordinary_target_released(&f, source).await;
-    }
+    reacquire_public_native_target(&f, root, interrupted, operation, events[0].1).await;
     let state = f.coordinator.port_test_state();
     assert_eq!(
         (
@@ -427,8 +277,6 @@ async fn port_native_trace_restore() {
 }
 
 async fn port_native_trace_restore_body() {
-    use crate::pty::backend::PtyBackend;
-    use crate::pty::manager::PtyManager;
     use native_fixture::NativeFixture;
     let mut f = NativeFixture::build(false).await;
     f.coordinator.start(f.app.handle().clone()).unwrap();
@@ -439,26 +287,7 @@ async fn port_native_trace_restore_body() {
     assert_eq!(nonce, f.coordinator.port_test_active_restore_nonce());
     assert!(transaction.has_active_restore_capability());
     f.source = f.restore_source(&transaction).await;
-    let row = f.manager.read().await.get_session(f.source).await.unwrap();
-    assert!(!matches!(
-        row.status,
-        crate::session::session::SessionStatus::Exited(_)
-    ));
-    assert!(!row.is_root_agent);
-    assert!(PtyManager::snapshot_route_proof(&f.pty, f.source)
-        .unwrap()
-        .saved_cwd_matches_path(f.cwd.path()));
-    let manager = f.manager.read().await.clone();
-    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-    assert!(
-        manager
-            .with_current_carrier_snapshot(&permit, |current| !current
-                .pending_ids
-                .contains(&f.source))
-            .await
-    );
-    drop(permit);
-    assert!(f.backend.has_session(f.source));
+    assert_restored_native_source(&f).await;
     let (at_a, resume_a) = f.schedule.gate(false);
     let (at_b, resume_b) = f.schedule.gate(true);
     let coordinator = f.coordinator.clone();
@@ -507,16 +336,7 @@ async fn port_native_trace_restore_body() {
     };
     resume_b.send(()).unwrap();
     let result = caller.await.unwrap().unwrap();
-    assert_ne!(result.id, f.source.to_string());
-    f.coordinator.snapshot().await.unwrap();
-    assert_eq!(receipt.load(Ordering::Acquire), 1);
-    assert_eq!(f.coordinator.port_test_active_restore_nonce(), None);
-    assert!(!transaction.has_active_restore_capability());
-    assert!(f.backend.has_session(Uuid::parse_str(&result.id).unwrap()));
-    assert!(f.manager.read().await.get_session(f.source).await.is_none());
-    assert_ordinary_target_released(&f, Uuid::parse_str(&result.id).unwrap()).await;
-    let original = f.create_source().await;
-    assert_ordinary_target_released(&f, original).await;
+    assert_restored_native_release(&f, &transaction, &result, &receipt).await;
     let _report = f.coordinator.close_and_join().await;
     protected_carrier::complete_isolated(concat!(
         "commands::session::selection_executor::tests::",
@@ -889,4 +709,259 @@ async fn port_native_wrong_payload_fixture_body() {
         "commands::session::selection_executor::tests::",
         "port_native_wrong_payload_fixture"
     ));
+}
+
+async fn prepare_public_native_root(
+    f: &native_fixture::NativeFixture,
+    root: bool,
+    interrupted: bool,
+) {
+    use crate::pty::backend::PtyBackend;
+    use crate::pty::manager::PtyManager;
+    if root {
+        f.manager
+            .read()
+            .await
+            .set_is_root_agent(f.source, true)
+            .await;
+        if interrupted {
+            let teardown = crate::commands::session::restart::teardown_old_for_restart(
+                &f.transaction(),
+                f.source,
+                false,
+            )
+            .await;
+            assert!(teardown.is_ok());
+            f.manager.read().await.mark_exited(f.source, 0).await;
+            let row = f.manager.read().await.get_session(f.source).await.unwrap();
+            assert!(matches!(
+                row.status,
+                crate::session::session::SessionStatus::Exited(_)
+            ));
+            assert!(matches!(
+                PtyManager::snapshot_route_proof(&f.pty, f.source),
+                Err(crate::errors::AppError::SessionNotFound(id)) if id == f.source.to_string()
+            ));
+            assert!(!f.backend.has_session(f.source));
+        }
+    }
+}
+
+fn public_native_receipts(
+    f: &native_fixture::NativeFixture,
+    root: bool,
+    interrupted: bool,
+) -> (
+    Arc<AtomicU8>,
+    crate::session::selection::SelectionPortTestTrace,
+    Uuid,
+) {
+    use crate::session::selection::SelectionPortTestEvent as Event;
+    let records = f.receipt_records();
+    let matched: Vec<_> = records
+        .iter()
+        .filter(|r| r.source == if root { None } else { Some(f.source) })
+        .collect();
+    assert_eq!(matched.len(), 1);
+    let record = matched[0];
+    assert_eq!(record.outcome, Some((!interrupted, !interrupted)));
+    assert_eq!(record.receipt.load(Ordering::Acquire), 0);
+    assert!(record.claimed);
+    assert!(!record
+        .trace
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(_, _, event)| matches!(
+            event,
+            Event::TransactionDropped
+                | Event::EntryDropped
+                | Event::HoldReleased
+                | Event::ResponseDropped
+                | Event::ResponseAttempted
+        )));
+    (
+        record.receipt.clone(),
+        record.trace.clone(),
+        record.operation,
+    )
+}
+
+fn assert_public_native_trace(
+    trace: &crate::session::selection::SelectionPortTestTrace,
+    operation: Uuid,
+    root: bool,
+    interrupted: bool,
+) -> Vec<(
+    Uuid,
+    Uuid,
+    crate::session::selection::SelectionPortTestEvent,
+)> {
+    use crate::session::selection::SelectionPortTestEvent as Event;
+    let mut expected = if interrupted {
+        vec![
+            Event::Validate(true),
+            Event::Accepted(true),
+            Event::NativeEntered,
+            Event::NativeOutcome(false, false),
+            Event::TransactionDropped,
+            Event::EntryDropped,
+            Event::HoldReleased,
+            Event::ResponseDropped,
+        ]
+    } else {
+        vec![
+            Event::Validate(true),
+            Event::Accepted(true),
+            Event::NativeEntered,
+            Event::NativeOutcome(true, true),
+            Event::ReleaseAwaitBefore,
+            Event::ReleaseAwaitAfter,
+            Event::TransactionDropped,
+            Event::EntryDropped,
+            Event::HoldReleased,
+            Event::ResponseAttempted,
+        ]
+    };
+    if root {
+        expected.insert(0, Event::RootDirectoryComplete(true));
+    }
+    let events = trace.lock().unwrap().clone();
+    assert_eq!(
+        events.iter().map(|(_, _, e)| *e).collect::<Vec<_>>(),
+        expected
+    );
+    assert!(events
+        .iter()
+        .all(|(op, nonce, _)| *op == operation && *nonce == events[0].1));
+    assert_ne!(events[0].1, Uuid::nil());
+    events
+}
+
+async fn assert_public_native_interrupted(
+    f: &native_fixture::NativeFixture,
+    root: bool,
+    backup: &std::path::Path,
+    initial: &crate::path_identity::VerifiedPathIdentity,
+) {
+    assert!(f.manager.read().await.get_session(f.source).await.is_some());
+    assert_eq!(f.backend.kill_count(f.source), usize::from(root));
+    std::fs::remove_dir(f.cwd.path()).unwrap();
+    std::fs::rename(backup, f.cwd.path()).unwrap();
+    assert_eq!(
+        initial.object_id,
+        crate::path_identity::verify_directory(f.cwd.path())
+            .unwrap()
+            .object_id
+    );
+}
+
+async fn assert_public_native_success(
+    f: &native_fixture::NativeFixture,
+    root: bool,
+    row: crate::session::session::SessionInfo,
+    initial: &crate::path_identity::VerifiedPathIdentity,
+) {
+    use crate::pty::backend::PtyBackend;
+    let id = Uuid::parse_str(&row.id).unwrap();
+    assert_eq!(id == f.source, root);
+    assert!(f.backend.has_session(id));
+    if root {
+        assert_eq!(f.backend.kill_count(f.source), 0);
+        assert_eq!(
+            initial.object_id,
+            crate::path_identity::verify_directory(f.cwd.path())
+                .unwrap()
+                .object_id
+        );
+    } else {
+        assert!(f.manager.read().await.get_session(f.source).await.is_none());
+        assert_ordinary_target_released(f, id).await;
+    }
+}
+
+async fn reacquire_public_native_target(
+    f: &native_fixture::NativeFixture,
+    root: bool,
+    interrupted: bool,
+    operation: Uuid,
+    nonce: Uuid,
+) {
+    let executor = f.executor();
+    let transaction = f.transaction();
+    if root {
+        let path = {
+            let outcomes = f.schedule.root_outcomes();
+            let matched: Vec<_> = outcomes
+                .iter()
+                .filter(|(op, _, _)| *op == operation)
+                .collect();
+            assert_eq!(matched.len(), 1);
+            assert_eq!(matched[0].1, nonce);
+            matched[0].2.clone().unwrap()
+        };
+        let LifecycleAdmission::Ready(lease) = executor
+            .prepare(&transaction, Uuid::new_v4(), None, true, Some(&path))
+            .await
+            .unwrap()
+        else {
+            panic!("original root target must be reacquired")
+        };
+        assert!(executor.has_claim(&lease));
+        let receipt = native_fixture::native_receipt(&lease);
+        let released = executor.release(lease);
+        assert_eq!(receipt.load(Ordering::Acquire), 1);
+        assert!(released);
+    } else {
+        let source = if interrupted {
+            f.source
+        } else {
+            f.create_source().await
+        };
+        assert_ordinary_target_released(f, source).await;
+    }
+}
+
+async fn assert_restored_native_source(f: &native_fixture::NativeFixture) {
+    use crate::pty::backend::PtyBackend;
+    use crate::pty::manager::PtyManager;
+    let row = f.manager.read().await.get_session(f.source).await.unwrap();
+    assert!(!matches!(
+        row.status,
+        crate::session::session::SessionStatus::Exited(_)
+    ));
+    assert!(!row.is_root_agent);
+    assert!(PtyManager::snapshot_route_proof(&f.pty, f.source)
+        .unwrap()
+        .saved_cwd_matches_path(f.cwd.path()));
+    let manager = f.manager.read().await.clone();
+    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    assert!(
+        manager
+            .with_current_carrier_snapshot(&permit, |current| !current
+                .pending_ids
+                .contains(&f.source))
+            .await
+    );
+    drop(permit);
+    assert!(f.backend.has_session(f.source));
+}
+
+async fn assert_restored_native_release(
+    f: &native_fixture::NativeFixture,
+    transaction: &SelectionTransaction<tauri::test::MockRuntime>,
+    result: &crate::session::session::SessionInfo,
+    receipt: &AtomicU8,
+) {
+    use crate::pty::backend::PtyBackend;
+    assert_ne!(result.id, f.source.to_string());
+    f.coordinator.snapshot().await.unwrap();
+    assert_eq!(receipt.load(Ordering::Acquire), 1);
+    assert_eq!(f.coordinator.port_test_active_restore_nonce(), None);
+    assert!(!transaction.has_active_restore_capability());
+    assert!(f.backend.has_session(Uuid::parse_str(&result.id).unwrap()));
+    assert!(f.manager.read().await.get_session(f.source).await.is_none());
+    assert_ordinary_target_released(f, Uuid::parse_str(&result.id).unwrap()).await;
+    let original = f.create_source().await;
+    assert_ordinary_target_released(f, original).await;
 }
