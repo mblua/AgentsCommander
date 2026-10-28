@@ -775,3 +775,83 @@ pub(super) fn read_response_json(cwd: &Path, request_id: &str) -> Option<serde_j
     let content = std::fs::read_to_string(&resp).ok()?;
     serde_json::from_str(&content).ok()
 }
+
+/// P18 uses the existing exact-child supervisor and its after-assertion receipt.
+pub(super) fn p18_isolated_child_or_parent(row: &str) -> bool {
+    const MARKER: &str = "AC_P18_ISOLATED_CHILD";
+    const IDENTITY: &str = "AC_P18_ISOLATED_IDENTITY";
+    assert!(matches!(
+        row,
+        "worker_rejects"
+            | "input_error_no_replay"
+            | "reject_io_pending"
+            | "followup_eligibility"
+    ));
+    let wrapper = format!(
+        "phone::mailbox::tests::wake_dispatch_2::issue_3263_minimal_retained_{row}"
+    );
+    if let Some(marked) = std::env::var_os(MARKER) {
+        assert_eq!(marked.to_str(), Some(wrapper.as_str()));
+        let identity = std::env::var(IDENTITY).expect("P18 child identity");
+        let (run, expected) = identity.split_once('|').expect("run-bound P18 identity");
+        Uuid::parse_str(run).expect("P18 parent nonce");
+        assert_eq!(expected, wrapper);
+        let config = PathBuf::from(
+            std::env::var_os("AGENTSCOMMANDER_CONFIG_DIR").expect("P18 child config"),
+        );
+        let test_config = PathBuf::from(
+            std::env::var_os("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("P18 test config"),
+        );
+        assert!(config.is_absolute());
+        assert_eq!(config, test_config);
+        assert_eq!(crate::config::config_dir().as_ref(), Some(&config));
+        assert!(!config
+            .join("completion.txt")
+            .try_exists()
+            .expect("inspect P18 receipt"));
+        return false;
+    }
+    assert!(std::env::var_os(IDENTITY).is_none());
+    let directory = tempfile::tempdir().expect("P18 child directory");
+    let path = directory
+        .path()
+        .canonicalize()
+        .expect("absolute P18 directory");
+    let identity = format!("{}|{wrapper}", Uuid::new_v4());
+    let stdout = std::fs::File::create(path.join("stdout.log")).expect("P18 stdout");
+    let stderr = std::fs::File::create(path.join("stderr.log")).expect("P18 stderr");
+    let mut command =
+        std::process::Command::new(std::env::current_exe().expect("test executable"));
+    command
+        .args([wrapper.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+        .stdin(std::process::Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr)
+        .env(MARKER, &wrapper)
+        .env(IDENTITY, &identity)
+        .env("AGENTSCOMMANDER_CONFIG_DIR", &path)
+        .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let child = command.spawn().expect("spawn exact P18 child");
+    let mut owner = RetainedSourceChild {
+        child,
+        directory: Some(directory),
+        reaped: false,
+    };
+    owner.supervise(&identity, "p18-isolated");
+    true
+}
+
+pub(super) fn complete_p18_isolated_child(row: &str) {
+    assert!(std::env::var_os("AC_P18_ISOLATED_CHILD").is_some());
+    assert!(!p18_isolated_child_or_parent(row));
+    let identity = std::env::var("AC_P18_ISOLATED_IDENTITY").expect("P18 completion identity");
+    let config = PathBuf::from(
+        std::env::var_os("AGENTSCOMMANDER_CONFIG_DIR").expect("P18 completion config"),
+    );
+    std::fs::write(config.join("completion.txt"), identity).expect("P18 assertion receipt");
+}

@@ -711,6 +711,9 @@ async fn poll_split_counts_transient_attempts_across_cycles() {
 
 #[tokio::test]
 async fn issue_3263_minimal_retained_worker_rejects() {
+    if super::support_wake::p18_isolated_child_or_parent("worker_rejects") {
+        return;
+    }
     use super::support_retained_cells::{assert_minimal_retired, minimal_retained_worker};
     assert_eq!(
         super::super::handoff::ERR_OWNED_WAKE_RETAINED,
@@ -734,19 +737,27 @@ async fn issue_3263_minimal_retained_worker_rejects() {
     let reason = std::fs::read_to_string(dir.join(format!("{id}.reason.txt"))).unwrap();
     assert!(reason.contains("fixture_source_core_refused") && reason.contains("uncertain"));
     assert!(!worker.origin.exists());
+    super::support_wake::complete_p18_isolated_child("worker_rejects");
 }
 
 #[tokio::test]
 async fn issue_3263_minimal_retained_input_error_no_replay() {
+    if super::support_wake::p18_isolated_child_or_parent("input_error_no_replay") {
+        return;
+    }
     use super::support_retained_cells::{assert_minimal_retired, minimal_retained_worker};
     let mut worker = Box::pin(minimal_retained_worker(true)).await;
     Box::pin(assert_minimal_retired(&mut worker)).await;
     // Backend failure returns before recording bytes; stage/failed receipt proves the attempt.
     assert!(!worker.origin.exists());
+    super::support_wake::complete_p18_isolated_child("input_error_no_replay");
 }
 
 #[tokio::test]
 async fn issue_3263_minimal_retained_reject_io_pending() {
+    if super::support_wake::p18_isolated_child_or_parent("reject_io_pending") {
+        return;
+    }
     use super::super::handoff::wake_claim_path;
     use super::support_retained_cells::{assert_minimal_retired, minimal_retained_worker};
     Box::pin(super::support_retained_cells::minimal_retained_missing_eight()).await;
@@ -892,10 +903,14 @@ async fn issue_3263_minimal_retained_reject_io_pending() {
             assert!(!payload.exists());
         }
     }
+    super::support_wake::complete_p18_isolated_child("reject_io_pending");
 }
 
 #[tokio::test]
 async fn issue_3263_minimal_retained_followup_eligibility() {
+    if super::support_wake::p18_isolated_child_or_parent("followup_eligibility") {
+        return;
+    }
     {
         use super::support_retained_cells::{assert_minimal_retired, minimal_retained_worker};
         let mut worker = Box::pin(minimal_retained_worker(false)).await;
@@ -981,4 +996,5 @@ async fn issue_3263_minimal_retained_followup_eligibility() {
         .unwrap()
         .join("delivered/followup.json")
         .exists());
+    super::support_wake::complete_p18_isolated_child("followup_eligibility");
 }
