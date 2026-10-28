@@ -32,6 +32,7 @@ mod window_list;
 mod window_screenshot;
 mod workgroup;
 
+use crate::filesystem::{directories, documents};
 use clap::{Parser, Subcommand};
 
 /// Print to stdout with BrokenPipe tolerance. If the underlying write fails
@@ -412,7 +413,7 @@ pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), Stri
 
     // Accept master token from persisted file
     if let Some(master_path) = crate::config::config_dir().map(|d| d.join("master-token.txt")) {
-        if let Ok(master) = std::fs::read_to_string(&master_path) {
+        if let Ok(master) = documents::read_cli_outbox_text(&master_path) {
             if master.trim() == token {
                 return Ok((token, true));
             }
@@ -562,9 +563,9 @@ fn execute_plain_clear(args: plain_clear::PlainClearArgs) -> i32 {
     let outbox_dir = if is_root {
         crate::config::config_dir()
             .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|p| documents::read_cli_outbox_text(&p).ok())
             .map(|s| PathBuf::from(s.trim()))
-            .filter(|p| p.is_dir())
+            .filter(|p| directories::cli_discovery_is_dir(p))
             .unwrap_or_else(|| ac_dir.join("outbox"))
     } else {
         ac_dir.join("outbox")
@@ -575,7 +576,7 @@ fn execute_plain_clear(args: plain_clear::PlainClearArgs) -> i32 {
         .join("rejected")
         .join(format!("{msg_id}.reason.txt"));
     let delivered_path = outbox_dir.join("delivered").join(format!("{msg_id}.json"));
-    let read_optional = |path: &std::path::Path| match std::fs::read_to_string(path) {
+    let read_optional = |path: &std::path::Path| match documents::read_cli_outbox_text(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.to_string()),
@@ -591,21 +592,20 @@ fn execute_plain_clear(args: plain_clear::PlainClearArgs) -> i32 {
         plain_clear::Callbacks {
             publish: || {
                 let bytes = serde_json::to_vec_pretty(&message).map_err(|e| e.to_string())?;
-                std::fs::create_dir_all(&outbox_dir).map_err(|e| e.to_string())?;
-                std::fs::write(&request_path, bytes).map_err(|e| e.to_string())
+                directories::ensure_cli_outbox(&outbox_dir).map_err(|e| e.to_string())?;
+                documents::write_cli_outbox_message(&request_path, &bytes)
+                    .map_err(|e| e.to_string())
             },
             read: || plain_clear::Observation {
                 ack: read_optional(&ack_path),
                 rejection: read_optional(&rejection_path),
-                delivered: std::fs::metadata(&delivered_path)
-                    .map(|m| m.is_file())
-                    .or_else(|e| {
-                        if e.kind() == std::io::ErrorKind::NotFound {
-                            Ok(false)
-                        } else {
-                            Err(e.to_string())
-                        }
-                    }),
+                delivered: documents::cli_outbox_delivery_is_file(&delivered_path).or_else(|e| {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        Ok(false)
+                    } else {
+                        Err(e.to_string())
+                    }
+                }),
             },
             now: || clock.elapsed(),
             wait: std::thread::sleep,
