@@ -394,3 +394,32 @@ pub(crate) fn rename_ui_automation_file(from: &Path, to: &Path) -> io::Result<()
 pub(crate) fn remove_ui_automation_file(path: &Path) -> io::Result<()> {
     std::fs::remove_file(path)
 }
+
+pub(crate) fn read_config_document(path: &Path) -> io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+pub(crate) fn read_agent_activity_bytes(path: &Path) -> io::Result<Vec<u8>> {
+    std::fs::read(path)
+}
+
+pub(crate) fn config_document_exists(path: &Path) -> bool {
+    path.exists()
+}
+
+pub(crate) fn canonical_config_document(path: &Path) -> io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+pub(crate) fn append_config_ignore_rows(
+    path: &Path,
+    separator: &str,
+    rows: &str,
+) -> io::Result<()> {
+    use std::io::Write as _;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(format!("{separator}{rows}").as_bytes()))
+}

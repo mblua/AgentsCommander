@@ -9,6 +9,7 @@
 
 pub(crate) mod ac_root_gitignore;
 
+use crate::filesystem::config_locations;
 use crate::filesystem::projects as project_fs;
 use std::collections::HashSet;
 use std::ops::ControlFlow;
@@ -376,12 +377,13 @@ where
     // `create_dir` below can race-detect properly. `create_dir_all` is
     // idempotent on an already-existing dir, so this costs nothing extra
     // when PATH is already there.
-    std::fs::create_dir_all(&abs).map_err(|e| ProjectError::AcRootCreateFailed(abs.clone(), e))?;
+    config_locations::ensure_shared_directories(&abs)
+        .map_err(|e| ProjectError::AcRootCreateFailed(abs.clone(), e))?;
 
     let ac_root = ac_root_for_project(&abs);
     // The create syscall is the sole creation-intent authority. An earlier
     // existence observation cannot distinguish this caller from a contender.
-    let created = match std::fs::create_dir(&ac_root) {
+    let created = match config_locations::create_shared_directory(&ac_root) {
         Ok(()) => true,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
         Err(e) => return Err(ProjectError::AcRootCreateFailed(ac_root.clone(), e)),
