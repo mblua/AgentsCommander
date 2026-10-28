@@ -1314,15 +1314,15 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          printf 'testedSha=%s GITHUB_SHA=%s run=%s attempt=%s PR-head=%s
-'             "$(git rev-parse HEAD)" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$PR_HEAD_SHA"
+          printf 'testedSha=%s GITHUB_SHA=%s run=%s attempt=%s PR-head=%s\n' \
+            "$(git rev-parse HEAD)" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$PR_HEAD_SHA"
           EXPECTED=1
           for FILTER in h2_literal_backslash_identity verify_directory_reason_rejects_symlinked_component h2_protection_resolved_alias; do
             cargo test --locked --lib "$FILTER" -- --list 2>&1 | tee "test-3318-$FILTER-list.log"
             grep -qE "::$FILTER: test$" "test-3318-$FILTER-list.log"
             cargo test --locked --lib "$FILTER" -- --test-threads=1 2>&1 | tee "test-3318-$FILTER.log"
             grep -qE "^test .*::$FILTER [.][.][.] ok$" "test-3318-$FILTER.log"
-            grep -qE "^test result: ok. ${EXPECTED} passed; 0 failed" "test-3318-$FILTER.log"
+            grep -qE "^test result: ok\\. ${EXPECTED} passed; 0 failed" "test-3318-$FILTER.log"
             grep -qE '; 0 ignored;' "test-3318-$FILTER.log"
           done
           sha256sum test-3318-*.log
