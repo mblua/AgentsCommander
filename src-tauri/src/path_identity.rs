@@ -18,6 +18,7 @@ mod terminal_output;
 
 pub use json::parse_json_no_duplicates;
 pub use json::scan_json_document;
+pub(crate) use json::validate_ac_configuration_json;
 #[cfg(all(test, windows))]
 use regular::atomic_replace_existing;
 pub use regular::is_verified_descendant;

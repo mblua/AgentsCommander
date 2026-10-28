@@ -4,6 +4,39 @@ use serde::de::MapAccess;
 use serde::de::SeqAccess;
 use serde::de::Visitor;
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ConfigurationJsonFault {
+    path: PathBuf,
+}
+
+impl std::fmt::Display for ConfigurationJsonFault {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "duplicateJsonMember: {}", self.path.display())
+    }
+}
+
+/// Only a complete scan can identify a duplicate configuration member.
+/// Syntax errors remain the responsibility of the caller's ordinary parser.
+pub(crate) fn configuration_json_fault(
+    path: &Path,
+    bytes: &[u8],
+) -> Option<ConfigurationJsonFault> {
+    let document = scan_json_document(bytes).ok()?;
+    document.duplicate_keys.then(|| ConfigurationJsonFault {
+        path: path.to_path_buf(),
+    })
+}
+
+/// Reject duplicate members without changing the caller's syntax-error policy.
+/// `Ok(())` does not assert that the input is valid JSON.
+pub(crate) fn validate_ac_configuration_json(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(fault) = configuration_json_fault(path, bytes) {
+        return Err(fault.to_string());
+    }
+    Ok(())
+}
 
 pub struct ScannedJsonDocument {
     pub value: serde_json::Value,

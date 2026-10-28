@@ -51,6 +51,7 @@ where
     let mut root = if path.exists() {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+        crate::path_identity::validate_ac_configuration_json(path, content.as_bytes())?;
         let parsed: Value = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;
         if !parsed.is_object() {
@@ -146,3 +147,6 @@ where
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
