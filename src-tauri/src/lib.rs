@@ -600,3 +600,19 @@ impl<R: tauri::Runtime> update_check::UpdateCheckHost for tauri::AppHandle<R> {
         Clone::clone(tauri::Manager::state::<network::OutboundNetwork>(self).inner())
     }
 }
+
+impl restore::RestoreStartupTask for tauri::async_runtime::JoinHandle<()> {
+    type Error = tauri::Error;
+    fn spawn_owned(future: futures::future::BoxFuture<'static, ()>) -> Self {
+        tauri::async_runtime::spawn(future)
+    }
+}
+
+impl resource_monitor::watchdog::ResourceWatchdogTaskScope for ShutdownSignal {
+    fn token(&self) -> &tokio_util::sync::CancellationToken {
+        ShutdownSignal::token(self)
+    }
+    fn spawn_owned(&self, future: futures::future::BoxFuture<'static, ()>) {
+        tauri::async_runtime::spawn(future);
+    }
+}
