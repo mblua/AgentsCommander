@@ -323,12 +323,15 @@ async fn start_running_web_handle(
     let (admission_sender, admission_receiver) = oneshot::channel();
     let waiter = handle.begin_start(
         crate::shutdown::ShutdownSignal::new(),
+        |future| drop(tauri::async_runtime::spawn(future)),
         move |generation, admission, generation_token| async move {
             assert!(lifecycle.publish_effective_endpoint(generation, bind, port));
             assert!(admission_sender.send(Arc::clone(&admission)).is_ok());
-            Ok::<_, String>(Some(tauri::async_runtime::spawn(async move {
-                generation_token.cancelled().await;
-            })))
+            Ok::<_, String>(Some(crate::web_server::ServerTask::from_native(
+                tauri::async_runtime::spawn(async move {
+                    generation_token.cancelled().await;
+                }),
+            )))
         },
     );
     let admission = admission_receiver.await.expect("admission exposed");
@@ -378,6 +381,7 @@ async fn stop_web_server_clears_bind_failure_published_by_late_bind() {
     let (release_bind_sender, release_bind_receiver) = oneshot::channel();
     let start = handle.begin_start(
         crate::shutdown::ShutdownSignal::new(),
+        |future| drop(tauri::async_runtime::spawn(future)),
         move |generation, _admission, _generation_token| async move {
             assert!(lifecycle.publish_effective_endpoint(
                 generation,
@@ -476,6 +480,7 @@ async fn ensure_web_remote_open_allowed_rejects_enabled_settings_without_owned_h
     let (factory_release_sender, factory_release_receiver) = oneshot::channel();
     let start = handle.begin_start(
         crate::shutdown::ShutdownSignal::new(),
+        |future| drop(tauri::async_runtime::spawn(future)),
         move |generation, _admission, generation_token| async move {
             assert!(lifecycle.publish_effective_endpoint(
                 generation,
@@ -561,6 +566,7 @@ async fn web_server_owned_status_retries_when_starting_revision_changes() {
     let endpoint_a_for_factory = endpoint_a.clone();
     let start = handle.begin_start(
         crate::shutdown::ShutdownSignal::new(),
+        |future| drop(tauri::async_runtime::spawn(future)),
         move |generation, _admission, generation_token| async move {
             assert!(lifecycle.publish_effective_endpoint(
                 generation,
@@ -709,6 +715,7 @@ async fn web_server_owned_status_stopping_before_endpoint_uses_configured_fallba
     let (factory_release_sender, factory_release_receiver) = oneshot::channel();
     let start = handle.begin_start(
         crate::shutdown::ShutdownSignal::new(),
+        |future| drop(tauri::async_runtime::spawn(future)),
         move |_generation, _admission, _generation_token| async move {
             assert!(factory_entered_sender.send(()).is_ok());
             factory_release_receiver.await.expect("release factory");
@@ -761,6 +768,7 @@ async fn web_server_owned_status_stopping_retries_when_endpoint_appears_during_f
     let (finish_sender, finish_receiver) = oneshot::channel();
     let start = handle.begin_start(
         crate::shutdown::ShutdownSignal::new(),
+        |future| drop(tauri::async_runtime::spawn(future)),
         move |generation, _admission, _generation_token| async move {
             assert!(factory_entered_sender.send(()).is_ok());
             publish_receiver
@@ -881,14 +889,17 @@ async fn web_server_owned_status_wildcard_uses_probe_in_all_owned_phases() {
     let (admission_sender, admission_receiver) = oneshot::channel();
     let start = handle.begin_start(
         crate::shutdown::ShutdownSignal::new(),
+        |future| drop(tauri::async_runtime::spawn(future)),
         move |generation, admission, generation_token| async move {
             assert!(lifecycle.publish_effective_endpoint(generation, "0.0.0.0".to_string(), port,));
             assert!(admission_sender.send(Arc::clone(&admission)).is_ok());
             assert!(factory_entered_sender.send(()).is_ok());
             factory_release_receiver.await.expect("release factory");
-            Ok::<_, String>(Some(tauri::async_runtime::spawn(async move {
-                generation_token.cancelled().await;
-            })))
+            Ok::<_, String>(Some(crate::web_server::ServerTask::from_native(
+                tauri::async_runtime::spawn(async move {
+                    generation_token.cancelled().await;
+                }),
+            )))
         },
     );
     factory_entered_receiver.await.expect("factory entered");

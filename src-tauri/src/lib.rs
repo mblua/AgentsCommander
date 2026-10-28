@@ -593,5 +593,29 @@ impl<R: tauri::Runtime> loops::non_stop_watchdog::WatchdogHost for tauri::AppHan
     }
 }
 
+impl web_server::ServerTask {
+    pub(crate) fn from_native(join: tauri::async_runtime::JoinHandle<()>) -> Self {
+        let abort = join.inner().abort_handle();
+        Self::new(
+            Box::pin(async move { join.await.map_err(|e| e.to_string()) }),
+            abort,
+        )
+    }
+}
+
+impl ApiServerTask {
+    pub fn new(
+        join: tauri::async_runtime::JoinHandle<()>,
+        shutdown: tokio_util::sync::CancellationToken,
+        bound_addr: std::net::SocketAddr,
+    ) -> Self {
+        Self::from_task(
+            web_server::ServerTask::from_native(join),
+            shutdown,
+            bound_addr,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests;

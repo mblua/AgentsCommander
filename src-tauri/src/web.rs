@@ -6,7 +6,9 @@ mod embedded;
 pub(crate) mod event_broadcast;
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
@@ -15,7 +17,6 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
-use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 use tower_http::services::ServeDir;
 
@@ -23,6 +24,7 @@ pub use crate::web_server::StartServerError;
 pub(super) use crate::web_server::{WebSocketAdmission, WebSocketAdmissionGuard};
 
 use crate::session::manager::SessionManager;
+use crate::web_server::ServerTask;
 
 use self::auth::WebAccessToken;
 use self::broadcast::WsBroadcaster;
@@ -60,20 +62,24 @@ fn acquire_websocket_upgrade_guard(
 // Wired by a single setup() call with all shared state already in scope; an
 // args struct would just rename the same fields.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn start_server(
+pub(super) async fn start_server<F>(
     bind: String,
     port: u16,
     web_token: Arc<WebAccessToken>,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     dispatcher: Arc<dyn WebCommandDispatcher>,
     broadcaster: WsBroadcaster,
-    app_handle: tauri::AppHandle,
+    resource_dir: Option<std::path::PathBuf>,
     admission: Arc<WebSocketAdmission>,
     generation_token: CancellationToken,
     shutdown: crate::shutdown::ShutdownSignal,
-) -> Result<tauri::async_runtime::JoinHandle<()>, StartServerError> {
+    spawn_server: F,
+) -> Result<ServerTask, StartServerError>
+where
+    F: FnOnce(Pin<Box<dyn Future<Output = ()> + Send + 'static>>) -> ServerTask,
+{
     // Resolve the static file location before constructing the router.
-    let dist_path = resolve_dist_path(&app_handle);
+    let dist_path = resolve_dist_path(resource_dir);
 
     let app = build_router(
         web_token,
@@ -113,6 +119,7 @@ pub(super) async fn start_server(
         app,
         generation_token,
         shutdown,
+        spawn_server,
     ))
 }
 
@@ -165,13 +172,17 @@ pub(super) fn build_router(
     app
 }
 
-pub(super) fn spawn_server_on_listener(
+pub(super) fn spawn_server_on_listener<F>(
     listener: tokio::net::TcpListener,
     app: Router,
     generation_token: CancellationToken,
     shutdown: crate::shutdown::ShutdownSignal,
-) -> tauri::async_runtime::JoinHandle<()> {
-    tauri::async_runtime::spawn(async move {
+    spawn_server: F,
+) -> ServerTask
+where
+    F: FnOnce(Pin<Box<dyn Future<Output = ()> + Send + 'static>>) -> ServerTask,
+{
+    spawn_server(Box::pin(async move {
         let global_token = shutdown.token().clone();
         let generation_for_shutdown = generation_token.clone();
         if let Err(e) = axum::serve(listener, app)
@@ -190,7 +201,7 @@ pub(super) fn spawn_server_on_listener(
         {
             log::error!("[web-server] server error: {}", e);
         }
-    })
+    }))
 }
 
 /// WebSocket upgrade handler with token validation.
@@ -453,9 +464,9 @@ fn prefer_embedded_dist() -> bool {
 }
 
 /// Resolve the dist/ directory for static file serving.
-fn resolve_dist_path(app_handle: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+fn resolve_dist_path(resource_dir: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
     // 1. Tauri resource dir (production NSIS bundle)
-    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+    if let Some(resource_dir) = resource_dir {
         let dist = resource_dir.join("dist");
         if dist.exists() && dist.is_dir() {
             log::info!("[web-server] Found dist via resource_dir: {:?}", dist);

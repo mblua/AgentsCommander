@@ -3,6 +3,7 @@ use crate::errors::AppError;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
+use tauri::Manager;
 use tokio::sync::{mpsc, Semaphore};
 
 // §1453 D2: Display preserva byte a byte los strings historicos de app.log,
@@ -267,6 +268,7 @@ async fn spawn_server_on_listener_stops_for_generation_or_global_signal() {
         Router::new(),
         generation_token.clone(),
         generation_shutdown.clone(),
+        |future| ServerTask::from_native(tauri::async_runtime::spawn(future)),
     );
     generation_token.cancel();
     tokio::time::timeout(Duration::from_secs(1), generation_server)
@@ -285,6 +287,7 @@ async fn spawn_server_on_listener_stops_for_generation_or_global_signal() {
         Router::new(),
         independent_token.clone(),
         global_shutdown.clone(),
+        |future| ServerTask::from_native(tauri::async_runtime::spawn(future)),
     );
     global_shutdown.trigger();
     tokio::time::timeout(Duration::from_secs(1), global_server)

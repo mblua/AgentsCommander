@@ -778,6 +778,7 @@ agentscommander_lib::commands::config::web_server -> agentscommander_lib::web
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::web::auth
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::web::broadcast
 agentscommander_lib::commands::config::web_server -> agentscommander_lib::web::command_port
+agentscommander_lib::commands::config::web_server -> agentscommander_lib::web_server
 agentscommander_lib::commands::entity_creation::agent_delete_plan -> agentscommander_lib::commands::entity_creation::delete_guard
 agentscommander_lib::commands::entity_creation::agent_delete_plan -> agentscommander_lib::commands::entity_creation::matrix_layout
 agentscommander_lib::commands::entity_creation::agent_delete_plan -> agentscommander_lib::commands::entity_creation::team_config
