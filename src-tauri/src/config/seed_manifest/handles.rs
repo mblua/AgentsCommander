@@ -1,5 +1,5 @@
 use super::{FileIdentity, ManifestDegradedReason, ManifestState, SeedManifestError};
-use std::fs::{File, OpenOptions};
+use crate::filesystem::seed_manifest::{self as manifest_disk, ManifestFile as File};
 use std::path::{Path, PathBuf};
 use std::{fmt, io};
 
@@ -73,7 +73,8 @@ pub(crate) struct OpenedRegularFile {
 }
 
 impl OpenedRegularFile {
-    pub(crate) fn from_file(path: &Path, file: File) -> Result<Self, SeedManifestError> {
+    pub(crate) fn from_file(path: &Path, file: impl Into<File>) -> Result<Self, SeedManifestError> {
+        let file = file.into();
         let facts = handle_facts(&file).map_err(|source| SeedManifestError::Io {
             operation: "inspect opened regular file",
             path: path.to_path_buf(),
@@ -174,7 +175,7 @@ pub(crate) fn classify_open_error(
     operation: &'static str,
     expect_directory: bool,
 ) -> SeedManifestError {
-    match std::fs::symlink_metadata(path) {
+    match manifest_disk::inspect_manifest_path(path) {
         Ok(metadata) if metadata.file_type().is_symlink() || is_windows_reparse(&metadata) => {
             SeedManifestError::UnsafePath {
                 path: path.to_path_buf(),
@@ -203,7 +204,7 @@ pub(crate) fn classify_open_error(
 }
 
 pub(crate) fn classify_lock_open_error(path: &Path, source: io::Error) -> SeedManifestError {
-    match std::fs::symlink_metadata(path) {
+    match manifest_disk::inspect_manifest_path(path) {
         Ok(metadata) if metadata.file_type().is_symlink() || is_windows_reparse(&metadata) => {
             SeedManifestError::UnsafePath {
                 path: path.to_path_buf(),
@@ -240,200 +241,25 @@ pub(crate) fn is_exact_not_found(error: &io::Error) -> bool {
     }
 }
 
-pub(crate) fn is_windows_reparse(metadata: &std::fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    }
-
-    #[cfg(not(windows))]
-    {
-        let _ = metadata;
-        false
-    }
-}
-
-#[cfg(unix)]
-pub(crate) fn open_directory_no_follow(path: &Path) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-        .open(path)
-}
-
-#[cfg(windows)]
-pub(crate) fn open_directory_no_follow(path: &Path) -> io::Result<File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-
-    OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
-}
-
-#[cfg(not(any(unix, windows)))]
-pub(crate) fn open_directory_no_follow(path: &Path) -> io::Result<File> {
-    let metadata = std::fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "path is not a real directory",
-        ));
-    }
-    File::open(path)
-}
-
-#[cfg(unix)]
-pub(crate) fn open_regular_no_follow(
-    path: &Path,
-    writable: bool,
-    create_new: bool,
-) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(writable)
-        .custom_flags(libc::O_NOFOLLOW);
-    if create_new {
-        options.create_new(true);
-    }
-    options.open(path)
-}
-
-#[cfg(windows)]
-pub(crate) fn open_regular_no_follow(
-    path: &Path,
-    writable: bool,
-    create_new: bool,
-) -> io::Result<File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(writable)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    if create_new {
-        options.create_new(true);
-    }
-    options.open(path)
-}
-
-#[cfg(not(any(unix, windows)))]
-pub(crate) fn open_regular_no_follow(
-    path: &Path,
-    writable: bool,
-    create_new: bool,
-) -> io::Result<File> {
-    if !create_new {
-        let metadata = std::fs::symlink_metadata(path)?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "path is not a real regular file",
-            ));
-        }
-    }
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(writable)
-        .create_new(create_new)
-        .open(path)
-}
-
-#[cfg(unix)]
+pub(crate) use crate::filesystem::seed_manifest::{
+    is_windows_reparse, open_directory_no_follow, open_regular_no_follow,
+};
 pub(crate) fn handle_facts(file: &File) -> io::Result<HandleFacts> {
-    use std::os::unix::fs::MetadataExt;
-
-    let metadata = file.metadata()?;
+    let facts = crate::filesystem::seed_manifest::handle_facts(file)?;
     Ok(HandleFacts {
         identity: FileIdentity {
-            volume: metadata.dev(),
-            file: u128::from(metadata.ino()),
+            volume: facts.identity.volume,
+            file: facts.identity.file,
         },
-        is_directory: metadata.is_dir(),
-        is_regular_file: metadata.is_file(),
-        is_reparse: false,
-        links: metadata.nlink(),
-        length: metadata.len(),
-        attributes: 0,
-        creation_time: 0,
+        is_directory: facts.is_directory,
+        is_regular_file: facts.is_regular_file,
+        is_reparse: facts.is_reparse,
+        links: facts.links,
+        length: facts.length,
+        attributes: facts.attributes,
+        creation_time: facts.creation_time,
     })
 }
-
-#[cfg(windows)]
-pub(crate) fn handle_facts(file: &File) -> io::Result<HandleFacts> {
-    use std::mem::MaybeUninit;
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY,
-        FILE_ATTRIBUTE_REPARSE_POINT,
-    };
-
-    let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
-    let success =
-        unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, info.as_mut_ptr()) };
-    if success == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let info = unsafe { info.assume_init() };
-    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
-    let length = (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow);
-    let creation_time = (u64::from(info.ftCreationTime.dwHighDateTime) << 32)
-        | u64::from(info.ftCreationTime.dwLowDateTime);
-    let is_directory = info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
-    let is_reparse = info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0;
-    Ok(HandleFacts {
-        identity: FileIdentity {
-            volume: u64::from(info.dwVolumeSerialNumber),
-            file: u128::from(index),
-        },
-        is_directory,
-        is_regular_file: !is_directory,
-        is_reparse,
-        links: u64::from(info.nNumberOfLinks),
-        length,
-        attributes: info.dwFileAttributes,
-        creation_time,
-    })
-}
-
-#[cfg(not(any(unix, windows)))]
-pub(crate) fn handle_facts(file: &File) -> io::Result<HandleFacts> {
-    let metadata = file.metadata()?;
-    Ok(HandleFacts {
-        identity: FileIdentity {
-            volume: 0,
-            file: u128::from(metadata.len()),
-        },
-        is_directory: metadata.is_dir(),
-        is_regular_file: metadata.is_file(),
-        is_reparse: false,
-        links: 1,
-        length: metadata.len(),
-        attributes: 0,
-        creation_time: 0,
-    })
-}
-
 #[derive(Debug)]
 pub(crate) struct PinnedOwnerChain {
     pub(crate) directories: Vec<PinnedDirectory>,

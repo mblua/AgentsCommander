@@ -7,7 +7,6 @@ use super::{
 };
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -682,7 +681,7 @@ pub(crate) fn sanitize_canonical_validation_error(error: SeedManifestError) -> S
 }
 
 pub(crate) fn read_bounded_file(
-    file: &mut File,
+    file: &mut (impl Read + Seek),
     known_length: u64,
     limit: u64,
     path: &Path,
