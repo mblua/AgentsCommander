@@ -4,6 +4,7 @@ mod storage;
 use crate::config::ac_root::existing_ac_root;
 #[cfg(test)]
 use crate::config::naming_migration;
+use crate::filesystem::loop_files;
 use chrono::{DateTime, Local, Utc};
 pub(crate) use lock::acquire_loop_lock_for_dir;
 #[cfg(test)]
@@ -291,7 +292,7 @@ pub fn discover_loops_in_project(project_dir: &Path) -> Vec<AcLoopSummary> {
     let Some(ac_root) = existing_ac_root(project_dir) else {
         return Vec::new();
     };
-    let entries = match std::fs::read_dir(&ac_root) {
+    let entries = match loop_files::loop_discovery_entries(&ac_root) {
         Ok(entries) => entries,
         Err(e) => {
             log::warn!(
@@ -304,9 +305,8 @@ pub fn discover_loops_in_project(project_dir: &Path) -> Vec<AcLoopSummary> {
     };
 
     let mut loops = Vec::new();
-    for entry in entries.flatten() {
-        let dir = entry.path();
-        if !dir.is_dir() {
+    for dir in entries {
+        if !loop_files::loop_path_is_directory(&dir) {
             continue;
         }
         let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
@@ -380,7 +380,7 @@ pub fn resolve_loop_target(
         )
     })?;
     let wg_dir = ac_root.join(&config.target.workgroup);
-    if !wg_dir.is_dir() {
+    if !loop_files::loop_path_is_directory(&wg_dir) {
         return Err(format!(
             "Room '{}' not found in project {}",
             config.target.workgroup,
