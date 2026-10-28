@@ -2391,6 +2391,15 @@ jobs:
           path: ${{ runner.temp }}/cog-observed-macos.json
           if-no-files-found: warn
 
+      # Preparation compiles the harness; the next step executes its tests.
+      - name: "cargo test (IS #2079 library harness preparation on macOS)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib --no-run
+
       # IS #2079: compiling is not running. Without this step the macOS leg
       # never executes the screenshot module, so the CoreGraphics link proof
       # and the permission-gate assertions would be missing evidence.

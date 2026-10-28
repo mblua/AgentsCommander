@@ -140,8 +140,8 @@ section 6.2 says what that means for a pull request.
 
 ## 3. The baseline may only shrink
 
-`cognitive-complexity.baseline.json` records accepted debt; it may not grow. The ratchet allows
-exactly one exemption.
+`cognitive-complexity.baseline.json` records accepted debt; it may not grow. Only a toolchain refresh may exempt growth; a named historical cleanup below
+allows a bounded shrink.
 
 - **An addition fails.** Any anchor in the head baseline that was not in the base prints
   `Baseline grew without a toolchain refresh: <id>#<anchor> (<platform>)` followed by
@@ -151,7 +151,7 @@ exactly one exemption.
   from the working tree. Otherwise the step prints
   `Baseline entry removed without touching its file: <id>` followed by
   `A shrink is only credible where the pull request changed the code. Include that file, or explain the removal in a toolchain-refresh pull request.`
-- **The single exemption is a toolchain refresh.** If the diff contains **no `.rs` path** and the
+- **The single growth exemption is a toolchain refresh.** If the diff contains **no `.rs` path** and the
   head baseline's `toolchain` is **strictly higher** than the base's (numeric comparison of the
   dotted components, left to right), additions are accepted and the step prints
   `TOOLCHAIN REFRESH: <base> -> <head> (<n> additions, <m> removals)`. The reason is that a
@@ -163,6 +163,20 @@ exactly one exemption.
   toolchain must also equal the baseline's `toolchain` field, so lowering the pin without editing
   the baseline makes every leg fail with `baseline toolchain must be ...`; editing it does not make
   the diff exempt, because the direction test still rejects it.
+
+### Historical shrink #3319
+
+Only the three Windows/Linux/macOS occurrences of
+`rust:src-tauri/src/phone/mailbox/self_switch.rs::impl:MailboxPoller::resolve_repo_path`
+with anchor `81f48c31ba89` may be removed together without touching their source.
+The base baseline Git blob must be `461937d898eaa388f0e4bb102d479be1fe462e87`,
+both toolchains must be `1.98.1`, and no addition or replacement is allowed.
+Base and HEAD source blobs and the attribute-aware working-tree Git hash must all equal
+`735d686ea90efeb7248ed2b07ad4b7adadd24cc6`; the source must be untouched in the real diff.
+Missing files, read/Git errors and mismatches never grant this exemption. Other removals still
+need the ordinary touched/gone proof. The checker prints each historical-cleanup tuple.
+Once the entry leaves the comparison base the exception is dormant; do not replay an artificial
+base, reintroduce debt, or change the pins to accommodate drift. A returning warning is NEW.
 
 ## 4. Renames, moves and header edits bounce by design
 
@@ -177,7 +191,8 @@ asks for a fix:
 - editing a closure's parameter list.
 
 There is no automatic re-anchoring. The remedy is section 1: reduce the function to 25 or below
-and remove the entry in the same pull request that touched the file.
+and remove the entry in the same pull request that touched the file. The precisely pinned
+historical #3319 cleanup in section 3 also permits its three recorded removals.
 
 Growth is deliberately different: a baselined function may keep growing **in its body**, at any
 complexity, without bouncing. The anchor is computed from the site's header text and stops at the
@@ -330,7 +345,8 @@ If that happens to your pull request:
    the same finding did it come from main.
 2. Do not grow the baseline to get past it: the ratchet in section 3 refuses the addition. A
    `STALE` entry can be removed only where section 3 accepts the shrink: the pull request touched
-   the entry's `.rs` file, or that file is gone from the working tree. So if main deleted the file
+   the entry's `.rs` file, that file is gone, or the exact historical #3319 cleanup applies.
+   So if main deleted the file
    and left its entry behind, any pull request, yours included, may remove the entry.
 3. Otherwise fix it at the source: a separate pull request that brings the function to 25 or below
    (for `NEW`), or that removes the entry under the same rule (for `STALE`), labelled `ci:full` so
