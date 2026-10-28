@@ -255,11 +255,11 @@ pub(crate) const MIGRATION_FORBIDDEN_SEGMENTS: [&str; 7] = [
 fn naming_migration_names_nothing_that_reaches_the_knot() {
     let seen = observe(&MIGRATION_MODULE, Reach::WithSubmodules);
 
-    assert!(
-        seen.anchored.is_empty(),
-        "config::naming_migration must not name any `crate::` path: the crate root \
-         is in the cyclic SCC and B1b calls this module from it. OBSERVED: {:?}",
-        seen.anchored
+    assert_eq!(
+        seen.anchored,
+        expected(&[(MIGRATION_FILE, "filesystem")]),
+        "config::naming_migration may name only crate::filesystem::naming_journal; \
+         this leaf has no path back to the knot"
     );
     assert!(
         seen.aliases.is_empty(),
