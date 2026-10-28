@@ -6,10 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::session::profile::{ContainerCredentialSource, ContainerFirstRunState};
+use crate::filesystem::{directories, documents};
 
-#[cfg(windows)]
-const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+use crate::session::profile::{ContainerCredentialSource, ContainerFirstRunState};
 
 /// A resolved copy job: absolute host source file and absolute replica dest file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,24 +24,10 @@ pub struct ContainerCredentialPlan {
 /// F2 - true if `path` exists AND is a symlink or Windows junction/reparse point.
 /// `symlink_metadata` does NOT traverse the leaf. NotFound => false (safe to
 /// create/copy); any other error => true (undeterminable = skip-worthy). Mirrors
-/// the private, DirEntry-based `config_seed::is_symlink_or_reparse`.
+/// the private, entry-based `filesystem::config_seed::is_symlink_or_reparse`,
+/// using the shared `path_identity` metadata predicate.
 fn is_reparse_path(path: &Path) -> bool {
-    let md = match std::fs::symlink_metadata(path) {
-        Ok(md) => md,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
-        Err(_) => return true,
-    };
-    if md.file_type().is_symlink() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        if md.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return true;
-        }
-    }
-    false
+    documents::container_credential_is_reparse(path)
 }
 
 /// Resolve a copy job for `source` given the container bind-mount root
@@ -121,16 +106,14 @@ pub fn copy_in(plan: &ContainerCredentialPlan) -> std::io::Result<CopyOutcome> {
         return Ok(CopyOutcome::SkippedReparse);
     }
     if let Some(parent) = plan.dest.parent() {
-        std::fs::create_dir_all(parent)?;
+        directories::ensure_container_credential_directory(parent)?;
     }
-    std::fs::copy(&plan.source, &plan.dest)?;
+    documents::copy_container_credential(&plan.source, &plan.dest)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
         // F4 - do not silently swallow a perms failure; a token left broadly
         // readable must at least be observable in the log.
-        if let Err(e) = std::fs::set_permissions(&plan.dest, std::fs::Permissions::from_mode(0o600))
-        {
+        if let Err(e) = documents::set_container_credential_private(&plan.dest) {
             log::warn!(
                 "[container-cred] failed to set 0o600 on {}: {}",
                 plan.dest.display(),
@@ -157,7 +140,7 @@ pub fn remove_copied(dest: &Path) {
         );
         return;
     }
-    match std::fs::remove_file(dest) {
+    match documents::remove_container_credential_artifact(dest) {
         Ok(()) => log::info!(
             "[container-cred] removed copied credential {}",
             dest.display()
@@ -223,7 +206,7 @@ pub fn ensure_first_run_state(plan: &ContainerCredentialPlan, container_workdir:
         );
         return;
     }
-    if let Err(e) = std::fs::create_dir_all(dir) {
+    if let Err(e) = directories::ensure_container_credential_directory(dir) {
         log::warn!(
             "[container-cred] failed to create {}: {}; skipping first-run state",
             dir.display(),
@@ -232,7 +215,7 @@ pub fn ensure_first_run_state(plan: &ContainerCredentialPlan, container_workdir:
         return;
     }
 
-    let mut root = match std::fs::read_to_string(&path) {
+    let mut root = match documents::read_container_first_run_state(&path) {
         // An empty file carries no user data, so treat it like a missing one.
         Ok(text) if text.trim().is_empty() => serde_json::Map::new(),
         Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
@@ -324,22 +307,22 @@ pub fn ensure_first_run_state(plan: &ContainerCredentialPlan, container_workdir:
     };
     // Temp + rename: a crash mid-write must never truncate an existing config.
     let tmp = dir.join(format!("{}.ac-{}.tmp", state.file, uuid::Uuid::new_v4()));
-    if let Err(e) = std::fs::write(&tmp, text.as_bytes()) {
+    if let Err(e) = documents::write_container_first_run_stage(&tmp, text.as_bytes()) {
         log::warn!(
             "[container-cred] failed to write first-run state to {}: {}",
             tmp.display(),
             e
         );
-        let _ = std::fs::remove_file(&tmp);
+        let _ = documents::remove_container_credential_artifact(&tmp);
         return;
     }
-    if let Err(e) = std::fs::rename(&tmp, &path) {
+    if let Err(e) = documents::rename_container_first_run_stage(&tmp, &path) {
         log::warn!(
             "[container-cred] failed to install first-run state at {}: {}",
             path.display(),
             e
         );
-        let _ = std::fs::remove_file(&tmp);
+        let _ = documents::remove_container_credential_artifact(&tmp);
         return;
     }
     log::info!(
