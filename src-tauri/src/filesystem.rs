@@ -9,6 +9,7 @@ pub(crate) mod ac_discovery;
 pub(crate) mod activity_log;
 pub(crate) mod agency_templates;
 pub(crate) mod agent_files;
+pub(crate) mod agent_settings;
 pub(crate) mod attachments;
 pub(crate) mod catalog;
 pub(crate) mod config_locations;
