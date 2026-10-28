@@ -1,11 +1,13 @@
-use std::io::Write as IoWrite;
-
 use tauri::Emitter;
 use tokio::time::Duration;
 
 use crate::config::instance_artifacts::{
     TELEGRAM_BRIDGE_LOG_FILE_NAME, TELEGRAM_DIAG_RAW_LOG_FILE_NAME,
     TELEGRAM_DIAG_SENT_LOG_FILE_NAME,
+};
+use crate::filesystem::telegram_logs::{
+    ensure_telegram_log_directory, flush_telegram_log, open_telegram_bridge_log,
+    open_telegram_diagnostic_log, telegram_log_metadata, write_telegram_log, TelegramLogFile,
 };
 use crate::network::OutboundNetwork;
 use crate::telegram::api;
@@ -58,23 +60,19 @@ impl TelegramErrKind {
 // ── File logger ──────────────────────────────────────────────
 
 pub(crate) struct BridgeLogger {
-    file: Option<std::fs::File>,
+    file: Option<TelegramLogFile>,
 }
 
 impl BridgeLogger {
     pub(crate) fn new(session_id: &str) -> Self {
         let file = crate::config::config_dir().and_then(|dir| {
-            std::fs::create_dir_all(&dir).ok()?;
+            ensure_telegram_log_directory(&dir).ok()?;
             let path = dir.join(TELEGRAM_BRIDGE_LOG_FILE_NAME);
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .ok()
+            open_telegram_bridge_log(&path).ok()
         });
 
         if let Some(ref f) = file {
-            let path = f.metadata().ok();
+            let path = telegram_log_metadata(f).ok();
             log::info!(
                 "Bridge logger active for session {} ({} bytes)",
                 session_id,
@@ -109,12 +107,11 @@ impl BridgeLogger {
             } else {
                 text_redacted
             };
-            let _ = writeln!(
+            let _ = write_telegram_log(
                 f,
-                "[{}] {} sid={} | {}",
-                now, direction, session_id, preview
+                format_args!("[{}] {} sid={} | {}\n", now, direction, session_id, preview),
             );
-            let _ = f.flush();
+            let _ = flush_telegram_log(f);
         }
     }
 }
@@ -122,24 +119,19 @@ impl BridgeLogger {
 // ── Diagnostic logger (full capture, no truncation) ─────────
 
 pub(crate) struct DiagLogger {
-    raw_file: Option<std::fs::File>,
-    sent_file: Option<std::fs::File>,
+    raw_file: Option<TelegramLogFile>,
+    sent_file: Option<TelegramLogFile>,
 }
 
 impl DiagLogger {
     pub(crate) fn new() -> Self {
         let dir = crate::config::config_dir();
 
-        let open = |name: &str| -> Option<std::fs::File> {
+        let open = |name: &str| -> Option<TelegramLogFile> {
             let dir = dir.as_ref()?;
-            std::fs::create_dir_all(dir).ok()?;
+            ensure_telegram_log_directory(dir).ok()?;
             let path = dir.join(name);
-            std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&path)
-                .ok()
+            open_telegram_diagnostic_log(&path).ok()
         };
 
         let raw_file = open(TELEGRAM_DIAG_RAW_LOG_FILE_NAME);
@@ -164,9 +156,9 @@ impl DiagLogger {
             // containing a Telegram URL, or any future call site that
             // bypassed api.rs) cannot land in the diag log.
             let text = crate::telegram::redact::redact(text);
-            let _ = writeln!(f, "--- [{}] ---", now);
-            let _ = writeln!(f, "{}", text);
-            let _ = f.flush();
+            let _ = write_telegram_log(f, format_args!("--- [{}] ---\n", now));
+            let _ = write_telegram_log(f, format_args!("{}\n", text));
+            let _ = flush_telegram_log(f);
         }
     }
 
@@ -177,9 +169,9 @@ impl DiagLogger {
             // #280 G-MED-3 — same scrub as log_raw; diag-sent.log bypasses
             // env_logger.
             let text = crate::telegram::redact::redact(text);
-            let _ = writeln!(f, "--- [{}] ---", now);
-            let _ = writeln!(f, "{}", text);
-            let _ = f.flush();
+            let _ = write_telegram_log(f, format_args!("--- [{}] ---\n", now));
+            let _ = write_telegram_log(f, format_args!("{}\n", text));
+            let _ = flush_telegram_log(f);
         }
     }
 }

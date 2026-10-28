@@ -315,3 +315,161 @@ fn timeout_phase_uses_ready_window_labels_for_inflight() {
         "awaiting_frontend_response"
     );
 }
+
+#[test]
+fn issue_3355_atomic_new_stage_collision() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("request.json");
+    let stage = path.with_extension("tmp");
+    fs::write(&stage, "stage sentinel").unwrap();
+    let error = write_json_atomic_new(&path, &json!({"ok": true})).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(fs::read_to_string(&stage).unwrap(), "stage sentinel");
+    assert!(!path.exists());
+    fs::write(&path, "destination sentinel").unwrap();
+    let error = write_json_atomic_new(&path, &json!({"ok": true})).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(
+        error.to_string(),
+        format!("destination already exists: {}", path.display())
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), "destination sentinel");
+    assert_eq!(fs::read_to_string(stage).unwrap(), "stage sentinel");
+}
+
+#[test]
+fn issue_3355_atomic_new_and_replace_preserve_bytes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("request.json");
+    let value = json!({"text": "unicode λ", "ok": true});
+    write_json_atomic_new(&path, &value).unwrap();
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        serde_json::to_vec(&value).unwrap()
+    );
+    assert!(!path.with_extension("tmp").exists());
+    fs::write(
+        path.with_extension("tmp"),
+        "stale stage longer than replacement",
+    )
+    .unwrap();
+    let replacement = json!({"n": 1});
+    super::super::files::write_json_atomic_replace(&path, &replacement).unwrap();
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        serde_json::to_vec(&replacement).unwrap()
+    );
+    assert!(!path.with_extension("tmp").exists());
+}
+
+#[test]
+fn issue_3355_atomic_serialize_error_keeps_stage() {
+    struct Failing;
+    impl serde::Serialize for Failing {
+        fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("intentional serialize failure"))
+        }
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("request.json");
+    fs::write(&path, "original").unwrap();
+    let error = super::super::files::write_json_atomic_replace(&path, &Failing).unwrap_err();
+    assert!(error.to_string().contains("intentional serialize failure"));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "original");
+    assert_eq!(
+        fs::read(path.with_extension("tmp")).unwrap(),
+        Vec::<u8>::new()
+    );
+}
+
+#[test]
+fn issue_3355_retry_contract() {
+    use super::super::files::retry_fs;
+    let mut attempts = 0;
+    retry_fs(|| {
+        attempts += 1;
+        if attempts == 8 {
+            Ok(())
+        } else {
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "transient"))
+        }
+    })
+    .unwrap();
+    assert_eq!(attempts, 8);
+    attempts = 0;
+    let error = retry_fs(|| {
+        attempts += 1;
+        Err(io::Error::new(io::ErrorKind::InvalidInput, "permanent"))
+    })
+    .unwrap_err();
+    assert_eq!(attempts, 1);
+    assert_eq!(error.to_string(), "permanent");
+    attempts = 0;
+    let error = retry_fs(|| {
+        attempts += 1;
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("attempt{attempts}"),
+        ))
+    })
+    .unwrap_err();
+    assert_eq!(attempts, 8);
+    assert_eq!(error.to_string(), "attempt8");
+}
+
+#[test]
+fn issue_3355_automation_ports_preserve_native_results() {
+    use crate::filesystem::{directories as dirs, documents as docs};
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("text");
+    let error = |e: io::Error| (e.kind(), e.raw_os_error(), e.to_string());
+    for text in ["", " \u{feff}λ\n", "plain"] {
+        fs::write(&path, text).unwrap();
+        assert_eq!(
+            docs::read_ui_automation_text(&path).unwrap(),
+            fs::read_to_string(&path).unwrap()
+        );
+    }
+    fs::write(&path, [0xff]).unwrap();
+    for bad in [
+        path.clone(),
+        tmp.path().join("missing"),
+        tmp.path().to_path_buf(),
+    ] {
+        assert_eq!(
+            error(docs::read_ui_automation_text(&bad).unwrap_err()),
+            error(fs::read_to_string(&bad).unwrap_err())
+        );
+    }
+    let directory = tmp.path().join("nested").join("directory");
+    dirs::ensure_ui_automation_directory(&directory).unwrap();
+    assert!(directory.is_dir());
+    for p in [&directory, &path, &tmp.path().join("missing")] {
+        assert_eq!(dirs::ui_automation_path_exists(p), p.exists());
+    }
+    assert_eq!(
+        error(dirs::ensure_ui_automation_directory(&path).unwrap_err()),
+        error(fs::create_dir_all(&path).unwrap_err())
+    );
+    let absent = tmp.path().join("absent");
+    let destination = tmp.path().join("renamed");
+    assert_eq!(
+        error(docs::rename_ui_automation_file(&absent, &destination).unwrap_err()),
+        error(fs::rename(&absent, &destination).unwrap_err())
+    );
+    assert_eq!(
+        error(docs::remove_ui_automation_file(&absent).unwrap_err()),
+        error(fs::remove_file(&absent).unwrap_err())
+    );
+    super::super::files::retry_remove_file(&absent).unwrap();
+    super::super::files::retry_remove_dir_all(&absent).unwrap();
+    docs::rename_ui_automation_file(&path, &destination).unwrap();
+    assert!(!path.exists());
+    assert_eq!(fs::read(&destination).unwrap(), vec![0xff]);
+    docs::remove_ui_automation_file(&destination).unwrap();
+    assert!(!destination.exists());
+    let resolved = directory.canonicalize().unwrap();
+    assert!(resolved.starts_with(tmp.path().canonicalize().unwrap()));
+    dirs::remove_ui_automation_directory(&resolved).unwrap();
+    assert!(!directory.exists());
+}
