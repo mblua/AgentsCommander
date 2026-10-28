@@ -287,7 +287,10 @@ pub(crate) fn refresh_shipped_blocking_menus_file(settings_path: &Path) -> bool 
     let Ok(canonical) = pretty_json_bytes(shipped_blocking_menus()) else {
         return false;
     };
-    if matches!(std::fs::read(&path), Ok(existing) if existing == canonical) {
+    if matches!(
+        crate::filesystem::agent_settings::read_blocking_menus_bytes(&path),
+        Ok(existing) if existing == canonical
+    ) {
         return false;
     }
     match crate::config::local_config_io::write_file_atomic(&path, &canonical) {
@@ -308,7 +311,7 @@ pub(crate) fn refresh_shipped_blocking_menus_file(settings_path: &Path) -> bool 
 /// #1905 (D6) - the user layer. Every rejection logs once and yields an empty layer.
 pub(crate) fn load_local_blocking_menus_file(settings_path: &Path) -> BlockingMenusFile {
     let path = blocking_menus_local_path(settings_path);
-    let contents = match std::fs::read_to_string(&path) {
+    let contents = match crate::filesystem::agent_settings::read_blocking_menus_text(&path) {
         Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return BlockingMenusFile::default(),
         Err(e) => {
@@ -330,7 +333,7 @@ pub(crate) fn load_local_blocking_menus_file(settings_path: &Path) -> BlockingMe
 /// empty layer and one warning; a missing cache is silent.
 pub(crate) fn load_remote_blocking_menus_file(settings_path: &Path) -> BlockingMenusFile {
     let path = blocking_menus_remote_path(settings_path);
-    let contents = match std::fs::read_to_string(&path) {
+    let contents = match crate::filesystem::agent_settings::read_blocking_menus_text(&path) {
         Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return BlockingMenusFile::default(),
         Err(e) => {
@@ -389,7 +392,10 @@ pub(crate) struct RemoteBlockingMenusCheckStamp {
 pub(crate) fn read_remote_blocking_menus_check_stamp(
     settings_path: &Path,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
-    let bytes = std::fs::read(blocking_menus_remote_check_path(settings_path)).ok()?;
+    let bytes = crate::filesystem::agent_settings::read_blocking_menus_bytes(
+        &blocking_menus_remote_check_path(settings_path),
+    )
+    .ok()?;
     let stamp: RemoteBlockingMenusCheckStamp = serde_json::from_slice(&bytes).ok()?;
     Some(stamp.last_checked_at)
 }
@@ -570,7 +576,7 @@ pub(crate) fn export_blocking_menus_with_startup(
         .filter(|(_, (command, entries))| **entries != default_blocking_menus_for_command(command))
         .map(|(id, (_, entries))| ((*id).to_string(), (*entries).clone()))
         .collect();
-    let raw = match std::fs::read_to_string(&local_path) {
+    let raw = match crate::filesystem::agent_settings::read_blocking_menus_text(&local_path) {
         Ok(contents) => Some(contents),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {

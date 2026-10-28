@@ -1,3 +1,4 @@
+use crate::filesystem::directories;
 use clap::Args;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -129,8 +130,8 @@ fn execute_inner(args: TestResetArgs) -> Result<TestResetOutput, String> {
             )
         })?;
 
-        if candidate.exists() {
-            std::fs::remove_dir_all(candidate).map_err(|e| {
+        if directories::test_reset_candidate_exists(candidate) {
+            directories::remove_test_reset_candidate(candidate).map_err(|e| {
                 error_json(
                     "remove_dir_all_failed",
                     serde_json::json!({
@@ -173,7 +174,7 @@ fn validate_candidate(exe_parent: &Path, candidate: &Path) -> Result<(), String>
         return Err("reset_candidate_name_not_allowed".to_string());
     }
 
-    let metadata = match std::fs::symlink_metadata(candidate) {
+    let metadata = match directories::inspect_test_reset_candidate(candidate) {
         Ok(metadata) => metadata,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(format!("reset_candidate_metadata_failed: {e}")),
@@ -189,12 +190,10 @@ fn validate_candidate(exe_parent: &Path, candidate: &Path) -> Result<(), String>
         return Err("reset_candidate_not_directory".to_string());
     }
 
-    let canonical_parent = exe_parent
-        .canonicalize()
+    let canonical_parent = directories::canonical_test_reset_path(exe_parent)
         .map_err(|e| format!("reset_parent_canonicalize_failed: {e}"))?;
     let expected = canonical_parent.join(file_name);
-    let actual = candidate
-        .canonicalize()
+    let actual = directories::canonical_test_reset_path(candidate)
         .map_err(|e| format!("reset_candidate_canonicalize_failed: {e}"))?;
     if actual != expected {
         return Err("reset_candidate_canonical_path_mismatch".to_string());
@@ -206,8 +205,7 @@ fn validate_candidate(exe_parent: &Path, candidate: &Path) -> Result<(), String>
 #[cfg(target_os = "windows")]
 fn has_windows_reparse_point(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    crate::path_identity::link_flags_indicate_link_or_reparse(false, metadata.file_attributes())
 }
 
 #[cfg(not(target_os = "windows"))]
