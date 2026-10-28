@@ -1,10 +1,10 @@
-pub mod agent_quota; // #2482 - weekly quota reading per agent session
+pub(crate) mod agent_quota; // #2482 - weekly quota reading per agent session
 pub mod backend;
 pub(crate) mod backend_kind;
 pub(crate) mod container_backend;
 pub(crate) mod container_credentials;
 pub(crate) mod container_lifecycle;
-pub mod container_paths;
+pub(crate) mod container_paths;
 pub(crate) mod container_repos;
 pub(crate) mod container_runtime;
 pub(crate) mod container_tokens;
@@ -14,11 +14,11 @@ mod docker_runtime;
 pub mod git_watcher;
 pub mod idle_detector;
 pub mod inject;
-pub mod input_activity;
+pub(crate) mod input_activity;
 pub(crate) mod input_limits;
 pub(crate) mod input_route;
-pub mod job; // #632 - per-agent Job Object for tree-kill
-pub mod local_backend;
+pub(crate) mod job; // #632 - per-agent Job Object for tree-kill
+pub(crate) mod local_backend;
 pub mod manager;
 pub(crate) mod menu_guard; // #1646 / #1647 - proactive detection of terminal blocking menus
 pub(crate) mod output;
