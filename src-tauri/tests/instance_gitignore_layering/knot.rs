@@ -104,10 +104,13 @@ fn instance_gitignore_names_nothing_that_reaches_the_knot() {
         expected(&ALLOWED_GUARDED_CRATE_REFERENCES),
         "the set of crate modules named from config::instance_gitignore moved.\n\
          \n\
-         WHY THIS TABLE HAS ONE ROW: #3327 delegates physical ignore IO through \
-         crate::filesystem::instance_ignore. This leaf uses std/OS bindings and \
-         has no app path back. Equality permits only the file/child pair \
-         src/config/instance_gitignore.rs -> filesystem and rejects all others.\n\
+         WHY THIS TABLE HAS ONE ROW: #3327 P04 permits the pair \
+         src/config/instance_gitignore.rs -> filesystem for physical ignore IO \
+         through crate::filesystem::instance_ignore. P05 enables the second pair, \
+         src/config/naming_migration.rs -> filesystem, through \
+         crate::filesystem::naming_journal. Both leaves use only std/OS bindings \
+         and have no app path back. This equality permits only the first pair; \
+         the second belongs to the separate naming_migration guard in P05.\n\
          \n\
          THIS IS THE ASSERTION #1268 IS ABOUT. `project_settings_layering.rs` \
          collects the same set for its guarded module and never asserts it, and \
