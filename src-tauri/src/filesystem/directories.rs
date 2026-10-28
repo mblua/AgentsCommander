@@ -268,3 +268,16 @@ pub(crate) fn ensure_cli_peer_mailbox(path: &Path) -> io::Result<()> {
 pub(crate) fn create_cli_outbox(path: &Path) -> io::Result<()> {
     std::fs::create_dir(path)
 }
+
+pub(crate) fn ensure_container_credential_directory(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+#[cfg(windows)]
+pub(crate) fn ensure_git_guard_directory(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+pub(crate) fn ensure_pty_response_directory(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
