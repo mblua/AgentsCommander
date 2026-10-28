@@ -1,11 +1,10 @@
 use super::TaskOpError;
+use crate::filesystem::tasks::{
+    create_task_artifact, io_boundary, open_status_repair, read_status_window,
+};
 use chrono::DateTime;
 use chrono::Utc;
-use std::fs::OpenOptions;
-use std::io::Write as _;
 use std::path::Path;
-#[cfg(test)]
-use std::path::PathBuf;
 use std::time::SystemTime;
 
 // Status persistence shares the TASK lock; callers own authorization.
@@ -172,11 +171,10 @@ pub(super) fn validate_record(bytes: &[u8]) -> Result<StatusRecord, TaskOpError>
 }
 
 pub(super) fn read_latest_status_locked(root: &Path) -> Result<StatusTail, TaskOpError> {
-    use std::io::{Read, Seek, SeekFrom};
     let path = root.join(STATUS_NAME);
-    let mut file = match std::fs::File::open(&path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+    let window = match read_status_window(&path, STATUS_WINDOW) {
+        Ok(Some(window)) => window,
+        Ok(None) => {
             return Ok(StatusTail {
                 record: None,
                 partial: Vec::new(),
@@ -188,19 +186,12 @@ pub(super) fn read_latest_status_locked(root: &Path) -> Result<StatusTail, TaskO
         }
         Err(e) => return Err(TaskOpError::ReadFailed(path, e)),
     };
-    let meta = file
-        .metadata()
-        .map_err(|e| TaskOpError::ReadFailed(path.clone(), e))?;
-    let len = file
-        .seek(SeekFrom::End(0))
-        .map_err(|e| TaskOpError::ReadFailed(path.clone(), e))?;
-    let start = len.saturating_sub(STATUS_WINDOW);
-    file.seek(SeekFrom::Start(start))
-        .map_err(|e| TaskOpError::ReadFailed(path.clone(), e))?;
-    let mut bytes = Vec::with_capacity((len - start) as usize);
-    file.take(STATUS_WINDOW)
-        .read_to_end(&mut bytes)
-        .map_err(|e| TaskOpError::ReadFailed(path, e))?;
+    let crate::filesystem::tasks::StatusWindow {
+        bytes,
+        start,
+        len,
+        modified,
+    } = window;
     let last_lf = bytes.iter().rposition(|b| *b == b'\n');
     let end = last_lf.map_or(0, |i| i + 1);
     let partial = bytes[end..].to_vec();
@@ -224,58 +215,13 @@ pub(super) fn read_latest_status_locked(root: &Path) -> Result<StatusTail, TaskO
         partial,
         complete_len: start + end as u64,
         len,
-        modified: meta.modified().ok(),
+        modified,
         bytes_read: bytes.len(),
     })
 }
 
 pub(super) fn write_failed(e: std::io::Error) -> TaskOpError {
     TaskOpError::WriteFailed(e)
-}
-
-// Failures are injected only in fixtures, in this thread and this module.
-#[cfg(test)]
-thread_local! {
-    pub(super) static IO_MUTATION: std::cell::RefCell<Option<(String, PathBuf, Vec<u8>)>> =
-        const { std::cell::RefCell::new(None) };
-    pub(super) static IO_FAULT: std::cell::RefCell<(Option<String>, Vec<String>)> =
-        const { std::cell::RefCell::new((None, Vec::new())) };
-}
-pub(super) fn io_boundary(name: &str) -> std::io::Result<()> {
-    #[cfg(test)]
-    {
-        if std::env::var("AC_TASK_OPS_CHILD_BOUNDARY").as_deref() == Ok(name)
-            && std::env::var_os("AC_TASK_OPS_CHILD_FIXTURE").is_some()
-        {
-            std::process::exit(71);
-        }
-        IO_MUTATION.with(|v| {
-            let mut v = v.borrow_mut();
-            if v.as_ref().is_some_and(|(point, _, _)| point == name) {
-                let (_, path, bytes) = v.take().unwrap();
-                std::fs::write(path, bytes).unwrap();
-            }
-        });
-        IO_FAULT.with(|f| {
-            let mut f = f.borrow_mut();
-            f.1.push(name.into());
-            if f.0.as_deref() == Some(name) {
-                Err(std::io::Error::other(format!("fixture: {name}")))
-            } else {
-                Ok(())
-            }
-        })
-    }
-    #[cfg(not(test))]
-    {
-        let _ = name;
-        Ok(())
-    }
-}
-
-pub(super) fn sync_file(file: &std::fs::File, boundary: &str) -> std::io::Result<()> {
-    io_boundary(boundary)?;
-    file.sync_all()
 }
 
 pub(super) fn repair_partial_locked(root: &Path, tail: &StatusTail) -> Result<(), TaskOpError> {
@@ -299,22 +245,16 @@ pub(super) fn repair_partial_locked(root: &Path, tail: &StatusTail) -> Result<()
         uuid::Uuid::new_v4()
     ));
     io_boundary("partial_backup_create").map_err(write_failed)?;
-    let mut saved = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&backup)
-        .map_err(write_failed)?;
+    let mut saved = create_task_artifact(&backup).map_err(write_failed)?;
     io_boundary("partial_backup_write").map_err(write_failed)?;
-    saved.write_all(&tail.partial).map_err(write_failed)?;
-    sync_file(&saved, "partial_backup_sync").map_err(write_failed)?;
+    saved.write_bytes(&tail.partial).map_err(write_failed)?;
+    saved.sync_at("partial_backup_sync").map_err(write_failed)?;
     if !unchanged(&read_latest_status_locked(root)?) {
         return Err(TaskOpError::StatusSourceChanged);
     }
     io_boundary("partial_truncate").map_err(write_failed)?;
-    let file = OpenOptions::new()
-        .write(true)
-        .open(path)
+    let file = open_status_repair(&path).map_err(write_failed)?;
+    file.truncate_status(tail.complete_len)
         .map_err(write_failed)?;
-    file.set_len(tail.complete_len).map_err(write_failed)?;
-    sync_file(&file, "partial_truncate_sync").map_err(write_failed)
+    file.sync_at("partial_truncate_sync").map_err(write_failed)
 }

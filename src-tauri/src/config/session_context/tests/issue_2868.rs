@@ -609,7 +609,8 @@ fn issue_2868_root_raw_and_canonical_guard_preserve_durable_output() {
     let nested = root.join("ordinary-child");
     std::fs::create_dir(&nested).unwrap();
     let alias = nested.join("..");
-    for identity in [&root, &alias] {
+    let canonical_root = root.canonicalize().unwrap();
+    for identity in [&root, &canonical_root] {
         let content = with_issue_2832_root_config(temp.path(), || issue_2868_cache(identity));
         assert!(!content.contains("## Project Skills"));
         assert!(!content.contains("Filesystem authorization amendment:"));
@@ -619,6 +620,49 @@ fn issue_2868_root_raw_and_canonical_guard_preserve_durable_output() {
     }
     assert!(!control.contains("## Project Skills"));
     assert_eq!(std::fs::read(&base).unwrap(), before);
+    let cache_dir = temp.path().join(CONTEXT_CACHE_DIR_NAME);
+    let mut cache_before = std::fs::read_dir(&cache_dir)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect::<Vec<_>>();
+    cache_before.sort();
+    let directories = [
+        temp.path(),
+        root.as_path(),
+        nested.as_path(),
+        cache_dir.as_path(),
+    ];
+    let entries_before = directories.map(|directory| {
+        let mut entries = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        entries.sort();
+        entries
+    });
+    let error = with_issue_2832_root_config(temp.path(), || {
+        ensure_session_context(&display_path(&alias))
+    })
+    .unwrap_err();
+    assert!(error.contains("Root identity validation failed"), "{error}");
+    assert_eq!(std::fs::read(&base).unwrap(), before);
+    for (path, bytes) in cache_before {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    for (directory, before) in directories.into_iter().zip(entries_before) {
+        let mut after = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        after.sort();
+        assert_eq!(after, before);
+    }
+    assert!(!temp.path().join("project-skills").exists());
+    assert!(!root.join("project-skills").exists());
 }
 
 #[cfg(windows)]

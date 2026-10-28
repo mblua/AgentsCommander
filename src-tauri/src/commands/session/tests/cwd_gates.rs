@@ -220,13 +220,14 @@ async fn restore_wake_gate_exceptions() {
         backend.clone(),
     )));
 
-    // Root-agent cwd: allowed even when the dir is missing.
+    // Root-agent cwd: the Root must be verified.
     let app = session_test_app(
         AppSettings::default(),
         Arc::clone(&session_mgr),
         Arc::clone(&pty_mgr),
     );
     let root = crate::config::root_agent::root_agent_dir().expect("root dir resolves");
+    std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
     assert!(
         enforce_creation_gate(app.handle(), &root, CreationGateEnforcement::Enforce)
             .await

@@ -514,3 +514,143 @@ fn root_sender_uses_reserved_non_path_namespace() {
         crate::config::teams::agent_fqn_from_path("C:/tmp/agentscommander/_agent_root-agent")
     );
 }
+
+#[test]
+fn h2_strict_identity_and_protection_truth_table() {
+    use crate::config::root_agent::provisioning::root_agent_path_requires_protection_at;
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("config");
+    let root = config.join(ROOT_AGENT_DIR_NAME);
+    let ordinary = temp.path().join("ordinary");
+    let missing = temp.path().join("missing");
+    let file = temp.path().join("file");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir(&ordinary).unwrap();
+    std::fs::write(&file, "not a directory").unwrap();
+    assert!(paths_equivalent(&root, &root));
+    assert!(!paths_equivalent(&missing, &missing));
+    assert!(!paths_equivalent(&file, &file));
+    assert!(!paths_equivalent(&root, &ordinary));
+    for (cwd, expected) in [
+        (&root, true),
+        (&ordinary, false),
+        (&missing, true),
+        (&file, true),
+    ] {
+        assert_eq!(
+            root_agent_path_requires_protection_at(cwd.to_str().unwrap(), &config),
+            expected,
+            "{}",
+            cwd.display()
+        );
+    }
+    let absent_config = temp.path().join("absent-config");
+    for cwd in [&root, &ordinary, &missing, &file] {
+        assert!(root_agent_path_requires_protection_at(
+            cwd.to_str().unwrap(),
+            &absent_config
+        ));
+    }
+    assert!(!is_root_agent_path_at(
+        missing.to_str().unwrap(),
+        &absent_config
+    ));
+    assert!(!missing.join("skills").exists());
+    assert!(!missing.join("Role.md").exists());
+    ensure_root_agent_dir_at(&root).unwrap();
+    assert!(root.join("Role.md").is_file());
+    assert!(root
+        .join("skills/role-skill-boundary-audit/SKILL.md")
+        .is_file());
+    assert!(!missing.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn h2_literal_backslash_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let literal = temp.path().join(r"a\b");
+    let separated = temp.path().join("a/b");
+    std::fs::create_dir(&literal).unwrap();
+    std::fs::create_dir_all(&separated).unwrap();
+    assert!(!paths_equivalent(&literal, &separated));
+    let left = crate::path_identity::verify_directory(&literal).unwrap();
+    let right = crate::path_identity::verify_directory(&separated).unwrap();
+    assert_ne!(left.object_id, right.object_id);
+}
+
+#[cfg(unix)]
+#[test]
+fn h2_protection_resolved_alias() {
+    use crate::config::root_agent::provisioning::root_agent_path_requires_protection_at;
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("config");
+    let root = config.join(ROOT_AGENT_DIR_NAME);
+    let ordinary = temp.path().join("ordinary");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir(&ordinary).unwrap();
+    let ordinary_link = temp.path().join("ordinary-link");
+    let root_link = temp.path().join("root-link");
+    let broken = temp.path().join("broken");
+    std::os::unix::fs::symlink(&ordinary, &ordinary_link).unwrap();
+    std::os::unix::fs::symlink(&root, &root_link).unwrap();
+    std::os::unix::fs::symlink(temp.path().join("absent"), &broken).unwrap();
+    let nested = root.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let parent = nested.join("..");
+    for (alias, target, protects) in [
+        (&ordinary_link, Some(&ordinary), false),
+        (&root_link, Some(&root), true),
+        (&parent, Some(&root), true),
+        (&broken, None, true),
+    ] {
+        assert_eq!(
+            root_agent_path_requires_protection_at(alias.to_str().unwrap(), &config),
+            protects,
+            "{}",
+            alias.display()
+        );
+        if let Some(target) = target {
+            let resolved = std::fs::canonicalize(alias).unwrap();
+            assert_eq!(
+                crate::path_identity::verify_directory(&resolved)
+                    .unwrap()
+                    .object_id,
+                crate::path_identity::verify_directory(target)
+                    .unwrap()
+                    .object_id
+            );
+        }
+    }
+    for alias in [&ordinary_link, &root_link, &broken] {
+        assert!(!paths_equivalent(alias, &root));
+        assert!(!is_root_agent_path_at(alias.to_str().unwrap(), &config));
+    }
+    assert!(ensure_root_agent_dir_at(&root_link).is_err());
+    assert!(!root.join("Role.md").exists());
+    assert!(!root.join("skills").exists());
+    ensure_root_agent_dir_at(&root).unwrap();
+    assert!(root.join("Role.md").is_file());
+}
+
+#[test]
+fn h2_invalid_supplied_root_publishes_no_context_or_skills() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+    assert!(
+        crate::config::session_context::ensure_session_context(root.to_str().unwrap()).is_err()
+    );
+    assert!(!root.exists());
+    std::fs::create_dir(&root).unwrap();
+    assert!(
+        crate::config::session_context::ensure_session_context(root.to_str().unwrap()).is_err()
+    );
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    assert!(!temp.path().join("Context.root-agent.md").exists());
+    // Provisioning the intended explicit Root remains independent of a supplied impostor.
+    ensure_root_agent_dir_at(&root).unwrap();
+    assert!(root.join("Role.md").is_file());
+    assert!(root
+        .join("skills/role-skill-boundary-audit/SKILL.md")
+        .is_file());
+}

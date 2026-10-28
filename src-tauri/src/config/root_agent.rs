@@ -31,6 +31,7 @@ use legacy_contexts::{
     ROOT_COORDINATION_MESSAGING_PARAGRAPH,
     ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME, ROOT_ROLE_MD,
 };
+pub(crate) use provisioning::root_agent_path_requires_protection;
 #[cfg(test)]
 use provisioning::MINIMAL_ROOT_ROLE_MD;
 pub(crate) use provisioning::{ensure_default_root_agent_skills_at, verify_live_root_agent_path};

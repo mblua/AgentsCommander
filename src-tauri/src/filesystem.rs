@@ -23,6 +23,7 @@ pub(crate) mod directories;
 pub(crate) mod documents;
 pub(crate) mod injected_documents;
 pub(crate) mod instance_ignore;
+pub(crate) mod loop_files;
 pub(crate) mod naming_journal;
 pub(crate) mod phone_mailbox;
 pub(crate) mod phone_messaging;
