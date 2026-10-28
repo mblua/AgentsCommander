@@ -488,6 +488,7 @@ pub(crate) fn owned_replacement_launch_recipe(
 
 pub struct MailboxPoller {
     pub(crate) messages: Arc<crate::config::injected_messages::MessageWarnings>,
+    pub(crate) host_pty_slots: Arc<tokio::sync::Semaphore>,
     pub(crate) poll_interval: std::time::Duration,
     pub(crate) retry_tracker: HashMap<PathBuf, RetryState>,
     pub(crate) response_sources: Arc<Mutex<HashMap<PathBuf, ResponseWakeWork>>>,

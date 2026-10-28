@@ -415,37 +415,58 @@ impl MailboxPoller {
         source_plane: crate::phone::types::PtyInputSourcePlane,
         api_client_store: Option<&Arc<crate::api::auth::ApiClientStore>>,
     ) {
-        #[cfg(test)]
-        if let Some(control) = self
-            .test_hooks
-            .as_ref()
-            .and_then(MailboxTestHooks::replacement_fixture_control)
-        {
-            if !control.before_source_accept(injection_id).await {
-                return;
+        let deadline = tokio::time::Instant::now() + super::teardown::OBSERVATION_ALLOWANCE;
+        let host = matches!(
+            source_plane,
+            crate::phone::types::PtyInputSourcePlane::HostCli
+        );
+        let host_permit = if host {
+            match Arc::clone(&self.host_pty_slots).try_acquire_owned() {
+                Ok(permit) => Some(permit),
+                Err(_) => return,
             }
-        }
-        let delivery = self.delivery_poller();
-        let app = app.clone();
-        let injection_id = injection_id.to_owned();
-        let api_client_store = api_client_store.cloned();
-        let state = crate::api::message_store::MessageStoreState {
-            store: state.store.clone(),
-            active_operations: state.active_operations.clone(),
-            target_locks: state.target_locks.clone(),
-            target_gate: state.target_gate.clone(),
+        } else {
+            None
         };
-        crate::config::sessions_persistence::run_owned_persist_core(async move {
-            delivery
-                .dispatch_pty_input_operation_core(
-                    &app,
-                    &state,
-                    &injection_id,
-                    source_plane,
-                    api_client_store.as_ref(),
-                )
-                .await;
-        })
-        .await;
+        let operation = async move {
+            #[cfg(test)]
+            if let Some(control) = self
+                .test_hooks
+                .as_ref()
+                .and_then(MailboxTestHooks::replacement_fixture_control)
+            {
+                if !control.before_source_accept(injection_id).await {
+                    return;
+                }
+            }
+            let delivery = self.delivery_poller();
+            let app = app.clone();
+            let injection_id = injection_id.to_owned();
+            let api_client_store = api_client_store.cloned();
+            let state = crate::api::message_store::MessageStoreState {
+                store: state.store.clone(),
+                active_operations: state.active_operations.clone(),
+                target_locks: state.target_locks.clone(),
+                target_gate: state.target_gate.clone(),
+            };
+            crate::config::sessions_persistence::run_owned_persist_core(async move {
+                let _host_permit = host_permit;
+                delivery
+                    .dispatch_pty_input_operation_core(
+                        &app,
+                        &state,
+                        &injection_id,
+                        source_plane,
+                        api_client_store.as_ref(),
+                    )
+                    .await;
+            })
+            .await;
+        };
+        if host {
+            let _ = tokio::time::timeout_at(deadline, operation).await;
+        } else {
+            operation.await;
+        }
     }
 }

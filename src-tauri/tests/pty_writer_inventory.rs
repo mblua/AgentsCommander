@@ -132,7 +132,7 @@ fn every_production_pty_writer_is_in_the_explicit_permit_inventory() {
         "src/web.rs",
         "src/web/commands.rs",
         "src/pty/inject.rs",
-        "src/phone/mailbox/self_switch.rs",
+        "src/phone/mailbox/teardown.rs",
     ];
     expected_surfaces.retain(|relative| before_move || *relative != "src/web.rs");
     for relative in expected_surfaces {
@@ -176,7 +176,7 @@ fn every_production_pty_writer_is_in_the_explicit_permit_inventory() {
 
     let mut expected_permit_paths = vec![
         "src/commands/pty.rs",
-        "src/phone/mailbox/self_switch.rs",
+        "src/phone/mailbox/teardown.rs",
         "src/pty/inject.rs",
         // Moved out of pty::inject: its permit-write tests.
         "src/pty/inject/tests/submit.rs",

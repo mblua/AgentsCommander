@@ -21,6 +21,7 @@ mod self_switch;
 mod session_lookup;
 mod session_request;
 mod settle;
+mod teardown;
 mod wake_delivery;
 mod wake_injection;
 mod wake_workers;
