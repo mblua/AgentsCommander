@@ -73,7 +73,10 @@ fn create_workgroup_prepares_task_once_before_mutation() {
     assert!(!helper.contains("build_task_content("));
     assert!(!helper.contains("validate_task_title("));
     assert!(!helper.contains(".trim()"));
+}
 
+#[test]
+fn create_workgroup_on_disk_preserves_task_creation_order() {
     let disk_source = include_str!("../workgroup.rs");
     let disk = function_body(
         disk_source,
@@ -95,6 +98,17 @@ fn create_workgroup_prepares_task_once_before_mutation() {
     assert_eq!(helper.matches("build_task_content(").count(), 1);
     assert_eq!(helper.matches("write_task(").count(), 1);
     assert!(helper.contains("write_task(&wg_dir, &task_content)"));
+}
+
+#[test]
+fn room_allocation_precedes_reporting_and_initialization() {
+    let source = include_str!("../team_create.rs");
+    let body = function_body(source, "pub async fn create_workgroup(");
+    let disk_source = include_str!("../workgroup.rs");
+    let disk = function_body(
+        disk_source,
+        "pub(crate) async fn create_workgroup_on_disk_traced(",
+    );
 
     for (entry, helper, input, replicas, clones) in [
         (
