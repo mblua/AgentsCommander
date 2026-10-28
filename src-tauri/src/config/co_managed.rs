@@ -21,12 +21,18 @@
 //! - `lock`: one advisory lock file governing `config.json` and the `state.json`
 //!   phase 3 adds. One lock for both; phase 3 does not add a second.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+
+use crate::filesystem::co_managed_config::{
+    create_co_managed_stage, ensure_co_managed_directory, flush_co_managed_stage,
+    open_co_managed_lock, read_co_managed_config, remove_co_managed_stage,
+    replace_co_managed_config, sync_co_managed_stage, try_co_managed_lock, write_co_managed_stage,
+    CoManagedLockFile, CoManagedTryLockError,
+};
 
 /// Directory holding the per-room Co-managed files, directly under the Room root.
 pub const CO_MANAGED_DIR_NAME: &str = ".co-managed";
@@ -140,7 +146,7 @@ pub fn queue_dir(room_root: &Path) -> PathBuf {
 /// must never be able to break the room. Never creates anything on disk.
 pub fn load_config(room_root: &Path) -> CoManagedConfig {
     let path = config_path(room_root);
-    let Ok(raw) = std::fs::read_to_string(&path) else {
+    let Ok(raw) = read_co_managed_config(&path) else {
         return CoManagedConfig::default();
     };
     let Ok(value) = serde_json::from_str::<Value>(&raw) else {
@@ -169,7 +175,7 @@ fn config_from_value(value: &Value) -> CoManagedConfig {
 /// half file. Creates `.co-managed/` lazily on first write.
 pub fn set_enabled(room_root: &Path, enabled: bool) -> Result<CoManagedConfig, String> {
     let dir = co_managed_dir(room_root);
-    std::fs::create_dir_all(&dir)
+    ensure_co_managed_directory(&dir)
         .map_err(|e| format!("coManagedDirCreateFailed: {}: {}", dir.display(), e))?;
     let _lock = acquire_lock(&dir)?;
 
@@ -181,7 +187,7 @@ pub fn set_enabled(room_root: &Path, enabled: bool) -> Result<CoManagedConfig, S
 }
 
 fn read_config_object(path: &Path) -> Map<String, Value> {
-    match std::fs::read_to_string(path) {
+    match read_co_managed_config(path) {
         Ok(raw) => match serde_json::from_str::<Value>(&raw) {
             Ok(Value::Object(object)) => object,
             _ => Map::new(),
@@ -314,7 +320,7 @@ fn resolve_catalog_path(room_root: &Path, catalog: &str) -> PathBuf {
 /// A held advisory lock. The `File` IS the lock: dropping this guard closes the
 /// handle and releases the OS lock. The lock file itself is left on disk.
 struct CoManagedLock {
-    _file: std::fs::File,
+    _file: CoManagedLockFile,
 }
 
 fn acquire_lock(dir: &Path) -> Result<CoManagedLock, String> {
@@ -322,30 +328,25 @@ fn acquire_lock(dir: &Path) -> Result<CoManagedLock, String> {
     // The lock file is a pure advisory token: it carries no content, and a
     // concurrent holder may have it open, so it is created if absent but never
     // truncated (`suspicious_open_options`).
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
+    let file = open_co_managed_lock(&path)
         .map_err(|e| format!("coManagedLockOpenFailed: {}: {}", path.display(), e))?;
 
     let started = Instant::now();
     loop {
-        match file.try_lock() {
+        match try_co_managed_lock(&file) {
             Ok(()) => return Ok(CoManagedLock { _file: file }),
-            Err(std::fs::TryLockError::WouldBlock) if started.elapsed() >= LOCK_WAIT_BUDGET => {
+            Err(CoManagedTryLockError::WouldBlock) if started.elapsed() >= LOCK_WAIT_BUDGET => {
                 return Err(format!(
                     "coManagedLockTimeout: waited {} ms for {}",
                     LOCK_WAIT_BUDGET.as_millis(),
                     path.display()
                 ));
             }
-            Err(std::fs::TryLockError::WouldBlock) => {
+            Err(CoManagedTryLockError::WouldBlock) => {
                 let remaining = LOCK_WAIT_BUDGET.saturating_sub(started.elapsed());
                 std::thread::sleep(LOCK_POLL_INTERVAL.min(remaining));
             }
-            Err(std::fs::TryLockError::Error(e)) => {
+            Err(CoManagedTryLockError::Error(e)) => {
                 return Err(format!("coManagedLockFailed: {}: {}", path.display(), e));
             }
         }
@@ -359,22 +360,22 @@ fn write_config_atomic(dir: &Path, path: &Path, value: &Value) -> Result<(), Str
 
     let tmp_path = temp_path(dir);
     let write_result = (|| -> Result<(), String> {
-        let mut file = std::fs::File::create(&tmp_path)
+        let mut file = create_co_managed_stage(&tmp_path)
             .map_err(|e| format!("coManagedTempCreateFailed: {}: {}", tmp_path.display(), e))?;
-        file.write_all(&bytes)
+        write_co_managed_stage(&mut file, &bytes)
             .map_err(|e| format!("coManagedTempWriteFailed: {}: {}", tmp_path.display(), e))?;
-        file.flush()
+        flush_co_managed_stage(&mut file)
             .map_err(|e| format!("coManagedTempFlushFailed: {}: {}", tmp_path.display(), e))?;
-        file.sync_all()
+        sync_co_managed_stage(&file)
             .map_err(|e| format!("coManagedTempSyncFailed: {}: {}", tmp_path.display(), e))
     })();
     if let Err(e) = write_result {
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = remove_co_managed_stage(&tmp_path);
         return Err(e);
     }
 
-    std::fs::rename(&tmp_path, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp_path);
+    replace_co_managed_config(&tmp_path, path).map_err(|e| {
+        let _ = remove_co_managed_stage(&tmp_path);
         format!(
             "coManagedPublishFailed: {} -> {}: {}",
             tmp_path.display(),
