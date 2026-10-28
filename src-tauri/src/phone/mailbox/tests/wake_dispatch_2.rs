@@ -724,8 +724,8 @@ async fn issue_3263_minimal_retained_worker_rejects() {
     ] {
         assert!(!is_permanent_delivery_error(reason));
     }
-    let mut worker = minimal_retained_worker(false).await;
-    assert_minimal_retired(&mut worker).await;
+    let mut worker = Box::pin(minimal_retained_worker(false)).await;
+    Box::pin(assert_minimal_retired(&mut worker)).await;
     let dir = worker.origin.parent().unwrap().join("rejected");
     let id = worker.origin.file_stem().unwrap().to_str().unwrap();
     let message: OutboxMessage =
@@ -739,8 +739,8 @@ async fn issue_3263_minimal_retained_worker_rejects() {
 #[tokio::test]
 async fn issue_3263_minimal_retained_input_error_no_replay() {
     use super::support_retained_cells::{assert_minimal_retired, minimal_retained_worker};
-    let mut worker = minimal_retained_worker(true).await;
-    assert_minimal_retired(&mut worker).await;
+    let mut worker = Box::pin(minimal_retained_worker(true)).await;
+    Box::pin(assert_minimal_retired(&mut worker)).await;
     // Backend failure returns before recording bytes; stage/failed receipt proves the attempt.
     assert!(!worker.origin.exists());
 }
@@ -749,7 +749,7 @@ async fn issue_3263_minimal_retained_input_error_no_replay() {
 async fn issue_3263_minimal_retained_reject_io_pending() {
     use super::super::handoff::wake_claim_path;
     use super::support_retained_cells::{assert_minimal_retired, minimal_retained_worker};
-    super::support_retained_cells::minimal_retained_missing_eight().await;
+    Box::pin(super::support_retained_cells::minimal_retained_missing_eight()).await;
     for case in [
         "absent",
         "mismatch",
@@ -764,7 +764,7 @@ async fn issue_3263_minimal_retained_reject_io_pending() {
         "payload-delete",
         "raw-reason",
     ] {
-        let mut worker = minimal_retained_worker(false).await;
+        let mut worker = Box::pin(minimal_retained_worker(false)).await;
         worker.poller.retry_tracker.insert(
             worker.origin.clone(),
             super::super::notice::RetryState {
@@ -830,7 +830,7 @@ async fn issue_3263_minimal_retained_reject_io_pending() {
             std::fs::create_dir(raw_reason).unwrap();
         }
         let receipts = worker.control.receipts.lock().unwrap().len();
-        worker.poller.drain_wake_outcomes().await;
+        Box::pin(worker.poller.drain_wake_outcomes()).await;
         if [
             "raw-blocked",
             "reason-only",
@@ -848,7 +848,7 @@ async fn issue_3263_minimal_retained_reject_io_pending() {
                 .contains_key(&worker.origin));
             assert!(claim.exists());
             assert!(!worker.origin.exists());
-            worker.poller.drain_wake_outcomes().await;
+            Box::pin(worker.poller.drain_wake_outcomes()).await;
             assert_eq!(worker.poller.live_claims.len(), 1);
             assert_eq!(worker.control.receipts.lock().unwrap().len(), receipts);
             if case.ends_with("-delete") {
@@ -869,13 +869,13 @@ async fn issue_3263_minimal_retained_reject_io_pending() {
             }
         }
         if case.contains("collision") {
-            worker.poller.drain_wake_outcomes().await;
+            Box::pin(worker.poller.drain_wake_outcomes()).await;
             assert!(worker.poller.live_claims.is_empty());
             assert!(worker.poller.retry_tracker.is_empty());
             assert!(worker.poller.response_sources.lock().unwrap().is_empty());
             assert_eq!(std::fs::read(&worker.origin).unwrap(), b"foreign origin");
         }
-        assert_minimal_retired(&mut worker).await;
+        Box::pin(assert_minimal_retired(&mut worker)).await;
         if ["json", "utf8", "bom", "raw-blocked", "raw-reason"].contains(&case) {
             assert_eq!(std::fs::read(raw).unwrap(), corrupt);
             assert!(!payload.exists());
@@ -898,8 +898,8 @@ async fn issue_3263_minimal_retained_reject_io_pending() {
 async fn issue_3263_minimal_retained_followup_eligibility() {
     {
         use super::support_retained_cells::{assert_minimal_retired, minimal_retained_worker};
-        let mut worker = minimal_retained_worker(false).await;
-        assert_minimal_retired(&mut worker).await;
+        let mut worker = Box::pin(minimal_retained_worker(false)).await;
+        Box::pin(assert_minimal_retired(&mut worker)).await;
         let app = worker.fixture.app.handle();
         let coordinator = app.state::<crate::session::selection::SelectionCoordinator>();
         let roots = coordinator.fixture_root_count();
@@ -910,7 +910,7 @@ async fn issue_3263_minimal_retained_followup_eligibility() {
         // Observe actual blockage, never clear the accepted retained root to get a success.
         let observation = tokio::time::timeout(
             Duration::from_millis(50),
-            worker.poller.deliver_wake(app, &followup),
+            Box::pin(worker.poller.deliver_wake(app, &followup)),
         )
         .await;
         assert!(
@@ -921,7 +921,7 @@ async fn issue_3263_minimal_retained_followup_eligibility() {
     }
     let fixture = make_mailbox_fixture();
     let app = fixture.app.handle();
-    let (coordinator, _, _, _) = prepare_retained_exited_respawn(&fixture).await;
+    let (coordinator, _, _, _) = Box::pin(prepare_retained_exited_respawn(&fixture)).await;
     {
         let state = app.state::<SettingsState>();
         let mut settings = state.write().await;
@@ -939,8 +939,8 @@ async fn issue_3263_minimal_retained_followup_eligibility() {
     let hooks = MailboxTestHooks::default();
     let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
     let old = write_wake_message(&fixture.sender_cwd, "unsupported", "2026-07-15T00:00:01Z");
-    poller.poll(app).await.unwrap();
-    poller.settle_wake_workers().await;
+    Box::pin(poller.poll(app)).await.unwrap();
+    Box::pin(poller.settle_wake_workers()).await;
     let rejected = old
         .parent()
         .unwrap()
@@ -972,8 +972,8 @@ async fn issue_3263_minimal_retained_followup_eligibility() {
     hooks.pty_presence.lock().unwrap().insert(session, true);
     hooks.inject_results.lock().unwrap().push_back(Ok(()));
     let origin = write_wake_message(&fixture.sender_cwd, "followup", "2026-07-15T00:00:02Z");
-    poller.poll(app).await.unwrap();
-    poller.settle_wake_workers().await;
+    Box::pin(poller.poll(app)).await.unwrap();
+    Box::pin(poller.settle_wake_workers()).await;
     assert!(!origin.exists());
     assert_eq!(hooks.inject_calls.lock().unwrap().as_slice(), &[session]);
     assert!(origin

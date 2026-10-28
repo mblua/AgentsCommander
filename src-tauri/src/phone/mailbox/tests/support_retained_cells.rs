@@ -790,7 +790,7 @@ pub(super) async fn minimal_retained_worker(input_failure: bool) -> MinimalRetai
     };
     let fixture = make_mailbox_fixture();
     let app = fixture.app.handle();
-    let (coordinator, _, _, _) = prepare_retained_exited_respawn(&fixture).await;
+    let (coordinator, _, _, _) = Box::pin(prepare_retained_exited_respawn(&fixture)).await;
     let control = Arc::new(ReplacementFixtureControl::default());
     control.mock_backend.store(true, Ordering::Release);
     if input_failure {
@@ -821,7 +821,7 @@ pub(super) async fn minimal_retained_worker(input_failure: bool) -> MinimalRetai
     std::fs::create_dir_all(&outbox).unwrap();
     let origin = outbox.join(format!("{}.json", message.id));
     std::fs::write(&origin, serde_json::to_vec(&message).unwrap()).unwrap();
-    poller.poll(app).await.unwrap();
+    Box::pin(poller.poll(app)).await.unwrap();
     retained_source_wait_cut(&control, Cut::SourceRetainedReturn).await;
     // The bound starts only AFTER the real core's retained-return observation.
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -884,7 +884,7 @@ pub(super) async fn assert_minimal_retired(worker: &mut MinimalRetainedWorker) {
         .iter()
         .find_map(|r| r.binding);
     let writes = binding.map(|binding| shared_engine_writes(app, binding.session_id()));
-    worker.poller.drain_wake_outcomes().await;
+    Box::pin(worker.poller.drain_wake_outcomes()).await;
     assert!(worker.poller.live_claims.is_empty());
     assert!(worker.poller.retry_tracker.is_empty());
     assert!(worker.poller.response_sources.lock().unwrap().is_empty());
