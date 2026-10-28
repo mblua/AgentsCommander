@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::config::settings::WindowGeometry;
+use crate::filesystem::session_context;
 use crate::pty::backend_kind::SessionBackendKind;
 use crate::session::profile::{
     detect_configured_pty_submission_agent, detect_pty_submission_agent, CodingAgentKind,
@@ -306,7 +307,7 @@ pub(crate) fn find_workgroup_task_path_for_cwd(cwd: &str) -> Option<std::path::P
 
 pub(crate) fn read_workgroup_task_for_cwd(cwd: &str) -> Option<String> {
     let path = find_workgroup_task_path_for_cwd(cwd)?;
-    std::fs::read_to_string(&path)
+    session_context::read_context_source(&path)
         .ok()
         .map(|content| content.trim().to_string())
         .filter(|content| !content.is_empty())
