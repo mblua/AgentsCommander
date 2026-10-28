@@ -1,3 +1,4 @@
+use crate::filesystem::config_seed as seed_disk;
 use std::path::{Component, Path, PathBuf};
 
 use crate::config::placeholders::{expand_placeholders_in_content, PlaceholderContext};
@@ -12,7 +13,9 @@ use super::{
 };
 
 pub(super) fn is_readable_dir(path: &Path) -> bool {
-    std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false)
+    seed_disk::inspect_seed_source(path)
+        .map(|m| m.is_dir())
+        .unwrap_or(false)
 }
 
 pub(super) fn manifest_source_for_tier(tier: ConfigSeedTier) -> ManifestSource {
@@ -168,7 +171,7 @@ impl SeedFileCollector {
 }
 
 pub(super) fn remove_seed_scratch(path: &Path, context: &str, unique_sfx: &str) {
-    match std::fs::remove_dir_all(path) {
+    match seed_disk::remove_seed_scratch(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => log::warn!(
@@ -190,7 +193,7 @@ pub(crate) fn is_nonempty_seed_dir(path: &Path) -> bool {
         if depth > MAX_SEED_DEPTH {
             return false;
         }
-        let Ok(entries) = std::fs::read_dir(dir) else {
+        let Ok(entries) = seed_disk::seed_entries(dir) else {
             return false;
         };
         for entry in entries.flatten() {
@@ -223,7 +226,7 @@ pub(crate) fn is_nonempty_seed_dir(path: &Path) -> bool {
 pub(super) fn clear_stale_seed_scratch(parent: &Path, dest_name: &str) {
     let tmp_prefix = format!("{}.acseed-tmp-", dest_name);
     let old_prefix = format!("{}.acseed-old-", dest_name);
-    let entries = match std::fs::read_dir(parent) {
+    let entries = match seed_disk::seed_entries(parent) {
         Ok(entries) => entries,
         Err(error) => {
             log::warn!(
@@ -249,7 +252,7 @@ pub(super) fn clear_stale_seed_scratch(parent: &Path, dest_name: &str) {
         if let Some(name) = entry.file_name().to_str() {
             if name.starts_with(&tmp_prefix) || name.starts_with(&old_prefix) {
                 let path = entry.path();
-                if let Err(error) = std::fs::remove_dir_all(&path) {
+                if let Err(error) = seed_disk::remove_seed_scratch(&path) {
                     if error.kind() != std::io::ErrorKind::NotFound {
                         log::warn!(
                             "[config-seed] failed to reclaim stale scratch {} scope={}: {}",
@@ -319,9 +322,10 @@ pub(super) fn copy_tree_internal(
         );
         return Ok(());
     }
-    std::fs::create_dir_all(dst_dir).map_err(|e| format!("create {}: {}", dst_dir.display(), e))?;
-    let entries =
-        std::fs::read_dir(src_dir).map_err(|e| format!("read {}: {}", src_dir.display(), e))?;
+    seed_disk::ensure_seed_directory(dst_dir)
+        .map_err(|e| format!("create {}: {}", dst_dir.display(), e))?;
+    let entries = seed_disk::seed_entries(src_dir)
+        .map_err(|e| format!("read {}: {}", src_dir.display(), e))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("read entry in {}: {}", src_dir.display(), e))?;
         // M6/I3: skip symlinks AND Windows junctions/reparse points (warn, not debug).
@@ -369,56 +373,38 @@ pub(super) fn copy_file_substituted(
     let ctx = match (substitute, ctx) {
         (true, Some(ctx)) => ctx,
         _ => {
-            return std::fs::copy(src, dst)
+            return seed_disk::copy_seed_file(src, dst)
                 .map(|_| ())
                 .map_err(|e| format!("copy {} -> {}: {}", src.display(), dst.display(), e));
         }
     };
-    let len = std::fs::metadata(src)
+    let len = seed_disk::inspect_seed_source(src)
         .map_err(|e| format!("stat {}: {}", src.display(), e))?
         .len();
     // M4: over-cap files are streamed, never read whole into memory.
     if len > CONTENT_SUBSTITUTION_CAP {
-        std::fs::copy(src, dst)
+        seed_disk::copy_seed_file(src, dst)
             .map_err(|e| format!("copy {} -> {}: {}", src.display(), dst.display(), e))?;
         return Ok(());
     }
-    let bytes = std::fs::read(src).map_err(|e| format!("read {}: {}", src.display(), e))?;
+    let bytes =
+        seed_disk::read_seed_file(src).map_err(|e| format!("read {}: {}", src.display(), e))?;
     // Binary sniff: a NUL in the leading window means "copy verbatim".
     let probe = bytes.len().min(8192);
     if bytes[..probe].contains(&0u8) {
-        return std::fs::write(dst, &bytes).map_err(|e| format!("write {}: {}", dst.display(), e));
+        return seed_disk::write_seed_file(dst, &bytes)
+            .map_err(|e| format!("write {}: {}", dst.display(), e));
     }
     match std::str::from_utf8(&bytes) {
         // CRLF and a UTF-8 BOM survive (only known token substrings are swapped).
-        Ok(text) => std::fs::write(dst, expand_placeholders_in_content(text, ctx).as_bytes())
-            .map_err(|e| format!("write {}: {}", dst.display(), e)),
-        // Non-UTF-8 (no NUL): copy verbatim.
-        Err(_) => {
-            std::fs::write(dst, &bytes).map_err(|e| format!("write {}: {}", dst.display(), e))
+        Ok(text) => {
+            seed_disk::write_seed_file(dst, expand_placeholders_in_content(text, ctx).as_bytes())
+                .map_err(|e| format!("write {}: {}", dst.display(), e))
         }
+        // Non-UTF-8 (no NUL): copy verbatim.
+        Err(_) => seed_disk::write_seed_file(dst, &bytes)
+            .map_err(|e| format!("write {}: {}", dst.display(), e)),
     }
 }
 
-/// True for a symlink OR a Windows junction/reparse point. `is_symlink()` alone
-/// is FALSE for junctions, so the reparse-attribute check is required (M6).
-/// `DirEntry::metadata` does NOT traverse, so the junction's own attributes are
-/// observed. An undeterminable file type is treated as skip-worthy.
-pub(super) fn is_symlink_or_reparse(entry: &std::fs::DirEntry) -> bool {
-    match entry.file_type() {
-        Ok(ft) if ft.is_symlink() => return true,
-        Ok(_) => {}
-        Err(_) => return true,
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-        if let Ok(md) = entry.metadata() {
-            if md.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-                return true;
-            }
-        }
-    }
-    false
-}
+pub(super) use crate::filesystem::config_seed::is_symlink_or_reparse;
