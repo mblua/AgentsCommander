@@ -64,9 +64,6 @@ pub(crate) async fn destroy_one_legacy_session<R: tauri::Runtime>(
         }
         crate::session::selection::forget_response_close_registration(session_id);
     }
-    let is_root_agent = existing.is_root_agent
-        || crate::config::root_agent::is_root_agent_path(&existing.working_directory);
-
     if let Err(error) =
         teardown_legacy_destroy_runtime(transaction, session_id, &request.source).await
     {
@@ -77,7 +74,12 @@ pub(crate) async fn destroy_one_legacy_session<R: tauri::Runtime>(
     #[cfg(test)]
     restart_reader_seam::hit_after_old_release(&format!("destroy:{session_id}")).await;
 
-    if is_root_agent && !request.force_destroy_root {
+    if !request.force_destroy_root
+        && (existing.is_root_agent
+            || crate::config::root_agent::root_agent_path_requires_protection(
+                &existing.working_directory,
+            ))
+    {
         mutations.set_detached_intent(session_id, false);
         if !matches!(existing.status, SessionStatus::Exited(_)) {
             mutations.mark_exited(session_id, 0);
@@ -425,3 +427,6 @@ pub(crate) async fn execute_manual_coordinator_destroy<R: tauri::Runtime>(
     outcome.clone().into_single_result(coordinator_id)?;
     Ok(outcome)
 }
+
+#[cfg(test)]
+mod tests;

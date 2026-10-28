@@ -629,7 +629,8 @@ fn root_grant_is_gated_on_path_not_dir_name_anti_spoof() {
 #[test]
 fn root_grant_fires_through_production_path_gate() {
     let root = crate::config::root_agent::root_agent_dir().expect("canonical identity");
-    verify_root_context_identity(&root).expect("canonical Root accepted");
+    std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
+    verify_root_context_identity(&root).expect("Root must be verified");
     let out = default_context_as_root(&root, None, &no_skill_section());
     assert!(out.contains("Every registered AgentsCommander project folder"));
     assert_eq!(
