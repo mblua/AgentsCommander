@@ -11,6 +11,58 @@ use std::collections::HashSet;
 use std::time::Duration;
 use uuid::Uuid;
 
+#[test]
+fn message_path_target_root_file_is_io() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    std::fs::write(&root, b"file").unwrap();
+    assert!(matches!(
+        PtyInputTargetGate::new(root),
+        Err(MessageStoreError::Io(_))
+    ));
+}
+
+#[test]
+fn message_path_lock_directory_file_is_unsafe() {
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path();
+    std::fs::write(parent.join("pty-input-locks"), b"file").unwrap();
+    assert!(crate::path_identity::verify_directory(parent).is_ok());
+    assert!(matches!(
+        try_stripe_lock_at(parent, "v", false),
+        Err(MessageStoreError::UnsafePath)
+    ));
+}
+
+#[test]
+fn message_path_sqlite_wal_directory_is_unsafe() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join(DB_FILENAME);
+    std::fs::create_dir(sqlite_sidecar_paths(&db)[0].clone()).unwrap();
+    assert!(matches!(
+        verify_existing_sqlite_files(&db),
+        Err(MessageStoreError::UnsafePath)
+    ));
+    assert!(crate::path_identity::verify_directory(temp.path()).is_ok());
+    assert!(matches!(
+        MessageStore::open(db.clone()),
+        Err(MessageStoreError::UnsafePath)
+    ));
+    assert!(matches!(std::fs::symlink_metadata(&db),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound));
+}
+
+#[test]
+fn message_path_store_parent_file_is_io() {
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path().join("parent");
+    std::fs::write(&parent, b"file").unwrap();
+    assert!(matches!(
+        MessageStore::open(parent.join(DB_FILENAME)),
+        Err(MessageStoreError::Io(_))
+    ));
+}
+
 fn store() -> MessageStore {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join(DB_FILENAME);
