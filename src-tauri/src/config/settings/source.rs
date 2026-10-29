@@ -2,6 +2,7 @@ use super::{
     IdentityReferenceCompleteProof, IdentityReferenceError, IdentityReferencePhysicalState,
     IdentityReferenceProtectedRevision, ProfileCellConfig,
 };
+use crate::filesystem::settings_sources;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -426,7 +427,7 @@ pub(crate) enum OriginPhysicalInput {
 #[allow(dead_code)] // Dormant until the later source protocol cuts.
 impl OriginPhysicalInput {
     pub(crate) fn read(path: &Path) -> Self {
-        match std::fs::read(path) {
+        match settings_sources::bytes(path) {
             Ok(bytes) => Self::Bytes(bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::Absent,
             Err(_) => Self::Unknown,

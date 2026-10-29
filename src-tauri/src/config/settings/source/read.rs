@@ -40,6 +40,7 @@ use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME;
 use crate::config::local_overlay::LocalSettingsOverlay;
 use crate::config::settings::project_path as projects;
+use crate::filesystem::settings_sources;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -76,10 +77,10 @@ impl SourceReadContext {
         let config = settings_path
             .parent()
             .ok_or(SourcePreparationError::ContextUnavailable)?;
-        let config = std::fs::canonicalize(config)
+        let config = settings_sources::canonical(config)
             .map_err(|_| SourcePreparationError::ContextUnavailable)?;
         let catalog_root = match &primary {
-            Some(root) => std::fs::canonicalize(root)
+            Some(root) => settings_sources::canonical(root)
                 .map_err(|_| SourcePreparationError::ContextUnavailable)?,
             None => config.clone(),
         };
@@ -190,7 +191,7 @@ pub(crate) fn list_active_sources(context: &SourceReadContext) -> Vec<SourceRef>
             };
             // Missing files are omitted; nonregular/unreadable existing sources
             // remain visible for a diagnostic snapshot. Never create on read.
-            if std::fs::symlink_metadata(&path)
+            if settings_sources::probe(&path)
                 .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
             {
                 continue;

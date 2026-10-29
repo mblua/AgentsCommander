@@ -4,6 +4,7 @@ use super::{
     project_physical_profiles,
 };
 use crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME;
+use crate::filesystem::settings_sources;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -139,7 +140,7 @@ pub(crate) fn collect_registered_profile_gate(path: &Path) -> RegisteredProfileC
     ]
     .into_iter()
     .map(|participant| {
-        let input = match std::fs::read(&participant) {
+        let input = match settings_sources::bytes(&participant) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.to_string()),
@@ -301,7 +302,7 @@ pub(crate) fn recheck_registered_profile_gate(
     captured: &[RegisteredProfileDocument],
 ) -> Result<(), String> {
     for (path, before) in captured {
-        let current = match std::fs::read(path) {
+        let current = match settings_sources::bytes(path) {
             Ok(bytes) => Some(bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(format!("{}: {e}", path.display())),

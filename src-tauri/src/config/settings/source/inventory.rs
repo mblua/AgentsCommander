@@ -41,6 +41,7 @@ use super::SourceRef;
 use super::SourceRevision;
 use super::SourceRole;
 use super::SourceScope;
+use crate::filesystem::settings_sources;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -483,7 +484,7 @@ impl SourceInventoryCapture {
             } else {
                 let parent = slot.parent().ok_or_else(invalid)?;
                 crate::path_identity::verify_directory(parent).map_err(|_| invalid())?;
-                match std::fs::symlink_metadata(slot) {
+                match settings_sources::probe(slot) {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     _ => return Err(invalid()),
                 }
@@ -823,7 +824,7 @@ impl SourceInventoryProof {
             }
         }
         for (slot, present) in &original.discovery.slots {
-            let exists = match std::fs::symlink_metadata(slot) {
+            let exists = match settings_sources::probe(slot) {
                 Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => true,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
                 _ => return Err(conflict()),
