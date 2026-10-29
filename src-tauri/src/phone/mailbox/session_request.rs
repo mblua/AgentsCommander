@@ -10,6 +10,7 @@ use super::poller::{evaluate_gate, MailboxPoller, PurgeGatePeer, PurgeGateSessio
 use super::settle::{archive_root_md, capture_self_forget_summary, filter_sessions_by_fqn};
 use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::SettingsState;
+use crate::filesystem::phone_mailbox as mailbox_disk;
 use crate::phone::types::OutboxMessage;
 use crate::pty::inject::LogicalPtyCommand;
 use crate::session::maintenance::{MaintenanceError, PendingSelfClear};
@@ -117,9 +118,9 @@ impl MailboxPoller {
             }
         };
         let mut peer_fqns: Vec<String> = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(wg_dir) {
-            for entry in entries.flatten() {
-                let name = match entry.file_name().to_str() {
+        if let Ok(entries) = mailbox_disk::mailbox_directory_paths(wg_dir) {
+            for path in entries.flatten() {
+                let name = match path.file_name().and_then(|name| name.to_str()) {
                     Some(n) => n.to_string(),
                     None => continue,
                 };
@@ -130,7 +131,7 @@ impl MailboxPoller {
                 if agent == wg.agent_name {
                     continue;
                 }
-                if !entry.path().is_dir() {
+                if !mailbox_disk::mailbox_path_is_dir(&path) {
                     continue;
                 }
                 peer_fqns.push(format!("{}:{}/{}", wg.project, wg.wg_name, agent));
@@ -609,7 +610,7 @@ impl MailboxPoller {
         //     nothing is queued/archived with nothing to resume.
         let handoff_path =
             std::path::Path::new(&session.working_directory).join(SELF_HANDOFF_ROOT_NAME);
-        if !handoff_path.is_file() {
+        if !mailbox_disk::mailbox_path_is_file(&handoff_path) {
             return self
                 .reject_message(
                     path,
@@ -721,7 +722,7 @@ impl MailboxPoller {
         else {
             return false;
         };
-        let Ok(content) = std::fs::read_to_string(task_path) else {
+        let Ok(content) = mailbox_disk::read_mailbox_task_text(task_path) else {
             return false;
         };
         crate::commands::entity_creation::parse_task_title(&content).is_some()
@@ -837,9 +838,9 @@ struct PlainReceiptStage {
 
 impl Drop for PlainReceiptStage {
     fn drop(&mut self) {
-        match std::fs::read(&self.path) {
+        match mailbox_disk::read_mailbox_message(&self.path) {
             Ok(bytes) if bytes == self.written => {
-                if let Err(error) = std::fs::remove_file(&self.path) {
+                if let Err(error) = mailbox_disk::remove_mailbox_artifact(&self.path) {
                     log::warn!("[mailbox] self-clear stage cleanup failed: {}", error);
                 }
             }
@@ -877,7 +878,6 @@ impl MailboxPoller {
     {
         use super::self_clear::{accept, Callbacks, PlainError, Prepared, Request};
         use crate::session::maintenance::PlainIdentity;
-        use std::io::Write;
         let (launch, transport, inject, note_boundary) = callbacks;
         let request_id = match msg
             .request_id
@@ -920,21 +920,21 @@ impl MailboxPoller {
             request,
             pending,
             Callbacks {
-                read_receipt: |destination: &std::path::Path| match std::fs::read(destination) {
-                    Ok(bytes) => Ok(Some(bytes)),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                    Err(error) => Err(error.to_string()),
+                read_receipt: |destination: &std::path::Path| {
+                    match mailbox_disk::read_mailbox_message(destination) {
+                        Ok(bytes) => Ok(Some(bytes)),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                        Err(error) => Err(error.to_string()),
+                    }
                 },
                 prepare_receipt: |destination: &std::path::Path, bytes: &[u8], _lease: &_| {
                     let parent = destination
                         .parent()
                         .ok_or("self-clear: no responses directory")?;
-                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                    mailbox_disk::ensure_mailbox_archive_directory(parent)
+                        .map_err(|e| e.to_string())?;
                     let stage_path = parent.join(format!("{}.stage", Uuid::new_v4()));
-                    let mut file = std::fs::OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .open(&stage_path)
+                    let mut file = mailbox_disk::create_plain_mailbox_receipt_stage(&stage_path)
                         .map_err(|e| e.to_string())?;
                     let mut stage = PlainReceiptStage {
                         path: stage_path,
@@ -942,14 +942,17 @@ impl MailboxPoller {
                     };
                     while stage.written.len() < bytes.len() {
                         let remaining = &bytes[stage.written.len()..];
-                        let count = file.write(remaining).map_err(|e| e.to_string())?;
+                        let count =
+                            mailbox_disk::write_plain_mailbox_receipt_chunk(&mut file, remaining)
+                                .map_err(|e| e.to_string())?;
                         if count == 0 {
                             return Err("self-clear: stage write made no progress".into());
                         }
                         stage.written.extend_from_slice(&remaining[..count]);
                     }
                     drop(file);
-                    let bytes = std::fs::read(&stage.path).map_err(|e| e.to_string())?;
+                    let bytes = mailbox_disk::read_mailbox_message(&stage.path)
+                        .map_err(|e| e.to_string())?;
                     Ok(Prepared { stage, bytes })
                 },
                 publish_prepared: |stage: &PlainReceiptStage, destination: &std::path::Path| {

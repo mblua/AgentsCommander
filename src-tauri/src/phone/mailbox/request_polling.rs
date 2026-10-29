@@ -2,6 +2,7 @@ use super::poller::{collect_project_refresh_requests, read_text_bom_tolerant, Ma
 use crate::config::instance_artifacts::PROJECT_REFRESH_REQUESTS_DIR_NAME;
 use crate::config::instance_artifacts::SESSION_REQUESTS_DIR_NAME;
 use crate::config::settings::SettingsState;
+use crate::filesystem::phone_mailbox as mailbox_disk;
 use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
@@ -20,7 +21,7 @@ impl MailboxPoller {
         msg: &OutboxMessage,
     ) -> Result<(), String> {
         let delivered_dir = path.parent().ok_or("No parent dir")?.join("delivered");
-        std::fs::create_dir_all(&delivered_dir)
+        mailbox_disk::ensure_mailbox_archive_directory(&delivered_dir)
             .map_err(|e| format!("Failed to create delivered dir: {}", e))?;
 
         // Strip token before storing
@@ -30,11 +31,12 @@ impl MailboxPoller {
         let dest = delivered_dir.join(format!("{}.json", msg.id));
         let json = serde_json::to_string_pretty(&stripped)
             .map_err(|e| format!("Failed to serialize: {}", e))?;
-        std::fs::write(&dest, json)
+        mailbox_disk::write_mailbox_document(&dest, json)
             .map_err(|e| format!("Failed to write delivered file: {}", e))?;
 
         // Remove original
-        std::fs::remove_file(path).map_err(|e| format!("Failed to remove outbox file: {}", e))?;
+        mailbox_disk::remove_mailbox_artifact(path)
+            .map_err(|e| format!("Failed to remove outbox file: {}", e))?;
         self.complete_response_delivery(app, path).await;
 
         log::info!("[mailbox] Message {} moved to delivered/", msg.id);
@@ -49,12 +51,12 @@ impl MailboxPoller {
         reason: &str,
     ) -> Result<(), String> {
         let rejected_dir = path.parent().ok_or("No parent dir")?.join("rejected");
-        std::fs::create_dir_all(&rejected_dir)
+        mailbox_disk::ensure_mailbox_archive_directory(&rejected_dir)
             .map_err(|e| format!("Failed to create rejected dir: {}", e))?;
 
         // Write reason file FIRST — the CLI polls for this file to detect rejection
         let reason_path = rejected_dir.join(format!("{}.reason.txt", msg.id));
-        std::fs::write(&reason_path, reason)
+        mailbox_disk::write_mailbox_document(&reason_path, reason)
             .map_err(|_| "Failed to write reason file".to_string())?;
 
         // Then write the stripped message JSON
@@ -64,10 +66,12 @@ impl MailboxPoller {
         let dest = rejected_dir.join(format!("{}.json", msg.id));
         let json = serde_json::to_string_pretty(&stripped)
             .map_err(|e| format!("Failed to serialize: {}", e))?;
-        std::fs::write(&dest, json).map_err(|e| format!("Failed to write rejected file: {}", e))?;
+        mailbox_disk::write_mailbox_document(&dest, json)
+            .map_err(|e| format!("Failed to write rejected file: {}", e))?;
 
         // Remove original
-        std::fs::remove_file(path).map_err(|e| format!("Failed to remove outbox file: {}", e))?;
+        mailbox_disk::remove_mailbox_artifact(path)
+            .map_err(|e| format!("Failed to remove outbox file: {}", e))?;
         self.settle_response_source(path, false);
 
         log::warn!(
@@ -81,7 +85,7 @@ impl MailboxPoller {
     /// Reject a raw file that cannot be parsed as OutboxMessage.
     pub(crate) fn reject_raw_file(path: &Path, reason: &str) -> Result<(), String> {
         let rejected_dir = path.parent().ok_or("No parent dir")?.join("rejected");
-        std::fs::create_dir_all(&rejected_dir)
+        mailbox_disk::ensure_mailbox_archive_directory(&rejected_dir)
             .map_err(|e| format!("Failed to create rejected dir: {}", e))?;
 
         let filename = path
@@ -90,8 +94,11 @@ impl MailboxPoller {
             .unwrap_or("unknown.json");
 
         let dest = rejected_dir.join(filename);
-        std::fs::rename(path, &dest)
-            .or_else(|_| std::fs::copy(path, &dest).and_then(|_| std::fs::remove_file(path)))
+        mailbox_disk::rename_mailbox_document(path, &dest)
+            .or_else(|_| {
+                mailbox_disk::copy_mailbox_document(path, &dest)
+                    .and_then(|_| mailbox_disk::remove_mailbox_artifact(path))
+            })
             .map_err(|e| format!("Failed to move file to rejected: {}", e))?;
 
         let stem = Path::new(filename)
@@ -99,7 +106,7 @@ impl MailboxPoller {
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
         let reason_path = rejected_dir.join(format!("{}.reason.txt", stem));
-        std::fs::write(&reason_path, reason)
+        mailbox_disk::write_mailbox_document(&reason_path, reason)
             .map_err(|_| "Failed to write reason file".to_string())?;
 
         log::warn!("Rejected raw file {:?}: {}", path, reason);
@@ -129,7 +136,7 @@ impl MailboxPoller {
         }
 
         for path in batch.processed_paths {
-            let _ = std::fs::remove_file(&path);
+            let _ = mailbox_disk::remove_mailbox_artifact(&path);
         }
     }
 
@@ -140,7 +147,7 @@ impl MailboxPoller {
             None => return,
         };
         let requests_dir = config_dir.join(SESSION_REQUESTS_DIR_NAME);
-        if !requests_dir.is_dir() {
+        if !mailbox_disk::mailbox_path_is_dir(&requests_dir) {
             return;
         }
 
@@ -149,27 +156,25 @@ impl MailboxPoller {
         // result older than 5 minutes is litter from a timed-out or crashed
         // CLI and is removed here (worst case a few KB in an already-ephemeral,
         // ignored instance-artifact directory).
-        if let Ok(rd) = std::fs::read_dir(&requests_dir) {
-            for entry in rd.filter_map(|e| e.ok()) {
-                let path = entry.path();
+        if let Ok(rd) = mailbox_disk::mailbox_directory_paths(&requests_dir) {
+            for path in rd.filter_map(|e| e.ok()) {
                 if !crate::cli::create_agent::is_session_request_result_path(&path) {
                     continue;
                 }
-                let stale = std::fs::metadata(&path)
+                let stale = mailbox_disk::mailbox_path_metadata(&path)
                     .ok()
                     .and_then(|metadata| metadata.modified().ok())
                     .and_then(|modified| modified.elapsed().ok())
                     .is_some_and(|age| age >= std::time::Duration::from_secs(5 * 60));
                 if stale {
-                    let _ = std::fs::remove_file(&path);
+                    let _ = mailbox_disk::remove_mailbox_artifact(&path);
                 }
             }
         }
 
-        let entries: Vec<PathBuf> = match std::fs::read_dir(&requests_dir) {
+        let entries: Vec<PathBuf> = match mailbox_disk::mailbox_directory_paths(&requests_dir) {
             Ok(rd) => rd
                 .filter_map(|e| e.ok())
-                .map(|e| e.path())
                 .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
                 // #1163: result sidecars (`<id>.result.json`) are ANSWERS, not
                 // requests; without this exclusion a leftover result file would
@@ -223,7 +228,7 @@ impl MailboxPoller {
                             error: Some(format!("malformed session request: {e}")),
                         });
                         // Delete malformed file
-                        let _ = std::fs::remove_file(&path);
+                        let _ = mailbox_disk::remove_mailbox_artifact(&path);
                         continue;
                     }
                 };
@@ -270,7 +275,7 @@ impl MailboxPoller {
                             session_id: None,
                             error: Some(e.to_string()),
                         });
-                        let _ = std::fs::remove_file(&path);
+                        let _ = mailbox_disk::remove_mailbox_artifact(&path);
                         continue;
                     }
                 }
@@ -340,7 +345,7 @@ impl MailboxPoller {
             write_result(result);
 
             // Delete processed request file regardless of success/failure
-            let _ = std::fs::remove_file(&path);
+            let _ = mailbox_disk::remove_mailbox_artifact(&path);
         }
     }
 
@@ -362,15 +367,14 @@ impl MailboxPoller {
             None => return,
         };
         let requests_dir = config_dir.join(ca::CODING_AGENT_REQUESTS_DIR);
-        if !requests_dir.is_dir() {
+        if !mailbox_disk::mailbox_path_is_dir(&requests_dir) {
             return;
         }
         let results_dir = requests_dir.join(ca::RESULTS_SUBDIR);
 
-        let entries: Vec<PathBuf> = match std::fs::read_dir(&requests_dir) {
+        let entries: Vec<PathBuf> = match mailbox_disk::mailbox_directory_paths(&requests_dir) {
             Ok(rd) => rd
                 .filter_map(|e| e.ok())
-                .map(|e| e.path())
                 .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
                 .collect(),
             Err(_) => return,
