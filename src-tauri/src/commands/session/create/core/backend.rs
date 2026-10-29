@@ -15,13 +15,13 @@ use crate::commands::session::create::publication::rollback_pre_created_session;
 #[cfg(test)]
 use crate::commands::session::seed_race_barriers;
 use crate::config::settings::SettingsState;
+use crate::events::pty::output_target;
 use crate::pty::backend::BackendSpawnSpec;
 use crate::pty::backend::LaunchWitness;
 use crate::pty::backend::PtyViewport;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::container_paths::CLAUDE_CONFIG_DIR_KEY;
 use crate::pty::manager::PtyManager;
-use crate::pty::output::PtyOutputTarget;
 use crate::resource_monitor::ResourceLaunchMetadata;
 use crate::resource_monitor::ResourceLaunchRegistration;
 use crate::resource_monitor::ResourceLogicalAgentSlot;
@@ -241,7 +241,7 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
         env_unset,
         extra_env,
         idle_tuning: launch_idle_tuning,
-        output_target: PtyOutputTarget::from_app_handle(app.clone()),
+        output_target: output_target(app.clone()),
         resource_registration,
         logical_resource_slot,
         container_credential,
