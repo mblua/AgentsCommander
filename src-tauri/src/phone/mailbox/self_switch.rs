@@ -17,9 +17,10 @@ use super::settle::{
 };
 use crate::config::settings::SettingsState;
 use crate::config::teams;
+use crate::filesystem::phone_mailbox as mailbox_disk;
 use crate::phone::types::OutboxMessage;
+use crate::session::maintenance::PendingSelfClear;
 use crate::session::manager::SessionManager;
-use crate::session::session::SessionStatus;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -53,7 +54,7 @@ impl MailboxPoller {
         target_profile: String,
         forgotten_summary: Option<ForgottenSummary>,
         flavor: SelfHandoffFlavor,
-        pending: Arc<crate::PendingSelfClear>,
+        pending: Arc<PendingSelfClear>,
         settle: std::time::Duration,
         poll: std::time::Duration,
         max_defer: std::time::Duration,
@@ -75,12 +76,29 @@ impl MailboxPoller {
         NoteBoundary: FnMut(Uuid, SelfClearBoundary) -> NoteFut + Send + 'static,
         NoteFut: std::future::Future<Output = ()> + Send,
     {
+        let Some(lease) = pending.legacy_lease(original_session_id) else {
+            log::warn!(
+                "[mailbox] switch driver missing legacy reservation for {}",
+                original_session_id
+            );
+            return SelfHandoffOutcome::Failed(SelfHandoffFailure {
+                action: flavor.action,
+                attempt: Uuid::new_v4(),
+                original: original_session_id,
+                current: Some(original_session_id),
+                root: cwd,
+                continuation: false,
+                reason: format!(
+                    "switch driver missing legacy reservation for {original_session_id}"
+                ),
+                forgotten: forgotten_summary.is_some(),
+            });
+        };
         let attempt = Uuid::new_v4();
         let mut continuation = false;
         let mut current = Some(original_session_id);
         let mut state = SelfClearGateState::new(std::time::Instant::now());
         let mut session_id = original_session_id;
-        let mut new_alias_id: Option<Uuid> = None;
 
         let reason = loop {
             tokio::time::sleep(poll).await;
@@ -165,17 +183,13 @@ impl MailboxPoller {
                             break Some(e);
                         }
                     };
-                    {
-                        let mut set = pending.0.lock().unwrap_or_else(|e| e.into_inner());
-                        if set.insert(new_id) {
-                            new_alias_id = Some(new_id);
-                        } else {
-                            log::warn!(
-                                "[mailbox] {}: new session {} was already marked pending",
-                                flavor.action,
-                                new_id
-                            );
-                        }
+                    if let Err(error) = pending.alias(&lease, new_id) {
+                        log::warn!(
+                            "[mailbox] {}: new session {} alias refused: {:?}",
+                            flavor.action,
+                            new_id,
+                            error
+                        );
                     }
                     session_id = new_id;
                     current = Some(new_id);
@@ -225,12 +239,7 @@ impl MailboxPoller {
             }
         };
 
-        let mut set = pending.0.lock().unwrap_or_else(|e| e.into_inner());
-        set.remove(&original_session_id);
-        if let Some(new_id) = new_alias_id {
-            set.remove(&new_id);
-        }
-        drop(set);
+        pending.release(&lease);
         match reason {
             None => SelfHandoffOutcome::Completed,
             Some(reason) => SelfHandoffOutcome::Failed(SelfHandoffFailure {
@@ -244,6 +253,62 @@ impl MailboxPoller {
                 forgotten: forgotten_summary.is_some(),
             }),
         }
+    }
+
+    /// (#885) Write the purge response JSON and move the message to delivered/.
+    /// Mirrors `handle_close_session`'s dual-write block (§224 A.6, G-IMPL-2).
+    pub(crate) async fn write_purge_response_and_deliver<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+        is_app_outbox: bool,
+        response: &serde_json::Value,
+    ) -> Result<(), String> {
+        let json = match serde_json::to_string_pretty(response) {
+            Ok(j) => j,
+            Err(e) => {
+                log::warn!("[mailbox] Failed to serialize purge-wg response: {}", e);
+                return self.move_to_delivered(app, path, msg).await;
+            }
+        };
+
+        if let Some(ref rid) = msg.request_id {
+            if !is_app_outbox {
+                let outbox_relative_responses_dir = path
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .map(|ac_dir| ac_dir.join("responses"));
+                if let Some(responses_dir) = outbox_relative_responses_dir {
+                    let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                    let response_path = responses_dir.join(format!("{}.json", rid));
+                    if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
+                        log::warn!(
+                            "[mailbox] Failed to write purge-wg response to outbox-relative path \
+                            {:?}: {}",
+                            response_path,
+                            e
+                        );
+                    }
+                }
+            }
+
+            if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
+                let responses_dir = std::path::PathBuf::from(sender_path)
+                    .join(crate::config::agent_local_dir_name())
+                    .join("responses");
+                let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                let response_path = responses_dir.join(format!("{}.json", rid));
+                if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
+                    log::warn!(
+                        "[mailbox] Failed to write purge-wg response to resolved-sender path: {}",
+                        e
+                    );
+                }
+            }
+        }
+
+        self.move_to_delivered(app, path, msg).await
     }
 
     /// #617 - write the self-clear queue-ack response, then move the message to
@@ -274,8 +339,11 @@ impl MailboxPoller {
                         .and_then(|p| p.parent())
                         .map(|ac| ac.join("responses"))
                     {
-                        let _ = std::fs::create_dir_all(&responses_dir);
-                        let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                        let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                        let _ = mailbox_disk::write_mailbox_document(
+                            &responses_dir.join(format!("{}.json", rid)),
+                            &json,
+                        );
                     }
                 }
                 // (2) resolved-sender path (best-effort).
@@ -283,8 +351,11 @@ impl MailboxPoller {
                     let responses_dir = std::path::PathBuf::from(sender_path)
                         .join(crate::config::agent_local_dir_name())
                         .join("responses");
-                    let _ = std::fs::create_dir_all(&responses_dir);
-                    let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                    let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                    let _ = mailbox_disk::write_mailbox_document(
+                        &responses_dir.join(format!("{}.json", rid)),
+                        &json,
+                    );
                 }
             }
         }
@@ -319,16 +390,22 @@ impl MailboxPoller {
                         .and_then(|p| p.parent())
                         .map(|ac| ac.join("responses"))
                     {
-                        let _ = std::fs::create_dir_all(&responses_dir);
-                        let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                        let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                        let _ = mailbox_disk::write_mailbox_document(
+                            &responses_dir.join(format!("{}.json", rid)),
+                            &json,
+                        );
                     }
                 }
                 if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
                     let responses_dir = std::path::PathBuf::from(sender_path)
                         .join(crate::config::agent_local_dir_name())
                         .join("responses");
-                    let _ = std::fs::create_dir_all(&responses_dir);
-                    let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                    let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                    let _ = mailbox_disk::write_mailbox_document(
+                        &responses_dir.join(format!("{}.json", rid)),
+                        &json,
+                    );
                 }
             }
         }
@@ -366,16 +443,22 @@ impl MailboxPoller {
                         .and_then(|p| p.parent())
                         .map(|ac| ac.join("responses"))
                     {
-                        let _ = std::fs::create_dir_all(&responses_dir);
-                        let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                        let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                        let _ = mailbox_disk::write_mailbox_document(
+                            &responses_dir.join(format!("{}.json", rid)),
+                            &json,
+                        );
                     }
                 }
                 if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
                     let responses_dir = std::path::PathBuf::from(sender_path)
                         .join(crate::config::agent_local_dir_name())
                         .join("responses");
-                    let _ = std::fs::create_dir_all(&responses_dir);
-                    let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                    let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                    let _ = mailbox_disk::write_mailbox_document(
+                        &responses_dir.join(format!("{}.json", rid)),
+                        &json,
+                    );
                 }
             }
         }
@@ -408,170 +491,88 @@ impl MailboxPoller {
                         .and_then(|p| p.parent())
                         .map(|ac| ac.join("responses"))
                     {
-                        let _ = std::fs::create_dir_all(&responses_dir);
-                        let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                        let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                        let _ = mailbox_disk::write_mailbox_document(
+                            &responses_dir.join(format!("{}.json", rid)),
+                            &json,
+                        );
                     }
                 }
                 if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
                     let responses_dir = std::path::PathBuf::from(sender_path)
                         .join(crate::config::agent_local_dir_name())
                         .join("responses");
-                    let _ = std::fs::create_dir_all(&responses_dir);
-                    let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                    let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                    let _ = mailbox_disk::write_mailbox_document(
+                        &responses_dir.join(format!("{}.json", rid)),
+                        &json,
+                    );
                 }
             }
         }
         self.move_to_delivered(app, path, msg).await
     }
 
-    /// Force-close a session immediately via destroy_session_inner.
-    pub(crate) async fn force_close_session<R: tauri::Runtime>(
+    /// App-facing adapter; callers place the entire adapter inside their observation deadline.
+    pub(crate) async fn close_session_attempt<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         sid: Uuid,
-    ) -> bool {
-        #[cfg(test)]
-        {
-            // (#885 E-2) Emit a Destroy event so purge tests can assert that
-            // the destroy loop was or was not reached. Without this, the
-            // "zero Destroy events" assertions in the F-7 and root-guard
-            // tests are tautologies: the only emit site was in the wake
-            // deferred-destroy path, which the purge never reaches.
-            if let Some(hooks) = &self.test_hooks {
-                {
-                    let mut calls = hooks.destroy_calls.lock().unwrap();
-                    calls.push(sid);
-                }
-                {
-                    let mut events = hooks.events.lock().unwrap();
-                    events.push(MailboxTestEvent::Destroy(sid));
-                }
-            }
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = session_mgr.read().await;
-            return mgr.destroy_session(sid).await.is_ok();
-        }
-
-        #[cfg(not(test))]
-        {
-            match crate::commands::session::background_destroy_session_inner(app, sid).await {
-                Ok(()) => {
-                    log::info!("[mailbox] close-session: force-destroyed session {}", sid);
-                    true
-                }
-                Err(e) => {
-                    log::warn!(
-                        "[mailbox] close-session: failed to force-destroy session {}: {}",
-                        sid,
-                        e
-                    );
-                    false
-                }
-            }
-        }
-    }
-
-    /// Gracefully close a session: inject exit command, poll for Exited, fallback to force on
-    /// timeout.
-    pub(crate) async fn graceful_close_session<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        sid: Uuid,
+        force: bool,
         timeout_secs: u32,
-    ) -> bool {
-        // Get session info to determine agent type
-        let exit_cmd = {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = session_mgr.read().await;
-            let sessions = mgr.list_sessions().await;
-            match sessions.iter().find(|s| s.id == sid.to_string()) {
-                Some(s) => Self::resolve_exit_command(&s.shell, &s.shell_args),
-                None => {
-                    log::warn!(
-                        "[mailbox] close-session: session {} not found for graceful close",
-                        sid
-                    );
-                    return false;
-                }
+        accepted: Arc<std::sync::atomic::AtomicBool>,
+    ) -> super::teardown::TeardownOutcome {
+        #[cfg(test)]
+        use super::teardown::TeardownOutcome;
+        use super::teardown::{force_close, graceful_close};
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        #[cfg(test)]
+        if app
+            .try_state::<crate::session::selection::SelectionCoordinator>()
+            .is_none()
+        {
+            if let Some(hooks) = &self.test_hooks {
+                hooks.destroy_calls.lock().unwrap().push(sid);
+                hooks
+                    .events
+                    .lock()
+                    .unwrap()
+                    .push(MailboxTestEvent::Destroy(sid));
             }
-        };
-
-        log::info!(
-            "[mailbox] close-session: injecting '{}' into session {}",
-            exit_cmd.escape_debug(),
-            sid
-        );
-
-        // Graceful exit shares the same per-route input serialization as user,
-        // automated, and privileged writers.
-        let pty_arc = app
-            .state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>()
+            return match manager.destroy_session(sid).await {
+                Ok(_) => TeardownOutcome::Closed,
+                Err(reason) if manager.contains_public_or_pending(sid).await => {
+                    TeardownOutcome::Failed(format!("destroy_failed: {reason}"))
+                }
+                Err(_) => TeardownOutcome::AlreadyGone,
+            };
+        }
+        let coordinator = app
+            .state::<crate::session::selection::SelectionCoordinator>()
             .inner()
             .clone();
-        let inject_result =
-            match crate::pty::manager::PtyManager::acquire_input_writer(&pty_arc, sid).await {
-                Ok(permit) => {
-                    let result = crate::pty::manager::PtyManager::write_with_permit(
-                        &permit,
-                        exit_cmd.as_bytes(),
-                    )
-                    .map_err(|error| error.to_string());
-                    if result.is_ok() {
-                        crate::commands::pty::mark_successful_pty_write_busy(
-                            app,
-                            sid,
-                            exit_cmd.len(),
-                        )
-                        .await;
-                    }
-                    result
-                }
-                Err(error) => Err(error.to_string()),
-            };
-        if let Err(e) = inject_result {
-            log::warn!(
-                "[mailbox] close-session: PTY inject failed for {}: {}, falling back to force",
+        if force {
+            force_close(manager, coordinator, sid, accepted).await
+        } else {
+            let pty = app
+                .state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>()
+                .inner()
+                .clone();
+            graceful_close(
+                manager,
+                coordinator,
+                pty,
                 sid,
-                e
-            );
-            return self.force_close_session(app, sid).await;
-        }
-
-        // Poll for SessionStatus::Exited
-        let timeout = std::time::Duration::from_secs(timeout_secs as u64);
-        let poll_interval = std::time::Duration::from_secs(1);
-        let start = std::time::Instant::now();
-
-        loop {
-            if start.elapsed() >= timeout {
-                log::warn!(
-                    "[mailbox] close-session: graceful timeout ({}s) for session {}, falling back \
-                    to force",
-                    timeout_secs,
-                    sid
-                );
-                return self.force_close_session(app, sid).await;
-            }
-
-            tokio::time::sleep(poll_interval).await;
-
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = session_mgr.read().await;
-            let sessions = mgr.list_sessions().await;
-            match sessions.iter().find(|s| s.id == sid.to_string()) {
-                Some(s) if matches!(s.status, SessionStatus::Exited(_)) => {
-                    log::info!("[mailbox] close-session: session {} exited gracefully", sid);
-                    drop(mgr);
-                    // Clean up the exited session
-                    return self.force_close_session(app, sid).await;
-                }
-                None => {
-                    // Session already removed
-                    log::info!("[mailbox] close-session: session {} already gone", sid);
-                    return true;
-                }
-                _ => {} // still running, keep polling
-            }
+                timeout_secs,
+                accepted,
+                Self::resolve_exit_command,
+                |id, bytes| crate::commands::pty::mark_successful_pty_write_busy(app, id, bytes),
+            )
+            .await
         }
     }
 
@@ -726,7 +727,7 @@ impl MailboxPoller {
                             continue;
                         };
                         let candidate = ac_root.join(wg_name).join(&replica_dir);
-                        if candidate.is_dir() {
+                        if mailbox_disk::mailbox_path_is_dir(&candidate) {
                             record_match(&candidate.to_string_lossy(), &mut matches);
                             // Within a single `rp`, first hit is the unique hit —
                             // an FQN matches one replica dir per project. Continue

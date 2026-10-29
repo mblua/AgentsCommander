@@ -3,6 +3,7 @@ use super::{
     SettingsSaveStage,
 };
 use crate::config::instance_artifacts::SETTINGS_LOCK_FILE_NAME;
+use crate::filesystem::settings_file;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -394,7 +395,7 @@ impl SettingsFileLock {
                 SettingsSaveLegacyOutward::SettingsLockUnavailable,
             )
         })?;
-        std::fs::create_dir_all(parent).map_err(|source| {
+        settings_file::ensure_settings_directory(parent).map_err(|source| {
             SettingsSaveError::io(
                 SettingsSaveStage::LockAcquire,
                 settings_path,
@@ -413,24 +414,7 @@ impl SettingsFileLock {
             )
         })?;
         let lock_path = parent.join(lock_name);
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true).write(true).create(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            use windows_sys::Win32::Storage::FileSystem::{
-                FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            };
-            options
-                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-        }
-        let file = options.open(&lock_path).map_err(|source| {
+        let file = settings_file::open_settings_lock(&lock_path).map_err(|source| {
             SettingsSaveError::io(
                 SettingsSaveStage::LockAcquire,
                 settings_path,
@@ -439,7 +423,7 @@ impl SettingsFileLock {
                 SettingsSaveLegacyOutward::SettingsLockUnavailable,
             )
         })?;
-        let metadata = file.metadata().map_err(|source| {
+        let metadata = settings_file::settings_handle_metadata(&file).map_err(|source| {
             SettingsSaveError::io(
                 SettingsSaveStage::LockAcquire,
                 settings_path,
@@ -459,7 +443,7 @@ impl SettingsFileLock {
         }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            use std::os::unix::fs::MetadataExt;
             if metadata.nlink() != 1 {
                 return Err(SettingsSaveError::semantic(
                     SettingsSaveStage::LockAcquire,
@@ -469,17 +453,15 @@ impl SettingsFileLock {
                     SettingsSaveLegacyOutward::SettingsLockUnavailable,
                 ));
             }
-            std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o600)).map_err(
-                |source| {
-                    SettingsSaveError::io(
-                        SettingsSaveStage::LockAcquire,
-                        settings_path,
-                        None,
-                        source,
-                        SettingsSaveLegacyOutward::SettingsLockUnavailable,
-                    )
-                },
-            )?;
+            settings_file::set_private_settings_permissions(&lock_path).map_err(|source| {
+                SettingsSaveError::io(
+                    SettingsSaveStage::LockAcquire,
+                    settings_path,
+                    None,
+                    source,
+                    SettingsSaveLegacyOutward::SettingsLockUnavailable,
+                )
+            })?;
         }
         #[cfg(windows)]
         crate::path_identity::verify_regular_file(&lock_path).map_err(|_| {
@@ -571,74 +553,14 @@ impl Drop for SettingsFileLock {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn try_lock_settings_file(file: &std::fs::File) -> std::io::Result<bool> {
-    use std::os::fd::AsRawFd;
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    let source = std::io::Error::last_os_error();
-    if result == 0 {
-        return Ok(true);
-    }
-    let error = std::io::Error::last_os_error();
-    // Compared rather than matched: `EWOULDBLOCK` and `EAGAIN` are the same
-    // value on Linux and macOS, which makes the second pattern unreachable.
-    let raw = error.raw_os_error();
-    if raw == Some(libc::EWOULDBLOCK) || raw == Some(libc::EAGAIN) {
-        Ok(false)
-    } else {
-        Err(source)
-    }
+    settings_file::try_lock_settings_handle(file)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn unlock_settings_file(file: &std::fs::File) -> std::io::Result<()> {
-    use std::os::fd::AsRawFd;
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-#[cfg(windows)]
-pub(crate) fn try_lock_settings_file(file: &std::fs::File) -> std::io::Result<bool> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
-    };
-    let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
-    let result = unsafe {
-        LockFileEx(
-            file.as_raw_handle(),
-            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
-            0,
-            u32::MAX,
-            u32::MAX,
-            &mut overlapped,
-        )
-    };
-    if result != 0 {
-        return Ok(true);
-    }
-    const ERROR_LOCK_VIOLATION: i32 = 33;
-    let source = std::io::Error::last_os_error();
-    if source.raw_os_error() == Some(ERROR_LOCK_VIOLATION) {
-        Ok(false)
-    } else {
-        Err(source)
-    }
-}
-
-#[cfg(windows)]
-pub(crate) fn unlock_settings_file(file: &std::fs::File) -> std::io::Result<()> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
-    let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
-    if unsafe { UnlockFileEx(file.as_raw_handle(), 0, u32::MAX, u32::MAX, &mut overlapped) } != 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
+    settings_file::unlock_settings_handle(file)
 }
 
 #[cfg(not(any(unix, windows)))]

@@ -175,14 +175,17 @@ impl From<String> for TerminalSnapshotRejection {
     }
 }
 
-pub fn execute(args: TerminalSnapshotArgs) -> i32 {
-    match execute_inner(args) {
+pub fn execute(args: TerminalSnapshotArgs, history: &SnapshotStageHistory) -> i32 {
+    match execute_inner(args, history) {
         Ok(()) => 0,
-        Err(rejection) => fail(rejection),
+        Err(rejection) => fail(rejection, history),
     }
 }
 
-fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), TerminalSnapshotRejection> {
+fn execute_inner(
+    args: TerminalSnapshotArgs,
+    history: &SnapshotStageHistory,
+) -> Result<(), TerminalSnapshotRejection> {
     use TerminalSnapshotField as F;
     use TerminalSnapshotReasonCode as C;
     use TerminalSnapshotRejectionReason as R;
@@ -290,7 +293,9 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), TerminalSnapshotRejec
     })?;
     let request_path = request_directory.join(format!("{request_id}.json"));
     let response_path = response_directory.join(format!("{request_id}.json"));
-    if request_path.exists() || response_path.exists() {
+    if crate::filesystem::directories::cli_outbox_artifact_exists(&request_path)
+        || crate::filesystem::directories::cli_outbox_artifact_exists(&response_path)
+    {
         return Err(TerminalSnapshotRejection::new(
             C::UnsafePath,
             None,
@@ -303,6 +308,7 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), TerminalSnapshotRejec
         request_id,
         &request.nonce,
         &request_bytes,
+        history,
     )?;
 
     let deadline = Instant::now() + Duration::from_secs(args.timeout);
@@ -319,7 +325,7 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), TerminalSnapshotRejec
                 "snapshot_timeout".to_string(),
             ));
         }
-        if response_path.exists() {
+        if crate::filesystem::directories::cli_outbox_artifact_exists(&response_path) {
             let (response, response_identity) = read_response(
                 &response_path,
                 &request.request_id,
@@ -327,6 +333,7 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), TerminalSnapshotRejec
                 &request.to,
                 request.format,
                 deadline,
+                history,
             )?;
             finish_response(
                 &response_path,
@@ -337,6 +344,7 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), TerminalSnapshotRejec
                 &request.from,
                 &request.to,
                 deadline,
+                history,
             )?;
             return Ok(());
         }
@@ -446,37 +454,7 @@ fn is_persisted_static_token(token: &str) -> bool {
 }
 
 fn ensure_private_child(parent: &Path, child: &Path) -> Result<(), String> {
-    let before = crate::path_identity::verify_directory(parent)?;
-    match std::fs::create_dir(child) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(_) => return Err("unsafe_path".to_string()),
-    }
-    let child_before = crate::path_identity::verify_directory(child)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(child, std::fs::Permissions::from_mode(0o700))
-            .map_err(|_| "unsafe_path".to_string())?;
-        if std::fs::symlink_metadata(child)
-            .map_err(|_| "unsafe_path".to_string())?
-            .permissions()
-            .mode()
-            & 0o777
-            != 0o700
-        {
-            return Err("unsafe_path".to_string());
-        }
-    }
-    let after = crate::path_identity::verify_directory(parent)?;
-    let child_identity = crate::path_identity::verify_directory(child)?;
-    if !crate::path_identity::same_object(&before, &after)
-        || !crate::path_identity::same_object(&child_before, &child_identity)
-        || !crate::path_identity::is_verified_descendant(&child_identity, &before)
-    {
-        return Err("unsafe_path".to_string());
-    }
-    Ok(())
+    crate::filesystem::ensure_terminal_snapshot_child(parent, child)
 }
 
 fn publish_request(
@@ -485,78 +463,14 @@ fn publish_request(
     request_id: Uuid,
     nonce: &str,
     bytes: &[u8],
+    history: &SnapshotStageHistory,
 ) -> Result<crate::path_identity::VerifiedPathIdentity, String> {
     let temporary = request_directory.join(format!(
         ".{request_id}.{nonce}.terminal-snapshot-request-tmp"
     ));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    enter_stage("publish_request.open_temporary");
-    let mut file = options
-        .open(&temporary)
-        .map_err(|_| "response_unavailable".to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        enter_stage("publish_request.unix_mode");
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(|_| "response_unavailable".to_string())?;
-        if file
-            .metadata()
-            .map_err(|_| "response_unavailable".to_string())?
-            .permissions()
-            .mode()
-            & 0o777
-            != 0o600
-        {
-            return Err("response_unavailable".to_string());
-        }
-    }
-    enter_stage("publish_request.write_temporary");
-    file.write_all(bytes)
-        .and_then(|_| file.flush())
-        .and_then(|_| file.sync_all())
-        .map_err(|_| "response_unavailable".to_string())?;
-    enter_stage("publish_request.verify_temporary");
-    let temporary_identity =
-        crate::path_identity::verify_opened_regular_file(&temporary, &file, false)
-            .map_err(|_| "response_unavailable".to_string())?;
-    enter_stage("publish_request.publish_atomic");
-    if crate::path_identity::publish_new_file_atomic(&temporary, destination).is_err() {
-        if let Ok(current) = crate::path_identity::verify_regular_file(&temporary) {
-            if crate::path_identity::same_object(&temporary_identity, &current) {
-                let _ = std::fs::remove_file(&temporary);
-            }
-        }
-        return Err("response_unavailable".to_string());
-    }
-    enter_stage("publish_request.verify_published");
-    // The request is already published, so this is a best-effort observation of a
-    // name a compatible daemon may legitimately claim at any moment, not a
-    // confinement gate. Confinement was established before publication by the
-    // create_new no-follow open and the verify on the retained handle, and that
-    // retained handle/object proof is what cancellation matches on. Failing here
-    // would abandon a token-bearing request the daemon may still serve, leaving
-    // its response unconsumed until the TTL sweep. Fall back to the retained proof
-    // so the poll loop either consumes the response or cancels the request at the
-    // deadline; cancellation is identity-gated, so a final that is no longer our
-    // object is left untouched.
-    let published = crate::path_identity::verify_opened_regular_file(destination, &file, false)
-        .unwrap_or(temporary_identity);
-    drop(file);
-    crate::path_identity::sync_parent_best_effort(destination);
-    Ok(published)
+    crate::filesystem::publish_terminal_snapshot_request(temporary, destination, bytes, |stage| {
+        enter_stage(stage, history)
+    })
 }
 
 fn cancel_request(
@@ -623,7 +537,7 @@ where
     if !crate::path_identity::same_object(expected, &current) {
         return false;
     }
-    std::fs::remove_file(cancellation).is_ok()
+    crate::filesystem::remove_terminal_snapshot_cancellation(&cancellation)
 }
 
 fn read_response(
@@ -633,6 +547,7 @@ fn read_response(
     target: &str,
     format: TerminalSnapshotFormat,
     deadline: Instant,
+    history: &SnapshotStageHistory,
 ) -> Result<
     (
         TerminalSnapshotHostResponse,
@@ -640,24 +555,21 @@ fn read_response(
     ),
     String,
 > {
-    enter_stage("read_response.entry_deadline");
+    enter_stage("read_response.entry_deadline", history);
     ensure_client_deadline(deadline)?;
-    enter_stage("read_response.verify_initial");
+    enter_stage("read_response.verify_initial", history);
     let initial = crate::path_identity::verify_regular_file(path)
         .map_err(|_| "response_unavailable".to_string())?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        enter_stage("read_response.private_mode");
-        let private = std::fs::symlink_metadata(path)
-            .map(|metadata| metadata.permissions().mode() & 0o777 == 0o600)
-            .unwrap_or(false);
+        enter_stage("read_response.private_mode", history);
+        let private = crate::filesystem::terminal_snapshot_response_is_private(path);
         if !private {
             remove_response(path, &initial);
             return Err("response_unavailable".to_string());
         }
     }
-    enter_stage("read_response.read_bounded");
+    enter_stage("read_response.read_bounded", history);
     let (bytes, identity) =
         match crate::path_identity::read_bounded_regular(path, MAX_TRANSPORT_BYTES) {
             Ok(value) => value,
@@ -666,26 +578,26 @@ fn read_response(
                 return Err("response_unavailable".to_string());
             }
         };
-    enter_stage("read_response.same_object_initial");
+    enter_stage("read_response.same_object_initial", history);
     if !crate::path_identity::same_object(&initial, &identity) {
         return Err("response_unavailable".to_string());
     }
     let outcome = (|| {
-        enter_stage("read_response.pre_decode_deadline");
+        enter_stage("read_response.pre_decode_deadline", history);
         ensure_client_deadline(deadline)?;
-        enter_stage("read_response.decode");
+        enter_stage("read_response.decode", history);
         let response = decode_host_response(&bytes, request_id, confirmation_tag, target, format)
             .map_err(|_| "response_unavailable".to_string())?;
-        enter_stage("read_response.post_decode_deadline");
+        enter_stage("read_response.post_decode_deadline", history);
         ensure_client_deadline(deadline)?;
-        enter_stage("read_response.verify_current");
+        enter_stage("read_response.verify_current", history);
         let current = crate::path_identity::verify_regular_file(path)
             .map_err(|_| "response_unavailable".to_string())?;
-        enter_stage("read_response.same_object_current");
+        enter_stage("read_response.same_object_current", history);
         if !crate::path_identity::same_object(&identity, &current) {
             return Err("response_unavailable".to_string());
         }
-        enter_stage("read_response.exit_deadline");
+        enter_stage("read_response.exit_deadline", history);
         ensure_client_deadline(deadline)?;
         Ok(response)
     })();
@@ -712,21 +624,22 @@ fn finish_response(
     expected_requester: &str,
     expected_target: &str,
     deadline: Instant,
+    history: &SnapshotStageHistory,
 ) -> Result<(), String> {
     let outcome = (|| {
-        enter_stage("finish_response.validate_timestamp");
+        enter_stage("finish_response.validate_timestamp", history);
         let expires_at = terminal_snapshot_renderer::validate_timestamp(&response.expires_at)
             .map_err(|_| "response_unavailable".to_string())?;
         let now = chrono::Utc::now();
         if now >= expires_at {
-            enter_stage("finish_response.expiry_elapsed");
+            enter_stage("finish_response.expiry_elapsed", history);
             return Err("response_unavailable".to_string());
         }
         if expires_at > now + chrono::Duration::seconds(65) {
-            enter_stage("finish_response.expiry_far_future");
+            enter_stage("finish_response.expiry_far_future", history);
             return Err("response_unavailable".to_string());
         }
-        enter_stage("finish_response.deadline");
+        enter_stage("finish_response.deadline", history);
         ensure_client_deadline(deadline)?;
         handle_response(
             response,
@@ -735,6 +648,7 @@ fn finish_response(
             expected_requester,
             expected_target,
             deadline,
+            history,
         )
     })();
     remove_response(path, identity);
@@ -748,55 +662,56 @@ fn handle_response(
     expected_requester: &str,
     expected_target: &str,
     deadline: Instant,
+    history: &SnapshotStageHistory,
 ) -> Result<(), String> {
-    enter_stage("handle_response.entry_deadline");
+    enter_stage("handle_response.entry_deadline", history);
     ensure_client_deadline(deadline)?;
     if let Some(error) = response.error {
-        enter_stage("handle_response.server_error");
+        enter_stage("handle_response.server_error", history);
         return Err(error.as_str().to_string());
     }
-    enter_stage("handle_response.result_present");
+    enter_stage("handle_response.result_present", history);
     let result = response
         .result
         .as_ref()
         .ok_or_else(|| "response_unavailable".to_string())?;
-    enter_stage("handle_response.identity_match");
+    enter_stage("handle_response.identity_match", history);
     if result.requester() != expected_requester || result.target() != expected_target {
         return Err("response_unavailable".to_string());
     }
     match (format, result) {
         (TerminalSnapshotFormat::Json, TerminalSnapshotPayload::Json { snapshot }) => {
-            enter_stage("handle_response.json.validate");
+            enter_stage("handle_response.json.validate", history);
             snapshot
                 .validate()
                 .map_err(|_| "response_unavailable".to_string())?;
-            enter_stage("handle_response.json.encode");
+            enter_stage("handle_response.json.encode", history);
             let bytes = to_ascii_json(snapshot, MAX_TRANSPORT_BYTES)
                 .map_err(|_| "response_unavailable".to_string())?;
-            enter_stage("handle_response.json.stdout");
+            enter_stage("handle_response.json.stdout", history);
             write_stdout_line(&bytes, deadline)
         }
         (TerminalSnapshotFormat::Png, TerminalSnapshotPayload::Png { metadata, png }) => {
-            enter_stage("handle_response.png.output_required");
+            enter_stage("handle_response.png.output_required", history);
             let output = output.ok_or_else(|| "invalid_request".to_string())?;
-            enter_stage("handle_response.png.metadata_validate");
+            enter_stage("handle_response.png.metadata_validate", history);
             metadata
                 .validate()
                 .map_err(|_| "response_unavailable".to_string())?;
-            enter_stage("handle_response.png.metadata_encode");
+            enter_stage("handle_response.png.metadata_encode", history);
             let bytes = to_ascii_json(metadata, MAX_REQUEST_BYTES)
                 .map_err(|_| "output_failed".to_string())?;
-            enter_stage("handle_response.png.pre_output_deadline");
+            enter_stage("handle_response.png.pre_output_deadline", history);
             ensure_client_deadline(deadline)?;
-            enter_stage("handle_response.png.create_output");
+            enter_stage("handle_response.png.create_output", history);
             let file = crate::path_identity::create_terminal_snapshot_output(output)?;
-            enter_stage("handle_response.png.write_png");
+            enter_stage("handle_response.png.write_png", history);
             file.write_all_and_sync(png)?;
-            enter_stage("handle_response.png.stdout");
+            enter_stage("handle_response.png.stdout", history);
             write_stdout_line(&bytes, deadline)
         }
         _ => {
-            enter_stage("handle_response.format_payload_mismatch");
+            enter_stage("handle_response.format_payload_mismatch", history);
             Err("response_unavailable".to_string())
         }
     }
@@ -832,34 +747,37 @@ fn ensure_client_deadline(deadline: Instant) -> Result<(), String> {
 // This is the only instrument that has located a wrong failure code on this
 // path. Without it a `response_unavailable` that should have been
 // `output_failed` is indistinguishable from a genuine server-response problem.
-static CURRENT_STAGE: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+#[derive(Default)]
+pub struct SnapshotStageHistory {
+    current: std::sync::Mutex<Option<&'static str>>,
+}
 
-fn enter_stage(stage: &'static str) {
-    if let Ok(mut current) = CURRENT_STAGE.lock() {
+impl SnapshotStageHistory {
+    fn current_stage(&self) -> &'static str {
+        self.current
+            .lock()
+            .ok()
+            .and_then(|current| *current)
+            .unwrap_or("none")
+    }
+}
+
+fn enter_stage(stage: &'static str, history: &SnapshotStageHistory) {
+    if let Ok(mut current) = history.current.lock() {
         *current = Some(stage);
     }
 }
 
-fn record_stage_side_channel(code: &str) {
+fn record_stage_side_channel(code: &str, history: &SnapshotStageHistory) {
     let Ok(path) = crate::config::environment::terminal_snapshot_stage_file() else {
         return;
     };
-    let stage = CURRENT_STAGE
-        .lock()
-        .ok()
-        .and_then(|current| *current)
-        .unwrap_or("none");
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "code={code} stage={stage}");
-    }
+    let stage = history.current_stage();
+    crate::filesystem::append_terminal_snapshot_stage(&path, code, stage);
 }
 
-fn fail(rejection: TerminalSnapshotRejection) -> i32 {
-    record_stage_side_channel(rejection.code.as_str());
+fn fail(rejection: TerminalSnapshotRejection, history: &SnapshotStageHistory) -> i32 {
+    record_stage_side_channel(rejection.code.as_str(), history);
     eprintln!("{}", rejection_line(rejection));
     1
 }

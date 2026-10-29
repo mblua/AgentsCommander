@@ -224,6 +224,7 @@ fn ensure_seeded_masters_creates_nonempty_masters_and_preserves_edits() {
 
 #[test]
 fn reseed_installs_embedded_default_and_backs_up_current() {
+    let owner = CatalogReseedState::new();
     let dir = seed_dir();
     ensure_seeded_masters(dir.path(), None);
     let m = master("claude");
@@ -231,7 +232,7 @@ fn reseed_installs_embedded_default_and_backs_up_current() {
     let file = master_dir.join(m.files[0].rel_path);
     std::fs::write(&file, b"USER EDITED").unwrap();
 
-    let result = reseed_master_for_command(dir.path(), "claude").unwrap();
+    let result = reseed_master_for_command(&owner, dir.path(), "claude").unwrap();
     assert_eq!(result.dest, ".claude");
     assert!(!result.backup_path.is_empty());
     // Master restored to the embedded default.
@@ -243,13 +244,14 @@ fn reseed_installs_embedded_default_and_backs_up_current() {
 
 #[test]
 fn reseed_when_master_absent_installs_without_backup() {
+    let owner = CatalogReseedState::new();
     let dir = seed_dir();
     // Masters not seeded: the _seed dir is absent.
     let m = master("codex");
     let master_dir = master_dir_for_dest(dir.path(), m.dest);
     assert!(!master_dir.exists());
 
-    let result = reseed_master_for_command(dir.path(), "codex").unwrap();
+    let result = reseed_master_for_command(&owner, dir.path(), "codex").unwrap();
     assert_eq!(result.dest, ".codex");
     assert!(
         result.backup_path.is_empty(),
@@ -263,6 +265,7 @@ fn reseed_when_master_absent_installs_without_backup() {
 
 #[test]
 fn reseed_gating_is_exact_basename_never_startswith() {
+    let owner = CatalogReseedState::new();
     let dir = seed_dir();
     ensure_seeded_masters(dir.path(), None);
     // `pi` and `agent` are real built-in commands but ship NO master; `pip`
@@ -270,7 +273,7 @@ fn reseed_gating_is_exact_basename_never_startswith() {
     // unknown are rejected.
     for bad in ["pi", "agent", "pip", "clau", "claudex", "notacommand", ""] {
         assert!(
-            reseed_master_for_command(dir.path(), bad).is_err(),
+            reseed_master_for_command(&owner, dir.path(), bad).is_err(),
             "should reject {bad:?}"
         );
     }
@@ -283,7 +286,7 @@ fn reseed_gating_is_exact_basename_never_startswith() {
         "codex --model x",
     ] {
         assert!(
-            reseed_master_for_command(dir.path(), good).is_ok(),
+            reseed_master_for_command(&owner, dir.path(), good).is_ok(),
             "should accept {good:?}"
         );
     }
@@ -377,4 +380,108 @@ fn managed_catalog_migrates_instance_legacy_into_absent_project_base() {
         "the instance source bytes survive the rename, never rewritten"
     );
     assert!(!legacy.path().join("agents.json").exists());
+}
+
+#[test]
+fn reseed_owner_serializes_two_callers_until_release() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    let owner = Arc::new(CatalogReseedState::new());
+    let active = Arc::new(AtomicBool::new(false));
+    let bound = Duration::from_secs(10);
+    let (holding_tx, holding_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (first_done_tx, first_done_rx) = mpsc::channel();
+    let first_owner = owner.clone();
+    let first_active = active.clone();
+    let first = std::thread::spawn(move || {
+        let result = first_owner.with_reseed(|| {
+            assert!(!first_active.swap(true, Ordering::SeqCst));
+            holding_tx.send(()).unwrap();
+            release_rx
+                .recv_timeout(bound)
+                .expect("first caller released");
+            first_active.store(false, Ordering::SeqCst);
+            Ok(())
+        });
+        first_done_tx.send(result).unwrap();
+    });
+    holding_rx
+        .recv_timeout(bound)
+        .expect("first caller entered");
+    let (attempt_tx, attempt_rx) = mpsc::channel();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (second_done_tx, second_done_rx) = mpsc::channel();
+    let second = std::thread::spawn(move || {
+        attempt_tx.send(()).unwrap();
+        let result = owner.with_reseed(|| {
+            assert!(
+                !active.swap(true, Ordering::SeqCst),
+                "reseed callers overlap"
+            );
+            entered_tx.send(()).unwrap();
+            active.store(false, Ordering::SeqCst);
+            Ok(())
+        });
+        second_done_tx.send(result).unwrap();
+    });
+    attempt_rx
+        .recv_timeout(bound)
+        .expect("second caller attempted entry");
+    // A broken-lock detection during this negative wait depends on scheduling.
+    let blocked = entered_rx.recv_timeout(Duration::from_millis(100));
+    release_tx.send(()).unwrap();
+    assert!(matches!(blocked, Err(mpsc::RecvTimeoutError::Timeout)));
+    entered_rx
+        .recv_timeout(bound)
+        .expect("second caller enters after release");
+    first_done_rx
+        .recv_timeout(bound)
+        .expect("first caller completed")
+        .unwrap();
+    second_done_rx
+        .recv_timeout(bound)
+        .expect("second caller completed")
+        .unwrap();
+    first.join().unwrap();
+    second.join().unwrap();
+}
+
+#[test]
+fn poisoned_reseed_owner_refuses_without_changing_master_or_backups() {
+    let owner = std::sync::Arc::new(CatalogReseedState::new());
+    let dir = seed_dir();
+    ensure_seeded_masters(dir.path(), None);
+    let m = master("claude");
+    let master_dir = master_dir_for_dest(dir.path(), m.dest);
+    let file = master_dir.join(m.files[0].rel_path);
+    std::fs::write(&file, b"KEEP USER MASTER").unwrap();
+    let before: std::collections::BTreeSet<_> = std::fs::read_dir(master_dir.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    let unsupported = reseed_master_for_command(&owner, dir.path(), "notacommand").unwrap_err();
+    assert!(std::panic::catch_unwind(|| {
+        let _: Result<(), String> = owner.with_reseed(|| panic!("poison reseed owner"));
+    })
+    .is_err());
+    assert_eq!(
+        reseed_master_for_command(&owner, dir.path(), "claude").unwrap_err(),
+        "re-seed lock poisoned"
+    );
+    assert_eq!(
+        reseed_master_for_command(&owner, dir.path(), "notacommand").unwrap_err(),
+        unsupported
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), b"KEEP USER MASTER");
+    let after: std::collections::BTreeSet<_> = std::fs::read_dir(master_dir.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        after, before,
+        "poison must not create backup/staging/trash paths"
+    );
 }

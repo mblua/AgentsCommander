@@ -389,3 +389,132 @@ export function compatibilitySites(p,text,tokens=[]) {
 const code=mask(text),lines=text.split('\n'),starts=[0];for(let i=0;i<text.length;i++)if(text[i]=='\n')starts.push(i+1);const functions=[];for(const m of code.matchAll(/\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<|\()/g)){let b=code.indexOf('{',m.index),semi=code.indexOf(';',m.index);if(b<0||semi>=0&&semi<b)continue;let d=1,e=b+1;while(e<code.length&&d){if(code[e]=='{')d++;if(code[e]=='}')d--;e++;}functions.push({name:m[1],start:m.index,end:e});}const sinks=[];const re=/\.(?:join|push|with_file_name|with_extension|open|create_new_private_file|write_all|write_fmt|sync_all|sync_data|set_len|read_to_end|read_to_string|save|persist|flush|write_to)\s*\(|\b(?:Path|PathBuf)::(?:new|from)\s*\(|\b(?:fs|filesystem)::[A-Za-z_]+\s*\(|\b(?:File|OpenOptions|Connection)::[A-Za-z_]+\s*\(|\b(?:write_file_atomic|atomic_write\w*|write_json\w*|rename_with_retry|CreateFileW|MoveFileExW|ReplaceFileW|writeln|write)\s*!?\s*\(/g;for(const m of code.matchAll(re)){const f=functions.filter(f=>m.index>=f.start&&m.index<f.end).sort((a,b)=>(a.end-a.start)-(b.end-b.start))[0];const item=f?f.name:'<module>';const ordinal=sinks.filter(x=>x.item===item).length+1;let line=starts.findIndex(x=>x>m.index);if(line<0)line=starts.length;sinks.push({path:p,item,ordinal,line,offset:m.index,operation:m[0],evidence:lines[line-1].trim()});}
 return sinks.map(site=>({...site,tokens:tokens.filter(t=>t.start>=site.offset&&t.start<site.offset+site.operation.length)}));
 }
+
+// Positive, deliberately small TOML subset; no unconsumed statement can enable inheritance.
+function ordinaryManifest(cargo, external = false, path, tree) {
+  const gap = String.raw`(?:[ \t\r\n]|#[^\r\n]*(?![^\r\n]))*`;
+  const string = String.raw`(?:"[^"\\\r\n]*"|'[^'\\\r\n]*')`;
+  const scalar = String.raw`(?:${string}|true|false|[+-]?[0-9][0-9_.]*)`;
+  const array = String.raw`\[${gap}(?:${scalar}${gap}(?:,${gap}${scalar}${gap})*,?${gap})?\]`;
+  const pair = String.raw`[A-Za-z0-9_-]+[ \t]*=[ \t]*(?:${scalar}|${array})`;
+  const inline = String.raw`\{[ \t]*${pair}(?:[ \t]*,[ \t]*${pair})*[ \t]*\}`;
+  const ending = String.raw`[ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)`;
+  const assignment = new RegExp(
+    String.raw`^([A-Za-z0-9_-]+)[ \t]*=[ \t]*(${scalar}|${array}|${inline})${ending}`);
+  let section;
+  let targetTable = false;
+  while (cargo.length) {
+    cargo = cargo.replace(new RegExp('^' + gap), '');
+    if (!cargo.length) break;
+    const arrayHeader = new RegExp(
+      String.raw`^\[\[[ \t]*(bin|test|bench|example)[ \t]*\]\]` + ending).exec(cargo);
+    if (arrayHeader) {
+      if (!external) return false;
+      section = arrayHeader[1];
+      targetTable = true;
+      cargo = cargo.slice(arrayHeader[0].length);
+      continue;
+    }
+    const header = /^\[[ \t]*([^\[\]\r\n]+?)[ \t]*\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/
+      .exec(cargo);
+    if (header) {
+      section = header[1].trim();
+      targetTable = false;
+      const simple = /^(?:package|lib|dependencies|dev-dependencies|build-dependencies|features)$/;
+      const target = /^target\.'cfg\([^'\\\r\n]*\)'\.(?:dev-|build-)?dependencies$/;
+      if (!simple.test(section) && !target.test(section) &&
+          !(external && section === 'workspace')) return false;
+      cargo = cargo.slice(header[0].length);
+      continue;
+    }
+    const entry = assignment.exec(cargo);
+    if (!entry) return false;
+    const [, key, value] = entry;
+    if (!section) return false;
+    if (section === 'workspace') {
+      if (!['members', 'default-members', 'exclude', 'resolver'].includes(key)) return false;
+      if (key !== 'resolver') {
+        for (const m of value.matchAll(new RegExp(string, 'g'))) {
+          const member = m[0].slice(1, -1);
+          const base = path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : '';
+          if (key !== 'exclude' && !tree.has(base + member + '/Cargo.toml')) return false;
+        }
+      }
+    }
+    if (section === 'lib' && !['name', 'crate-type'].includes(key) &&
+        !(external && key === 'doctest' && value === 'false')) return false;
+    if (targetTable && (key === 'path'
+      ? !/^(?:"[A-Za-z0-9_-]+\.rs"|'[A-Za-z0-9_-]+\.rs')$/.test(value)
+      : key !== 'name')) return false;
+    if (section === 'package' && key === 'build' && value !== 'false') return false;
+    cargo = cargo.slice(entry[0].length);
+  }
+  return true;
+}
+
+// Snapshot-local, no filesystem or process state; unsupported syntax keeps production.
+export function createRustScanner(tree, readBlob) {
+  const scans = new Map(), incoming = new Map();
+  let unsupported = [...tree.keys()].some(p => p.startsWith('src-tauri/src/bin/'));
+  for (const [path, manifest] of tree) {
+    if (!/(^|\/)Cargo\.toml$/.test(path)) continue;
+    if (path.startsWith('src-tauri/') && path !== 'src-tauri/Cargo.toml') {
+      unsupported = true; continue;
+    }
+    unsupported ||= !ordinaryManifest(readBlob(manifest),
+      path !== 'src-tauri/Cargo.toml', path, tree);
+  }
+  for (const [path, entry] of tree) {
+    if (!path.endsWith('.rs')) continue;
+    const scan = scanRust(path, readBlob(entry));
+    scans.set(path, scan);
+    if (scan.attributes.some(a => a.signals.some(m => m.name === 'path')) ||
+        scan.tokens.some(t => t.name === 'include' && scan.tokens[t.index + 1]?.text === '!'))
+      unsupported = true;
+    const mods = scan.items.filter(i => i.kind === 'mod');
+    if (scan.tokens.some(t => t.name === 'mod' && !mods.some(i => i.first === t.index)))
+      unsupported = true;
+    if (!path.startsWith('src-tauri/src/')) {
+      if (path.slice(0, path.lastIndexOf('/')) === 'src-tauri' &&
+          scan.tokens.some(t => t.name === 'mod')) unsupported = true;
+      continue;
+    }
+    if (mods.some(i => i.bodyScope || i.scope !== scan.root))
+      unsupported = true;
+    const crateRoot = ['src-tauri/src/lib.rs', 'src-tauri/src/main.rs'].includes(path);
+    const base = crateRoot || path.endsWith('/mod.rs')
+      ? path.slice(0, path.lastIndexOf('/')) : path.slice(0, -3);
+    for (const item of mods) {
+      const targets = [base + '/' + item.name + '.rs', base + '/' + item.name + '/mod.rs']
+        .filter(p => tree.has(p));
+      if (targets.length > 1) unsupported = true;
+      for (const target of targets) {
+        if (!incoming.has(target)) incoming.set(target, []);
+        incoming.get(target).push({ parent: path, test: item.cfgTest });
+      }
+    }
+  }
+  const testOnly = new Set();
+  if (!unsupported) {
+    let changed;
+    do {
+      changed = false;
+      for (const [path, declarations] of incoming) {
+        if (testOnly.has(path) ||
+            ['src-tauri/src/lib.rs', 'src-tauri/src/main.rs'].includes(path)) continue;
+        if (declarations.every(d => d.test || testOnly.has(d.parent))) {
+          testOnly.add(path); changed = true;
+        }
+      }
+    } while (changed);
+  }
+  return path => {
+    const scan = scans.get(path);
+    if (!scan) return scanRust(path, readBlob(tree.get(path)));
+    if (!testOnly.has(path)) return scan;
+    for (const item of scan.items) item.testOnly = true;
+    scan.isTestOffset = () => true;
+    scan.productionTokens = [];
+    return scan;
+  };
+}

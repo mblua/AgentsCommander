@@ -273,3 +273,70 @@ fn wait_for_session_request_result_times_out_as_pending() {
     let outcome = wait_for_session_request_result(&id, std::time::Duration::from_millis(300));
     assert_eq!(outcome, LaunchOutcome::Pending);
 }
+
+#[test]
+fn session_result_roundtrip_consumes_json_but_preserves_read_failures() {
+    let _guard = SESSION_REQUESTS_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap();
+    let result = SessionRequestResult {
+        id: format!("test-{}", uuid::Uuid::new_v4().simple()),
+        status: SessionRequestResultStatus::Rejected,
+        session_id: None,
+        error: Some("request rejected".to_string()),
+    };
+    let config_dir = crate::config::config_dir().expect("config dir");
+    let path = session_request::session_request_result_path(&config_dir, &result.id);
+    assert!(session_request::read_session_request_result(&result.id).is_none());
+    assert!(!path.exists());
+
+    session_request::write_session_request_result(&result).expect("write result");
+    let read = session_request::read_session_request_result(&result.id).expect("read result");
+    assert_eq!(read.id, result.id);
+    assert_eq!(read.status, result.status);
+    assert_eq!(read.session_id, result.session_id);
+    assert_eq!(read.error, result.error);
+    assert!(!path.exists());
+
+    std::fs::write(&path, b"{corrupt json").unwrap();
+    assert!(session_request::read_session_request_result(&result.id).is_none());
+    assert!(
+        !path.exists(),
+        "parsed text is consumed even when JSON is invalid"
+    );
+
+    std::fs::write(&path, [0xff]).unwrap();
+    assert!(session_request::read_session_request_result(&result.id).is_none());
+    assert_eq!(std::fs::read(&path).unwrap(), [0xff]);
+    std::fs::remove_file(&path).unwrap();
+    assert!(session_request::read_session_request_result(&result.id).is_none());
+    assert!(!path.exists());
+}
+
+#[test]
+fn refresh_stage_finalize_moves_bytes_and_cleans_only_stage_on_failure() {
+    use crate::filesystem::documents::{finalize_refresh_request, write_refresh_request_stage};
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path().join("request.json.tmp");
+    let dst = dir.path().join("request.json");
+    let bytes = b"{\"projectPath\":\"example\"}\n";
+    write_refresh_request_stage(&tmp, bytes).unwrap();
+    finalize_refresh_request(&tmp, &dst).unwrap();
+    assert_eq!(std::fs::read(&dst).unwrap(), bytes);
+    assert!(!tmp.exists());
+
+    let incompatible = dir.path().join("directory");
+    std::fs::create_dir(&incompatible).unwrap();
+    let retained = incompatible.join("retained");
+    std::fs::write(&retained, b"retain").unwrap();
+    write_refresh_request_stage(&tmp, bytes).unwrap();
+    let expected = std::fs::rename(&tmp, &incompatible).unwrap_err();
+    let error = finalize_refresh_request(&tmp, &incompatible).unwrap_err();
+    assert_eq!(error.kind(), expected.kind());
+    assert_eq!(error.raw_os_error(), expected.raw_os_error());
+    assert!(!tmp.exists());
+    assert!(incompatible.is_dir());
+    assert_eq!(std::fs::read(&retained).unwrap(), b"retain");
+    assert_eq!(std::fs::read(&dst).unwrap(), bytes);
+}

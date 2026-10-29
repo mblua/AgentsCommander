@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::config::instance_artifacts::COORDINATOR_CLOCKS_FILE_NAME;
+use crate::filesystem::coordinator_clocks as clock_io;
 
 /// Minimum gap between two recorded user-message timestamps for the same
 /// coordinator. Keystroke bursts inside this window are coalesced to one
@@ -406,7 +407,7 @@ pub fn load() -> CoordinatorClocks {
         log::warn!("[coordinator-clocks] no config dir; badge clocks start empty");
         return CoordinatorClocks::default();
     };
-    let map = match std::fs::read_to_string(&path) {
+    let map = match clock_io::read_clock_document(&path) {
         Ok(raw) => match serde_json::from_str::<HashMap<String, ClockEntry>>(&raw) {
             Ok(m) => m,
             Err(e) => {
@@ -442,7 +443,7 @@ pub fn save_map(map: &HashMap<String, ClockEntry>) -> Result<(), String> {
 /// Path-explicit variant for unit tests (exercises the REAL serialize+rename).
 pub fn save_map_to(path: &Path, map: &HashMap<String, ClockEntry>) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        clock_io::ensure_clock_parent(dir).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string_pretty(map).map_err(|e| e.to_string())?;
     // (#621 MED-2) Unique temp per write: two concurrent saves in one process
@@ -453,19 +454,17 @@ pub fn save_map_to(path: &Path, map: &HashMap<String, ClockEntry>) -> Result<(),
         std::process::id(),
         SAVE_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    let file = clock_io::create_clock_stage(&tmp).map_err(|e| e.to_string())?;
     let write_result = (|| -> std::io::Result<()> {
-        use std::io::Write;
-
         let mut file = file;
-        file.write_all(json.as_bytes())?;
+        clock_io::write_clock_stage(&mut file, json.as_bytes())?;
         #[cfg(all(test, windows))]
         let file = tests::issue_3278_sync_handle(&tmp, file)?;
-        file.sync_all()
+        clock_io::sync_clock_stage(&file)
     })();
     if let Err(error) = write_result {
         // The closure dropped the handle before cleanup, including on Windows.
-        let _ = std::fs::remove_file(&tmp);
+        let _ = clock_io::remove_clock_stage(&tmp);
         return Err(error.to_string());
     }
     // Reuse sessions_persistence::rename_with_retry for the Windows AV/indexer
@@ -599,7 +598,7 @@ fn should_keep_clock_key(
         return true;
     };
     // Keep iff the workgroup dir still exists; prune only on CONFIRMED absence.
-    ac_root.join(wg).is_dir()
+    clock_io::clock_workgroup_is_directory(&ac_root.join(wg))
 }
 
 /// Path-explicit load for unit tests, symmetric with `save_map_to`.

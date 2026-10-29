@@ -394,3 +394,43 @@ fn validate_user_title_accepts_normal_title() {
 }
 
 mod committed_snapshot_tests;
+
+#[test]
+fn read_title_missing_file_returns_none() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(task_ops::read_title(dir.path()).unwrap(), None);
+}
+
+#[test]
+fn read_title_preserves_parser_titles_with_bom_and_quotes() {
+    let dir = tempfile::tempdir().unwrap();
+    for content in [
+        "---\ntitle: plain title\n---\nbody\n",
+        "---\ntitle: 'quoted title'\n---\nbody\n",
+        "\u{feff}---\ntitle: \"double quoted\"\n---\nbody\n",
+        "\u{feff}---\ntitle: 'it''s quoted'\n---\nbody\n",
+    ] {
+        std::fs::write(dir.path().join("TASK.md"), content).unwrap();
+        let expected = task_ops::title_value_of(&task_ops::parse_task(content));
+        assert_eq!(task_ops::read_title(dir.path()).unwrap(), expected);
+    }
+}
+
+#[test]
+fn read_title_without_frontmatter_returns_none() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("TASK.md"), "body only\n").unwrap();
+    assert_eq!(task_ops::read_title(dir.path()).unwrap(), None);
+}
+
+#[test]
+fn read_title_invalid_utf8_preserves_read_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("TASK.md");
+    std::fs::write(&path, [0xff, 0xfe]).unwrap();
+    let error = std::fs::read_to_string(&path).unwrap_err();
+    assert_eq!(
+        task_ops::read_title(dir.path()).unwrap_err(),
+        format!("read TASK.md: {}", error)
+    );
+}

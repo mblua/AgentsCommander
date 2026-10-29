@@ -7,8 +7,8 @@ use super::{
 };
 use crate::config::local_config_io::{acquire_sidecar_write_lock, SidecarWriteLock};
 use crate::config::naming_migration;
+use crate::filesystem::loop_files;
 use chrono::Utc;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -53,7 +53,7 @@ pub(super) fn acquire_loop_lock_in(
     journal_dir: Option<&Path>,
 ) -> Result<LoopDirLock, String> {
     validate_loop_id(loop_id)?;
-    let canonical_root = std::fs::canonicalize(ac_root).map_err(|e| {
+    let canonical_root = loop_files::canonical_loop_root(ac_root).map_err(|e| {
         format!(
             "Failed to resolve AC root '{}' for Loop lock: {}",
             ac_root.display(),
@@ -111,7 +111,7 @@ pub(super) fn migrate_loop_state_name(
     journal_dir: Option<&Path>,
 ) {
     let loop_dir = canonical_root.join(format!("{LOOP_DIR_PREFIX}{loop_id}"));
-    if !loop_dir.is_dir() {
+    if !loop_files::loop_path_is_directory(&loop_dir) {
         return;
     }
     let key = loop_state_scope_key(&loop_dir);
@@ -182,7 +182,7 @@ pub(super) fn ensure_loop_state_ignore_rows(
     let io = |what: &str, e: std::io::Error| {
         naming_migration::Refusal::Io(format!("failed to {what} {}: {e}", path.display()))
     };
-    let content = match std::fs::read_to_string(&path) {
+    let content = match loop_files::read_loop_document(&path) {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(io("read", e)),
@@ -200,11 +200,7 @@ pub(super) fn ensure_loop_state_ignore_rows(
     } else {
         "\n"
     };
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .and_then(|mut file| file.write_all(format!("{separator}{blocks}").as_bytes()))
+    loop_files::append_loop_ignore_rows(&path, &format!("{separator}{blocks}"))
         .map_err(|e| io("append to", e))
 }
 
@@ -216,7 +212,7 @@ pub fn create_loop_files(
     config: &LoopConfigToml,
 ) -> Result<(PathBuf, LoopState), String> {
     let _lock = acquire_loop_lock(ac_root, &config.loop_def.id, LOOP_LOCK_TIMEOUT)?;
-    if loop_dir(ac_root, &config.loop_def.id).exists() {
+    if loop_files::loop_path_exists(&loop_dir(ac_root, &config.loop_def.id)) {
         return Err(format!("Loop '{}' already exists", config.loop_def.id));
     }
     validate_loop_config(project_dir, config)?;
@@ -237,7 +233,7 @@ pub fn update_loop_files(
 ) -> Result<(PathBuf, LoopConfigToml, LoopState), String> {
     let _lock = acquire_loop_lock(ac_root, loop_id, LOOP_LOCK_TIMEOUT)?;
     let dir = loop_dir(ac_root, loop_id);
-    if !dir.is_dir() {
+    if !loop_files::loop_path_is_directory(&dir) {
         return Err(format!("Loop '{}' not found", loop_id));
     }
     let mut config = read_loop_config(&dir)?;
@@ -261,10 +257,11 @@ pub fn update_loop_files(
 pub fn remove_loop_files(ac_root: &Path, loop_id: &str) -> Result<PathBuf, String> {
     let _lock = acquire_loop_lock(ac_root, loop_id, LOOP_LOCK_TIMEOUT)?;
     let dir = loop_dir(ac_root, loop_id);
-    if !dir.is_dir() {
+    if !loop_files::loop_path_is_directory(&dir) {
         return Err(format!("Loop '{}' not found", loop_id));
     }
-    std::fs::remove_dir_all(&dir).map_err(|e| format!("Failed to remove Loop directory: {}", e))?;
+    loop_files::remove_loop_directory(&dir)
+        .map_err(|e| format!("Failed to remove Loop directory: {}", e))?;
     Ok(dir)
 }
 

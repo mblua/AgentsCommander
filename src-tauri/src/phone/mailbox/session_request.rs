@@ -10,8 +10,10 @@ use super::poller::{evaluate_gate, MailboxPoller, PurgeGatePeer, PurgeGateSessio
 use super::settle::{archive_root_md, capture_self_forget_summary, filter_sessions_by_fqn};
 use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::SettingsState;
+use crate::filesystem::phone_mailbox as mailbox_disk;
 use crate::phone::types::OutboxMessage;
 use crate::pty::inject::LogicalPtyCommand;
+use crate::session::maintenance::{MaintenanceError, PendingSelfClear};
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
@@ -116,9 +118,9 @@ impl MailboxPoller {
             }
         };
         let mut peer_fqns: Vec<String> = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(wg_dir) {
-            for entry in entries.flatten() {
-                let name = match entry.file_name().to_str() {
+        if let Ok(entries) = mailbox_disk::mailbox_directory_paths(wg_dir) {
+            for path in entries.flatten() {
+                let name = match path.file_name().and_then(|name| name.to_str()) {
                     Some(n) => n.to_string(),
                     None => continue,
                 };
@@ -129,7 +131,7 @@ impl MailboxPoller {
                 if agent == wg.agent_name {
                     continue;
                 }
-                if !entry.path().is_dir() {
+                if !mailbox_disk::mailbox_path_is_dir(&path) {
                     continue;
                 }
                 peer_fqns.push(format!("{}:{}/{}", wg.project, wg.wg_name, agent));
@@ -190,7 +192,9 @@ impl MailboxPoller {
             for s in &matched {
                 // Guard B (root): corrupted-state assertion (F-12).
                 if s.is_root_agent
-                    || crate::config::root_agent::is_root_agent_path(&s.working_directory)
+                    || crate::config::root_agent::root_agent_path_requires_protection(
+                        &s.working_directory,
+                    )
                 {
                     let response = serde_json::json!({
                         "action": PURGE_WG_ACTION,
@@ -358,58 +362,87 @@ impl MailboxPoller {
             .state::<Arc<crate::session::purge_guard::PurgeGuard>>()
             .inner()
             .clone();
-        let lease = purge_guard.acquire(target_sids, target_fqns).await;
-
-        // 12. Destroy loop (past the commit point, §2.5; no re-check).
         let force = msg.force.unwrap_or(true);
         let timeout_secs = msg.timeout_secs.unwrap_or(5);
-        let mut closed_ids: Vec<String> = Vec::new();
-        let mut failed_ids: Vec<String> = Vec::new();
-        let mut already_closed_ids: Vec<String> = Vec::new();
-        let mut any_failed = false;
-
+        let budget = super::teardown::observation_budget(force, timeout_secs)
+            .ok_or_else(|| "purge observation budget overflow".to_string())?;
+        let mut ids = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for peer in &gate_peers {
-            for sid_str in &peer.all_session_ids {
-                let sid = match Uuid::parse_str(sid_str) {
-                    Ok(id) => id,
-                    Err(_) => continue,
-                };
-                let ok = if force {
-                    self.force_close_session(app, sid).await
-                } else {
-                    self.graceful_close_session(app, sid, timeout_secs).await
-                };
-                if ok {
-                    closed_ids.push(sid_str.clone());
-                } else {
-                    // (#885 E-4) Post-failure re-probe: if the record is gone,
-                    // the destroy failed because auto-close raced us and the
-                    // session is already destroyed. That is success, not
-                    // failure. Sound because `destroy_session_inner` returns
-                    // Err("Session not found") ONLY from its first statement;
-                    // every other failure (notably kill_group's ??) leaves
-                    // the record present, so a genuine failure is always
-                    // distinguishable by the record still being there.
-                    let gone = {
-                        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                        let mgr = session_mgr.read().await;
-                        mgr.get_session(sid).await.is_none()
-                    };
-                    if gone {
-                        already_closed_ids.push(sid_str.clone());
-                    } else {
-                        failed_ids.push(sid_str.clone());
-                        any_failed = true;
+            for id in &peer.all_session_ids {
+                if let Ok(sid) = Uuid::parse_str(id) {
+                    if seen.insert(sid) {
+                        ids.push(sid);
                     }
                 }
             }
         }
-
-        // 13. Drop the lease before writing the response.
-        drop(lease);
-
-        // 14. Response + move_to_delivered.
-        let status = if any_failed {
+        let progress = Arc::new(super::teardown::PurgeProgress::new(ids.clone()));
+        let targets = super::teardown::PurgeTargets {
+            ids,
+            session_ids: target_sids,
+            fqns: target_fqns,
+        };
+        let owned_app = app.clone();
+        let poller = self.delivery_poller();
+        let worker = tokio::spawn(super::teardown::run_purge_batch(
+            purge_guard,
+            targets,
+            progress.clone(),
+            budget,
+            move |sid| {
+                let app = owned_app.clone();
+                let poller = poller.delivery_poller();
+                async move {
+                    poller
+                        .close_session_attempt(
+                            &app,
+                            sid,
+                            force,
+                            timeout_secs,
+                            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                        )
+                        .await
+                }
+            },
+        ));
+        let snapshot = super::teardown::observe_purge(progress, worker).await?;
+        let mut closed_ids = Vec::new();
+        let mut already_closed_ids = Vec::new();
+        let mut failed_ids = Vec::new();
+        let mut reasons = Vec::new();
+        for (sid, outcome) in &snapshot.results {
+            match outcome {
+                super::teardown::TeardownOutcome::Closed => closed_ids.push(sid.to_string()),
+                super::teardown::TeardownOutcome::AlreadyGone => {
+                    already_closed_ids.push(sid.to_string());
+                }
+                _ => {
+                    failed_ids.push(sid.to_string());
+                    reasons
+                        .push(serde_json::json!({"session_id": sid, "reason": outcome.reason()}));
+                }
+            }
+        }
+        let current_id = match snapshot.phase {
+            super::teardown::PurgePhase::Started(sid)
+                if !snapshot.results.iter().any(|(id, _)| *id == sid) =>
+            {
+                Some(sid)
+            }
+            _ => None,
+        };
+        let unattempted_ids: Vec<String> = snapshot
+            .ids
+            .iter()
+            .filter(|sid| {
+                Some(**sid) != current_id && !snapshot.results.iter().any(|(done, _)| done == *sid)
+            })
+            .map(Uuid::to_string)
+            .collect();
+        let uncertain =
+            snapshot.phase != super::teardown::PurgePhase::Stopped || snapshot.reason.is_some();
+        let status = if uncertain || !failed_ids.is_empty() {
             "partial_failure"
         } else {
             "purged"
@@ -424,8 +457,21 @@ impl MailboxPoller {
             "purged": closed_ids.len(),
             "already_closed": already_closed_ids.len(),
             "failed": failed_ids.len(),
+            "session_ids": closed_ids,
+            "already_closed_ids": already_closed_ids,
+            "failed_ids": failed_ids,
+            "current_uncertain_id": current_id,
+            "unattempted_ids": unattempted_ids,
+            "reason": snapshot.reason,
+            "failure_reasons": reasons,
+            "outcome_unknown": uncertain,
+            "may_complete_later": uncertain && snapshot.started
+                && snapshot.phase != super::teardown::PurgePhase::Stopped,
             "peers": decision.peers.iter().map(|p| {
-                let outcome = if failed_ids.iter().any(|f| p.session_ids.contains(f)) {
+                let current = current_id.is_some_and(|id| p.session_ids.contains(&id.to_string()));
+                let outcome = if current {
+                    "uncertain"
+                } else if failed_ids.iter().any(|f| p.session_ids.contains(f)) {
                     "failed"
                 } else if already_closed_ids.iter().any(|c| p.session_ids.contains(c))
                     && !closed_ids.iter().any(|c| p.session_ids.contains(c))
@@ -447,62 +493,6 @@ impl MailboxPoller {
 
         self.write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
             .await
-    }
-
-    /// (#885) Write the purge response JSON and move the message to delivered/.
-    /// Mirrors `handle_close_session`'s dual-write block (§224 A.6, G-IMPL-2).
-    async fn write_purge_response_and_deliver<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        path: &std::path::Path,
-        msg: &OutboxMessage,
-        is_app_outbox: bool,
-        response: &serde_json::Value,
-    ) -> Result<(), String> {
-        let json = match serde_json::to_string_pretty(response) {
-            Ok(j) => j,
-            Err(e) => {
-                log::warn!("[mailbox] Failed to serialize purge-wg response: {}", e);
-                return self.move_to_delivered(app, path, msg).await;
-            }
-        };
-
-        if let Some(ref rid) = msg.request_id {
-            if !is_app_outbox {
-                let outbox_relative_responses_dir = path
-                    .parent()
-                    .and_then(|p| p.parent())
-                    .map(|ac_dir| ac_dir.join("responses"));
-                if let Some(responses_dir) = outbox_relative_responses_dir {
-                    let _ = std::fs::create_dir_all(&responses_dir);
-                    let response_path = responses_dir.join(format!("{}.json", rid));
-                    if let Err(e) = std::fs::write(&response_path, &json) {
-                        log::warn!(
-                            "[mailbox] Failed to write purge-wg response to outbox-relative path \
-                            {:?}: {}",
-                            response_path,
-                            e
-                        );
-                    }
-                }
-            }
-
-            if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
-                let responses_dir = std::path::PathBuf::from(sender_path)
-                    .join(crate::config::agent_local_dir_name())
-                    .join("responses");
-                let _ = std::fs::create_dir_all(&responses_dir);
-                let response_path = responses_dir.join(format!("{}.json", rid));
-                if let Err(e) = std::fs::write(&response_path, &json) {
-                    log::warn!(
-                        "[mailbox] Failed to write purge-wg response to resolved-sender path: {}",
-                        e
-                    );
-                }
-            }
-        }
-
-        self.move_to_delivered(app, path, msg).await
     }
 
     /// Returns fast: the 30s sustained-idle wait runs in a detached task so the
@@ -579,6 +569,37 @@ impl MailboxPoller {
             }
         };
 
+        let pending = app.state::<Arc<PendingSelfClear>>().inner().clone();
+        if msg.action.as_deref() == Some(super::PLAIN_SELF_CLEAR_ACTION) {
+            #[cfg(not(test))]
+            let inject = {
+                let app = app.clone();
+                move |sid, text: String| async move {
+                    crate::pty::inject::inject_text_into_session(&app, sid, &text).await
+                }
+            };
+            #[cfg(test)]
+            let inject = |_sid, _text: String| async {
+                Err("self-clear synthetic test injector: no PTY input".to_string())
+            };
+            let boundary_app = app.clone();
+            let note_boundary = move |sid| async move {
+                crate::commands::pty::stamp_fresh_boundary_to_session(&boundary_app, sid).await;
+            };
+            let transport = || self.move_to_delivered(app, path, msg);
+            let launch = Self::launch_self_clear_driver::<super::self_clear::Driver>;
+            return self
+                .handle_plain_self_clear(
+                    path,
+                    msg,
+                    session,
+                    clear_text,
+                    pending,
+                    (launch, transport, inject, note_boundary),
+                )
+                .await;
+        }
+
         // 2b. #626 existence gate - REFUSE if the agent did not write its handoff notes. Clearing
         // with
         // no SELF-HANDOFF.md would wipe context with no way to resume (the agent would post-clear
@@ -589,7 +610,7 @@ impl MailboxPoller {
         //     nothing is queued/archived with nothing to resume.
         let handoff_path =
             std::path::Path::new(&session.working_directory).join(SELF_HANDOFF_ROOT_NAME);
-        if !handoff_path.is_file() {
+        if !mailbox_disk::mailbox_path_is_file(&handoff_path) {
             return self
                 .reject_message(
                     path,
@@ -604,10 +625,13 @@ impl MailboxPoller {
         }
 
         // 3. Idempotency - atomic check-and-set. insert() returns false if already present.
-        let newly_inserted = {
-            let pending = app.state::<Arc<crate::PendingSelfClear>>();
-            let mut set = pending.0.lock().unwrap_or_else(|e| e.into_inner());
-            set.insert(session_id)
+        let reservation = pending.reserve_legacy(session_id);
+        let newly_inserted = match reservation {
+            Ok(_) => true,
+            Err(MaintenanceError::AlreadyLegacy) => false,
+            Err(error) => {
+                return self.reject_message(path, msg, &error.to_string()).await;
+            }
         };
         let status = if newly_inserted {
             "queued"
@@ -655,7 +679,7 @@ impl MailboxPoller {
                 // without a mid-flight session-manager lookup. A session's working
                 // directory never changes while its id stays alive.
                 let root = root.to_path_buf();
-                tauri::async_runtime::spawn(async move {
+                Self::launch_self_clear_driver(async move {
                     Self::run_self_clear_after_sustained_idle(
                         &app_clone,
                         session_id,
@@ -698,7 +722,7 @@ impl MailboxPoller {
         else {
             return false;
         };
-        let Ok(content) = std::fs::read_to_string(task_path) else {
+        let Ok(content) = mailbox_disk::read_mailbox_task_text(&task_path) else {
             return false;
         };
         crate::commands::entity_creation::parse_task_title(&content).is_some()
@@ -803,5 +827,148 @@ impl MailboxPoller {
 
         self.write_raise_hand_response(app, path, msg, session_id, raised, status, is_app_outbox)
             .await
+    }
+}
+
+// A stage is owned only after create_new succeeds. Cleanup never touches the destination.
+struct PlainReceiptStage {
+    path: std::path::PathBuf,
+    written: Vec<u8>,
+}
+
+impl Drop for PlainReceiptStage {
+    fn drop(&mut self) {
+        match mailbox_disk::read_mailbox_message(&self.path) {
+            Ok(bytes) if bytes == self.written => {
+                if let Err(error) = mailbox_disk::remove_mailbox_artifact(&self.path) {
+                    log::warn!("[mailbox] self-clear stage cleanup failed: {}", error);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => log::warn!("[mailbox] self-clear stage changed; preserving it"),
+        }
+    }
+}
+
+impl MailboxPoller {
+    fn launch_self_clear_driver<F>(driver: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        tauri::async_runtime::spawn(driver);
+    }
+
+    async fn handle_plain_self_clear<L, T, TF, I, IF, B, BF>(
+        &self,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+        session: SessionInfo,
+        clear_text: &'static str,
+        pending: Arc<PendingSelfClear>,
+        callbacks: (L, T, I, B),
+    ) -> Result<(), String>
+    where
+        L: FnOnce(super::self_clear::Driver),
+        T: FnOnce() -> TF,
+        TF: std::future::Future<Output = Result<(), String>>,
+        I: FnOnce(Uuid, String) -> IF + Send + 'static,
+        IF: std::future::Future<Output = Result<(), String>> + Send + 'static,
+        B: FnOnce(Uuid) -> BF + Send + 'static,
+        BF: std::future::Future<Output = ()> + Send + 'static,
+    {
+        use super::self_clear::{accept, Callbacks, PlainError, Prepared, Request};
+        use crate::session::maintenance::PlainIdentity;
+        let (launch, transport, inject, note_boundary) = callbacks;
+        let request_id = match msg
+            .request_id
+            .as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok())
+        {
+            Some(id) => id,
+            None => {
+                return self
+                    .reject_message(path, msg, "self-clear requires request_id UUID")
+                    .await
+            }
+        };
+        let identity = PlainIdentity {
+            session_id: Uuid::parse_str(&session.id).map_err(|e| e.to_string())?,
+            request_id,
+            action: super::PLAIN_SELF_CLEAR_ACTION.into(),
+            requested_by: msg.from.clone(),
+        };
+        let canonical = super::notice::sender_name_for_session_cwd_with_root_flag(
+            &session.working_directory,
+            session.is_root_agent
+                || crate::config::root_agent::is_root_agent_path(&session.working_directory),
+        );
+        if let Err(error) = super::self_clear::validate_caller(
+            &identity,
+            &canonical,
+            &msg.to,
+            msg.target.as_deref(),
+        ) {
+            return self.reject_message(path, msg, &error).await;
+        }
+        let request = Request {
+            identity,
+            root: session.working_directory.into(),
+            local_dir: crate::config::agent_local_dir_name(),
+            clear_text,
+        };
+        let result = accept(
+            request,
+            pending,
+            Callbacks {
+                read_receipt: |destination: &std::path::Path| {
+                    match mailbox_disk::read_mailbox_message(destination) {
+                        Ok(bytes) => Ok(Some(bytes)),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                        Err(error) => Err(error.to_string()),
+                    }
+                },
+                prepare_receipt: |destination: &std::path::Path, bytes: &[u8], _lease: &_| {
+                    let parent = destination
+                        .parent()
+                        .ok_or("self-clear: no responses directory")?;
+                    mailbox_disk::ensure_mailbox_archive_directory(parent)
+                        .map_err(|e| e.to_string())?;
+                    let stage_path = parent.join(format!("{}.stage", Uuid::new_v4()));
+                    let mut file = mailbox_disk::create_plain_mailbox_receipt_stage(&stage_path)
+                        .map_err(|e| e.to_string())?;
+                    let mut stage = PlainReceiptStage {
+                        path: stage_path,
+                        written: Vec::new(),
+                    };
+                    while stage.written.len() < bytes.len() {
+                        let remaining = &bytes[stage.written.len()..];
+                        let count =
+                            mailbox_disk::write_plain_mailbox_receipt_chunk(&mut file, remaining)
+                                .map_err(|e| e.to_string())?;
+                        if count == 0 {
+                            return Err("self-clear: stage write made no progress".into());
+                        }
+                        stage.written.extend_from_slice(&remaining[..count]);
+                    }
+                    drop(file);
+                    let bytes = mailbox_disk::read_mailbox_message(&stage.path)
+                        .map_err(|e| e.to_string())?;
+                    Ok(Prepared { stage, bytes })
+                },
+                publish_prepared: |stage: &PlainReceiptStage, destination: &std::path::Path| {
+                    crate::path_identity::publish_new_file_atomic(&stage.path, destination)
+                },
+                launch,
+                transport,
+                inject,
+                note_boundary,
+            },
+        )
+        .await;
+        match result {
+            Ok(()) => Ok(()),
+            Err(PlainError::Rejected(error)) => self.reject_message(path, msg, &error).await,
+            Err(PlainError::Retryable(error) | PlainError::Transport(error)) => Err(error),
+        }
     }
 }

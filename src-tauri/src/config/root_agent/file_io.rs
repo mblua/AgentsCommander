@@ -4,13 +4,13 @@ use super::{
 };
 #[cfg(test)]
 use super::{FAIL_ROOT_ROLE_WRITE_MARKER, FAIL_ROOT_ROLE_WRITE_ONCE};
+use crate::filesystem::agent_files;
 use serde_json::Value;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 pub(crate) fn write_role_file(
-    file: &mut std::fs::File,
+    file: &mut agent_files::RootAgentStage,
     role_path: &Path,
     content: &str,
 ) -> Result<(), String> {
@@ -24,11 +24,11 @@ pub(crate) fn write_role_file(
         ));
     }
 
-    file.write_all(content.as_bytes())
+    agent_files::write_root_agent_stage(file, content.as_bytes())
         .map_err(|e| format!("Failed to write {}: {}", role_path.display(), e))?;
-    file.flush()
+    agent_files::flush_root_agent_stage(file)
         .map_err(|e| format!("Failed to flush {}: {}", role_path.display(), e))?;
-    file.sync_all()
+    agent_files::sync_root_agent_stage(file)
         .map_err(|e| format!("Failed to sync {}: {}", role_path.display(), e))
 }
 
@@ -48,14 +48,14 @@ pub(crate) fn unique_role_temp_path(role_path: &Path) -> std::path::PathBuf {
 
 pub(crate) fn create_default_skill_temp_file(
     path: &Path,
-) -> Result<(PathBuf, std::fs::File), String> {
+) -> Result<(PathBuf, agent_files::RootAgentStage), String> {
     create_default_skill_temp_file_with(path, unique_default_skill_temp_path)
 }
 
 pub(crate) fn create_default_skill_temp_file_with<F>(
     path: &Path,
     mut next_temp_path: F,
-) -> Result<(PathBuf, std::fs::File), String>
+) -> Result<(PathBuf, agent_files::RootAgentStage), String>
 where
     F: FnMut(&Path) -> PathBuf,
 {
@@ -63,11 +63,7 @@ where
 
     for _ in 0..TEMP_CREATE_ATTEMPTS {
         let temp_path = next_temp_path(path);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
+        match agent_files::create_root_agent_stage(&temp_path) {
             Ok(file) => return Ok((temp_path, file)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
@@ -102,7 +98,7 @@ pub(crate) fn unique_default_skill_temp_path(path: &Path) -> PathBuf {
 }
 
 pub(crate) fn cleanup_temp_role(path: &Path) {
-    if let Err(e) = std::fs::remove_file(path) {
+    if let Err(e) = agent_files::remove_root_agent_temp(path) {
         if e.kind() != std::io::ErrorKind::NotFound {
             log::warn!(
                 "Failed to remove temporary role file {}: {}",
@@ -114,8 +110,8 @@ pub(crate) fn cleanup_temp_role(path: &Path) {
 }
 
 pub(crate) fn sync_role_dir(parent: &Path) {
-    if let Ok(dir) = std::fs::File::open(parent) {
-        if let Err(e) = dir.sync_all() {
+    if let Ok(dir) = agent_files::open_root_agent_directory(parent) {
+        if let Err(e) = agent_files::sync_root_agent_directory(&dir) {
             log::warn!(
                 "Failed to sync root agent role directory {}: {}",
                 parent.display(),
@@ -129,7 +125,7 @@ pub(crate) fn publish_missing_role_file(
     temp_path: &Path,
     role_path: &Path,
 ) -> Result<bool, String> {
-    match std::fs::hard_link(temp_path, role_path) {
+    match agent_files::publish_root_agent_missing(temp_path, role_path) {
         Ok(()) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
         Err(e) => Err(format!(
@@ -159,7 +155,7 @@ pub(crate) fn publish_missing_default_skill_file(
     path: &Path,
 ) -> Result<bool, String> {
     publish_missing_default_skill_file_with(temp_path, path, |temp_path, path| {
-        std::fs::hard_link(temp_path, path)
+        agent_files::publish_root_agent_missing(temp_path, path)
     })
 }
 
@@ -174,7 +170,7 @@ where
     match publish(temp_path, path) {
         Ok(()) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            let metadata = std::fs::symlink_metadata(path).map_err(|inspect_err| {
+            let metadata = agent_files::inspect_root_agent_entry(path).map_err(|inspect_err| {
                 format!(
                     "Root agent default skill file {} appeared during publish but could not be \
                         inspected: {}",
@@ -196,7 +192,7 @@ where
 
 #[cfg(not(windows))]
 pub(crate) fn replace_role_file(temp_path: &Path, role_path: &Path) -> Result<(), String> {
-    std::fs::rename(temp_path, role_path).map_err(|e| {
+    agent_files::rename_root_agent_stage(temp_path, role_path).map_err(|e| {
         format!(
             "Failed to replace {} with {}: {}",
             role_path.display(),
@@ -208,8 +204,8 @@ pub(crate) fn replace_role_file(temp_path: &Path, role_path: &Path) -> Result<()
 
 #[cfg(windows)]
 pub(crate) fn replace_role_file(temp_path: &Path, role_path: &Path) -> Result<(), String> {
-    if !role_path.exists() {
-        return std::fs::rename(temp_path, role_path).map_err(|e| {
+    if !agent_files::root_agent_target_exists(role_path) {
+        return agent_files::rename_root_agent_stage(temp_path, role_path).map_err(|e| {
             format!(
                 "Failed to publish {} from {}: {}",
                 role_path.display(),
@@ -228,7 +224,6 @@ pub(crate) fn replace_existing_file_windows(
     role_path: &Path,
 ) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
 
     // Normalize the parent for extended-length Windows APIs without following
     // the leaf that is about to be replaced.
@@ -243,7 +238,7 @@ pub(crate) fn replace_existing_file_windows(
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let canonical_parent = std::fs::canonicalize(parent).map_err(|error| {
+        let canonical_parent = agent_files::canonical_root_agent_path(parent).map_err(|error| {
             format!(
                 "Failed to normalize replacement parent for {}: {}",
                 path.display(),
@@ -259,25 +254,14 @@ pub(crate) fn replace_existing_file_windows(
     };
     let role_wide = canonical_leaf(role_path)?;
     let temp_wide = canonical_leaf(temp_path)?;
-    let ok = unsafe {
-        ReplaceFileW(
-            role_wide.as_ptr(),
-            temp_wide.as_ptr(),
-            std::ptr::null(),
-            REPLACEFILE_WRITE_THROUGH,
-            std::ptr::null(),
-            std::ptr::null(),
-        )
-    };
-    if ok == 0 {
-        return Err(format!(
+    agent_files::replace_root_agent_once(&role_wide, &temp_wide).map_err(|error| {
+        format!(
             "Failed to replace {} with {}: {}",
             role_path.display(),
             temp_path.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(())
+            error
+        )
+    })
 }
 
 /// #664: shared atomic replace-existing primitive. Delegates to the vetted
@@ -364,21 +348,12 @@ pub fn read_last_coding_agent(root_dir: &str) -> Option<String> {
 }
 
 pub(crate) fn paths_equivalent(left: &Path, right: &Path) -> bool {
-    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => normalize_for_compare(&left) == normalize_for_compare(&right),
-        _ => normalize_for_compare(left) == normalize_for_compare(right),
-    }
-}
-
-pub(crate) fn normalize_for_compare(path: &Path) -> String {
-    let mut s = display_path(path).replace('\\', "/");
-    while s.ends_with('/') && s.len() > 1 {
-        s.pop();
-    }
-    if cfg!(windows) {
-        s.to_ascii_lowercase()
-    } else {
-        s
+    match (
+        crate::path_identity::verify_directory(left),
+        crate::path_identity::verify_directory(right),
+    ) {
+        (Ok(left), Ok(right)) => left.object_id == right.object_id,
+        _ => false,
     }
 }
 

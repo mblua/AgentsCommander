@@ -14,11 +14,13 @@
 //! `<from>.deprecated-<n>.no-git`.
 
 use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::fs::File;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+use crate::filesystem::naming_journal;
 
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -234,7 +236,7 @@ fn journal_path(dir: &Path) -> PathBuf {
 /// `Ok(None)` when there is no configuration directory or no journal file yet.
 /// An unreadable or version-unknown journal is an error, never a reset.
 fn read_journal_at(path: &Path) -> Result<Option<Journal>, Refusal> {
-    let bytes = match std::fs::read(path) {
+    let bytes = match naming_journal::read_journal_bytes(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
@@ -307,7 +309,7 @@ pub(crate) fn scope_is_settled(dir_of: Option<&Journal>, scope: &str) -> bool {
 }
 
 fn present(path: &Path) -> io::Result<bool> {
-    match std::fs::symlink_metadata(path) {
+    match naming_journal::migration_metadata(path) {
         Ok(_) => Ok(true),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(e),
@@ -319,24 +321,7 @@ fn present(path: &Path) -> io::Result<bool> {
 // ---------------------------------------------------------------------------
 
 fn open_sidecar(path: &Path) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        };
-        options
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    options.open(path)
+    naming_journal::open_migration_sidecar(path)
 }
 
 fn is_lock_contention_error(error: &io::Error) -> bool {
@@ -361,11 +346,10 @@ fn acquire_sidecar(path: &Path, timeout: Duration) -> Result<File, Refusal> {
         .map_err(|e| Refusal::Io(format!("failed to open lock {}: {e}", path.display())))?;
     let started = Instant::now();
     loop {
-        match file.try_lock() {
+        match naming_journal::try_lock_migration(&file) {
             Ok(()) => return Ok(file),
-            Err(std::fs::TryLockError::WouldBlock) => {}
-            Err(std::fs::TryLockError::Error(e)) if is_lock_contention_error(&e) => {}
-            Err(std::fs::TryLockError::Error(e)) => {
+            Err(e) if is_lock_contention_error(&e) => {}
+            Err(e) => {
                 return Err(Refusal::Io(format!(
                     "failed to lock {}: {e}",
                     path.display()
@@ -452,19 +436,16 @@ fn commit_journal(dir: &Path, journal: &Journal) -> Result<(), Refusal> {
         TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
     let written = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
+        let mut file = naming_journal::create_journal_stage(&temp)?;
+        naming_journal::write_journal_stage(&mut file, &bytes)?;
+        naming_journal::sync_journal_stage(&file)?;
         drop(file);
         replace_file_with_retry(&temp, &destination)?;
         sync_directory(dir)
     })();
     written.map_err(|e| {
         // This run's own temporary, never a stale one found on disk.
-        let _ = std::fs::remove_file(&temp);
+        let _ = naming_journal::remove_migration_file(&temp);
         Refusal::Io(format!(
             "failed to commit naming-migration journal {}: {e}",
             destination.display()
@@ -474,14 +455,14 @@ fn commit_journal(dir: &Path, journal: &Journal) -> Result<(), Refusal> {
 
 #[cfg(unix)]
 fn sync_directory(dir: &Path) -> io::Result<()> {
-    File::open(dir)?.sync_all()
+    naming_journal::sync_journal_directory(dir)
 }
 
 /// Windows has no directory `fsync`; a lost last commit re-runs an idempotent
 /// step, because no decision depends on a record existing.
 #[cfg(not(unix))]
 fn sync_directory(_dir: &Path) -> io::Result<()> {
-    Ok(())
+    naming_journal::sync_journal_directory(_dir)
 }
 
 /// Sleeps between replace attempts: three attempts. Copied from
@@ -504,30 +485,12 @@ fn replace_file_with_retry(src: &Path, dst: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn replace_file(src: &Path, dst: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-
-    let src_wide: Vec<u16> = src.as_os_str().encode_wide().chain(Some(0)).collect();
-    let dst_wide: Vec<u16> = dst.as_os_str().encode_wide().chain(Some(0)).collect();
-    let ok = unsafe {
-        MoveFileExW(
-            src_wide.as_ptr(),
-            dst_wide.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if ok == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    naming_journal::replace_journal_file(src, dst)
 }
 
 #[cfg(not(windows))]
 fn replace_file(src: &Path, dst: &Path) -> io::Result<()> {
-    std::fs::rename(src, dst)
+    naming_journal::replace_journal_file(src, dst)
 }
 
 #[cfg(windows)]
@@ -549,40 +512,36 @@ fn is_transient_replace_error(e: &io::Error) -> bool {
 /// handle kept open, and `ErrorKind::AlreadyExists` means "take the next
 /// ordinal", not failure.
 #[cfg(windows)]
-fn move_no_replace(from: &Path, to: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
-
+fn move_no_replace(
+    from: &Path,
+    to: &Path,
+    #[cfg(test)] faults: &MigrationPathFaults,
+) -> io::Result<()> {
     #[cfg(test)]
-    if let Some(kind) = take_migration_path_fault("move_no_replace", to) {
+    if let Some(kind) = faults.take("move_no_replace", to) {
         return Err(io::Error::new(kind, "injected move_no_replace failure"));
     }
-    let from_wide: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
-    let to_wide: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
-    // Deliberately WITHOUT `MOVEFILE_REPLACE_EXISTING`: an existing `to` fails
-    // with ERROR_ALREADY_EXISTS (183) and its bytes are never replaced.
-    let ok = unsafe { MoveFileExW(from_wide.as_ptr(), to_wide.as_ptr(), MOVEFILE_WRITE_THROUGH) };
-    if ok == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    naming_journal::move_migration_file_no_replace(from, to)
 }
 
 /// `hard_link` is create-only; `std::fs::rename` is not used here because a
 /// POSIX rename silently replaces an existing destination.
 #[cfg(not(windows))]
-fn move_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+fn move_no_replace(
+    from: &Path,
+    to: &Path,
+    #[cfg(test)] faults: &MigrationPathFaults,
+) -> io::Result<()> {
     #[cfg(test)]
-    if let Some(kind) = take_migration_path_fault("move_no_replace", to) {
+    if let Some(kind) = faults.take("move_no_replace", to) {
         return Err(io::Error::new(kind, "injected move_no_replace failure"));
     }
-    std::fs::hard_link(from, to)?;
+    naming_journal::link_migration_file(from, to)?;
     #[cfg(test)]
-    if let Some(kind) = take_migration_path_fault("remove_file", from) {
+    if let Some(kind) = faults.take("remove_file", from) {
         return Err(io::Error::new(kind, "injected remove_file failure"));
     }
-    std::fs::remove_file(from)
+    naming_journal::remove_migration_file(from)
 }
 
 // ---------------------------------------------------------------------------
@@ -681,6 +640,7 @@ fn set_aside(
     scope: &str,
     journal_dir: Option<&Path>,
     held: &ScopeLock,
+    #[cfg(test)] faults: &MigrationPathFaults,
 ) -> Outcome {
     let from_path = dir.join(from);
     for _ in 0..SET_ASIDE_CEILING {
@@ -690,7 +650,12 @@ fn set_aside(
         };
         migration_pause_hook("before_set_aside_move", dir);
         let candidate_path = dir.join(&candidate);
-        match move_no_replace(&from_path, &candidate_path) {
+        match move_no_replace(
+            &from_path,
+            &candidate_path,
+            #[cfg(test)]
+            faults,
+        ) {
             Ok(()) => {
                 return match commit_step(
                     journal_dir,
@@ -731,6 +696,7 @@ fn step(
     scope: &str,
     journal_dir: Option<&Path>,
     held: &ScopeLock,
+    #[cfg(test)] faults: &MigrationPathFaults,
 ) -> Outcome {
     let recorded = match read_journal(journal_dir) {
         Ok(journal) => journal.and_then(|j| j.step_state(scope, dir, from, to)),
@@ -750,7 +716,16 @@ fn step(
     };
     let settled = recorded.is_some_and(StepState::is_settled);
     match (from_present, to_present) {
-        (true, true) => set_aside(dir, from, to, scope, journal_dir, held),
+        (true, true) => set_aside(
+            dir,
+            from,
+            to,
+            scope,
+            journal_dir,
+            held,
+            #[cfg(test)]
+            faults,
+        ),
         (true, false) => {
             if let Err(refusal) =
                 commit_step(journal_dir, scope, dir, from, to, StepState::Renaming, None)
@@ -758,11 +733,25 @@ fn step(
                 return Outcome::Refused(refusal);
             }
             migration_pause_hook("before_rename", dir);
-            match move_no_replace(&from_path, &to_path) {
+            match move_no_replace(
+                &from_path,
+                &to_path,
+                #[cfg(test)]
+                faults,
+            ) {
                 Ok(()) => {}
                 // `to` appeared since the probe: both names present.
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                    return set_aside(dir, from, to, scope, journal_dir, held)
+                    return set_aside(
+                        dir,
+                        from,
+                        to,
+                        scope,
+                        journal_dir,
+                        held,
+                        #[cfg(test)]
+                        faults,
+                    )
                 }
                 Err(e) => {
                     let note = leftover_note(from, &to_path);
@@ -818,7 +807,16 @@ pub(crate) fn rename_step(
     journal_dir: Option<&Path>,
     held: &ScopeLock,
 ) -> Outcome {
-    step(dir, r.from, r.to, scope, journal_dir, held)
+    step(
+        dir,
+        r.from,
+        r.to,
+        scope,
+        journal_dir,
+        held,
+        #[cfg(test)]
+        &MigrationPathFaults::default(),
+    )
 }
 
 /// `rename_step` for every `dir` entry between `old_prefix` and `suffix`,
@@ -832,7 +830,31 @@ pub(crate) fn rename_prefix_family(
     journal_dir: Option<&Path>,
     held: &ScopeLock,
 ) -> Vec<(String, Outcome)> {
-    let entries = match std::fs::read_dir(dir) {
+    rename_prefix_family_with_faults(
+        dir,
+        old_prefix,
+        new_prefix,
+        suffix,
+        scope,
+        journal_dir,
+        held,
+        #[cfg(test)]
+        &MigrationPathFaults::default(),
+    )
+}
+
+#[cfg_attr(test, allow(clippy::too_many_arguments))]
+fn rename_prefix_family_with_faults(
+    dir: &Path,
+    old_prefix: &str,
+    new_prefix: &str,
+    suffix: &str,
+    scope: &str,
+    journal_dir: Option<&Path>,
+    held: &ScopeLock,
+    #[cfg(test)] faults: &MigrationPathFaults,
+) -> Vec<(String, Outcome)> {
+    let entries = match naming_journal::migration_entries(dir) {
         Ok(entries) => entries,
         Err(e) => {
             let refusal = Refusal::Io(format!("failed to list {}: {e}", dir.display()));
@@ -856,7 +878,7 @@ pub(crate) fn rename_prefix_family(
     let mut names = Vec::new();
     for entry in entries {
         #[cfg(test)]
-        let entry = match take_migration_path_fault("read_dir_entry", dir) {
+        let entry = match faults.take("read_dir_entry", dir) {
             Some(kind) => Err(io::Error::new(kind, "injected read_dir entry failure")),
             None => entry,
         };
@@ -883,7 +905,16 @@ pub(crate) fn rename_prefix_family(
         .map(|from| {
             let middle = &from[old_prefix.len()..from.len() - suffix.len()];
             let to = format!("{new_prefix}{middle}{suffix}");
-            let outcome = step(dir, &from, &to, scope, journal_dir, held);
+            let outcome = step(
+                dir,
+                &from,
+                &to,
+                scope,
+                journal_dir,
+                held,
+                #[cfg(test)]
+                faults,
+            );
             (from, outcome)
         })
         .collect()
@@ -911,33 +942,29 @@ struct MigrationPathFault {
 }
 
 #[cfg(test)]
-thread_local! {
-    static MIGRATION_PATH_FAULTS: std::cell::RefCell<Vec<MigrationPathFault>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+#[derive(Default)]
+struct MigrationPathFaults {
+    faults: std::cell::RefCell<Vec<MigrationPathFault>>,
 }
 
-/// Arms one injected failure of `op` (`move_no_replace`, or `remove_file` off
-/// Windows) on `path`, for the current thread.
 #[cfg(test)]
-fn arm_migration_path_fault(op: &'static str, path: &Path, kind: io::ErrorKind) {
-    MIGRATION_PATH_FAULTS.with(|faults| {
-        faults.borrow_mut().push(MigrationPathFault {
+impl MigrationPathFaults {
+    /// Arms one exact operation/path failure for this scenario.
+    fn arm(&self, op: &'static str, path: &Path, kind: io::ErrorKind) {
+        self.faults.borrow_mut().push(MigrationPathFault {
             op,
             path: path.to_path_buf(),
             kind,
-        })
-    });
-}
+        });
+    }
 
-#[cfg(test)]
-fn take_migration_path_fault(op: &str, path: &Path) -> Option<io::ErrorKind> {
-    MIGRATION_PATH_FAULTS.with(|faults| {
-        let mut faults = faults.borrow_mut();
+    fn take(&self, op: &str, path: &Path) -> Option<io::ErrorKind> {
+        let mut faults = self.faults.borrow_mut();
         let index = faults
             .iter()
             .position(|fault| fault.op == op && fault.path == path)?;
         Some(faults.remove(index).kind)
-    })
+    }
 }
 
 /// A copy of the #2682 harness in `config/loops.rs`, which is inside the SCC

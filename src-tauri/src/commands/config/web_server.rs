@@ -465,6 +465,7 @@ pub(crate) fn begin_web_server_start(
     let factory_shutdown = shutdown.clone();
     ws_handle.begin_start(
         shutdown,
+        |future| drop(tauri::async_runtime::spawn(future)),
         move |generation, admission, generation_token| async move {
             let dispatcher = app_handle
                 .try_state::<ManagedWebCommandDispatcher>()
@@ -496,6 +497,7 @@ pub(crate) fn begin_web_server_start(
                 return Err(WEB_SERVER_START_CANCELLED.to_string());
             }
 
+            let resource_dir = app_handle.path().resource_dir().ok();
             match crate::web::start_server(
                 bind,
                 port,
@@ -503,10 +505,13 @@ pub(crate) fn begin_web_server_start(
                 session_mgr,
                 dispatcher,
                 broadcaster,
-                app_handle,
+                resource_dir,
                 admission,
                 generation_token,
                 factory_shutdown,
+                |future| {
+                    crate::web_server::ServerTask::from_native(tauri::async_runtime::spawn(future))
+                },
             )
             .await
             {

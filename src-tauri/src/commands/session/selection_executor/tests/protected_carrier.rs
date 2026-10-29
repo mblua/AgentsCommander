@@ -1,5 +1,7 @@
 //! Protected carrier provisioning and retirement fixture.
 
+mod closing;
+
 use super::native_fixture::NativeFixture;
 use std::sync::Arc;
 use tauri::Manager;
@@ -723,76 +725,11 @@ pub(crate) async fn response_close_case(case: u8) {
         _ => unreachable!(),
     };
     let view = PollView::new(&f, log.clone(), tracker, bound, coord);
-    assert!(Arc::ptr_eq(
-        &view
-            .app
-            .state::<crate::app_state::AppOwners>()
-            .response_effects,
-        &f.native
-            .app
-            .state::<crate::app_state::AppOwners>()
-            .response_effects,
-    ));
+    assert_response_owner_identity(&f, &view);
     if case == 3 {
-        let release = view.gate();
-        let app = view.app.handle().clone();
-        let task = tokio::spawn(async move {
-            crate::commands::session::selection_executor::poll_response_close(&app).await;
-        });
-        tokio::time::timeout(Duration::from_secs(5), view.observer.entered.notified())
-            .await
-            .unwrap();
-        assert!(!task.is_finished());
-        assert_eq!(f.native.backend.kill_count(f.native.source), 0);
-        assert!(f
-            .native
-            .app
-            .state::<crate::app_state::AppOwners>()
-            .response_effects
-            .snapshot()
-            .unwrap()
-            .is_empty());
-        let logs = log.lock().unwrap().clone();
-        assert_eq!(logs.iter().filter(|l| *l == "completed").count(), 0);
-        assert!(!logs
-            .iter()
-            .any(|l| l.contains("outcome=coordinator_missing")));
-        release.send(()).unwrap();
-        tokio::time::timeout(Duration::from_secs(5), task)
-            .await
-            .unwrap()
-            .unwrap();
-        view.check(true, false, 1, 1);
+        assert_gated_response_poll(&f, &view, &log).await;
     } else if case == 5 {
-        let shutdown = crate::shutdown::ShutdownSignal::new();
-        shutdown.trigger();
-        let task = crate::commands::session::selection_executor::start_response_close_polling(
-            view.app.handle().clone(),
-            shutdown,
-        );
-        tokio::time::timeout(Duration::from_secs(5), task)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(log.lock().unwrap().is_empty());
-        assert_eq!(view.outcome.load(Ordering::Acquire), 0);
-        let shutdown = crate::shutdown::ShutdownSignal::new();
-        let release = view.gate();
-        *view.observer.started.lock().unwrap() = Some(Instant::now());
-        let task = crate::commands::session::selection_executor::start_response_close_polling(
-            view.app.handle().clone(),
-            shutdown.clone(),
-        );
-        tokio::time::timeout(Duration::from_secs(5), view.observer.entered.notified())
-            .await
-            .unwrap();
-        shutdown.trigger();
-        release.send(()).unwrap();
-        tokio::time::timeout(Duration::from_secs(5), task)
-            .await
-            .unwrap()
-            .unwrap();
-        view.check(true, false, 1, 1);
+        assert_shutdown_response_poll(&view, &log).await;
     } else {
         view.poll(false).await;
         view.check(
@@ -803,66 +740,156 @@ pub(crate) async fn response_close_case(case: u8) {
         );
     }
     if case == 1 || case == 2 {
-        assert!(log
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|l| l.contains("outcome=executor_missing")));
-        drop(view);
-        let direct = PollView::new(&f, log.clone(), true, false, coord);
-        direct.poll(true).await;
-        direct.check(true, coord, 0, 0);
-        assert!(log
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|l| l.contains("outcome=executor_missing")));
+        assert_unbound_response_poll(&f, view, &log, coord).await;
     } else {
         drop(view);
     }
     if case == 4 {
-        tokio::time::timeout(Duration::from_secs(20), f.retire())
-            .await
-            .unwrap();
-        let n = &f.native;
-        let status = n
-            .manager
-            .read()
-            .await
-            .get_session(n.source)
-            .await
-            .unwrap()
-            .status;
-        assert_eq!(status, crate::session::session::SessionStatus::Exited(0));
-        assert_eq!(n.backend.kill_count(n.source), 1);
-        assert!(crate::session::selection::response_close_registration(n.source).is_none());
-        assert!(n
-            .app
-            .state::<crate::app_state::AppOwners>()
-            .response_effects
-            .snapshot()
-            .unwrap()
-            .is_empty());
-        crate::commands::session::selection_executor::poll_response_close(n.app.handle()).await;
-        n.coordinator.snapshot().await.unwrap();
-        assert_eq!(n.backend.kill_count(n.source), 1);
-        let t = n.transaction();
-        let port = n.executor();
-        let LifecycleAdmission::Ready(lease) = port
-            .prepare(&t, Uuid::new_v4(), Some(f.sender), false, None)
-            .await
-            .unwrap()
-        else {
-            panic!("sender lease required")
-        };
-        assert!(port.has_claim(&lease));
-        let receipt = lease
-            .downcast_ref::<super::super::NativeLifecycleLease>()
-            .unwrap()
-            .release_receipt
-            .clone();
-        assert!(port.release(lease));
-        assert_eq!(receipt.load(Ordering::Acquire), 1);
+        assert_retired_response_poll(&f).await;
     }
     f.native.coordinator.close_and_join().await;
+}
+
+async fn assert_gated_response_poll(f: &ProtectedFixture, view: &PollView, log: &PollLog) {
+    let release = view.gate();
+    let app = view.app.handle().clone();
+    let task = tokio::spawn(async move {
+        crate::commands::session::selection_executor::poll_response_close(&app).await;
+    });
+    tokio::time::timeout(Duration::from_secs(5), view.observer.entered.notified())
+        .await
+        .unwrap();
+    assert!(!task.is_finished());
+    assert_eq!(f.native.backend.kill_count(f.native.source), 0);
+    assert!(f
+        .native
+        .app
+        .state::<crate::app_state::AppOwners>()
+        .response_effects
+        .snapshot()
+        .unwrap()
+        .is_empty());
+    let logs = log.lock().unwrap().clone();
+    assert_eq!(logs.iter().filter(|l| *l == "completed").count(), 0);
+    assert!(!logs
+        .iter()
+        .any(|l| l.contains("outcome=coordinator_missing")));
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    view.check(true, false, 1, 1);
+}
+
+async fn assert_shutdown_response_poll(view: &PollView, log: &PollLog) {
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    shutdown.trigger();
+    let task = crate::commands::session::selection_executor::start_response_close_polling(
+        view.app.handle().clone(),
+        shutdown,
+    );
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(log.lock().unwrap().is_empty());
+    assert_eq!(view.outcome.load(Ordering::Acquire), 0);
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    let release = view.gate();
+    *view.observer.started.lock().unwrap() = Some(Instant::now());
+    let task = crate::commands::session::selection_executor::start_response_close_polling(
+        view.app.handle().clone(),
+        shutdown.clone(),
+    );
+    tokio::time::timeout(Duration::from_secs(5), view.observer.entered.notified())
+        .await
+        .unwrap();
+    shutdown.trigger();
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    view.check(true, false, 1, 1);
+}
+
+async fn assert_retired_response_poll(f: &ProtectedFixture) {
+    tokio::time::timeout(Duration::from_secs(20), f.retire())
+        .await
+        .unwrap();
+    let n = &f.native;
+    let status = n
+        .manager
+        .read()
+        .await
+        .get_session(n.source)
+        .await
+        .unwrap()
+        .status;
+    assert_eq!(status, crate::session::session::SessionStatus::Exited(0));
+    assert_eq!(n.backend.kill_count(n.source), 1);
+    assert!(crate::session::selection::response_close_registration(n.source).is_none());
+    assert!(n
+        .app
+        .state::<crate::app_state::AppOwners>()
+        .response_effects
+        .snapshot()
+        .unwrap()
+        .is_empty());
+    crate::commands::session::selection_executor::poll_response_close(n.app.handle()).await;
+    n.coordinator.snapshot().await.unwrap();
+    assert_eq!(n.backend.kill_count(n.source), 1);
+    let t = n.transaction();
+    let port = n.executor();
+    let LifecycleAdmission::Ready(lease) = port
+        .prepare(&t, Uuid::new_v4(), Some(f.sender), false, None)
+        .await
+        .unwrap()
+    else {
+        panic!("sender lease required")
+    };
+    assert!(port.has_claim(&lease));
+    let receipt = lease
+        .downcast_ref::<super::super::NativeLifecycleLease>()
+        .unwrap()
+        .release_receipt
+        .clone();
+    assert!(port.release(lease));
+    assert_eq!(receipt.load(Ordering::Acquire), 1);
+}
+
+fn assert_response_owner_identity(f: &ProtectedFixture, view: &PollView) {
+    assert!(Arc::ptr_eq(
+        &view
+            .app
+            .state::<crate::app_state::AppOwners>()
+            .response_effects,
+        &f.native
+            .app
+            .state::<crate::app_state::AppOwners>()
+            .response_effects,
+    ));
+}
+
+async fn assert_unbound_response_poll(
+    f: &ProtectedFixture,
+    view: PollView,
+    log: &PollLog,
+    coord: bool,
+) {
+    assert!(log
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|l| l.contains("outcome=executor_missing")));
+    drop(view);
+    let direct = PollView::new(f, log.clone(), true, false, coord);
+    direct.poll(true).await;
+    direct.check(true, coord, 0, 0);
+    assert!(log
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|l| l.contains("outcome=executor_missing")));
 }

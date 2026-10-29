@@ -1,6 +1,8 @@
 use super::{ordinary_publish_result, PairTargetGuard, PreparedPairError};
 use std::path::Path;
 
+use crate::filesystem::local_config;
+
 /// #537 - OS error codes that mean the destination config.json was only
 /// briefly held by another handle (a concurrent in-process reader, a second
 /// AgentsCommander instance, or antivirus / the Windows Search Indexer) at the
@@ -87,7 +89,7 @@ pub(super) fn publish_temp_config_guarded(
         tmp_path,
         path,
         guard,
-        &mut || std::fs::rename(tmp_path, path),
+        &mut || local_config::rename_local_config_stage(tmp_path, path),
         &|duration| std::thread::sleep(duration),
     )
 }
@@ -246,9 +248,9 @@ pub(super) fn publish_temp_config_guarded(
     guard: &PairTargetGuard<'_>,
 ) -> Result<(), PreparedPairError> {
     guard.check()?;
-    if !path.exists() {
+    if !local_config::local_config_target_exists(path) {
         guard.check()?;
-        return std::fs::rename(tmp_path, path)
+        return local_config::rename_local_config_stage(tmp_path, path)
             .map_err(|e| {
                 format!(
                     "Failed to publish {} as {}: {}",
@@ -342,22 +344,7 @@ pub(super) fn replace_temp_config_once(
     path_wide: &[u16],
     tmp_wide: &[u16],
 ) -> Result<(), std::io::Error> {
-    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
-    let ok = unsafe {
-        ReplaceFileW(
-            path_wide.as_ptr(),
-            tmp_wide.as_ptr(),
-            std::ptr::null(),
-            REPLACEFILE_WRITE_THROUGH,
-            std::ptr::null(),
-            std::ptr::null(),
-        )
-    };
-    if ok != 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
+    local_config::replace_local_config_once(path_wide, tmp_wide)
 }
 
 #[cfg(test)]

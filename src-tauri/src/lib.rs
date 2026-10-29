@@ -5,6 +5,7 @@ pub mod capture;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub(crate) mod debug_logs;
 pub(crate) mod errors;
 pub(crate) mod events;
 pub(crate) mod filesystem;
@@ -21,6 +22,7 @@ pub mod resource_monitor;
 pub mod screenshot;
 pub mod session;
 pub mod shutdown;
+pub(crate) mod spec_board;
 pub mod telegram;
 pub mod test_support;
 pub mod testability;
@@ -39,7 +41,7 @@ mod startup;
 mod web_server;
 mod window;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use commands::ac_discovery::DiscoveryBranchWatcher;
@@ -295,17 +297,7 @@ impl MasterToken {
     }
 }
 
-/// (#617/#668) Sessions with a self context operation awaiting their sustained-idle
-/// window. Insert on queue; remove when the deferred task completes, the session
-/// dies, or the safety cap expires. A session_id already present means a repeat
-/// self operation is a no-op ("already_queued") - requests never stack.
-/// In-memory only: a daemon restart drops pending requests (accepted, best-effort).
-///
-/// Newtype is mandatory: `DetachedSessionsState` (lib.rs:38) is already a managed
-/// bare `Arc<Mutex<HashSet<Uuid>>>`, and Tauri keys managed state by Rust type, so
-/// a second bare alias would collide. Mirrors `RestoreInProgress`.
-#[derive(Default)]
-pub struct PendingSelfClear(pub Mutex<HashSet<uuid::Uuid>>);
+pub use session::maintenance::PendingSelfClear;
 
 /// (#1652) Pins the type of the closure `generate_handler!` produces. The
 /// macro's closure parameter is UNANNOTATED and rustc type-checks the body at
@@ -554,6 +546,67 @@ fn invoke_handler(
     move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
         observer.note_invoke(invoke.message.command());
         generated(invoke)
+    }
+}
+
+impl loops::scheduler::SchedulerHost for tauri::AppHandle {
+    fn spawn_background(
+        &self,
+        future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>,
+    ) {
+        drop(tauri::async_runtime::spawn(future));
+    }
+}
+
+impl<R: tauri::Runtime> loops::ipc_observer::IpcObserverHost for tauri::AppHandle<R> {
+    fn spawn_background(
+        &self,
+        future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>,
+    ) {
+        drop(tauri::async_runtime::spawn(future));
+    }
+}
+
+impl<R: tauri::Runtime> loops::non_stop_watchdog::WatchdogHost for tauri::AppHandle<R> {
+    fn settings_owner(&self) -> &SettingsState {
+        use tauri::Manager;
+        self.state::<SettingsState>().inner()
+    }
+
+    fn outbound_network(&self) -> &network::OutboundNetwork {
+        use tauri::Manager;
+        self.state::<network::OutboundNetwork>().inner()
+    }
+
+    fn spawn_background(
+        &self,
+        future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>,
+    ) {
+        drop(tauri::async_runtime::spawn(future));
+    }
+}
+
+impl web_server::ServerTask {
+    pub(crate) fn from_native(join: tauri::async_runtime::JoinHandle<()>) -> Self {
+        let abort = join.inner().abort_handle();
+        Self::new(
+            Box::pin(async move { join.await.map_err(|e| e.to_string()) }),
+            abort,
+        )
+    }
+}
+
+impl ApiServerTask {
+    pub fn new(
+        join: tauri::async_runtime::JoinHandle<()>,
+        shutdown: tokio_util::sync::CancellationToken,
+        bound_addr: std::net::SocketAddr,
+    ) -> Self {
+        Self::from_task(
+            web_server::ServerTask::from_native(join),
+            shutdown,
+            bound_addr,
+        )
     }
 }
 

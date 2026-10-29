@@ -1,4 +1,5 @@
 use super::super::validate_non_project_settings;
+use crate::filesystem::settings_file;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -510,7 +511,7 @@ pub(crate) fn read_disk_object_and_contents_for_write_typed(
     path: &Path,
     stage: SettingsSaveStage,
 ) -> Result<Option<(Map<String, Value>, String)>, SettingsSaveError> {
-    match std::fs::read_to_string(path) {
+    match settings_file::read_settings_text(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(source) => {
             let outward = format!(

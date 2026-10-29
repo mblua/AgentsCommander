@@ -3,6 +3,7 @@ use crate::errors::AppError;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
+use tauri::Manager;
 use tokio::sync::{mpsc, Semaphore};
 
 // §1453 D2: Display preserva byte a byte los strings historicos de app.log,
@@ -267,6 +268,7 @@ async fn spawn_server_on_listener_stops_for_generation_or_global_signal() {
         Router::new(),
         generation_token.clone(),
         generation_shutdown.clone(),
+        |future| ServerTask::from_native(tauri::async_runtime::spawn(future)),
     );
     generation_token.cancel();
     tokio::time::timeout(Duration::from_secs(1), generation_server)
@@ -285,6 +287,7 @@ async fn spawn_server_on_listener_stops_for_generation_or_global_signal() {
         Router::new(),
         independent_token.clone(),
         global_shutdown.clone(),
+        |future| ServerTask::from_native(tauri::async_runtime::spawn(future)),
     );
     global_shutdown.trigger();
     tokio::time::timeout(Duration::from_secs(1), global_server)
@@ -549,19 +552,20 @@ fn real_adapter_state() -> (tauri::App, commands::WsState) {
         None,
         None,
     )));
-    let state = commands::WsState {
+    let state = commands::WsState::new(
         session_mgr,
         pty_mgr,
         settings,
-        broadcaster: WsBroadcaster::new(),
-        app_handle: app.handle().clone(),
-    };
+        WsBroadcaster::new(),
+        app.handle().clone(),
+    );
     (app, state)
 }
 
 fn begin_test_generation(
     handle: &crate::WebServerHandle,
     state: &commands::WsState,
+    app: &tauri::AppHandle,
 ) -> crate::WebServerStartWaiter {
     crate::commands::config::begin_web_server_start(
         handle.clone(),
@@ -570,7 +574,7 @@ fn begin_test_generation(
         Arc::clone(&state.session_mgr),
         Arc::clone(&state.pty_mgr),
         state.broadcaster.clone(),
-        state.app_handle.clone(),
+        app.clone(),
         crate::shutdown::ShutdownSignal::new(),
     )
 }
@@ -650,7 +654,7 @@ async fn disabled_web_settings_allow_manual_start_with_registered_adapter() {
     assert_eq!(
         tokio::time::timeout(
             Duration::from_secs(1),
-            begin_test_generation(&handle, &state).wait()
+            begin_test_generation(&handle, &state, app.handle()).wait()
         )
         .await
         .unwrap(),
@@ -693,7 +697,7 @@ async fn missing_dispatcher_fails_before_settings_endpoint_or_bind_and_retry_suc
     assert_eq!(
         tokio::time::timeout(
             Duration::from_secs(1),
-            begin_test_generation(&handle, &state).wait()
+            begin_test_generation(&handle, &state, app.handle()).wait()
         )
         .await
         .expect("missing dispatcher blocked on settings"),
@@ -715,7 +719,7 @@ async fn missing_dispatcher_fails_before_settings_endpoint_or_bind_and_retry_suc
     assert_eq!(
         tokio::time::timeout(
             Duration::from_secs(1),
-            begin_test_generation(&handle, &state).wait()
+            begin_test_generation(&handle, &state, app.handle()).wait()
         )
         .await
         .unwrap(),

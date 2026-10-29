@@ -32,6 +32,11 @@ use crate::capture::key::{
 use crate::capture::record::{CapturedRecord, RecordOrigin};
 use crate::capture::sink::CaptureSlot;
 use crate::config::co_managed::{co_managed_dir, lock_path};
+use crate::filesystem::capture_state::{
+    canonical_capture_room, ensure_capture_directory, open_capture_lock, read_capture_state,
+    remove_capture_stage, replace_capture_state, try_capture_lock, write_capture_stage,
+    CaptureLockFile, CaptureTryLockError,
+};
 
 /// How old a precondition snapshot may be and still count as a revalidation.
 pub const STALE_PRECONDITIONS: Duration = Duration::from_millis(250);
@@ -373,12 +378,14 @@ type Rooms = HashMap<PathBuf, RoomState>;
 
 /// Lazy per-process capture state, explicitly shared by the composition root.
 pub struct CaptureState {
+    pub(crate) secret_rules: super::secrets::SecretRules,
     rooms: OnceLock<Mutex<Rooms>>,
 }
 #[allow(clippy::new_without_default)]
 impl CaptureState {
     pub fn new() -> Self {
         Self {
+            secret_rules: super::secrets::SecretRules::default(),
             rooms: OnceLock::new(),
         }
     }
@@ -393,7 +400,7 @@ fn rooms(capture: &CaptureState) -> MutexGuard<'_, Rooms> {
 }
 
 fn room_key(room_root: &Path) -> PathBuf {
-    std::fs::canonicalize(room_root).unwrap_or_else(|_| room_root.to_path_buf())
+    canonical_capture_room(room_root).unwrap_or_else(|_| room_root.to_path_buf())
 }
 
 fn state_path(room_root: &Path) -> PathBuf {
@@ -401,7 +408,7 @@ fn state_path(room_root: &Path) -> PathBuf {
 }
 
 fn read_persisted(room_root: &Path) -> PersistedRoomState {
-    let Ok(raw) = std::fs::read_to_string(state_path(room_root)) else {
+    let Ok(raw) = read_capture_state(&state_path(room_root)) else {
         return PersistedRoomState::default();
     };
     serde_json::from_str(&raw).unwrap_or_default()
@@ -603,7 +610,7 @@ pub fn recharge_in_memory(room_root: &Path, capture: &CaptureState) {
 /// A held advisory lock. The `File` IS the lock: dropping the guard closes the
 /// handle and releases the OS lock. The lock file is left on disk.
 struct RoomLock {
-    _file: std::fs::File,
+    _file: CaptureLockFile,
 }
 
 enum LockAttempt {
@@ -619,19 +626,13 @@ enum LockAttempt {
 /// path with its own budget rather than relaxing phase 2's.
 fn acquire_lock(room_root: &Path, budget: Duration) -> LockAttempt {
     let dir = co_managed_dir(room_root);
-    if let Err(e) = std::fs::create_dir_all(&dir) {
+    if let Err(e) = ensure_capture_directory(&dir) {
         return LockAttempt::Unavailable(format!("captureLockDirFailed: {}: {e}", dir.display()));
     }
     let path = lock_path(room_root);
     // Advisory token only: created if absent, never truncated, since a
     // concurrent holder may have it open.
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
-    {
+    let file = match open_capture_lock(&path) {
         Ok(file) => file,
         Err(e) => {
             return LockAttempt::Unavailable(format!(
@@ -643,16 +644,16 @@ fn acquire_lock(room_root: &Path, budget: Duration) -> LockAttempt {
 
     let started = Instant::now();
     loop {
-        match file.try_lock() {
+        match try_capture_lock(&file) {
             Ok(()) => return LockAttempt::Held(RoomLock { _file: file }),
-            Err(std::fs::TryLockError::WouldBlock) => {
+            Err(CaptureTryLockError::WouldBlock) => {
                 let elapsed = started.elapsed();
                 if elapsed >= budget {
                     return LockAttempt::Busy;
                 }
                 std::thread::sleep(LOCK_POLL_INTERVAL.min(budget - elapsed));
             }
-            Err(std::fs::TryLockError::Error(e)) => {
+            Err(CaptureTryLockError::Error(e)) => {
                 return LockAttempt::Unavailable(format!(
                     "captureLockFailed: {}: {e}",
                     path.display()
@@ -670,14 +671,14 @@ fn write_state_atomic(room_root: &Path, persisted: &PersistedRoomState) -> Resul
     bytes.push(b'\n');
 
     let tmp = dir.join(format!("{STATE_FILE_NAME}.{}.tmp", std::process::id()));
-    let written = std::fs::write(&tmp, &bytes)
+    let written = write_capture_stage(&tmp, &bytes)
         .map_err(|e| format!("captureStateTempWriteFailed: {}: {e}", tmp.display()));
     if let Err(e) = written {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = remove_capture_stage(&tmp);
         return Err(e);
     }
-    std::fs::rename(&tmp, &path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+    replace_capture_state(&tmp, &path).map_err(|e| {
+        let _ = remove_capture_stage(&tmp);
         format!("captureStatePublishFailed: {}: {e}", path.display())
     })
 }

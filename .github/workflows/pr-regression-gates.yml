@@ -1306,6 +1306,28 @@ jobs:
       # IS #2430: the stem rule must split `\` on every OS. The sentinel fails
       # on Linux if `command_token_basename` goes back to std::path::Path, and
       # the full suite runs only on the Windows leg, where it passes either way.
+      - name: "cargo test (IS #3318 Root identity on Linux)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 15
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          printf 'testedSha=%s GITHUB_SHA=%s run=%s attempt=%s PR-head=%s\n' \
+            "$(git rev-parse HEAD)" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$PR_HEAD_SHA"
+          EXPECTED=1
+          for FILTER in h2_literal_backslash_identity verify_directory_reason_rejects_symlinked_component h2_protection_resolved_alias; do
+            cargo test --locked --lib "$FILTER" -- --list 2>&1 | tee "test-3318-$FILTER-list.log"
+            grep -qE "::$FILTER: test$" "test-3318-$FILTER-list.log"
+            cargo test --locked --lib "$FILTER" -- --test-threads=1 2>&1 | tee "test-3318-$FILTER.log"
+            grep -qE "^test .*::$FILTER [.][.][.] ok$" "test-3318-$FILTER.log"
+            grep -qE "^test result: ok\\. ${EXPECTED} passed; 0 failed" "test-3318-$FILTER.log"
+            grep -qE '; 0 ignored;' "test-3318-$FILTER.log"
+          done
+          sha256sum test-3318-*.log
+          wc -c test-3318-*.log
+
       - name: "cargo test (IS #2430 cross-platform stem rule, focused)"
         working-directory: src-tauri
         shell: bash
@@ -1373,11 +1395,11 @@ jobs:
           set -euo pipefail
           FILTER=config::agent_command::tests
           # LINUX count: the Windows leg also compiles four cfg(windows) tests
-          # and reports 100. Update in the same commit that adds or removes a
+          # and reports 101. Update in the same commit that adds or removes a
           # test in that module. Since #3176 the module also holds the former
           # sibling modules derived_agent_id_home (3 tests) and
           # p02_schema_launch (1 test).
-          EXPECTED=96
+          EXPECTED=97
           cargo test --locked --lib "$FILTER" -- --nocapture 2>&1 | tee test-2431.log
           grep -qF 'env_precedence_is_platform_independent' test-2431.log || {
             echo "::error::the POSIX precedence sentinel never ran; the filter matched nothing or it was renamed."
@@ -2368,6 +2390,15 @@ jobs:
           name: cog-observed-macos
           path: ${{ runner.temp }}/cog-observed-macos.json
           if-no-files-found: warn
+
+      # Preparation compiles the harness; the next step executes its tests.
+      - name: "cargo test (IS #2079 library harness preparation on macOS)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib --no-run
 
       # IS #2079: compiling is not running. Without this step the macOS leg
       # never executes the screenshot module, so the CoreGraphics link proof

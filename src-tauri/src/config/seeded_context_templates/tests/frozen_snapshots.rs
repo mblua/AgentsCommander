@@ -58,7 +58,7 @@ fn issue_2832_every_exact_snapshot_migrates_despite_state_and_preserves_backup()
             cases += 1;
         }
     }
-    assert_eq!(cases, 40);
+    assert_eq!(cases, 48);
     println!("issue_2832 exact-snapshot/state cases: {cases}");
 }
 
@@ -96,7 +96,7 @@ fn issue_2832_custom_bytes_survive_absent_and_forged_state() {
             }
         }
     }
-    assert_eq!(cases, 176);
+    assert_eq!(cases, 208);
     println!("issue_2832 custom-byte/state cases: {cases}");
 }
 

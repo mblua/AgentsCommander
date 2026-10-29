@@ -32,6 +32,80 @@ pub(crate) fn response_effect_owners<R: tauri::Runtime>(
         .clone()
 }
 
+fn diagnostic_value<T: std::fmt::Display>(value: Option<T>) -> String {
+    value.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
+}
+
+pub(crate) fn log_discard_veto<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    permit: &crate::session::manager::CarrierMutationPermit,
+    id: Uuid,
+) {
+    use crate::config::sessions_persistence::{observe_discard_veto, DiscardVetoReason};
+    // This returns owned data and drops all lower locks before consulting owners.
+    let observations: Vec<crate::config::sessions_persistence::DiscardVetoObservation> =
+        observe_discard_veto(permit, id);
+    let owners = app
+        .try_state::<crate::app_state::AppOwners>()
+        .and_then(|state| state.response_effects.snapshot());
+    let tracker = app.try_state::<crate::pty::manager::ResponseCloseState>();
+    for observed in observations {
+        let mut owner_reason = "owner_unavailable";
+        let mut close_nonce = None;
+        let mut generation = None;
+        let mut recorded_terminal = None;
+        if observed.reason == DiscardVetoReason::ProtectionClosing {
+            let owner = owners.as_ref().and_then(|owners| {
+                owners.iter().find(|owner| {
+                    Some(owner.registration().member.session_id) == observed.protected_session
+                })
+            });
+            if let Some(owner) = owner {
+                let registration = owner.registration();
+                let binding = owner.ticket().committed_binding();
+                let carrier = &registration.carrier;
+                if binding.member == registration.member
+                    && observed.protected_session == Some(carrier.session_id)
+                    && observed.token == Some(binding.member.token)
+                    && observed.token == Some(carrier.token)
+                    && observed.target.as_ref() == Some(&binding.member.target)
+                    && observed.target.as_ref() == Some(&carrier.target)
+                    && observed.protection_nonce == Some(carrier.nonce)
+                    && tracker
+                        .as_ref()
+                        .is_some_and(|t| registration.tracker.same_state(t))
+                {
+                    close_nonce = Some(binding.close_nonce);
+                    generation = Some(binding.member.generation);
+                    recorded_terminal = owner.diagnostic_terminal();
+                    owner_reason = if recorded_terminal.is_some() {
+                        "observed"
+                    } else {
+                        "owner_record_unreadable"
+                    };
+                } else {
+                    owner_reason = "owner_identity_mismatch";
+                }
+            }
+        }
+        log::warn!(
+            target: "agentscommander_lib::response_close_diag",
+            "stage=discard_veto reason={} session={} protected_session={} target={} \
+             phase={} protection_nonce={} epoch={} version={} owner_reason={} \
+             close_nonce={} generation={} recorded_terminal={} owner_nonce={} \
+             previous={} replacement={}",
+            observed.reason.code(), observed.session,
+            diagnostic_value(observed.protected_session),
+            diagnostic_value(observed.target), diagnostic_value(observed.phase),
+            diagnostic_value(observed.protection_nonce),
+            diagnostic_value(observed.epoch), diagnostic_value(observed.version), owner_reason,
+            diagnostic_value(close_nonce), diagnostic_value(generation),
+            diagnostic_value(recorded_terminal), diagnostic_value(observed.owner_nonce),
+            diagnostic_value(observed.previous), diagnostic_value(observed.replacement)
+        );
+    }
+}
+
 pub(crate) async fn response_group_effect(
     owner: &Arc<ResponseEffectOwner>,
     monitor: &Arc<ResourceMonitorState>,
@@ -467,20 +541,114 @@ pub(crate) async fn run_response_close_auxiliary<R: tauri::Runtime>(
     let _ = owner.complete(events, Ok(()));
 }
 
+#[derive(Clone, Copy)]
+enum SettlementRejection {
+    OwnerNotTerminal,
+    RouteUnavailable,
+    AuthorityUnavailable,
+    NonlocalRoute,
+    MemberRowUnavailable,
+    CwdIdentityFailed,
+    LifecycleUnavailable,
+    GenerationMismatch,
+    SettlementClassificationRejected,
+    DetachedRegistryUnreadable,
+    DetachedMember,
+    ReplicaUnavailable,
+    PublicationStateUnavailable,
+    PublicationSuppressed,
+    ConfirmedCarrierRejected,
+    TrackerFinishRejected,
+    PostfinishCleanup,
+    #[cfg(test)]
+    TestForcedSettlement,
+}
+
+impl SettlementRejection {
+    fn code(self) -> &'static str {
+        match self {
+            Self::OwnerNotTerminal => "owner_not_terminal",
+            Self::RouteUnavailable => "route_unavailable",
+            Self::AuthorityUnavailable => "authority_unavailable",
+            Self::NonlocalRoute => "nonlocal_route",
+            Self::MemberRowUnavailable => "member_row_unavailable",
+            Self::CwdIdentityFailed => "cwd_identity_failed",
+            Self::LifecycleUnavailable => "lifecycle_unavailable",
+            Self::GenerationMismatch => "generation_mismatch",
+            Self::SettlementClassificationRejected => "settlement_classification_rejected",
+            Self::DetachedRegistryUnreadable => "detached_registry_unreadable",
+            Self::DetachedMember => "detached_member",
+            Self::ReplicaUnavailable => "replica_unavailable",
+            Self::PublicationStateUnavailable => "publication_state_unavailable",
+            Self::PublicationSuppressed => "publication_suppressed",
+            Self::ConfirmedCarrierRejected => "confirmed_carrier_rejected",
+            Self::TrackerFinishRejected => "tracker_finish_rejected",
+            Self::PostfinishCleanup => "postfinish_cleanup",
+            #[cfg(test)]
+            Self::TestForcedSettlement => "test_forced_settlement",
+        }
+    }
+}
+
 pub(crate) async fn settle_response_close<R: tauri::Runtime>(
     app: &AppHandle<R>,
     manager: &SessionManager,
     owner: &Arc<ResponseEffectOwner>,
 ) -> Option<ResponseCloseDisposition> {
+    match settle_response_close_result(app, manager, owner).await {
+        Ok(disposition) => Some(disposition),
+        Err(reason) => {
+            if !matches!(reason, SettlementRejection::PostfinishCleanup) {
+                let binding = owner.ticket().committed_binding();
+                log::warn!(
+                    target: "agentscommander_lib::response_close_diag",
+                    "stage=settlement reason={} session={} target={} \
+                     protection_nonce={} close_nonce={} generation={}",
+                    reason.code(), binding.member.session_id, binding.member.target,
+                    owner.registration().carrier.nonce,
+                    binding.close_nonce, binding.member.generation
+                );
+            }
+            None
+        }
+    }
+}
+
+fn log_postfinish_cleanup(
+    owner: &ResponseEffectOwner,
+    disposition: &ResponseCloseDisposition,
+    reason: &'static str,
+) {
+    let binding = owner.ticket().committed_binding();
+    log::warn!(
+        target: "agentscommander_lib::response_close_diag",
+        "stage=postfinish_cleanup settled=true disposition={:?} reason={} session={} \
+         close_nonce={} generation={}",
+        disposition, reason, binding.member.session_id,
+        binding.close_nonce, binding.member.generation
+    );
+}
+
+async fn settle_response_close_result<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    manager: &SessionManager,
+    owner: &Arc<ResponseEffectOwner>,
+) -> Result<ResponseCloseDisposition, SettlementRejection> {
     if !owner.terminal() {
-        return None;
+        return Err(SettlementRejection::OwnerNotTerminal);
+    }
+    #[cfg(test)]
+    if owner.forced_settlement_for_test() {
+        return Err(SettlementRejection::TestForcedSettlement);
     }
     let binding = owner.ticket().committed_binding();
     let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-    let route = PtyManager::snapshot_route_proof(&pty, binding.member.session_id).ok()?;
-    let authority = PtyManager::authority_route_proof(&pty, binding.member.session_id).ok()?;
+    let route = PtyManager::snapshot_route_proof(&pty, binding.member.session_id)
+        .map_err(|_| SettlementRejection::RouteUnavailable)?;
+    let authority = PtyManager::authority_route_proof(&pty, binding.member.session_id)
+        .map_err(|_| SettlementRejection::AuthorityUnavailable)?;
     if route.backend_kind() != SessionBackendKind::LocalProcess {
-        return None;
+        return Err(SettlementRejection::NonlocalRoute);
     }
     let tracker = app
         .state::<crate::pty::manager::ResponseCloseState>()
@@ -499,6 +667,7 @@ pub(crate) async fn settle_response_close<R: tauri::Runtime>(
     };
     use crate::session::manager::CarrierPhysicalIdentity;
     use crate::session::session::is_working;
+    let mut rejection = SettlementRejection::MemberRowUnavailable;
     let settled = manager
         .with_current_carrier_snapshot(&permit, |current| {
             let row = current.rows.iter().find(|row| {
@@ -507,11 +676,13 @@ pub(crate) async fn settle_response_close<R: tauri::Runtime>(
                     && row.backend_kind == SessionBackendKind::LocalProcess
                     && !current.pending_ids.contains(&row.id)
             })?;
+            rejection = SettlementRejection::CwdIdentityFailed;
             if !verify_directory(Path::new(&row.working_directory))
                 .is_ok_and(|actual| same_object(&actual, route.saved_cwd()))
             {
                 return None;
             }
+            rejection = SettlementRejection::LifecycleUnavailable;
             let _lifecycle = authority
                 .lock_verified(
                     SessionBackendKind::LocalProcess,
@@ -519,6 +690,7 @@ pub(crate) async fn settle_response_close<R: tauri::Runtime>(
                     route.saved_replica(),
                 )
                 .ok()?;
+            rejection = SettlementRejection::GenerationMismatch;
             if tracker.generation(row.id) != Some(binding.member.generation) {
                 return None;
             }
@@ -534,13 +706,19 @@ pub(crate) async fn settle_response_close<R: tauri::Runtime>(
                     *version >= binding.member.carrier_version && *version < u64::MAX
                 })
                 && owner.backend().context_session_liveness(row.id) == ContextSessionLiveness::Live;
+            rejection = SettlementRejection::SettlementClassificationRejected;
             if !dormant && !live {
                 return None;
             }
             let detached = app.state::<DetachedSessionsState>();
-            if dormant && detached.lock().ok()?.contains(&row.id) {
-                return None;
+            if dormant {
+                rejection = SettlementRejection::DetachedRegistryUnreadable;
+                if detached.lock().ok()?.contains(&row.id) {
+                    rejection = SettlementRejection::DetachedMember;
+                    return None;
+                }
             }
+            rejection = SettlementRejection::ReplicaUnavailable;
             let retired_replica = if dormant {
                 Some(CarrierPhysicalIdentity::from(
                     route.saved_replica()?.clone(),
@@ -549,8 +727,10 @@ pub(crate) async fn settle_response_close<R: tauri::Runtime>(
                 None
             };
             let carrier = &owner.registration().carrier;
+            rejection = SettlementRejection::PublicationStateUnavailable;
             try_with_agents_layer_publication_state(&carrier.directory, |suppressed| {
                 if suppressed {
+                    rejection = SettlementRejection::PublicationSuppressed;
                     return None;
                 }
                 let transition = if dormant {
@@ -562,7 +742,9 @@ pub(crate) async fn settle_response_close<R: tauri::Runtime>(
                 } else {
                     CarrierCheckpointTransition::FinishClosing
                 };
+                rejection = SettlementRejection::ConfirmedCarrierRejected;
                 with_confirmed_carrier(&permit, carrier, current, transition, |stamp| {
+                    rejection = SettlementRejection::TrackerFinishRejected;
                     let mut identity = binding.member.clone();
                     identity.carrier_version = stamp.version;
                     tracker.publish_manager_facts(
@@ -619,17 +801,23 @@ pub(crate) async fn settle_response_close<R: tauri::Runtime>(
     if let Some(disposition) = settled {
         response_effect_owners(app)
             .remove(binding.member.session_id)
-            .ok()?;
+            .map_err(|_| {
+                log_postfinish_cleanup(owner, &disposition, "owner_remove_unreadable");
+                SettlementRejection::PostfinishCleanup
+            })?;
         crate::session::selection::forget_response_close_registration(binding.member.session_id);
 
         if matches!(disposition, ResponseCloseDisposition::Dormant) {
             pty.lock()
-                .ok()?
+                .map_err(|_| {
+                    log_postfinish_cleanup(owner, &disposition, "pty_route_lock_unreadable");
+                    SettlementRejection::PostfinishCleanup
+                })?
                 .remove_route_if_kind(binding.member.session_id, binding.member.backend);
         }
-        return Some(disposition);
+        return Ok(disposition);
     }
-    None
+    Err(rejection)
 }
 
 pub(crate) async fn reconcile_response_closes<R: tauri::Runtime>(app: &AppHandle<R>) {

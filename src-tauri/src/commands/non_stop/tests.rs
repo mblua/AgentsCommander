@@ -64,3 +64,43 @@ async fn non_stop_report_emits_stop_for_each_recovered_path() {
     // One stop per recovered path, not a repeat.
     assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
 }
+
+#[cfg(any(windows, target_os = "linux"))]
+#[test]
+fn issue_3260_spawn_from_sync_thread() {
+    let app = crate::test_support::test_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build established Wry fixture without managed state");
+    let host = app.handle().clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        for capability in 0..3 {
+            let tx = tx.clone();
+            let future = Box::pin(async move { tx.send(capability).unwrap() });
+            match capability {
+                0 => crate::loops::ipc_observer::IpcObserverHost::spawn_background(&host, future),
+                1 => crate::loops::non_stop_watchdog::WatchdogHost::spawn_background(&host, future),
+                _ => crate::loops::scheduler::SchedulerHost::spawn_background(&host, future),
+            }
+        }
+        done_tx.send(()).unwrap();
+    });
+    let completed = done_rx.recv_timeout(Duration::from_secs(5));
+    assert!(!matches!(
+        completed,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    worker.join().expect("propagate synchronous caller panic");
+    completed.expect("synchronous caller completed");
+    let mut executed = Vec::new();
+    for _ in 0..3 {
+        executed.push(
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("future executed"),
+        );
+    }
+    executed.sort();
+    assert_eq!(executed, [0, 1, 2]);
+}

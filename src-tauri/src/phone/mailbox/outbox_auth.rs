@@ -291,6 +291,13 @@ impl MailboxPoller {
         let mut msg: OutboxMessage = serde_json::from_str(content)
             .map_err(|e| format!("Failed to parse outbox message: {}", e))?;
 
+        if let Some(raw) = msg.request_id.as_deref() {
+            let parsed = Uuid::parse_str(raw).map_err(|_| "invalid_request_id".to_string())?;
+            if raw != parsed.hyphenated().to_string() {
+                return Err("invalid_request_id".to_string());
+            }
+        }
+
         log::info!(
             "[mailbox] Processing message {} from='{}' to='{}' mode='{}'",
             msg.id,
@@ -621,7 +628,10 @@ impl MailboxPoller {
         // "can A reach B" team rules. Routing it through can_communicate would wrongly
         // reject valid callers in no shared team. close-session stays in the
         // post-routing action block because it IS a cross-agent operation.
-        if msg.action.as_deref() == Some(SELF_CLEAR_ACTION) {
+        if matches!(
+            msg.action.as_deref(),
+            Some(SELF_CLEAR_ACTION | super::PLAIN_SELF_CLEAR_ACTION)
+        ) {
             return Ok(std::ops::ControlFlow::Break(
                 self.handle_self_clear(app, path, msg, is_app_outbox).await,
             ));

@@ -68,27 +68,47 @@ pub(crate) fn get_identity_transition(
 }
 
 #[cfg(test)]
-thread_local! {
-    pub(super) static SOURCE_TRANSITION_UUIDS: std::cell::Cell<usize> =
-        const { std::cell::Cell::new(0) };
+pub(crate) type SourceDurableCutState = (Option<(&'static str, usize)>, Vec<&'static str>);
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct IdentityTransitionTestControls {
+    uuids: std::cell::Cell<usize>,
+    durable_cut: std::cell::RefCell<SourceDurableCutState>,
+    fence_effect_barrier: std::cell::RefCell<Option<std::sync::Arc<std::sync::Barrier>>>,
 }
 
 #[cfg(test)]
-pub(super) type SourceDurableCutState = (Option<(&'static str, usize)>, Vec<&'static str>);
+impl IdentityTransitionTestControls {
+    pub(crate) fn uuid_count(&self) -> usize {
+        self.uuids.get()
+    }
 
-#[cfg(test)]
-thread_local! {
-    pub(super) static SOURCE_DURABLE_CUT: std::cell::RefCell<SourceDurableCutState> =
-        const { std::cell::RefCell::new((None, Vec::new())) };
+    pub(crate) fn configure_durable_cut(&self, cut: Option<(&'static str, usize)>) {
+        *self.durable_cut.borrow_mut() = (cut, Vec::new());
+    }
+
+    pub(crate) fn durable_cut_state(&self) -> std::cell::Ref<'_, SourceDurableCutState> {
+        self.durable_cut.borrow()
+    }
+
+    pub(crate) fn set_fence_effect_barrier(&self, barrier: std::sync::Arc<std::sync::Barrier>) {
+        *self.fence_effect_barrier.borrow_mut() = Some(barrier);
+    }
+
+    fn take_fence_effect_barrier(&self) -> Option<std::sync::Arc<std::sync::Barrier>> {
+        self.fence_effect_barrier.borrow_mut().take()
+    }
 }
 
 /// Fail-only seam after real durability, outside every publisher/PAIR guard.
 fn source_durable_boundary(
     _stage: &'static str,
+    #[cfg(test)] controls: &IdentityTransitionTestControls,
 ) -> Result<(), crate::config::settings::SourceCoordinationError> {
     #[cfg(test)]
-    return SOURCE_DURABLE_CUT.with(|state| {
-        let mut state = state.borrow_mut();
+    return {
+        let mut state = controls.durable_cut.borrow_mut();
         state.1.push(_stage);
         if let Some((stage, ordinal)) = state.0 {
             if stage == _stage && state.1.iter().filter(|seen| **seen == stage).count() == ordinal {
@@ -99,38 +119,32 @@ fn source_durable_boundary(
             }
         }
         Ok(())
-    });
+    };
     #[cfg(not(test))]
     Ok(())
 }
 
-#[cfg(test)]
-pub(super) fn configure_source_durable_cut(cut: Option<(&'static str, usize)>) {
-    SOURCE_DURABLE_CUT.with(|state| *state.borrow_mut() = (cut, Vec::new()));
-}
-
-#[cfg(test)]
-thread_local! {
-    // Test-only pause outside validation: an external writer changes a real
-    // protected target between production's initial check and fence effect.
-    pub(super) static SOURCE_FENCE_EFFECT_BARRIER:
-        std::cell::RefCell<Option<std::sync::Arc<std::sync::Barrier>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-fn source_before_fence_boundary() -> Result<(), crate::config::settings::SourceCoordinationError> {
-    source_durable_boundary("beforeFence")?;
+fn source_before_fence_boundary(
+    #[cfg(test)] controls: &IdentityTransitionTestControls,
+) -> Result<(), crate::config::settings::SourceCoordinationError> {
+    source_durable_boundary(
+        "beforeFence",
+        #[cfg(test)]
+        controls,
+    )?;
     #[cfg(test)]
-    if let Some(barrier) = SOURCE_FENCE_EFFECT_BARRIER.with(|slot| slot.borrow_mut().take()) {
+    if let Some(barrier) = controls.take_fence_effect_barrier() {
         barrier.wait();
         barrier.wait();
     }
     Ok(())
 }
 
-pub(super) fn new_source_transition_id() -> String {
+pub(super) fn new_source_transition_id(
+    #[cfg(test)] controls: &IdentityTransitionTestControls,
+) -> String {
     #[cfg(test)]
-    SOURCE_TRANSITION_UUIDS.with(|count| count.set(count.get() + 1));
+    controls.uuids.set(controls.uuids.get() + 1);
     uuid::Uuid::new_v4().to_string()
 }
 
@@ -153,13 +167,31 @@ pub(crate) fn commit_source_candidate(
     request_id: &str,
     expected: &crate::config::settings::SourceRevision,
     candidate: &serde_json::Value,
-    reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+    #[cfg(not(test))] reload: &dyn Fn() -> Result<
+        (),
+        crate::config::settings::SourceCoordinationError,
+    >,
+    #[cfg(test)] reload_and_controls: (
+        &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+        &IdentityTransitionTestControls,
+    ),
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
+    #[cfg(test)]
+    let (reload, controls) = reload_and_controls;
     if !crate::config::settings::source_protocol_active() {
         return Err(SourceTransitionError::ActivationRequired);
     }
     commit_source_candidate_internal(
-        settings, context, source, request_id, expected, candidate, reload,
+        settings,
+        context,
+        source,
+        request_id,
+        expected,
+        candidate,
+        #[cfg(not(test))]
+        reload,
+        #[cfg(test)]
+        (reload, controls),
     )
 }
 
@@ -171,8 +203,17 @@ pub(super) fn commit_source_candidate_internal(
     request_id: &str,
     expected: &crate::config::settings::SourceRevision,
     candidate: &serde_json::Value,
-    reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+    #[cfg(not(test))] reload: &dyn Fn() -> Result<
+        (),
+        crate::config::settings::SourceCoordinationError,
+    >,
+    #[cfg(test)] reload_and_controls: (
+        &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+        &IdentityTransitionTestControls,
+    ),
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
+    #[cfg(test)]
+    let (reload, controls) = reload_and_controls;
     use crate::config::settings::{
         prepare_source_candidate_with_original_links, read_own_source_journal,
         read_source_snapshot, source_original_mappings, source_transition_digest,
@@ -245,7 +286,10 @@ pub(super) fn commit_source_candidate_internal(
     }
     capture.classify(classifications)?;
     prepared.revalidate_before_write(context)?;
-    let operation_id = new_source_transition_id();
+    let operation_id = new_source_transition_id(
+        #[cfg(test)]
+        controls,
+    );
     // settings alone constructs original authorization, mapping and binding.
     let authority = SourceInventoryProof::for_candidate(
         crate::config::settings::SourceInventoryInputs {
@@ -285,7 +329,11 @@ pub(super) fn commit_source_candidate_internal(
         Ok(())
     };
     let validate = || authority.validate(&identity, &lease, context);
-    source_durable_boundary("beforeIntent")?;
+    source_durable_boundary(
+        "beforeIntent",
+        #[cfg(test)]
+        controls,
+    )?;
     let intent = authority.stored_intent(&prepared, &operation_id, request_id, &payload_digest)?;
     let journal_publication = update_own_source_journal_with_validation(
         &identity,
@@ -320,10 +368,17 @@ pub(super) fn commit_source_candidate_internal(
         };
     }
     let continuation = (|| -> Result<IdentityTransitionRead, SourceTransitionError> {
-        source_durable_boundary("intentInventory")?;
+        source_durable_boundary(
+            "intentInventory",
+            #[cfg(test)]
+            controls,
+        )?;
         rediscover()?;
         authority.verify_affected_before_fence()?;
-        source_before_fence_boundary()?;
+        source_before_fence_boundary(
+            #[cfg(test)]
+            controls,
+        )?;
         validate()?;
         authority.verify_affected_before_fence()?;
         drive_identity_transition(
@@ -333,7 +388,10 @@ pub(super) fn commit_source_candidate_internal(
             &operation_id,
             &authority,
             &rediscover,
+            #[cfg(not(test))]
             reload,
+            #[cfg(test)]
+            (reload, controls),
         )
     })();
     continuation.map_err(|error| SourceTransitionError::Interrupted {
@@ -354,11 +412,21 @@ pub(crate) fn resume_identity_transition(
     operation_id: &str,
     expected: &SourceResumeExpectation,
     reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+    #[cfg(test)] controls: &IdentityTransitionTestControls,
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
     if !crate::config::settings::source_protocol_active() {
         return Err(SourceTransitionError::ActivationRequired);
     }
-    resume_identity_transition_internal(settings, context, source, operation_id, expected, reload)
+    resume_identity_transition_internal(
+        settings,
+        context,
+        source,
+        operation_id,
+        expected,
+        reload,
+        #[cfg(test)]
+        controls,
+    )
 }
 
 #[allow(dead_code)]
@@ -369,6 +437,7 @@ pub(super) fn resume_identity_transition_internal(
     operation_id: &str,
     expected: &SourceResumeExpectation,
     reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+    #[cfg(test)] controls: &IdentityTransitionTestControls,
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
     use crate::config::settings::{
         read_own_source_journal, IdentityReferenceError, IdentityWriteLease,
@@ -423,7 +492,10 @@ pub(super) fn resume_identity_transition_internal(
         operation_id,
         &authority,
         &rediscover,
+        #[cfg(not(test))]
         reload,
+        #[cfg(test)]
+        (reload, controls),
     )
     .map_err(|error| SourceTransitionError::Interrupted {
         operation_id: operation_id.into(),
@@ -481,8 +553,17 @@ pub(super) fn drive_identity_transition(
     operation_id: &str,
     authority: &crate::config::settings::SourceInventoryProof,
     rediscover: &dyn Fn() -> Result<(), SourceTransitionError>,
-    reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+    #[cfg(not(test))] reload: &dyn Fn() -> Result<
+        (),
+        crate::config::settings::SourceCoordinationError,
+    >,
+    #[cfg(test)] reload_and_controls: (
+        &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+        &IdentityTransitionTestControls,
+    ),
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
+    #[cfg(test)]
+    let (reload, controls) = reload_and_controls;
     use crate::config::coding_agent_profiles::{
         apply_identity_reference_patch, prepare_identity_reference_patch,
     };
@@ -556,7 +637,10 @@ pub(super) fn drive_identity_transition(
         return Err(SourceCoordinationError::Stale.into());
     }
     if !progress.packets_prepared {
-        source_before_fence_boundary()?;
+        source_before_fence_boundary(
+            #[cfg(test)]
+            controls,
+        )?;
         authority.verify_affected_before_fence()?;
         let mappings_digest = source_transition_digest(&inventory.mappings)?;
         for target in &inventory.targets {
@@ -588,7 +672,11 @@ pub(super) fn drive_identity_transition(
                     &validate,
                 )?,
             };
-            source_durable_boundary("packet")?;
+            source_durable_boundary(
+                "packet",
+                #[cfg(test)]
+                controls,
+            )?;
             let hashes = packet.protected_revision_digests()?;
             let record = SourcePacketRecord {
                 target: target.decisions.clone(),
@@ -610,11 +698,19 @@ pub(super) fn drive_identity_transition(
                 progress = persist(progress)?;
             }
         }
-        source_durable_boundary("allPackets")?;
+        source_durable_boundary(
+            "allPackets",
+            #[cfg(test)]
+            controls,
+        )?;
         progress.packets_prepared = true;
         progress = persist(progress)?;
     }
-    source_durable_boundary("prepared")?;
+    source_durable_boundary(
+        "prepared",
+        #[cfg(test)]
+        controls,
+    )?;
     // Verify every ORIGINAL packet before recognizing/publishing source.
     if progress.receipt.is_none() {
         let mappings_digest = source_transition_digest(&inventory.mappings)?;
@@ -661,7 +757,11 @@ pub(super) fn drive_identity_transition(
             .get(operation_id)
             .ok_or(SourceCoordinationError::Invalid)?
             .clone();
-        source_durable_boundary("sourceAfter")?;
+        source_durable_boundary(
+            "sourceAfter",
+            #[cfg(test)]
+            controls,
+        )?;
         validate()?;
         if lease.source_revision()? != after {
             return Err(SourceCoordinationError::Stale.into());
@@ -669,7 +769,11 @@ pub(super) fn drive_identity_transition(
         progress.source_published = true;
         progress = persist(progress)?;
     }
-    source_durable_boundary("sourcePublished")?;
+    source_durable_boundary(
+        "sourcePublished",
+        #[cfg(test)]
+        controls,
+    )?;
     rediscover()?;
     for row in &progress.packets {
         let target = inventory
@@ -689,13 +793,21 @@ pub(super) fn drive_identity_transition(
                 &validate,
             )?;
         }
-        source_durable_boundary("ref")?;
+        source_durable_boundary(
+            "ref",
+            #[cfg(test)]
+            controls,
+        )?;
     }
     if !progress.refs_verified {
         progress.refs_verified = true;
         progress = persist(progress)?;
     }
-    source_durable_boundary("refsVerified")?;
+    source_durable_boundary(
+        "refsVerified",
+        #[cfg(test)]
+        controls,
+    )?;
     validate()?;
     reload()?;
     validate()?;
@@ -703,7 +815,11 @@ pub(super) fn drive_identity_transition(
         progress.reloaded = true;
         progress = persist(progress)?;
     }
-    source_durable_boundary("reloaded")?;
+    source_durable_boundary(
+        "reloaded",
+        #[cfg(test)]
+        controls,
+    )?;
     rediscover()?;
     if lease.source_revision()? != after {
         return Err(SourceCoordinationError::Stale.into());
@@ -724,7 +840,11 @@ pub(super) fn drive_identity_transition(
         });
         progress = persist(progress)?;
     }
-    source_durable_boundary("receipt")?;
+    source_durable_boundary(
+        "receipt",
+        #[cfg(test)]
+        controls,
+    )?;
     for row in &progress.packets {
         rediscover()?;
         let target = inventory
@@ -741,7 +861,11 @@ pub(super) fn drive_identity_transition(
             &proof,
             &validate,
         )?;
-        source_durable_boundary("release")?;
+        source_durable_boundary(
+            "release",
+            #[cfg(test)]
+            controls,
+        )?;
     }
     Ok(get_identity_transition(
         context,

@@ -136,6 +136,11 @@ fn self_restart_help_documents_scope_recipe_and_no_enter_caveat() {
         .clone();
     let raw = subcommand.render_long_help().to_string();
     let help = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(normalized.contains("following the self-handoff skill"));
+    assert!(normalized.contains("If SELF-HANDOFF.md is missing"));
+    assert!(!normalized.contains("who you are"));
+    assert!(!normalized.contains("ZERO memory"));
 
     assert!(help.contains("SELF-HANDOFF.md"), "{raw}");
     assert!(
@@ -186,9 +191,8 @@ fn self_restart_queued_status_is_honest_about_the_recipe_and_the_selection() {
 
 /// The Root Agent's self-handoff-and-restart must send as the reserved
 /// `ROOT_AGENT_SENDER`, NOT the path-derived FQN. Asserted from THIS module so a future
-/// divergence on the restart path surfaces here. `is_root_agent_path` recognizes the
-/// canonical `root_agent_dir()` by string equality even when the directory is absent, so
-/// no filesystem setup is needed.
+/// divergence on the restart path surfaces here. The canonical Root directory must
+/// exist so its identity can be verified.
 ///
 /// T18 alone is NOT sufficient for the Root Agent scope: it asserts the helper in
 /// isolation and nothing in it proves the restart path calls it. T26 below closes the
@@ -197,6 +201,7 @@ fn self_restart_queued_status_is_honest_about_the_recipe_and_the_selection() {
 #[test]
 fn self_restart_sender_for_root_agent_uses_reserved_constant() {
     let root = crate::config::root_agent::root_agent_dir().expect("resolve root agent dir");
+    std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
     assert_eq!(
         crate::cli::self_clear::resolve_self_clear_sender(&root),
         crate::config::root_agent::ROOT_AGENT_SENDER,
@@ -210,6 +215,7 @@ fn self_restart_sender_for_root_agent_uses_reserved_constant() {
 #[test]
 fn build_self_restart_outbox_message_stamps_canonical_root_sender() {
     let root = crate::config::root_agent::root_agent_dir().expect("resolve root agent dir");
+    std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
     let root_msg =
         build_self_restart_outbox_message(&root, Some("tok".into()), "m".into(), "r".into());
     assert_eq!(

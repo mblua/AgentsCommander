@@ -1,4 +1,5 @@
 use super::replica_profile::ReplicaProfileRead;
+use crate::filesystem::coding_agent_profiles::read_selection_default_bytes;
 
 use crate::config::settings::{normalize_profile_letter, ConfigurationRef};
 use serde_json::Value;
@@ -489,7 +490,7 @@ pub fn read_replica_selection_default(
     matrix_dir: &Path,
 ) -> Result<Option<ReplicaSelectionDefault>, String> {
     let config_path = matrix_dir.join("config.json");
-    let bytes = match std::fs::read(&config_path) {
+    let bytes = match read_selection_default_bytes(&config_path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {

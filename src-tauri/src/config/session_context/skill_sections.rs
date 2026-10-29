@@ -18,7 +18,7 @@ pub(crate) fn resolve_project_skill_root(
     if root_context_candidate(owner) || !is_canonical_agent_matrix_dir(owner) {
         return None;
     }
-    let matrix = std::fs::canonicalize(owner).ok()?;
+    let matrix = crate::filesystem::context_skills::canonical_skill_source(owner).ok()?;
     let ac_root = matrix.parent()?;
     super::super::ac_root::ensure_authoritative_ac_root(ac_root).ok()?;
     Some(ac_root.to_path_buf())
@@ -66,7 +66,8 @@ pub(crate) fn accept_skill_team(root: &Path) -> bool {
         return false;
     };
     let inspect = |path: &Path, directory: bool| -> Result<(), String> {
-        let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        let metadata = crate::filesystem::context_skills::inspect_skill_source(path)
+            .map_err(|e| e.to_string())?;
         let linked = metadata.file_type().is_symlink();
         #[cfg(windows)]
         let linked = {
@@ -110,7 +111,7 @@ pub(crate) fn replica_skill_team(agent_root: &str) -> Option<&str> {
 }
 
 pub(crate) fn canonical_skill_member(path: &Path, matrix: &Path) -> bool {
-    let canonical = match std::fs::canonicalize(path) {
+    let canonical = match crate::filesystem::context_skills::canonical_skill_source(path) {
         Ok(path) => crate::path_utils::normalize_windows_verbatim_path_buf(&path),
         Err(error) => {
             log::warn!(
@@ -135,7 +136,9 @@ pub(crate) fn team_skills_for_session(agent_root: &str, matrix_root: Option<&str
     let Some(ac_root) = resolve_project_skill_root(agent_root, matrix_root) else {
         return String::new();
     };
-    let matrix = match std::fs::canonicalize(matrix_root.unwrap_or(agent_root)) {
+    let matrix = match crate::filesystem::context_skills::canonical_skill_source(
+        matrix_root.unwrap_or(agent_root),
+    ) {
         Ok(path) => crate::path_utils::normalize_windows_verbatim_path_buf(&path),
         Err(error) => {
             log::warn!("[team-skills] matrix canonicalization failed: {}", error);

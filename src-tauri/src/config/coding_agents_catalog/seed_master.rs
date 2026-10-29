@@ -4,11 +4,12 @@ use std::sync::atomic::Ordering;
 use serde::Serialize;
 
 use crate::config::seed_manifest::ManifestActivationToken;
+use crate::filesystem::{catalog, config_seed};
 
 use super::{
     acquire_catalog_lock, active_builtin_agent_support, catalog_dir,
     ensure_seeded_for_project_with_token, is_supported_builtin, publish_replace, CatalogPaths,
-    RESEED_LOCK, SEED_TEMP_COUNTER,
+    CatalogReseedState, SEED_TEMP_COUNTER,
 };
 
 // ---------------------------------------------------------------------------
@@ -163,10 +164,11 @@ pub(crate) fn write_embedded_files_into(
             path.push(seg);
         }
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
+            config_seed::ensure_seed_directory(parent)
                 .map_err(|e| format!("create {}: {e}", parent.display()))?;
         }
-        std::fs::write(&path, f.bytes).map_err(|e| format!("write {}: {e}", path.display()))?;
+        config_seed::write_seed_file(&path, f.bytes)
+            .map_err(|e| format!("write {}: {e}", path.display()))?;
     }
     Ok(())
 }
@@ -196,7 +198,7 @@ pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
     }
     for master in supported_embedded_masters() {
         let dir = master_dir_for_dest(ac_dir, master.dest);
-        match std::fs::symlink_metadata(&dir) {
+        match config_seed::inspect_seed_destination(&dir) {
             Ok(_) => continue, // present (any form) -> user-owned, leave alone
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
@@ -213,7 +215,7 @@ pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
         let mut copied_from_legacy = false;
         if let Some(legacy) = legacy_catalog_dir {
             let legacy_master = legacy.join(SEED_MASTERS_DIR_NAME).join(master.dest);
-            match std::fs::symlink_metadata(&legacy_master) {
+            match config_seed::inspect_seed_destination(&legacy_master) {
                 Ok(meta) if meta.is_dir() => {
                     match crate::config::config_seed::copy_tree(
                         &legacy_master,
@@ -236,7 +238,7 @@ pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
                         Err(e) => {
                             // A partial copy must never win over the embedded
                             // default; the legacy tree itself is never touched.
-                            let _ = std::fs::remove_dir_all(&dir);
+                            let _ = config_seed::remove_seed_scratch(&dir);
                             log::warn!(
                                 "[coding-agents] failed to copy legacy master {} ({e}); falling \
                                     back to the embedded default",
@@ -254,7 +256,7 @@ pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
 
         let sfx = unique_suffix();
         let staging = staging_sibling(&dir, "seedtmp", &sfx);
-        let _ = std::fs::remove_dir_all(&staging);
+        let _ = config_seed::remove_seed_scratch(&staging);
         let result = write_embedded_files_into(&staging, master)
             .and_then(|()| rename_into_place(&staging, &dir));
         match result {
@@ -263,7 +265,7 @@ pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
                 dir.display()
             ),
             Err(e) => {
-                let _ = std::fs::remove_dir_all(&staging);
+                let _ = config_seed::remove_seed_scratch(&staging);
                 log::warn!(
                     "[coding-agents] failed to seed master {} ({e})",
                     dir.display()
@@ -280,7 +282,7 @@ pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
 /// optimization.
 pub(crate) fn all_masters_present(ac_dir: &Path) -> bool {
     supported_embedded_masters()
-        .all(|m| std::fs::symlink_metadata(master_dir_for_dest(ac_dir, m.dest)).is_ok())
+        .all(|m| config_seed::inspect_seed_destination(master_dir_for_dest(ac_dir, m.dest)).is_ok())
 }
 
 /// Seed the catalog + masters for one registered project root, then record the
@@ -303,24 +305,7 @@ pub(crate) fn ensure_seeded_for_project(project_root: &Path) {
 }
 
 pub(crate) fn tree_byte_count(dir: &Path) -> u64 {
-    fn walk(dir: &Path, total: &mut u64) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let Ok(meta) = entry.metadata() else {
-                continue;
-            };
-            if meta.is_dir() {
-                walk(&entry.path(), total);
-            } else if meta.is_file() {
-                *total = total.saturating_add(meta.len());
-            }
-        }
-    }
-    let mut total = 0_u64;
-    walk(dir, &mut total);
-    total
+    catalog::tree_byte_count(dir)
 }
 
 /// Re-seed the master for `command` back to AC's embedded default (the Settings
@@ -329,7 +314,11 @@ pub(crate) fn tree_byte_count(dir: &Path) -> u64 {
 /// `agent` cannot false-match). On success: a timestamped `.bak` of the current
 /// master is made FIRST, then a trash-first atomic swap installs the embedded
 /// default. On failure the prior master is restored; never a partial state.
-pub fn reseed_master_for_command(ac_dir: &Path, command: &str) -> Result<ReseedResult, String> {
+pub fn reseed_master_for_command(
+    owner: &CatalogReseedState,
+    ac_dir: &Path,
+    command: &str,
+) -> Result<ReseedResult, String> {
     let basename = command_executable_basename(command)
         .ok_or_else(|| format!("'{command}' is not a valid coding-agent command"))?;
     let master = embedded_master_for_command_basename(&basename).ok_or_else(|| {
@@ -337,53 +326,51 @@ pub fn reseed_master_for_command(ac_dir: &Path, command: &str) -> Result<ReseedR
     })?;
     let dir = master_dir_for_dest(ac_dir, master.dest);
 
-    let _guard = RESEED_LOCK
-        .lock()
-        .map_err(|_| "re-seed lock poisoned".to_string())?;
+    owner.with_reseed(|| {
+        // 1. `.bak` the current master (verbatim), BEFORE any swap.
+        let backup_path = if catalog::catalog_path_exists(&dir) {
+            Some(backup_master_dir(&dir)?)
+        } else {
+            None
+        };
 
-    // 1. `.bak` the current master (verbatim), BEFORE any swap.
-    let backup_path = if dir.exists() {
-        Some(backup_master_dir(&dir)?)
-    } else {
-        None
-    };
+        // 2. Trash-first atomic swap of the embedded default into the master.
+        let sfx = unique_suffix();
+        let staging = staging_sibling(&dir, "reseedtmp", &sfx);
+        let trash = staging_sibling(&dir, "reseedold", &sfx);
+        let _ = config_seed::remove_seed_scratch(&staging);
+        let _ = config_seed::remove_seed_scratch(&trash);
 
-    // 2. Trash-first atomic swap of the embedded default into the master.
-    let sfx = unique_suffix();
-    let staging = staging_sibling(&dir, "reseedtmp", &sfx);
-    let trash = staging_sibling(&dir, "reseedold", &sfx);
-    let _ = std::fs::remove_dir_all(&staging);
-    let _ = std::fs::remove_dir_all(&trash);
+        write_embedded_files_into(&staging, master)?;
 
-    write_embedded_files_into(&staging, master)?;
-
-    if dir.exists() {
-        if let Err(e) = std::fs::rename(&dir, &trash) {
-            let _ = std::fs::remove_dir_all(&staging);
+        if catalog::catalog_path_exists(&dir) {
+            if let Err(e) = config_seed::rename_seed_tree(&dir, &trash) {
+                let _ = config_seed::remove_seed_scratch(&staging);
+                return Err(format!(
+                    "master {} is in use ({e}); re-seed aborted, master unchanged",
+                    dir.display()
+                ));
+            }
+        }
+        if let Err(e) = config_seed::rename_seed_tree(&staging, &dir) {
+            // Restore the prior master so we never leave a hole.
+            if !catalog::catalog_path_exists(&dir) && catalog::catalog_path_exists(&trash) {
+                let _ = config_seed::rename_seed_tree(&trash, &dir);
+            }
+            let _ = config_seed::remove_seed_scratch(&staging);
             return Err(format!(
-                "master {} is in use ({e}); re-seed aborted, master unchanged",
+                "failed to install re-seeded master {} ({e}); prior config restored",
                 dir.display()
             ));
         }
-    }
-    if let Err(e) = std::fs::rename(&staging, &dir) {
-        // Restore the prior master so we never leave a hole.
-        if !dir.exists() && trash.exists() {
-            let _ = std::fs::rename(&trash, &dir);
-        }
-        let _ = std::fs::remove_dir_all(&staging);
-        return Err(format!(
-            "failed to install re-seeded master {} ({e}); prior config restored",
-            dir.display()
-        ));
-    }
-    let _ = std::fs::remove_dir_all(&trash);
+        let _ = config_seed::remove_seed_scratch(&trash);
 
-    Ok(ReseedResult {
-        dest: master.dest.to_string(),
-        backup_path: backup_path
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default(),
+        Ok(ReseedResult {
+            dest: master.dest.to_string(),
+            backup_path: backup_path
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+        })
     })
 }
 
@@ -405,7 +392,7 @@ pub(crate) fn backup_master_dir(dir: &Path) -> Result<PathBuf, String> {
             n => format!("{name}.bak-{ts}.{n}"),
         };
         let bak = parent.join(&bak_name);
-        if bak.exists() {
+        if catalog::catalog_path_exists(&bak) {
             continue;
         }
         crate::config::config_seed::copy_tree(dir, &bak, 0, None, false)
@@ -435,7 +422,8 @@ pub(crate) fn staging_sibling(dir: &Path, tag: &str, sfx: &str) -> PathBuf {
 /// Publish a staged dir into `dest` (dest expected absent). Cleans staging on
 /// failure. `std::fs::rename` is first-writer-wins if `dest` appeared concurrently.
 pub(crate) fn rename_into_place(staging: &Path, dest: &Path) -> Result<(), String> {
-    std::fs::rename(staging, dest).map_err(|e| format!("install {} ({e})", dest.display()))
+    config_seed::rename_seed_tree(staging, dest)
+        .map_err(|e| format!("install {} ({e})", dest.display()))
 }
 
 // E2432: narrow physical IO, no catalog initialization, migration or refresh.

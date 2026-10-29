@@ -13,7 +13,12 @@ use crate::config::ac_root::existing_ac_root;
 use crate::config::coding_agent_profiles::{
     read_replica_current_coding_agent, read_replica_profile_result,
 };
+use crate::config::entity_creation::teams::read_discovery_team_config;
 use crate::config::settings::SettingsState;
+use crate::filesystem::ac_discovery::{
+    canonical_discovery_repo, discovery_directory_entries, discovery_path_is_dir,
+    discovery_role_exists,
+};
 use crate::session::manager::SessionManager;
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -138,14 +143,14 @@ pub(crate) async fn discover_project_inner(
     let mut workgroups: Vec<AcWorkgroup> = Vec::new();
     let mut loops = crate::config::loops::discover_loops_in_project(base);
 
-    let entries = match std::fs::read_dir(&ac_root) {
+    let entries = match discovery_directory_entries(&ac_root) {
         Ok(e) => e,
         Err(e) => return Err(format!("Failed to read Project AC Root directory: {}", e)),
     };
 
     for entry in entries.flatten() {
         let entry_path = entry.path();
-        if !entry_path.is_dir() {
+        if !discovery_path_is_dir(&entry_path) {
             continue;
         }
 
@@ -157,7 +162,7 @@ pub(crate) async fn discover_project_inner(
         // Agent matrices: _agent_*
         if dir_name.starts_with("_agent_") {
             let display_name = agent_display_name(&project_folder, &dir_name);
-            let role_exists = entry_path.join("Role.md").exists();
+            let role_exists = discovery_role_exists(&entry_path.join("Role.md"));
 
             let preferred_agent_id = read_preferred_agent_id(&entry_path, &cfg);
 
@@ -173,22 +178,22 @@ pub(crate) async fn discover_project_inner(
         if crate::config::entity_prefix::has_entity_prefix(&dir_name) {
             let (task, task_title) = read_task_fields(&entry_path);
 
-            let repo_path = std::fs::read_dir(&entry_path)
+            let repo_path = discovery_directory_entries(&entry_path)
                 .ok()
                 .and_then(|entries| {
                     entries.flatten().find(|e| {
                         let n = e.file_name();
                         let name = n.to_string_lossy();
-                        name.starts_with("repo-") && e.path().is_dir()
+                        name.starts_with("repo-") && discovery_path_is_dir(&e.path())
                     })
                 })
                 .map(|e| projected_path_string(&e.path()));
 
             let mut wg_agents: Vec<AcAgentReplica> = Vec::new();
-            if let Ok(wg_entries) = std::fs::read_dir(&entry_path) {
+            if let Ok(wg_entries) = discovery_directory_entries(&entry_path) {
                 for wg_entry in wg_entries.flatten() {
                     let wg_path = wg_entry.path();
-                    if !wg_path.is_dir() {
+                    if !discovery_path_is_dir(&wg_path) {
                         continue;
                     }
                     let wg_dir_name = match wg_path.file_name().and_then(|n| n.to_str()) {
@@ -232,7 +237,7 @@ pub(crate) async fn discover_project_inner(
                             .filter_map(|r| r.as_str())
                             .filter_map(|rel| {
                                 let resolved = wg_path.join(rel);
-                                std::fs::canonicalize(&resolved)
+                                canonical_discovery_repo(&resolved)
                                     .ok()
                                     .map(|p| projected_path_string(&p))
                             })
@@ -338,31 +343,28 @@ pub(crate) async fn discover_project_inner(
                 .unwrap_or(&dir_name)
                 .to_string();
 
-            let config_path = entry_path.join("config.json");
-            if let Ok(content) = std::fs::read_to_string(&config_path) {
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
-                    let team_agents = parsed
-                        .get("agents")
-                        .and_then(|a| a.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str())
-                                .map(|r| resolve_agent_ref(&project_folder, r))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
+            if let Some(parsed) = read_discovery_team_config(&entry_path) {
+                let team_agents = parsed
+                    .get("agents")
+                    .and_then(|a| a.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(|r| resolve_agent_ref(&project_folder, r))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
 
-                    let coordinator = parsed
-                        .get("coordinator")
-                        .and_then(|c| c.as_str())
-                        .map(|r| resolve_agent_ref(&project_folder, r));
+                let coordinator = parsed
+                    .get("coordinator")
+                    .and_then(|c| c.as_str())
+                    .map(|r| resolve_agent_ref(&project_folder, r));
 
-                    teams.push(AcTeam {
-                        name: team_name,
-                        agents: team_agents,
-                        coordinator,
-                    });
-                }
+                teams.push(AcTeam {
+                    name: team_name,
+                    agents: team_agents,
+                    coordinator,
+                });
             }
         }
     }

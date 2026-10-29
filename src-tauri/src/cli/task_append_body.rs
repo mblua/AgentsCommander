@@ -8,6 +8,7 @@
 //! issue is recommended to bind tokens to issued sessions, closing the hole
 //! for all CLI verbs simultaneously.
 
+use crate::filesystem::{directories, documents};
 use clap::Args;
 use std::path::Path;
 
@@ -83,7 +84,7 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
         if let Some(ref token_str) = args.token {
             crate::config::config_dir()
                 .map(|d| d.join("master-token.txt"))
-                .and_then(|p| std::fs::read_to_string(&p).ok())
+                .and_then(|p| documents::read_cli_outbox_text(&p).ok())
                 .map(|m| m.trim() == token_str)
                 .unwrap_or(false)
         } else {
@@ -226,7 +227,7 @@ pub fn execute_set_body(args: TaskSetBodyArgs) -> i32 {
         if let Some(ref token_str) = args.token {
             crate::config::config_dir()
                 .map(|d| d.join("master-token.txt"))
-                .and_then(|p| std::fs::read_to_string(&p).ok())
+                .and_then(|p| documents::read_cli_outbox_text(&p).ok())
                 .map(|m| m.trim() == token_str)
                 .unwrap_or(false)
         } else {
@@ -375,9 +376,9 @@ fn task_authorization(token: &str, root: &str) -> Result<(std::path::PathBuf, St
     }
     let room = crate::phone::messaging::workgroup_root(Path::new(root))
         .ok()
-        .and_then(|path| std::fs::canonicalize(path).ok())
+        .and_then(|path| directories::canonical_cli_discovery_path(&path).ok())
         .filter(|path| {
-            path.is_dir()
+            directories::cli_discovery_is_dir(path)
                 && path
                     .file_name()
                     .and_then(|n| n.to_str())

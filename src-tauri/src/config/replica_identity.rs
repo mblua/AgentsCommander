@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::config::ac_root::{ensure_authoritative_ac_root, find_ac_root_ancestor};
+use crate::filesystem::config_locations;
 
 pub const ROLE_MD_FILENAME: &str = "Role.md";
 pub const WG_REPLICA_REQUIRED_CONTEXT: &[&str] = &["$AGENTSCOMMANDER_CONTEXT"];
@@ -37,7 +38,9 @@ fn display_path(path: &Path) -> String {
 }
 
 fn canonical_or_original(path: &Path) -> PathBuf {
-    strip_unc(std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
+    strip_unc(
+        config_locations::canonical_replica_location(path).unwrap_or_else(|_| path.to_path_buf()),
+    )
 }
 
 fn validate_agent_name(name: &str) -> Result<(), String> {
@@ -176,7 +179,7 @@ fn validate_local_matrix(
         ));
     }
 
-    let metadata = std::fs::symlink_metadata(matrix_dir).map_err(|e| {
+    let metadata = config_locations::replica_matrix_metadata(matrix_dir).map_err(|e| {
         format!(
             "Expected local Agent Matrix '{}' for Room replica identity, \
              but it is not readable: {}",
@@ -192,14 +195,16 @@ fn validate_local_matrix(
         ));
     }
 
-    let ac_root_abs = std::fs::canonicalize(ac_root).map(strip_unc).map_err(|e| {
-        format!(
-            "Failed to canonicalize Project AC Root '{}': {}",
-            display_path(ac_root),
-            e
-        )
-    })?;
-    let matrix_abs = std::fs::canonicalize(matrix_dir)
+    let ac_root_abs = config_locations::canonical_replica_location(ac_root)
+        .map(strip_unc)
+        .map_err(|e| {
+            format!(
+                "Failed to canonicalize Project AC Root '{}': {}",
+                display_path(ac_root),
+                e
+            )
+        })?;
+    let matrix_abs = config_locations::canonical_replica_location(matrix_dir)
         .map(strip_unc)
         .map_err(|e| {
             format!(
@@ -386,7 +391,8 @@ pub fn repair_wg_replica_config_value(
                 .collect()
         })
         .unwrap_or_default();
-    let role_exists = identity.matrix_dir.join(ROLE_MD_FILENAME).exists();
+    let role_exists =
+        config_locations::replica_role_exists(&identity.matrix_dir.join(ROLE_MD_FILENAME));
     config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
         &existing_context,
         required_context_prefix,
@@ -439,6 +445,7 @@ pub fn read_and_repair_wg_replica_config(
     replica_dir: &Path,
     required_context_prefix: &[&str],
 ) -> Result<(Value, WgReplicaIdentity), String> {
+    expected_wg_replica_identity(replica_dir)?;
     let config_path = replica_dir.join("config.json");
     let mut repaired_identity: Option<WgReplicaIdentity> = None;
     // #2816 (C3) - the returned value is the decisions object as published,

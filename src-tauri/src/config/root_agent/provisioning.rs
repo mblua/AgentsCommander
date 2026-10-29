@@ -9,6 +9,7 @@ use super::{
     ROOT_COORDINATION_MESSAGING_PARAGRAPH, ROOT_ROLE_MD,
 };
 use crate::config::ROOT_AGENT_DIR_NAME;
+use crate::filesystem::agent_files;
 use std::path::Path;
 
 pub(crate) const MINIMAL_ROOT_ROLE_MD: &str = r#"# Role
@@ -29,6 +30,30 @@ pub fn is_root_agent_path(cwd: &str) -> bool {
         return false;
     };
     paths_equivalent(Path::new(cwd), Path::new(&root_dir))
+}
+
+/// Refusal-only guard: unresolved identity never permits removal.
+pub(crate) fn root_agent_path_requires_protection(cwd: &str) -> bool {
+    let Some(config_dir) = crate::config::config_dir() else {
+        return true;
+    };
+    root_agent_path_requires_protection_at(cwd, &config_dir)
+}
+
+pub(crate) fn root_agent_path_requires_protection_at(cwd: &str, config_dir: &Path) -> bool {
+    let (Ok(supplied), Ok(configured)) = (
+        agent_files::canonical_root_agent_path(Path::new(cwd)),
+        agent_files::canonical_root_agent_path(&config_dir.join(ROOT_AGENT_DIR_NAME)),
+    ) else {
+        return true;
+    };
+    match (
+        crate::path_identity::verify_directory(&supplied),
+        crate::path_identity::verify_directory(&configured),
+    ) {
+        (Ok(supplied), Ok(configured)) => supplied.object_id == configured.object_id,
+        _ => true,
+    }
 }
 
 /// Isolated context fixtures use the same canonical path comparison as live
@@ -54,7 +79,7 @@ pub(crate) fn verify_live_root_agent_path(
 }
 
 pub(crate) fn validate_root_agent_root_path(root_dir: &Path) -> Result<(), String> {
-    match std::fs::symlink_metadata(root_dir) {
+    match agent_files::inspect_root_agent_entry(root_dir) {
         Ok(metadata) => {
             if is_link_or_reparse(&metadata) || !metadata.is_dir() {
                 return Err(format!(
@@ -114,7 +139,7 @@ pub(crate) fn ensure_root_agent_dir_at(root_dir: &Path) -> Result<(), String> {
     ensure_default_root_agent_skills_at(root_dir)?;
 
     let messaging_dir = root_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME);
-    std::fs::create_dir_all(&messaging_dir).map_err(|e| {
+    agent_files::ensure_root_agent_directory(&messaging_dir).map_err(|e| {
         format!(
             "Failed to create root agent messaging directory at {}: {}",
             messaging_dir.display(),
@@ -159,7 +184,7 @@ pub(crate) fn ensure_root_agent_dir_at(root_dir: &Path) -> Result<(), String> {
 pub(crate) fn ensure_default_root_agent_skills_at(root_dir: &Path) -> Result<(), String> {
     validate_root_agent_root_path(root_dir)?;
     let skills_root = root_dir.join(ROOT_AGENT_SKILLS_DIR);
-    std::fs::create_dir_all(&skills_root).map_err(|e| {
+    agent_files::ensure_root_agent_directory(&skills_root).map_err(|e| {
         format!(
             "Failed to create root agent skills directory at {}: {}",
             skills_root.display(),
@@ -185,7 +210,7 @@ pub(crate) fn ensure_default_root_skill_file(
     validate_root_agent_root_path(root_dir)?;
     validate_root_agent_skills_root(skills_root)?;
     let skill_dir = skills_root.join(skill.dir_name);
-    match std::fs::symlink_metadata(&skill_dir) {
+    match agent_files::inspect_root_agent_entry(&skill_dir) {
         Ok(metadata) => {
             if is_link_or_reparse(&metadata) || !metadata.is_dir() {
                 return Err(format!(
@@ -195,7 +220,7 @@ pub(crate) fn ensure_default_root_skill_file(
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            match std::fs::create_dir(&skill_dir) {
+            match agent_files::create_root_agent_skill_directory(&skill_dir) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => {
@@ -218,7 +243,7 @@ pub(crate) fn ensure_default_root_skill_file(
 
     validate_root_agent_root_path(root_dir)?;
     validate_root_agent_skills_root(skills_root)?;
-    let metadata = std::fs::symlink_metadata(&skill_dir).map_err(|e| {
+    let metadata = agent_files::inspect_root_agent_entry(&skill_dir).map_err(|e| {
         format!(
             "Failed to inspect root agent default skill directory {} after create: {}",
             skill_dir.display(),
@@ -243,7 +268,7 @@ pub(crate) fn ensure_default_root_skill_file(
 }
 
 pub(crate) fn validate_root_agent_skills_root(skills_root: &Path) -> Result<(), String> {
-    let metadata = std::fs::symlink_metadata(skills_root).map_err(|e| {
+    let metadata = agent_files::inspect_root_agent_entry(skills_root).map_err(|e| {
         format!(
             "Failed to inspect root agent skills directory {}: {}",
             skills_root.display(),
@@ -260,7 +285,7 @@ pub(crate) fn validate_root_agent_skills_root(skills_root: &Path) -> Result<(), 
 }
 
 pub(crate) fn validate_default_skill_directory(skill_dir: &Path) -> Result<(), String> {
-    let metadata = std::fs::symlink_metadata(skill_dir).map_err(|e| {
+    let metadata = agent_files::inspect_root_agent_entry(skill_dir).map_err(|e| {
         format!(
             "Failed to inspect root agent default skill directory {}: {}",
             skill_dir.display(),
@@ -304,7 +329,7 @@ pub(crate) fn migrate_root_role(role_path: &Path) -> Result<(), String> {
         CreateMissingRole::AlreadyExists => {}
     }
 
-    let existing = std::fs::read_to_string(role_path)
+    let existing = agent_files::read_root_agent_role(role_path)
         .map_err(|e| format!("Failed to read {}: {}", role_path.display(), e))?;
     let existing_normalized = normalize_role_text(&existing);
     let migrated = if existing_normalized == normalize_role_text(OLD_ROOT_ROLE_MD)
@@ -355,11 +380,7 @@ pub(crate) fn atomic_write_role(role_path: &Path, content: &str) -> Result<(), S
         )
     })?;
     let temp_path = unique_role_temp_path(role_path);
-    let mut file = match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp_path)
-    {
+    let mut file = match agent_files::create_root_agent_stage(&temp_path) {
         Ok(file) => file,
         Err(e) => {
             return Err(format!(
@@ -382,8 +403,8 @@ pub(crate) fn atomic_write_role(role_path: &Path, content: &str) -> Result<(), S
         return Err(e);
     }
 
-    if let Ok(dir) = std::fs::File::open(parent) {
-        if let Err(e) = dir.sync_all() {
+    if let Ok(dir) = agent_files::open_root_agent_directory(parent) {
+        if let Err(e) = agent_files::sync_root_agent_directory(&dir) {
             log::warn!(
                 "Failed to sync root agent role directory {}: {}",
                 parent.display(),
@@ -411,11 +432,7 @@ pub(crate) fn create_missing_role(
         )
     })?;
     let temp_path = unique_role_temp_path(role_path);
-    let mut file = match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp_path)
-    {
+    let mut file = match agent_files::create_root_agent_stage(&temp_path) {
         Ok(file) => file,
         Err(e) => {
             return Err(format!(

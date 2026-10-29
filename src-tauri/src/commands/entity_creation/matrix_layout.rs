@@ -1,98 +1,15 @@
-use super::{AGENT_MATRIX_DIRS, AGENT_REPLICA_DIRS};
-use crate::config::ac_root::existing_ac_root;
+pub(crate) use crate::config::entity_creation::matrices::{
+    create_agent_matrix_layout, create_agent_replica_layout, default_agent_matrix_config,
+};
+use crate::config::entity_creation::matrices::{
+    create_new_agent_matrix_layout, matrix_directory_present,
+};
+pub(crate) use crate::config::entity_creation::names::{
+    sanitize_name, selected_ac_root, validate_existing_name,
+};
+use crate::config::entity_creation::roles;
 use crate::config::settings::AppSettings;
 use std::path::{Path, PathBuf};
-
-pub(super) fn create_agent_matrix_subdirs(
-    agent_dir: &Path,
-) -> Result<(), (&'static str, std::io::Error)> {
-    for &sub in AGENT_MATRIX_DIRS {
-        std::fs::create_dir_all(agent_dir.join(sub)).map_err(|e| (sub, e))?;
-    }
-    Ok(())
-}
-
-/// Create the full Agent Matrix layout, including the root directory.
-///
-/// The returned tag is `"agent_dir"` for root failures or the failing subdir
-/// name for child directory failures, so callers can preserve diagnostics.
-pub(crate) fn create_agent_matrix_layout(
-    agent_dir: &Path,
-) -> Result<(), (&'static str, std::io::Error)> {
-    std::fs::create_dir_all(agent_dir).map_err(|e| ("agent_dir", e))?;
-    create_agent_matrix_subdirs(agent_dir)
-}
-
-/// Create a new Agent Matrix layout after atomically claiming the root.
-///
-/// Unlike `create_agent_matrix_layout`, this fails if the root already exists.
-/// Use it for user-facing creation paths so concurrent creates cannot overwrite
-/// each other's Role.md or config.json.
-pub(crate) fn create_new_agent_matrix_layout(
-    agent_dir: &Path,
-) -> Result<(), (&'static str, std::io::Error)> {
-    std::fs::create_dir(agent_dir).map_err(|e| ("agent_dir", e))?;
-    create_agent_matrix_subdirs(agent_dir)
-}
-
-/// Create the full workgroup replica layout, including the root directory.
-///
-/// Canonical state is intentionally absent here; replicas reference the origin
-/// Agent Matrix through `config.json`.
-pub(crate) fn create_agent_replica_layout(
-    replica_dir: &Path,
-) -> Result<(), (&'static str, std::io::Error)> {
-    std::fs::create_dir_all(replica_dir).map_err(|e| ("replica_dir", e))?;
-    for &sub in AGENT_REPLICA_DIRS {
-        std::fs::create_dir_all(replica_dir.join(sub)).map_err(|e| (sub, e))?;
-    }
-    Ok(())
-}
-
-/// Sanitize a user-provided name into a safe directory component:
-/// lowercase, only a-z 0-9 and hyphens, no leading/trailing hyphens.
-pub(crate) fn sanitize_name(raw: &str) -> Result<String, String> {
-    let sanitized: String = raw
-        .to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-
-    if sanitized.is_empty() {
-        return Err("Name must contain at least one alphanumeric character".into());
-    }
-    Ok(sanitized)
-}
-
-/// Validate that an existing entity name is safe for path operations.
-/// Unlike `sanitize_name`, this does NOT transform the name — it just rejects
-/// names that contain path traversal or separator characters.
-///
-/// `pub(crate)` so the sentinel-collision invariant test in
-/// `wg_delete_diagnostic::tests` can prove that no valid WG name can collide
-/// with the `BLOCKERS:` / `DIRTY_REPOS:` sentinel prefixes.
-pub(crate) fn validate_existing_name(name: &str, entity_label: &str) -> Result<(), String> {
-    if name.is_empty() {
-        return Err(format!("{} name cannot be empty", entity_label));
-    }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-        return Err(format!(
-            "Invalid {} name: only alphanumeric characters and hyphens are allowed",
-            entity_label
-        ));
-    }
-    Ok(())
-}
 
 /// Extract a repo directory name from a git URL.
 /// `https://github.com/org/my-repo.git` → `my-repo`
@@ -147,59 +64,16 @@ pub(super) fn parse_role_frontmatter(content: &str) -> (Option<String>, Option<S
     (name, description)
 }
 
-/// Build the Role.md body written by `create_agent_matrix`. Kept as a separate
-/// pure helper so the legacy (no-template) format can be unit-tested without
-/// touching the Tauri command surface. `template` is the resolved template; when
-/// `None`, output is byte-identical to the pre-#271 inline `format!`.
-///
-/// When a template is supplied, its body is inserted as a `## Role Profile`
-/// section between the title/description and the mandatory `## Source of Truth`
-/// / `## Agent Memory Rule` sections (plan §7) — the mandatory sections always
-/// land last so a template body cannot push them off, and Role-Profile content
-/// inherits the picker's display order (the section header makes the source of
-/// the imported text obvious to a human reader of Role.md).
 pub(crate) fn build_role_content(
     safe_name: &str,
     description: &str,
     template: Option<&crate::commands::role_templates::ResolvedRoleTemplate>,
 ) -> String {
-    let desc_yaml = description.replace('\'', "''");
-    // Plan §7.2: imported template body is fenced by HTML-comment delimiters so
-    // the section boundary stays machine-detectable (and the opening tag
-    // records provenance via the template id). Pre-release maintainer review
-    // (§10.2) screens template bodies for the literal closing delimiter to
-    // prevent a body from "escaping" the fenced section.
-    let profile = match template {
-        Some(t) => format!(
-            "\n## Role Profile\n\n\
-             <!-- ac:role-profile source=\"{}\" — imported template body; \
-             the AC sections below are mandatory and must stay last -->\n\n\
-             {}\n\n\
-             <!-- ac:role-profile:end -->\n",
-            t.id,
-            t.body.trim(),
-        ),
-        None => String::new(),
-    };
-    format!(
-        "---\nname: '{name}'\ndescription: '{desc_yaml}'\ntype: agent\n---\n\n\
-         # {name}\n\n\
-         {description}\n\
-         {profile}\n\
-         ## Source of Truth\n\n\
-         This role is defined in Role.md of your Agent Matrix at: .ac/_agent_{name}/\n\
-         If you are running as a replica, this file was generated from that source; the \
-         Agent Matrix is canonical.\n\n\
-         ## Agent Memory Rule\n\n\
-         Your Agent Matrix's memory/, plans/, skills/, and Role.md are the single source \
-         of persistent knowledge. Use your replica folder only for replica-local scratch, \
-         inbox/outbox, and session artifacts. NEVER use external memory systems from the \
-         coding agent (e.g., ~/.claude/projects/memory/).\n",
-        name = safe_name,
-        desc_yaml = desc_yaml,
-        description = description,
-        profile = profile,
-    )
+    let profile = template.map(|t| roles::RoleProfileRef {
+        id: &t.id,
+        body: &t.body,
+    });
+    roles::build_role_content(safe_name, description, profile.as_ref())
 }
 
 pub(crate) struct CreateAgentMatrixDiskArgs<'a> {
@@ -236,7 +110,7 @@ pub(crate) fn create_agent_matrix_on_disk(
     let base = selected_ac_root(project)?;
 
     let agent_dir = base.join(format!("_agent_{}", safe_name));
-    if agent_dir.exists() {
+    if matrix_directory_present(&agent_dir) {
         return Err(format!("Agent '{}' already exists", safe_name));
     }
 
@@ -270,9 +144,7 @@ pub(crate) fn create_agent_matrix_on_disk(
     })?;
 
     let role_content = build_role_content(&safe_name, args.description, resolved_template.as_ref());
-    let role_path = agent_dir.join("Role.md");
-    std::fs::write(&role_path, &role_content)
-        .map_err(|e| format!("Failed to write Role.md: {}", e))?;
+    let role_path = roles::write_created_role(&agent_dir, role_content.as_bytes())?;
 
     if let Some(ref t) = resolved_template {
         if let Some(ref src) = t.skills_src {
@@ -322,7 +194,7 @@ pub(crate) fn create_agent_matrix_from_role(
     }
     validate_existing_name(args.safe_name, "Agent")?;
     let agent_dir = args.ac_root.join(format!("_agent_{}", args.safe_name));
-    if agent_dir.exists() {
+    if matrix_directory_present(&agent_dir) {
         return Err(format!("Agent '{}' already exists", args.safe_name));
     }
     create_new_agent_matrix_layout(&agent_dir).map_err(|(sub, e)| match (sub, e.kind()) {
@@ -333,9 +205,7 @@ pub(crate) fn create_agent_matrix_from_role(
         _ => format!("Failed to create {} directory: {}", sub, e),
     })?;
 
-    let role_path = agent_dir.join("Role.md");
-    std::fs::write(&role_path, args.role_bytes)
-        .map_err(|e| format!("Failed to write Role.md: {}", e))?;
+    let role_path = roles::write_created_role(&agent_dir, args.role_bytes)?;
 
     write_local_config_value(
         &agent_dir.join("config.json"),
@@ -354,13 +224,6 @@ pub(crate) fn create_agent_matrix_from_role(
     })
 }
 
-pub(super) fn default_agent_matrix_config() -> serde_json::Value {
-    serde_json::json!({
-        "tooling": {},
-        "context": ["$AGENTSCOMMANDER_CONTEXT", "Role.md"],
-    })
-}
-
 pub(super) fn write_local_config_value(
     config_path: &Path,
     value: serde_json::Value,
@@ -373,9 +236,4 @@ pub(super) fn write_local_config_value(
         Ok(())
     })?;
     Ok(())
-}
-
-pub(super) fn selected_ac_root(project: &Path) -> Result<PathBuf, String> {
-    existing_ac_root(project)
-        .ok_or_else(|| format!(".ac directory not found in {}", project.display()))
 }

@@ -210,3 +210,216 @@ pub(crate) fn replace_experiment_artifact(
         }
     }
 }
+
+pub(crate) fn read_cli_outbox_text(path: &Path) -> io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+pub(crate) fn write_cli_outbox_message(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+pub(crate) fn write_cli_session_document(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+pub(crate) fn read_cli_session_result(path: &Path) -> io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+pub(crate) fn remove_cli_session_artifact(path: &Path) -> io::Result<()> {
+    std::fs::remove_file(path)
+}
+
+pub(crate) fn write_refresh_request_stage(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+pub(crate) fn finalize_refresh_request(tmp: &Path, dst: &Path) -> io::Result<()> {
+    std::fs::rename(tmp, dst).inspect_err(|_| {
+        let _ = std::fs::remove_file(tmp);
+    })
+}
+
+pub(crate) fn append_harness_audit(path: &Path, line: &str) -> io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{}", line)
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn write_window_screenshot(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+pub(crate) fn read_cli_room_task(path: &Path) -> io::Result<Vec<u8>> {
+    std::fs::read(path)
+}
+
+pub(crate) fn read_cli_message_archive_source(path: &Path) -> io::Result<Vec<u8>> {
+    std::fs::read(path)
+}
+
+pub(crate) fn cli_outbox_delivery_is_file(path: &Path) -> io::Result<bool> {
+    std::fs::metadata(path).map(|metadata| metadata.is_file())
+}
+
+pub(crate) fn container_credential_is_reparse(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => crate::path_identity::is_link_or_reparse(&metadata),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(_) => true,
+    }
+}
+
+pub(crate) fn copy_container_credential(source: &Path, dest: &Path) -> io::Result<u64> {
+    std::fs::copy(source, dest)
+}
+
+#[cfg(unix)]
+pub(crate) fn set_container_credential_private(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+pub(crate) fn remove_container_credential_artifact(path: &Path) -> io::Result<()> {
+    std::fs::remove_file(path)
+}
+
+pub(crate) fn read_container_first_run_state(path: &Path) -> io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+pub(crate) fn write_container_first_run_stage(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+pub(crate) fn rename_container_first_run_stage(source: &Path, dest: &Path) -> io::Result<()> {
+    std::fs::rename(source, dest)
+}
+
+pub(crate) fn read_container_repo_config(path: &Path) -> io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+#[cfg(windows)]
+pub(crate) fn read_git_guard_file(path: &Path) -> io::Result<Vec<u8>> {
+    std::fs::read(path)
+}
+
+#[cfg(windows)]
+pub(crate) struct GitGuardStage(std::fs::File);
+
+#[cfg(windows)]
+impl GitGuardStage {
+    pub(crate) fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        use std::io::Write;
+        self.0.write_all(bytes)
+    }
+
+    pub(crate) fn flush(&mut self) -> io::Result<()> {
+        use std::io::Write;
+        self.0.flush()
+    }
+
+    pub(crate) fn sync_all(&self) -> io::Result<()> {
+        self.0.sync_all()
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn create_git_guard_stage(path: &Path) -> io::Result<GitGuardStage> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map(GitGuardStage)
+}
+
+#[cfg(windows)]
+pub(crate) fn remove_git_guard_stage(path: &Path) -> io::Result<()> {
+    std::fs::remove_file(path)
+}
+
+pub(crate) fn write_pty_response(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+pub(crate) fn read_ui_automation_text(path: &Path) -> io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+pub(crate) struct UiAutomationStage(std::fs::File);
+
+impl io::Write for UiAutomationStage {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        io::Write::write(&mut self.0, bytes)
+    }
+
+    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        io::Write::write_all(&mut self.0, bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        io::Write::flush(&mut self.0)
+    }
+}
+
+pub(crate) fn create_ui_automation_stage(
+    path: &Path,
+    replace: bool,
+) -> io::Result<UiAutomationStage> {
+    let file = if replace {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)?
+    } else {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?
+    };
+    Ok(UiAutomationStage(file))
+}
+
+pub(crate) fn rename_ui_automation_file(from: &Path, to: &Path) -> io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+pub(crate) fn remove_ui_automation_file(path: &Path) -> io::Result<()> {
+    std::fs::remove_file(path)
+}
+
+pub(crate) fn read_config_document(path: &Path) -> io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+pub(crate) fn read_agent_activity_bytes(path: &Path) -> io::Result<Vec<u8>> {
+    std::fs::read(path)
+}
+
+pub(crate) fn config_document_exists(path: &Path) -> bool {
+    path.exists()
+}
+
+pub(crate) fn canonical_config_document(path: &Path) -> io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+pub(crate) fn append_config_ignore_rows(
+    path: &Path,
+    separator: &str,
+    rows: &str,
+) -> io::Result<()> {
+    use std::io::Write as _;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(format!("{separator}{rows}").as_bytes()))
+}

@@ -2,6 +2,7 @@ use clap::Args;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+use crate::filesystem::{directories, documents};
 use crate::phone::types::OutboxMessage;
 
 use super::send::agent_name_from_root;
@@ -178,7 +179,7 @@ pub fn execute(args: PurgeWgArgs) -> i32 {
     let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
     let outbox_dir = ac_dir.join("outbox");
 
-    if let Err(e) = std::fs::create_dir_all(&outbox_dir) {
+    if let Err(e) = directories::ensure_cli_outbox(&outbox_dir) {
         log::error!("failed to create outbox directory: {}", e);
         eprintln!("Error: failed to create outbox directory: {}", e);
         return 1;
@@ -194,7 +195,7 @@ pub fn execute(args: PurgeWgArgs) -> i32 {
         }
     };
 
-    if let Err(e) = std::fs::write(&outbox_path, json) {
+    if let Err(e) = documents::write_cli_outbox_message(&outbox_path, json.as_bytes()) {
         log::error!("failed to write outbox file: {}", e);
         eprintln!("Error: failed to write outbox file: {}", e);
         return 1;
@@ -222,8 +223,8 @@ pub fn execute(args: PurgeWgArgs) -> i32 {
     let start = std::time::Instant::now();
 
     loop {
-        if response_path.exists() {
-            match std::fs::read_to_string(&response_path) {
+        if directories::cli_outbox_artifact_exists(&response_path) {
+            match documents::read_cli_outbox_text(&response_path) {
                 Ok(content) => {
                     crate::cli_println!("{}", content);
                     print_status_prose(&content);
@@ -236,8 +237,8 @@ pub fn execute(args: PurgeWgArgs) -> i32 {
                 }
             }
         }
-        if rejected_reason_path.exists() {
-            let reason = std::fs::read_to_string(&rejected_reason_path)
+        if directories::cli_outbox_artifact_exists(&rejected_reason_path) {
+            let reason = documents::read_cli_outbox_text(&rejected_reason_path)
                 .unwrap_or_else(|_| "unknown reason".to_string());
             let trimmed = reason.trim();
             log::error!("purge-wg rejected - {}", trimmed);

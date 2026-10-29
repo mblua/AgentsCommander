@@ -319,6 +319,9 @@ fn p22_publisher_failure_cuts_preserve_staging_and_no_false_rollback() {
             &PairTargetGuard::new(&allow),
         )
         .unwrap();
+        assert!(count.get() > 0);
+        assert_eq!(read_config_pair_physical(&target).unwrap(), after);
+        assert!(p22_stages(root.path()).is_empty());
         for cut in 1..=count.get() {
             let root = tempfile::tempdir().unwrap();
             let (target, before) = setup(root.path());
@@ -366,8 +369,8 @@ fn p22_cleanup_rejection_retains_diagnostic_stage_and_observed_drift() {
     };
     let guard = PairTargetGuard::new(&validate);
     let mut next = next_shared_staging_sequence;
-    let write = |file: &mut std::fs::File, bytes: &[u8]| {
-        file.write_all(bytes).unwrap();
+    let write = |file: &mut LocalConfigStage, bytes: &[u8]| {
+        write_local_config_stage(file, bytes).unwrap();
         std::fs::write(&target, b"{\"value\":2}").unwrap();
         drifted.set(true);
         Ok(())
@@ -468,7 +471,7 @@ fn p22_primary_io_diagnostic_and_cleanup_refusal_both_retained() {
     let diagnostics = std::cell::RefCell::new(Vec::new());
     let owned = std::cell::RefCell::new(None);
     let mut next = next_shared_staging_sequence;
-    let write = |_: &mut std::fs::File, _: &[u8]| {
+    let write = |_: &mut LocalConfigStage, _: &[u8]| {
         let stages = p22_stages(root.path());
         assert_eq!(stages.len(), 1);
         *owned.borrow_mut() = Some(stages[0].0.clone());

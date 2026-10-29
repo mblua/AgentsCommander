@@ -751,3 +751,45 @@ fn is_generated_context_filename_matches_three_prefixes_only() {
     assert!(!is_generated_context_filename("random.md"));
     assert!(!is_generated_context_filename("context-1.md"));
 }
+
+#[test]
+fn manual_clear_is_once_for_replica_roles_with_auto_on_or_off() {
+    for coordinator in [false, true] {
+        for auto in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let ac = temp.path().join(".ac");
+            let matrix = ac.join("_agent_dev-rust");
+            let replica = ac.join("room-1-team").join("__agent_dev-rust");
+            std::fs::create_dir_all(&matrix).unwrap();
+            std::fs::create_dir_all(&replica).unwrap();
+            std::fs::write(matrix.join("Role.md"), "ROLE_SENTINEL").unwrap();
+            std::fs::write(
+                replica.join("config.json"),
+                concat!(
+                    r#"{"identity":"../../_agent_dev-rust","context":["#,
+                    r#""$AGENTSCOMMANDER_CONTEXT","../../_agent_dev-rust/Role.md"]}"#
+                ),
+            )
+            .unwrap();
+            let path = materialize_agent_context_file_with_filename(
+                &path_string(&replica),
+                "AGENTS.md",
+                &[],
+                coordinator,
+                auto,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+            let content = std::fs::read_to_string(path).unwrap();
+            assert_eq!(content.matches("## Manual context clear").count(), 1);
+            assert_eq!(
+                content.matches("## Self-Maintenance").count(),
+                usize::from(auto)
+            );
+            assert!(content.contains("ROLE_SENTINEL"));
+            assert!(content.contains("timeout leaves the outcome unknown"));
+            assert!(content.contains("Ordinary work in flight does not gate"));
+        }
+    }
+}

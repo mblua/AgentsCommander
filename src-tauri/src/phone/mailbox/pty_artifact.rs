@@ -2,6 +2,7 @@ use super::poller::MailboxPoller;
 use super::pty_claim::write_atomic_pty_metadata;
 use super::settle::{reason_code_name, CorrelatedHostPtyMetadata};
 use crate::config::settings::SettingsState;
+use crate::filesystem::phone_mailbox;
 use std::path::Path;
 use std::sync::Arc;
 use tauri::Manager;
@@ -47,7 +48,7 @@ impl MailboxPoller {
         if !crate::path_identity::same_object(&source_identity, &current_source) {
             return;
         }
-        if let Err(error) = std::fs::remove_file(path) {
+        if let Err(error) = phone_mailbox::remove_mailbox_artifact(path) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 log::warn!(
                     "[pty-input] malformed candidate cleanup failed id={} code=artifact_unclaimed",
@@ -219,7 +220,7 @@ impl MailboxPoller {
         }) {
             return true;
         }
-        if let Err(error) = std::fs::remove_file(path) {
+        if let Err(error) = phone_mailbox::remove_mailbox_artifact(path) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 log::warn!(
                     "[pty-input] unavailable-store source cleanup failed id={} \
@@ -414,7 +415,7 @@ impl MailboxPoller {
         }) {
             return true;
         }
-        if let Err(error) = std::fs::remove_file(path) {
+        if let Err(error) = phone_mailbox::remove_mailbox_artifact(path) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 log::warn!(
                     "[pty-input] correlated ingress cleanup failed id={} code=artifact_unclaimed",
@@ -439,8 +440,9 @@ impl MailboxPoller {
         let outbox = source.parent().ok_or("unsafe_path")?;
         crate::path_identity::verify_directory(outbox).map_err(|_| "unsafe_path")?;
         let artifact_dir = outbox.join(directory);
-        if !artifact_dir.exists() {
-            std::fs::create_dir(&artifact_dir).map_err(|_| "unsafe_path")?;
+        if !phone_mailbox::mailbox_path_exists(&artifact_dir) {
+            phone_mailbox::create_mailbox_artifact_directory(&artifact_dir)
+                .map_err(|_| "unsafe_path")?;
         }
         crate::path_identity::verify_directory(&artifact_dir).map_err(|_| "unsafe_path")?;
         let bytes = serde_json::to_vec(artifact).map_err(|_| "invalid_artifact")?;
@@ -509,7 +511,7 @@ impl MailboxPoller {
             .mark_host_artifact_offloaded(injection_id.to_string(), chrono::Utc::now())
             .await
             .map_err(|_| "store_transient")?;
-        if let Err(error) = std::fs::remove_file(path) {
+        if let Err(error) = phone_mailbox::remove_mailbox_artifact(path) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 return Err("artifact_unclaimed");
             }

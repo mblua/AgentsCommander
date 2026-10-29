@@ -1,10 +1,10 @@
-use super::locks::verify_existing_sqlite_files;
 #[cfg(test)]
 use super::PtyInputStoreTestFaults;
 use super::{
     response_work_key, MessageDeliveryReservation, MessageStore, MessageStoreError,
     PtyInputMaintenanceCursors, DB_FILENAME, RESPONSE_CLOSING_DEFERRED,
 };
+use crate::filesystem::message_store::{self, MessagePathError};
 use crate::pty::manager::{ResponseCloseError, ResponseCloseState, WorkAdmission};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -133,11 +133,17 @@ impl MessageStore {
 
     pub fn open(path: PathBuf) -> Result<Self, MessageStoreError> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-            crate::path_identity::verify_directory(parent)
-                .map_err(|_| MessageStoreError::UnsafePath)?;
+            message_store::ensure_message_directory(parent).map_err(|error| match error {
+                MessagePathError::Io(error) => MessageStoreError::Io(error),
+                MessagePathError::UnsafePath => MessageStoreError::UnsafePath,
+            })?;
         }
-        verify_existing_sqlite_files(&path)?;
+        message_store::verify_existing_message_sqlite_files(&path).map_err(
+            |error| match error {
+                MessagePathError::Io(error) => MessageStoreError::Io(error),
+                MessagePathError::UnsafePath => MessageStoreError::UnsafePath,
+            },
+        )?;
         let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
             | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
             | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
@@ -147,7 +153,12 @@ impl MessageStore {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let _: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        verify_existing_sqlite_files(&path)?;
+        message_store::verify_existing_message_sqlite_files(&path).map_err(
+            |error| match error {
+                MessagePathError::Io(error) => MessageStoreError::Io(error),
+                MessagePathError::UnsafePath => MessageStoreError::UnsafePath,
+            },
+        )?;
         let store = Self {
             path,
             conn: Arc::new(Mutex::new(conn)),

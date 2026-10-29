@@ -28,13 +28,14 @@ async fn start_test_web_generation(
     let (admission_sender, admission_receiver) = oneshot::channel();
     let waiter = handle.begin_start(
         shutdown,
+        |future| drop(tauri::async_runtime::spawn(future)),
         move |generation, admission, generation_token| async move {
             assert!(lifecycle.publish_effective_endpoint(generation, bind, port));
             assert!(admission_sender.send(Arc::clone(&admission)).is_ok());
             let server = tauri::async_runtime::spawn(async move {
                 generation_token.cancelled().await;
             });
-            Ok::<_, String>(Some(server))
+            Ok::<_, String>(Some(crate::web_server::ServerTask::from_native(server)))
         },
     );
     let admission = tokio::time::timeout(Duration::from_secs(2), admission_receiver)
@@ -65,6 +66,7 @@ async fn web_server_stop_during_start_is_sticky() {
     let (admission_sender, admission_receiver) = oneshot::channel();
     let first = handle.begin_start(
         shutdown.clone(),
+        |future| drop(tauri::async_runtime::spawn(future)),
         move |generation, admission, _generation_token| async move {
             assert!(entered_sender.send(()).is_ok());
             assert!(admission_sender.send(Arc::clone(&admission)).is_ok());
@@ -84,6 +86,7 @@ async fn web_server_stop_during_start_is_sticky() {
     let calls = Arc::clone(&unexpected_factory_calls);
     let second = handle.begin_start(
         shutdown,
+        |future| drop(tauri::async_runtime::spawn(future)),
         move |_generation, _admission, _generation_token| async move {
             calls.fetch_add(1, Ordering::SeqCst);
             Ok::<_, String>(None)
@@ -107,12 +110,13 @@ async fn web_server_stop_during_start_is_sticky() {
 }
 
 async fn assert_stop_after_start_output_cancels_result(
-    factory_output: Result<Option<tauri::async_runtime::JoinHandle<()>>, String>,
+    factory_output: Result<Option<crate::web_server::ServerTask>, String>,
 ) {
     let handle = WebServerHandle::default();
     let (output_reached, release_output) = handle.gate_next_start_output();
     let start = handle.begin_start(
         crate::shutdown::ShutdownSignal::new(),
+        |future| drop(tauri::async_runtime::spawn(future)),
         move |_generation, _admission, _generation_token| async move { factory_output },
     );
 
@@ -205,6 +209,7 @@ async fn web_server_stop_timeout_is_shared_and_fail_closed() {
     assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopping);
     let rejected_start = handle.begin_start(
         crate::shutdown::ShutdownSignal::new(),
+        |future| drop(tauri::async_runtime::spawn(future)),
         |_generation, _admission, _generation_token| async { Ok::<_, String>(None) },
     );
     assert_eq!(
@@ -278,13 +283,16 @@ async fn web_server_finished_outer_task_converges_after_start_terminal() {
     let lifecycle = handle.clone();
     let waiter = handle.begin_start(
         crate::shutdown::ShutdownSignal::new(),
+        |future| drop(tauri::async_runtime::spawn(future)),
         move |generation, _admission, _generation_token| async move {
             assert!(lifecycle.publish_effective_endpoint(
                 generation,
                 "127.0.0.1".to_string(),
                 8769,
             ));
-            Ok::<_, String>(Some(tauri::async_runtime::spawn(async {})))
+            Ok::<_, String>(Some(crate::web_server::ServerTask::from_native(
+                tauri::async_runtime::spawn(async {}),
+            )))
         },
     );
     assert_eq!(waiter.wait().await, Ok(true));
@@ -330,13 +338,13 @@ async fn real_loopback_websocket_is_closed_and_reaped_by_generation_stop() {
     assert!(admission.open(&shutdown));
     let broadcaster = crate::web::broadcast::WsBroadcaster::new();
     let dispatcher =
-        crate::web::commands::WebCommandsDispatcher::new(crate::web::commands::WsState {
-            session_mgr: Arc::clone(&session_mgr),
+        crate::web::commands::WebCommandsDispatcher::new(crate::web::commands::WsState::new(
+            Arc::clone(&session_mgr),
             pty_mgr,
             settings,
-            broadcaster: broadcaster.clone(),
-            app_handle: app.handle().clone(),
-        });
+            broadcaster.clone(),
+            app.handle().clone(),
+        ));
     let router = crate::web::build_router(
         Arc::new(crate::web::auth::WebAccessToken::new(
             "loopback-test-token".to_string(),
@@ -352,8 +360,13 @@ async fn real_loopback_websocket_is_closed_and_reaped_by_generation_stop() {
         .await
         .expect("bind loopback websocket listener");
     let addr = listener.local_addr().expect("loopback listener address");
-    let server =
-        crate::web::spawn_server_on_listener(listener, router, generation_token.clone(), shutdown);
+    let server = crate::web::spawn_server_on_listener(
+        listener,
+        router,
+        generation_token.clone(),
+        shutdown,
+        |future| crate::web_server::ServerTask::from_native(tauri::async_runtime::spawn(future)),
+    );
     let mut client = tokio::net::TcpStream::connect(addr)
         .await
         .expect("connect loopback websocket client");
@@ -488,4 +501,148 @@ async fn api_server_handle_rejects_duplicate_running_task() {
         .shutdown_running(Duration::from_secs(1))
         .await
         .unwrap());
+}
+
+#[tokio::test]
+async fn server_task_preserves_native_error_display_and_finished_state() {
+    let join = tauri::async_runtime::spawn(std::future::pending::<()>());
+    let task_id = join.inner().id();
+    let task = crate::web_server::ServerTask::from_native(join);
+    fn assert_unpin<T: Unpin>(_: &T) {}
+    assert_unpin(&task);
+    assert!(!task.is_finished());
+    task.abort();
+    let error = tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("aborted native join must be reaped")
+        .expect_err("cancellation must remain a join error");
+    assert_eq!(error, format!("task {task_id} was cancelled"));
+
+    let finished =
+        crate::web_server::ServerTask::from_native(tauri::async_runtime::spawn(async {}));
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !finished.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("finished state must follow the native task");
+    assert_eq!(finished.await, Ok(()));
+}
+
+#[tokio::test]
+async fn api_server_duplicate_aborts_same_task_and_cleans_finished_handle() {
+    let handle = ApiServerHandle::default();
+    let first = tauri::async_runtime::spawn(std::future::pending::<()>());
+    let first_abort = first.inner().abort_handle();
+    assert!(handle
+        .store_if_idle(ApiServerTask::new(
+            first,
+            CancellationToken::new(),
+            api_test_addr(9906),
+        ))
+        .unwrap());
+    let duplicate = tauri::async_runtime::spawn(std::future::pending::<()>());
+    let duplicate_abort = duplicate.inner().abort_handle();
+    let duplicate_shutdown = CancellationToken::new();
+    assert!(!handle
+        .store_if_idle(ApiServerTask::new(
+            duplicate,
+            duplicate_shutdown.clone(),
+            api_test_addr(9907),
+        ))
+        .unwrap());
+    assert!(duplicate_shutdown.is_cancelled());
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !duplicate_abort.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("duplicate must abort the same pending native task");
+    assert!(!first_abort.is_finished());
+    first_abort.abort();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !first_abort.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first task finishes before cleanup");
+    assert_eq!(handle.running_bound_addr().unwrap(), None);
+    assert!(!handle
+        .shutdown_running(Duration::from_secs(1))
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn api_server_timeout_aborts_and_reaps_before_return() {
+    struct Reaped(Arc<AtomicU64>);
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            self.0.store(1, Ordering::SeqCst);
+        }
+    }
+    let handle = ApiServerHandle::default();
+    let dropped = Arc::new(AtomicU64::new(0));
+    let dropped_by_task = Arc::clone(&dropped);
+    let shutdown = CancellationToken::new();
+    let (entered_sender, entered_receiver) = oneshot::channel();
+    let join = tauri::async_runtime::spawn(async move {
+        let _reaped = Reaped(dropped_by_task);
+        entered_sender.send(()).unwrap();
+        std::future::pending::<()>().await;
+    });
+    let abort = join.inner().abort_handle();
+    entered_receiver.await.unwrap();
+    assert!(handle
+        .store_if_idle(ApiServerTask::new(
+            join,
+            shutdown.clone(),
+            api_test_addr(9906)
+        ))
+        .unwrap());
+    assert!(handle
+        .shutdown_running(Duration::from_millis(20))
+        .await
+        .unwrap());
+    assert!(shutdown.is_cancelled());
+    assert!(abort.is_finished());
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    assert!(!handle.has_running().unwrap());
+}
+
+#[test]
+fn server_task_and_supervisor_spawn_without_ambient_runtime() {
+    std::thread::spawn(|| {
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        let (sent, received) = std::sync::mpsc::channel();
+        let task =
+            crate::web_server::ServerTask::from_native(tauri::async_runtime::spawn(async move {
+                sent.send(()).unwrap()
+            }));
+        received
+            .recv_timeout(Duration::from_secs(2))
+            .expect("native server future must execute without an entered Tokio runtime");
+        assert_eq!(tauri::async_runtime::block_on(task), Ok(()));
+
+        let handle = WebServerHandle::default();
+        let start = handle.begin_start(
+            crate::shutdown::ShutdownSignal::new(),
+            |future| drop(tauri::async_runtime::spawn(future)),
+            |_generation, _admission, _token| async { Ok::<_, String>(None) },
+        );
+        assert_eq!(
+            tauri::async_runtime::block_on(async {
+                tokio::time::timeout(Duration::from_secs(2), start.wait())
+                    .await
+                    .expect("supervisor must execute on the explicit native spawner")
+            }),
+            Ok(false)
+        );
+        assert!(tokio::runtime::Handle::try_current().is_err());
+    })
+    .join()
+    .expect("finite native-spawn assertions must pass on the synchronous thread");
 }

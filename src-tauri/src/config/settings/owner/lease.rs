@@ -1,6 +1,7 @@
 use super::{owner_save_error_text, SettingsOwnerError};
 use crate::config::instance_artifacts::SETTINGS_OWNER_LOCK_FILE_NAME;
 use crate::config::settings::{SettingsFileLock, SettingsSaveCause, SettingsSaveReason};
+use crate::filesystem::settings_file;
 use std::path::{Path, PathBuf};
 
 /// The lifecycle lease: an exclusive lock on the stable owner sidecar inside a
@@ -87,8 +88,8 @@ impl SettingsOwnerLease {
             Ok(()) | Err(crate::path_identity::PathRule::ComponentIsLink) => {}
             Err(_) => return Err(identity("lock_identity_rejected")),
         }
-        let physical_parent =
-            std::fs::canonicalize(parent).map_err(|_| identity("lock_identity_rejected"))?;
+        let physical_parent = settings_file::canonical_settings_parent(parent)
+            .map_err(|_| identity("lock_identity_rejected"))?;
         let retained = crate::path_identity::retain_directory(&physical_parent)
             .map_err(|_| identity("lock_identity_rejected"))?;
         let physical = retained.identity().canonical_path.join(leaf);

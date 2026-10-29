@@ -4,6 +4,7 @@ use super::notice::{
     ERR_UNSUPPORTED_LOGICAL_REMOTE_COMMAND,
 };
 use crate::config::settings::AppSettings;
+use crate::filesystem::phone_mailbox as mailbox_disk;
 use crate::session::session::SessionStatus;
 use std::path::Path;
 use std::path::PathBuf;
@@ -96,7 +97,7 @@ pub(crate) fn wake_claim_has_settled_receipt(origin: &Path) -> Result<bool, Stri
 /// keeps and requeues its outcome; without ledger ownership, a later poll or
 /// process restart retries general reclamation.
 pub(crate) fn release_wake_claim(claim: &Path, origin: &Path) {
-    if let Err(error) = std::fs::rename(claim, origin) {
+    if let Err(error) = mailbox_disk::rename_mailbox_document(claim, origin) {
         log::error!(
             "[mailbox] #1399 failed to return claim {:?} to {:?}: {}",
             claim,
@@ -145,7 +146,7 @@ pub(crate) fn outbox_message_send_time(path: &Path) -> Option<chrono::DateTime<c
 /// on it here costs nothing and keeps thousands of stat calls off the 3 s
 /// cycle this issue exists to make fast.
 pub(crate) fn dedup_outbox_dirs_by_object_id(outbox_dirs: &mut Vec<PathBuf>) {
-    outbox_dirs.retain(|dir| dir.is_dir());
+    outbox_dirs.retain(|dir| mailbox_disk::mailbox_path_is_dir(dir));
     let mut seen = std::collections::HashSet::new();
     outbox_dirs.retain_mut(|dir| match crate::path_identity::verify_directory(dir) {
         Ok(identity) => {

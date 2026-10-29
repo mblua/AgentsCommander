@@ -1,9 +1,10 @@
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 use crate::config::agent_command::{build_agent_spawn_command, AgentSpawnCommand};
@@ -14,7 +15,49 @@ use crate::config::loops::{
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
-use crate::session::session::{SessionInfo, SessionRepo, SessionStatus};
+use crate::session::session::{SessionInfo, SessionStatus};
+
+pub(crate) trait LoopPromptEvents {
+    fn last_prompt(&self, session_id: Uuid, text: &str);
+}
+
+pub(crate) struct LoopSessionCreate {
+    pub(crate) shell: String,
+    pub(crate) shell_args: Vec<String>,
+    pub(crate) cwd: String,
+    pub(crate) session_name: Option<String>,
+    pub(crate) agent_id: Option<String>,
+    pub(crate) agent_label: Option<String>,
+    pub(crate) skip_auto_resume: bool,
+    pub(crate) resolved_spawn: Option<AgentSpawnCommand>,
+    pub(crate) resolved_agent_host_shell: Option<crate::pty::backend::ResolvedAgentHostShell>,
+}
+
+pub(crate) trait LoopDeliveryHost: LoopPromptEvents + Send + Sync {
+    fn settings_owner(&self) -> &SettingsState;
+    fn sessions(&self) -> &Arc<tokio::sync::RwLock<SessionManager>>;
+    fn ptys(&self) -> &Arc<Mutex<PtyManager>>;
+    fn purge_guard(&self) -> Option<&Arc<crate::session::purge_guard::PurgeGuard>>;
+    fn background_destroy(
+        &self,
+        id: Uuid,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
+    fn restart_fresh(
+        &self,
+        id: Uuid,
+    ) -> Pin<Box<dyn Future<Output = Result<SessionInfo, String>> + Send + '_>>;
+    fn create(
+        &self,
+        request: LoopSessionCreate,
+    ) -> Pin<Box<dyn Future<Output = Result<SessionInfo, String>> + Send + '_>>;
+    fn inject<'a>(
+        &'a self,
+        id: Uuid,
+        text: &'a str,
+        pre_write: Box<dyn FnOnce() -> Result<(), String> + Send + 'a>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+    fn note_post_boundary(&self, id: Uuid) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+}
 
 #[derive(Debug, Clone)]
 pub struct LoopDeliveryReport {
@@ -39,8 +82,8 @@ pub(crate) struct ResolvedLoopAgentCommand {
     resolved_agent_host_shell: Option<crate::pty::backend::ResolvedAgentHostShell>,
 }
 
-pub async fn deliver_loop_prompt(
-    app: &AppHandle,
+pub async fn deliver_loop_prompt<H: LoopDeliveryHost + ?Sized>(
+    app: &H,
     project_dir: &Path,
     config: &LoopConfigToml,
     _run_id: Uuid,
@@ -60,7 +103,7 @@ pub async fn deliver_loop_prompt(
     // tick can resurrect a peer the purge already destroyed. Keyed on the
     // FQN, not a session id, because the J2 case is precisely the one where
     // the session record is already gone.
-    if let Some(g) = app.try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>() {
+    if let Some(g) = app.purge_guard() {
         if g.blocks_agent(&target_fqn) {
             return LoopDeliveryReport {
                 kind: LoopAuditKind::SkippedBusy,
@@ -92,9 +135,7 @@ pub async fn deliver_loop_prompt(
         Some(session) => session,
         None => {
             for stale_id in lookup.stale_session_ids {
-                if let Err(e) =
-                    crate::commands::session::background_destroy_session_inner(app, stale_id).await
-                {
+                if let Err(e) = app.background_destroy(stale_id).await {
                     log::warn!(
                         "[loops] Failed to clear stale coordinator session {} before wake: {}",
                         stale_id,
@@ -167,25 +208,7 @@ pub async fn deliver_loop_prompt(
             }
         }
 
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
-        let settings = app.state::<SettingsState>();
-        let restarted = match crate::commands::session::restart_session_inner_with_intent(
-            app,
-            session_mgr.inner(),
-            pty_mgr.inner(),
-            settings.inner(),
-            session_id,
-            None,
-            None,
-            Some(true),
-            false,
-            crate::session::selection::TrustedRestartIntent::Background,
-            None,
-            crate::config::sessions_persistence::default_creation_gate_enforcement(),
-        )
-        .await
-        {
+        let restarted = match app.restart_fresh(session_id).await {
             Ok(info) => info,
             Err(e) => return failed_report(Some(target_fqn), Some(session_id), e),
         };
@@ -265,18 +288,20 @@ pub async fn deliver_loop_prompt(
         session_id
     };
 
-    match crate::pty::inject::inject_text_into_session_with_pre_write_check(
-        app,
-        session_id,
-        &prompt,
-        || stale_delivery_error_if_needed(&loop_storage_dir, config, &target_fqn, session_id),
-    )
-    .await
+    match app
+        .inject(
+            session_id,
+            &prompt,
+            Box::new(|| {
+                stale_delivery_error_if_needed(&loop_storage_dir, config, &target_fqn, session_id)
+            }),
+        )
+        .await
     {
         Ok(()) => {
             // (#756) loop prompt = AC-injected post-boundary content: drop any
             // pending fresh intent (record + mirror).
-            crate::commands::pty::note_post_boundary_content_to_session(app, session_id).await;
+            app.note_post_boundary(session_id).await;
             if let Err(e) = set_last_prompt(app, session_id, prompt.clone()).await {
                 log::warn!(
                     "[loops] Failed to update last_prompt after Loop delivery to {}: {}",
@@ -409,12 +434,12 @@ struct CoordinatorSessionLookup {
     persisted_agent: Option<PersistedCoordinatorAgent>,
 }
 
-async fn find_coordinator_session(
-    app: &AppHandle,
+async fn find_coordinator_session<H: LoopDeliveryHost + ?Sized>(
+    app: &H,
     coordinator_replica_dir: &Path,
 ) -> Result<CoordinatorSessionLookup, String> {
     let target_key = path_compare_key(coordinator_replica_dir);
-    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+    let session_mgr = app.sessions();
     let mgr = session_mgr.read().await;
     let sessions = mgr.list_sessions().await;
     // #2176 - the persisted agent pin is extracted from the same unfiltered
@@ -443,7 +468,7 @@ async fn find_coordinator_session(
             if matches!(session.status, SessionStatus::Exited(_)) {
                 false
             } else {
-                let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+                let pty_mgr = app.ptys();
                 let has_pty = pty_mgr
                     .lock()
                     .map_err(|_| "PtyManager lock poisoned".to_string())?
@@ -525,8 +550,8 @@ fn loop_candidate_should_respawn(status: &SessionStatus, has_pty: bool) -> bool 
     }
 }
 
-async fn spawn_coordinator_session(
-    app: &AppHandle,
+async fn spawn_coordinator_session<H: LoopDeliveryHost + ?Sized>(
+    app: &H,
     target: &crate::config::loops::ResolvedLoopTarget,
     had_existing_match: bool,
     persisted_agent: Option<PersistedCoordinatorAgent>,
@@ -547,40 +572,27 @@ async fn spawn_coordinator_session(
             .unwrap_or("workgroup"),
         target.coordinator_agent_name
     );
-    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-    let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
     let cwd = crate::path_utils::path_to_string_without_windows_verbatim_prefix(
         &target.coordinator_replica_dir,
     );
-    // #1873 - decided BEFORE the command's fields move into the create call.
     let skip_auto_resume = spawn_skip_auto_resume(session_start, had_existing_match, &command);
-    let info = crate::commands::session::create_session_inner(
-        app,
-        session_mgr.inner(),
-        pty_mgr.inner(),
-        command.shell,
-        command.shell_args,
-        cwd,
-        Some(session_name),
-        command.agent_id,
-        command.agent_label,
-        false,
-        Vec::<SessionRepo>::new(),
-        skip_auto_resume,
-        command.resolved_spawn,
-        // #1271 - the configured host shell paired with the resolved agent,
-        // carried through ResolvedLoopAgentCommand from the same settings
-        // snapshot that built the spawn.
-        command.resolved_agent_host_shell,
-        // #973 - headless caller: no terminal to measure, keep 120x30.
-        None,
-        crate::commands::session::CreateSelectionIntent::Background,
-    )
-    .await?;
+    let info = app
+        .create(LoopSessionCreate {
+            shell: command.shell,
+            shell_args: command.shell_args,
+            cwd,
+            session_name: Some(session_name),
+            agent_id: command.agent_id,
+            agent_label: command.agent_label,
+            skip_auto_resume,
+            resolved_spawn: command.resolved_spawn,
+            resolved_agent_host_shell: command.resolved_agent_host_shell,
+        })
+        .await?;
     let session_id = Uuid::parse_str(&info.id)
         .map_err(|e| format!("Failed to parse spawned session id: {}", e))?;
     wait_for_session_idle(app, session_id).await?;
-    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+    let session_mgr = app.sessions();
     let mgr = session_mgr.read().await;
     mgr.list_sessions()
         .await
@@ -665,7 +677,10 @@ pub(crate) fn spawn_skip_auto_resume(
     }
 }
 
-async fn wait_for_session_idle(app: &AppHandle, session_id: Uuid) -> Result<(), String> {
+async fn wait_for_session_idle<H: LoopDeliveryHost + ?Sized>(
+    app: &H,
+    session_id: Uuid,
+) -> Result<(), String> {
     let start = Instant::now();
     let max_wait = Duration::from_secs(90);
     let poll = Duration::from_millis(500);
@@ -686,8 +701,11 @@ async fn wait_for_session_idle(app: &AppHandle, session_id: Uuid) -> Result<(), 
     }
 }
 
-async fn final_busy_check(app: &AppHandle, session_id: Uuid) -> Result<bool, String> {
-    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+async fn final_busy_check<H: LoopDeliveryHost + ?Sized>(
+    app: &H,
+    session_id: Uuid,
+) -> Result<bool, String> {
+    let session_mgr = app.sessions();
     let mgr = session_mgr.read().await;
     let session = mgr
         .list_sessions()
@@ -698,28 +716,28 @@ async fn final_busy_check(app: &AppHandle, session_id: Uuid) -> Result<bool, Str
     Ok(session.waiting_for_input)
 }
 
-async fn set_last_prompt(app: &AppHandle, session_id: Uuid, prompt: String) -> Result<(), String> {
-    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+async fn set_last_prompt<H: LoopDeliveryHost + ?Sized>(
+    app: &H,
+    session_id: Uuid,
+    prompt: String,
+) -> Result<(), String> {
+    let session_mgr = app.sessions();
     let mgr = session_mgr.read().await;
     mgr.set_last_prompt(session_id, prompt.clone()).await;
     crate::config::sessions_persistence::persist_current_state(&mgr).await;
-    let _ = tauri::Emitter::emit(
-        app,
-        "last_prompt",
-        serde_json::json!({ "sessionId": session_id.to_string(), "text": prompt }),
-    );
+    app.last_prompt(session_id, &prompt);
     Ok(())
 }
 
-async fn resolve_loop_agent_command(
-    app: &AppHandle,
+async fn resolve_loop_agent_command<H: LoopDeliveryHost + ?Sized>(
+    app: &H,
     replica_dir: &Path,
     persisted_agent: Option<&PersistedCoordinatorAgent>,
 ) -> Result<ResolvedLoopAgentCommand, String> {
     let replica_dir = crate::path_utils::normalize_windows_verbatim_path_buf(replica_dir);
     let replica_dir = replica_dir.as_path();
     let settings = {
-        let settings_state = app.state::<SettingsState>();
+        let settings_state = app.settings_owner();
         let settings = settings_state
             .current_snapshot()
             .await
@@ -730,7 +748,7 @@ async fn resolve_loop_agent_command(
     resolve_loop_agent_command_from_settings(&settings, replica_dir, persisted_agent)
 }
 
-/// #2176 - the whole Loop wake agent decision, kept free of `AppHandle` so it
+/// #2176 - the whole Loop wake agent decision, kept free of transport so it
 /// is directly unit-testable.
 ///
 /// Rank 1 (`tooling.currentCodingAgent`, validated) and rank 2 (the persisted

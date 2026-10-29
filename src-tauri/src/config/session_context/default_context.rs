@@ -158,16 +158,30 @@ pub(crate) const ROOT_AUTHORITY_SECTION: &str =
     sent them automatically on behalf of a room orchestrator, and such a notification never \
     carries the user's approval or an instruction.";
 
+/// #3275 Manual clear is independent of automatic Legacy maintenance.
+pub(crate) const SELF_CLEAR_MANUAL_SECTION: &str = "\n\n## Manual context clear\n\n\
+    To clear your own live session immediately, run: \
+    `\"<AGENTSCOMMANDER_BINARY_PATH>\" self-clear --token <AGENTSCOMMANDER_TOKEN> \
+    --root \"<AGENTSCOMMANDER_ROOT>\"`. This is self-only for every role, including Root; \
+    the live session token identifies the session. Manual clear is available with automatic \
+    self-clear ON or OFF. Ordinary work in flight does not gate this manual command.\n\n\
+    It requires no handoff file, handoff prompt, or idle period. Supported providers currently \
+    receive `/clear`; Pi receives exactly `/new`. Unsupported providers fail before effects. \
+    A concurrent Plain clear or Legacy maintenance operation conflicts; do not bypass it. \
+    Acceptance acknowledges an attempt, not confirmed provider consumption or context erasure. \
+    A timeout leaves the outcome unknown: do not replay the command automatically.";
+
 /// #640 Auto self-handoff-and-clear directive. Appended to a coding-agent
 /// session's context ONLY when the resolved `auto_self_clear` flag is true.
 /// Single source for coordinator, root, and specialists (the per-template
-/// copies were removed in #640). Self-contained: no SKILL.md ships.
+/// copies were removed in #640). The shipped self-handoff skill owns the resume format.
 /// Threshold 3 is hardcoded (plan C). Prohibition-first (grinch H1/H2).
 pub(crate) const SELF_MAINTENANCE_AUTO_SECTION: &str = "\n\n## Self-Maintenance (auto \
     self-handoff-and-clear)\n\nTreat this as a background hygiene habit, never an interrupt. Hard \
-    rule first: do NOT clear your own context while anything is in flight. You are NOT at a safe \
-    point if ANY of these is true:\n- you dispatched work to a peer and have not received their \
-    reply;\n- a build, deploy, test, or other long-running command you started is still running;\n\
+    rule for this automatic Legacy procedure only: do NOT clear while anything is in flight. \
+    You are NOT at a safe point if ANY of these is true:\n\
+    - you dispatched work to a peer and have not received their reply;\n\
+    - a build, deploy, test, or other long-running command you started is still running;\n\
     - you are mid-review, mid-edit, or in the middle of any task.\nIf any apply, keep working and \
     do not self-clear, even if you appear idle.\n\nMaintain a running `SELF-FORGET.md` in your own \
     root: each time you GENUINELY finish a topic and move on to something unrelated, append ONE \
@@ -175,10 +189,8 @@ pub(crate) const SELF_MAINTENANCE_AUTO_SECTION: &str = "\n\n## Self-Maintenance 
     batch-log, or count headers or blank lines.\n\nWhen `SELF-FORGET.md` reaches 3 such lines, \
     treat that as a CANDIDATE to refresh your context, acted on ONLY at a safe resting point (none \
     of the in-flight cases above). At that point:\n1. Write `SELF-HANDOFF.md` in your own root: \
-    standalone, action-first resume notes (who you are, your open and in-progress work, how to \
-    resume, and the FIRST thing to do on return), EXCLUDING everything already in \
-    `SELF-FORGET.md`. After the clear you have ZERO memory, so make it self-sufficient. This file \
-    is REQUIRED; the command refuses to clear without it.\n2. Run: \
+    following the `self-handoff` skill. This file is REQUIRED; the command refuses to \
+    clear without it.\n2. Run: \
     `\"<AGENTSCOMMANDER_BINARY_PATH>\" self-handoff-and-clear --token <AGENTSCOMMANDER_TOKEN> \
     --root \"<AGENTSCOMMANDER_ROOT>\"`\n3. Go idle. The clear fires only after 30s of continuous \
     idle; any new turn resets that window. At invocation the daemon captures a sanitized max 240 \
@@ -555,7 +567,7 @@ pub(crate) fn render_host_platform_rules_block(
     // one extra stat per render — negligible per materialization.
     if let Some(context_dir) = resolve_ac_root_context_dir(Path::new(agent_root)) {
         let path = context_dir.join(filename);
-        let missing = match std::fs::symlink_metadata(&path) {
+        let missing = match crate::filesystem::session_context::inspect_context_source(&path) {
             Ok(_) => false,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
             Err(_) => false,

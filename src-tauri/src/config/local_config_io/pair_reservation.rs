@@ -8,6 +8,7 @@ use super::{
     PairReservation, PairReservationRequest, PairTargetGuard, PhysicalState, PreparedPairError,
     ProtectedRevision, TimestampPhysical, CONFIG_LOCK_TIMEOUT,
 };
+use crate::filesystem::local_config;
 use serde_json::Map;
 use serde_json::Value;
 use std::path::Path;
@@ -150,8 +151,8 @@ pub(super) fn pair_target_identity(
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or(PreparedPairError::InvalidPlan("PAIR name"))?;
-        let parent =
-            std::fs::canonicalize(parent).map_err(|e| PreparedPairError::Io(e.to_string()))?;
+        let parent = local_config::canonical_local_config_parent(parent)
+            .map_err(|e| PreparedPairError::Io(e.to_string()))?;
         let path = parent.join(name).to_string_lossy().into_owned();
         Ok(if cfg!(windows) {
             path.to_lowercase()
@@ -194,7 +195,7 @@ pub(super) fn validate_pair_paths(
 ) -> Result<(), PreparedPairError> {
     pair_target_identity(decisions, state)?;
     let resolve = |path: &Path| -> Result<PathBuf, PreparedPairError> {
-        let parent = std::fs::canonicalize(
+        let parent = local_config::canonical_local_config_parent(
             path.parent()
                 .ok_or(PreparedPairError::InvalidPlan("PAIR parent"))?,
         )
@@ -828,15 +829,15 @@ pub(crate) fn release_reserved_config_pair_guarded(
         return Err(PreparedPairError::Conflict);
     }
     guard.check()?;
-    std::fs::remove_file(reservation).map_err(|e| PreparedPairError::Io(e.to_string()))?;
+    local_config::remove_local_config_stage(reservation)
+        .map_err(|e| PreparedPairError::Io(e.to_string()))?;
     guard.check()?;
     #[cfg(not(windows))]
-    std::fs::File::open(
+    local_config::sync_local_config_directory(
         reservation
             .parent()
             .ok_or(PreparedPairError::InvalidPlan("reservation parent"))?,
     )
-    .and_then(|directory| directory.sync_all())
     .map_err(|e| PreparedPairError::Io(e.to_string()))?;
     guard.check()?;
     Ok(current)

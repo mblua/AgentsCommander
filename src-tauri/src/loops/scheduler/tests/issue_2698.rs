@@ -64,7 +64,13 @@ async fn scan_with_the_loop_lock_held(
         let (project, dir) = (project.to_path_buf(), dir.to_path_buf());
         tokio::spawn(async move {
             scheduler
-                .scan_loop(&SchedulerContext::Native(app), &project, &dir, false, false)
+                .scan_loop(
+                    &SchedulerContext::Native(Arc::new(app)),
+                    &project,
+                    &dir,
+                    false,
+                    false,
+                )
                 .await
         })
     };
@@ -239,7 +245,7 @@ async fn issue_2698_audit_failure_after_state_write_is_replayed() {
     install_report_gate(&scheduler, delivered_report());
     let err = scheduler
         .scan_loop(
-            &SchedulerContext::Native(app.handle().clone()),
+            &SchedulerContext::Native(Arc::new(app.handle().clone())),
             tmp.path(),
             &dir,
             false,
@@ -447,7 +453,13 @@ async fn issue_2698_cancelled_replay_keeps_the_record() {
         let (project, dir) = (tmp.path().to_path_buf(), dir.clone());
         tokio::spawn(async move {
             scheduler
-                .scan_loop(&SchedulerContext::Native(app), &project, &dir, false, false)
+                .scan_loop(
+                    &SchedulerContext::Native(Arc::new(app)),
+                    &project,
+                    &dir,
+                    false,
+                    false,
+                )
                 .await
         })
     };

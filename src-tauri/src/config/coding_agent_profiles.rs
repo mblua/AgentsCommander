@@ -1,4 +1,5 @@
 use crate::config::settings::ProfileCellConfig;
+use crate::filesystem::coding_agent_profiles::{profile_path_symlink_metadata, read_profile_text};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -74,7 +75,7 @@ pub struct ProfileSelectionResolution {
 }
 
 fn read_json_object(path: &Path) -> Option<Value> {
-    let content = std::fs::read_to_string(path).ok()?;
+    let content = read_profile_text(path).ok()?;
     serde_json::from_str::<Value>(&content).ok()
 }
 
@@ -102,7 +103,7 @@ fn write_tooling_string(
     key: &str,
     value: Option<&str>,
 ) -> Result<(), String> {
-    let metadata = std::fs::symlink_metadata(agent_dir).map_err(|e| {
+    let metadata = profile_path_symlink_metadata(agent_dir).map_err(|e| {
         format!(
             "Agent config dir '{}' is not readable: {}",
             agent_dir.display(),
@@ -225,37 +226,6 @@ pub(crate) fn source_target_is_affected(
         identity_reference_value(&target.physical_revision[1])?,
     ];
     Ok(patch.after != original)
-}
-
-#[cfg(test)]
-thread_local! {
-    static SOURCE_DISCOVERY_CALLS:
-        std::cell::RefCell<std::collections::BTreeMap<&'static str, usize>> =
-        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
-    static SOURCE_DISCOVERY_FAILURE: std::cell::Cell<Option<(&'static str, usize)>> =
-        const { std::cell::Cell::new(None) };
-}
-
-fn source_discovery_cut(_stage: &'static str) -> Result<(), std::io::Error> {
-    #[cfg(test)]
-    SOURCE_DISCOVERY_CALLS.with(|calls| *calls.borrow_mut().entry(_stage).or_default() += 1);
-    #[cfg(test)]
-    SOURCE_DISCOVERY_FAILURE.with(|failure| {
-        if let Some((stage, remaining)) = failure.get() {
-            if stage == _stage {
-                if remaining == 1 {
-                    failure.set(None);
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "source inventory fail-only cut",
-                    ));
-                }
-                failure.set(Some((stage, remaining - 1)));
-            }
-        }
-        Ok(())
-    })?;
-    Ok(())
 }
 
 #[cfg(test)]

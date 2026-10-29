@@ -196,7 +196,7 @@ async fn self_switch_established_source_to_pi_target_remains_supported() {
     assert_eq!(target.agent_id.as_deref(), Some("pi"));
     assert_eq!(target.requested_profile.as_deref(), Some("A"));
     assert_eq!(target.effective_profile.as_deref(), Some("A"));
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
     let saved: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(fixture.replica.join("config.json")).unwrap(),
     )
@@ -435,7 +435,7 @@ async fn self_switch_pi_source_to_established_target_completes() {
     let target = manager.get_session(target_id).await.unwrap();
     assert_eq!(target.shell, "codex");
     assert_eq!(target.agent_id.as_deref(), Some("codex"));
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
     let saved: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(fixture.replica.join("config.json")).unwrap(),
     )
@@ -640,7 +640,7 @@ async fn self_switch_pi_source_omitted_target_hard_resets_to_pi() {
     let target = manager.get_session(target_id).await.unwrap();
     assert_eq!(target.shell, "pi");
     assert_eq!(target.agent_id.as_deref(), Some("pi"));
-    assert!(pending.0.lock().unwrap().is_empty());
+    assert!(pending.is_empty());
     let saved: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(fixture.replica.join("config.json")).unwrap(),
     )
@@ -717,11 +717,7 @@ async fn handle_self_switch_pending_alias_reports_already_queued() {
     std::fs::write(fixture.replica.join("SELF-FORGET.md"), "new topic").unwrap();
     {
         let pending = app.state::<Arc<crate::PendingSelfClear>>();
-        pending
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(session_id);
+        pending.seed_legacy(session_id);
     }
 
     let (path, msg) = build_self_switch_message(

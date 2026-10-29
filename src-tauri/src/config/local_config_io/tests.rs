@@ -934,3 +934,40 @@ mod pair;
 mod pair_activity;
 #[cfg(windows)]
 mod publish_path;
+
+#[test]
+fn sidecar_lock_rejects_directory_without_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let sidecar = temp.path().join("sidecar.lock");
+    std::fs::create_dir(&sidecar).unwrap();
+    let sentinel = sidecar.join("sentinel-child");
+    std::fs::write(&sentinel, b"preserve sentinel").unwrap();
+    let error =
+        acquire_sidecar_write_lock(&sidecar, Duration::ZERO, "testTimeout", "test sidecar lock")
+            .unwrap_err();
+    assert_eq!(
+        error,
+        format!(
+            "Test sidecar lock '{}' must be a regular non-symlink file",
+            sidecar.display()
+        )
+    );
+    assert!(sidecar.is_dir());
+    assert_eq!(std::fs::read(sentinel).unwrap(), b"preserve sentinel");
+}
+
+#[test]
+fn sidecar_lock_preserves_existing_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let sidecar = temp.path().join("sidecar.lock");
+    let seeded = b"preserve existing sidecar bytes";
+    std::fs::write(&sidecar, seeded).unwrap();
+    let lock =
+        acquire_sidecar_write_lock(&sidecar, Duration::ZERO, "testTimeout", "test sidecar lock")
+            .unwrap();
+    #[cfg(not(windows))]
+    assert_eq!(std::fs::read(&sidecar).unwrap(), seeded);
+    drop(lock);
+    assert!(sidecar.is_file());
+    assert_eq!(std::fs::read(&sidecar).unwrap(), seeded);
+}

@@ -1,5 +1,12 @@
 use super::*;
 
+fn root_payload(content: &str) -> &str {
+    assert_eq!(content.matches("## Manual context clear").count(), 1);
+    content
+        .strip_suffix(super::super::default_context::SELF_CLEAR_MANUAL_SECTION)
+        .expect("Root context must end with the complete manual section")
+}
+
 #[test]
 fn issue_2832_default_blocks_render_once_in_configured_order() {
     let (temp, root) = issue_2832_fixture();
@@ -105,7 +112,8 @@ fn issue_2832_custom_context_arrays_order_and_raw_files() {
             serde_json::json!({"context":entries}).to_string(),
         )
         .unwrap();
-        assert_eq!(issue_2832_combined(&root, temp.path(), true), expected);
+        let out = issue_2832_combined(&root, temp.path(), true);
+        assert_eq!(root_payload(&out), expected);
     }
     std::fs::write(
         root.join("config.json"),
@@ -115,6 +123,7 @@ fn issue_2832_custom_context_arrays_order_and_raw_files() {
     )
     .unwrap();
     let out = issue_2832_combined(&root, temp.path(), false);
+    let out = root_payload(&out);
     assert!(out.starts_with("EXTRA\n\n---\n\n# Context: Context.root-agent.md"));
     assert!(out.contains("RAW {{AGENT_ROOT}}\n{{#HOST_WINDOWS}}\nRAW CONDITION"));
     assert!(out.find("EXTRA").unwrap() < out.find("## GOLDEN RULE").unwrap());
@@ -305,17 +314,17 @@ fn issue_2832_modified_snapshots_survive_provisioning_and_final_materialization(
                         root_conditions(None, false),
                     )
                     .unwrap();
-                    assert_eq!(out, expected);
+                    assert_eq!(root_payload(&out), expected);
                     assert_eq!(std::fs::read(&path).unwrap(), custom.as_bytes());
                     if custom.is_empty() || custom == "\n" {
-                        assert_eq!(out, custom);
+                        assert_eq!(root_payload(&out), custom);
                     }
                 }
                 cases += 1;
             }
         }
     }
-    assert_eq!(cases, 176);
+    assert_eq!(cases, 208);
     println!("issue_2832 custom-byte/state materialization cases: {cases}");
 }
 
@@ -433,7 +442,8 @@ fn issue_2832_successful_root_resolver_and_direct_ensure_preserve_exclusions() {
                 for _ in 0..2 {
                     // Actual public materializer -> production resolver -> Root
                     // identity/builder -> final writer, with coordinator=true.
-                    assert_eq!(issue_2832_combined(&root, &config_dir, auto), expected);
+                    let out = issue_2832_combined(&root, &config_dir, auto);
+                    assert_eq!(root_payload(&out), expected);
                     let direct = with_issue_2832_root_config(&config_dir, || {
                         let path = ensure_session_context(&path_string(&root)).unwrap();
                         std::fs::read_to_string(path).unwrap()
@@ -573,6 +583,12 @@ fn issue_2832_skill_budget_overflow_is_data_only_and_non_root_keeps_instructions
             );
         }
         let rendered = issue_2832_combined(&root, temp.path(), true);
+        assert!(
+            rendered.len()
+                <= SKILL_INDEX_TOTAL_MAX_BYTES
+                    + super::super::default_context::SELF_CLEAR_MANUAL_SECTION.len()
+        );
+        let rendered = root_payload(&rendered);
         assert!(rendered.len() <= SKILL_INDEX_TOTAL_MAX_BYTES);
         assert!(
             rendered.contains("Metadata omitted because"),

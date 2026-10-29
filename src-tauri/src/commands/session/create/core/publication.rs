@@ -72,106 +72,7 @@ pub(crate) async fn complete<'a: 'b, 'b, R: tauri::Runtime>(
     }
     register_session_samplers(app, id, agent_id.clone());
 
-    // Auto-inject optional non-credential bootstrap text for agent sessions
-    // after PTY spawn. Credentials are already present in child environment
-    // variables; no credentials are written through PTY.
-    //
-    // Currently the only bootstrap payload is the Coordinator auto-title prompt.
-    if agent_id.is_some() && !is_coordinator {
-        log::debug!(
-            "[session] No bootstrap injection for non-coordinator agent session {}",
-            id
-        );
-    }
-    if agent_id.is_some() && is_coordinator {
-        let auto_title_enabled = false; /*
-                                            let settings_state = app.state::<SettingsState>();
-                                            let cfg = settings_state.read().await;
-                                            cfg.auto_generate_task_title
-                                        };*/
-
-        if auto_title_enabled {
-            let app_clone = app.clone();
-            let session_id = id;
-            let cwd_clone = cwd.to_owned();
-
-            tokio::spawn(async move {
-                let prompt = match build_title_prompt_appendage(&cwd_clone) {
-                    Ok(Some(prompt)) => {
-                        log::info!(
-                            "[session] Auto-title prompt built for session {}",
-                            session_id
-                        );
-                        prompt
-                    }
-                    Ok(None) => {
-                        log::info!(
-                            "[session] Auto-title prompt skipped (gate not passed) for session {}",
-                            session_id
-                        );
-                        return;
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "[session] Auto-title prompt skipped for session {}: {}",
-                            session_id,
-                            e
-                        );
-                        return;
-                    }
-                };
-
-                let max_wait = std::time::Duration::from_secs(30);
-                let poll = std::time::Duration::from_millis(500);
-                let start = std::time::Instant::now();
-
-                loop {
-                    if start.elapsed() >= max_wait {
-                        log::warn!(
-                        "[session] Timeout waiting for idle before auto-title prompt injection \
-                         for session {}",
-                        session_id
-                    );
-                        break;
-                    }
-                    tokio::time::sleep(poll).await;
-
-                    let session_mgr = app_clone.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                    let mgr = session_mgr.read().await;
-                    let sessions = mgr.list_sessions().await;
-                    match sessions.iter().find(|s| s.id == session_id.to_string()) {
-                        Some(s) if s.waiting_for_input => break,
-                        Some(_) => {}
-                        None => {
-                            log::warn!(
-                                "[session] Session {} gone before auto-title prompt injection",
-                                session_id
-                            );
-                            return;
-                        }
-                    }
-                }
-
-                match crate::pty::inject::inject_text_into_session(&app_clone, session_id, &prompt)
-                    .await
-                {
-                    Ok(()) => {
-                        log::info!(
-                            "[session] Auto-title prompt injected for session {}",
-                            session_id
-                        );
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "[session] Failed to inject auto-title prompt for {}: {}",
-                            session_id,
-                            e
-                        );
-                    }
-                }
-            });
-        }
-    }
+    maybe_spawn_coordinator_title(app, cwd, id, agent_id.is_some(), is_coordinator);
 
     let finalization_warnings = session_env_warnings
         .iter()
@@ -377,4 +278,124 @@ pub(crate) async fn complete<'a: 'b, 'b, R: tauri::Runtime>(
         }
     }
     completion
+}
+
+fn maybe_spawn_coordinator_title<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    cwd: &str,
+    id: uuid::Uuid,
+    has_agent: bool,
+    is_coordinator: bool,
+) {
+    // Auto-inject optional non-credential bootstrap text for agent sessions
+    // after PTY spawn. Credentials are already present in child environment
+    // variables; no credentials are written through PTY.
+    //
+    // Currently the only bootstrap payload is the Coordinator auto-title prompt.
+    if has_agent && !is_coordinator {
+        log::debug!(
+            "[session] No bootstrap injection for non-coordinator agent session {}",
+            id
+        );
+    }
+    if has_agent && is_coordinator {
+        let auto_title_enabled = false; /*
+                                            let settings_state = app.state::<SettingsState>();
+                                            let cfg = settings_state.read().await;
+                                            cfg.auto_generate_task_title
+                                        };*/
+
+        if auto_title_enabled {
+            let app_clone = app.clone();
+            let session_id = id;
+            let cwd_clone = cwd.to_owned();
+
+            tokio::spawn(async move {
+                let prompt = match build_title_prompt_appendage(&cwd_clone) {
+                    Ok(Some(prompt)) => {
+                        log::info!(
+                            "[session] Auto-title prompt built for session {}",
+                            session_id
+                        );
+                        prompt
+                    }
+                    Ok(None) => {
+                        log::info!(
+                            "[session] Auto-title prompt skipped (gate not passed) for session {}",
+                            session_id
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "[session] Auto-title prompt skipped for session {}: {}",
+                            session_id,
+                            e
+                        );
+                        return;
+                    }
+                };
+
+                if !wait_for_title_prompt_ready(&app_clone, session_id).await {
+                    return;
+                }
+
+                match crate::pty::inject::inject_text_into_session(&app_clone, session_id, &prompt)
+                    .await
+                {
+                    Ok(()) => {
+                        log::info!(
+                            "[session] Auto-title prompt injected for session {}",
+                            session_id
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "[session] Failed to inject auto-title prompt for {}: {}",
+                            session_id,
+                            e
+                        );
+                    }
+                }
+            });
+        }
+    }
+}
+
+async fn wait_for_title_prompt_ready<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: uuid::Uuid,
+) -> bool {
+    let max_wait = std::time::Duration::from_secs(30);
+    let poll = std::time::Duration::from_millis(500);
+    let start = std::time::Instant::now();
+
+    loop {
+        if start.elapsed() >= max_wait {
+            log::warn!(
+                "[session] Timeout waiting for idle before auto-title prompt injection \
+             for session {}",
+                session_id
+            );
+            break;
+        }
+        tokio::time::sleep(poll).await;
+
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        let sessions = mgr.list_sessions().await;
+        match sessions.iter().find(|s| s.id == session_id.to_string()) {
+            Some(s) if s.waiting_for_input => break,
+            Some(_) => {}
+            None => {
+                log::warn!(
+                    "[session] Session {} gone before auto-title prompt injection",
+                    session_id
+                );
+                return false;
+            }
+        }
+    }
+
+    true
 }

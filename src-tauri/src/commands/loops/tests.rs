@@ -468,3 +468,259 @@ async fn every_loop_command_bumps_the_generation() {
     fixture.create().await;
     assert_ne!(generation(), before, "create_loop must bump");
 }
+
+#[derive(Default)]
+struct DeliveryAdapterBackend {
+    live: Mutex<std::collections::HashSet<Uuid>>,
+    specs: Mutex<Vec<crate::pty::backend::BackendSpawnSpec>>,
+}
+impl crate::pty::backend::PtyBackend for DeliveryAdapterBackend {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn spawn(
+        &self,
+        spec: crate::pty::backend::BackendSpawnSpec,
+    ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+        Box::pin(async move {
+            self.live.lock().unwrap().insert(spec.id);
+            self.specs.lock().unwrap().push(spec);
+            Ok(())
+        })
+    }
+    fn write(
+        &self,
+        _: &crate::pty::manager::BackendWriteAuthority,
+        _: Uuid,
+        _: &[u8],
+    ) -> Result<(), crate::errors::AppError> {
+        panic!("no native input")
+    }
+    fn resize(&self, _: Uuid, _: u16, _: u16) -> Result<(), crate::errors::AppError> {
+        panic!("no resize")
+    }
+    fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+        self.live.lock().unwrap().remove(&id);
+        Ok(())
+    }
+    fn has_session(&self, id: Uuid) -> bool {
+        self.live.lock().unwrap().contains(&id)
+    }
+    fn get_screen_snapshot(&self, _: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+        None
+    }
+    fn get_pty_size(&self, _: Uuid) -> Option<(u16, u16)> {
+        None
+    }
+    fn get_screen_rows(&self, _: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+        crate::pty::context_scrape::ScreenRowsRead::SessionOver
+    }
+    fn register_response_watcher(&self, _: Uuid, _: String, _: PathBuf) {}
+    fn terminate_job_for_session(&self, _: Uuid) -> bool {
+        false
+    }
+    fn kill_all_jobs(&self) -> (usize, usize) {
+        (0, 0)
+    }
+}
+
+fn delivery_adapter_app(
+    session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+    backend: Arc<DeliveryAdapterBackend>,
+    settings: crate::config::settings::AppSettings,
+) -> tauri::App {
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    let coordinator = crate::session::selection::SelectionCoordinator::new(
+        Arc::clone(&session_mgr),
+        shutdown.token().clone(),
+    );
+    let output_senders = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let telegram: crate::telegram::manager::TelegramBridgeState =
+        Arc::new(tokio::sync::Mutex::new(
+            crate::telegram::manager::TelegramBridgeManager::new(output_senders),
+        ));
+    let store_dir = tempfile::TempDir::new().expect("create target-gate store");
+    let message_store = Arc::new(
+        crate::api::message_store::MessageStore::open(
+            store_dir
+                .path()
+                .join(crate::api::message_store::DB_FILENAME),
+        )
+        .expect("open target-gate store"),
+    );
+    let target_gate_state = crate::api::message_store::PtyInputTargetGateState::for_root(
+        store_dir.path().to_path_buf(),
+    );
+    let pty_mgr = Arc::new(Mutex::new(PtyManager::new_for_test(backend)));
+    let app = crate::test_support::test_builder()
+        .manage(crate::config::settings::new_settings_state(settings))
+        .manage(Arc::new(
+            crate::resource_monitor::ResourceMonitorState::new(),
+        ))
+        .manage(Arc::clone(&session_mgr))
+        .manage(pty_mgr)
+        .manage(crate::DetachedSessionsState::default())
+        .manage(telegram)
+        .manage(crate::session::warnings::new_session_warning_state())
+        .manage(Arc::new(crate::pty::menu_guard::MenuGuard::new()))
+        .manage(coordinator.clone())
+        .manage(target_gate_state.clone())
+        .manage(shutdown)
+        .manage(
+            crate::api::message_store::MessageStoreState::with_store_and_target_gate(
+                Ok(message_store),
+                target_gate_state.gate.clone(),
+            ),
+        )
+        .manage(store_dir)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build restartable loop app");
+    coordinator
+        .start(app.handle().clone())
+        .expect("start coordinator");
+    let bootstrap = coordinator.clone();
+    std::thread::spawn(move || {
+        tauri::async_runtime::block_on(async move {
+            bootstrap
+                .submit_restore_first()
+                .await
+                .expect("open coordinator")
+                .finish();
+        });
+    })
+    .join()
+    .expect("join coordinator bootstrap");
+    app
+}
+
+#[test]
+fn issue_3260_delivery_adapter_required_state_panics_at_use() {
+    let app = crate::test_support::test_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    assert!(app.handle().purge_guard().is_none());
+    // Constructing a borrowing future performs no required-state lookup.
+    let future = app.handle().restart_fresh(Uuid::new_v4());
+    drop(future);
+    for getter in [
+        (|app: &AppHandle| {
+            let _ = app.sessions();
+        }) as fn(&AppHandle),
+        |app: &AppHandle| {
+            let _ = app.ptys();
+        },
+        |app: &AppHandle| {
+            let _ = app.settings_owner();
+        },
+    ] {
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            getter(app.handle());
+        }))
+        .is_err());
+    }
+}
+
+#[tokio::test]
+async fn issue_3260_delivery_adapter_background_and_default_gate_delegation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().to_string_lossy().to_string();
+    let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let backend = Arc::new(DeliveryAdapterBackend::default());
+    let settings = crate::config::settings::AppSettings {
+        agents: vec![delivery_adapter_agent("pi", "pi --model x")],
+        ..Default::default()
+    };
+    let spawn = crate::config::agent_command::resolve_agent_spawn_command(
+        &settings,
+        "pi",
+        Some(tmp.path()),
+        None,
+        false,
+    )
+    .unwrap();
+    let app = delivery_adapter_app(Arc::clone(&sessions), Arc::clone(&backend), settings);
+    // This cwd is outside every registered project. The cfg(test) default gate skips it.
+    assert!(crate::config::sessions_persistence::enforce_creation_gate(
+        app.handle(),
+        &cwd,
+        crate::config::sessions_persistence::CreationGateEnforcement::Enforce,
+    )
+    .await
+    .is_err());
+    let selected = sessions
+        .read()
+        .await
+        .create_session(
+            "shell".into(),
+            Vec::new(),
+            cwd.clone(),
+            None,
+            None,
+            Vec::<SessionRepo>::new(),
+            false,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+        )
+        .await
+        .unwrap()
+        .id;
+    sessions
+        .read()
+        .await
+        .set_active_only(selected)
+        .await
+        .unwrap();
+    let info = app
+        .handle()
+        .create(LoopSessionCreate {
+            shell: spawn.shell.clone(),
+            shell_args: spawn.shell_args.clone(),
+            cwd: cwd.clone(),
+            session_name: Some("background loop".into()),
+            agent_id: Some("pi".into()),
+            agent_label: Some("pi".into()),
+            skip_auto_resume: true,
+            resolved_spawn: Some(spawn),
+            resolved_agent_host_shell: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(sessions.read().await.get_active().await, Some(selected));
+    let id = Uuid::parse_str(&info.id).unwrap();
+    let restarted = app.handle().restart_fresh(id).await.unwrap();
+    assert_ne!(restarted.id, info.id);
+    assert_eq!(sessions.read().await.get_active().await, Some(selected));
+    {
+        let specs = backend.specs.lock().unwrap();
+        assert_eq!(specs.len(), 2);
+        for spec in specs.iter() {
+            assert_eq!((spec.cols, spec.rows), (120, 30));
+            assert_eq!(spec.cmd, "pi");
+            assert!(!spec.args.contains(&"--continue".to_string()));
+            assert_eq!(spec.cwd, cwd);
+        }
+    }
+    app.state::<crate::session::selection::SelectionCoordinator>()
+        .close_and_join()
+        .await;
+}
+
+fn delivery_adapter_agent(id: &str, command: &str) -> crate::config::settings::AgentConfig {
+    crate::config::settings::AgentConfig {
+        preflight: None,
+        preflight_timeout_seconds: None,
+        id: id.to_string(),
+        id_hash: None,
+        id_hash_debug: None,
+        label: id.to_string(),
+        command: command.to_string(),
+        color: "#000000".to_string(),
+        order: None,
+        envs: Vec::new(),
+        isolated_home: false,
+        instructions_filename: None,
+        config_seed: None,
+        context_regex: None,
+        blocking_menus: None,
+        backend: Default::default(),
+    }
+}

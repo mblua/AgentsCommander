@@ -8,6 +8,9 @@ use super::team_config::{
 };
 use super::{RepoAssignment, SyncError, SyncResult, TeamConfigResult};
 use crate::commands::ac_discovery::DiscoveryBranchWatcher;
+use crate::config::entity_creation::directories::{
+    replica_candidates, replica_role_present, team_directory_present, team_room_candidates,
+};
 use crate::config::replica_identity::{
     normalize_wg_replica_context_entries, repair_wg_replica_config_value, ROLE_MD_FILENAME,
     WG_REPLICA_REQUIRED_CONTEXT,
@@ -15,7 +18,7 @@ use crate::config::replica_identity::{
 use crate::pty::git_watcher::{CoordinatorChangedPayload, GitWatcher};
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionRepo;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
@@ -43,7 +46,7 @@ pub async fn update_team(
     let guard = acquire_team_config_mutation_guard_async(&base).await?;
 
     let team_dir = base.join(format!("_team_{}", team_name));
-    if !team_dir.exists() {
+    if !team_directory_present(&team_dir) {
         return Err(format!("Team '{}' not found", team_name));
     }
 
@@ -176,7 +179,7 @@ pub(super) fn apply_wg_replica_repos(
             &existing_context,
             &["$AGENTSCOMMANDER_CONTEXT"],
             &identity.identity,
-            identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
+            replica_role_present(&identity.matrix_dir.join(ROLE_MD_FILENAME)),
         ));
 
         let final_obj = config.as_object_mut().ok_or_else(|| {
@@ -214,29 +217,7 @@ pub(super) async fn sync_workgroup_repos_inner(
     // discovery poll re-registers them with fresh data (§3.2.5 / Grinch #17).
     let mut touched_replica_paths: Vec<String> = Vec::new();
 
-    // Find all workgroups for this team (same discovery as delete_team())
-    let wg_suffix = format!("-{}", team_name);
-    let mut wg_dirs: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(base) {
-        for entry in entries.flatten() {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            // #1614: the middle segment comes from the STRIPPED remainder, never
-            // from an index. The literal 3 was "wg-".len(); "room-".len() is 5,
-            // so an index form would mis-slice every Room name and, for a team
-            // name long enough, panic on a reversed range.
-            if let Some(rest) = crate::config::entity_prefix::strip_entity_prefix(&name_str) {
-                if let Some(middle) = rest.strip_suffix(&wg_suffix) {
-                    if middle.parse::<u32>().is_ok() {
-                        wg_dirs.push(entry.path());
-                    }
-                }
-            }
-        }
-    }
+    let wg_dirs = team_room_candidates(base, team_name);
 
     for wg_dir in &wg_dirs {
         let mut wg_touched = false;
@@ -247,14 +228,8 @@ pub(super) async fn sync_workgroup_repos_inner(
             .to_string();
 
         // List __agent_* directories in this workgroup
-        let replica_dirs: Vec<PathBuf> = match std::fs::read_dir(wg_dir) {
-            Ok(entries) => entries
-                .flatten()
-                .filter(|e| {
-                    e.path().is_dir() && e.file_name().to_string_lossy().starts_with("__agent_")
-                })
-                .map(|e| e.path())
-                .collect(),
+        let replica_dirs = match replica_candidates(wg_dir) {
+            Ok(dirs) => dirs,
             Err(e) => {
                 log::warn!("Failed to read workgroup dir {}: {}", wg_dir.display(), e);
                 continue;

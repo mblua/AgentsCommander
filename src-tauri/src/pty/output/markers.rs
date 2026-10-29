@@ -1,3 +1,5 @@
+use crate::filesystem::{directories, documents};
+
 use super::ResponseWatcherMap;
 use uuid::Uuid;
 
@@ -185,7 +187,7 @@ pub(super) fn write_response_file(
     content: String,
 ) {
     let response_path = response_dir.join(format!("{}.json", request_id));
-    if let Err(e) = std::fs::create_dir_all(response_dir) {
+    if let Err(e) = directories::ensure_pty_response_directory(response_dir) {
         log::warn!("Failed to create responses dir: {}", e);
     }
 
@@ -197,7 +199,7 @@ pub(super) fn write_response_file(
 
     match serde_json::to_string_pretty(&response_json) {
         Ok(json) => {
-            if let Err(e) = std::fs::write(&response_path, json) {
+            if let Err(e) = documents::write_pty_response(&response_path, json.as_bytes()) {
                 log::warn!("Failed to write response file: {}", e);
             } else {
                 log::info!(
