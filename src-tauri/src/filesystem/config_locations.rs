@@ -38,3 +38,14 @@ pub(crate) fn replica_role_exists(path: &Path) -> bool {
 pub(crate) fn ensure_instance_outbox(path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path)
 }
+
+pub(crate) fn create_config_write_probe(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+}
+
+pub(crate) fn remove_config_write_probe(path: &Path) -> std::io::Result<()> {
+    std::fs::remove_file(path)
+}

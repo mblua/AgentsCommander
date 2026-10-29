@@ -41,7 +41,7 @@ pub(crate) mod shared_locations;
 pub(crate) mod teams;
 
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -484,10 +484,10 @@ fn probe_candidate_write(candidate: &Path) -> WriteProbeOutcome {
         RetryPlatform::current(),
         candidate,
         &probe_path,
-        |path| fs::create_dir_all(path),
-        |path| OpenOptions::new().write(true).create_new(true).open(path),
+        crate::filesystem::config_locations::ensure_shared_directories,
+        crate::filesystem::config_locations::create_config_write_probe,
         |file: &mut File| file.write_all(b"AgentsCommander write probe\n"),
-        |path| fs::remove_file(path),
+        crate::filesystem::config_locations::remove_config_write_probe,
         std::thread::sleep,
     )
 }
