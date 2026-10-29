@@ -1,4 +1,5 @@
 use super::super::record::PersistedSession;
+use crate::filesystem::directories::canonical_carrier_cwd;
 use crate::session::session::SessionStatus;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -103,11 +104,11 @@ pub(in super::super) fn probe_publication_directory(
             if !initial {
                 return PublicationDirectoryIdentity::Legacy;
             }
-            std::fs::canonicalize(dir)
+            canonical_carrier_cwd(dir)
                 .map(PublicationDirectoryIdentity::Known)
                 .unwrap_or(PublicationDirectoryIdentity::Legacy)
         }
-        Some(_) => std::fs::canonicalize(dir)
+        Some(_) => canonical_carrier_cwd(dir)
             .map(PublicationDirectoryIdentity::Known)
             .unwrap_or(PublicationDirectoryIdentity::Unknown),
         None => PublicationDirectoryIdentity::Unknown,
