@@ -11,6 +11,7 @@ use super::SourceKind;
 use super::SourceOriginalInventoryEvidence;
 use super::SourceRef;
 use super::SourceRevision;
+use crate::filesystem::settings_sources;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -250,7 +251,7 @@ pub(crate) fn coordination_publication_error(
 pub(crate) fn coordination_parent(
     path: &Path,
 ) -> Result<crate::path_identity::RetainedDirectory, SourceCoordinationError> {
-    let parent = std::fs::canonicalize(
+    let parent = settings_sources::canonical(
         path.parent()
             .ok_or(SourceCoordinationError::IdentityUncertain)?,
     )
@@ -292,7 +293,7 @@ pub(crate) fn source_ledger_name(kind: SourceKind) -> &'static str {
 pub(crate) fn coordination_read(
     path: &Path,
 ) -> Result<(SourceRevision, Option<Vec<u8>>), SourceCoordinationError> {
-    match std::fs::symlink_metadata(path) {
+    match settings_sources::probe(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((SourceRevision::Absent {}, None)),
         Err(e) => Err(SourceCoordinationError::Io(e.to_string())),
         Ok(_) => {
@@ -304,7 +305,7 @@ pub(crate) fn coordination_read(
 }
 
 pub(crate) fn reject_legacy_source_ledger(path: &Path) -> Result<(), SourceCoordinationError> {
-    match std::fs::symlink_metadata(path) {
+    match settings_sources::probe(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(SourceCoordinationError::Io(error.to_string())),
         Ok(_) => Err(SourceCoordinationError::Invalid),

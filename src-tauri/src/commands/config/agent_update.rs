@@ -1,9 +1,28 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 use crate::config::settings::SettingsState;
 
 use super::preferences::persist_narrow_settings_update;
+
+impl crate::agent_update::AgentUpdateTasks for AppHandle {
+    fn spawn_update_task(&self, task: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {
+        drop(tauri::async_runtime::spawn(task));
+    }
+}
+
+impl crate::agent_update::AgentUpdateState for AppHandle {
+    fn update_settings(&self) -> &SettingsState {
+        tauri::Manager::state::<SettingsState>(self).inner()
+    }
+
+    fn install_cache(&self) -> Option<&Arc<crate::agent_version::AgentInstallCache>> {
+        tauri::Manager::try_state::<Arc<crate::agent_version::AgentInstallCache>>(self)
+            .map(|state| state.inner())
+    }
+}
 
 /// Issue #609 - return the pending "npm update available" info, or null if the
 /// running build is current / the check has not finished / it is disabled.

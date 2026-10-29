@@ -16,6 +16,7 @@ use super::{
 };
 use crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME;
 use crate::config::settings::project_path as projects;
+use crate::filesystem::settings_sources;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -53,7 +54,7 @@ impl BoundedSourceObservation {
 
 pub(crate) fn observe_agent_file(path: &Path) -> BoundedSourceObservation {
     agent_file_checkpoint("observe", path);
-    match std::fs::symlink_metadata(path) {
+    match settings_sources::probe(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return BoundedSourceObservation::Absent
         }

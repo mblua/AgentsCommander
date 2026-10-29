@@ -91,7 +91,8 @@ fn build_fixture(tmp: &Path) -> Fixture {
 }
 
 #[cfg(target_os = "windows")]
-const WINDOWS_SIMULATOR_PS1: &str = r#"
+const WINDOWS_SIMULATOR_PS1: &str = concat!(
+    r#"
 param(
   [Parameter(Mandatory=$true)][string]$OutboxDir,
   [Parameter(Mandatory=$true)][string]$ResponsesDir,
@@ -103,7 +104,8 @@ $deadline = (Get-Date).AddSeconds($TimeoutSec)
 $lastReadinessError = $null
 
 while ((Get-Date) -lt $deadline) {
-  $messageFile = Get-ChildItem -LiteralPath $OutboxDir -Filter '*.json' -File -ErrorAction SilentlyContinue |
+  $messageFile = Get-ChildItem -LiteralPath $OutboxDir -Filter '*.json"#,
+    r#"' -File -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTimeUtc, Name |
     Select-Object -First 1
 
@@ -114,7 +116,8 @@ while ((Get-Date) -lt $deadline) {
       $messageBody = Get-Content -LiteralPath $messagePath -Raw -ErrorAction Stop
       $message = $messageBody | ConvertFrom-Json -ErrorAction Stop
     } catch {
-      $lastReadinessError = "message visible but not parseable yet at ${messagePath}: $($_.Exception.Message)"
+      $lastReadinessError = "message visible but not parseable yet at "#,
+    r#"${messagePath}: $($_.Exception.Message)"
       Start-Sleep -Milliseconds 50
       continue
     }
@@ -150,12 +153,14 @@ while ((Get-Date) -lt $deadline) {
     $deliveredDir = Join-Path $OutboxDir 'delivered'
     New-Item -ItemType Directory -Force -Path $deliveredDir | Out-Null
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText((Join-Path $deliveredDir "$($message.id).json"), $messageBody, $utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $deliveredDir "$($messag"#,
+    r#"e.id).json"), $messageBody, $utf8NoBom)
     Remove-Item -LiteralPath $messagePath -Force -ErrorAction SilentlyContinue
 
     New-Item -ItemType Directory -Force -Path $ResponsesDir | Out-Null
     $responseBody = Get-Content -LiteralPath $ResponseBodyPath -Raw -ErrorAction Stop
-    [System.IO.File]::WriteAllText((Join-Path $ResponsesDir "$($message.requestId).json"), $responseBody, $utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $ResponsesDir "$($messag"#,
+    r#"e.requestId).json"), $responseBody, $utf8NoBom)
 
     Write-Output $message.id
     exit 0
@@ -165,12 +170,14 @@ while ((Get-Date) -lt $deadline) {
 }
 
 if ($lastReadinessError) {
-  Write-Error "timeout waiting for ready CLI outbox message at $OutboxDir; last readiness error: $lastReadinessError"
+  Write-Error "timeout waiting for ready CLI outbox message at $Outbox"#,
+    r#"Dir; last readiness error: $lastReadinessError"
 } else {
   Write-Error "timeout waiting for CLI outbox write at $OutboxDir"
 }
 exit 12
-"#;
+"#
+);
 
 #[cfg(target_os = "windows")]
 fn write_windows_simulator_script(tmp: &Path) -> PathBuf {
@@ -300,7 +307,8 @@ fn simulate_daemon_response(
         if start.elapsed() >= overall_timeout {
             return Err(match last_readiness_error {
                 Some(e) => format!(
-                    "timeout waiting for ready CLI outbox message at {:?}; last readiness error: {}",
+                    "timeout waiting for ready CLI outbox message at {:?}; \
+                        last readiness error: {}",
                     outbox_dir, e
                 ),
                 None => format!("timeout waiting for CLI outbox write at {:?}", outbox_dir),

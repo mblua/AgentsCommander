@@ -11,6 +11,7 @@ use crate::config::loops::{
 use crate::config::projects::{enumerate_registered_project_candidates, ProjectResolution};
 use crate::config::sessions_persistence;
 use crate::config::settings::SettingsState;
+use crate::filesystem::loop_files;
 use crate::loops::events::emit_loop_change;
 
 /// Every scan-side state write: a Loop whose `config.toml` is gone is `Stale`
@@ -42,7 +43,7 @@ pub(super) fn guarded_state_write(
 /// and the key survives the directory's own deletion. Case-folded on Windows.
 pub(super) fn generation_key(dir: &Path) -> String {
     let path = match (dir.parent(), dir.file_name()) {
-        (Some(parent), Some(name)) => std::fs::canonicalize(parent)
+        (Some(parent), Some(name)) => loop_files::canonical_loop_root(parent)
             .map(|parent| parent.join(name))
             .unwrap_or_else(|_| dir.to_path_buf()),
         _ => dir.to_path_buf(),
@@ -74,7 +75,7 @@ pub(super) fn read_state_snapshot(dir: &Path) -> Result<(LoopState, Option<Vec<u
 
 pub(super) fn read_raw_loop_state(dir: &Path) -> Result<Option<Vec<u8>>, String> {
     let path = crate::config::loops::resolved_loop_state_path(dir);
-    match std::fs::read(&path) {
+    match loop_files::read_loop_bytes(&path) {
         Ok(content) => Ok(Some(content)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("Failed to read {}: {}", path.display(), e)),
@@ -144,12 +145,11 @@ pub(super) fn unresolved_targets_in_project(project_dir: &Path) -> Vec<Unresolve
 }
 
 pub(super) fn loop_dirs(ac_root: &Path) -> Result<Vec<PathBuf>, String> {
-    let entries =
-        std::fs::read_dir(ac_root).map_err(|e| format!("Failed to read Project AC Root: {}", e))?;
+    let entries = loop_files::loop_discovery_entries(ac_root)
+        .map_err(|e| format!("Failed to read Project AC Root: {}", e))?;
     let mut dirs = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+    for path in entries {
+        if !loop_files::loop_path_is_directory(&path) {
             continue;
         }
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {

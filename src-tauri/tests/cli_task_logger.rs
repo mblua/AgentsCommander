@@ -195,7 +195,8 @@ fn task_set_title_audit_line_reaches_file_sink() {
     // non-functional foundation again.
     assert!(
         log_contents.contains("[task] set-title:"),
-        "app.log at {} did not contain a [task] set-title line.\nstderr was:\n{}\nfile contents:\n{}",
+        "app.log at {} did not contain a [task] set-title line.\nstderr \
+            was:\n{}\nfile contents:\n{}",
         log_path.display(),
         String::from_utf8_lossy(&out.stderr),
         log_contents,
@@ -294,7 +295,8 @@ fn task_append_body_audit_line_reaches_file_sink_and_preserves_title() {
     let log_contents = std::fs::read_to_string(&log_path).unwrap_or_default();
     assert!(
         log_contents.contains("[task] append-body:"),
-        "app.log at {} did not contain a [task] append-body line.\nstderr was:\n{}\nfile contents:\n{}",
+        "app.log at {} did not contain a [task] append-body line.\nstderr \
+            was:\n{}\nfile contents:\n{}",
         log_path.display(),
         String::from_utf8_lossy(&out.stderr),
         log_contents,
