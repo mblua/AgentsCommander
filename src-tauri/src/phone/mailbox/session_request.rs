@@ -722,7 +722,7 @@ impl MailboxPoller {
         else {
             return false;
         };
-        let Ok(content) = mailbox_disk::read_mailbox_task_text(task_path) else {
+        let Ok(content) = mailbox_disk::read_mailbox_task_text(&task_path) else {
             return false;
         };
         crate::commands::entity_creation::parse_task_title(&content).is_some()
