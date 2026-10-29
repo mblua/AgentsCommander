@@ -8,13 +8,16 @@ use super::retained_prompt::flush_retained_prompts_locked;
 #[cfg(test)]
 use super::write::save_sessions_to_dir;
 use super::write::{run_owned_persist_core, PersistMode, PersistPreparation};
+use crate::filesystem::sessions_persistence_files::{
+    append_orphan_archive_line, ensure_orphan_archive, orphan_archive_exists, orphan_archive_length,
+    rename_orphan_archive,
+};
 use crate::session::manager::{
     acquire_carrier_mutation_permit, CarrierDisposition, CarrierMutationPermit, SessionManager,
 };
 use crate::session::session::SessionStatus;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -245,11 +248,7 @@ pub(super) fn append_orphan_archive_record_locked(
         }
     };
     let wrote = {
-        let result = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(archive_path)
-            .and_then(|mut file| writeln!(file, "{}", line));
+        let result = append_orphan_archive_line(archive_path, &line);
         if let Err(e) = result {
             log::error!(
                 "[sessions] Failed to append orphan archive record to {:?}: {}",
@@ -309,8 +308,8 @@ pub(crate) async fn append_orphan_archive_record(
 /// failures never fail the persist. Deliberate LOCAL duplicate of the logging
 /// algorithm (logging.rs untouched; documented cross-reference).
 pub(super) fn rotate_orphan_archive(archive_path: &Path) {
-    let len = match std::fs::metadata(archive_path) {
-        Ok(metadata) => metadata.len(),
+    let len = match orphan_archive_length(archive_path) {
+        Ok(len) => len,
         Err(_) => return,
     };
     if len < orphan_archive_max_bytes() {
@@ -329,11 +328,11 @@ pub(super) fn rotate_orphan_archive(archive_path: &Path) {
     if ORPHAN_ARCHIVE_KEEP >= 2 {
         for i in (1..=ORPHAN_ARCHIVE_KEEP - 1).rev() {
             let from = numbered(i);
-            if !from.exists() {
+            if !orphan_archive_exists(&from) {
                 continue;
             }
             let to = numbered(i + 1);
-            if let Err(e) = std::fs::rename(&from, &to) {
+            if let Err(e) = rename_orphan_archive(&from, &to) {
                 log::error!(
                     "[sessions] orphan archive rotation: failed to rename {} to {}: {} \
                      (continuing)",
@@ -345,7 +344,7 @@ pub(super) fn rotate_orphan_archive(archive_path: &Path) {
         }
     }
 
-    if let Err(e) = std::fs::rename(archive_path, numbered(1)) {
+    if let Err(e) = rename_orphan_archive(archive_path, &numbered(1)) {
         log::error!(
             "[sessions] orphan archive rotation: failed to rename {} to {}: {} (active file stays \
              in place)",
@@ -357,11 +356,7 @@ pub(super) fn rotate_orphan_archive(archive_path: &Path) {
     }
 
     // Recreate a fresh active file so the next append starts clean.
-    if let Err(e) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(archive_path)
-    {
+    if let Err(e) = ensure_orphan_archive(archive_path) {
         log::error!(
             "[sessions] orphan archive rotation: failed to recreate {}: {}",
             archive_path.display(),
