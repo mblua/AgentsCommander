@@ -105,19 +105,19 @@ fn logical_origin_distance(a: &LogicalFrame, b: &LogicalFrame) -> f64 {
 /// and size both fall inside the rounding tolerance, else fall back to the
 /// nearest origin, which is what shipped before.
 pub(super) fn match_monitor(
-    tauri: &[MonitorGeometry],
+    window_monitors: &[MonitorGeometry],
     captured: &MonitorGeometry,
     frame: PlacementFrame,
 ) -> Option<usize> {
     if frame == PlacementFrame::Physical {
-        if let Some(idx) = tauri
+        if let Some(idx) = window_monitors
             .iter()
             .position(|tm| tm.name.is_some() && tm.name == captured.name)
         {
             return Some(idx);
         }
         let (cx, cy) = captured.position;
-        return tauri
+        return window_monitors
             .iter()
             .enumerate()
             .min_by_key(|(_, tm)| {
@@ -129,7 +129,7 @@ pub(super) fn match_monitor(
     }
 
     let want = xcap_logical_frame(captured);
-    if let Some(idx) = tauri.iter().position(|tm| {
+    if let Some(idx) = window_monitors.iter().position(|tm| {
         let got = tauri_logical_frame(tm);
         logical_origin_distance(&got, &want) <= LOGICAL_ORIGIN_TOLERANCE_PT
             && (got.width - want.width).abs() + (got.height - want.height).abs()
@@ -137,7 +137,7 @@ pub(super) fn match_monitor(
     }) {
         return Some(idx);
     }
-    tauri
+    window_monitors
         .iter()
         .enumerate()
         .min_by(|(_, a), (_, b)| {
@@ -164,11 +164,11 @@ impl PlacementGeometry {
 /// for every Tauri coordinate — and fall back to the xcap geometry when nothing
 /// matched.
 pub(super) fn build_placement(
-    tauri: Option<&MonitorGeometry>,
+    window_monitor: Option<&MonitorGeometry>,
     captured: &MonitorGeometry,
     frame: PlacementFrame,
 ) -> PlacementGeometry {
-    match (frame, tauri) {
+    match (frame, window_monitor) {
         (PlacementFrame::Physical, Some(tm)) => PlacementGeometry {
             x: tm.position.0,
             y: tm.position.1,
