@@ -841,7 +841,12 @@ impl PreparedCarrierRelation {
             id: row.id.as_deref().and_then(|id| Uuid::parse_str(id).ok()),
             cwd: row.working_directory.clone(),
             canonical_cwd: (!protections.is_empty())
-                .then(|| std::fs::canonicalize(&row.working_directory).ok())
+                .then(|| {
+                    crate::filesystem::directories::canonical_carrier_cwd(Path::new(
+                        &row.working_directory,
+                    ))
+                    .ok()
+                })
                 .flatten(),
         }
     }
@@ -854,7 +859,12 @@ impl PreparedCarrierRelation {
             id: Some(row.id),
             cwd: row.working_directory.clone(),
             canonical_cwd: (!protections.is_empty())
-                .then(|| std::fs::canonicalize(&row.working_directory).ok())
+                .then(|| {
+                    crate::filesystem::directories::canonical_carrier_cwd(Path::new(
+                        &row.working_directory,
+                    ))
+                    .ok()
+                })
                 .flatten(),
         }
     }
