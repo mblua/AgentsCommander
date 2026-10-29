@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render } from "solid-js/web";
 import WebBrowserView, { isCovered, physicalBounds } from "./WebBrowserView";
+import { webBrowserStore } from "../stores/webBrowser";
 
 const api = vi.hoisted(() => {
   const snapshot = { url: "about:blank", title: "", loading: false, visible: true };
@@ -90,6 +91,39 @@ describe("WebBrowserView rejected URL (#3367)", () => {
           "unsupported url: javascript:alert(1)",
         ),
       );
+    } finally {
+      dispose();
+      root.remove();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("WebBrowserView typed URL (#3367)", () => {
+  it("keeps the typed URL when the field blurs before Go and when a snapshot arrives", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    api.navigate.mockClear();
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    const dispose = render(() => WebBrowserView({}), root);
+    try {
+      const url = root.querySelector<HTMLInputElement>('[data-ac-testid="webBrowser.url"]')!;
+      url.focus();
+      url.value = "example.com";
+      url.dispatchEvent(new Event("input", { bubbles: true }));
+      // A mouse click on Go blurs the field first; the show/hide snapshot of
+      // the current page must not overwrite the text either.
+      url.blur();
+      webBrowserStore.apply({ url: "about:blank", title: "", loading: false, visible: false });
+      expect(url.value).toBe("example.com");
+      root.querySelector<HTMLButtonElement>('[data-ac-testid="webBrowser.go"]')!.click();
+      expect(api.navigate).toHaveBeenCalledWith("example.com");
     } finally {
       dispose();
       root.remove();

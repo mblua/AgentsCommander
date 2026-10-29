@@ -1,4 +1,14 @@
-import { Component, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import {
+  Component,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  on,
+  onCleanup,
+  onMount,
+  untrack,
+} from "solid-js";
 import { WebBrowserAPI, type WebBrowserBounds } from "../../shared/ipc";
 import { webBrowserStore } from "../stores/webBrowser";
 
@@ -49,14 +59,19 @@ const WebBrowserView: Component = () => {
   // Rounded bounds last sent to the backend; null while hidden.
   let shown: string | null = null;
   let disposed = false;
-  const [draft, setDraft] = createSignal(webBrowserStore.url);
-  const [editing, setEditing] = createSignal(false);
+  const [draft, setDraft] = createSignal("");
+  // True while the URL bar holds text the user typed and has not submitted.
+  const [dirty, setDirty] = createSignal(false);
+  const pageUrl = createMemo(() => webBrowserStore.url);
+  const showPage = () => setDraft(pageUrl() === "about:blank" ? "" : pageUrl());
 
-  // Keep the URL bar on the page URL unless the user is typing.
-  createEffect(() => {
-    const url = webBrowserStore.url;
-    if (!editing()) setDraft(url === "about:blank" ? "" : url);
-  });
+  // Follow page changes unless the user has typed. Blur must keep the text: a
+  // mouse click on Go blurs the field before the form submits.
+  createEffect(
+    on(pageUrl, () => {
+      if (!untrack(dirty)) showPage();
+    }),
+  );
 
   const run = (call: Promise<unknown>) => {
     call
@@ -120,7 +135,7 @@ const WebBrowserView: Component = () => {
     e.preventDefault();
     const url = draft().trim();
     if (!url) return;
-    setEditing(false);
+    setDirty(false);
     inputRef?.blur();
     act(() => WebBrowserAPI.navigate(url));
   };
@@ -172,13 +187,14 @@ const WebBrowserView: Component = () => {
           aria-label="URL"
           title={webBrowserStore.title || webBrowserStore.url}
           value={draft()}
-          onFocus={() => setEditing(true)}
-          onBlur={() => setEditing(false)}
-          onInput={(e) => setDraft(e.currentTarget.value)}
+          onInput={(e) => {
+            setDraft(e.currentTarget.value);
+            setDirty(true);
+          }}
           onKeyDown={(e) => {
             if (e.key !== "Escape") return;
-            setEditing(false);
-            setDraft(webBrowserStore.url === "about:blank" ? "" : webBrowserStore.url);
+            setDirty(false);
+            showPage();
             e.currentTarget.blur();
           }}
           data-ac-testid="webBrowser.url"
