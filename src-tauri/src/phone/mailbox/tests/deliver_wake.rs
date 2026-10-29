@@ -795,7 +795,7 @@ fn rejection_inventory(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     fn visit(root: &Path, dir: &Path, rows: &mut Vec<(PathBuf, Vec<u8>)>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
-            let relative = path.strip_prefix(root).unwrap().to_path_buf();
+            let relative = path.strip_prefix(root).unwrap().components().collect();
             if path.is_dir() {
                 rows.push((relative, Vec::new()));
                 visit(root, &path, rows);
@@ -900,13 +900,13 @@ fn rejection_case(id: &str, raw: bool, failure: u8) {
             ));
         }
     }
+    for (path, _) in &mut expected {
+        *path = path.components().collect();
+    }
     expected.sort();
     assert_eq!(rejection_inventory(&root), expected, "id={id:?}");
-    let unsettled = poller
-        .response_sources
-        .lock()
-        .unwrap()
-        .contains_key(&source);
+    let sources = poller.response_sources.lock().unwrap();
+    let unsettled = sources.contains_key(&source);
     assert_eq!(unsettled, failure != 0);
     #[cfg(windows)]
     if id.contains(":stream") {
