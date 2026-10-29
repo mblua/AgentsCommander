@@ -88,13 +88,12 @@ fn long_path_publish_fixture(root: &Path) -> (PathBuf, PathBuf) {
     }
     std::fs::create_dir_all(&dir).expect("create long dir");
     let dest = dir.join("config.json");
-    use std::io::Write;
     std::fs::write(&dest, b"old content").expect("write dest");
     let guard = super::PairTargetGuard::new(&|| Ok(()));
     let (tmp, mut file) = super::acquire_fresh_config_stage(&dest, &guard).unwrap();
-    file.write_all(b"new content").unwrap();
-    file.flush().unwrap();
-    file.sync_all().unwrap();
+    crate::filesystem::local_config::write_local_config_stage(&mut file, b"new content").unwrap();
+    crate::filesystem::local_config::flush_local_config_stage(&mut file).unwrap();
+    crate::filesystem::local_config::sync_local_config_stage(&file).unwrap();
     drop(file);
 
     for p in [&dest, &tmp] {

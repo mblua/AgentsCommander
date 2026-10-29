@@ -604,7 +604,7 @@ fn ensure_opencode_config_dir(
         );
         return OpencodeConfigDirOutcome::Skipped;
     }
-    match std::fs::create_dir_all(&path) {
+    match crate::filesystem::agent_command::ensure_opencode_config_directory(&path) {
         Ok(()) => {
             log::info!(
                 "[opencode] Ensured OPENCODE_CONFIG_DIR '{}'",
@@ -875,13 +875,15 @@ pub(crate) fn resolve_agent_spawn_command(
 /// creation preserves its existing best-effort policy.
 pub(crate) fn prepare_agent_spawn_command(command: &AgentSpawnCommand) -> Result<(), String> {
     if let Some(home) = command.isolated_codex_home_to_prepare.as_ref() {
-        std::fs::create_dir_all(home).map_err(|e| {
-            format!(
-                "Failed to create isolated CODEX_HOME '{}': {}",
-                home.display(),
-                e
-            )
-        })?;
+        crate::filesystem::agent_command::ensure_isolated_codex_home_directory(home).map_err(
+            |e| {
+                format!(
+                    "Failed to create isolated CODEX_HOME '{}': {}",
+                    home.display(),
+                    e
+                )
+            },
+        )?;
     }
     ensure_opencode_config_dir(
         &command.shell,
