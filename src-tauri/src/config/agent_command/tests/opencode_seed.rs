@@ -213,6 +213,40 @@ fn resolve_is_read_only_and_prepare_is_idempotent_for_opencode() {
 }
 
 #[test]
+fn prepare_codex_home_failure_short_circuits_opencode_directory_creation() {
+    let temp = tempfile::tempdir().unwrap();
+    let blocker = temp.path().join("not-a-directory");
+    std::fs::write(&blocker, b"x").unwrap();
+    let home = blocker.join("home");
+    let parent = temp.path().join("oc");
+    std::fs::create_dir_all(&parent).unwrap();
+    let target = parent.join(".opencode");
+    assert!(parent.is_dir());
+    assert!(!target.exists());
+    let settings = AppSettings {
+        agents: vec![agent("opencode", "opencode")],
+        ..AppSettings::default()
+    };
+    let mut spawn =
+        resolve_agent_spawn_command(&settings, "opencode", None, Some("A"), false).unwrap();
+    spawn.isolated_codex_home_to_prepare = Some(home.clone());
+    spawn.profile_env = opencode_env(&target.to_string_lossy());
+    let expected = std::fs::create_dir_all(&home).unwrap_err();
+
+    let error = prepare_agent_spawn_command(&spawn).unwrap_err();
+
+    assert_eq!(
+        error,
+        format!(
+            "Failed to create isolated CODEX_HOME '{}': {}",
+            home.display(),
+            expected
+        )
+    );
+    assert!(!target.exists());
+}
+
+#[test]
 fn resolve_is_read_only_and_public_build_prepares_isolated_codex_home() {
     let id = format!("codex-resolve-{}", uuid::Uuid::new_v4());
     let mut codex = agent(&id, "codex");
