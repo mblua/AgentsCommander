@@ -1,3 +1,4 @@
+use crate::filesystem::local_config;
 use std::cell::Cell;
 use std::path::Path;
 use std::path::PathBuf;
@@ -5,7 +6,8 @@ use std::sync::Mutex;
 use std::sync::MutexGuard;
 use std::sync::OnceLock;
 use std::time::Duration;
-use std::time::Instant;
+
+pub(crate) use crate::filesystem::local_config::SidecarWriteLock;
 
 pub(super) fn local_config_write_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -64,16 +66,7 @@ impl Drop for ConfigWriterActive {
 /// next to the config file: created once, never deleted - including on error
 /// paths - so every process locks the same file. Closing the handle (normal
 /// drop, panic, or process death) releases the OS lock.
-pub(super) const CONFIG_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub(super) const CONFIG_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// #1938 - a held sidecar lock. The `File` IS the lock: dropping this guard
-/// closes the handle and releases the OS lock. The sidecar file itself is
-/// deliberately left on disk.
-#[derive(Debug)]
-pub(crate) struct SidecarWriteLock {
-    _file: std::fs::File,
-}
 
 /// #1938 - the physical sidecar for `config_path` once its parent has resolved
 /// to the canonical directory, so raw, dot-segment, symlink and Windows case /
@@ -107,7 +100,7 @@ pub(super) fn acquire_config_file_write_lock(
             config_path.display()
         )
     })?;
-    let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
+    let canonical_parent = local_config::canonical_local_config_parent(parent).map_err(|e| {
         format!(
             "Failed to resolve local config directory '{}' for write lock: {}",
             parent.display(),
@@ -133,91 +126,5 @@ pub(crate) fn acquire_sidecar_write_lock(
     timeout_marker: &str,
     subject: &str,
 ) -> Result<SidecarWriteLock, String> {
-    let mut chars = subject.chars();
-    let subject_capitalized: String = chars
-        .next()
-        .map(|first| first.to_uppercase().chain(chars).collect())
-        .unwrap_or_default();
-    match std::fs::symlink_metadata(lock_path) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            return Err(format!(
-                "{} '{}' must be a regular non-symlink file",
-                subject_capitalized,
-                lock_path.display()
-            ));
-        }
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => {
-            return Err(format!(
-                "Failed to inspect {} '{}': {}",
-                subject,
-                lock_path.display(),
-                e
-            ));
-        }
-    }
-
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)
-        .map_err(|e| {
-            format!(
-                "Failed to open {} '{}': {}",
-                subject,
-                lock_path.display(),
-                e
-            )
-        })?;
-    if !file
-        .metadata()
-        .map_err(|e| {
-            format!(
-                "Failed to inspect opened {} '{}': {}",
-                subject,
-                lock_path.display(),
-                e
-            )
-        })?
-        .is_file()
-    {
-        return Err(format!(
-            "{} '{}' must be a regular file",
-            subject_capitalized,
-            lock_path.display()
-        ));
-    }
-
-    let started = Instant::now();
-    loop {
-        match file.try_lock() {
-            Ok(()) => break,
-            Err(std::fs::TryLockError::WouldBlock) if started.elapsed() >= timeout => {
-                return Err(format!(
-                    "{}: timed out after {} ms waiting for {} '{}'",
-                    timeout_marker,
-                    timeout.as_millis(),
-                    subject,
-                    lock_path.display()
-                ));
-            }
-            Err(std::fs::TryLockError::WouldBlock) => {
-                let remaining = timeout.saturating_sub(started.elapsed());
-                std::thread::sleep(CONFIG_LOCK_POLL_INTERVAL.min(remaining));
-            }
-            Err(std::fs::TryLockError::Error(e)) => {
-                return Err(format!(
-                    "Failed to acquire {} '{}': {}",
-                    subject,
-                    lock_path.display(),
-                    e
-                ));
-            }
-        }
-    }
-
-    Ok(SidecarWriteLock { _file: file })
+    local_config::acquire_local_config_sidecar_lock(lock_path, timeout, timeout_marker, subject)
 }
