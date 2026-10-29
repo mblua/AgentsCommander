@@ -66,3 +66,34 @@ describe("WebBrowserView Go button (#3367)", () => {
     }
   });
 });
+
+describe("WebBrowserView rejected URL (#3367)", () => {
+  it("shows the backend error after Go", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    api.navigate.mockRejectedValueOnce("unsupported url: javascript:alert(1)");
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    const dispose = render(() => WebBrowserView({}), root);
+    try {
+      const url = root.querySelector<HTMLInputElement>('[data-ac-testid="webBrowser.url"]')!;
+      url.value = "javascript:alert(1)";
+      url.dispatchEvent(new Event("input", { bubbles: true }));
+      root.querySelector<HTMLButtonElement>('[data-ac-testid="webBrowser.go"]')!.click();
+      await vi.waitFor(() =>
+        expect(root.querySelector('[data-ac-testid="webBrowser.error"]')?.textContent).toBe(
+          "unsupported url: javascript:alert(1)",
+        ),
+      );
+    } finally {
+      dispose();
+      root.remove();
+      vi.unstubAllGlobals();
+    }
+  });
+});

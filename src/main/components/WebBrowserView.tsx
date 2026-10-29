@@ -68,6 +68,12 @@ const WebBrowserView: Component = () => {
       .catch((e) => webBrowserStore.fail(e));
   };
 
+  // A user action replaces the previous error; show/hide never clear it.
+  const act = (start: () => Promise<unknown>) => {
+    webBrowserStore.clearError();
+    run(start());
+  };
+
   const sync = () => {
     frame = 0;
     if (disposed || !viewportRef) return;
@@ -116,7 +122,7 @@ const WebBrowserView: Component = () => {
     if (!url) return;
     setEditing(false);
     inputRef?.blur();
-    run(WebBrowserAPI.navigate(url));
+    act(() => WebBrowserAPI.navigate(url));
   };
 
   return (
@@ -127,7 +133,7 @@ const WebBrowserView: Component = () => {
           class="web-browser-btn"
           title="Back"
           aria-label="Back"
-          onClick={() => run(WebBrowserAPI.go(-1))}
+          onClick={() => act(() => WebBrowserAPI.go(-1))}
           data-ac-testid="webBrowser.back"
           data-ac-role="button"
         >
@@ -138,7 +144,7 @@ const WebBrowserView: Component = () => {
           class="web-browser-btn"
           title="Forward"
           aria-label="Forward"
-          onClick={() => run(WebBrowserAPI.go(1))}
+          onClick={() => act(() => WebBrowserAPI.go(1))}
           data-ac-testid="webBrowser.forward"
           data-ac-role="button"
         >
@@ -150,7 +156,7 @@ const WebBrowserView: Component = () => {
           classList={{ loading: webBrowserStore.loading }}
           title="Refresh"
           aria-label="Refresh"
-          onClick={() => run(WebBrowserAPI.reload())}
+          onClick={() => act(() => WebBrowserAPI.reload())}
           data-ac-testid="webBrowser.reload"
           data-ac-role="button"
           data-ac-state={webBrowserStore.loading ? "loading" : "idle"}

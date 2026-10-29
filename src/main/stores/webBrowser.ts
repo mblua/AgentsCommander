@@ -23,8 +23,14 @@ export const webBrowserStore = {
     return error();
   },
 
+  // Only a new page clears the error: show/hide snapshots keep the URL, and
+  // the error banner itself moves the viewport, which triggers a show.
   apply(next: WebBrowserSnapshot) {
+    if (next.url !== snapshot().url) setError(null);
     setSnapshot(next);
+  },
+
+  clearError() {
     setError(null);
   },
 
