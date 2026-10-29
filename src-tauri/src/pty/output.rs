@@ -16,6 +16,8 @@ use capture::{CaptureFailure, ScreenReplayState};
 use markers::screen_shows_visible_content;
 pub(crate) use markers::{output_has_printable_activity, scan_response_markers};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
@@ -24,7 +26,6 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 #[cfg(any(windows, test))]
 use std::time::Instant;
-use tauri::{AppHandle, Emitter};
 #[cfg(test)]
 use terminal_snapshot_renderer::{TerminalActiveBuffer, TerminalCellWidth, TerminalColor};
 use uuid::Uuid;
@@ -154,11 +155,9 @@ fn history_from_first_line<'a>(front: &'a [u8], back: &'a [u8]) -> Option<(&'a [
     Some((&[], aligned_back))
 }
 
-/// The private result surface of the Tauri output effect. It deliberately carries no
-/// underlying Tauri error because output bytes and event errors are both sensitive at this
-/// boundary.
+/// Output emission failure without transport details or sensitive output bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PtyOutputEmitError {
+pub(crate) enum PtyOutputEmitError {
     Emit,
 }
 
@@ -174,11 +173,11 @@ enum PtyOutputEmitError {
 /// faulted parser is what made the terminal permanently black in #955.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PtyOutputPayload {
-    session_id: String,
-    data: Vec<u8>,
+pub(crate) struct PtyOutputPayload {
+    pub(crate) session_id: String,
+    pub(crate) data: Vec<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    sequence: Option<u64>,
+    pub(crate) sequence: Option<u64>,
 }
 
 /// The only two conditions that fail an attach: there is nothing to attach to.
@@ -229,11 +228,14 @@ impl RegisteredPtyOutputTarget {
 
 /// One emit per attached window label, fallible as a whole.
 type PtyOutputEmitFn =
-    dyn Fn(&[WindowLabel], PtyOutputPayload) -> Result<(), PtyOutputEmitError> + Send + Sync;
+    dyn Fn(&[String], PtyOutputPayload) -> Result<(), PtyOutputEmitError> + Send + Sync;
+
+pub(crate) type PtyOutputTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 #[derive(Clone)]
 pub(crate) struct PtyOutputTarget {
     emit_pty_output: Arc<PtyOutputEmitFn>,
+    spawn_task: Arc<dyn Fn(PtyOutputTask) + Send + Sync + 'static>,
 }
 
 #[cfg(test)]
@@ -243,59 +245,52 @@ pub(crate) type PtyOutputTestEvent = (String, Vec<u8>, Option<u64>);
 pub(crate) type PtyOutputTestSink = Arc<Mutex<Vec<PtyOutputTestEvent>>>;
 
 impl PtyOutputTarget {
-    /// Emits once per attached window label.
-    ///
-    /// `emit` would deliver to EVERY open webview, listener or not: the sidebar and every
-    /// detached terminal window each pay a receive-side deserialization before their event
-    /// router discards the payload. With `emit_to` the bridge multiplier is the number of
-    /// (session, attached window) pairs instead, which is what bounds the webview axis at all.
-    /// `emit_to` returns `Ok` for a label with no listener and for a label whose window is
-    /// already gone, so a window that died before the destroy reap ran is benign.
-    pub(crate) fn from_app_handle<R: tauri::Runtime>(app_handle: AppHandle<R>) -> Self {
+    pub(crate) fn new<E, S>(emit: E, spawn: S) -> Self
+    where
+        E: Fn(&[String], PtyOutputPayload) -> Result<(), PtyOutputEmitError>
+            + Send
+            + Sync
+            + 'static,
+        S: Fn(PtyOutputTask) + Send + Sync + 'static,
+    {
         Self {
-            emit_pty_output: Arc::new(move |labels, payload| {
-                let mut result = Ok(());
-                for label in labels {
-                    if app_handle
-                        .emit_to(label.as_str(), "pty_output", payload.clone())
-                        .is_err()
-                    {
-                        result = Err(PtyOutputEmitError::Emit);
-                    }
-                }
-                result
-            }),
+            emit_pty_output: Arc::new(emit),
+            spawn_task: Arc::new(spawn),
         }
+    }
+
+    fn spawn_flush(&self, task: PtyOutputTask) {
+        (self.spawn_task)(task);
     }
 
     #[cfg(test)]
     pub(crate) fn noop() -> Self {
-        Self {
-            emit_pty_output: Arc::new(|_, _| Ok(())),
-        }
+        Self::new(|_, _| Ok(()), drop)
     }
 
     #[cfg(test)]
     pub(crate) fn from_test_sink(sink: PtyOutputTestSink) -> Self {
-        Self {
-            emit_pty_output: Arc::new(move |_labels, payload| {
+        Self::new(
+            move |_labels, payload| {
                 sink.lock()
                     .unwrap()
                     .push((payload.session_id, payload.data, payload.sequence));
                 Ok(())
-            }),
-        }
+            },
+            drop,
+        )
     }
 
     #[cfg(test)]
     fn failing_test_sink(sink: PtyOutputTestSink) -> Self {
         let target = Self::from_test_sink(sink);
-        Self {
-            emit_pty_output: Arc::new(move |labels, payload| {
+        Self::new(
+            move |labels, payload| {
                 let _ = target.emit_pty_output(labels, payload);
                 Err(PtyOutputEmitError::Emit)
-            }),
-        }
+            },
+            drop,
+        )
     }
 
     fn emit_pty_output(
