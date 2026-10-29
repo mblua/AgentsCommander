@@ -2,11 +2,18 @@
 use super::super::session::{Session, SessionCommunication, SessionStatus};
 use super::{PendingCreateBinding, RetainedPrompt, SessionManager, SessionManagerState};
 use crate::errors::AppError;
-use crate::pty::backend::SessionBackendKind;
+use crate::pty::response_close::{
+    RowEnrollment, TrackerAdmissionFact, TrackerProofError, TrackerPublicationKind,
+    TrackerPublicationReceipt, TrackerRowExpectation, TrackerVersionRule,
+};
 use crate::session::selection::payload::SessionSelection;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
+
+mod facts;
+use facts::stable_carrier_equal;
+pub(crate) use facts::{CarrierPhysicalIdentity, CarrierSnapshot};
 
 /// The process publication gate is shared with P05 persistence. It holds no
 /// directory protection map or settings state.
@@ -34,71 +41,6 @@ pub(crate) async fn acquire_carrier_mutation_permit() -> CarrierMutationPermit {
 impl CarrierMutationPermit {
     fn proves(&self) -> bool {
         Arc::ptr_eq(&self.gate, process_carrier_publication_gate())
-    }
-}
-
-#[derive(Clone)]
-// Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
-pub(crate) struct CarrierSnapshot {
-    pub rows: Vec<Session>,
-    // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
-    pub versions: HashMap<Uuid, u64>,
-    // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
-    pub pending_ids: HashSet<Uuid>,
-    // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
-    pub order: Vec<Uuid>,
-    // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
-    pub selection: SessionSelection,
-}
-
-impl CarrierSnapshot {
-    pub(crate) fn is_local_interactive_carrier(row: &Session) -> bool {
-        row.backend_kind == SessionBackendKind::LocalProcess
-            && !row.is_root_agent
-            && !row.is_coordinator
-            && !row.was_detached
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CarrierPhysicalIdentity(crate::path_identity::VerifiedPathIdentity);
-
-impl From<crate::path_identity::VerifiedPathIdentity> for CarrierPhysicalIdentity {
-    fn from(value: crate::path_identity::VerifiedPathIdentity) -> Self {
-        Self(value)
-    }
-}
-
-impl CarrierPhysicalIdentity {
-    pub(crate) fn canonical_path(&self) -> &std::path::Path {
-        &self.0.canonical_path
-    }
-
-    pub(crate) fn is_dir(&self) -> bool {
-        self.0.metadata.is_dir
-    }
-
-    pub(crate) fn same_object(&self, other: &Self) -> bool {
-        self.0.object_id == other.0.object_id
-    }
-
-    pub(crate) fn matches_route_observations(
-        &self,
-        cwd: Option<&crate::path_identity::VerifiedPathIdentity>,
-        replica: Option<&crate::path_identity::VerifiedPathIdentity>,
-        expected_replica: Option<&Self>,
-    ) -> bool {
-        cwd.is_some_and(|cwd| cwd.object_id == self.0.object_id)
-            && match (replica, expected_replica) {
-                (Some(actual), Some(expected)) => actual.object_id == expected.0.object_id,
-                (None, None) => true,
-                _ => false,
-            }
     }
 }
 
@@ -171,6 +113,9 @@ pub(super) struct CarrierStateWrite<'a> {
     owned_before: Vec<OwnedRowIdentity>,
     result: Option<super::CommitResult>,
     finished: bool,
+    tracking: Result<TrackerAdmissionFact, TrackerProofError>,
+    publications: Vec<Result<TrackerPublicationReceipt, TrackerProofError>>,
+    expectations: Vec<TrackerRowExpectation>,
     #[cfg(test)]
     probe: Option<crate::config::sessions_persistence::OperationScope>,
 }
@@ -186,48 +131,6 @@ impl std::ops::DerefMut for CarrierStateWrite<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.state
     }
-}
-
-pub(super) fn stable_carrier_equal(a: &Session, b: &Session) -> bool {
-    a.id == b.id
-        && a.created_at == b.created_at
-        && a.token == b.token
-        && a.name == b.name
-        && a.working_directory == b.working_directory
-        && a.shell == b.shell
-        && a.shell_args == b.shell_args
-        && a.backend_kind == b.backend_kind
-        && a.effective_shell_args == b.effective_shell_args
-        && a.agent_id == b.agent_id
-        && a.agent_label == b.agent_label
-        && a.git_repos.len() == b.git_repos.len()
-        && a.git_repos
-            .iter()
-            .zip(&b.git_repos)
-            .all(|(a, b)| a.label == b.label && a.source_path == b.source_path)
-        && a.is_coordinator == b.is_coordinator
-        && a.is_root_agent == b.is_root_agent
-        && a.agent_kind == b.agent_kind
-        && a.requested_profile == b.requested_profile
-        && a.effective_profile == b.effective_profile
-        && a.profile_fallback_chain == b.profile_fallback_chain
-        && a.profile_fallback_applied == b.profile_fallback_applied
-        && a.match_tier == b.match_tier
-        && a.original_profile_letter == b.original_profile_letter
-        && a.effective_codex_home == b.effective_codex_home
-        && a.resolved_claude_projects_dir == b.resolved_claude_projects_dir
-        && a.profile_content_hash == b.profile_content_hash
-        && a.trusted_configured_spawn == b.trusted_configured_spawn
-        && a.telegram_bot_id == b.telegram_bot_id
-        && a.was_detached == b.was_detached
-        && a.start_fresh_on_restore == b.start_fresh_on_restore
-        && a.communication == b.communication
-        && matches!(a.status, SessionStatus::Active) == matches!(b.status, SessionStatus::Active)
-        && match (&a.status, &b.status) {
-            (SessionStatus::Exited(a), SessionStatus::Exited(b)) => a == b,
-            (SessionStatus::Exited(_), _) | (_, SessionStatus::Exited(_)) => false,
-            _ => true,
-        }
 }
 
 impl CarrierStateWrite<'_> {
@@ -307,7 +210,7 @@ impl CarrierStateWrite<'_> {
             self.state.prompt_keys.remove(id);
             self.state.pending_prompts.remove(id);
             self.state.prompt_seed_blocked.remove(id);
-            self.tracker.invalidate_manager_row(*id, now);
+            self.invalidate_row(*id, now);
             // Retain the version tombstone: same-UUID recreation never resets it.
             if let Some(next) = self
                 .state
@@ -342,7 +245,7 @@ impl CarrierStateWrite<'_> {
                 .copied()
                 .unwrap_or(0);
             if changed {
-                self.tracker.invalidate_manager_row(row.id, now);
+                self.invalidate_row(row.id, now);
                 let Some(next) = version.checked_add(1) else {
                     self.tracker.fail_closed();
                     continue;
@@ -357,7 +260,8 @@ impl CarrierStateWrite<'_> {
             // Canonical verified target names are supplied by upper admission.
             // This publisher preserves an existing verified target; it cannot
             // promote a CWD/label into authenticated routing authority.
-            self.tracker.publish_manager_row(
+            let expected = self.row_expectation(row.id, TrackerPublicationKind::Published);
+            if let Some(publication) = self.tracker.publish_manager_row_dispatch(
                 row.id,
                 row.token,
                 generation,
@@ -369,9 +273,60 @@ impl CarrierStateWrite<'_> {
                     && !matches!(row.status, SessionStatus::Exited(_)),
                 crate::session::session::is_working(&row),
                 now,
-            );
+                expected.as_ref(),
+            ) {
+                self.publications.push(publication);
+            }
+        }
+        for original in &self.expectations {
+            let id = original.original.row;
+            let kind = match original.original.enrollment {
+                RowEnrollment::Unenrolled => TrackerPublicationKind::Unenrolled,
+                _ if !self.state.sessions.contains_key(&id) => TrackerPublicationKind::Removed,
+                _ => continue,
+            };
+            if let Some(e) = self.row_expectation(id, kind) {
+                self.publications
+                    .push(self.tracker.observe_manager_absence(&e));
+            }
         }
     }
+    fn row_expectation(
+        &self,
+        id: Uuid,
+        kind: TrackerPublicationKind,
+    ) -> Option<TrackerRowExpectation> {
+        let expected = *self.expectations.iter().find(|e| e.original.row == id)?;
+        if kind == TrackerPublicationKind::Invalidated {
+            return Some(expected);
+        }
+        Some(
+            expected.stage(
+                kind,
+                manager_row_identity(&self.state, id),
+                self.state
+                    .carrier_versions
+                    .get(&id)
+                    .copied()
+                    .filter(|_| !self.state.sessions.contains_key(&id)),
+            ),
+        )
+    }
+    fn invalidate_row(&mut self, id: Uuid, now: std::time::Instant) {
+        if let Some(expected) = self.row_expectation(id, TrackerPublicationKind::Invalidated) {
+            if matches!(expected.original.enrollment, RowEnrollment::Enrolled { .. }) {
+                self.publications
+                    .push(self.tracker.invalidate_manager_row_observed(&expected, now));
+            }
+        } else {
+            self.tracker.invalidate_manager_row(id, now);
+        }
+    }
+}
+
+fn manager_row_identity(state: &SessionManagerState, id: Uuid) -> Option<(Uuid, u64)> {
+    let row = state.sessions.get(&id)?;
+    Some((row.token, *state.carrier_versions.get(&id)?))
 }
 
 impl SessionManager {
@@ -407,6 +362,36 @@ impl SessionManager {
                 .collect()
             })
             .unwrap_or_default();
+        let tracking = permit
+            .owned
+            .as_ref()
+            .map(|claim| claim.tracking.clone())
+            .unwrap_or(Ok(TrackerAdmissionFact::NotTracked));
+        let expectations = match &tracking {
+            Ok(TrackerAdmissionFact::Bound {
+                wiring_identity,
+                rows,
+            }) => rows
+                .iter()
+                .enumerate()
+                .map(|(index, original)| {
+                    let rule = if index == 1
+                        && owned.as_ref().is_some_and(|(_, a)| a.launch().is_some())
+                    {
+                        TrackerVersionRule::SameTokenAdvance
+                    } else {
+                        TrackerVersionRule::Pinned
+                    };
+                    TrackerRowExpectation::new(
+                        *wiring_identity,
+                        *original,
+                        rule,
+                        manager_row_identity(&state, original.row),
+                    )
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let before = state.sessions.clone();
         let pending_before = state.pending_create.keys().copied().collect();
         let selection_before = state.selection.clone();
@@ -421,6 +406,9 @@ impl SessionManager {
             owned_before,
             result: None,
             finished: false,
+            tracking,
+            expectations,
+            publications: Vec::new(),
             #[cfg(test)]
             probe: permit.owned.as_ref().and_then(|claim| claim.probe.clone()),
         }
@@ -558,12 +546,15 @@ pub(crate) struct OwnedMutationReceipt {
     pub initial_b: Option<(Uuid, u64, u64)>,
     // Pending is additive manager publication, never full tracker settlement proof.
     pub tracker_pending: bool,
+    pub tracking: TrackerAdmissionFact,
+    pub publications: Vec<Result<TrackerPublicationReceipt, TrackerProofError>>,
 }
 struct OwnedMutationState {
     manager: Option<std::sync::Weak<tokio::sync::RwLock<SessionManagerState>>>,
     action: Option<OwnedAction>,
     observation: OwnedMutationObservation,
     partial: Option<Arc<OwnedMutationReceipt>>,
+    tracking: Option<Result<TrackerAdmissionFact, TrackerProofError>>,
 }
 pub(crate) struct OwnedMutationCell {
     reservation: OwnedMutationReservation,
@@ -579,6 +570,7 @@ pub(crate) struct OwnedMutationClaim {
     action: OwnedAction,
     terminal: bool,
     failure: OwnedMutationFailure,
+    tracking: TrackerAdmissionFact,
     #[cfg(test)]
     probe: Option<crate::config::sessions_persistence::OperationScope>,
 }
@@ -602,6 +594,7 @@ impl OwnedMutationCell {
                 action: None,
                 observation: OwnedMutationObservation::NotEntered,
                 partial: None,
+                tracking: None,
             }),
         })
     }
@@ -692,6 +685,10 @@ impl SessionManager {
                 return Err(conflict());
             }
         }
+        let admission = self.response_close.capture_tracking_admission([
+            cell.reservation.original_a.id,
+            cell.reservation.header.binding.session_id,
+        ]);
         let mut state = cell.state.lock().map_err(|_| conflict())?;
         if state
             .action
@@ -710,6 +707,7 @@ impl SessionManager {
             OwnedMutationObservation::Applied(_) => true,
             other => return Err(other.clone()),
         };
+        let tracking = state.tracking.get_or_insert(admission).clone();
         if !terminal {
             state.manager = Some(Arc::downgrade(&self.state));
             state.action = Some(witness.action.clone());
@@ -721,6 +719,7 @@ impl SessionManager {
             action: witness.action,
             terminal,
             failure: OwnedMutationFailure::CancelledBeforeMutation,
+            tracking,
             #[cfg(test)]
             probe: crate::config::sessions_persistence::OperationScope::current(),
         })
@@ -834,6 +833,22 @@ impl CarrierStateWrite<'_> {
                 return Err(fail());
             }
         }
+        self.tracking.as_ref().map_err(|_| fail())?;
+        self.tracker
+            .validate_tracking_rows(&self.expectations)
+            .map_err(|_| fail())?;
+        if let Some(b) = self.expectations.get(1) {
+            let valid = match (action.launch(), b.original.enrollment) {
+                (Some((_, expected)), RowEnrollment::Enrolled { generation, .. }) => {
+                    generation == expected
+                }
+                (None, RowEnrollment::Unenrolled) => true,
+                _ => false,
+            };
+            if !valid {
+                return Err(fail());
+            }
+        }
         Ok(())
     }
     pub(super) fn owned_request(
@@ -874,6 +889,34 @@ impl CarrierStateWrite<'_> {
         if !cell.started.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
+        let Ok(tracking) = &self.tracking else {
+            return;
+        };
+        let tracking = *tracking;
+        let mut required = 0;
+        let mut covers = |e: TrackerRowExpectation| {
+            required += 1;
+            self.publications
+                .iter()
+                .filter(|r| r.as_ref().is_ok_and(|r| r.covers(&e)))
+                .count()
+                == 1
+        };
+        let complete = self.expectations.iter().all(|e| {
+            let id = e.original.row;
+            let kind = match e.original.enrollment {
+                RowEnrollment::Unenrolled => TrackerPublicationKind::Unenrolled,
+                _ if self.state.sessions.contains_key(&id) => TrackerPublicationKind::Published,
+                _ => TrackerPublicationKind::Removed,
+            };
+            let Some(final_row) = self.row_expectation(id, kind) else {
+                return false;
+            };
+            (kind == TrackerPublicationKind::Unenrolled
+                || final_row.manager_before == final_row.manager_final
+                || covers(*e))
+                && covers(final_row)
+        }) && required == self.publications.len();
         let binding = cell.reservation.header.binding;
         let removed_id = match action {
             OwnedAction::RemoveA { .. } => cell.reservation.original_a.id,
@@ -920,9 +963,14 @@ impl CarrierStateWrite<'_> {
                     .map(|version| (*token, *generation, *version)),
                 _ => None,
             },
-            tracker_pending: true,
+            tracker_pending: matches!(tracking, TrackerAdmissionFact::NotTracked) || !complete,
+            tracking,
+            publications: std::mem::take(&mut self.publications),
         });
-        let healthy = self.tracker.is_healthy();
+        let healthy = match tracking {
+            TrackerAdmissionFact::NotTracked => self.tracker.is_healthy(),
+            TrackerAdmissionFact::Bound { .. } => complete,
+        };
         let mut slot = cell.state.lock().unwrap_or_else(|error| error.into_inner());
         if !matches!(slot.observation, OwnedMutationObservation::InProgress) {
             return;

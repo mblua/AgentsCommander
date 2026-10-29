@@ -53,6 +53,9 @@ pub(super) struct ResponseCloseInner {
     #[allow(dead_code)]
     pub(in crate::pty) next_return_sequence: u64,
     pub(in crate::pty) unknown_spawns: usize,
+    proof_epoch: u64,
+    admissions: HashMap<AdmissionKey, ObservedAdmission>,
+    terminal_receipts: HashMap<ResponseTerminalKey, ResponseTerminalReceipt>,
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
     pub(in crate::pty) terminal_returns:
@@ -75,7 +78,7 @@ pub(super) struct ResponseCloseWork {
     pub(in crate::pty) terminal: HashMap<String, String>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ResponseRouteIdentity {
     pub target: String,
     pub session_id: Uuid,
@@ -251,6 +254,7 @@ pub(crate) struct WorkAdmission {
 // Dormant until P05 integration; remove with real callers.
 #[allow(dead_code)]
 pub(crate) struct WorkDeliveryReservation {
+    receipt: Option<AdmissionKey>,
     pub(in crate::pty) state: ResponseCloseState,
     pub(in crate::pty) target: String,
 }
@@ -265,6 +269,7 @@ pub(crate) struct WriterAdmission {
 // Dormant until P05 integration; remove with real callers.
 #[allow(dead_code)]
 pub(crate) struct CreateOwnerReservation {
+    receipt: Option<AdmissionKey>,
     pub(in crate::pty) state: ResponseCloseState,
     pub(in crate::pty) target: String,
     pub(in crate::pty) nonce: Uuid,
@@ -329,7 +334,7 @@ pub(crate) struct ResponseDeliveryProof {
     pub published_carrier_version: u64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 // Dormant until P05 integration; remove with real callers.
 #[allow(dead_code)]
 pub(crate) struct ReturnObservationContext {
@@ -633,5 +638,234 @@ impl ResponseCloseState {
     }
     pub(crate) fn is_healthy(&self) -> bool {
         self.with_inner(|_| ()).is_ok()
+    }
+}
+
+// Owned APIs stay additive until the upper settlement path is activated.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum AdmissionKind {
+    CreateOwner,
+    Delivery,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct AdmissionKey {
+    target: String,
+    operation: Uuid,
+    kind: AdmissionKind,
+    nonce: Uuid,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TrackerProofError {
+    Unknown,
+    Conflict,
+    ClosingDeferred,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TrackerReleaseReceipt {
+    pub key: AdmissionKey,
+    pub epoch: u64,
+    pub generation: Vec<(Uuid, u64)>,
+    pub routes: Vec<ResponseRouteIdentity>,
+    pub result: TrackerReleaseResult,
+}
+struct ObservedAdmission {
+    generation: Vec<(Uuid, u64)>,
+    routes: Vec<ResponseRouteIdentity>,
+    release: Option<Result<TrackerReleaseReceipt, TrackerProofError>>,
+    debited: bool,
+    terminal_started: bool,
+}
+#[derive(Clone)]
+pub(crate) struct TrackerReceiptHandle {
+    state: ResponseCloseState,
+    key: AdmissionKey,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ResponseTerminalKey {
+    pub target: String,
+    pub source_key: String,
+    pub digest: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResponseTerminalReceipt {
+    pub key: ResponseTerminalKey,
+    admission: AdmissionKey,
+    pub epoch: u64,
+    pub already_terminal: bool,
+    return_context: Option<ReturnObservationContext>,
+    pub result: TrackerTerminalResult,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TrackerPublicationReceipt {
+    pub row: Uuid,
+    pub token: Option<Uuid>,
+    pub generation: Option<u64>,
+    pub version: u64,
+    pub epoch: u64,
+    pub invalidated: bool,
+    pub expectation: TrackerRowExpectation,
+    pub kind: TrackerPublicationKind,
+    pub mirror_before: Option<TrackerMirror>,
+    pub mirror_after: Option<TrackerMirror>,
+}
+impl ResponseCloseInner {
+    fn next_proof_epoch(&mut self) -> Result<u64, TrackerProofError> {
+        match self.proof_epoch.checked_add(1) {
+            Some(next) => {
+                self.proof_epoch = next;
+                Ok(next)
+            }
+            None => {
+                self.failed = true;
+                Err(TrackerProofError::Unknown)
+            }
+        }
+    }
+    fn proof_conflict<T>(&mut self) -> Result<T, TrackerProofError> {
+        self.failed = true;
+        Err(TrackerProofError::Conflict)
+    }
+    fn target_generations(&self, target: &str) -> Vec<(Uuid, u64)> {
+        let mut rows: Vec<_> = self
+            .routes
+            .iter()
+            .filter_map(|(id, route)| {
+                route
+                    .facts
+                    .as_ref()
+                    .filter(|f| f.target == target)
+                    .map(|_| (*id, route.generation))
+            })
+            .collect();
+        rows.sort_unstable();
+        rows
+    }
+    fn touch_target(&mut self, target: &str) -> Result<(), TrackerProofError> {
+        for route in self
+            .routes
+            .values_mut()
+            .filter(|r| r.facts.as_ref().is_some_and(|f| f.target == target))
+        {
+            if !route.touch(std::time::Instant::now()) {
+                self.failed = true;
+                return Err(TrackerProofError::Unknown);
+            }
+        }
+        Ok(())
+    }
+    fn register_admission(&mut self, key: &AdmissionKey) -> Result<(), TrackerProofError> {
+        if self.admissions.contains_key(key) {
+            return self.proof_conflict();
+        }
+        let generation = self.target_generations(&key.target);
+        let routes = self.routes.values().filter_map(|r| r.facts.clone())
+            .filter(|r| r.target == key.target).collect();
+        self.admissions.insert(
+            key.clone(),
+            ObservedAdmission {
+                generation,
+                routes,
+                release: None,
+                debited: false,
+                terminal_started: false,
+            },
+        );
+        self.next_proof_epoch()?;
+        Ok(())
+    }
+}
+impl ResponseCloseState {
+    fn with_proof<T>(
+        &self,
+        f: impl FnOnce(&mut ResponseCloseInner) -> Result<T, TrackerProofError>,
+    ) -> Result<T, TrackerProofError> {
+        self.with_inner(f).map_err(|_| TrackerProofError::Unknown)?
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrackerAdmissionFact {
+    NotTracked,
+    Bound { wiring_identity: usize, rows: [RowAdmission; 2] },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrackerMirror {
+    Unpublished,
+    Published { token: Uuid, version: u64 },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RowEnrollment {
+    Unenrolled,
+    Enrolled { generation: u64, mirror: TrackerMirror },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RowAdmission {
+    pub row: Uuid,
+    pub enrollment: RowEnrollment,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrackerVersionRule {
+    Pinned,
+    SameTokenAdvance,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrackerPublicationKind {
+    Invalidated,
+    Published,
+    Removed,
+    Unenrolled,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TrackerRowExpectation {
+    pub wiring_identity: usize,
+    pub original: RowAdmission,
+    pub version_rule: TrackerVersionRule,
+    pub manager_before: Option<(Uuid, u64)>,
+    pub manager_final: Option<(Uuid, u64)>,
+    pub tombstone: Option<u64>,
+    pub kind: TrackerPublicationKind,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TrackerReleaseResult {
+    Released,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TrackerTerminalResult {
+    Ordinary,
+    ResponseReturn,
+}
+
+impl ResponseCloseInner {
+    fn admission_routes_match(&self, key: &AdmissionKey) -> bool {
+        self.admissions.get(key).is_some_and(|a| {
+            a.generation == self.target_generations(&key.target)
+                && a.routes.iter().all(|original| {
+                    self.routes.get(&original.session_id).is_some_and(|r| {
+                        r.generation == original.generation && r.facts.as_ref() == Some(original)
+                    })
+                })
+        })
+    }
+}
+
+impl TrackerRowExpectation {
+    pub(crate) fn new(
+        wiring_identity: usize, original: RowAdmission, version_rule: TrackerVersionRule,
+        manager_before: Option<(Uuid, u64)>,
+    ) -> Self {
+        Self {
+            wiring_identity, original, version_rule, manager_before,
+            manager_final: None, tombstone: None, kind: TrackerPublicationKind::Invalidated,
+        }
+    }
+    pub(crate) fn stage(
+        mut self, kind: TrackerPublicationKind,
+        manager_final: Option<(Uuid, u64)>, tombstone: Option<u64>,
+    ) -> Self {
+        self.kind = kind;
+        self.manager_final = manager_final;
+        self.tombstone = tombstone;
+        self
     }
 }

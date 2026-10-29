@@ -1,3 +1,5 @@
+use super::{AdmissionKey, AdmissionKind, TrackerProofError, TrackerReceiptHandle};
+use super::{ResponseTerminalKey, ResponseTerminalReceipt, TrackerReleaseReceipt};
 use crate::pty::response_close::CreateAdmission;
 use crate::pty::response_close::CreateClassification;
 use crate::pty::response_close::CreateOwnerReservation;
@@ -222,6 +224,13 @@ impl ResponseCloseState {
         &self,
         target: &str,
     ) -> Result<WorkDeliveryReservation, ResponseCloseError> {
+        self.begin_delivery_inner(target, None)
+    }
+    fn begin_delivery_inner(
+        &self,
+        target: &str,
+        operation: Option<Uuid>,
+    ) -> Result<WorkDeliveryReservation, ResponseCloseError> {
         let mut inner = match self.inner.lock() {
             Ok(inner) => inner,
             Err(poison) => {
@@ -258,8 +267,20 @@ impl ResponseCloseState {
             return Err(ResponseCloseError::Unavailable);
         };
         work.dispatch = next;
+        let receipt = operation.map(|operation| AdmissionKey {
+            target: target.to_owned(),
+            operation,
+            kind: AdmissionKind::Delivery,
+            nonce: Uuid::new_v4(),
+        });
+        if let Some(key) = &receipt {
+            inner
+                .register_admission(key)
+                .map_err(|_| ResponseCloseError::Unknown)?;
+        }
         drop(inner);
         Ok(WorkDeliveryReservation {
+            receipt,
             state: self.clone(),
             target: target.to_owned(),
         })
@@ -271,6 +292,15 @@ impl ResponseCloseState {
         target: &str,
         nonce: Uuid,
         classification: CreateClassification,
+    ) -> Result<CreateAdmission, ResponseCloseError> {
+        self.reserve_create_owner_inner(target, nonce, classification, None)
+    }
+    fn reserve_create_owner_inner(
+        &self,
+        target: &str,
+        nonce: Uuid,
+        classification: CreateClassification,
+        operation: Option<Uuid>,
     ) -> Result<CreateAdmission, ResponseCloseError> {
         self.with_inner(|inner| {
             if matches!(&classification, CreateClassification::Unknown) {
@@ -322,7 +352,22 @@ impl ResponseCloseState {
                     inner.failed = true;
                 }
             }
+            let receipt = operation.map(|operation| AdmissionKey {
+                target: target.to_owned(),
+                operation,
+                kind: AdmissionKind::CreateOwner,
+                nonce,
+            });
+            if let Some(key) = &receipt {
+                inner
+                    .register_admission(key)
+                    .map_err(|_| ResponseCloseError::Unknown)?;
+                if inner.failed {
+                    return Err(ResponseCloseError::Unknown);
+                }
+            }
             Ok(CreateAdmission::Reserved(CreateOwnerReservation {
+                receipt,
                 state: self.clone(),
                 target: target.to_owned(),
                 nonce,
@@ -406,6 +451,10 @@ impl Drop for WorkAdmission {
 }
 impl Drop for WorkDeliveryReservation {
     fn drop(&mut self) {
+        if let Some(key) = &self.receipt {
+            let _ = self.state.release_observed_key(key);
+            return;
+        }
         let _ = self.state.with_inner(|inner| {
             if let Some(work) = inner.work.get_mut(&self.target) {
                 work.dispatch = work.dispatch.saturating_sub(1);
@@ -465,6 +514,10 @@ impl Drop for WriterAdmission {
 }
 impl Drop for CreateOwnerReservation {
     fn drop(&mut self) {
+        if let Some(key) = &self.receipt {
+            let _ = self.state.release_observed_key(key);
+            return;
+        }
         let _ = self.state.with_inner(|inner| {
             let removed = if let Some(owners) = inner.create_owners.get_mut(&self.target) {
                 let removed = owners.remove(&self.nonce).is_some();
@@ -497,5 +550,204 @@ impl Drop for CreateOwnerReservation {
                 }
             }
         });
+    }
+}
+
+impl ResponseCloseState {
+    #[allow(dead_code)]
+    pub(crate) fn begin_delivery_observed(
+        &self,
+        target: &str,
+        operation: Uuid,
+    ) -> Result<(WorkDeliveryReservation, TrackerReceiptHandle), TrackerProofError> {
+        let reservation = self
+            .begin_delivery_inner(target, Some(operation))
+            .map_err(TrackerProofError::from)?;
+        let handle = TrackerReceiptHandle {
+            state: self.clone(),
+            key: reservation
+                .receipt
+                .clone()
+                .ok_or(TrackerProofError::Unknown)?,
+        };
+        Ok((reservation, handle))
+    }
+    #[allow(dead_code)]
+    pub(crate) fn reserve_create_owner_observed(
+        &self,
+        target: &str,
+        nonce: Uuid,
+        classification: CreateClassification,
+        operation: Uuid,
+    ) -> Result<(CreateOwnerReservation, TrackerReceiptHandle), TrackerProofError> {
+        match self
+            .reserve_create_owner_inner(target, nonce, classification, Some(operation))
+            .map_err(TrackerProofError::from)?
+        {
+            CreateAdmission::Reserved(reservation) => {
+                let key = reservation
+                    .receipt
+                    .clone()
+                    .ok_or(TrackerProofError::Unknown)?;
+                Ok((
+                    reservation,
+                    TrackerReceiptHandle {
+                        state: self.clone(),
+                        key,
+                    },
+                ))
+            }
+            CreateAdmission::ClosingDeferred => Err(TrackerProofError::ClosingDeferred),
+            CreateAdmission::WaitingIdentity => Err(TrackerProofError::Unknown),
+        }
+    }
+    fn release_observed_key(
+        &self,
+        key: &AdmissionKey,
+    ) -> Result<TrackerReleaseReceipt, TrackerProofError> {
+        self.with_proof(|inner| {
+            let Some(admission) = inner.admissions.get(key) else {
+                return inner.proof_conflict();
+            };
+            if let Some(receipt) = &admission.release {
+                return receipt.clone();
+            }
+            let generation = admission.generation.clone();
+            let routes = admission.routes.clone();
+            if !inner.admission_routes_match(key) {
+                return inner.proof_conflict();
+            }
+            if generation != inner.target_generations(&key.target) {
+                return inner.proof_conflict();
+            }
+            inner.admissions.get_mut(key).ok_or(TrackerProofError::Unknown)?.release =
+                Some(Err(TrackerProofError::Unknown));
+            let released = match key.kind {
+                AdmissionKind::Delivery => inner
+                    .work
+                    .get_mut(&key.target)
+                    .and_then(|work| {
+                        work.dispatch
+                            .checked_sub(1)
+                            .map(|next| work.dispatch = next)
+                    })
+                    .is_some(),
+                AdmissionKind::CreateOwner => {
+                    let removed = inner
+                        .create_owners
+                        .get_mut(&key.target)
+                        .is_some_and(|owners| owners.remove(&key.nonce).is_some());
+                    if inner
+                        .create_owners
+                        .get(&key.target)
+                        .is_some_and(|owners| owners.is_empty())
+                    {
+                        inner.create_owners.remove(&key.target);
+                    }
+                    removed
+                }
+            };
+            if !released {
+                return inner.proof_conflict();
+            }
+            inner.admissions.get_mut(key).ok_or(TrackerProofError::Unknown)?.debited = true;
+            inner.touch_target(&key.target)?;
+            let receipt = TrackerReleaseReceipt {
+                key: key.clone(),
+                epoch: inner.next_proof_epoch()?,
+                generation,
+                routes,
+                result: super::TrackerReleaseResult::Released,
+            };
+            inner
+                .admissions
+                .get_mut(key)
+                .ok_or(TrackerProofError::Unknown)?
+                .release = Some(Ok(receipt.clone()));
+            Ok(receipt)
+        })
+    }
+}
+impl From<ResponseCloseError> for TrackerProofError {
+    fn from(error: ResponseCloseError) -> Self {
+        match error {
+            ResponseCloseError::Conflict => Self::Conflict,
+            ResponseCloseError::ClosingDeferred => Self::ClosingDeferred,
+            _ => Self::Unknown,
+        }
+    }
+}
+impl WorkDeliveryReservation {
+    #[allow(dead_code)]
+    pub(crate) fn release_observed(self) -> Result<TrackerReleaseReceipt, TrackerProofError> {
+        self.state
+            .release_observed_key(self.receipt.as_ref().ok_or(TrackerProofError::Unknown)?)
+    }
+}
+impl CreateOwnerReservation {
+    #[allow(dead_code)]
+    pub(crate) fn release_observed(self) -> Result<TrackerReleaseReceipt, TrackerProofError> {
+        self.state
+            .release_observed_key(self.receipt.as_ref().ok_or(TrackerProofError::Unknown)?)
+    }
+}
+impl TrackerReceiptHandle {
+    #[allow(dead_code)]
+    pub(crate) fn observe(&self) -> Result<Option<TrackerReleaseReceipt>, TrackerProofError> {
+        self.state.with_proof(|inner| {
+            inner
+                .admissions
+                .get(&self.key)
+                .map(|a| a.release.clone().transpose())
+                .ok_or(TrackerProofError::Unknown)?
+        })
+    }
+    #[allow(dead_code)]
+    pub(crate) fn settle_terminal_observed(
+        &self,
+        key: &ResponseTerminalKey,
+    ) -> Result<ResponseTerminalReceipt, TrackerProofError> {
+        self.state.with_proof(|inner| {
+            if key.target != self.key.target || !inner.admission_routes_match(&self.key) {
+                return inner.proof_conflict();
+            }
+            if let Some(old) = inner.terminal_receipts.get(key) {
+                if old.admission != self.key || old.return_context.is_some()
+                    || old.result != super::TrackerTerminalResult::Ordinary {
+                    return inner.proof_conflict();
+                }
+                let mut receipt = old.clone();
+                receipt.already_terminal = true;
+
+                return Ok(receipt);
+            }
+            if inner.admissions.get(&self.key).is_none_or(|a| a.terminal_started) {
+                return inner.proof_conflict();
+            }
+            let Some(work) = inner.work.get_mut(&key.target) else {
+                return inner.proof_conflict();
+            };
+            if work.pending.get(&key.source_key) != Some(&key.digest)
+                || work.terminal.contains_key(&key.source_key)
+            {
+                return inner.proof_conflict();
+            }
+            inner.admissions.get_mut(&self.key).ok_or(TrackerProofError::Unknown)?
+                .terminal_started = true;
+            work.pending.remove(&key.source_key);
+            work.terminal
+                .insert(key.source_key.clone(), key.digest.clone());
+            inner.touch_target(&key.target)?;
+            let receipt = ResponseTerminalReceipt {
+                key: key.clone(),
+                admission: self.key.clone(),
+                epoch: inner.next_proof_epoch()?,
+                already_terminal: false,
+                return_context: None,
+                result: super::TrackerTerminalResult::Ordinary,
+            };
+            inner.terminal_receipts.insert(key.clone(), receipt.clone());
+            Ok(receipt)
+        })
     }
 }
