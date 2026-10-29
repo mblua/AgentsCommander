@@ -252,6 +252,7 @@ const Titlebar: Component = () => {
                       class={`layout-segment ${currentSide() === preset.side ? "active" : ""}`}
                       onClick={() => applySidePreset(preset.side)}
                       aria-pressed={currentSide() === preset.side}
+                      data-ac-testid={`titlebar.layout.side.${preset.side}`}
                     >
                       {preset.label}
                     </button>
