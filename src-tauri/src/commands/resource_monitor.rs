@@ -72,6 +72,24 @@ pub(crate) async fn execute_resource_kill_transaction<R: tauri::Runtime>(
     session_id: Uuid,
     intent: TrustedResourceIntent,
 ) -> Result<ResourceKillResult, String> {
+    #[cfg(test)]
+    let retry_failures = std::sync::atomic::AtomicUsize::new(0);
+    execute_resource_kill_transaction_inner(
+        transaction,
+        session_id,
+        intent,
+        #[cfg(test)]
+        &retry_failures,
+    )
+    .await
+}
+
+async fn execute_resource_kill_transaction_inner<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+    intent: TrustedResourceIntent,
+    #[cfg(test)] retry_failures: &std::sync::atomic::AtomicUsize,
+) -> Result<ResourceKillResult, String> {
     let reason = match intent {
         TrustedResourceIntent::User => ResourceKillReason::User,
         TrustedResourceIntent::Watchdog => ResourceKillReason::Watchdog,
@@ -142,8 +160,15 @@ pub(crate) async fn execute_resource_kill_transaction<R: tauri::Runtime>(
                         session_id,
                         error
                     );
-                    finalize_dead_pty_route_bounded(transaction, session_id, intent, &pty_mgr)
-                        .await?;
+                    finalize_dead_pty_route_bounded(
+                        transaction,
+                        session_id,
+                        intent,
+                        &pty_mgr,
+                        #[cfg(test)]
+                        retry_failures,
+                    )
+                    .await?;
                     result.finalized = true;
                     return Ok(result);
                 }
@@ -313,6 +338,7 @@ async fn finalize_dead_pty_route_bounded<R: tauri::Runtime>(
     session_id: Uuid,
     intent: TrustedResourceIntent,
     pty_mgr: &Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>,
+    #[cfg(test)] retry_failures: &std::sync::atomic::AtomicUsize,
 ) -> Result<(), String> {
     for attempt in 1..=PTY_ROUTE_RETRY_ATTEMPTS {
         tokio::time::sleep(PTY_ROUTE_RETRY_DELAY).await;
@@ -338,7 +364,7 @@ async fn finalize_dead_pty_route_bounded<R: tauri::Runtime>(
             session_id
         );
         #[cfg(test)]
-        DEFER_RETRY_FAILURES.with(|c| c.set(c.get() + 1));
+        retry_failures.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
     log::error!(
         "[resource-monitor] bounded deferred PTY teardown exhausted {} attempts session={}; \
@@ -354,27 +380,6 @@ async fn finalize_dead_pty_route_bounded<R: tauri::Runtime>(
         drop(guard);
     }
     finalize_verified_dead_session(transaction, session_id, intent).await
-}
-
-#[cfg(test)]
-use std::cell::Cell;
-
-// Per-test count of bounded-deferred-teardown retry failures. `#[tokio::test]` (current
-// thread runtime) runs each test body on one thread, so a thread-local isolates tests
-// that run in parallel and is reset at the start of each retry test.
-#[cfg(test)]
-thread_local! {
-    static DEFER_RETRY_FAILURES: Cell<usize> = const { Cell::new(0) };
-}
-
-#[cfg(test)]
-fn defer_retry_failures() -> usize {
-    DEFER_RETRY_FAILURES.with(|c| c.get())
-}
-
-#[cfg(test)]
-fn reset_defer_retry_failures() {
-    DEFER_RETRY_FAILURES.with(|c| c.set(0));
 }
 
 #[cfg(test)]
