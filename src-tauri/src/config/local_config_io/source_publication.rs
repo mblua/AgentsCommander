@@ -4,9 +4,15 @@ use super::{
     read_config_pair_physical, PairTargetGuard, PhysicalState, PreparedPairError,
     SourceNativePublication,
 };
+#[cfg(not(windows))]
+use crate::filesystem::local_config::sync_local_config_directory;
+use crate::filesystem::local_config::{
+    flush_local_config_stage, read_local_config_source_stage, reopen_local_config_source_stage,
+    sync_local_config_stage, verify_opened_local_config_stage, write_local_config_stage,
+    LocalConfigStage,
+};
 #[cfg(test)]
 use std::cell::Cell;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -90,7 +96,7 @@ pub(crate) struct PreparedSourceCapability<'a> {
     target: &'a Path,
     bytes: &'a [u8],
     stage: PathBuf,
-    file: std::fs::File,
+    file: LocalConfigStage,
     proof: PreparedSourcePublication,
     guard: PairTargetGuard<'a>,
 }
@@ -104,10 +110,9 @@ impl PreparedSourceCapability<'_> {
         let result = (|| {
             self.guard.check()?;
             validate_source_publication_children(self.parent, &self.stage, self.target)?;
-            let current = self
-                .parent
-                .verify_opened_regular_file(&self.stage, &self.file, false)
-                .map_err(PreparedPairError::Io)?;
+            let current =
+                verify_opened_local_config_stage(self.parent, &self.stage, &self.file, false)
+                    .map_err(PreparedPairError::Io)?;
             if !self.proof.matches_parent(self.parent)
                 || !self.proof.matches_object(&current)
                 || read_config_pair_physical(&self.stage)?
@@ -157,8 +162,7 @@ impl PreparedSourceCapability<'_> {
                 &|| self.guard.check(),
             )?;
             #[cfg(not(windows))]
-            std::fs::File::open(self.target.parent().ok_or(PreparedPairError::Conflict)?)
-                .and_then(|dir| dir.sync_all())
+            sync_local_config_directory(self.target.parent().ok_or(PreparedPairError::Conflict)?)
                 .map_err(|e| PreparedPairError::Io(e.to_string()))?;
             self.guard.check()
         })();
@@ -169,34 +173,21 @@ impl PreparedSourceCapability<'_> {
     }
 
     fn verify_stage(&mut self) -> Result<(), PreparedPairError> {
-        use std::io::{Read, Seek, SeekFrom};
-        let opened = self
-            .parent
-            .verify_opened_regular_file(&self.stage, &self.file, false)
+        let opened = verify_opened_local_config_stage(self.parent, &self.stage, &self.file, false)
             .map_err(PreparedPairError::Io)?;
         if !self.proof.matches_parent(self.parent) || !self.proof.matches_object(&opened) {
             return Err(PreparedPairError::Conflict);
         }
-        self.file
-            .seek(SeekFrom::Start(0))
-            .map_err(|e| PreparedPairError::Io(e.to_string()))?;
-        let mut current = Vec::new();
-        self.file
-            .read_to_end(&mut current)
+        let current = read_local_config_source_stage(&mut self.file)
             .map_err(|e| PreparedPairError::Io(e.to_string()))?;
         if current != self.bytes {
             return Err(PreparedPairError::Conflict);
         }
         self.guard.check()?;
-        self.file
-            .flush()
+        flush_local_config_stage(&mut self.file)
             .map_err(|e| PreparedPairError::Io(e.to_string()))?;
-        self.file
-            .sync_all()
-            .map_err(|e| PreparedPairError::Io(e.to_string()))?;
-        let current = self
-            .parent
-            .verify_opened_regular_file(&self.stage, &self.file, false)
+        sync_local_config_stage(&self.file).map_err(|e| PreparedPairError::Io(e.to_string()))?;
+        let current = verify_opened_local_config_stage(self.parent, &self.stage, &self.file, false)
             .map_err(PreparedPairError::Io)?;
         if !self.proof.matches_object(&current) {
             return Err(PreparedPairError::Conflict);
@@ -220,17 +211,13 @@ pub(crate) fn prepare_source_publication<'a>(
         return Err(PreparedPairError::Conflict);
     }
     let (stage, mut file) = acquire_fresh_config_stage(target, &guard)?;
-    let own = parent
-        .verify_opened_regular_file(&stage, &file, true)
+    let own = verify_opened_local_config_stage(parent, &stage, &file, true)
         .map_err(PreparedPairError::Io)?;
     guard.check()?;
-    file.write_all(bytes)
-        .map_err(|e| PreparedPairError::Io(e.to_string()))?;
+    write_local_config_stage(&mut file, bytes).map_err(|e| PreparedPairError::Io(e.to_string()))?;
     guard.check()?;
-    file.flush()
-        .map_err(|e| PreparedPairError::Io(e.to_string()))?;
-    file.sync_all()
-        .map_err(|e| PreparedPairError::Io(e.to_string()))?;
+    flush_local_config_stage(&mut file).map_err(|e| PreparedPairError::Io(e.to_string()))?;
+    sync_local_config_stage(&file).map_err(|e| PreparedPairError::Io(e.to_string()))?;
     let id = parent.identity().object_id;
     let proof = PreparedSourcePublication::Prepared {
         stage_object: (own.object_id.volume, own.object_id.file),
@@ -266,10 +253,7 @@ pub(crate) fn reopen_source_publication<'a>(
     validate_source_publication_children(parent, &stage, target)?;
     // Identity is checked through the retained parent around the opened handle;
     // opening alone never proves ownership or authorizes a new stage.
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&stage)
+    let file = reopen_local_config_source_stage(&stage)
         .map_err(|e| PreparedPairError::Io(e.to_string()))?;
     let mut cap = PreparedSourceCapability {
         parent,
@@ -370,7 +354,7 @@ pub(crate) fn publish_source_coordination_bytes_with_validation(
             &guard,
             &log_unverified_cleanup_refusal,
             (&mut next_shared_staging_sequence, &|file, bytes| {
-                file.write_all(bytes)
+                write_local_config_stage(file, bytes)
                     .map_err(|e| PreparedPairError::Io(e.to_string()))
             }),
             Some(&source),

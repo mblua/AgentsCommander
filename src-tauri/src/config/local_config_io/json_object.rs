@@ -3,9 +3,13 @@ use super::{
     ordinary_staging_error, publish_temp_config, ConfigWriterActive, PairTargetGuard,
     CONFIG_LOCK_TIMEOUT,
 };
+use crate::filesystem::local_config::{
+    ensure_local_config_parent, flush_local_config_stage, local_config_target_exists,
+    read_local_config_text, remove_local_config_stage, sync_local_config_stage,
+    write_local_config_stage,
+};
 use serde_json::Map;
 use serde_json::Value;
-use std::io::Write;
 use std::path::Path;
 
 pub fn update_config_json_object<F>(
@@ -44,12 +48,12 @@ where
     let parent = path
         .parent()
         .ok_or_else(|| format!("Local config {} has no parent directory", path.display()))?;
-    std::fs::create_dir_all(parent)
+    ensure_local_config_parent(parent)
         .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
     let _file_lock = acquire_config_file_write_lock(path, CONFIG_LOCK_TIMEOUT)?;
 
-    let mut root = if path.exists() {
-        let content = std::fs::read_to_string(path)
+    let mut root = if local_config_target_exists(path) {
+        let content = read_local_config_text(path)
             .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
         let parsed: Value = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;
@@ -80,21 +84,21 @@ where
         acquire_fresh_config_stage(path, &guard).map_err(ordinary_staging_error)?;
 
     let write_result = (|| -> Result<(), String> {
-        file.write_all(json.as_bytes())
+        write_local_config_stage(&mut file, json.as_bytes())
             .map_err(|e| format!("Failed to write temp config {}: {}", tmp_path.display(), e))?;
-        file.flush()
+        flush_local_config_stage(&mut file)
             .map_err(|e| format!("Failed to flush temp config {}: {}", tmp_path.display(), e))?;
-        file.sync_all()
+        sync_local_config_stage(&file)
             .map_err(|e| format!("Failed to sync temp config {}: {}", tmp_path.display(), e))
     })();
     drop(file);
     if let Err(e) = write_result {
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = remove_local_config_stage(&tmp_path);
         return Err(e);
     }
 
     if let Err(e) = publish(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = remove_local_config_stage(&tmp_path);
         return Err(e);
     }
 
@@ -119,28 +123,28 @@ where
     let parent = path
         .parent()
         .ok_or_else(|| format!("Local config {} has no parent directory", path.display()))?;
-    std::fs::create_dir_all(parent)
+    ensure_local_config_parent(parent)
         .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
     let guard = PairTargetGuard::new(&|| Ok(()));
     let (tmp_path, mut file) =
         acquire_fresh_config_stage(path, &guard).map_err(ordinary_staging_error)?;
 
     let write_result = (|| -> Result<(), String> {
-        file.write_all(bytes)
+        write_local_config_stage(&mut file, bytes)
             .map_err(|e| format!("Failed to write temp config {}: {}", tmp_path.display(), e))?;
-        file.flush()
+        flush_local_config_stage(&mut file)
             .map_err(|e| format!("Failed to flush temp config {}: {}", tmp_path.display(), e))?;
-        file.sync_all()
+        sync_local_config_stage(&file)
             .map_err(|e| format!("Failed to sync temp config {}: {}", tmp_path.display(), e))
     })();
     drop(file);
     if let Err(e) = write_result {
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = remove_local_config_stage(&tmp_path);
         return Err(e);
     }
 
     if let Err(e) = publish(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = remove_local_config_stage(&tmp_path);
         return Err(e);
     }
 

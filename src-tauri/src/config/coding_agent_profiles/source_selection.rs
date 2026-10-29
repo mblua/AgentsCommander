@@ -2,7 +2,7 @@ use super::paths::{
     canonical_existing_dir, same_canonical_path, validate_profile_selection_agent_path,
 };
 use super::selection_state::ReplicaSelectionPair;
-use super::{source_discovery_cut, source_original_slots};
+use super::source_original_slots;
 use crate::config::ac_root::{
     ensure_authoritative_ac_root, is_ac_root_name, CANONICAL_AC_ROOT_DIR,
 };
@@ -60,6 +60,19 @@ pub(crate) fn discover_source_inventory(
     ),
     crate::config::settings::IdentityReferenceError,
 > {
+    discover_source_inventory_with_cut(settings, |_| Ok(()))
+}
+
+pub(crate) fn discover_source_inventory_with_cut(
+    settings: &AppSettings,
+    mut cut: impl FnMut(&'static str) -> std::io::Result<()>,
+) -> Result<
+    (
+        crate::config::settings::SourceDiscoveryWitness,
+        Vec<SourceSelectionTarget>,
+    ),
+    crate::config::settings::IdentityReferenceError,
+> {
     use crate::config::settings::{IdentityReferenceError, SourceDiscoveryWitness};
     let fail = |error: std::io::Error| IdentityReferenceError::Preparation(error.to_string());
     let mut witness = SourceDiscoveryWitness {
@@ -89,7 +102,7 @@ pub(crate) fn discover_source_inventory(
         let mut children = Vec::new();
         crate::filesystem::projects::visit_source_inventory_children(
             &base,
-            source_discovery_cut,
+            &mut cut,
             |path, kind| {
                 if kind.is_dir() {
                     witness.parents.push(path.clone());
@@ -134,11 +147,11 @@ pub(crate) fn discover_source_inventory(
     for root in ac_roots {
         witness.parents.push(root.clone());
         let mut selected = Vec::new();
-        source_discovery_cut("readDir").map_err(&fail)?;
+        cut("readDir").map_err(&fail)?;
         for item in open_profile_directory(&root).map_err(&fail)? {
-            source_discovery_cut("entry").map_err(&fail)?;
+            cut("entry").map_err(&fail)?;
             let item = item.map_err(&fail)?;
-            source_discovery_cut("fileType").map_err(&fail)?;
+            cut("fileType").map_err(&fail)?;
             let kind = item.file_type().map_err(&fail)?;
             let name = item
                 .file_name()
@@ -157,11 +170,11 @@ pub(crate) fn discover_source_inventory(
                 selected.push(item.path());
                 witness.parents.push(item.path());
                 let mut replicas = Vec::new();
-                source_discovery_cut("readDir").map_err(&fail)?;
+                cut("readDir").map_err(&fail)?;
                 for replica in open_profile_directory(&item.path()).map_err(&fail)? {
-                    source_discovery_cut("entry").map_err(&fail)?;
+                    cut("entry").map_err(&fail)?;
                     let replica = replica.map_err(&fail)?;
-                    source_discovery_cut("fileType").map_err(&fail)?;
+                    cut("fileType").map_err(&fail)?;
                     let kind = replica.file_type().map_err(&fail)?;
                     let name = replica
                         .file_name()
