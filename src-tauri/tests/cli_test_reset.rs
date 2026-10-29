@@ -322,7 +322,8 @@ fn long_path_target_deletes_only_allowed_directories() {
     }
     if let Err(e) = std::fs::create_dir_all(&base) {
         println!(
-            "skipping long path reset regression; see docs/testing/destructive-filesystem-regression.md#reset-long-path-check: {}",
+            "skipping long path reset regression; see \
+                docs/testing/destructive-filesystem-regression.md#reset-long-path-check: {}",
             e
         );
         return;
@@ -337,7 +338,8 @@ fn long_path_target_deletes_only_allowed_directories() {
     let probe_child = {
         let _guard = spawn_lock();
         probe.spawn().expect(
-            "spawn --help probe; see docs/testing/destructive-filesystem-regression.md#reset-long-path-check",
+            "spawn --help probe; see \
+                docs/testing/destructive-filesystem-regression.md#reset-long-path-check",
         )
     };
     let _probe_output = probe_child
@@ -452,12 +454,14 @@ fn held_testable_mutex_refuses_and_deletes_nothing() {
         .collect();
     assert!(
         !mine_handles.contains(&decoy_handle.as_str()),
-        "the decoy handle {decoy_handle} refers to a different mutex and must not be reported: {payload}"
+        "the decoy handle {decoy_handle} refers to a different mutex and \
+            must not be reported: {payload}"
     );
     assert_eq!(
         mine_handles,
         [expected_handle.as_str()],
-        "this harness (pid {me}) holds exactly one handle to the mutex, {expected_handle}: {payload}"
+        "this harness (pid {me}) holds exactly one handle to the mutex, \
+            {expected_handle}: {payload}"
     );
     assert!(
         mine.iter().all(|h| h["imageName"] == my_image.as_str()),
@@ -480,7 +484,8 @@ fn junction_target_refuses_and_deletes_nothing() {
 
     if let Err(e) = create_junction(&junction, &real) {
         println!(
-            "skipping junction reset regression; see docs/testing/destructive-filesystem-regression.md#reset-junction-reparse-check: {}",
+            "skipping junction reset regression; see \
+                docs/testing/destructive-filesystem-regression.md#reset-junction-reparse-check: {}",
             e
         );
         return;

@@ -150,7 +150,8 @@ fn close_response(
 }
 
 #[cfg(target_os = "windows")]
-const WINDOWS_SIMULATOR_PS1: &str = r#"
+const WINDOWS_SIMULATOR_PS1: &str = concat!(
+    r#"
 param(
   [Parameter(Mandatory=$true)][string]$OutboxDir,
   [Parameter(Mandatory=$true)][string]$ResponsesDir,
@@ -166,7 +167,8 @@ $deadline = (Get-Date).AddSeconds($TimeoutSec)
 $lastReadinessError = $null
 
 while ((Get-Date) -lt $deadline) {
-  $messageFile = Get-ChildItem -LiteralPath $OutboxDir -Filter '*.json' -File -ErrorAction SilentlyContinue |
+  $messageFile = Get-ChildItem -LiteralPath $OutboxDir -Filter '*.json"#,
+    r#"' -File -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTimeUtc, Name |
     Select-Object -First 1
 
@@ -177,7 +179,8 @@ while ((Get-Date) -lt $deadline) {
       $messageBody = Get-Content -LiteralPath $messagePath -Raw -ErrorAction Stop
       $message = $messageBody | ConvertFrom-Json -ErrorAction Stop
     } catch {
-      $lastReadinessError = "message visible but not parseable yet at ${messagePath}: $($_.Exception.Message)"
+      $lastReadinessError = "message visible but not parseable yet at "#,
+    r#"${messagePath}: $($_.Exception.Message)"
       Start-Sleep -Milliseconds 50
       continue
     }
@@ -200,8 +203,10 @@ while ((Get-Date) -lt $deadline) {
       New-Item -ItemType Directory -Force -Path $rejectedDir | Out-Null
       $utf8NoBomReject = New-Object System.Text.UTF8Encoding($false)
       $reasonBody = Get-Content -LiteralPath $ResponseBodyPath -Raw -ErrorAction Stop
-      [System.IO.File]::WriteAllText((Join-Path $rejectedDir "$($message.id).reason.txt"), $reasonBody, $utf8NoBomReject)
-      [System.IO.File]::WriteAllText((Join-Path $rejectedDir "$($message.id).json"), $messageBody, $utf8NoBomReject)
+      [System.IO.File]::WriteAllText((Join-Path $rejectedDir "$($messa"#,
+    r#"ge.id).reason.txt"), $reasonBody, $utf8NoBomReject)
+      [System.IO.File]::WriteAllText((Join-Path $rejectedDir "$($messa"#,
+    r#"ge.id).json"), $messageBody, $utf8NoBomReject)
       Remove-Item -LiteralPath $messagePath -Force -ErrorAction SilentlyContinue
       Write-Output $message.id
       exit 0
@@ -219,12 +224,14 @@ while ((Get-Date) -lt $deadline) {
       Write-Error "contract violation: to was '$($message.to)', expected '$ExpectedTo'"
       exit 13
     }
-    $forceType = if ($null -eq $message.force) { '<null>' } else { $message.force.GetType().FullName }
+    $forceType = if ($null -eq $message.force) { '<null>' } else { $me"#,
+    r#"ssage.force.GetType().FullName }
     if (-not ($message.force -is [bool]) -or $message.force -ne $true) {
       Write-Error "contract violation: force was '$($message.force)' with type '$forceType'"
       exit 13
     }
-    $timeoutType = if ($null -eq $message.timeoutSecs) { '<null>' } else { $message.timeoutSecs.GetType().FullName }
+    $timeoutType = if ($null -eq $message.timeoutSecs) { '<null>' } el"#,
+    r#"se { $message.timeoutSecs.GetType().FullName }
     $timeoutIsInteger = $message.timeoutSecs -is [byte] -or
       $message.timeoutSecs -is [sbyte] -or
       $message.timeoutSecs -is [int16] -or
@@ -234,14 +241,16 @@ while ((Get-Date) -lt $deadline) {
       $message.timeoutSecs -is [long] -or
       $message.timeoutSecs -is [uint64]
     if (-not $timeoutIsInteger -or [long]$message.timeoutSecs -ne [long]$ExpectedTimeoutSec) {
-      Write-Error "contract violation: timeoutSecs was '$($message.timeoutSecs)' with type '$timeoutType', expected integer '$ExpectedTimeoutSec'"
+      Write-Error "contract violation: timeoutSecs was '$($message.tim"#,
+    r#"eoutSecs)' with type '$timeoutType', expected integer '$ExpectedTimeoutSec'"
       exit 13
     }
 
     $deliveredDir = Join-Path $OutboxDir 'delivered'
     New-Item -ItemType Directory -Force -Path $deliveredDir | Out-Null
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText((Join-Path $deliveredDir "$($message.id).json"), $messageBody, $utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $deliveredDir "$($messag"#,
+    r#"e.id).json"), $messageBody, $utf8NoBom)
     Remove-Item -LiteralPath $messagePath -Force -ErrorAction SilentlyContinue
 
     if ($Mode -eq 'respond-staged') {
@@ -250,13 +259,15 @@ while ((Get-Date) -lt $deadline) {
       # ventana. Aca la ventana es determinista: 600ms (mas de dos ticks del
       # poll de 250ms del CLI) con un prefijo que no parsea.
       New-Item -ItemType Directory -Force -Path $ResponsesDir | Out-Null
-      Set-Content -LiteralPath (Join-Path $ResponsesDir "$($message.requestId).json") -Value '{"' -NoNewline -Encoding ascii
+      Set-Content -LiteralPath (Join-Path $ResponsesDir "$($message.re"#,
+    r#"questId).json") -Value '{"' -NoNewline -Encoding ascii
       Start-Sleep -Milliseconds 600
     }
 
     New-Item -ItemType Directory -Force -Path $ResponsesDir | Out-Null
     $responseBody = Get-Content -LiteralPath $ResponseBodyPath -Raw -ErrorAction Stop
-    [System.IO.File]::WriteAllText((Join-Path $ResponsesDir "$($message.requestId).json"), $responseBody, $utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $ResponsesDir "$($messag"#,
+    r#"e.requestId).json"), $responseBody, $utf8NoBom)
 
     Write-Output $message.id
     exit 0
@@ -266,12 +277,14 @@ while ((Get-Date) -lt $deadline) {
 }
 
 if ($lastReadinessError) {
-  Write-Error "timeout waiting for ready CLI outbox message at $OutboxDir; last readiness error: $lastReadinessError"
+  Write-Error "timeout waiting for ready CLI outbox message at $Outbox"#,
+    r#"Dir; last readiness error: $lastReadinessError"
 } else {
   Write-Error "timeout waiting for CLI outbox write at $OutboxDir"
 }
 exit 12
-"#;
+"#
+);
 
 #[cfg(target_os = "windows")]
 fn write_windows_simulator_script(tmp: &Path) -> PathBuf {
@@ -426,7 +439,8 @@ fn simulate_daemon_response(
         if start.elapsed() >= overall_timeout {
             return Err(match last_readiness_error {
                 Some(e) => format!(
-                    "timeout waiting for ready CLI outbox message at {:?}; last readiness error: {}",
+                    "timeout waiting for ready CLI outbox message at {:?}; \
+                        last readiness error: {}",
                     outbox_dir, e
                 ),
                 None => format!("timeout waiting for CLI outbox write at {:?}", outbox_dir),
@@ -818,7 +832,8 @@ fn close_session_response_via_outbox_relative_path_only() {
     assert_eq!(
         code,
         Some(0),
-        "outbox-relative response must exit 0.\nstdout: {}\nstderr: {}\nsim stdout: {}\nsim stderr: {}",
+        "outbox-relative response must exit 0.\nstdout: {}\nstderr: {}\nsim \
+            stdout: {}\nsim stderr: {}",
         stdout,
         stderr,
         sim_stdout,
@@ -857,7 +872,8 @@ fn close_session_incoherent_response_exits_two() {
     assert_eq!(
         code,
         Some(2),
-        "unknown response status must exit 2.\nstdout: {}\nstderr: {}\nsim stdout: {}\nsim stderr: {}",
+        "unknown response status must exit 2.\nstdout: {}\nstderr: {}\nsim \
+            stdout: {}\nsim stderr: {}",
         stdout,
         stderr,
         sim_stdout,
@@ -919,7 +935,8 @@ fn close_session_staged_response_write_still_exits_zero() {
     let fix = build_fixture(tmp.path(), "hank-staged");
     let target = "proj:wg-1-test/hank-staged";
     let body = format!(
-        "{{\"action\":\"close-session\",\"target\":\"{}\",\"status\":\"closed\",\"sessions_closed\":1,\"session_ids\":[\"7\"],\"requested_by\":\"tester\"}}",
+        "{{\"action\":\"close-session\",\"target\":\"{}\",\"status\":\"closed\",\
+            \"sessions_closed\":1,\"session_ids\":[\"7\"],\"requested_by\":\"tester\"}}",
         target
     );
 
@@ -943,7 +960,8 @@ stderr: {}",
     );
     assert!(
         stdout.starts_with(&body),
-        "stdout must begin with the complete response JSON (no torn prefix may reach stdout); got: {}",
+        "stdout must begin with the complete response JSON (no torn prefix \
+            may reach stdout); got: {}",
         stdout
     );
 }
