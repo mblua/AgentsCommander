@@ -1,6 +1,5 @@
 use super::record::PersistedSession;
 use std::path::Path;
-use tauri::Manager;
 
 pub(super) fn strip_long_prefix_str(s: &str) -> String {
     crate::path_utils::normalize_windows_verbatim_path(s)
@@ -355,15 +354,14 @@ pub(crate) fn default_creation_gate_enforcement() -> CreationGateEnforcement {
 /// §1295 5.1 — run the creation gate. Reads the settings once (cloned read
 /// guard), computes retained + archived roots, and runs the pure predicate in
 /// `tokio::task::spawn_blocking`. `Skip` short-circuits to Ok.
-pub(crate) async fn enforce_creation_gate<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn enforce_creation_gate(
+    settings: &crate::config::settings::SettingsState,
     cwd: &str,
     enforcement: CreationGateEnforcement,
 ) -> Result<(), String> {
     match enforcement {
         CreationGateEnforcement::Skip => Ok(()),
         CreationGateEnforcement::Enforce => {
-            let settings = app.state::<crate::config::settings::SettingsState>();
             let cfg = settings.read().await;
             let retained = session_retention_project_paths(&cfg)?;
             let archived = cfg.archived_project_paths.clone();

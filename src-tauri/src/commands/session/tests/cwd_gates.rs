@@ -228,8 +228,9 @@ async fn restore_wake_gate_exceptions() {
     );
     let root = crate::config::root_agent::root_agent_dir().expect("root dir resolves");
     std::fs::create_dir_all(&root).expect("Root fixture creation succeeds");
+    let settings = app.state::<crate::config::settings::SettingsState>();
     assert!(
-        enforce_creation_gate(app.handle(), &root, CreationGateEnforcement::Enforce)
+        enforce_creation_gate(settings.inner(), &root, CreationGateEnforcement::Enforce)
             .await
             .is_ok(),
         "root-agent cwd is gate-exempt"
@@ -254,9 +255,10 @@ async fn restore_wake_gate_exceptions() {
         Arc::clone(&session_mgr2),
         Arc::clone(&pty_mgr),
     );
+    let settings2 = app2.state::<crate::config::settings::SettingsState>();
     assert!(
         enforce_creation_gate(
-            app2.handle(),
+            settings2.inner(),
             &missing_under_archived,
             CreationGateEnforcement::Enforce
         )
@@ -278,9 +280,14 @@ async fn restore_wake_gate_exceptions() {
         .join("elsewhere")
         .to_string_lossy()
         .to_string();
-    let err = enforce_creation_gate(app3.handle(), &outside, CreationGateEnforcement::Enforce)
-        .await
-        .unwrap_err();
+    let settings3 = app3.state::<crate::config::settings::SettingsState>();
+    let err = enforce_creation_gate(
+        settings3.inner(),
+        &outside,
+        CreationGateEnforcement::Enforce,
+    )
+    .await
+    .unwrap_err();
     assert!(err.contains("sessionCreateBlocked"), "{err}");
     close_test_coordinator(&app3).await;
 }
