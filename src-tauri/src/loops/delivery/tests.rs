@@ -5,7 +5,9 @@ use crate::config::loops::{
 };
 use crate::config::settings::{AgentConfig, ProfileCellConfig};
 use crate::pty::backend::PtyBackend;
+use crate::session::session::SessionRepo;
 use std::collections::{BTreeMap, HashSet};
+use tauri::Manager;
 
 #[test]
 #[cfg(windows)]
@@ -598,3 +600,301 @@ fn persisted_agent_prefers_the_most_live_status() {
 }
 
 mod restart;
+
+struct RecordingDeliveryHost {
+    calls: Mutex<Vec<&'static str>>,
+    sessions: Arc<tokio::sync::RwLock<SessionManager>>,
+    ptys: Arc<Mutex<PtyManager>>,
+    purge: Arc<crate::session::purge_guard::PurgeGuard>,
+    change: Option<(PathBuf, LoopConfigToml)>,
+    fail: bool,
+}
+
+impl RecordingDeliveryHost {
+    fn record(&self, call: &'static str) {
+        self.calls.lock().unwrap().push(call);
+    }
+}
+
+impl LoopPromptEvents for RecordingDeliveryHost {
+    fn last_prompt(&self, _: Uuid, _: &str) {
+        assert!(
+            self.sessions.try_write().is_err(),
+            "manager guard spans emission"
+        );
+        self.record("event");
+    }
+}
+
+impl LoopDeliveryHost for RecordingDeliveryHost {
+    fn settings_owner(&self) -> &SettingsState {
+        panic!("unexpected settings lookup")
+    }
+    fn sessions(&self) -> &Arc<tokio::sync::RwLock<SessionManager>> {
+        self.record("sessions");
+        &self.sessions
+    }
+    fn ptys(&self) -> &Arc<Mutex<PtyManager>> {
+        assert!(
+            self.sessions.try_write().is_ok(),
+            "session guard dropped before PTY"
+        );
+        self.record("ptys");
+        &self.ptys
+    }
+    fn purge_guard(&self) -> Option<&Arc<crate::session::purge_guard::PurgeGuard>> {
+        self.record("purge");
+        Some(&self.purge)
+    }
+    fn background_destroy(
+        &self,
+        _: Uuid,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+        panic!("unexpected destroy")
+    }
+    fn restart_fresh(
+        &self,
+        _: Uuid,
+    ) -> Pin<Box<dyn Future<Output = Result<SessionInfo, String>> + Send + '_>> {
+        panic!("unexpected restart")
+    }
+    fn create(
+        &self,
+        _: LoopSessionCreate,
+    ) -> Pin<Box<dyn Future<Output = Result<SessionInfo, String>> + Send + '_>> {
+        panic!("unexpected create")
+    }
+    fn inject<'a>(
+        &'a self,
+        _: Uuid,
+        _: &'a str,
+        pre_write: Box<dyn FnOnce() -> Result<(), String> + Send + 'a>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        self.record("inject-built");
+        Box::pin(async move {
+            self.record("inject-polled");
+            if let Some((root, config)) = &self.change {
+                write_loop_config(root, config).unwrap();
+            }
+            pre_write()?;
+            self.record("write");
+            if self.fail {
+                Err("recording failure".into())
+            } else {
+                Ok(())
+            }
+        })
+    }
+    fn note_post_boundary(&self, _: Uuid) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async move { self.record("note") })
+    }
+}
+
+struct DeliveryBackend;
+impl PtyBackend for DeliveryBackend {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn spawn(
+        &self,
+        _: crate::pty::backend::BackendSpawnSpec,
+    ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+        panic!("no native spawn")
+    }
+    fn write(
+        &self,
+        _: &crate::pty::manager::BackendWriteAuthority,
+        _: Uuid,
+        _: &[u8],
+    ) -> Result<(), crate::errors::AppError> {
+        panic!("no native input")
+    }
+    fn resize(&self, _: Uuid, _: u16, _: u16) -> Result<(), crate::errors::AppError> {
+        panic!("no resize")
+    }
+    fn kill(&self, _: Uuid) -> Result<(), crate::errors::AppError> {
+        panic!("no kill")
+    }
+    fn has_session(&self, _: Uuid) -> bool {
+        true
+    }
+    fn get_screen_snapshot(&self, _: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+        None
+    }
+    fn get_pty_size(&self, _: Uuid) -> Option<(u16, u16)> {
+        None
+    }
+    fn get_screen_rows(&self, _: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+        crate::pty::context_scrape::ScreenRowsRead::SessionOver
+    }
+    fn register_response_watcher(&self, _: Uuid, _: String, _: PathBuf) {}
+    fn terminate_job_for_session(&self, _: Uuid) -> bool {
+        false
+    }
+    fn kill_all_jobs(&self) -> (usize, usize) {
+        (0, 0)
+    }
+}
+
+fn recording_delivery_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, LoopConfigToml) {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("project");
+    let root = project.join(".ac");
+    let replica = root.join("wg-1-dev-team/__agent_lead");
+    for dir in [
+        root.join("_team_dev-team"),
+        root.join("_agent_lead"),
+        replica.clone(),
+    ] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(
+        root.join("_team_dev-team/config.json"),
+        r#"{"agents":["../_agent_lead"],"coordinator":"../_agent_lead"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        replica.join("config.json"),
+        r#"{"identity":"../../_agent_lead"}"#,
+    )
+    .unwrap();
+    let mut config = sample_config();
+    config.policy.session_start = LoopSessionStart::Accumulate;
+    write_loop_config(&root, &config).unwrap();
+    (tmp, project, replica, config)
+}
+
+fn recording_delivery_host() -> RecordingDeliveryHost {
+    RecordingDeliveryHost {
+        calls: Mutex::new(Vec::new()),
+        sessions: Arc::new(tokio::sync::RwLock::new(SessionManager::new())),
+        ptys: Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(
+            DeliveryBackend,
+        )))),
+        purge: Arc::new(crate::session::purge_guard::PurgeGuard::default()),
+        change: None,
+        fail: false,
+    }
+}
+
+#[tokio::test]
+async fn issue_3260_delivery_target_and_purge_exit_before_sessions() {
+    let (_tmp, project, _replica, config) = recording_delivery_fixture();
+    let host = recording_delivery_host();
+    let report = deliver_loop_prompt(
+        &host,
+        Path::new("missing"),
+        &config,
+        Uuid::new_v4(),
+        Utc::now(),
+    )
+    .await;
+    assert!(matches!(report.kind, LoopAuditKind::TargetUnresolved));
+    assert!(host.calls.lock().unwrap().is_empty());
+    let target = resolve_loop_target(&project, &config).unwrap();
+    let _lease = host
+        .purge
+        .acquire(HashSet::new(), HashSet::from([target.target_fqn]))
+        .await;
+    let report = deliver_loop_prompt(&host, &project, &config, Uuid::new_v4(), Utc::now()).await;
+    assert!(matches!(report.kind, LoopAuditKind::SkippedBusy));
+    assert_eq!(*host.calls.lock().unwrap(), ["purge"]);
+}
+
+#[tokio::test]
+async fn issue_3260_delivery_callback_and_success_only_prompt_effects() {
+    for outcome in ["success", "stale", "failure", "busy", "fresh-busy"] {
+        let (_tmp, project, replica, mut config) = recording_delivery_fixture();
+        let mut host = recording_delivery_host();
+        let id = host
+            .sessions
+            .read()
+            .await
+            .create_session(
+                "codex".into(),
+                Vec::new(),
+                replica.to_string_lossy().into(),
+                None,
+                None,
+                Vec::<SessionRepo>::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap()
+            .id;
+        host.ptys
+            .lock()
+            .unwrap()
+            .record_route(id, crate::pty::backend::SessionBackendKind::LocalProcess);
+        if outcome != "busy" && outcome != "fresh-busy" {
+            host.sessions.read().await.mark_idle(id).await;
+        }
+        if outcome == "fresh-busy" {
+            config.policy.session_start = LoopSessionStart::Fresh;
+            write_loop_config(&project.join(".ac"), &config).unwrap();
+        }
+        if outcome == "stale" {
+            let mut changed = config.clone();
+            changed.prompt.body = "changed after injection starts".into();
+            host.change = Some((project.join(".ac"), changed));
+        }
+        host.fail = outcome == "failure";
+        let report =
+            deliver_loop_prompt(&host, &project, &config, Uuid::new_v4(), Utc::now()).await;
+        let calls = host.calls.lock().unwrap().clone();
+        let mut expected = vec!["purge", "sessions", "ptys", "sessions"];
+        if outcome == "busy" || outcome == "fresh-busy" {
+            assert!(matches!(report.kind, LoopAuditKind::PendingBusy));
+        } else {
+            expected.extend(["inject-built", "inject-polled"]);
+            if outcome != "stale" {
+                expected.push("write");
+            }
+            if outcome == "success" {
+                expected.extend(["note", "sessions", "event"]);
+                assert!(matches!(report.kind, LoopAuditKind::Delivered));
+            } else {
+                assert!(matches!(report.kind, LoopAuditKind::DeliveryFailed));
+            }
+        }
+        assert_eq!(calls, expected, "{outcome}");
+        let sessions = host.sessions.read().await.list_sessions().await;
+        let prompt = sessions
+            .iter()
+            .find(|s| s.id == id.to_string())
+            .unwrap()
+            .last_prompt
+            .clone();
+        assert_eq!(
+            prompt,
+            (outcome == "success").then(|| config.prompt.body.clone())
+        );
+    }
+}
+
+#[tokio::test]
+async fn issue_3260_delivery_exited_candidate_never_looks_up_pty() {
+    let (_tmp, _project, replica, _config) = recording_delivery_fixture();
+    let host = recording_delivery_host();
+    let mgr = host.sessions.read().await;
+    let session = mgr
+        .create_session(
+            "codex".into(),
+            Vec::new(),
+            replica.to_string_lossy().into(),
+            None,
+            None,
+            Vec::<SessionRepo>::new(),
+            false,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+        )
+        .await
+        .unwrap();
+    mgr.mark_exited(session.id, 0).await;
+    drop(mgr);
+    let lookup = find_coordinator_session(&host, &replica).await.unwrap();
+    assert!(lookup.live.is_none());
+    assert_eq!(lookup.stale_session_ids, [session.id]);
+    assert_eq!(*host.calls.lock().unwrap(), ["sessions"]);
+}

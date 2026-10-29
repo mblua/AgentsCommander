@@ -80,7 +80,9 @@ async fn e2992_p43_invalid_no_candidate_action() {
         .completed_scans
         .load(std::sync::atomic::Ordering::SeqCst);
     let started = tokio::time::Instant::now();
-    Arc::clone(&scheduler).start_with_context(context.clone(), shutdown.clone());
+    Arc::clone(&scheduler).start_with_context(context.clone(), shutdown.clone(), |future| {
+        drop(tokio::spawn(future));
+    });
     // Observe the actual task's startup scan and first interval tick.
     tokio::time::timeout(Duration::from_secs(5), async {
         while scheduler
@@ -289,18 +291,20 @@ fn scan_once_calls_archived_candidate_filter() {
         .split("    async fn scan_once(")
         .nth(1)
         .expect("scan_once definition")
-        .split("    pub(crate) async fn scan_project_under_scan_lock(")
+        .split("    pub(crate) async fn scan_project_under_scan_lock<")
         .next()
         .expect("scan_once body");
     assert!(scan.contains("active_project_candidates_for_owner(&owner).await"));
     let wrapper = production
-        .split("async fn active_project_candidates(app: &AppHandle) -> Vec<ProjectResolution> {")
+        .split(
+            "async fn active_project_candidates(owner: &SettingsState) -> Vec<ProjectResolution> {",
+        )
         .nth(1)
         .expect("active_project_candidates definition")
         .split("async fn active_project_candidates_for_owner(")
         .next()
         .expect("active_project_candidates body");
-    assert!(wrapper.contains("active_project_candidates_for_owner(&owner).await"));
+    assert!(wrapper.contains("active_project_candidates_for_owner(owner).await"));
     let state = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/loops/scheduler/state.rs"
@@ -397,7 +401,7 @@ async fn records_session_start_on_a_coalesced_pending_run() {
 
     scheduler
         .maybe_coalesce_pending(
-            &SchedulerContext::Native(app.handle().clone()),
+            &SchedulerContext::Native(Arc::new(app.handle().clone())),
             &project_dir,
             &dir,
             &config,
@@ -434,7 +438,7 @@ async fn records_session_start_on_a_missed_while_closed_run() {
 
     scheduler
         .record_missed_while_closed(
-            &SchedulerContext::Native(app.handle().clone()),
+            &SchedulerContext::Native(Arc::new(app.handle().clone())),
             &project_dir,
             &dir,
             &config,
@@ -476,7 +480,7 @@ async fn records_session_start_on_a_delivery_report() {
 
     scheduler
         .apply_delivery_report(
-            &SchedulerContext::Native(app.handle().clone()),
+            &SchedulerContext::Native(Arc::new(app.handle().clone())),
             &project_dir,
             &dir,
             &config,
@@ -532,7 +536,7 @@ async fn scan_heals_a_non_utf8_state_file() {
 
     LoopScheduler::new()
         .scan_loop(
-            &SchedulerContext::Native(app.handle().clone()),
+            &SchedulerContext::Native(Arc::new(app.handle().clone())),
             tmp.path(),
             &dir,
             false,
@@ -618,7 +622,7 @@ async fn scan_loop_skips_a_missing_dir_or_config_quietly() {
     let missing = loop_dir(&ac_root, "gone");
     scheduler
         .scan_loop(
-            &SchedulerContext::Native(app.handle().clone()),
+            &SchedulerContext::Native(Arc::new(app.handle().clone())),
             tmp.path(),
             &missing,
             false,
@@ -632,7 +636,7 @@ async fn scan_loop_skips_a_missing_dir_or_config_quietly() {
     std::fs::remove_file(dir.join(crate::config::loops::LOOP_CONFIG_FILE)).expect("remove config");
     scheduler
         .scan_loop(
-            &SchedulerContext::Native(app.handle().clone()),
+            &SchedulerContext::Native(Arc::new(app.handle().clone())),
             tmp.path(),
             &dir,
             false,
