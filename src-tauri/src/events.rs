@@ -5,3 +5,4 @@ mod loops;
 mod phone;
 pub(crate) mod pty;
 mod session;
+mod web;

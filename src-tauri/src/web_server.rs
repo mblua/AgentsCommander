@@ -3,7 +3,9 @@
 use std::future::Future;
 use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use crate::shutdown::ShutdownSignal;
@@ -13,6 +15,37 @@ use tokio_util::sync::CancellationToken;
 
 use tokio_util::task::task_tracker::TaskTrackerToken;
 use tokio_util::task::TaskTracker;
+
+/// Owns the server join and the abort capability for that same task.
+pub(crate) struct ServerTask {
+    join: Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'static>>,
+    abort: tokio::task::AbortHandle,
+}
+
+impl ServerTask {
+    pub(crate) fn new(
+        join: Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'static>>,
+        abort: tokio::task::AbortHandle,
+    ) -> Self {
+        Self { join, abort }
+    }
+
+    pub(crate) fn is_finished(&self) -> bool {
+        self.abort.is_finished()
+    }
+
+    pub(crate) fn abort(&self) {
+        self.abort.abort();
+    }
+}
+
+impl Future for ServerTask {
+    type Output = Result<(), String>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.get_mut().join.as_mut().poll(cx)
+    }
+}
 
 /// Per-generation admission gate and semantic-work tracker. The lifecycle
 /// always takes its own mutex before calling `open` or `close`; this type never
@@ -211,13 +244,12 @@ impl WebServerHandle {
     pub(crate) fn begin_start<F, Fut>(
         &self,
         shutdown: ShutdownSignal,
+        spawn_supervisor: fn(Pin<Box<dyn Future<Output = ()> + Send + 'static>>),
         factory: F,
     ) -> WebServerStartWaiter
     where
         F: FnOnce(u64, Arc<WebSocketAdmission>, CancellationToken) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<Option<tauri::async_runtime::JoinHandle<()>>, String>>
-            + Send
-            + 'static,
+        Fut: Future<Output = Result<Option<ServerTask>, String>> + Send + 'static,
     {
         let mut factory = Some(factory);
         let mut supervisor = None;
@@ -287,7 +319,7 @@ impl WebServerHandle {
         )) = supervisor
         {
             let handle = self.clone();
-            tauri::async_runtime::spawn(async move {
+            spawn_supervisor(Box::pin(async move {
                 handle
                     .supervise_generation(
                         generation,
@@ -299,7 +331,7 @@ impl WebServerHandle {
                         factory,
                     )
                     .await;
-            });
+            }));
         }
 
         waiter
@@ -549,7 +581,7 @@ impl WebServerHandle {
         factory: F,
     ) where
         F: FnOnce(u64, Arc<WebSocketAdmission>, CancellationToken) -> Fut,
-        Fut: Future<Output = Result<Option<tauri::async_runtime::JoinHandle<()>>, String>>,
+        Fut: Future<Output = Result<Option<ServerTask>, String>>,
     {
         let start_future = AssertUnwindSafe(factory(
             generation,
@@ -633,14 +665,14 @@ pub struct ApiServerHandle {
 }
 
 pub struct ApiServerTask {
-    join: tauri::async_runtime::JoinHandle<()>,
+    join: ServerTask,
     shutdown: CancellationToken,
     bound_addr: SocketAddr,
 }
 
 impl ApiServerTask {
-    pub fn new(
-        join: tauri::async_runtime::JoinHandle<()>,
+    pub(crate) fn from_task(
+        join: ServerTask,
         shutdown: CancellationToken,
         bound_addr: SocketAddr,
     ) -> Self {
@@ -659,10 +691,7 @@ impl ApiServerHandle {
             .inner
             .lock()
             .map_err(|_| "API server handle lock is poisoned".to_string())?;
-        if let Some(stored) = inner
-            .as_ref()
-            .filter(|stored| !stored.join.inner().is_finished())
-        {
+        if let Some(stored) = inner.as_ref().filter(|stored| !stored.join.is_finished()) {
             log::debug!(
                 "[api-server] start ignored; server already running on {}",
                 stored.bound_addr
@@ -684,10 +713,7 @@ impl ApiServerHandle {
             .inner
             .lock()
             .map_err(|_| "API server handle lock is poisoned".to_string())?;
-        if let Some(stored) = inner
-            .as_ref()
-            .filter(|stored| !stored.join.inner().is_finished())
-        {
+        if let Some(stored) = inner.as_ref().filter(|stored| !stored.join.is_finished()) {
             return Ok(Some(stored.bound_addr));
         }
         *inner = None;
@@ -701,7 +727,7 @@ impl ApiServerHandle {
                 .lock()
                 .map_err(|_| "API server handle lock is poisoned".to_string())?;
             match inner.as_ref() {
-                Some(stored) if stored.join.inner().is_finished() => {
+                Some(stored) if stored.join.is_finished() => {
                     *inner = None;
                     return Ok(false);
                 }

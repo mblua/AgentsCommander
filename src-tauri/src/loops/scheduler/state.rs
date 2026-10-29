@@ -226,7 +226,7 @@ pub(super) fn emit_transition(
     let details = details_from_parts(dir, config, state);
     match context {
         SchedulerContext::Native(app) => emit_loop_change(
-            app,
+            app.as_ref(),
             project_dir,
             dir,
             &config.loop_def.id,

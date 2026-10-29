@@ -13,59 +13,44 @@ pub(super) async fn dispatch_agent_update_command(
     cmd: &str,
     args: &Value,
 ) -> Option<Result<Value, String>> {
+    let operations = state.operations.as_ref();
     match cmd {
-        "get_agent_update_status" => Some(
-            crate::commands::config::agent_update_status_inner(&state.app_handle).and_then(
-                |status| {
-                    serde_json::to_value(status)
-                        .map_err(|e| format!("Failed to serialize agent update status: {e}"))
-                },
-            ),
-        ),
+        "get_agent_update_status" => Some(operations.agent_update_status().and_then(|status| {
+            serde_json::to_value(status)
+                .map_err(|e| format!("Failed to serialize agent update status: {e}"))
+        })),
         "agent_update_answer" => {
             let parsed = require_str(args, "command").and_then(|command| {
                 require_json::<bool>(args, "enabled").map(|enabled| (command, enabled))
             });
             Some(match parsed {
-                Ok((command, enabled)) => crate::commands::config::agent_update_answer_inner(
-                    &state.app_handle,
-                    &state.settings,
-                    command,
-                    enabled,
-                )
-                .await
-                .map(|applied| json!(applied)),
+                Ok((command, enabled)) => operations
+                    .agent_update_answer(&state.settings, command, enabled)
+                    .await
+                    .map(|applied| json!(applied)),
                 Err(e) => Err(e),
             })
         }
         "agent_update_cancel" => Some(match require_str(args, "command") {
-            Ok(command) => {
-                crate::commands::config::agent_update_cancel_inner(&state.app_handle, command)
-                    .await
-                    .and_then(|response| {
-                        serde_json::to_value(response).map_err(|error| {
-                            format!("Failed to serialize cancellation response: {error}")
-                        })
-                    })
-            }
-            Err(error) => Err(error),
-        }),
-        "agent_updates_cancel_all" => Some(
-            crate::commands::config::agent_updates_cancel_all_inner(&state.app_handle)
+            Ok(command) => operations
+                .agent_update_cancel(command)
                 .await
                 .and_then(|response| {
                     serde_json::to_value(response).map_err(|error| {
-                        format!("Failed to serialize batch cancellation response: {error}")
+                        format!("Failed to serialize cancellation response: {error}")
                     })
                 }),
-        ),
+            Err(error) => Err(error),
+        }),
+        "agent_updates_cancel_all" => Some(operations.agent_updates_cancel_all().await.and_then(
+            |response| {
+                serde_json::to_value(response).map_err(|error| {
+                    format!("Failed to serialize batch cancellation response: {error}")
+                })
+            },
+        )),
         "get_agent_update_overview" => Some(
-            match crate::commands::config::agent_update_overview_inner(
-                &state.app_handle,
-                &state.settings,
-            )
-            .await
-            {
+            match operations.agent_update_overview(&state.settings).await {
                 Ok(rows) => serde_json::to_value(rows)
                     .map_err(|e| format!("Failed to serialize agent update overview: {e}")),
                 Err(e) => Err(e),
@@ -95,13 +80,10 @@ pub(super) async fn dispatch_agent_update_command(
         "install_coding_agent" => Some(match require_str(args, "key") {
             // #2736 - returns once the install task is spawned; the outcome is
             // the `coding_agent_install_finished` event.
-            Ok(key) => crate::commands::config::install_coding_agent_inner(
-                &state.app_handle,
-                &state.settings,
-                key,
-            )
-            .await
-            .map(|()| Value::Null),
+            Ok(key) => operations
+                .install_coding_agent(&state.settings, key)
+                .await
+                .map(|()| Value::Null),
             Err(error) => Err(error),
         }),
         "get_coding_agent_catalog_report" => {

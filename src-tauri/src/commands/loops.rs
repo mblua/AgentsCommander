@@ -1,9 +1,19 @@
+use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
+use uuid::Uuid;
+
+use crate::config::settings::SettingsState;
+use crate::loops::delivery::{LoopDeliveryHost, LoopSessionCreate};
+use crate::pty::manager::PtyManager;
+use crate::session::manager::SessionManager;
+use crate::session::purge_guard::PurgeGuard;
+use crate::session::session::{SessionInfo, SessionRepo};
 
 use crate::config::ac_root::existing_ac_root;
 use crate::config::loops::{
@@ -306,6 +316,109 @@ pub async fn list_unresolved_loop_targets(
     scheduler: State<'_, Arc<LoopScheduler>>,
 ) -> Result<Vec<UnresolvedLoopTarget>, String> {
     Ok(scheduler.unresolved_loop_targets(&app).await)
+}
+
+impl LoopDeliveryHost for AppHandle {
+    fn settings_owner(&self) -> &SettingsState {
+        self.state::<SettingsState>().inner()
+    }
+
+    fn sessions(&self) -> &Arc<tokio::sync::RwLock<SessionManager>> {
+        self.state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .inner()
+    }
+
+    fn ptys(&self) -> &Arc<Mutex<PtyManager>> {
+        self.state::<Arc<Mutex<PtyManager>>>().inner()
+    }
+
+    fn purge_guard(&self) -> Option<&Arc<PurgeGuard>> {
+        self.try_state::<Arc<PurgeGuard>>()
+            .map(|state| state.inner())
+    }
+
+    fn background_destroy(
+        &self,
+        id: Uuid,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(crate::commands::session::background_destroy_session_inner(
+            self, id,
+        ))
+    }
+
+    fn restart_fresh(
+        &self,
+        id: Uuid,
+    ) -> Pin<Box<dyn Future<Output = Result<SessionInfo, String>> + Send + '_>> {
+        Box::pin(async move {
+            let sessions = self.sessions();
+            let ptys = self.ptys();
+            let settings = self.settings_owner();
+            crate::commands::session::restart_session_inner_with_intent(
+                self,
+                sessions,
+                ptys,
+                settings,
+                id,
+                None,
+                None,
+                Some(true),
+                false,
+                crate::session::selection::TrustedRestartIntent::Background,
+                None,
+                crate::config::sessions_persistence::default_creation_gate_enforcement(),
+            )
+            .await
+        })
+    }
+
+    fn create(
+        &self,
+        request: LoopSessionCreate,
+    ) -> Pin<Box<dyn Future<Output = Result<SessionInfo, String>> + Send + '_>> {
+        Box::pin(async move {
+            let sessions = self.sessions();
+            let ptys = self.ptys();
+            crate::commands::session::create_session_inner(
+                self,
+                sessions,
+                ptys,
+                request.shell,
+                request.shell_args,
+                request.cwd,
+                request.session_name,
+                request.agent_id,
+                request.agent_label,
+                false,
+                Vec::<SessionRepo>::new(),
+                request.skip_auto_resume,
+                request.resolved_spawn,
+                request.resolved_agent_host_shell,
+                None,
+                crate::commands::session::CreateSelectionIntent::Background,
+            )
+            .await
+        })
+    }
+
+    fn inject<'a>(
+        &'a self,
+        id: Uuid,
+        text: &'a str,
+        pre_write: Box<dyn FnOnce() -> Result<(), String> + Send + 'a>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(
+            crate::pty::inject::inject_text_into_session_with_pre_write_check(
+                self, id, text, pre_write,
+            ),
+        )
+    }
+
+    fn note_post_boundary(&self, id: Uuid) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            let _ = crate::commands::pty::note_post_boundary_content_to_session(self, id).await;
+        })
+    }
 }
 
 #[cfg(test)]

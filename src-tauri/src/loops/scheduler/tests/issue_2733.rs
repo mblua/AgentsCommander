@@ -77,7 +77,7 @@ async fn issue_2733_unresolved_tick_notifies_once() {
 
     scheduler
         .scan_loop(
-            &SchedulerContext::Native(app.handle().clone()),
+            &SchedulerContext::Native(Arc::new(app.handle().clone())),
             tmp.path(),
             &dir,
             false,
@@ -104,7 +104,7 @@ async fn issue_2733_unresolved_tick_notifies_once() {
         .expect("forced check");
     scheduler
         .scan_loop(
-            &SchedulerContext::Native(app.handle().clone()),
+            &SchedulerContext::Native(Arc::new(app.handle().clone())),
             tmp.path(),
             &dir,
             false,
@@ -139,7 +139,7 @@ async fn issue_2733_unresolved_ticks_never_touch_config() {
         issue_2733_make_due(&dir);
         scheduler
             .scan_loop(
-                &SchedulerContext::Native(app.handle().clone()),
+                &SchedulerContext::Native(Arc::new(app.handle().clone())),
                 tmp.path(),
                 &dir,
                 false,
@@ -161,7 +161,7 @@ async fn issue_2733_pending_run_with_missing_room_is_cleared() {
 
     LoopScheduler::new()
         .scan_loop(
-            &SchedulerContext::Native(app.handle().clone()),
+            &SchedulerContext::Native(Arc::new(app.handle().clone())),
             tmp.path(),
             &dir,
             false,
@@ -199,7 +199,7 @@ async fn issue_2733_transition_again_after_another_result() {
 
     LoopScheduler::new()
         .scan_loop(
-            &SchedulerContext::Native(app.handle().clone()),
+            &SchedulerContext::Native(Arc::new(app.handle().clone())),
             tmp.path(),
             &dir,
             false,
@@ -227,7 +227,7 @@ async fn issue_2733_recovers_when_room_appears() {
     // 1. Room absent, real delivery.
     scheduler
         .scan_loop(
-            &SchedulerContext::Native(app.handle().clone()),
+            &SchedulerContext::Native(Arc::new(app.handle().clone())),
             tmp.path(),
             &dir,
             false,
@@ -254,7 +254,7 @@ async fn issue_2733_recovers_when_room_appears() {
     install_report_gate(&scheduler, delivered_report());
     scheduler
         .scan_loop(
-            &SchedulerContext::Native(app.handle().clone()),
+            &SchedulerContext::Native(Arc::new(app.handle().clone())),
             tmp.path(),
             &dir,
             false,
@@ -284,7 +284,7 @@ async fn issue_2733_recovers_when_room_appears() {
     issue_2733_make_due(&dir);
     scheduler
         .scan_loop(
-            &SchedulerContext::Native(app.handle().clone()),
+            &SchedulerContext::Native(Arc::new(app.handle().clone())),
             tmp.path(),
             &dir,
             false,

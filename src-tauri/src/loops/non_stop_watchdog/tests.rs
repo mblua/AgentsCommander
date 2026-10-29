@@ -340,3 +340,152 @@ fn project_folder_name_extracts_leaf() {
     assert_eq!(project_folder_name("C:/repos/my-project"), "my-project");
     assert_eq!(project_folder_name("plain"), "plain");
 }
+
+#[derive(Clone)]
+struct RecordingWatchdogHost {
+    state: NonStopWatchdogState,
+    settings: Option<SettingsState>,
+    network: Option<OutboundNetwork>,
+    calls: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+impl RecordingWatchdogHost {
+    fn new(state: &NonStopWatchdogState, bots: Option<Vec<TelegramBotConfig>>) -> Self {
+        Self {
+            state: state.clone(),
+            settings: bots.map(|telegram_bots| {
+                crate::config::settings::new_settings_state(crate::config::settings::AppSettings {
+                    telegram_bots,
+                    ..Default::default()
+                })
+            }),
+            network: None,
+            calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    fn record(&self, name: &'static str) {
+        assert!(self.state.inner.try_lock().is_ok(), "episode lock released");
+        self.calls.lock().unwrap().push(name);
+    }
+}
+
+impl NonStopAlarmEvents for RecordingWatchdogHost {
+    fn alarm(&self, payload: NonStopAlarmPayload) {
+        assert_eq!(payload.action, "start");
+        assert_eq!(payload.project_path, "p");
+        assert_eq!(payload.seconds, 3);
+        self.record("alarm");
+    }
+}
+
+impl WatchdogHost for RecordingWatchdogHost {
+    fn settings_owner(&self) -> &SettingsState {
+        self.record("settings");
+        self.settings.as_ref().expect("missing settings at use")
+    }
+
+    fn outbound_network(&self) -> &OutboundNetwork {
+        self.record("network");
+        assert!(self.settings.as_ref().unwrap().try_write().is_ok());
+        self.network.as_ref().expect("missing network at use")
+    }
+
+    fn spawn_background(&self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {
+        self.record("spawn");
+        assert!(self.settings.as_ref().unwrap().try_write().is_ok());
+        // Recording submission must not poll a real Telegram operation.
+        drop(future);
+    }
+}
+
+#[tokio::test]
+async fn issue_3260_watchdog_early_paths_do_not_lookup_settings_or_network() {
+    let state = NonStopWatchdogState::new();
+    let host = RecordingWatchdogHost::new(&state, None);
+    let mut r = report_with_sound("p", true, 0, 3);
+    state.ingest(vec![r.clone()]).await;
+    tick(&host, &state).await;
+    tick(&host, &state).await;
+    assert_eq!(*host.calls.lock().unwrap(), ["alarm"], "single-fire latch");
+
+    host.calls.lock().unwrap().clear();
+    r.telegram_enabled = true;
+    state.ingest(vec![report("p", false, 0)]).await;
+    fire(&host, &state, &r).await;
+    assert!(
+        host.calls.lock().unwrap().is_empty(),
+        "recovered report rechecked"
+    );
+    state.ingest(vec![r]).await;
+    backdate_last_seen(
+        &state,
+        "p",
+        REPORT_STALENESS_CEILING + Duration::from_secs(1),
+    )
+    .await;
+    tick(&host, &state).await;
+    assert!(
+        host.calls.lock().unwrap().is_empty(),
+        "stale episode disarmed"
+    );
+}
+
+#[tokio::test]
+async fn issue_3260_watchdog_missing_settings_panics_only_at_use_after_alarm() {
+    use futures::FutureExt;
+    let state = NonStopWatchdogState::new();
+    let host = RecordingWatchdogHost::new(&state, None);
+    let mut r = report_with_sound("p", true, 0, 3);
+    r.telegram_enabled = true;
+    state.ingest(vec![r.clone()]).await;
+    assert!(std::panic::AssertUnwindSafe(fire(&host, &state, &r))
+        .catch_unwind()
+        .await
+        .is_err());
+    assert_eq!(*host.calls.lock().unwrap(), ["alarm", "settings"]);
+}
+
+#[tokio::test]
+async fn issue_3260_watchdog_no_bot_skips_network_and_spawn() {
+    let state = NonStopWatchdogState::new();
+    let host = RecordingWatchdogHost::new(&state, Some(Vec::new()));
+    let mut r = report("p", true, 0);
+    r.telegram_enabled = true;
+    state.ingest(vec![r.clone()]).await;
+    fire(&host, &state, &r).await;
+    assert_eq!(*host.calls.lock().unwrap(), ["settings"]);
+}
+
+#[tokio::test]
+async fn issue_3260_watchdog_resolves_bot_releases_settings_then_network_and_spawn() {
+    use futures::FutureExt;
+    let state = NonStopWatchdogState::new();
+    let mut host = RecordingWatchdogHost::new(&state, Some(vec![bot("a"), bot("b")]));
+    let mut r = report_with_sound("p", true, 0, 3);
+    r.telegram_enabled = true;
+    r.telegram_bot_id = Some("b".into());
+    state.ingest(vec![r.clone()]).await;
+    assert!(std::panic::AssertUnwindSafe(fire(&host, &state, &r))
+        .catch_unwind()
+        .await
+        .is_err());
+    assert_eq!(
+        *host.calls.lock().unwrap(),
+        ["alarm", "settings", "network"]
+    );
+
+    host.calls.lock().unwrap().clear();
+    host.network = Some(OutboundNetwork::new_for_tests(1));
+    fire(&host, &state, &r).await;
+    assert_eq!(
+        *host.calls.lock().unwrap(),
+        ["alarm", "settings", "network", "spawn"]
+    );
+    assert!(host
+        .network
+        .as_ref()
+        .unwrap()
+        .acquired_labels_for_tests()
+        .is_empty());
+}

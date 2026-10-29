@@ -23,19 +23,28 @@
 //! renderer black box (phase 2) lands.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{Local, TimeZone};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
 
 use crate::config::config_dir;
 
 mod report;
 use crate::shutdown::ShutdownSignal;
 use report::{marker_only_block, record_block, silence_block, summary_line};
+
+pub trait IpcProbeEvents: Send + Sync {
+    fn probe(&self, seq: u32, backend_now_ms: u64);
+}
+
+pub trait IpcObserverHost: IpcProbeEvents + Clone + Send + Sync + 'static {
+    fn spawn_background(&self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>);
+}
 
 /// Loop cadence. One tick is the resolution of every bound below.
 const TICK_INTERVAL: Duration = Duration::from_secs(1);
@@ -726,19 +735,16 @@ fn delete_marker() {
 
 /// Unscoped, so every window receives it. The result is discarded: a failed emit
 /// is itself evidence and must not abort the loop.
-fn emit_probe(app: &AppHandle, seq: u32, now: u64) {
-    let _ = app.emit(
-        "ipc_silence_probe",
-        serde_json::json!({ "seq": seq, "backendNowMs": now }),
-    );
+fn emit_probe(events: &impl IpcProbeEvents, seq: u32, now: u64) {
+    events.probe(seq, now);
 }
 
 // ---------------------------------------------------------------------------
 // The loop
 // ---------------------------------------------------------------------------
 
-pub fn start(app: AppHandle, observer: Arc<IpcObserver>, shutdown: ShutdownSignal) {
-    tauri::async_runtime::spawn(async move {
+pub fn start<H: IpcObserverHost>(app: H, observer: Arc<IpcObserver>, shutdown: ShutdownSignal) {
+    app.clone().spawn_background(Box::pin(async move {
         let mut interval = tokio::time::interval(TICK_INTERVAL);
         let mut marker_warned = false;
         loop {
@@ -750,10 +756,10 @@ pub fn start(app: AppHandle, observer: Arc<IpcObserver>, shutdown: ShutdownSigna
                 _ = interval.tick() => tick(&app, &observer, &mut marker_warned),
             }
         }
-    });
+    }));
 }
 
-fn tick(app: &AppHandle, observer: &IpcObserver, marker_warned: &mut bool) {
+fn tick(app: &impl IpcProbeEvents, observer: &IpcObserver, marker_warned: &mut bool) {
     // 1. The frontend has never talked; there is no silence.
     let total_invokes = observer.total_invokes.load(Ordering::Relaxed);
     if total_invokes == 0 {

@@ -552,7 +552,9 @@ async fn issue_1937_transport_parity_assignment_preview_queues_behind_the_turn()
 /// requires, so the web-path invalid-input postcondition test builds them
 /// here, mirroring the pty_lifecycle harness (plan Finding F).
 #[cfg(windows)]
-fn ws_state_for_1271(settings: AppSettings) -> WsState {
+fn ws_state_for_1271(
+    settings: AppSettings,
+) -> (WsState, Arc<crate::pty::spawn_diagnostics::SpawnRegistry>) {
     let owners = crate::AppOwners::new();
     let app = crate::test_support::test_builder_with_owners(owners.clone())
         .manage(crate::session::warnings::new_session_warning_state())
@@ -636,13 +638,10 @@ fn ws_state_for_1271(settings: AppSettings) -> WsState {
     .expect("join selection bootstrap");
     std::mem::forget(full_app);
 
-    WsState {
-        session_mgr,
-        pty_mgr,
-        settings,
-        broadcaster,
-        app_handle: full_handle,
-    }
+    (
+        WsState::new(session_mgr, pty_mgr, settings, broadcaster, full_handle),
+        owners.spawn.clone(),
+    )
 }
 
 // #1271 - the adapter's deterministic rejections are Windows-only (the
@@ -662,7 +661,7 @@ async fn configured_default_shell_invalid_input_leaves_no_session_state_via_web(
         agents: vec![test_agent("claude")],
         ..AppSettings::default()
     };
-    let state = ws_state_for_1271(settings);
+    let (state, spawn) = ws_state_for_1271(settings);
 
     let response = dispatch(
         &state,
@@ -706,11 +705,7 @@ async fn configured_default_shell_invalid_input_leaves_no_session_state_via_web(
         .pending_ids;
     for id in &pending_ids {
         assert!(
-            crate::pty::spawn_diagnostics::record_for(
-                *id,
-                state.app_handle.state::<crate::AppOwners>().spawn.as_ref()
-            )
-            .is_none(),
+            crate::pty::spawn_diagnostics::record_for(*id, spawn.as_ref()).is_none(),
             "no launch provenance may be recorded for the rejected session"
         );
         assert!(
@@ -760,7 +755,7 @@ async fn configured_default_shell_invalid_payload_leaves_no_session_state_via_we
         agents: vec![agent],
         ..AppSettings::default()
     };
-    let state = ws_state_for_1271(settings);
+    let (state, spawn) = ws_state_for_1271(settings);
 
     let response = dispatch(
         &state,
@@ -791,11 +786,7 @@ async fn configured_default_shell_invalid_payload_leaves_no_session_state_via_we
         .await
         .pending_ids;
     for id in &pending_ids {
-        assert!(crate::pty::spawn_diagnostics::record_for(
-            *id,
-            state.app_handle.state::<crate::AppOwners>().spawn.as_ref()
-        )
-        .is_none());
+        assert!(crate::pty::spawn_diagnostics::record_for(*id, spawn.as_ref()).is_none());
         assert!(!state.pty_mgr.lock().unwrap().has_session(*id));
         assert!(state.pty_mgr.lock().unwrap().get_pty_size(*id).is_none());
     }
