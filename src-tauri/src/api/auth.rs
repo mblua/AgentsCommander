@@ -9,7 +9,7 @@
 //! truth; the in-memory copy is a cache keyed by mtime.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -22,6 +22,7 @@ use uuid::Uuid;
 use super::error::ApiError;
 
 use crate::config::instance_artifacts::API_CLIENTS_LOCK_FILENAME;
+use crate::filesystem::api_registry::{self, RegistryFile};
 
 /// The `send` scope (POST /api/v1/send).
 pub const SCOPE_SEND: &str = "send";
@@ -207,7 +208,7 @@ pub fn is_expired(client: &ApiClient, now: chrono::DateTime<chrono::Utc>) -> boo
 /// Load the registry, tolerating an absent/malformed/unreadable file by
 /// returning an empty registry (fail-safe: no clients => everything 401).
 fn load_registry(path: &Path) -> RegistrySnapshot {
-    match std::fs::read_to_string(path) {
+    match api_registry::read_registry_text(path) {
         Ok(raw) => match serde_json::from_str(&raw) {
             Ok(registry) => RegistrySnapshot {
                 registry,
@@ -269,7 +270,7 @@ pub struct ApiClientStore {
 pub struct ApiClientFreshGuard {
     pub client: ApiClient,
     pub presented_token_hash: String,
-    _registry_lock: std::fs::File,
+    _registry_lock: RegistryFile,
 }
 
 /// Fresh privileged-registry acquisition failures. These are dependency
@@ -307,9 +308,7 @@ impl ApiClientStore {
     /// Return the current registry, reloading from disk only if the file's
     /// mtime changed since the last load (or it was never loaded).
     fn current(&self) -> Result<RegistrySnapshot, ApiError> {
-        let disk_mtime = std::fs::metadata(&self.path)
-            .and_then(|m| m.modified())
-            .ok();
+        let disk_mtime = api_registry::registry_modified(&self.path);
         let mut cache = self.cache.lock().map_err(|_| {
             ApiError::Internal("API auth registry cache lock is poisoned".to_string())
         })?;
@@ -338,7 +337,7 @@ impl ApiClientStore {
         }))
     }
 
-    fn acquire_fresh_registry_lock(&self) -> Result<(PathBuf, std::fs::File), FreshRegistryError> {
+    fn acquire_fresh_registry_lock(&self) -> Result<(PathBuf, RegistryFile), FreshRegistryError> {
         let parent = self
             .path
             .parent()
@@ -347,7 +346,7 @@ impl ApiClientStore {
         let lock = open_registry_lock(&parent).map_err(|_| FreshRegistryError::Internal)?;
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
-            match lock.try_lock() {
+            match api_registry::try_lock_registry(&lock) {
                 Ok(()) => break,
                 Err(error) => {
                     let error: std::io::Error = error.into();
@@ -367,7 +366,7 @@ impl ApiClientStore {
 
     fn read_fresh_registry(
         &self,
-    ) -> Result<Option<(ApiClientRegistry, std::fs::File)>, FreshRegistryError> {
+    ) -> Result<Option<(ApiClientRegistry, RegistryFile)>, FreshRegistryError> {
         let (_parent, lock) = self.acquire_fresh_registry_lock()?;
         let (bytes, _) =
             match crate::path_identity::read_bounded_regular(&self.path, REGISTRY_MAX_BYTES) {
@@ -375,7 +374,7 @@ impl ApiClientStore {
                 Err(code)
                     if code == "unsafe_path"
                         && matches!(
-                            std::fs::symlink_metadata(&self.path),
+                            api_registry::registry_leaf_metadata(&self.path),
                             Err(error) if error.kind() == std::io::ErrorKind::NotFound
                         ) =>
                 {
@@ -635,32 +634,9 @@ pub fn list_with_status(path: &Path) -> RegistrySnapshot {
 const REGISTRY_MAX_BYTES: usize = 4 * 1024 * 1024;
 const REGISTRY_MAX_CLIENTS: usize = 4_096;
 
-fn open_registry_lock(parent: &Path) -> Result<std::fs::File, String> {
-    crate::path_identity::verify_directory(parent)?;
+fn open_registry_lock(parent: &Path) -> Result<RegistryFile, String> {
     let path = parent.join(API_CLIENTS_LOCK_FILENAME);
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(0x0002_0000);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        };
-        options
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let file = options
-        .open(&path)
-        .map_err(|_| "api_registry_lock_failed".to_string())?;
-    crate::path_identity::verify_opened_regular_file(&path, &file, true)
-        .map_err(|_| "api_registry_lock_failed".to_string())?;
-    Ok(file)
+    api_registry::open_registry_lock(parent, &path)
 }
 
 /// Hold the dedicated registry lock exactly the way the production acquisition
@@ -669,22 +645,14 @@ fn open_registry_lock(parent: &Path) -> Result<std::fs::File, String> {
 /// `FreshRegistryError::Contended`. The returned handle keeps the lock until it
 /// is dropped.
 #[cfg(test)]
-pub(crate) fn hold_registry_lock_for_test(parent: &Path) -> std::fs::File {
+pub(crate) fn hold_registry_lock_for_test(parent: &Path) -> RegistryFile {
     let lock = open_registry_lock(parent).expect("open registry lock for test");
-    lock.lock().expect("hold registry lock for test");
+    api_registry::lock_registry(&lock).expect("hold registry lock for test");
     lock
 }
 
-fn revalidate_registry_lock(parent: &Path, file: &std::fs::File) -> Result<(), String> {
-    crate::path_identity::verify_directory(parent)
-        .map_err(|_| "api_registry_lock_failed".to_string())?;
-    crate::path_identity::verify_opened_regular_file(
-        &parent.join(API_CLIENTS_LOCK_FILENAME),
-        file,
-        true,
-    )
-    .map(|_| ())
-    .map_err(|_| "api_registry_lock_failed".to_string())
+fn revalidate_registry_lock(parent: &Path, file: &RegistryFile) -> Result<(), String> {
+    api_registry::revalidate_registry_lock(parent, &parent.join(API_CLIENTS_LOCK_FILENAME), file)
 }
 
 fn validate_registry_strict(registry: &ApiClientRegistry) -> Result<(), String> {
@@ -726,7 +694,7 @@ fn validate_registry_strict(registry: &ApiClientRegistry) -> Result<(), String> 
 }
 
 fn read_registry_strict(path: &Path) -> Result<ApiClientRegistry, String> {
-    match std::fs::symlink_metadata(path) {
+    match api_registry::registry_leaf_metadata(path) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(ApiClientRegistry::default());
@@ -754,7 +722,7 @@ fn write_registry_bytes(path: &Path, registry: &ApiClientRegistry) -> Result<(),
         .ok_or_else(|| "api_registry_write_failed".to_string())?;
     let parent_identity = crate::path_identity::verify_directory(parent)
         .map_err(|_| "api_registry_write_failed".to_string())?;
-    let destination_identity = match std::fs::symlink_metadata(path) {
+    let destination_identity = match api_registry::registry_leaf_metadata(path) {
         Ok(_) => Some(
             crate::path_identity::verify_regular_file(path)
                 .map_err(|_| "api_registry_write_failed".to_string())?,
@@ -763,32 +731,10 @@ fn write_registry_bytes(path: &Path, registry: &ApiClientRegistry) -> Result<(),
         Err(_) => return Err("api_registry_write_failed".to_string()),
     };
     let temp = parent.join(format!(".api-clients-{}.tmp", uuid::Uuid::new_v4()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(0x0002_0000);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        };
-        options
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let mut file = options
-        .open(&temp)
+    let mut file = api_registry::create_registry_stage(&temp)
         .map_err(|_| "api_registry_write_failed".to_string())?;
     let publish = (|| {
-        file.write_all(&bytes)
-            .map_err(|_| "api_registry_write_failed".to_string())?;
-        file.flush()
-            .map_err(|_| "api_registry_write_failed".to_string())?;
-        file.sync_all()
+        api_registry::write_sync_registry_stage(&mut file, &bytes)
             .map_err(|_| "api_registry_write_failed".to_string())?;
         let temp_identity = crate::path_identity::verify_opened_regular_file(&temp, &file, false)
             .map_err(|_| "api_registry_write_failed".to_string())?;
@@ -810,7 +756,7 @@ fn write_registry_bytes(path: &Path, registry: &ApiClientRegistry) -> Result<(),
                     return Err("api_registry_write_failed".to_string());
                 }
             }
-            None => match std::fs::symlink_metadata(path) {
+            None => match api_registry::registry_leaf_metadata(path) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 _ => return Err("api_registry_write_failed".to_string()),
             },
@@ -827,15 +773,12 @@ fn write_registry_bytes(path: &Path, registry: &ApiClientRegistry) -> Result<(),
         if !crate::path_identity::same_object(&parent_identity, &published_parent) {
             return Err("api_registry_write_failed".to_string());
         }
-        if let Ok(directory) = std::fs::File::open(parent) {
-            directory
-                .sync_all()
-                .map_err(|_| "api_registry_write_failed".to_string())?;
-        }
+        api_registry::sync_registry_parent(parent)
+            .map_err(|_| "api_registry_write_failed".to_string())?;
         Ok(())
     })();
     if publish.is_err() {
-        if let Err(error) = std::fs::remove_file(&temp) {
+        if let Err(error) = api_registry::remove_registry_stage(&temp) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 return Err("api_registry_write_failed".to_string());
             }
@@ -853,10 +796,10 @@ where
     let parent = path
         .parent()
         .ok_or_else(|| "api_registry_write_failed".to_string())?;
-    std::fs::create_dir_all(parent).map_err(|_| "api_registry_write_failed".to_string())?;
+    api_registry::ensure_registry_directory(parent)
+        .map_err(|_| "api_registry_write_failed".to_string())?;
     let lock = open_registry_lock(parent)?;
-    lock.lock()
-        .map_err(|_| "api_registry_lock_failed".to_string())?;
+    api_registry::lock_registry(&lock).map_err(|_| "api_registry_lock_failed".to_string())?;
     revalidate_registry_lock(parent, &lock)?;
     let mut registry = read_registry_strict(path)?;
     mutate(&mut registry)?;
