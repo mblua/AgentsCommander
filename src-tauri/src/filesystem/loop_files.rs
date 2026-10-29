@@ -27,6 +27,10 @@ pub(crate) fn read_loop_document(path: &Path) -> io::Result<String> {
     std::fs::read_to_string(path)
 }
 
+pub(crate) fn read_loop_bytes(path: &Path) -> io::Result<Vec<u8>> {
+    std::fs::read(path)
+}
+
 pub(crate) fn create_loop_directory(path: &Path) -> io::Result<()> {
     std::fs::create_dir_all(path)
 }
@@ -40,6 +44,10 @@ pub(crate) fn remove_loop_stage(path: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn write_loop_state_stage(path: &Path, content: &str) -> io::Result<()> {
+    std::fs::write(path, content)
+}
+
+pub(crate) fn write_loop_bytes(path: &Path, content: impl AsRef<[u8]>) -> io::Result<()> {
     std::fs::write(path, content)
 }
 

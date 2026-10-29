@@ -33,6 +33,7 @@ use chrono::{Local, TimeZone};
 use serde::{Deserialize, Serialize};
 
 use crate::config::config_dir;
+use crate::filesystem::loop_files;
 
 mod report;
 use crate::shutdown::ShutdownSignal;
@@ -711,7 +712,7 @@ fn write_marker(marker: &FreezeMarker, warned: &mut bool) {
             return;
         }
     };
-    if let Err(err) = std::fs::write(&path, bytes) {
+    if let Err(err) = loop_files::write_loop_bytes(&path, bytes) {
         if !*warned {
             log::warn!(
                 "[ipc-observer] freeze marker could not be written to {}: {err}",
@@ -723,13 +724,13 @@ fn write_marker(marker: &FreezeMarker, warned: &mut bool) {
 }
 
 fn read_marker() -> Option<FreezeMarker> {
-    let bytes = std::fs::read(marker_path()?).ok()?;
+    let bytes = loop_files::read_loop_bytes(&marker_path()?).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
 fn delete_marker() {
     if let Some(path) = marker_path() {
-        let _ = std::fs::remove_file(path);
+        let _ = loop_files::remove_loop_stage(&path);
     }
 }
 
