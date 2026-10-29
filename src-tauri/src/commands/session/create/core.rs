@@ -229,7 +229,18 @@ pub(crate) async fn create_session_inner_core<R: tauri::Runtime>(
         // yet, so a rejection leaves zero RAM/disk residue and needs no
         // `rollback_pre_created_session`. (dev-rust E: the two call strings
         // at :1443/:1708 are untouched.)
-        crate::config::sessions_persistence::enforce_creation_gate(app, &cwd, enforcement).await?;
+        if matches!(
+            enforcement,
+            crate::config::sessions_persistence::CreationGateEnforcement::Enforce
+        ) {
+            let settings = app.state::<SettingsState>();
+            crate::config::sessions_persistence::enforce_creation_gate(
+                settings.inner(),
+                &cwd,
+                enforcement,
+            )
+            .await?;
+        }
         enforce_owned_unarchived_for_spawn(
             app,
             &cwd,
