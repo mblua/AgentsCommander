@@ -14,31 +14,30 @@ use super::{
 };
 #[cfg(test)]
 use super::{AgentUpdateChange, AgentUpdateOutcome};
-use crate::agent_version::{AgentInstallCache, InstallState, Scheduling, INSTALL_CACHE_TTL};
+use super::{AgentUpdateState, AgentUpdateTasks, ManagedBroadcastEvents};
+use crate::agent_version::{InstallState, Scheduling, INSTALL_CACHE_TTL};
 use crate::config::coding_agents_catalog::{
     load_catalog_for_settings, primary_project_root, CodingAgentDefinition,
 };
-use crate::config::settings::SettingsState;
 use futures::FutureExt;
 use serde_json::json;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tauri::{AppHandle, Manager};
 
 pub(crate) struct SettledPostProbe(pub(crate) InstallState);
 
-pub(crate) struct TargetTerminalizer {
-    pub(crate) app: AppHandle,
+pub(crate) struct TargetTerminalizer<E> {
+    pub(crate) app: E,
     pub(crate) gate: Arc<AgentUpdateGate>,
     pub(crate) target: UpdateTarget,
     pub(crate) install_before: Option<InstallState>,
     pub(crate) settled_post_probe: Option<SettledPostProbe>,
 }
 
-impl TargetTerminalizer {
-    pub(crate) fn new(app: AppHandle, gate: Arc<AgentUpdateGate>, target: UpdateTarget) -> Self {
+impl<E: ManagedBroadcastEvents> TargetTerminalizer<E> {
+    pub(crate) fn new(app: E, gate: Arc<AgentUpdateGate>, target: UpdateTarget) -> Self {
         Self {
             app,
             gate,
@@ -145,7 +144,7 @@ pub(crate) fn finish_pass<I: FnOnce(), E: FnOnce()>(
 }
 
 pub(crate) async fn run_target_probe(
-    app: &AppHandle,
+    app: &impl ManagedBroadcastEvents,
     gate: &AgentUpdateGate,
     target: &UpdateTarget,
     work: TargetWork,
@@ -203,11 +202,11 @@ pub(crate) async fn run_target_probe(
     }
 }
 
-pub(crate) async fn run_update_target_body(
-    app: &AppHandle,
+pub(crate) async fn run_update_target_body<E: ManagedBroadcastEvents>(
+    app: &E,
     gate: &Arc<AgentUpdateGate>,
     target: &UpdateTarget,
-    terminalizer: &mut TargetTerminalizer,
+    terminalizer: &mut TargetTerminalizer<E>,
     owner_slot: &mut TargetOwnerSlot,
 ) -> AgentUpdateResult {
     let install_before =
@@ -294,8 +293,8 @@ pub(crate) async fn run_update_target_body(
 /// One retained target has one outer terminalizer and an owner slot outside the
 /// caught body. A panic therefore triggers asynchronous owner settlement before
 /// any failed result can be published.
-pub(crate) async fn run_update_target(
-    app: AppHandle,
+pub(crate) async fn run_update_target<E: ManagedBroadcastEvents + Clone>(
+    app: E,
     gate: Arc<AgentUpdateGate>,
     target: UpdateTarget,
 ) -> AgentUpdateResult {
@@ -344,7 +343,7 @@ pub(crate) async fn run_update_target(
 /// row leaves `running` and every surface receives its `command_finished`.
 #[cfg(test)]
 pub(crate) fn settle_joined_update(
-    app: &AppHandle,
+    app: &impl ManagedBroadcastEvents,
     gate: &AgentUpdateGate,
     target: &UpdateTarget,
     joined: Result<AgentUpdateResult, tokio::task::JoinError>,
@@ -408,7 +407,11 @@ pub fn pass_nodes(
 
 /// #1551 - a prompted target leaves the pass (answered No, or expired): prune its node and tell
 /// every surface, exactly once. Called by the prompt loop only, after that prompt's closure.
-pub(crate) fn skip_prompted_target(app: &AppHandle, gate: &AgentUpdateGate, command: &str) {
+pub(crate) fn skip_prompted_target(
+    app: &impl ManagedBroadcastEvents,
+    gate: &AgentUpdateGate,
+    command: &str,
+) {
     if let Some(skipped) = gate.mark_command_skipped(command) {
         emit_all(app, "agent_update_command_skipped", json!(skipped));
     }
@@ -420,8 +423,11 @@ pub(crate) fn skip_prompted_target(app: &AppHandle, gate: &AgentUpdateGate, comm
 /// the post-update state without asking. Runs only after `finish_pass` returned (program
 /// order in the pass task), so every ticket it opens carries the post-pass generation and
 /// no probe can overlap an update (every update ended before `finished`).
-pub(crate) fn schedule_post_update_probes(app: &AppHandle, updated: &[UpdateTarget]) {
-    let Some(cache) = app.try_state::<Arc<AgentInstallCache>>() else {
+pub(crate) fn schedule_post_update_probes<E>(app: &E, updated: &[UpdateTarget])
+where
+    E: ManagedBroadcastEvents + AgentUpdateTasks + AgentUpdateState + Clone + 'static,
+{
+    let Some(cache) = app.install_cache() else {
         return;
     };
     let now = Instant::now();
@@ -447,21 +453,22 @@ pub(crate) struct PassRuntime {
     pub(crate) tasks: Vec<SupervisedTargetTask>,
 }
 
-pub(crate) struct PassSupervisor {
-    pub(crate) app: AppHandle,
+pub(crate) struct PassSupervisor<E> {
+    pub(crate) app: E,
     pub(crate) gate: Arc<AgentUpdateGate>,
 }
 
-impl PassSupervisor {
-    pub(crate) fn spawn(
-        app: AppHandle,
-        gate: Arc<AgentUpdateGate>,
-    ) -> tokio::sync::oneshot::Receiver<()> {
+impl<E> PassSupervisor<E>
+where
+    E: ManagedBroadcastEvents + AgentUpdateTasks + AgentUpdateState + Clone + 'static,
+{
+    pub(crate) fn spawn(app: E, gate: Arc<AgentUpdateGate>) -> tokio::sync::oneshot::Receiver<()> {
         let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
-        tauri::async_runtime::spawn(async move {
+        let spawner = app.clone();
+        spawner.spawn_update_task(Box::pin(async move {
             Self { app, gate }.run().await;
             let _ = finished_tx.send(());
-        });
+        }));
         finished_rx
     }
 
@@ -473,7 +480,7 @@ impl PassSupervisor {
     }
 
     pub(crate) async fn run_body(&self, runtime: &mut PassRuntime) {
-        let settings = match self.app.state::<SettingsState>().current_snapshot().await {
+        let settings = match self.app.update_settings().current_snapshot().await {
             Ok(settings) => settings,
             Err(error) => {
                 log::debug!("[agent-update] startup pass skipped: {error}");
@@ -655,7 +662,7 @@ impl PassSupervisor {
         self.gate.wait_all_terminal_publications().await;
         let results = self.gate.snapshot().results;
         let announced = results.clone();
-        let cache = self.app.try_state::<Arc<AgentInstallCache>>();
+        let cache = self.app.install_cache();
         finish_pass(
             &self.gate,
             results,

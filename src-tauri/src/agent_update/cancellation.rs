@@ -1,12 +1,12 @@
 use super::gate::{AgentUpdateGate, GateState};
 use super::target::{ResponseReleaseGuard, TargetClaim, TargetPhase};
+use super::ManagedBroadcastEvents;
 use super::{
     emit_all, AgentUpdateCancelAllResponse, AgentUpdateCancelDisposition,
     AgentUpdateCancelResponse, AgentUpdateCancellationChanged, AgentUpdateCommandRef,
 };
 use serde_json::json;
 use std::sync::Arc;
-use tauri::AppHandle;
 
 pub(crate) fn cancellation_snapshot(state: &GateState) -> AgentUpdateCancellationChanged {
     AgentUpdateCancellationChanged {
@@ -25,7 +25,7 @@ pub(crate) fn cancellation_snapshot(state: &GateState) -> AgentUpdateCancellatio
 }
 
 pub async fn cancel_update(
-    app: &AppHandle,
+    app: &impl ManagedBroadcastEvents,
     gate: &AgentUpdateGate,
     command: String,
 ) -> AgentUpdateCancelResponse {
@@ -112,7 +112,7 @@ pub async fn cancel_update(
 }
 
 pub async fn cancel_all_updates(
-    app: &AppHandle,
+    app: &impl ManagedBroadcastEvents,
     gate: &AgentUpdateGate,
 ) -> AgentUpdateCancelAllResponse {
     let serial = gate.answer_serial.lock().await;
