@@ -1,13 +1,14 @@
 use super::{Path, PathBuf};
 use crate::config::instance_artifacts::{SETTINGS_BACKUP_PREFIX, SETTINGS_BACKUP_SUFFIX};
+use crate::filesystem::settings_file;
 
 pub(crate) fn write_pre_384_v1_backup(settings_path: &Path, contents: &str) -> Result<(), String> {
     let backup_path = settings_path
         .with_file_name(crate::config::instance_artifacts::SETTINGS_MIGRATION_BACKUP_384_V1_NAME);
-    if backup_path.exists() {
+    if settings_file::settings_path_exists(&backup_path) {
         return Ok(());
     }
-    std::fs::write(&backup_path, contents)
+    settings_file::write_settings_migration_backup(&backup_path, contents)
         .map_err(|e| format!("Failed to write {}: {}", backup_path.display(), e))?;
     log::info!(
         "[settings-migration] wrote pre-384 v1 settings backup to {:?}",
@@ -42,12 +43,11 @@ pub(crate) fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
 }
 
 pub(crate) fn rotate_settings_backups_labeled(settings_path: &Path, label: &Path, previous: &[u8]) {
-    use std::io::Write as _;
     // D8: a non-regular slot is a user-placed symlink or directory; never follow
     // or clobber it.
     for index in 1..=SETTINGS_BACKUP_KEEP {
         let slot = settings_backup_path(settings_path, index);
-        match std::fs::symlink_metadata(&slot) {
+        match settings_file::settings_path_metadata(&slot) {
             Ok(metadata) => {
                 if !metadata.is_file() {
                     log::warn!(
@@ -74,7 +74,7 @@ pub(crate) fn rotate_settings_backups_labeled(settings_path: &Path, label: &Path
     for index in (1..SETTINGS_BACKUP_KEEP).rev() {
         let from = settings_backup_path(settings_path, index);
         let to = settings_backup_path(settings_path, index + 1);
-        match std::fs::symlink_metadata(&from) {
+        match settings_file::settings_path_metadata(&from) {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => {
@@ -86,7 +86,7 @@ pub(crate) fn rotate_settings_backups_labeled(settings_path: &Path, label: &Path
                 return;
             }
         }
-        if let Err(error) = std::fs::rename(&from, &to) {
+        if let Err(error) = settings_file::rename_settings_file(&from, &to) {
             log::warn!(
                 "[settings] #2058 aborting backup rotation: rename {:?} -> {:?} failed: {}",
                 settings_backup_path(label, index),
@@ -99,22 +99,9 @@ pub(crate) fn rotate_settings_backups_labeled(settings_path: &Path, label: &Path
 
     // Write the just-replaced bytes into slot 1.
     let slot_one = settings_backup_path(settings_path, 1);
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    match options.open(&slot_one) {
+    match settings_file::open_settings_backup_slot(&slot_one) {
         Ok(mut file) => {
-            if let Err(error) = file.write_all(previous) {
+            if let Err(error) = settings_file::write_settings_bytes(&mut file, previous) {
                 log::warn!(
                     "[settings] #2058 aborting backup rotation: write to slot {:?} failed: {}",
                     settings_backup_path(label, 1),
