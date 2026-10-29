@@ -2,6 +2,7 @@
 use super::{project_migration_error, reconcile_project_state_to_path};
 use super::{AppSettings, ProjectWriteMode};
 use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
+use crate::filesystem::settings_file;
 use serde_json::Value;
 use std::path::Path;
 #[cfg(test)]
@@ -124,8 +125,6 @@ pub(crate) fn write_value_atomic_labeled(
     path: &Path,
     label: &Path,
 ) -> Result<Vec<u8>, SettingsSaveError> {
-    use std::io::Write as _;
-
     let dir = path.parent().ok_or_else(|| {
         SettingsSaveError::semantic(
             SettingsSaveStage::PrepareTarget,
@@ -135,7 +134,7 @@ pub(crate) fn write_value_atomic_labeled(
             SettingsSaveLegacyOutward::SettingsSaveFailed,
         )
     })?;
-    std::fs::create_dir_all(dir).map_err(|source| {
+    settings_file::ensure_settings_directory(dir).map_err(|source| {
         SettingsSaveError::io(
             SettingsSaveStage::PrepareTarget,
             path,
@@ -153,7 +152,7 @@ pub(crate) fn write_value_atomic_labeled(
             SettingsSaveLegacyOutward::SettingsSaveFailed,
         )
     })?;
-    match std::fs::symlink_metadata(path) {
+    match settings_file::settings_path_metadata(path) {
         Ok(metadata) => {
             if !metadata.is_file() {
                 return Err(SettingsSaveError::semantic(
@@ -223,35 +222,22 @@ pub(crate) fn write_value_atomic_labeled(
     let mut temp_name = temp_base.to_os_string();
     temp_name.push(format!(".{pid}.{op_id}.tmp"));
     let tmp_path = dir.join(temp_name);
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-
     let result: Result<(), SettingsSaveError> = (|| {
         #[cfg(test)]
         project_atomic_checkpoint(path, SettingsSaveStage::TempCreate)?;
-        let mut temporary = options.open(&tmp_path).map_err(|source| {
-            SettingsSaveError::io(
-                SettingsSaveStage::TempCreate,
-                path,
-                Some(&tmp_path),
-                source,
-                SettingsSaveLegacyOutward::SettingsSaveFailed,
-            )
-        })?;
+        let mut temporary =
+            settings_file::open_settings_temporary(&tmp_path).map_err(|source| {
+                SettingsSaveError::io(
+                    SettingsSaveStage::TempCreate,
+                    path,
+                    Some(&tmp_path),
+                    source,
+                    SettingsSaveLegacyOutward::SettingsSaveFailed,
+                )
+            })?;
         #[cfg(test)]
         project_atomic_checkpoint(path, SettingsSaveStage::TempWrite)?;
-        temporary.write_all(&json).map_err(|source| {
+        settings_file::write_settings_bytes(&mut temporary, &json).map_err(|source| {
             SettingsSaveError::io(
                 SettingsSaveStage::TempWrite,
                 path,
@@ -260,7 +246,7 @@ pub(crate) fn write_value_atomic_labeled(
                 SettingsSaveLegacyOutward::SettingsSaveFailed,
             )
         })?;
-        temporary.flush().map_err(|source| {
+        settings_file::flush_settings_file(&mut temporary).map_err(|source| {
             SettingsSaveError::io(
                 SettingsSaveStage::TempFlush,
                 path,
@@ -271,7 +257,7 @@ pub(crate) fn write_value_atomic_labeled(
         })?;
         #[cfg(test)]
         project_atomic_checkpoint(path, SettingsSaveStage::TempSync)?;
-        temporary.sync_all().map_err(|source| {
+        settings_file::sync_settings_file(&temporary).map_err(|source| {
             SettingsSaveError::io(
                 SettingsSaveStage::TempSync,
                 path,
@@ -306,29 +292,24 @@ pub(crate) fn write_value_atomic_labeled(
         })?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
-                |source| {
-                    SettingsSaveError::io(
-                        SettingsSaveStage::TargetPermissions,
-                        path,
-                        Some(&tmp_path),
-                        source,
-                        SettingsSaveLegacyOutward::SettingsSaveFailed,
-                    )
-                },
-            )?;
-            std::fs::File::open(dir)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|source| {
-                    SettingsSaveError::io(
-                        SettingsSaveStage::ParentDirectorySync,
-                        path,
-                        Some(&tmp_path),
-                        source,
-                        SettingsSaveLegacyOutward::SettingsSaveFailed,
-                    )
-                })?;
+            settings_file::set_private_settings_permissions(path).map_err(|source| {
+                SettingsSaveError::io(
+                    SettingsSaveStage::TargetPermissions,
+                    path,
+                    Some(&tmp_path),
+                    source,
+                    SettingsSaveLegacyOutward::SettingsSaveFailed,
+                )
+            })?;
+            settings_file::sync_settings_directory(dir).map_err(|source| {
+                SettingsSaveError::io(
+                    SettingsSaveStage::ParentDirectorySync,
+                    path,
+                    Some(&tmp_path),
+                    source,
+                    SettingsSaveLegacyOutward::SettingsSaveFailed,
+                )
+            })?;
         }
         #[cfg(test)]
         project_atomic_checkpoint(path, SettingsSaveStage::PostWriteRead)?;
@@ -353,8 +334,8 @@ pub(crate) fn write_value_atomic_labeled(
         }
         Ok(())
     })();
-    if result.is_err() && tmp_path.exists() {
-        let _ = std::fs::remove_file(&tmp_path);
+    if result.is_err() && settings_file::settings_path_exists(&tmp_path) {
+        let _ = settings_file::remove_settings_temporary(&tmp_path);
     }
     result?;
 
@@ -398,12 +379,6 @@ pub(crate) fn replace_settings_file_atomic(
 ) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
 
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
-    }
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
     let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
     let destination: Vec<u16> = destination
         .as_os_str()
@@ -412,18 +387,9 @@ pub(crate) fn replace_settings_file_atomic(
         .collect();
     replace_settings_file_atomic_with_retry(
         || {
-            let result = unsafe {
-                MoveFileExW(
-                    source.as_ptr(),
-                    destination.as_ptr(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-                )
-            };
-            if result == 0 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
+            // SAFETY: both Vecs use encode_wide().chain(Some(0)), remain live,
+            // and are never mutated during replacement attempts.
+            unsafe { settings_file::replace_settings_file_windows_once(&source, &destination) }
         },
         std::thread::sleep,
     )
@@ -434,7 +400,7 @@ pub(crate) fn replace_settings_file_atomic(
     source: &Path,
     destination: &Path,
 ) -> std::io::Result<()> {
-    std::fs::rename(source, destination)
+    settings_file::rename_settings_file(source, destination)
 }
 
 /// Snapshot fixture/migration writer only. Production operations own a token
