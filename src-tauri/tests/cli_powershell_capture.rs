@@ -130,7 +130,8 @@ fn debug_guard() {
 // propagates through it and out of the outer powershell.exe.
 
 #[test]
-#[ignore = "Manual developer check; CI uses smoke:cli-release-windows against shipped/testable exe names"]
+#[ignore = "Manual developer check; CI uses smoke:cli-release-windows against \
+    shipped/testable exe names"]
 fn list_peers_outputs_valid_json_under_powershell_noninteractive() {
     debug_guard();
     let guard = TempConfigRoot::new();
@@ -164,7 +165,8 @@ fn list_peers_outputs_valid_json_under_powershell_noninteractive() {
 }
 
 #[test]
-#[ignore = "Manual developer check; CI uses smoke:cli-release-windows against shipped/testable exe names"]
+#[ignore = "Manual developer check; CI uses smoke:cli-release-windows against \
+    shipped/testable exe names"]
 fn send_help_outputs_under_powershell_noninteractive() {
     debug_guard();
     let guard = TempConfigRoot::new();
@@ -185,7 +187,8 @@ fn send_help_outputs_under_powershell_noninteractive() {
 }
 
 #[test]
-#[ignore = "Manual developer check; CI uses smoke:cli-release-windows against shipped/testable exe names"]
+#[ignore = "Manual developer check; CI uses smoke:cli-release-windows against \
+    shipped/testable exe names"]
 fn send_unknown_flag_emits_stderr_under_powershell_noninteractive() {
     debug_guard();
     let guard = TempConfigRoot::new();
@@ -200,7 +203,8 @@ fn send_unknown_flag_emits_stderr_under_powershell_noninteractive() {
 
 // G8: parallel pwsh.exe tests. Skip if pwsh not installed.
 #[test]
-#[ignore = "Manual developer check; CI uses smoke:cli-release-windows against shipped/testable exe names when pwsh.exe is installed"]
+#[ignore = "Manual developer check; CI uses smoke:cli-release-windows against \
+    shipped/testable exe names when pwsh.exe is installed"]
 fn list_peers_outputs_valid_json_under_pwsh_noninteractive() {
     debug_guard();
     let guard = TempConfigRoot::new();
@@ -239,7 +243,8 @@ fn list_peers_outputs_valid_json_under_pwsh_noninteractive() {
 }
 
 #[test]
-#[ignore = "Manual developer check; CI uses smoke:cli-release-windows against shipped/testable exe names"]
+#[ignore = "Manual developer check; CI uses smoke:cli-release-windows against \
+    shipped/testable exe names"]
 fn list_peers_outputs_valid_json_under_powershell_noninteractive_via_git_bash() {
     debug_guard();
     let guard = TempConfigRoot::new();
@@ -873,7 +878,10 @@ fn issue_1867_isolation_source_contract() {
         assert_eq!(
             isolation_occurrences(
                 isolation_function(&tokens, function),
-                r#"Command::new(shell).arg("-Help").stdout(Stdio::null()).stderr(Stdio::null()).status().is_err()"#
+                concat!(
+                    r#"Command::new(shell).arg("-Help").stdout(Stdio::"#,
+                    r#"null()).stderr(Stdio::null()).status().is_err()"#
+                )
             ),
             1,
             "{function}: probe"
@@ -902,7 +910,10 @@ fn issue_1867_isolation_source_contract() {
     assert_eq!(
         isolation_occurrences(
             isolation_function(&tokens, ignored[4]),
-            r#"Command::new("bash.exe").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_err()"#
+            concat!(
+                r#"Command::new("bash.exe").arg("--version").stdout(St"#,
+                r#"dio::null()).stderr(Stdio::null()).status().is_err()"#
+            )
         ),
         1,
         "Bash probe"
