@@ -8,6 +8,7 @@ use super::poller::MailboxPoller;
 use super::pty_claim::ResponseWakeWork;
 #[cfg(test)]
 use super::pty_claim::{InternalSystemBookkeeping, MailboxTestEvent};
+use super::pty_observation::PtyAuthorityState;
 use super::settle::{err_is_pty_session_missing, internal_target_fqn_prefilter_matches};
 use crate::config::settings::SettingsState;
 use crate::phone::consumption::verdict_to_result;
@@ -377,13 +378,13 @@ impl MailboxPoller {
             .map_err(|error| format!("Internal notice guard task failed: {}", error))?
     }
 
-    async fn resolve_internal_agent_command<R: tauri::Runtime>(
+    async fn resolve_internal_agent_command<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         target: &InternalSystemTarget,
     ) -> Result<Option<ResolvedWakeAgentCommand>, String> {
         let agents = {
-            let settings = app.state::<SettingsState>();
+            let settings = app.pty_settings();
             let settings = settings.read().await;
             // #2716 (B3, option C): the same refusal as `resolve_agent_command`.
             if let Some(path) = settings.agents_layer.unreadable_path() {
@@ -415,13 +416,13 @@ impl MailboxPoller {
         .map_err(|error| format!("Internal command lookup task failed: {}", error))?
     }
 
-    async fn find_internal_system_candidates<R: tauri::Runtime>(
+    async fn find_internal_system_candidates<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         target: &InternalSystemTarget,
     ) -> Result<Vec<(SessionInfo, bool)>, String> {
         let sessions = {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let session_mgr = app.pty_sessions();
             let manager = session_mgr.read().await.clone();
             manager.list_sessions().await
         };
@@ -474,14 +475,14 @@ impl MailboxPoller {
         Ok(result)
     }
 
-    async fn recheck_internal_exited_candidate<R: tauri::Runtime>(
+    async fn recheck_internal_exited_candidate<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         session_id: Uuid,
         target: &InternalSystemTarget,
     ) -> Result<(), String> {
         let session = {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let session_mgr = app.pty_sessions();
             let manager = session_mgr.read().await.clone();
             manager.get_session(session_id).await
         }
@@ -511,15 +512,15 @@ impl MailboxPoller {
         Ok(())
     }
 
-    async fn recheck_internal_exited_record<R: tauri::Runtime>(
+    async fn recheck_internal_exited_record<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         session_id: Uuid,
         target: &InternalSystemTarget,
         expected_cwd: &str,
     ) -> Result<(), String> {
         let session = {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let session_mgr = app.pty_sessions();
             let manager = session_mgr.read().await.clone();
             manager.get_session(session_id).await
         }
