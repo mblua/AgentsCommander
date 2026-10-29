@@ -867,7 +867,10 @@ fn rejection_case(id: &str, raw: bool, failure: u8) {
             delivery_context: None,
         },
     );
-    let result = poller.reject_message(&source, &msg, "unchanged reason");
+    let result = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(poller.reject_message(&source, &msg, "unchanged reason"));
     if failure == 1 {
         let missing = inbox.join("other-missing.json");
         assert_eq!(
