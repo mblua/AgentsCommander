@@ -217,33 +217,8 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
         );
     }
     if will_inject_continue {
-        // #260: Claude's resume flag from the CodingAgentProfile. resume_tokens
-        // is a 1-element const for Claude, so [0] is provably in bounds.
-        let continue_flag = CodingAgentKind::Claude.profile().resume_tokens[0];
-        if let Some(ref aid) = agent_id {
-            if executable_basename(shell) == "cmd" {
-                if let Some(last) = shell_args.last_mut() {
-                    if executable_basename(last) == "claude"
-                        || last.to_lowercase().contains("claude")
-                    {
-                        *last = format!("{} {}", last, continue_flag);
-                        effective_continuation = true;
-                        log::info!(
-                            "Auto-injected --continue for agent '{}' \
-                             (prior conversation exists, cmd path)",
-                            aid
-                        );
-                    }
-                }
-            } else {
-                shell_args.push(continue_flag.to_string());
-                effective_continuation = true;
-                log::info!(
-                    "Auto-injected --continue for agent '{}' (prior conversation exists)",
-                    aid
-                );
-            }
-        }
+        effective_continuation |=
+            inject_claude_continue_args(shell, agent_id.as_deref(), &mut shell_args);
     }
 
     // (#756) Rider: on Claude spawns where AC suppresses resume, mint the fresh
@@ -254,87 +229,17 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
     // skip_auto_resume=false). `full_cmd` predates both blocks' mutations, so
     // the veto scan sees user-configured identity flags, never AC's own.
     if should_inject_fresh_session_id(is_claude, skip_auto_resume, &full_cmd) {
-        if let Some(ref aid) = agent_id {
-            let fresh_session_id = Uuid::new_v4();
-            if executable_basename(shell) == "cmd" {
-                if let Some(last) = shell_args.last_mut() {
-                    if executable_basename(last) == "claude"
-                        || last.to_lowercase().contains("claude")
-                    {
-                        *last = format!("{} --session-id {}", last, fresh_session_id);
-                        log::info!(
-                            "Auto-injected --session-id {} for agent '{}' (fresh spawn, cmd path, \
-                         #756)",
-                            fresh_session_id,
-                            aid
-                        );
-                    }
-                }
-            } else {
-                shell_args.push("--session-id".to_string());
-                shell_args.push(fresh_session_id.to_string());
-                log::info!(
-                    "Auto-injected --session-id {} for agent '{}' (fresh spawn, #756)",
-                    fresh_session_id,
-                    aid
-                );
-            }
-        }
+        inject_claude_fresh_args(shell, agent_id.as_deref(), &mut shell_args);
     }
 
-    if maybe_inject_pi_resume(
+    effective_continuation |= inject_other_provider_resume_args(
         agent_kind,
         resolved_spawn,
         skip_auto_resume,
         shell,
+        agent_id.as_deref(),
         &mut shell_args,
-    ) {
-        effective_continuation = true;
-        if let Some(spawn) = resolved_spawn {
-            log::info!(
-                "Auto-injected Pi `--continue` for trusted agent '{}'",
-                spawn.trusted_agent_id
-            );
-        }
-    }
-
-    if agent_kind == Some(CodingAgentKind::Codex) && !skip_auto_resume {
-        if let Some(ref aid) = agent_id {
-            if inject_codex_resume(shell, &mut shell_args) {
-                effective_continuation = true;
-                log::info!("Auto-injected `codex resume --last` for agent '{}'", aid);
-            }
-        }
-    }
-
-    if agent_kind == Some(CodingAgentKind::Antigravity) && !skip_auto_resume {
-        if let Some(ref aid) = agent_id {
-            if inject_antigravity_resume(shell, &mut shell_args) {
-                effective_continuation = true;
-                log::info!("Auto-injected `agy --continue` for agent '{}'", aid);
-            }
-        }
-    }
-
-    // #1873 - Muse workspace-latest resume: only a trusted, exact, empty-argv,
-    // local macOS/Linux recipe with resume intent receives `resume --last`,
-    // appended to the LOCAL effective vector only. Fresh intent, configured
-    // arguments, wrappers, containers, Windows and ad-hoc launches stay plain.
-    if maybe_inject_muse_resume(
-        agent_kind,
-        resolved_spawn,
-        skip_auto_resume,
-        shell,
-        &mut shell_args,
-    ) {
-        effective_continuation = true;
-        if let Some(spawn) = resolved_spawn {
-            log::info!(
-                "Auto-injected Muse `resume --last` for trusted agent '{}'",
-                spawn.trusted_agent_id
-            );
-        }
-    }
+    );
 
     // #529 - resolve the instructions filename from the configured coding agent
     // (falling back to detection for ad-hoc launches), plus the union of every
@@ -516,4 +421,132 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
         pending,
     };
     backend::spawn(ctx, input).await
+}
+
+fn inject_claude_continue_args(
+    shell: &str,
+    agent_id: Option<&str>,
+    shell_args: &mut Vec<String>,
+) -> bool {
+    let mut effective_continuation = false;
+    // #260: Claude's resume flag from the CodingAgentProfile. resume_tokens
+    // is a 1-element const for Claude, so [0] is provably in bounds.
+    let continue_flag = CodingAgentKind::Claude.profile().resume_tokens[0];
+    if let Some(aid) = agent_id {
+        if executable_basename(shell) == "cmd" {
+            if let Some(last) = shell_args.last_mut() {
+                if executable_basename(last) == "claude" || last.to_lowercase().contains("claude") {
+                    *last = format!("{} {}", last, continue_flag);
+                    effective_continuation = true;
+                    log::info!(
+                        "Auto-injected --continue for agent '{}' \
+                         (prior conversation exists, cmd path)",
+                        aid
+                    );
+                }
+            }
+        } else {
+            shell_args.push(continue_flag.to_string());
+            effective_continuation = true;
+            log::info!(
+                "Auto-injected --continue for agent '{}' (prior conversation exists)",
+                aid
+            );
+        }
+    }
+
+    effective_continuation
+}
+
+fn inject_claude_fresh_args(shell: &str, agent_id: Option<&str>, shell_args: &mut Vec<String>) {
+    if let Some(aid) = agent_id {
+        let fresh_session_id = Uuid::new_v4();
+        if executable_basename(shell) == "cmd" {
+            if let Some(last) = shell_args.last_mut() {
+                if executable_basename(last) == "claude" || last.to_lowercase().contains("claude") {
+                    *last = format!("{} --session-id {}", last, fresh_session_id);
+                    log::info!(
+                        "Auto-injected --session-id {} for agent '{}' (fresh spawn, cmd path, \
+                     #756)",
+                        fresh_session_id,
+                        aid
+                    );
+                }
+            }
+        } else {
+            shell_args.push("--session-id".to_string());
+            shell_args.push(fresh_session_id.to_string());
+            log::info!(
+                "Auto-injected --session-id {} for agent '{}' (fresh spawn, #756)",
+                fresh_session_id,
+                aid
+            );
+        }
+    }
+}
+
+fn inject_other_provider_resume_args(
+    agent_kind: Option<CodingAgentKind>,
+    resolved_spawn: Option<&crate::config::agent_command::AgentSpawnCommand>,
+    skip_auto_resume: bool,
+    shell: &str,
+    agent_id: Option<&str>,
+    shell_args: &mut Vec<String>,
+) -> bool {
+    let mut effective_continuation = false;
+    if maybe_inject_pi_resume(
+        agent_kind,
+        resolved_spawn,
+        skip_auto_resume,
+        shell,
+        shell_args,
+    ) {
+        effective_continuation = true;
+        if let Some(spawn) = resolved_spawn {
+            log::info!(
+                "Auto-injected Pi `--continue` for trusted agent '{}'",
+                spawn.trusted_agent_id
+            );
+        }
+    }
+
+    if agent_kind == Some(CodingAgentKind::Codex) && !skip_auto_resume {
+        if let Some(aid) = agent_id {
+            if inject_codex_resume(shell, shell_args) {
+                effective_continuation = true;
+                log::info!("Auto-injected `codex resume --last` for agent '{}'", aid);
+            }
+        }
+    }
+
+    if agent_kind == Some(CodingAgentKind::Antigravity) && !skip_auto_resume {
+        if let Some(aid) = agent_id {
+            if inject_antigravity_resume(shell, shell_args) {
+                effective_continuation = true;
+                log::info!("Auto-injected `agy --continue` for agent '{}'", aid);
+            }
+        }
+    }
+
+    // #1873 - Muse workspace-latest resume: only a trusted, exact, empty-argv,
+    // local macOS/Linux recipe with resume intent receives `resume --last`,
+    // appended to the LOCAL effective vector only. Fresh intent, configured
+    // arguments, wrappers, containers, Windows and ad-hoc launches stay plain.
+    if maybe_inject_muse_resume(
+        agent_kind,
+        resolved_spawn,
+        skip_auto_resume,
+        shell,
+        shell_args,
+    ) {
+        effective_continuation = true;
+        if let Some(spawn) = resolved_spawn {
+            log::info!(
+                "Auto-injected Muse `resume --last` for trusted agent '{}'",
+                spawn.trusted_agent_id
+            );
+        }
+    }
+
+    effective_continuation
 }

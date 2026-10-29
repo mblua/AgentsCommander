@@ -56,7 +56,6 @@ use skill_snapshots::{
 #[cfg(test)]
 use std::collections::HashMap;
 use std::collections::HashSet;
-#[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
@@ -99,6 +98,23 @@ struct DefaultRootSkill {
     legacy_snapshots: &'static [&'static str],
 }
 
+pub(crate) const SELF_HANDOFF_SKILL_CONTENT: &str =
+    include_str!("default_skills/self-handoff/SKILL.md");
+
+const SELF_HANDOFF_DEFAULT_SKILL: DefaultRootSkill = DefaultRootSkill {
+    dir_name: "self-handoff",
+    file_name: SKILL_MD_FILENAME,
+    content: SELF_HANDOFF_SKILL_CONTENT,
+    // First shipped version: future versions freeze their predecessors here.
+    legacy_snapshots: &[],
+};
+
+/// Reuse the existing create-only publisher and pristine-version repair for projects.
+pub(crate) fn ensure_project_self_handoff_skill_at(ac_root: &Path) -> Result<(), String> {
+    let skills_root = ac_root.join(crate::config::shared_locations::PROJECT_SKILLS_DIR);
+    provisioning::ensure_default_root_skill_file(ac_root, &skills_root, &SELF_HANDOFF_DEFAULT_SKILL)
+}
+
 const DEFAULT_ROOT_SKILLS: &[DefaultRootSkill] = &[
     DefaultRootSkill {
         dir_name: "role-skill-boundary-audit",
@@ -122,6 +138,7 @@ const DEFAULT_ROOT_SKILLS: &[DefaultRootSkill] = &[
         content: include_str!("root_agent_defaults/rtk-install-windows/SKILL.md"),
         legacy_snapshots: &[],
     },
+    SELF_HANDOFF_DEFAULT_SKILL,
 ];
 
 /// Returns `true` iff `target` is the canonical Root Agent reply name.

@@ -32,8 +32,8 @@ not an in-process clear.\n\
 archives SELF-HANDOFF.md -> self-clear/<timestamp>_SELF-HANDOFF.md in your root, then injects a \
 prompt naming that exact archived path to resume from. If the archive rename fails, the prompt \
 points at SELF-HANDOFF.md still in your root.\n\n\
-BEFORE invoking, write SELF-HANDOFF.md in your own root with the notes you need to resume \
-(EXCLUDING anything already recorded in SELF-FORGET.md). If SELF-HANDOFF.md is missing, the \
+BEFORE invoking, write SELF-HANDOFF.md in your own root following the self-handoff skill. \
+If SELF-HANDOFF.md is missing, the \
 command refuses (respawning with nothing to resume from would wipe your context).\n\n\
 On invocation the command archives SELF-FORGET.md -> self-clear/<timestamp>_SELF-FORGET.md in \
 your root (no-op if absent), so your next cycle starts with a fresh SELF-FORGET.md. The later \
