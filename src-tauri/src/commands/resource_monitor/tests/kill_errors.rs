@@ -245,6 +245,7 @@ async fn run_bounded_teardown_branch(
     Uuid,
     Arc<ResourcePtyBackend>,
     Arc<Mutex<PtyManager>>,
+    usize,
 ) {
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let session = manager
@@ -285,14 +286,23 @@ async fn run_bounded_teardown_branch(
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build bounded teardown app");
     let transaction = SelectionTransaction::for_test(app.handle().clone());
-    let result = execute_resource_kill_transaction(
+    let retry_failures = AtomicUsize::new(0);
+    let result = execute_resource_kill_transaction_inner(
         &transaction,
         session.id,
         TrustedResourceIntent::Watchdog,
+        &retry_failures,
     )
     .await
     .expect("kill transaction");
-    (result, manager, session.id, pty_backend, pty)
+    (
+        result,
+        manager,
+        session.id,
+        pty_backend,
+        pty,
+        retry_failures.load(Ordering::SeqCst),
+    )
 }
 
 /// Test 19 (round-3): the bounded deferred teardown retries the still-live PTY route
@@ -302,8 +312,7 @@ async fn run_bounded_teardown_branch(
 /// and `result.finalized` is true. Deterministic and bounded.
 #[tokio::test]
 async fn s1_defer_retries_pty_teardown_then_finalizes_when_route_clears() {
-    reset_defer_retry_failures();
-    let (result, manager, session_id, pty_backend, pty) = tokio::time::timeout(
+    let (result, manager, session_id, pty_backend, pty, retry_failures) = tokio::time::timeout(
         Duration::from_secs(10),
         run_bounded_teardown_branch(|backend| {
             backend.set_fail_kill(false);
@@ -331,7 +340,7 @@ async fn s1_defer_retries_pty_teardown_then_finalizes_when_route_clears() {
         "PTY route cleared on the final retry attempt"
     );
     assert_eq!(
-        defer_retry_failures(),
+        retry_failures,
         (PTY_ROUTE_RETRY_ATTEMPTS - 1) as usize,
         "exactly N-1 teardown WARNs emitted before the route cleared"
     );
@@ -348,8 +357,7 @@ async fn s1_defer_retries_pty_teardown_then_finalizes_when_route_clears() {
 /// instead of stranding in Running forever. No infinite retry.
 #[tokio::test]
 async fn s1_defer_escalates_force_close_after_n_failures() {
-    reset_defer_retry_failures();
-    let (result, manager, session_id, _pty_backend, pty) = tokio::time::timeout(
+    let (result, manager, session_id, _pty_backend, pty, retry_failures) = tokio::time::timeout(
         Duration::from_secs(10),
         run_bounded_teardown_branch(|backend| {
             backend.set_fail_kill(true);
@@ -372,7 +380,7 @@ async fn s1_defer_escalates_force_close_after_n_failures() {
         "row Exited after escalation force-close"
     );
     assert_eq!(
-        defer_retry_failures(),
+        retry_failures,
         PTY_ROUTE_RETRY_ATTEMPTS as usize,
         "exactly N failed retry attempts before escalation"
     );
