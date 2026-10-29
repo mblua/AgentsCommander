@@ -13,6 +13,7 @@ use super::{
     FIELD_ARCHIVED_REL, FIELD_PROJECT_PATH, FIELD_PROJECT_PATHS, FIELD_PROJECT_PATHS_REL,
     FIELD_PROJECT_PATH_REL,
 };
+use crate::filesystem::settings_file;
 
 pub(crate) fn capture_project_settings(
     path: &Path,
@@ -44,7 +45,7 @@ pub(crate) fn capture_project_settings_with_startup(
     let parent = path
         .parent()
         .ok_or_else(|| report(lock_error(SettingsSaveReason::MissingParentDirectory)))?;
-    std::fs::create_dir_all(parent).map_err(|source| {
+    settings_file::ensure_settings_directory(parent).map_err(|source| {
         report(SettingsSaveError::io(
             SettingsSaveStage::LockAcquire,
             path,
@@ -57,7 +58,7 @@ pub(crate) fn capture_project_settings_with_startup(
         Ok(()) | Err(crate::path_identity::PathRule::ComponentIsLink) => {}
         Err(_) => return Err(report(lock_error(SettingsSaveReason::LockIdentityRejected))),
     }
-    let physical_parent = std::fs::canonicalize(parent)
+    let physical_parent = settings_file::canonical_settings_parent(parent)
         .map_err(|_| report(lock_error(SettingsSaveReason::LockIdentityRejected)))?;
     // Windows retains a no-share-delete handle. Unix detects persistent
     // replacement, not transient A -> B -> A absolute-path substitution.
@@ -129,7 +130,7 @@ pub(crate) fn capture_project_settings_with_startup(
     {
         // The ordinary reader remains lenient. The strict project selector must
         // not turn an unrelated duplicate into project persistence failure.
-        let contents = std::fs::read_to_string(&transaction.path).unwrap_or_else(|_| {
+        let contents = settings_file::read_settings_text(&transaction.path).unwrap_or_else(|_| {
             serde_json::to_string(&AppSettings::default()).expect("default settings")
         });
         let legacy: Value =

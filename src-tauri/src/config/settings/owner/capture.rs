@@ -11,6 +11,7 @@ use crate::config::settings::{
     select_project_source_from_raw, AppSettings, SettingsSaveError, CONFIGURATION_COMMAND_PAIRS,
     OVERLAY_DERIVED_ID_CLOSURES, OVERLAY_INELIGIBLE_DISK_KEYS, OVERLAY_INELIGIBLE_LEGACY_KEYS,
 };
+use crate::filesystem::settings_file;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -70,7 +71,7 @@ pub(crate) fn capture_source_file(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    match std::fs::symlink_metadata(path) {
+    match settings_file::settings_path_metadata(path) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(CapturedSource::Absent);
