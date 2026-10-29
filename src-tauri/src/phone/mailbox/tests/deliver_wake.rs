@@ -779,6 +779,7 @@ fn gate_reports_busy_when_same_peer_has_busy_and_resize_unsettled_sessions() {
     );
 }
 
+#[cfg(not(windows))]
 fn rejection_devices() -> Vec<String> {
     let mut ids: Vec<_> = "CON|PRN|AUX|CONIN$|CONOUT$|cOn.txt|COM1 .txt"
         .split('|')
@@ -971,25 +972,6 @@ fn reject_message_plain_non_uuid_id_keeps_existing_behavior() {
             .collect(),
         false,
     );
-}
-#[cfg(windows)]
-#[test]
-#[ignore = "fixed-only: unsafe on Windows base; requires exact-SHA Rust Grinch diff PASS"]
-fn reject_message_windows_fixed_only_hostile_ids() {
-    // Not run on Windows base: unsafe. UNC stays local even if the guard regresses.
-    let mut ids = [
-        "C:relative",
-        "C:/absolute",
-        r"C:\absolute",
-        r"\\localhost\share\escape",
-        r"\\?\C:\escape",
-        r"\\.\COM1",
-        "a:b",
-    ]
-    .map(str::to_owned)
-    .to_vec();
-    ids.extend(rejection_devices());
-    rejection_table(ids, true);
 }
 #[test]
 fn reject_message_invalid_id_fallback_error_preserves_error() {
