@@ -17,6 +17,7 @@ use super::settle::{
 };
 use crate::config::settings::SettingsState;
 use crate::config::teams;
+use crate::filesystem::phone_mailbox as mailbox_disk;
 use crate::phone::types::OutboxMessage;
 use crate::session::maintenance::PendingSelfClear;
 use crate::session::manager::SessionManager;
@@ -279,9 +280,9 @@ impl MailboxPoller {
                     .and_then(|p| p.parent())
                     .map(|ac_dir| ac_dir.join("responses"));
                 if let Some(responses_dir) = outbox_relative_responses_dir {
-                    let _ = std::fs::create_dir_all(&responses_dir);
+                    let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                     let response_path = responses_dir.join(format!("{}.json", rid));
-                    if let Err(e) = std::fs::write(&response_path, &json) {
+                    if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
                         log::warn!(
                             "[mailbox] Failed to write purge-wg response to outbox-relative path \
                             {:?}: {}",
@@ -296,9 +297,9 @@ impl MailboxPoller {
                 let responses_dir = std::path::PathBuf::from(sender_path)
                     .join(crate::config::agent_local_dir_name())
                     .join("responses");
-                let _ = std::fs::create_dir_all(&responses_dir);
+                let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                 let response_path = responses_dir.join(format!("{}.json", rid));
-                if let Err(e) = std::fs::write(&response_path, &json) {
+                if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
                     log::warn!(
                         "[mailbox] Failed to write purge-wg response to resolved-sender path: {}",
                         e
@@ -338,8 +339,11 @@ impl MailboxPoller {
                         .and_then(|p| p.parent())
                         .map(|ac| ac.join("responses"))
                     {
-                        let _ = std::fs::create_dir_all(&responses_dir);
-                        let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                        let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                        let _ = mailbox_disk::write_mailbox_document(
+                            &responses_dir.join(format!("{}.json", rid)),
+                            &json,
+                        );
                     }
                 }
                 // (2) resolved-sender path (best-effort).
@@ -347,8 +351,11 @@ impl MailboxPoller {
                     let responses_dir = std::path::PathBuf::from(sender_path)
                         .join(crate::config::agent_local_dir_name())
                         .join("responses");
-                    let _ = std::fs::create_dir_all(&responses_dir);
-                    let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                    let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                    let _ = mailbox_disk::write_mailbox_document(
+                        &responses_dir.join(format!("{}.json", rid)),
+                        &json,
+                    );
                 }
             }
         }
@@ -383,16 +390,22 @@ impl MailboxPoller {
                         .and_then(|p| p.parent())
                         .map(|ac| ac.join("responses"))
                     {
-                        let _ = std::fs::create_dir_all(&responses_dir);
-                        let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                        let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                        let _ = mailbox_disk::write_mailbox_document(
+                            &responses_dir.join(format!("{}.json", rid)),
+                            &json,
+                        );
                     }
                 }
                 if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
                     let responses_dir = std::path::PathBuf::from(sender_path)
                         .join(crate::config::agent_local_dir_name())
                         .join("responses");
-                    let _ = std::fs::create_dir_all(&responses_dir);
-                    let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                    let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                    let _ = mailbox_disk::write_mailbox_document(
+                        &responses_dir.join(format!("{}.json", rid)),
+                        &json,
+                    );
                 }
             }
         }
@@ -430,16 +443,22 @@ impl MailboxPoller {
                         .and_then(|p| p.parent())
                         .map(|ac| ac.join("responses"))
                     {
-                        let _ = std::fs::create_dir_all(&responses_dir);
-                        let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                        let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                        let _ = mailbox_disk::write_mailbox_document(
+                            &responses_dir.join(format!("{}.json", rid)),
+                            &json,
+                        );
                     }
                 }
                 if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
                     let responses_dir = std::path::PathBuf::from(sender_path)
                         .join(crate::config::agent_local_dir_name())
                         .join("responses");
-                    let _ = std::fs::create_dir_all(&responses_dir);
-                    let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                    let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                    let _ = mailbox_disk::write_mailbox_document(
+                        &responses_dir.join(format!("{}.json", rid)),
+                        &json,
+                    );
                 }
             }
         }
@@ -472,16 +491,22 @@ impl MailboxPoller {
                         .and_then(|p| p.parent())
                         .map(|ac| ac.join("responses"))
                     {
-                        let _ = std::fs::create_dir_all(&responses_dir);
-                        let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                        let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                        let _ = mailbox_disk::write_mailbox_document(
+                            &responses_dir.join(format!("{}.json", rid)),
+                            &json,
+                        );
                     }
                 }
                 if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
                     let responses_dir = std::path::PathBuf::from(sender_path)
                         .join(crate::config::agent_local_dir_name())
                         .join("responses");
-                    let _ = std::fs::create_dir_all(&responses_dir);
-                    let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                    let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+                    let _ = mailbox_disk::write_mailbox_document(
+                        &responses_dir.join(format!("{}.json", rid)),
+                        &json,
+                    );
                 }
             }
         }
@@ -702,7 +727,7 @@ impl MailboxPoller {
                             continue;
                         };
                         let candidate = ac_root.join(wg_name).join(&replica_dir);
-                        if candidate.is_dir() {
+                        if mailbox_disk::mailbox_path_is_dir(&candidate) {
                             record_match(&candidate.to_string_lossy(), &mut matches);
                             // Within a single `rp`, first hit is the unique hit —
                             // an FQN matches one replica dir per project. Continue

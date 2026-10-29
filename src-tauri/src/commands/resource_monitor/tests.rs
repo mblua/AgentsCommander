@@ -1,7 +1,6 @@
 use super::{
-    defer_retry_failures, execute_resource_kill_transaction, kill_resource_group,
-    reset_defer_retry_failures, should_finalize_kill, verify_kill_settled,
-    PTY_ROUTE_RETRY_ATTEMPTS,
+    execute_resource_kill_transaction, execute_resource_kill_transaction_inner,
+    kill_resource_group, should_finalize_kill, verify_kill_settled, PTY_ROUTE_RETRY_ATTEMPTS,
 };
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
 use crate::pty::manager::PtyManager;

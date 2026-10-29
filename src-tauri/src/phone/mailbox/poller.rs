@@ -9,6 +9,7 @@ use super::pty_claim::{
     current_response_row, ResponseCandidateAttempt, ResponseRequestCandidate, ResponseWakeWork,
 };
 use crate::config::settings::SettingsState;
+use crate::filesystem::phone_mailbox as mailbox_disk;
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
@@ -23,14 +24,12 @@ use tauri::Manager;
 use uuid::Uuid;
 
 pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRefreshPollBatch {
-    if !requests_dir.is_dir() {
+    if !mailbox_disk::mailbox_path_is_dir(requests_dir) {
         return ProjectRefreshPollBatch::default();
     }
 
-    let mut entries: Vec<PathBuf> = match std::fs::read_dir(requests_dir) {
-        Ok(rd) => rd
-            .filter_map(|entry| entry.ok().map(|e| e.path()))
-            .collect(),
+    let mut entries: Vec<PathBuf> = match mailbox_disk::mailbox_directory_paths(requests_dir) {
+        Ok(rd) => rd.filter_map(|entry| entry.ok()).collect(),
         Err(e) => {
             log::warn!(
                 "[project-refresh-requests] Failed to read {:?}: {}",
@@ -72,7 +71,7 @@ pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRe
                         path,
                         e
                     );
-                    let _ = std::fs::remove_file(&path);
+                    let _ = mailbox_disk::remove_mailbox_artifact(&path);
                     continue;
                 }
             };
@@ -677,7 +676,8 @@ impl Default for MailboxPoller {
 /// Logs a warning when a BOM is detected so users see which tool is writing
 /// odd encoding into outbox / session-requests (typically PowerShell on Windows).
 pub(crate) fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let bytes = mailbox_disk::read_mailbox_message(path)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
 
     if bytes.starts_with(&[0xFF, 0xFE]) {
         log::warn!(
@@ -727,7 +727,7 @@ pub(crate) fn read_guarded_agent_state(
     use crate::phone::types::PtyInputReasonCode as C;
     let state_path = target_root.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
     if matches!(
-        std::fs::symlink_metadata(&state_path),
+        mailbox_disk::mailbox_path_symlink_metadata(&state_path),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound
     ) {
         return Ok(None);

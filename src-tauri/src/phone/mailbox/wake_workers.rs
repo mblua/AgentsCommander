@@ -10,6 +10,7 @@ use super::poller::{deliver_claimed_wake, read_text_bom_tolerant, MailboxPoller,
 use super::pty_claim::classify_outbox_document;
 use super::settle::OutboxClassification;
 use crate::config::settings::SettingsState;
+use crate::filesystem::phone_mailbox as mailbox_disk;
 use crate::phone::types::OutboxMessage;
 use crate::session::manager::SessionManager;
 use crate::AppOutbox;
@@ -70,11 +71,10 @@ impl MailboxPoller {
         outbox: &Path,
         store: &crate::api::message_store::MessageStore,
     ) {
-        let Ok(entries) = std::fs::read_dir(outbox) else {
+        let Ok(entries) = mailbox_disk::mailbox_directory_paths(outbox) else {
             return;
         };
-        for entry in entries.filter_map(Result::ok).take(1_024) {
-            let path = entry.path();
+        for path in entries.filter_map(Result::ok).take(1_024) {
             let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
                 continue;
             };
@@ -89,7 +89,7 @@ impl MailboxPoller {
             {
                 continue;
             }
-            let old_enough = std::fs::symlink_metadata(&path)
+            let old_enough = mailbox_disk::mailbox_path_symlink_metadata(&path)
                 .ok()
                 .filter(|metadata| metadata.is_file())
                 .and_then(|metadata| metadata.modified().ok())
@@ -101,7 +101,7 @@ impl MailboxPoller {
             let Ok(Some(_operation_lock)) = store.try_operation_lock(injection_id) else {
                 continue;
             };
-            if let Err(error) = std::fs::remove_file(&path) {
+            if let Err(error) = mailbox_disk::remove_mailbox_artifact(&path) {
                 if error.kind() != std::io::ErrorKind::NotFound {
                     log::debug!(
                         "[pty-input] stale request temp cleanup failed id={} \
@@ -160,7 +160,7 @@ impl MailboxPoller {
                 // the locked-handle condition that is ordinary on Windows, and
                 // a log line reporting an action that did not happen costs an
                 // hour in an incident. Self-heals on a later cycle either way.
-                match std::fs::remove_file(claim) {
+                match mailbox_disk::remove_mailbox_artifact(claim) {
                     Ok(()) => {
                         if origin_absent {
                             self.settle_response_source(&origin, false);
@@ -176,7 +176,7 @@ impl MailboxPoller {
                         error
                     ),
                 }
-            } else if let Err(error) = std::fs::rename(claim, &origin) {
+            } else if let Err(error) = mailbox_disk::rename_mailbox_document(claim, &origin) {
                 // Retried on the next cycle. This is the only reason a locked
                 // file cannot wedge the message.
                 log::warn!(
@@ -260,7 +260,7 @@ impl MailboxPoller {
         if self.live_claims.contains(&claim) {
             return WakeHandoff::LaneBusy;
         }
-        if let Err(error) = std::fs::rename(path, &claim) {
+        if let Err(error) = mailbox_disk::rename_mailbox_document(path, &claim) {
             // The reservation drops here, so the lane is free again.
             return if error.kind() == std::io::ErrorKind::NotFound {
                 WakeHandoff::LaneBusy // the file vanished; nothing to do
@@ -337,11 +337,14 @@ impl MailboxPoller {
                 if claim_present {
                     let (action, disk_result) = if claim_has_receipt {
                         // Claim plus receipt is authoritative. Never resurrect it.
-                        ("delete", std::fs::remove_file(&claim))
+                        ("delete", mailbox_disk::remove_mailbox_artifact(&claim))
                     } else {
                         // `record_message_outcome` requires the origin to exist on
                         // every retry/reject path, including panic attempt 10.
-                        ("restore", std::fs::rename(&claim, &path))
+                        (
+                            "restore",
+                            mailbox_disk::rename_mailbox_document(&claim, &path),
+                        )
                     };
                     disk_result.map_err(|error| {
                         format!("could not {} owned claim {:?}: {}", action, claim, error)
@@ -625,7 +628,7 @@ impl MailboxPoller {
         );
 
         for (outbox_dir, origin) in &scan_dirs {
-            if !outbox_dir.is_dir() {
+            if !mailbox_disk::mailbox_path_is_dir(outbox_dir) {
                 continue;
             }
             let is_app_outbox = *origin == OutboxOrigin::Master;
@@ -640,9 +643,9 @@ impl MailboxPoller {
             // unbounded, exactly as today's scan is.
             let mut entries: Vec<PathBuf> = Vec::new();
             let mut claims: Vec<PathBuf> = Vec::new();
-            match std::fs::read_dir(outbox_dir) {
+            match mailbox_disk::mailbox_directory_paths(outbox_dir) {
                 Ok(rd) => {
-                    for path in rd.filter_map(|e| e.ok()).map(|e| e.path()) {
+                    for path in rd.filter_map(|e| e.ok()) {
                         // Skip files in subdirectories (delivered/, rejected/)
                         if path.parent() != Some(outbox_dir.as_path()) {
                             continue;
