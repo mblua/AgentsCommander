@@ -116,3 +116,11 @@ pub(crate) fn remove_migration_file(path: &Path) -> io::Result<()> {
 pub(crate) fn link_migration_file(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::hard_link(from, to)
 }
+
+pub(crate) fn migration_directory_metadata(path: &Path) -> io::Result<Metadata> {
+    std::fs::metadata(path)
+}
+
+pub(crate) fn migration_sidecar_exists(path: &Path) -> bool {
+    path.exists()
+}

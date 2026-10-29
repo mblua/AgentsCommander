@@ -8,10 +8,10 @@
 //!   deep-merged once at load, and the base values the overlay displaces are
 //!   captured so every later save can restore them.
 //!
-//! **Leaf invariant, load-bearing.** Production code in this module references
-//! nothing inside the crate and does not use `log`. It uses `std` and
-//! `serde_json` only, and every list of crate-specific key names it needs is
-//! passed in by the caller. Breaking the invariant would create the arc
+//! **Leaf invariant, load-bearing.** Pure merge code uses `std` and `serde_json`
+//! only, and every list of crate-specific key names it needs is passed in by
+//! the caller. IO entrypoints may use low-level filesystem leaves, but never
+//! settings or `log`. Breaking the invariant would create the arc
 //! `local_overlay -> settings`, which together with `settings -> local_overlay`
 //! is a two-module cycle. Diagnostics are returned as typed values and rendered
 //! by the caller (plan D22), which is also what makes them assertable without a
@@ -20,6 +20,8 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
+
+use crate::filesystem::{context_templates, documents};
 
 /// The name of the JSON overlay file, read next to the base `settings.json`.
 const SETTINGS_LOCAL_FILE_NAME: &str = "settings.50.personal.no-git.json";
@@ -151,7 +153,7 @@ pub(crate) fn read_markdown_override(base: &Path) -> MarkdownOverride {
         return MarkdownOverride::Absent;
     };
     let display = path.display().to_string();
-    let metadata = match std::fs::symlink_metadata(&path) {
+    let metadata = match context_templates::inspect_template_source(&path) {
         Ok(metadata) => metadata,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return MarkdownOverride::Absent,
         Err(e) => {
@@ -167,7 +169,7 @@ pub(crate) fn read_markdown_override(base: &Path) -> MarkdownOverride {
             reason: "exists but is not a regular file".to_string(),
         };
     }
-    let bytes = match std::fs::read(&path) {
+    let bytes = match context_templates::read_template_bytes(&path) {
         Ok(bytes) => bytes,
         Err(e) => {
             return MarkdownOverride::Rejected {
@@ -373,7 +375,7 @@ impl LocalSettingsOverlay {
         pairs: &[PairedLeaf],
     ) -> Self {
         let path = settings_path.with_file_name(SETTINGS_LOCAL_FILE_NAME);
-        let contents = match std::fs::read_to_string(&path) {
+        let contents = match documents::read_config_document(&path) {
             Ok(contents) => contents,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
             Err(e) => return Self::rejected(OverlayRejection::Unreadable(e.to_string())),
