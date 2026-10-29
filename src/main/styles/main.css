@@ -590,6 +590,20 @@ html.light-theme .error-modal-title {
 }
 .web-browser-url:focus { outline: none; border-color: var(--sidebar-fg-dim); }
 
+.web-browser-go {
+  height: 28px;
+  padding: 0 var(--spacing-sm);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.web-browser-go:hover { background: var(--sidebar-hover); color: var(--sidebar-fg); }
+
 .web-browser-error {
   padding: var(--spacing-xs) var(--spacing-sm);
   color: #f87171;

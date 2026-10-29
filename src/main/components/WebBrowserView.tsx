@@ -178,6 +178,16 @@ const WebBrowserView: Component = () => {
           data-ac-testid="webBrowser.url"
           data-ac-role="input"
         />
+        <button
+          type="submit"
+          class="web-browser-go"
+          title="Go"
+          aria-label="Go"
+          data-ac-testid="webBrowser.go"
+          data-ac-role="button"
+        >
+          Go
+        </button>
       </form>
       <Show when={webBrowserStore.error}>
         <div class="web-browser-error" role="alert" data-ac-testid="webBrowser.error">
