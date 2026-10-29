@@ -301,7 +301,16 @@ pub async fn web_browser_show(
     };
     place(&app, &window)?;
     if !was_visible {
+        // Windows activates a window on show; keep the keyboard in the app
+        // when it had it (e.g. reappearing after a menu or modal closes).
+        let main = app.get_webview_window(MAIN_WINDOW_LABEL);
+        let main_focused = main
+            .as_ref()
+            .is_some_and(|m| m.is_focused().unwrap_or(false));
         window.show().map_err(|e| e.to_string())?;
+        if let Some(main) = main.filter(|_| main_focused) {
+            let _ = main.set_focus();
+        }
     }
     Ok(publish(&app))
 }
