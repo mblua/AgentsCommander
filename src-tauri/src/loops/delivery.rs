@@ -13,6 +13,7 @@ use crate::config::loops::{
     LoopConfigRevalidation, LoopConfigToml, LoopSessionStart,
 };
 use crate::config::settings::{AppSettings, SettingsState};
+use crate::filesystem::loop_files;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::session::{SessionInfo, SessionStatus};
@@ -861,7 +862,8 @@ fn read_last_coding_agent(replica_dir: &Path) -> Option<String> {
 }
 
 fn path_compare_key(path: &Path) -> String {
-    let resolved: PathBuf = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let resolved: PathBuf =
+        loop_files::canonical_loop_root(path).unwrap_or_else(|_| path.to_path_buf());
     let value = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&resolved);
     let value = value.replace('\\', "/").trim_end_matches('/').to_string();
     if cfg!(windows) {
