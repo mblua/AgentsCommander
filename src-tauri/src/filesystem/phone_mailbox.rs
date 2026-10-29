@@ -95,3 +95,35 @@ pub(crate) fn read_self_forget_summary(
 ) -> io::Result<usize> {
     Read::read_to_end(bounded, bytes)
 }
+
+pub(crate) fn write_mailbox_document(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+pub(crate) fn copy_mailbox_document(from: &Path, to: &Path) -> io::Result<u64> {
+    std::fs::copy(from, to)
+}
+
+pub(crate) fn read_mailbox_task_text(path: &Path) -> io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+pub(crate) fn mailbox_directory_paths(
+    path: &Path,
+) -> io::Result<impl Iterator<Item = io::Result<PathBuf>>> {
+    std::fs::read_dir(path).map(|entries| entries.map(|entry| entry.map(|e| e.path())))
+}
+
+pub(crate) fn create_plain_mailbox_receipt_stage(path: &Path) -> io::Result<File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+}
+
+pub(crate) fn write_plain_mailbox_receipt_chunk(
+    file: &mut File,
+    bytes: &[u8],
+) -> io::Result<usize> {
+    Write::write(file, bytes)
+}

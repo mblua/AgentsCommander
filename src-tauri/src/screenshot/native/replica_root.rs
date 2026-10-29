@@ -60,15 +60,17 @@ pub(super) fn resolve_session_replica_root(working_directory: &str) -> Result<Pa
     // (which must be rejected), yet a raw name-walk would see the `__agent_x`
     // ancestor and save there. Canonicalize requires the path to exist, which is
     // always true for a live session's CWD; a missing/unresolvable CWD is rejected.
-    let canonical_cwd = std::fs::canonicalize(working_directory)
-        .map_err(|e| format!("Cannot resolve the active session directory: {e}"))?;
+    let canonical_cwd = crate::filesystem::config_locations::canonical_replica_location(Path::new(
+        working_directory,
+    ))
+    .map_err(|e| format!("Cannot resolve the active session directory: {e}"))?;
     let root = find_replica_root(&canonical_cwd).ok_or_else(|| {
         "The active session is not inside a room replica directory, so there is no place to \
             save the screenshot"
             .to_string()
     })?;
 
-    let meta = std::fs::symlink_metadata(&root)
+    let meta = crate::filesystem::config_locations::replica_matrix_metadata(&root)
         .map_err(|e| format!("Cannot read the replica directory: {e}"))?;
     if is_link_or_reparse(&meta) {
         return Err("The replica directory is a symlink or reparse point".to_string());
@@ -77,7 +79,7 @@ pub(super) fn resolve_session_replica_root(working_directory: &str) -> Result<Pa
         return Err("The replica path is not a directory".to_string());
     }
 
-    let canonical = std::fs::canonicalize(&root)
+    let canonical = crate::filesystem::config_locations::canonical_replica_location(&root)
         .map_err(|e| format!("Cannot canonicalize the replica directory: {e}"))?;
 
     // Structure + persisted-identity validation against the existing helpers.
@@ -94,7 +96,7 @@ pub(super) fn resolve_session_replica_root(working_directory: &str) -> Result<Pa
 /// directory between capture and confirm (which the final parent-containment check
 /// alone would still accept). `target` is the canonical root resolved at start.
 pub(super) fn revalidate_replica_target(target: &Path) -> Result<(), String> {
-    let meta = std::fs::symlink_metadata(target)
+    let meta = crate::filesystem::config_locations::replica_matrix_metadata(target)
         .map_err(|e| format!("Cannot read the replica directory: {e}"))?;
     if is_link_or_reparse(&meta) {
         return Err("The replica directory is a symlink or reparse point".to_string());
@@ -105,7 +107,7 @@ pub(super) fn revalidate_replica_target(target: &Path) -> Result<(), String> {
 
     // `target` was already canonical at start; if re-canonicalizing yields a
     // different path the directory was replaced under us, so reject.
-    let canonical = std::fs::canonicalize(target)
+    let canonical = crate::filesystem::config_locations::canonical_replica_location(target)
         .map_err(|e| format!("Cannot canonicalize the replica directory: {e}"))?;
     if canonical.as_path() != target {
         return Err("The replica directory changed between capture and save".to_string());

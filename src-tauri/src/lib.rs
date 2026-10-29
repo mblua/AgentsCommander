@@ -555,5 +555,66 @@ fn invoke_handler(
     }
 }
 
+impl loops::scheduler::SchedulerHost for tauri::AppHandle {
+    fn spawn_background(
+        &self,
+        future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>,
+    ) {
+        drop(tauri::async_runtime::spawn(future));
+    }
+}
+
+impl<R: tauri::Runtime> loops::ipc_observer::IpcObserverHost for tauri::AppHandle<R> {
+    fn spawn_background(
+        &self,
+        future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>,
+    ) {
+        drop(tauri::async_runtime::spawn(future));
+    }
+}
+
+impl<R: tauri::Runtime> loops::non_stop_watchdog::WatchdogHost for tauri::AppHandle<R> {
+    fn settings_owner(&self) -> &SettingsState {
+        use tauri::Manager;
+        self.state::<SettingsState>().inner()
+    }
+
+    fn outbound_network(&self) -> &network::OutboundNetwork {
+        use tauri::Manager;
+        self.state::<network::OutboundNetwork>().inner()
+    }
+
+    fn spawn_background(
+        &self,
+        future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>,
+    ) {
+        drop(tauri::async_runtime::spawn(future));
+    }
+}
+
+impl web_server::ServerTask {
+    pub(crate) fn from_native(join: tauri::async_runtime::JoinHandle<()>) -> Self {
+        let abort = join.inner().abort_handle();
+        Self::new(
+            Box::pin(async move { join.await.map_err(|e| e.to_string()) }),
+            abort,
+        )
+    }
+}
+
+impl ApiServerTask {
+    pub fn new(
+        join: tauri::async_runtime::JoinHandle<()>,
+        shutdown: tokio_util::sync::CancellationToken,
+        bound_addr: std::net::SocketAddr,
+    ) -> Self {
+        Self::from_task(
+            web_server::ServerTask::from_native(join),
+            shutdown,
+            bound_addr,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests;

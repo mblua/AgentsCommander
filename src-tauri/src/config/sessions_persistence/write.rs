@@ -10,6 +10,7 @@ use super::store::{
     PreparedSessionsWrite, RenameDiagnostics, SnapshotLeafGuard, RENAME_ATTEMPTS,
     RENAME_BACKOFFS_MS,
 };
+use crate::filesystem::directories::canonical_carrier_cwd;
 use crate::session::manager::{CarrierDisposition, CarrierMutationPermit, SessionManager};
 use std::collections::HashMap;
 use std::path::Path;
@@ -581,7 +582,7 @@ pub(super) async fn save_current_snapshot_guarded(
         Err(error) => return GuardedSaveAttempt::Completed(Err(error)),
     };
     if initial.is_some() && prepared.canonical_directory.is_none() {
-        if let Ok(canonical) = std::fs::canonicalize(dir) {
+        if let Ok(canonical) = canonical_carrier_cwd(dir) {
             // Native preparation may have created this directory. Adopt any
             // already-known physical alias before publishing the first key;
             // its epoch and protections require a whole-snapshot recapture.

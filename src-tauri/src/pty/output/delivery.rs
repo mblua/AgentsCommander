@@ -2,8 +2,9 @@
 use super::FanoutTraceEvent;
 use super::{
     append_history, history_from_first_line, output_has_printable_activity, scan_response_markers,
-    Accumulated, ParserAvailability, PtyOutputRegistrationToken, PtyScreenSnapshot,
-    SessionIoFanout, TerminalOutputAttachError, UI_BATCH_INTERVAL_MS, UI_HISTORY_REPLAY_PROLOGUE,
+    Accumulated, ParserAvailability, PtyOutputRegistrationToken, PtyOutputTarget,
+    PtyScreenSnapshot, SessionIoFanout, TerminalOutputAttachError, UI_BATCH_INTERVAL_MS,
+    UI_HISTORY_REPLAY_PROLOGUE,
 };
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -70,7 +71,7 @@ impl SessionIoFanout {
             let _ = sender.try_send(data.clone());
         }
 
-        let accumulated = {
+        let (accumulated, registration) = {
             let Ok(mut parsers) = self.screen_parsers.lock() else {
                 return;
             };
@@ -130,12 +131,13 @@ impl SessionIoFanout {
             // Appending under the parser lock is what keeps the batch boundary atomic with the
             // sequence assignment, so no coalesced batch can straddle an attach's snapshot.
             // The emit it may ask for is run below, after the lock is dropped.
-            if ui_open {
+            let accumulated = if ui_open {
                 self.attachments
                     .accumulate(&registration, sequence, &data, parser_fault)
             } else {
                 Accumulated::Unattached
-            }
+            };
+            (accumulated, registration)
         };
 
         if let Some(ref broadcaster) = self.ws_broadcaster {
@@ -153,7 +155,7 @@ impl SessionIoFanout {
         }
         match accumulated {
             Accumulated::Unattached | Accumulated::Pending => {}
-            Accumulated::ArmTimer => self.arm_output_flush(id),
+            Accumulated::ArmTimer => self.arm_output_flush(id, &registration.target),
             Accumulated::FlushNow => self.attachments.flush(id, false),
         }
         lease.complete();
@@ -348,15 +350,15 @@ impl SessionIoFanout {
     /// Arming is switched at runtime rather than by `cfg(test)`: test builds start it off so
     /// every emit a test observes comes from an explicit `flush_terminal_output_for_test` and
     /// no assertion races a 16 ms task, and the one test that covers the timer turns it on.
-    pub(super) fn arm_output_flush(&self, id: Uuid) {
+    pub(super) fn arm_output_flush(&self, id: Uuid, target: &PtyOutputTarget) {
         if !self.output_timer_enabled.load(Ordering::Relaxed) {
             return;
         }
         let attachments = Arc::clone(&self.attachments);
-        tauri::async_runtime::spawn(async move {
+        target.spawn_flush(Box::pin(async move {
             tokio::time::sleep(Duration::from_millis(UI_BATCH_INTERVAL_MS)).await;
             attachments.flush(id, true);
-        });
+        }));
     }
 
     /// The synchronous flush seam. Every backend test drives it instead of sleeping, so the

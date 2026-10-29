@@ -23,13 +23,16 @@
 //!   disparity cleared between the tick's fire-decision and actuation.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
 
+use crate::config::settings::SettingsState;
+use crate::network::OutboundNetwork;
 use crate::shutdown::ShutdownSignal;
 use crate::telegram::types::TelegramBotConfig;
 
@@ -72,11 +75,18 @@ pub struct NonStopAlarmPayload {
     pub action: String, // "start" | "stop"
 }
 
-pub fn emit_non_stop_alarm<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    payload: NonStopAlarmPayload,
-) {
-    let _ = app.emit(NON_STOP_ALARM_EVENT, payload);
+pub trait NonStopAlarmEvents {
+    fn alarm(&self, payload: NonStopAlarmPayload);
+}
+
+pub trait WatchdogHost: NonStopAlarmEvents + Clone + Send + Sync + 'static {
+    fn settings_owner(&self) -> &SettingsState;
+    fn outbound_network(&self) -> &OutboundNetwork;
+    fn spawn_background(&self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>);
+}
+
+pub fn emit_non_stop_alarm(app: &impl NonStopAlarmEvents, payload: NonStopAlarmPayload) {
+    app.alarm(payload);
 }
 
 struct Episode {
@@ -205,8 +215,8 @@ fn resolve_bot<'a>(
     }
 }
 
-pub fn start(app: AppHandle, state: NonStopWatchdogState, shutdown: ShutdownSignal) {
-    tauri::async_runtime::spawn(async move {
+pub fn start<H: WatchdogHost>(app: H, state: NonStopWatchdogState, shutdown: ShutdownSignal) {
+    app.clone().spawn_background(Box::pin(async move {
         let mut interval = tokio::time::interval(TICK_INTERVAL);
         loop {
             tokio::select! {
@@ -214,10 +224,10 @@ pub fn start(app: AppHandle, state: NonStopWatchdogState, shutdown: ShutdownSign
                 _ = interval.tick() => tick(&app, &state).await,
             }
         }
-    });
+    }));
 }
 
-async fn tick(app: &AppHandle, state: &NonStopWatchdogState) {
+async fn tick(app: &impl WatchdogHost, state: &NonStopWatchdogState) {
     let now = Instant::now();
     let to_fire: Vec<NonStopReport> = {
         let mut map = state.inner.lock().await;
@@ -228,11 +238,7 @@ async fn tick(app: &AppHandle, state: &NonStopWatchdogState) {
     }
 }
 
-async fn fire<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    state: &NonStopWatchdogState,
-    r: &NonStopReport,
-) {
+async fn fire(app: &impl WatchdogHost, state: &NonStopWatchdogState, r: &NonStopReport) {
     // (G5, TOCTOU) Re-read under the lock: if the disparity cleared between the
     // tick's fire-decision and now, abort. No beep, no stale "not working"
     // Telegram message listing already-recovered workgroups.
@@ -268,11 +274,11 @@ async fn fire<R: tauri::Runtime>(
     }
 }
 
-async fn send_telegram<R: tauri::Runtime>(app: &AppHandle<R>, r: &NonStopReport) {
+async fn send_telegram(app: &impl WatchdogHost, r: &NonStopReport) {
     // Resolve bot from global settings: requested id, else first bot; skip if none.
-    // Bind the State to a local before .read().await (E0716).
+    // Read the settings owner only at this Telegram resolution point.
     let resolved = {
-        let settings = app.state::<crate::config::settings::SettingsState>();
+        let settings = app.settings_owner();
         let guard = match settings.current_read().await {
             Ok(guard) => guard,
             Err(error) => {
@@ -289,10 +295,7 @@ async fn send_telegram<R: tauri::Runtime>(app: &AppHandle<R>, r: &NonStopReport)
         }
     };
     let (token, chat_id, label) = resolved;
-    let network = app
-        .state::<crate::network::OutboundNetwork>()
-        .inner()
-        .clone();
+    let network = app.outbound_network().clone();
     let text = format!(
         "\u{26A0} Alert me! [{}]: {} {}/{} rooms working. Not working: {}. Persisted >{}s.",
         project_folder_name(&r.project_path),
@@ -306,11 +309,11 @@ async fn send_telegram<R: tauri::Runtime>(app: &AppHandle<R>, r: &NonStopReport)
         },
         r.tolerance_seconds
     );
-    tauri::async_runtime::spawn(async move {
+    app.spawn_background(Box::pin(async move {
         if let Err(e) = crate::telegram::api::send_message(&network, &token, chat_id, &text).await {
             log::warn!("[non-stop] telegram send via '{}' failed: {}", label, e);
         }
-    });
+    }));
 }
 
 fn project_folder_name(path: &str) -> String {

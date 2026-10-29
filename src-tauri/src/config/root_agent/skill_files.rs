@@ -6,7 +6,7 @@ use super::{
     validate_default_skill_directory, validate_default_skill_file, validate_root_agent_root_path,
     validate_root_agent_skills_root, MAX_DEFAULT_SKILL_TRIM_SLACK_BYTES, SKILL_REPAIR_WARNED,
 };
-use std::io::{Read, Write};
+use crate::filesystem::agent_files;
 use std::path::Path;
 
 /// Ensures the on-disk default skill file exists and, if it is a pristine copy of a defective
@@ -32,7 +32,7 @@ pub(crate) fn ensure_default_skill_file(
     content: &str,
     legacy_snapshots: &[&str],
 ) -> Result<(), String> {
-    match std::fs::symlink_metadata(path) {
+    match agent_files::inspect_root_agent_entry(path) {
         Ok(metadata) => {
             // An inode-type violation is structural and stays fatal. The `?` is deliberate.
             validate_default_skill_file(path, &metadata)?;
@@ -83,11 +83,11 @@ pub(crate) fn ensure_default_skill_file(
     let (temp_path, mut file) = create_default_skill_temp_file(path)?;
 
     let write_result = (|| -> Result<(), String> {
-        file.write_all(content.as_bytes())
+        agent_files::write_root_agent_stage(&mut file, content.as_bytes())
             .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
-        file.flush()
+        agent_files::flush_root_agent_stage(&mut file)
             .map_err(|e| format!("Failed to flush {}: {}", path.display(), e))?;
-        file.sync_all()
+        agent_files::sync_root_agent_stage(&file)
             .map_err(|e| format!("Failed to sync {}: {}", path.display(), e))
     })();
     if let Err(e) = write_result {
@@ -190,11 +190,9 @@ pub(crate) fn max_migratable_len(content: &str, legacy_snapshots: &[&str]) -> u6
 /// `MY NOTES` would read back as a prefix that trims to exactly the snapshot, match, and overwrite
 /// the user's notes. Do not write it.
 pub(crate) fn read_bounded(path: &Path, bound: u64) -> Result<BoundedRead, String> {
-    let file = std::fs::File::open(path)
+    let file = agent_files::open_root_agent_skill(path)
         .map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
-    let mut buf = Vec::new();
-    file.take(bound.saturating_add(1))
-        .read_to_end(&mut buf)
+    let buf = agent_files::read_root_agent_skill_prefix(file, bound.saturating_add(1))
         .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
     if buf.len() as u64 > bound {
         return Ok(BoundedRead::TooLarge);
@@ -252,7 +250,7 @@ pub(crate) fn migrate_default_skill_file(
     // supplies the read-only bit consumed below, which is why this function takes no `Metadata`
     // parameter: that parameter was proposed for the size guard (wrong window) and then for the
     // read-only check (wrong position), and neither use survived.
-    let metadata = std::fs::symlink_metadata(path)
+    let metadata = agent_files::inspect_root_agent_entry(path)
         .map_err(|e| format!("Failed to inspect {}: {}", path.display(), e))?;
     validate_default_skill_file(path, &metadata)?;
 
@@ -359,11 +357,11 @@ pub(crate) fn atomic_write_default_skill(
     let (temp_path, mut file) = create_default_skill_temp_file(path)?;
 
     let write_result = (|| -> Result<(), String> {
-        file.write_all(content.as_bytes())
+        agent_files::write_root_agent_stage(&mut file, content.as_bytes())
             .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
-        file.flush()
+        agent_files::flush_root_agent_stage(&mut file)
             .map_err(|e| format!("Failed to flush {}: {}", path.display(), e))?;
-        file.sync_all()
+        agent_files::sync_root_agent_stage(&file)
             .map_err(|e| format!("Failed to sync {}: {}", path.display(), e))
     })();
     if let Err(e) = write_result {
@@ -397,7 +395,7 @@ pub(crate) fn atomic_write_default_skill(
         // times and the file never. It cannot close the race, but it rejects a reparse point that
         // has PERSISTED since the stat above, which is the only variant an ordinary user produces
         // by accident.
-        let fresh_metadata = std::fs::symlink_metadata(path)
+        let fresh_metadata = agent_files::inspect_root_agent_entry(path)
             .map_err(|e| format!("Failed to re-inspect {}: {}", path.display(), e))?;
         validate_default_skill_file(path, &fresh_metadata)?;
 

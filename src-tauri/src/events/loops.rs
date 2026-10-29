@@ -3,7 +3,12 @@
 use tauri::Emitter;
 
 use crate::filesystem::canonical_loop_event_path;
+use crate::loops::delivery::LoopPromptEvents;
 use crate::loops::events::{LoopChange, LoopEventPayload, LoopEvents};
+use crate::loops::ipc_observer::IpcProbeEvents;
+use crate::loops::non_stop_watchdog::{
+    NonStopAlarmEvents, NonStopAlarmPayload, NON_STOP_ALARM_EVENT,
+};
 
 impl<R: tauri::Runtime> LoopEvents for tauri::AppHandle<R> {
     fn loop_changed(&self, change: LoopChange<'_>) {
@@ -39,6 +44,38 @@ impl<R: tauri::Runtime> LoopEvents for tauri::AppHandle<R> {
                 "reason": format!("loop{}", capitalize_reason(kind)),
             }),
         );
+    }
+}
+
+impl<R: tauri::Runtime> LoopPromptEvents for tauri::AppHandle<R> {
+    fn last_prompt(&self, session_id: uuid::Uuid, text: &str) {
+        emit_last_prompt(session_id, text, |event, payload| self.emit(event, payload));
+    }
+}
+
+fn emit_last_prompt(
+    session_id: uuid::Uuid,
+    text: &str,
+    emit: impl FnOnce(&str, serde_json::Value) -> tauri::Result<()>,
+) {
+    let _ = emit(
+        "last_prompt",
+        serde_json::json!({ "sessionId": session_id.to_string(), "text": text }),
+    );
+}
+
+impl<R: tauri::Runtime> IpcProbeEvents for tauri::AppHandle<R> {
+    fn probe(&self, seq: u32, backend_now_ms: u64) {
+        let _ = self.emit(
+            "ipc_silence_probe",
+            serde_json::json!({ "seq": seq, "backendNowMs": backend_now_ms }),
+        );
+    }
+}
+
+impl<R: tauri::Runtime> NonStopAlarmEvents for tauri::AppHandle<R> {
+    fn alarm(&self, payload: NonStopAlarmPayload) {
+        let _ = self.emit(NON_STOP_ALARM_EVENT, payload);
     }
 }
 

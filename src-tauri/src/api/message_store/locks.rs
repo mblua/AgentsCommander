@@ -3,10 +3,10 @@ use super::{
     PTY_INPUT_TARGET_LOCK_STRIPES,
 };
 use crate::config::instance_artifacts::PTY_INPUT_LOCKS_DIR_NAME;
+use crate::filesystem::message_store::{self, MessagePathError, MessageStripeLease};
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -172,9 +172,10 @@ pub struct PtyInputTargetGate {
 
 impl PtyInputTargetGate {
     pub fn new(lock_root: PathBuf) -> Result<Self, MessageStoreError> {
-        std::fs::create_dir_all(&lock_root)?;
-        crate::path_identity::verify_directory(&lock_root)
-            .map_err(|_| MessageStoreError::UnsafePath)?;
+        message_store::ensure_message_directory(&lock_root).map_err(|error| match error {
+            MessagePathError::Io(error) => MessageStoreError::Io(error),
+            MessagePathError::UnsafePath => MessageStoreError::UnsafePath,
+        })?;
         Ok(Self {
             lock_root,
             exact_locks: Arc::new(PtyInputTargetLocks::default()),
@@ -311,7 +312,7 @@ impl MessageStoreState {
 }
 
 pub struct PtyInputStripeGuard {
-    _file: File,
+    _lease: MessageStripeLease,
 }
 
 pub(crate) struct PtyInputTargetOwnership<'a> {
@@ -423,31 +424,17 @@ impl Drop for PreparationHeartbeatGuard {
     }
 }
 
+#[cfg(test)]
 pub(super) fn sqlite_sidecar_paths(path: &Path) -> [PathBuf; 3] {
-    let with_suffix = |suffix: &str| {
-        let mut value = path.as_os_str().to_os_string();
-        value.push(suffix);
-        PathBuf::from(value)
-    };
-    [
-        with_suffix("-wal"),
-        with_suffix("-shm"),
-        with_suffix("-journal"),
-    ]
+    message_store::sqlite_sidecar_paths(path)
 }
 
+#[cfg(test)]
 pub(super) fn verify_existing_sqlite_files(path: &Path) -> Result<(), MessageStoreError> {
-    for candidate in std::iter::once(path.to_path_buf()).chain(sqlite_sidecar_paths(path)) {
-        match std::fs::symlink_metadata(&candidate) {
-            Ok(_) => {
-                crate::path_identity::verify_regular_file(&candidate)
-                    .map_err(|_| MessageStoreError::UnsafePath)?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(MessageStoreError::Io(error)),
-        }
-    }
-    Ok(())
+    message_store::verify_existing_message_sqlite_files(path).map_err(|error| match error {
+        MessagePathError::Io(error) => MessageStoreError::Io(error),
+        MessagePathError::UnsafePath => MessageStoreError::UnsafePath,
+    })
 }
 
 pub(super) fn try_stripe_lock_at(
@@ -455,77 +442,28 @@ pub(super) fn try_stripe_lock_at(
     value: &str,
     operation: bool,
 ) -> Result<Option<PtyInputStripeGuard>, MessageStoreError> {
-    let parent_identity = crate::path_identity::verify_directory(parent)
-        .map_err(|_| MessageStoreError::UnsafePath)?;
-    let lock_dir = parent.join(PTY_INPUT_LOCKS_DIR_NAME);
-    if !lock_dir.exists() {
-        match std::fs::create_dir(&lock_dir) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(MessageStoreError::Io(error)),
-        }
-    }
-    let lock_dir_identity = crate::path_identity::verify_directory(&lock_dir)
-        .map_err(|_| MessageStoreError::UnsafePath)?;
-    let digest = Sha256::digest(value.as_bytes());
-    let (count, prefix, index) = if operation {
-        (
-            PTY_INPUT_OPERATION_LOCK_STRIPES,
-            "operation",
-            (((digest[0] as usize) << 4) | ((digest[1] as usize) >> 4)),
-        )
-    } else {
-        (
-            PTY_INPUT_TARGET_LOCK_STRIPES,
-            "target",
-            (((digest[0] as usize) << 2) | ((digest[1] as usize) >> 6)),
-        )
-    };
-    let width = if operation { 4 } else { 3 };
-    let index = index % count;
-    let path = lock_dir.join(format!("{prefix}-{index:0width$x}.lock"));
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(0x0002_0000);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    let lease = message_store::try_message_stripe_lock(parent, PTY_INPUT_LOCKS_DIR_NAME, || {
+        let digest = Sha256::digest(value.as_bytes());
+        let (count, prefix, index) = if operation {
+            (
+                PTY_INPUT_OPERATION_LOCK_STRIPES,
+                "operation",
+                (((digest[0] as usize) << 4) | ((digest[1] as usize) >> 4)),
+            )
+        } else {
+            (
+                PTY_INPUT_TARGET_LOCK_STRIPES,
+                "target",
+                (((digest[0] as usize) << 2) | ((digest[1] as usize) >> 6)),
+            )
         };
-        options
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let file = options.open(&path)?;
-    crate::path_identity::verify_opened_regular_file(&path, &file, true)
-        .map_err(|_| MessageStoreError::UnsafePath)?;
-    match file.try_lock() {
-        Ok(()) => {
-            crate::path_identity::verify_opened_regular_file(&path, &file, true)
-                .map_err(|_| MessageStoreError::UnsafePath)?;
-            let current_parent = crate::path_identity::verify_directory(parent)
-                .map_err(|_| MessageStoreError::UnsafePath)?;
-            let current_lock_dir = crate::path_identity::verify_directory(&lock_dir)
-                .map_err(|_| MessageStoreError::UnsafePath)?;
-            if !crate::path_identity::same_object(&parent_identity, &current_parent)
-                || !crate::path_identity::same_object(&lock_dir_identity, &current_lock_dir)
-            {
-                return Err(MessageStoreError::UnsafePath);
-            }
-            Ok(Some(PtyInputStripeGuard { _file: file }))
-        }
-        Err(error) => {
-            let error: std::io::Error = error.into();
-            if error.kind() == std::io::ErrorKind::WouldBlock {
-                Ok(None)
-            } else {
-                Err(MessageStoreError::Io(error))
-            }
-        }
-    }
+        let width = if operation { 4 } else { 3 };
+        let index = index % count;
+        format!("{prefix}-{index:0width$x}.lock")
+    })
+    .map_err(|error| match error {
+        MessagePathError::Io(error) => MessageStoreError::Io(error),
+        MessagePathError::UnsafePath => MessageStoreError::UnsafePath,
+    })?;
+    Ok(lease.map(|lease| PtyInputStripeGuard { _lease: lease }))
 }

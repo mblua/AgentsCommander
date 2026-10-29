@@ -41,6 +41,21 @@ fn ws_state_with_agent_update(
     tokio::sync::mpsc::Receiver<WsOutMsg>,
     Arc<crate::agent_update::AgentUpdateGate>,
 ) {
+    let (state, receiver, gate, _app_handle) =
+        ws_state_with_agent_update_and_handle(settings, restore_in_progress, pass_finished);
+    (state, receiver, gate)
+}
+
+fn ws_state_with_agent_update_and_handle(
+    settings: AppSettings,
+    restore_in_progress: bool,
+    pass_finished: bool,
+) -> (
+    WsState,
+    tokio::sync::mpsc::Receiver<WsOutMsg>,
+    Arc<crate::agent_update::AgentUpdateGate>,
+    tauri::AppHandle,
+) {
     let gate = Arc::new(crate::agent_update::AgentUpdateGate::new());
     if pass_finished {
         gate.mark_finished(vec![]);
@@ -71,14 +86,14 @@ fn ws_state_with_agent_update(
         Some(broadcaster.clone()),
         None,
     )));
-    let state = WsState {
+    let state = WsState::new(
         session_mgr,
         pty_mgr,
-        settings: crate::config::settings::new_settings_state(settings),
+        crate::config::settings::new_settings_state(settings),
         broadcaster,
-        app_handle,
-    };
-    (state, receiver, gate)
+        app_handle.clone(),
+    );
+    (state, receiver, gate, app_handle)
 }
 
 #[tokio::test]
@@ -156,7 +171,7 @@ async fn agent_update_answer_route_returns_false_for_an_already_answered_prompt(
     assert_eq!(status["prompt"], Value::Null);
 }
 
-fn welcome_status_state_2736() -> (tempfile::TempDir, WsState) {
+fn welcome_status_state_2736() -> (tempfile::TempDir, WsState, tauri::AppHandle) {
     let dir = tempfile::tempdir().expect("tempdir");
     let catalog_dir = dir.path().join(".ac").join("coding-agents");
     std::fs::create_dir_all(&catalog_dir).expect("catalog dir");
@@ -195,13 +210,14 @@ fn welcome_status_state_2736() -> (tempfile::TempDir, WsState) {
         project_paths: vec![dir.path().to_string_lossy().to_string()],
         ..AppSettings::default()
     };
-    let (state, _rx, _gate) = ws_state_with_agent_update(settings, false, false);
-    (dir, state)
+    let (state, _rx, _gate, app_handle) =
+        ws_state_with_agent_update_and_handle(settings, false, false);
+    (dir, state, app_handle)
 }
 
 #[tokio::test]
 async fn get_coding_agent_welcome_status_route_matches_the_shared_inner() {
-    let (_dir, state) = welcome_status_state_2736();
+    let (_dir, state, _app_handle) = welcome_status_state_2736();
     let inner = crate::commands::config::coding_agent_welcome_status_inner(&state.settings)
         .await
         .expect("shared inner");
@@ -220,9 +236,9 @@ async fn get_coding_agent_welcome_status_route_matches_the_shared_inner() {
 
 #[tokio::test]
 async fn install_coding_agent_route_matches_the_shared_inner_for_a_refusal() {
-    let (_dir, state) = welcome_status_state_2736();
+    let (_dir, state, app_handle) = welcome_status_state_2736();
     let inner = crate::commands::config::install_coding_agent_inner(
-        &state.app_handle,
+        &app_handle,
         &state.settings,
         "nope-2736".to_string(),
     )
@@ -239,14 +255,14 @@ async fn install_coding_agent_route_matches_the_shared_inner_for_a_refusal() {
 
 #[tokio::test]
 async fn install_coding_agent_route_rejects_missing_key() {
-    let (_dir, state) = welcome_status_state_2736();
+    let (_dir, state, _app_handle) = welcome_status_state_2736();
     let routed = dispatch_inner(&state, "install_coding_agent", &json!({})).await;
     assert_eq!(routed, Err("Missing required field: key".to_string()));
 }
 
 #[tokio::test]
 async fn get_coding_agent_welcome_status_route_ignores_extra_args() {
-    let (_dir, state) = welcome_status_state_2736();
+    let (_dir, state, _app_handle) = welcome_status_state_2736();
     let plain = dispatch_inner(&state, "get_coding_agent_welcome_status", &json!({}))
         .await
         .expect("plain route");
@@ -561,19 +577,17 @@ async fn agent_update_cancel_transport_parity() {
         );
     }
 
-    let (desktop, mut desktop_events, desktop_gate) =
-        ws_state_with_agent_update(AppSettings::default(), false, false);
+    let (_desktop, mut desktop_events, desktop_gate, desktop_handle) =
+        ws_state_with_agent_update_and_handle(AppSettings::default(), false, false);
     let (web, mut web_events, web_gate) =
         ws_state_with_agent_update(AppSettings::default(), false, false);
     retain(&desktop_gate, &[("claude", "Claude")]);
     retain(&web_gate, &[("claude", "Claude")]);
 
-    let desktop_response = crate::commands::config::agent_update_cancel(
-        desktop.app_handle.clone(),
-        "claude".to_string(),
-    )
-    .await
-    .expect("desktop cancellation");
+    let desktop_response =
+        crate::commands::config::agent_update_cancel(desktop_handle.clone(), "claude".to_string())
+            .await
+            .expect("desktop cancellation");
     let web_response = dispatch_inner(&web, "agent_update_cancel", &json!({ "command": "claude" }))
         .await
         .expect("web cancellation");
@@ -601,14 +615,14 @@ async fn agent_update_cancel_transport_parity() {
         })
     );
 
-    let (desktop, mut desktop_events, desktop_gate) =
-        ws_state_with_agent_update(AppSettings::default(), false, false);
-    let (web, mut web_events, web_gate) =
-        ws_state_with_agent_update(AppSettings::default(), false, false);
+    let (_desktop, mut desktop_events, desktop_gate, desktop_handle) =
+        ws_state_with_agent_update_and_handle(AppSettings::default(), false, false);
+    let (web, mut web_events, web_gate, web_handle) =
+        ws_state_with_agent_update_and_handle(AppSettings::default(), false, false);
     retain(&desktop_gate, &[("claude", "Claude"), ("codex", "Codex")]);
     retain(&web_gate, &[("claude", "Claude"), ("codex", "Codex")]);
     let desktop_response =
-        crate::commands::config::agent_updates_cancel_all(desktop.app_handle.clone())
+        crate::commands::config::agent_updates_cancel_all(desktop_handle.clone())
             .await
             .expect("desktop batch cancellation");
     let web_response = dispatch_inner(&web, "agent_updates_cancel_all", &json!({}))
@@ -640,8 +654,8 @@ async fn agent_update_cancel_transport_parity() {
         ])
     );
 
-    crate::agent_update::emit_agent_update_transport_contract_for_test(&desktop.app_handle);
-    crate::agent_update::emit_agent_update_transport_contract_for_test(&web.app_handle);
+    crate::agent_update::emit_agent_update_transport_contract_for_test(&desktop_handle);
+    crate::agent_update::emit_agent_update_transport_contract_for_test(&web_handle);
     let desktop_verifying = next_text(&mut desktop_events).await;
     let web_verifying = next_text(&mut web_events).await;
     assert_eq!(desktop_verifying, web_verifying);
@@ -766,16 +780,16 @@ async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
         ),
     )
     .unwrap();
-    let (mut state, mut ws) = ws_state_for(initial);
+    let (mut state, mut ws, app_handle) = ws_state_for_with_handle(initial);
     state.settings = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
-    assert!(state.app_handle.manage(state.broadcaster.clone()));
+    assert!(app_handle.manage(state.broadcaster.clone()));
     let (tx, events) = std::sync::mpsc::channel();
     for event in [
         "coding_agent_settings_updated",
         "coding_agent_profiles_updated",
     ] {
         let tx = tx.clone();
-        state.app_handle.listen_any(event, move |_| {
+        app_handle.listen_any(event, move |_| {
             tx.send(event).unwrap();
         });
     }

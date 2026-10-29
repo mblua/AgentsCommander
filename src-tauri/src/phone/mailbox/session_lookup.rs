@@ -4,6 +4,7 @@ use super::pty_observation::PtyAuthorityState;
 use super::settle::filter_sessions_by_fqn;
 use crate::config::settings::SettingsState;
 use crate::config::teams;
+use crate::filesystem::phone_mailbox as mailbox_disk;
 use crate::phone::types::OutboxMessage;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionStatus;
@@ -562,9 +563,9 @@ impl MailboxPoller {
                     .and_then(|p| p.parent())
                     .map(|ac_dir| ac_dir.join("responses"));
                 if let Some(responses_dir) = outbox_relative_responses_dir {
-                    let _ = std::fs::create_dir_all(&responses_dir);
+                    let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                     let response_path = responses_dir.join(format!("{}.json", rid));
-                    if let Err(e) = std::fs::write(&response_path, &json) {
+                    if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
                         log::warn!(
                             "[mailbox] Failed to write close-session response to outbox-relative \
                             path {:?}: {}",
@@ -585,9 +586,9 @@ impl MailboxPoller {
                 let responses_dir = std::path::PathBuf::from(sender_path)
                     .join(crate::config::agent_local_dir_name())
                     .join("responses");
-                let _ = std::fs::create_dir_all(&responses_dir);
+                let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                 let response_path = responses_dir.join(format!("{}.json", rid));
-                if let Err(e) = std::fs::write(&response_path, &json) {
+                if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
                     log::warn!(
                         "[mailbox] Failed to write close-session response to resolved-sender path: \
                         {}",
