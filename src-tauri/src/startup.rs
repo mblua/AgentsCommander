@@ -5,6 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::config;
+use crate::filesystem::{config_locations, naming_journal};
 
 /// Instance-private outbox directory. Only this app instance polls it.
 /// Created at startup, path printed to stdout alongside master token.
@@ -244,7 +245,7 @@ pub(crate) fn migrate_instance_families(dir: &Path) -> Result<Option<String>, St
 
     // A directory that does not exist yet holds nothing to rename, and it is
     // not created here. Anything else that is not a readable directory is fatal.
-    match dir.metadata() {
+    match naming_journal::migration_directory_metadata(dir) {
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => {
             return Err(naming_migration_error(
@@ -345,13 +346,13 @@ pub(crate) fn migrate_instance_families(dir: &Path) -> Result<Option<String>, St
     // A lock sidecar or a stale write temporary is never renamed or deleted,
     // only noted.
     let mut notes = Vec::new();
-    if dir.join(names::SETTINGS_RETIRED_LOCK_NAME).exists() {
+    if naming_journal::migration_sidecar_exists(&dir.join(names::SETTINGS_RETIRED_LOCK_NAME)) {
         notes.push(format!(
             "left on disk: {} (a lock sidecar is never renamed or deleted)",
             names::SETTINGS_RETIRED_LOCK_NAME
         ));
     }
-    if let Ok(entries) = std::fs::read_dir(dir) {
+    if let Ok(entries) = naming_journal::migration_entries(dir) {
         let mut stale: Vec<String> = entries
             .flatten()
             .filter_map(|entry| entry.file_name().into_string().ok())
@@ -397,7 +398,7 @@ pub(crate) fn prepare_app_outbox(
         .join(crate::config::instance_artifacts::INSTANCES_DIR_NAME)
         .join(instance_id)
         .join("outbox");
-    std::fs::create_dir_all(&app_outbox_path).map_err(|source| StartupError {
+    config_locations::ensure_instance_outbox(&app_outbox_path).map_err(|source| StartupError {
         kind: StartupErrorKind::AppOutboxCreate {
             config_dir: config_dir.to_path_buf(),
             app_outbox_path: app_outbox_path.clone(),
