@@ -176,16 +176,19 @@ pub(crate) fn exit_closing_detached(host: &dyn QuitGateHost) {
     host.exit(0);
 }
 
+type QuitEventCallback =
+    Box<dyn Fn(&str, &str, serde_json::Value) -> Result<(), String> + Send + Sync>;
+
 /// Production host operations supplied by composition.
 pub struct TauriQuitHost {
-    emit_to: Box<dyn Fn(&str, &str, serde_json::Value) -> Result<(), String> + Send + Sync>,
+    emit_to: QuitEventCallback,
     close_detached_terminals: Box<dyn Fn() -> Vec<String> + Send + Sync>,
     exit: Box<dyn Fn(i32) + Send + Sync>,
 }
 
 impl TauriQuitHost {
     pub(crate) fn from_callbacks(
-        emit_to: Box<dyn Fn(&str, &str, serde_json::Value) -> Result<(), String> + Send + Sync>,
+        emit_to: QuitEventCallback,
         close_detached_terminals: Box<dyn Fn() -> Vec<String> + Send + Sync>,
         exit: Box<dyn Fn(i32) + Send + Sync>,
     ) -> Self {

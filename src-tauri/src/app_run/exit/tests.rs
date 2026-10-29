@@ -82,10 +82,8 @@ fn detached() -> DetachedSessionsState {
     Arc::new(Mutex::new(HashSet::new()))
 }
 
-fn close_memory(owner: Arc<AtomicUsize>) -> impl Future<Output = ()> + Send {
-    async move {
-        owner.fetch_add(1, Ordering::SeqCst);
-    }
+async fn close_memory(owner: Arc<AtomicUsize>) {
+    owner.fetch_add(1, Ordering::SeqCst);
 }
 
 #[test]
