@@ -268,13 +268,13 @@ async fn update_project_groups_web_dispatch_broadcasts_saved_config() {
         None,
     )));
     let settings = crate::config::settings::new_settings_state(AppSettings::default());
-    let state = WsState {
+    let state = WsState::new(
         session_mgr,
         pty_mgr,
         settings,
-        broadcaster: broadcaster.clone(),
+        broadcaster.clone(),
         app_handle,
-    };
+    );
 
     let project = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(project.path().join(".ac")).expect("create .ac");
@@ -399,12 +399,10 @@ title: 'USER: café'
 
 #[tokio::test]
 async fn drain_session_warnings_web_dispatch_drains_buffer() {
-    let (state, _rx) = ws_state_for(AppSettings::default());
+    let (state, _rx, app_handle) = ws_state_for_with_handle(AppSettings::default());
     let session_id = Uuid::new_v4();
     {
-        let warnings = state
-            .app_handle
-            .state::<crate::session::warnings::SessionWarningState>();
+        let warnings = app_handle.state::<crate::session::warnings::SessionWarningState>();
         let mut buffer = warnings.lock().expect("warning buffer lock");
         buffer.push(crate::session::warnings::SessionWarning::new(
             session_id,

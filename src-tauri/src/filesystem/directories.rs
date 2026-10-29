@@ -309,3 +309,9 @@ pub(crate) fn ui_automation_path_exists(path: &Path) -> bool {
 pub(crate) fn remove_ui_automation_directory(path: &Path) -> io::Result<()> {
     std::fs::remove_dir_all(path)
 }
+
+pub(crate) fn retained_prompt_directory_metadata(
+    path: &Path,
+) -> std::io::Result<std::fs::Metadata> {
+    std::fs::metadata(path)
+}

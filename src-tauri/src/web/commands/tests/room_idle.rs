@@ -164,13 +164,13 @@ fn room_idle_confirmation_browser_events(
 #[cfg(windows)]
 async fn room_idle_confirmation_case(
     state: &WsState,
+    app: &tauri::AppHandle,
     writer: &str,
     case: &str,
     fixture: &std::path::Path,
     receiver: &mut tokio::sync::mpsc::Receiver<crate::web::broadcast::WsOutMsg>,
 ) -> Vec<Value> {
     use tauri::Listener;
-    let app = &state.app_handle;
     let settings = &state.settings;
     let (_, target, expected, success, count) = [
         ("changed", 30, 30, true, 1),
@@ -293,10 +293,10 @@ async fn room_idle_confirmation_routes_child() {
         Some(broadcaster.clone()),
         None,
     )));
-    let state = WsState {
+    let state = WsState::new(
         session_mgr,
         pty_mgr,
-        settings: crate::config::settings::new_settings_state(AppSettings {
+        crate::config::settings::new_settings_state(AppSettings {
             agents: Vec::new(),
             project_paths: Vec::new(),
             project_path: None,
@@ -304,8 +304,8 @@ async fn room_idle_confirmation_routes_child() {
             ..AppSettings::default()
         }),
         broadcaster,
-        app_handle,
-    };
+        app_handle.clone(),
+    );
     let mut receipts = Vec::new();
     for writer in ["update_settings", "save_settings_draft"] {
         let seed = AppSettings {
@@ -329,7 +329,15 @@ async fn room_idle_confirmation_routes_child() {
             "renewed-positive",
         ] {
             receipts.extend(
-                room_idle_confirmation_case(&state, writer, case, &fixture, &mut receiver).await,
+                room_idle_confirmation_case(
+                    &state,
+                    &app_handle,
+                    writer,
+                    case,
+                    &fixture,
+                    &mut receiver,
+                )
+                .await,
             );
         }
     }

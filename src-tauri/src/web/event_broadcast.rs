@@ -15,14 +15,22 @@ use serde_json::Value;
 
 use crate::web::broadcast::WsBroadcaster;
 
-/// Emit event to both Tauri windows and WebSocket clients.
-pub fn broadcast_all(
-    app: &tauri::AppHandle,
+pub trait DesktopBroadcastEvents: Send + Sync {
+    fn desktop_event(&self, event: &str, payload: &Value);
+}
+
+pub trait ManagedBroadcastEvents: Send + Sync {
+    fn managed_event(&self, event: &str, payload: &Value) -> bool;
+}
+
+/// Emit to desktop first, then always to the supplied WebSocket broadcaster.
+pub fn broadcast_all<E: DesktopBroadcastEvents + ?Sized>(
+    app: &E,
     broadcaster: &WsBroadcaster,
     event: &str,
     payload: &Value,
 ) {
-    let _ = tauri::Emitter::emit(app, event, payload.clone());
+    app.desktop_event(event, payload);
     broadcaster.broadcast_event(event, payload);
 }
 

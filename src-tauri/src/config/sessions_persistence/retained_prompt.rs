@@ -1,6 +1,7 @@
 use super::project_scope::strip_long_prefix_str;
 use super::record::PersistedSession;
 use super::write::rename_with_retry;
+use crate::filesystem::sessions_persistence_files;
 use crate::session::manager::{PromptKey, RetainedPrompt, SessionManager};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -56,7 +57,9 @@ pub(crate) fn prompt_key(
 }
 
 pub(super) fn load_retained_prompts(dir: &Path) -> Result<HashMap<PromptKey, RetainedPrompt>, ()> {
-    let bytes = match std::fs::read(dir.join(RETAINED_PROMPTS)) {
+    let bytes = match sessions_persistence_files::read_retained_prompt_checkpoint(
+        &dir.join(RETAINED_PROMPTS),
+    ) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
         Err(_) => return Err(()),
@@ -167,7 +170,7 @@ pub(super) async fn flush_retained_prompts_locked(
     dir: &Path,
 ) -> Result<(), String> {
     flush_retained_prompts_locked_with_probe(mgr, dir, cfg!(windows), |path| {
-        std::fs::metadata(path)
+        crate::filesystem::directories::retained_prompt_directory_metadata(Path::new(path))
             .map(|_| ())
             .map_err(|error| error.kind())
     })
@@ -228,12 +231,13 @@ pub(super) async fn flush_retained_prompts_locked_with_probe(
             entries,
         })
         .map_err(|_| "last-prompt serialization failed".to_string())?;
-        std::fs::write(&temp, bytes).map_err(|_| "last-prompt write failed".to_string())?;
+        sessions_persistence_files::write_retained_prompt_checkpoint(&temp, &bytes)
+            .map_err(|_| "last-prompt write failed".to_string())?;
         rename_with_retry(&temp, &dir.join(RETAINED_PROMPTS))
             .map_err(|_| "last-prompt rename failed".to_string())
     })();
     if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
+        let _ = sessions_persistence_files::remove_retained_prompt_checkpoint(&temp);
         mgr.disable_prompt_reuse().await;
         log::warn!("[last-prompt] checkpoint failed; cache reuse disabled");
     }
