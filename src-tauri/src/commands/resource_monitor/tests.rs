@@ -1,7 +1,6 @@
 use super::{
     execute_resource_kill_transaction, execute_resource_kill_transaction_inner,
-    kill_resource_group, should_finalize_kill, verify_kill_settled,
-    PTY_ROUTE_RETRY_ATTEMPTS,
+    kill_resource_group, should_finalize_kill, verify_kill_settled, PTY_ROUTE_RETRY_ATTEMPTS,
 };
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
 use crate::pty::manager::PtyManager;

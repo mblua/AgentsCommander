@@ -380,8 +380,7 @@ async fn s1_defer_escalates_force_close_after_n_failures() {
         "row Exited after escalation force-close"
     );
     assert_eq!(
-        retry_failures,
-        PTY_ROUTE_RETRY_ATTEMPTS as usize,
+        retry_failures, PTY_ROUTE_RETRY_ATTEMPTS as usize,
         "exactly N failed retry attempts before escalation"
     );
     assert!(
