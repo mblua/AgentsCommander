@@ -1,5 +1,7 @@
 use super::*;
 use crate::config::coding_agents_catalog::CodingAgentDefinition;
+use crate::web::broadcast::WsBroadcaster;
+use tauri::{AppHandle, Manager};
 
 fn entry(command: &str, label: &str, update_commands: Vec<&str>) -> CodingAgentDefinition {
     CodingAgentDefinition {
@@ -72,6 +74,189 @@ fn build_mock_app(builder: tauri::Builder<tauri::Wry>) -> tauri::App {
     builder
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build test app")
+}
+
+#[test]
+fn agent_update_desktop_fallback_preserves_payload() {
+    use std::sync::Mutex;
+    use tauri::Listener;
+
+    let app = build_mock_app(crate::test_support::test_builder());
+    assert!(app.try_state::<WsBroadcaster>().is_none());
+    let desktop = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&desktop);
+    let event_name = "agent_update_command_finished";
+    app.listen_any(event_name, move |event| {
+        let payload = serde_json::from_str::<Value>(event.payload()).expect("desktop JSON");
+        observed
+            .lock()
+            .unwrap()
+            .push((event_name.to_string(), payload));
+    });
+    let payload = json!({ "command": "agent-ñ", "ok": false, "error": null });
+
+    emit_all(app.handle(), event_name, payload.clone());
+
+    assert_eq!(
+        *desktop.lock().unwrap(),
+        vec![(event_name.to_string(), payload)]
+    );
+}
+
+#[test]
+fn agent_update_tasks_spawn_without_ambient_runtime() {
+    let app = build_mock_app(crate::test_support::test_builder());
+    let (tx, rx) = std::sync::mpsc::channel();
+    assert!(tokio::runtime::Handle::try_current().is_err());
+    AgentUpdateTasks::spawn_update_task(
+        app.handle(),
+        Box::pin(async move {
+            tx.send(()).ok();
+        }),
+    );
+    rx.recv_timeout(Duration::from_secs(5))
+        .expect("edge task executes without an ambient runtime");
+}
+
+#[derive(Clone, Default)]
+struct RecordingUpdateEvents {
+    frames: Arc<std::sync::Mutex<Vec<Value>>>,
+    fences: Option<(Arc<target::AsyncFence>, Arc<target::AsyncFence>)>,
+}
+
+impl ManagedBroadcastEvents for RecordingUpdateEvents {
+    fn managed_event(&self, event: &str, payload: &Value) -> bool {
+        if let Some((response, terminal)) = &self.fences {
+            assert!(
+                !terminal.is_open(),
+                "terminal fence must follow event enqueue"
+            );
+            if event != "agent_update_command_finished" {
+                assert!(
+                    !response.is_open(),
+                    "response fence must follow cancellation events"
+                );
+            }
+        }
+        self.frames
+            .lock()
+            .unwrap()
+            .push(json!({ "event": event, "payload": payload }));
+        true
+    }
+}
+
+struct RecordingAnswerRelease {
+    events: RecordingUpdateEvents,
+    saw_closure: AtomicBool,
+}
+
+impl Wake for RecordingAnswerRelease {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        let expected = json!({
+            "event": "agent_update_prompt_closed",
+            "payload": { "command": "claude", "label": "Claude" }
+        });
+        self.saw_closure.store(
+            self.events.frames.lock().unwrap().as_slice() == [expected],
+            Ordering::SeqCst,
+        );
+    }
+}
+
+#[tokio::test]
+async fn agent_update_answer_port_enqueues_before_delivery() {
+    let events = RecordingUpdateEvents::default();
+    let gate = AgentUpdateGate::new();
+    let mut rx = gate.register_prompt("claude", "Claude");
+    let release = Arc::new(RecordingAnswerRelease {
+        events: events.clone(),
+        saw_closure: AtomicBool::new(false),
+    });
+    let waker = Waker::from(Arc::clone(&release));
+    let mut cx = Context::from_waker(&waker);
+    assert!(Pin::new(&mut rx).poll(&mut cx).is_pending());
+
+    assert!(
+        answer_prompt(&events, &gate, "claude", true, || async { Ok(()) })
+            .await
+            .expect("answer through event capability")
+    );
+    assert!(release.saw_closure.load(Ordering::SeqCst));
+    assert!(rx.await.expect("answer delivered"));
+    assert_eq!(
+        *events.frames.lock().unwrap(),
+        vec![json!({
+            "event": "agent_update_prompt_closed",
+            "payload": { "command": "claude", "label": "Claude" }
+        })]
+    );
+}
+
+#[tokio::test]
+async fn agent_update_cancel_port_preserves_events_and_fences() {
+    let gate = Arc::new(AgentUpdateGate::new());
+    seed_retained_target(&gate, "claude", "Claude");
+    let _rx = gate.register_prompt("claude", "Claude");
+    let (response, terminal) = {
+        let state = gate.state.lock().unwrap();
+        let control = state.controls.get("claude").expect("retained control");
+        (
+            Arc::clone(&control.response_release),
+            Arc::clone(&control.terminal_publication),
+        )
+    };
+    let events = RecordingUpdateEvents {
+        fences: Some((Arc::clone(&response), Arc::clone(&terminal))),
+        ..RecordingUpdateEvents::default()
+    };
+
+    let result = cancel_update(&events, &gate, "claude".to_string()).await;
+    assert_eq!(result.disposition, AgentUpdateCancelDisposition::Requested);
+    assert!(response.is_open());
+    assert!(!terminal.is_open());
+    let expected = vec![
+        json!({
+            "event": "agent_update_prompt_closed",
+            "payload": { "command": "claude", "label": "Claude" }
+        }),
+        json!({
+            "event": "agent_update_cancellation_changed",
+            "payload": {
+                "cancelRequested": [{ "command": "claude", "label": "Claude" }],
+                "cancelAllRequested": false
+            }
+        }),
+    ];
+    assert_eq!(*events.frames.lock().unwrap(), expected);
+    let repeated = cancel_update(&events, &gate, "claude".to_string()).await;
+    assert_eq!(
+        repeated.disposition,
+        AgentUpdateCancelDisposition::AlreadyRequested
+    );
+    assert_eq!(*events.frames.lock().unwrap(), expected);
+
+    let target = UpdateTarget {
+        command: "claude".to_string(),
+        label: "Claude".to_string(),
+        commands: vec!["exit 0".to_string()],
+        cwd: cwd(),
+    };
+    let terminalizer = TargetTerminalizer::new(events.clone(), Arc::clone(&gate), target.clone());
+    let result = terminalizer
+        .publish(cancelled_update_result(&target, None))
+        .await;
+    assert!(terminal.is_open());
+    let frames = events.frames.lock().unwrap();
+    assert_eq!(frames.len(), 3);
+    assert_eq!(
+        frames[2],
+        json!({ "event": "agent_update_command_finished", "payload": result })
+    );
 }
 
 fn app_with_broadcaster() -> (tauri::App, tokio::sync::mpsc::Receiver<WsOutMsg>) {

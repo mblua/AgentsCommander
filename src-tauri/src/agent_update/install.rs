@@ -3,14 +3,15 @@ use super::updater::{
 };
 #[cfg(test)]
 use super::updater::{with_target_settlement_hook, TARGET_SETTLEMENT_HOOK};
-use super::{emit_all, OUTPUT_TAIL_BYTES, UPDATE_STEP_TIMEOUT};
+use super::{
+    emit_all, AgentUpdateTasks, ManagedBroadcastEvents, OUTPUT_TAIL_BYTES, UPDATE_STEP_TIMEOUT,
+};
 use crate::config::agent_path::effective_search_path;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::AppHandle;
 
 /// #2736 - resolved install commands with a running install task. Keyed by the
 /// command string, so two catalog keys sharing one command never run it twice.
@@ -68,28 +69,35 @@ impl Drop for InstallInFlight {
 /// Reuses the updater step primitives; deliberately does NOT touch
 /// `AgentUpdateGate`, the `agent_update_*` events, or the update overlay, so a
 /// first-run install stays silent.
-pub(crate) fn start_agent_install(
-    app: &AppHandle,
+pub(crate) fn start_agent_install<E>(
+    app: &E,
     owner: Arc<AgentInstallState>,
     key: String,
     command: String,
     cwd: PathBuf,
-) -> Result<(), String> {
+) -> Result<(), String>
+where
+    E: ManagedBroadcastEvents + AgentUpdateTasks + Clone + 'static,
+{
     start_agent_install_with_timeout(app, owner, key, command, cwd, UPDATE_STEP_TIMEOUT)
 }
 
 /// #2736 - `start_agent_install` with the step timeout injected. Production
 /// always passes `UPDATE_STEP_TIMEOUT`; only tests pass a shorter one.
-pub(crate) fn start_agent_install_with_timeout(
-    app: &AppHandle,
+pub(crate) fn start_agent_install_with_timeout<E>(
+    app: &E,
     owner: Arc<AgentInstallState>,
     key: String,
     command: String,
     cwd: PathBuf,
     timeout: Duration,
-) -> Result<(), String> {
+) -> Result<(), String>
+where
+    E: ManagedBroadcastEvents + AgentUpdateTasks + Clone + 'static,
+{
     let in_flight = InstallInFlight::acquire(owner, &command)?;
     let app = app.clone();
+    let spawner = app.clone();
     let task = async move {
         log::info!("[agent-install] running '{command}' for {key}");
         let run = run_agent_install(&app, &key, &command, &cwd, timeout).await;
@@ -115,7 +123,7 @@ pub(crate) fn start_agent_install_with_timeout(
             }
         }
     };
-    tauri::async_runtime::spawn(task);
+    spawner.spawn_update_task(Box::pin(task));
     Ok(())
 }
 
@@ -140,7 +148,7 @@ pub(crate) struct AgentInstallRun {
 /// awaits this, then releases the guard and emits. Tests await it directly and
 /// read the outcome instead of racing a detached task.
 pub(crate) async fn run_agent_install(
-    _app: &AppHandle,
+    _app: &impl ManagedBroadcastEvents,
     key: &str,
     command: &str,
     cwd: &Path,
