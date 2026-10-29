@@ -96,6 +96,31 @@ fn transition_strict_discovery_refuses_invalid_candidate_and_missing_registry_ba
     assert!(!root.path().join("missing").exists());
 }
 
+#[derive(Default)]
+struct SourceDiscoveryTestControls {
+    calls: std::collections::BTreeMap<&'static str, usize>,
+    failure: Option<(&'static str, usize)>,
+}
+
+impl SourceDiscoveryTestControls {
+    fn cut(&mut self, stage: &'static str) -> std::io::Result<()> {
+        *self.calls.entry(stage).or_default() += 1;
+        if let Some((failure_stage, remaining)) = self.failure {
+            if failure_stage == stage {
+                if remaining == 1 {
+                    self.failure = None;
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "source inventory fail-only cut",
+                    ));
+                }
+                self.failure = Some((failure_stage, remaining - 1));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[test]
 fn source_discovery_actual_iterator_type_and_directory_failures_never_prove_empty() {
     let root = crate::config::settings::source_transition_test_root();
@@ -115,30 +140,47 @@ fn source_discovery_actual_iterator_type_and_directory_failures_never_prove_empt
     std::fs::write(&target, bytes).unwrap();
     let replica_bytes = br#"{"identity":"../../_agent_N"}"#;
     std::fs::write(replica.join("config.json"), replica_bytes).unwrap();
-    SOURCE_DISCOVERY_FAILURE.with(|failure| failure.set(None));
-    SOURCE_DISCOVERY_CALLS.with(|calls| calls.borrow_mut().clear());
-    let baseline = discover_source_inventory(&settings).unwrap();
+    let mut controls = SourceDiscoveryTestControls::default();
+    let independent = SourceDiscoveryTestControls::default();
+    controls.failure = Some(("readDir", 1));
+    assert!(independent.calls.is_empty());
+    assert!(independent.failure.is_none());
+    controls.failure = None;
+    let baseline =
+        super::super::source_selection::discover_source_inventory_with_cut(&settings, |stage| {
+            controls.cut(stage)
+        })
+        .unwrap();
     assert_eq!(baseline.1.len(), 3);
-    let counts = SOURCE_DISCOVERY_CALLS.with(|calls| calls.borrow().clone());
+    let counts = controls.calls.clone();
     for stage in ["readDir", "entry", "fileType"] {
         assert!(
             counts[stage] > 1,
             "fixture must reach multiple discovery loops"
         );
         for ordinal in 1..=counts[stage] {
-            SOURCE_DISCOVERY_FAILURE.with(|failure| failure.set(Some((stage, ordinal))));
+            controls.failure = Some((stage, ordinal));
+            let calls_before = controls.calls[stage];
             assert!(
-                discover_source_inventory(&settings).is_err(),
+                super::super::source_selection::discover_source_inventory_with_cut(
+                    &settings,
+                    |stage| controls.cut(stage),
+                )
+                .is_err(),
                 "{stage}/{ordinal} silently became empty"
             );
-            SOURCE_DISCOVERY_FAILURE
-                .with(|failure| assert!(failure.get().is_none(), "cut not reached"));
+            assert!(controls.failure.is_none(), "cut not reached");
+            assert_eq!(controls.calls[stage] - calls_before, ordinal);
             assert_eq!(std::fs::read(&target).unwrap(), bytes);
             assert_eq!(
                 std::fs::read(replica.join("config.json")).unwrap(),
                 replica_bytes
             );
-            let recovered = discover_source_inventory(&settings).unwrap();
+            let recovered = super::super::source_selection::discover_source_inventory_with_cut(
+                &settings,
+                |stage| controls.cut(stage),
+            )
+            .unwrap();
             assert_eq!(recovered.0, baseline.0);
             assert_eq!(recovered.1.len(), baseline.1.len());
         }
