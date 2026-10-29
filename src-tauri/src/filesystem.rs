@@ -47,6 +47,7 @@ pub(crate) mod self_clear_files;
 pub(crate) mod session_context;
 pub(crate) mod sessions_persistence_files;
 pub(crate) mod settings_file;
+pub(crate) mod settings_sources;
 pub(crate) mod spec_board;
 pub(crate) mod tasks;
 pub(crate) mod telegram_logs;

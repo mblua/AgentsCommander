@@ -7,6 +7,7 @@ use super::{
     FIELD_ARCHIVED, FIELD_ARCHIVED_REL, FIELD_PROJECT_PATH, FIELD_PROJECT_PATHS,
     FIELD_PROJECT_PATHS_REL, FIELD_PROJECT_PATH_REL,
 };
+use crate::filesystem::settings_sources;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -68,7 +69,7 @@ pub(crate) fn read_project_source_bytes_labeled_with_limit(
     label: &Path,
     limit: usize,
 ) -> Result<Option<Vec<u8>>, SettingsSaveError> {
-    match std::fs::symlink_metadata(path) {
+    match settings_sources::probe(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(SettingsSaveError::io(
@@ -275,7 +276,6 @@ pub(crate) fn publish_project_migration_backup_labeled(
     bytes: &[u8],
     checkpoint: &mut impl FnMut(&str, &Path) -> Result<(), SettingsSaveError>,
 ) -> Result<(), SettingsSaveError> {
-    use std::io::Write as _;
     let backup = settings_path
         .with_file_name(crate::config::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME);
     let backup_label =
@@ -330,18 +330,6 @@ pub(crate) fn publish_project_migration_backup_labeled(
     ));
     let temp = parent.join(name);
     checkpoint("backup_create", &temp)?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
-    }
     let io_error = |stage, source| {
         SettingsSaveError::io(
             stage,
@@ -351,8 +339,7 @@ pub(crate) fn publish_project_migration_backup_labeled(
             SettingsSaveLegacyOutward::SettingsSaveFailed,
         )
     };
-    let mut file = options
-        .open(&temp)
+    let mut file = settings_sources::migration_stage(&temp)
         .map_err(|error| io_error(SettingsSaveStage::TempCreate, error))?;
     crate::path_identity::verify_opened_regular_file(&temp, &file, false).map_err(|reason| {
         project_migration_error_labeled(
@@ -363,13 +350,13 @@ pub(crate) fn publish_project_migration_backup_labeled(
         )
     })?;
     let prefix = bytes.len() / 2;
-    file.write_all(&bytes[..prefix])
+    settings_sources::write_stage(&mut file, &bytes[..prefix])
         .map_err(|error| io_error(SettingsSaveStage::TempWrite, error))?;
     checkpoint("backup_prefix", &temp)?;
-    file.write_all(&bytes[prefix..])
+    settings_sources::write_stage(&mut file, &bytes[prefix..])
         .map_err(|error| io_error(SettingsSaveStage::TempWrite, error))?;
     checkpoint("backup_write", &temp)?;
-    file.sync_all()
+    settings_sources::sync_stage(&file)
         .map_err(|error| io_error(SettingsSaveStage::TempSync, error))?;
     checkpoint("backup_sync", &temp)?;
     drop(file);
@@ -394,7 +381,7 @@ pub(crate) fn publish_project_migration_backup_labeled(
             Err(mismatch())
         };
     }
-    if let Err(error) = std::fs::rename(&temp, &backup) {
+    if let Err(error) = settings_sources::rename_backup(&temp, &backup) {
         match read_project_source_bytes_labeled_with_limit(
             &backup,
             &backup_label,
@@ -406,8 +393,7 @@ pub(crate) fn publish_project_migration_backup_labeled(
         }
     }
     #[cfg(unix)]
-    std::fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
+    settings_sources::sync_parent(parent)
         .map_err(|error| io_error(SettingsSaveStage::ParentDirectorySync, error))?;
     if read_project_source_bytes_labeled_with_limit(&backup, &backup_label, 16 * 1024 * 1024)?
         .as_deref()

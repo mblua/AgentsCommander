@@ -1,3 +1,4 @@
+use crate::filesystem::settings_sources;
 mod layer;
 mod overlay;
 
@@ -59,7 +60,7 @@ pub(crate) fn read_agents_instance_file_labeled(
     path: &Path,
     label: &Path,
 ) -> Result<Option<Map<String, Value>>, String> {
-    let contents = match std::fs::read_to_string(path) {
+    let contents = match settings_sources::text(path) {
         Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("could not read {}: {e}", label.display())),
@@ -186,8 +187,6 @@ pub(crate) fn write_agents_instance_file(
     groups: &Map<String, Value>,
     path: &Path,
 ) -> Result<(), SettingsSaveError> {
-    use std::io::Write as _;
-
     let bytes = serde_json::to_vec_pretty(&Value::Object(groups.clone())).map_err(|source| {
         SettingsSaveError::json(
             SettingsSaveStage::Serialize,
@@ -214,16 +213,11 @@ pub(crate) fn write_agents_instance_file(
     let result = (|| {
         #[cfg(test)]
         project_atomic_checkpoint(path, SettingsSaveStage::TempCreate)?;
-        let mut temporary = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp_path)
+        let mut temporary = settings_sources::agents_stage(&tmp_path)
             .map_err(|e| io_error(SettingsSaveStage::TempCreate, e))?;
-        temporary
-            .write_all(&bytes)
+        settings_sources::write_stage(&mut temporary, &bytes)
             .map_err(|e| io_error(SettingsSaveStage::TempWrite, e))?;
-        temporary
-            .sync_all()
+        settings_sources::sync_stage(&temporary)
             .map_err(|e| io_error(SettingsSaveStage::TempSync, e))?;
         drop(temporary);
         #[cfg(test)]
@@ -232,7 +226,7 @@ pub(crate) fn write_agents_instance_file(
             .map_err(|e| io_error(SettingsSaveStage::AtomicReplace, e))
     })();
     if result.is_err() {
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = settings_sources::remove_stage(&tmp_path);
     }
     result
 }
@@ -263,7 +257,7 @@ pub(crate) fn export_agents_to_instance_file(
         log::warn!("{reason}");
         return false;
     }
-    let legacy = match std::fs::read_to_string(settings_path)
+    let legacy = match settings_sources::text(settings_path)
         .ok()
         .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
     {
