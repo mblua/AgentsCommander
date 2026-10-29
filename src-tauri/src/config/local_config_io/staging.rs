@@ -1,16 +1,19 @@
 #[cfg(test)]
 use super::publish_temp_config;
 use super::{ConfigPublisher, PairTargetGuard, PreparedPairError};
+use crate::filesystem::local_config::{
+    create_local_config_stage, flush_local_config_stage, read_local_config_text,
+    remove_local_config_stage, sync_local_config_stage, write_local_config_stage, LocalConfigStage,
+};
 use serde_json::Map;
 use serde_json::Value;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
 /// #2786 (C1) - one side of the pair as a map: absent is empty, anything that
 /// is not a readable JSON object is an error.
 pub(super) fn read_pair_side(path: &Path) -> Result<Map<String, Value>, String> {
-    let content = match std::fs::read_to_string(path) {
+    let content = match read_local_config_text(path) {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
         Err(e) => return Err(format!("Failed to read {}: {}", path.display(), e)),
@@ -63,20 +66,20 @@ pub(super) fn publish_pair_side_with_publish(
     let (tmp_path, mut file) =
         acquire_fresh_config_stage(path, &guard).map_err(ordinary_staging_error)?;
     let write_result = (|| -> Result<(), String> {
-        file.write_all(json.as_bytes())
+        write_local_config_stage(&mut file, json.as_bytes())
             .map_err(|e| format!("Failed to write temp config {}: {}", tmp_path.display(), e))?;
-        file.flush()
+        flush_local_config_stage(&mut file)
             .map_err(|e| format!("Failed to flush temp config {}: {}", tmp_path.display(), e))?;
-        file.sync_all()
+        sync_local_config_stage(&file)
             .map_err(|e| format!("Failed to sync temp config {}: {}", tmp_path.display(), e))
     })();
     drop(file);
     if let Err(e) = write_result {
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = remove_local_config_stage(&tmp_path);
         return Err(e);
     }
     if let Err(e) = publish(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = remove_local_config_stage(&tmp_path);
         return Err(e);
     }
     Ok(())
@@ -112,7 +115,7 @@ pub(super) fn fresh_config_stage_path(path: &Path, sequence: u64) -> PathBuf {
 pub(super) fn acquire_fresh_config_stage(
     path: &Path,
     guard: &PairTargetGuard<'_>,
-) -> Result<(PathBuf, std::fs::File), PreparedPairError> {
+) -> Result<(PathBuf, LocalConfigStage), PreparedPairError> {
     acquire_fresh_config_stage_with_sequence(path, guard, &mut next_shared_staging_sequence)
 }
 
@@ -122,16 +125,12 @@ pub(super) fn acquire_fresh_config_stage_with_sequence(
     path: &Path,
     guard: &PairTargetGuard<'_>,
     next: &mut dyn FnMut() -> Result<u64, PreparedPairError>,
-) -> Result<(PathBuf, std::fs::File), PreparedPairError> {
+) -> Result<(PathBuf, LocalConfigStage), PreparedPairError> {
     for _ in 0..MAX_STAGING_ATTEMPTS {
         guard.check()?;
         let candidate = fresh_config_stage_path(path, next()?);
         guard.check()?;
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
+        match create_local_config_stage(&candidate) {
             Ok(file) => return Ok((candidate, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {

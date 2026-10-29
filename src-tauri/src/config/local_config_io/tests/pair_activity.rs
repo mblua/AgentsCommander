@@ -1,4 +1,7 @@
 use super::*;
+use crate::filesystem::local_config::{
+    flush_local_config_stage, sync_local_config_stage, write_local_config_stage, LocalConfigStage,
+};
 // Each fixture owns its temporary directory. Production never scans debris.
 fn p22_stages(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut stages: Vec<_> = std::fs::read_dir(root)
@@ -335,9 +338,9 @@ fn source_native_b_premove_guard_refusal_retains_owned_stage_without_effect() {
 fn p22_filled_stage(target: &Path, bytes: &[u8]) -> PathBuf {
     let guard = PairTargetGuard::new(&|| Ok(()));
     let (stage, mut file) = acquire_fresh_config_stage(target, &guard).unwrap();
-    file.write_all(bytes).unwrap();
-    file.flush().unwrap();
-    file.sync_all().unwrap();
+    write_local_config_stage(&mut file, bytes).unwrap();
+    flush_local_config_stage(&mut file).unwrap();
+    sync_local_config_stage(&file).unwrap();
     drop(file);
     stage
 }
@@ -444,7 +447,7 @@ fn p22_atomic_candidate_collisions_regular_directory_hardlink_and_race() {
             Ok((stage, mut file)) => {
                 assert_eq!(stage, fresh_config_stage_path(&target, 1));
                 assert_eq!(calls, 2);
-                file.write_all(b"owned").unwrap();
+                write_local_config_stage(&mut file, b"owned").unwrap();
                 drop(file);
             }
             Err(PreparedPairError::Io(reason)) if kind == 1 => {
@@ -611,8 +614,8 @@ fn p22_observed_directory_witness_change_after_acquisition_preserves_stage() {
     };
     let guard = PairTargetGuard::new(&validate);
     let mut next = next_shared_staging_sequence;
-    let write = |file: &mut std::fs::File, bytes: &[u8]| {
-        file.write_all(bytes).unwrap();
+    let write = |file: &mut LocalConfigStage, bytes: &[u8]| {
+        write_local_config_stage(file, bytes).unwrap();
         // A fixture marker models an observed directory witness. It is
         // neither production identity proof nor a hostile-host claim.
         std::fs::write(&witness, b"changed witness").unwrap();

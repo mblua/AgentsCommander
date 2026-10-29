@@ -5,9 +5,16 @@ use super::{
     validate_source_publication_children, ConfigPairCleanup, ConfigWriterActive, PairTargetGuard,
     CONFIG_LOCK_TIMEOUT,
 };
+#[cfg(not(windows))]
+use crate::filesystem::local_config::sync_local_config_directory;
+use crate::filesystem::local_config::{
+    canonical_local_config_parent, flush_local_config_stage, inspect_local_config_target,
+    link_absent_local_config_stage, read_local_config_bytes, remove_local_config_stage,
+    sync_local_config_stage, verify_opened_local_config_stage, write_local_config_stage,
+    LocalConfigStage,
+};
 use serde_json::Map;
 use serde_json::Value;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -52,7 +59,7 @@ impl PhysicalState {
 
 #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(crate) fn read_config_pair_physical(path: &Path) -> Result<PhysicalState, PreparedPairError> {
-    match std::fs::symlink_metadata(path) {
+    match inspect_local_config_target(path) {
         Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
             return Err(PreparedPairError::Io(
                 "PAIR target must be a regular non-symlink file".into(),
@@ -62,7 +69,7 @@ pub(crate) fn read_config_pair_physical(path: &Path) -> Result<PhysicalState, Pr
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(PhysicalState::Absent),
         Err(e) => return Err(PreparedPairError::Io(e.to_string())),
     }
-    std::fs::read(path)
+    read_local_config_bytes(path)
         .map(PhysicalState::from_bytes)
         .map_err(|e| PreparedPairError::Io(e.to_string()))
 }
@@ -247,8 +254,8 @@ pub(super) fn execute_unreserved_config_pair_inner(
         let name = path
             .file_name()
             .ok_or(PreparedPairError::InvalidPlan("PAIR target has no name"))?;
-        let parent =
-            std::fs::canonicalize(parent).map_err(|e| PreparedPairError::Io(e.to_string()))?;
+        let parent = canonical_local_config_parent(parent)
+            .map_err(|e| PreparedPairError::Io(e.to_string()))?;
         Ok(parent.join(name))
     };
     let decisions = resolve(decisions)?;
@@ -355,14 +362,13 @@ pub(super) fn publish_prepared_pair_image_with_report(
         report_cleanup_refusal,
         &mut next_shared_staging_sequence,
         &|file, bytes| {
-            file.write_all(bytes)
-                .map_err(|e| PreparedPairError::Io(e.to_string()))
+            write_local_config_stage(file, bytes).map_err(|e| PreparedPairError::Io(e.to_string()))
         },
     )
 }
 
 pub(super) type PreparedPairStageWrite<'a> =
-    dyn Fn(&mut std::fs::File, &[u8]) -> Result<(), PreparedPairError> + 'a;
+    dyn Fn(&mut LocalConfigStage, &[u8]) -> Result<(), PreparedPairError> + 'a;
 
 pub(super) fn publish_prepared_pair_image_with_io(
     path: &Path,
@@ -402,7 +408,8 @@ pub(super) fn publish_prepared_pair_image_with_source_parent(
     ),
     source: Option<&SourceNativePublication<'_>>,
 ) -> Result<(), PreparedPairError> {
-    let (next, write) = stage_io;
+    let next = stage_io.0;
+    let write = stage_io.1;
     let PhysicalState::Bytes { bytes, .. } = after else {
         return Err(PreparedPairError::InvalidPlan("PAIR never deletes a side"));
     };
@@ -420,19 +427,16 @@ pub(super) fn publish_prepared_pair_image_with_source_parent(
             guard.check()?;
             validate_source_publication_children(parent, &tmp, path)?;
             stage_identity = Some(
-                parent
-                    .verify_opened_regular_file(&tmp, &file, true)
+                verify_opened_local_config_stage(parent, &tmp, &file, true)
                     .map_err(PreparedPairError::Io)?,
             );
         }
         guard.check()?;
         write(&mut file, bytes)?;
         guard.check()?;
-        file.flush()
-            .map_err(|e| PreparedPairError::Io(e.to_string()))?;
+        flush_local_config_stage(&mut file).map_err(|e| PreparedPairError::Io(e.to_string()))?;
         guard.check()?;
-        file.sync_all()
-            .map_err(|e| PreparedPairError::Io(e.to_string()))?;
+        sync_local_config_stage(&file).map_err(|e| PreparedPairError::Io(e.to_string()))?;
         Ok(())
     })();
     drop(file);
@@ -487,7 +491,7 @@ pub(super) fn publish_prepared_pair_image_with_source_parent(
             } else {
                 // Atomic create-if-absent; rename would clobber a racing Unix creator.
                 guard.check()?;
-                std::fs::hard_link(&tmp, path).map_err(|e| {
+                link_absent_local_config_stage(&tmp, path).map_err(|e| {
                     if e.kind() == std::io::ErrorKind::AlreadyExists {
                         PreparedPairError::Conflict
                     } else {
@@ -495,18 +499,18 @@ pub(super) fn publish_prepared_pair_image_with_source_parent(
                     }
                 })?;
                 guard.check()?;
-                std::fs::remove_file(&tmp).map_err(|e| PreparedPairError::Io(e.to_string()))?;
+                remove_local_config_stage(&tmp)
+                    .map_err(|e| PreparedPairError::Io(e.to_string()))?;
             }
         } else {
             publish_temp_config_guarded(&tmp, path, guard)?;
         }
         guard.check()?;
         #[cfg(not(windows))]
-        std::fs::File::open(
+        sync_local_config_directory(
             path.parent()
                 .ok_or(PreparedPairError::InvalidPlan("PAIR target has no parent"))?,
         )
-        .and_then(|dir| dir.sync_all())
         .map_err(|e| PreparedPairError::Io(e.to_string()))?;
         Ok(())
     });
@@ -526,7 +530,7 @@ pub(super) fn publish_prepared_pair_image_with_source_parent(
                         parent.remove_regular_file_if_same(&tmp, owned);
                     }
                 }
-            } else if let Err(e) = std::fs::remove_file(&tmp) {
+            } else if let Err(e) = remove_local_config_stage(&tmp) {
                 if e.kind() != std::io::ErrorKind::NotFound {
                     log::warn!("[prepared-pair] temporary cleanup failed: {e}");
                 }

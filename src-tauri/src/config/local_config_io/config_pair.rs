@@ -5,6 +5,7 @@ use super::{
     timestamp_value, validate_pair_binding, validate_pair_paths, ConfigWriterActive, PhysicalState,
     CONFIG_LOCK_TIMEOUT,
 };
+use crate::filesystem::local_config;
 use serde_json::Map;
 use serde_json::Value;
 use std::cell::Cell;
@@ -123,7 +124,7 @@ where
         let parent = path
             .parent()
             .ok_or_else(|| format!("Local config {} has no parent directory", path.display()))?;
-        std::fs::create_dir_all(parent)
+        local_config::ensure_local_config_parent(parent)
             .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
     }
     if let Some(path) = reservation {
