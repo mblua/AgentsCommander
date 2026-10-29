@@ -11,6 +11,7 @@ use super::poller::{MailboxPoller, OutboxAuthenticationFacts, OutboxStage, Valid
 use super::pty_observation::{PtyAuthorityState, PtyReadinessState};
 use super::settle::session_has_current_pty_submission_provenance;
 use crate::config::teams;
+use crate::filesystem::phone_mailbox;
 #[cfg(test)]
 use crate::phone::mailbox::classify_outbox_document;
 #[cfg(test)]
@@ -700,9 +701,14 @@ impl MailboxPoller {
             .and_then(|room_root| room_root.parent().map(|ac_root| ac_root.to_path_buf()))
             .and_then(|ac_root| ac_root.parent().map(|project| project.to_path_buf()))
         {
-            let canon_project = std::fs::canonicalize(&project_dir).ok();
+            let canon_project = phone_mailbox::canonical_mailbox_path(&project_dir).ok();
             let already_present = paths.iter().any(|p| match &canon_project {
-                Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+                Some(canon_target) => {
+                    phone_mailbox::canonical_mailbox_path(Path::new(p))
+                        .ok()
+                        .as_ref()
+                        == Some(canon_target)
+                }
                 None => std::path::Path::new(p) == project_dir,
             });
             if !already_present {
@@ -753,9 +759,15 @@ impl MailboxPoller {
             c.project_paths.clone()
         };
         if let Some(root_project) = outbox_project.as_ref() {
-            let canon_root_project = std::fs::canonicalize(root_project).ok();
+            let canon_root_project =
+                phone_mailbox::canonical_mailbox_path(Path::new(root_project)).ok();
             let already_present = paths.iter().any(|p| match &canon_root_project {
-                Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+                Some(canon_target) => {
+                    phone_mailbox::canonical_mailbox_path(Path::new(p))
+                        .ok()
+                        .as_ref()
+                        == Some(canon_target)
+                }
                 None => p == root_project,
             });
             if !already_present {
@@ -806,9 +818,15 @@ impl MailboxPoller {
             c.project_paths.clone()
         };
         if let Some(root_project) = outbox_project.as_ref() {
-            let canon_root_project = std::fs::canonicalize(root_project).ok();
+            let canon_root_project =
+                phone_mailbox::canonical_mailbox_path(Path::new(root_project)).ok();
             let already_present = paths.iter().any(|p| match &canon_root_project {
-                Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+                Some(canon_target) => {
+                    phone_mailbox::canonical_mailbox_path(Path::new(p))
+                        .ok()
+                        .as_ref()
+                        == Some(canon_target)
+                }
                 None => p == root_project,
             });
             if !already_present {
