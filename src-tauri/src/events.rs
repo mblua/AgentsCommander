@@ -1,5 +1,6 @@
 //! Frontend event delivery adapters; includes transport, not domain rules.
 
+mod app_run;
 mod logging;
 mod loops;
 mod phone;
