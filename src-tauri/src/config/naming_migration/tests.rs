@@ -137,6 +137,26 @@ fn run_scope_with(
     journal_dir: Option<&Path>,
     timeout: Duration,
 ) -> Result<Vec<Outcome>, Refusal> {
+    run_scope_with_faults(
+        dir,
+        steps,
+        family,
+        scope,
+        journal_dir,
+        timeout,
+        &MigrationPathFaults::default(),
+    )
+}
+
+fn run_scope_with_faults(
+    dir: &Path,
+    steps: &[Rename],
+    family: Option<(&str, &str, &str)>,
+    scope: &str,
+    journal_dir: Option<&Path>,
+    timeout: Duration,
+    faults: &MigrationPathFaults,
+) -> Result<Vec<Outcome>, Refusal> {
     if scope_is_settled(read_journal(journal_dir)?.as_ref(), scope) {
         return Ok(Vec::new());
     }
@@ -146,11 +166,11 @@ fn run_scope_with(
     }
     let mut outcomes: Vec<Outcome> = steps
         .iter()
-        .map(|r| rename_step(dir, r, scope, journal_dir, &held))
+        .map(|r| step(dir, r.from, r.to, scope, journal_dir, &held, faults))
         .collect();
     if let Some((old_prefix, new_prefix, suffix)) = family {
         outcomes.extend(
-            rename_prefix_family(
+            rename_prefix_family_with_faults(
                 dir,
                 old_prefix,
                 new_prefix,
@@ -158,6 +178,7 @@ fn run_scope_with(
                 scope,
                 journal_dir,
                 &held,
+                faults,
             )
             .into_iter()
             .map(|(_, outcome)| outcome),
