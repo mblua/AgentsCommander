@@ -49,13 +49,6 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
     let [config_state_row, config_state_lock_row, config_state_tmp_row] = config_state_rows
         .each_ref()
         .map(|(pattern, comment)| (pattern.as_str(), *comment));
-    const SEED_MANIFEST_COORDINATION_BLOCK: &str = "# AgentsCommander: exclude seed-manifest \
-        coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n";
-    const SEED_MANIFEST_MANIFEST_BLOCK: &str = "# AgentsCommander: exclude the seed publication \
-        manifest from Git tracking.\n/seed-manifest.toml\n";
-    const SEED_MANIFEST_COORDINATION_PATTERNS: [&str; 2] =
-        ["/.seed-manifest.lock", "/.seed-manifest.*.tmp"];
-    const SEED_MANIFEST_MANIFEST_PATTERN: &str = "/seed-manifest.toml";
 
     // #1968 - the machine-local coding-agent catalog children, rooted at `.ac/`.
     let catalog = [
@@ -76,25 +69,7 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
     let [.., catalog_migration_backup_tmp, catalog_migration_journal_tmp, _, _] = &catalog;
     let [.., catalog_retired_lock, catalog_set_aside] = &catalog;
 
-    // #2434 - configured instructions filenames beyond the floor, escaped.
-    let mut custom_patterns: Vec<String> = Vec::new();
-    for name in configured {
-        if !crate::config::agent_command::is_safe_instructions_filename(name) {
-            log::warn!(
-                target: "agentscommander_lib::commands::ac_discovery::gitignore",
-                "[ac-gitignore] dropping unsafe instructions filename {:?}",
-                name
-            );
-            continue;
-        }
-        if name == "CLAUDE.md" || name == "AGENTS.md" {
-            continue;
-        }
-        let pattern = format!("**/__agent_*/{}", escape_gitignore_name(name));
-        if !custom_patterns.contains(&pattern) {
-            custom_patterns.push(pattern);
-        }
-    }
+    let custom_patterns = custom_instructions_patterns(configured);
 
     // Each entry: (pattern, comment explaining why)
     let mut required_entries: Vec<(&str, &str)> = vec![
@@ -244,8 +219,51 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         ));
     }
 
-    if discovery::ac_root_gitignore_exists(&gitignore_path) {
-        let content = discovery::read_ac_root_gitignore(&gitignore_path)
+    write_required_gitignore(
+        &gitignore_path,
+        &required_entries,
+        project_settings_gitignore_pattern,
+    )
+}
+
+const SEED_MANIFEST_COORDINATION_BLOCK: &str = "# AgentsCommander: exclude seed-manifest \
+    coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n";
+const SEED_MANIFEST_MANIFEST_BLOCK: &str = "# AgentsCommander: exclude the seed publication \
+    manifest from Git tracking.\n/seed-manifest.toml\n";
+const SEED_MANIFEST_COORDINATION_PATTERNS: [&str; 2] =
+    ["/.seed-manifest.lock", "/.seed-manifest.*.tmp"];
+const SEED_MANIFEST_MANIFEST_PATTERN: &str = "/seed-manifest.toml";
+
+fn custom_instructions_patterns(configured: &[String]) -> Vec<String> {
+    let mut custom_patterns: Vec<String> = Vec::new();
+    for name in configured {
+        if !crate::config::agent_command::is_safe_instructions_filename(name) {
+            log::warn!(
+                target: "agentscommander_lib::commands::ac_discovery::gitignore",
+                "[ac-gitignore] dropping unsafe instructions filename {:?}",
+                name
+            );
+            continue;
+        }
+        if name == "CLAUDE.md" || name == "AGENTS.md" {
+            continue;
+        }
+        let pattern = format!("**/__agent_*/{}", escape_gitignore_name(name));
+        if !custom_patterns.contains(&pattern) {
+            custom_patterns.push(pattern);
+        }
+    }
+
+    custom_patterns
+}
+
+fn write_required_gitignore(
+    gitignore_path: &Path,
+    required_entries: &[(&str, &str)],
+    project_settings_gitignore_pattern: &str,
+) -> Result<(), String> {
+    if discovery::ac_root_gitignore_exists(gitignore_path) {
+        let content = discovery::read_ac_root_gitignore(gitignore_path)
             .map_err(|e| format!("Failed to read Project AC Root .gitignore: {}", e))?;
         let (content, migrated) = migrate_legacy_seed_manifest_gitignore(content);
         // #2715 - the append-only writer never removes a row, so the catalog
@@ -262,7 +280,7 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         let migrated = migrated || retired;
 
         let mut additions = String::new();
-        for (pattern, comment) in &required_entries {
+        for (pattern, comment) in required_entries {
             let is_present = content.lines().any(|line| {
                 if *pattern == project_settings_gitignore_pattern {
                     line == *pattern
@@ -292,20 +310,20 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         if migrated || !additions.is_empty() {
             let separator = if content.ends_with('\n') { "" } else { "\n" };
             discovery::write_ac_root_gitignore(
-                &gitignore_path,
+                gitignore_path,
                 &format!("{}{}{}", content, separator, additions),
             )
             .map_err(|e| format!("Failed to update Project AC Root .gitignore: {}", e))?;
         }
     } else {
         let mut content = String::new();
-        for (pattern, comment) in &required_entries {
+        for (pattern, comment) in required_entries {
             content.push_str(&format!("{}\n{}\n\n", comment, pattern));
         }
         content.push_str(SEED_MANIFEST_COORDINATION_BLOCK);
         content.push('\n');
         content.push_str(SEED_MANIFEST_MANIFEST_BLOCK);
-        discovery::write_ac_root_gitignore(&gitignore_path, &content)
+        discovery::write_ac_root_gitignore(gitignore_path, &content)
             .map_err(|e| format!("Failed to create Project AC Root .gitignore: {}", e))?;
     }
 
