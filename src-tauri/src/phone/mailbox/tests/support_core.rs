@@ -432,6 +432,8 @@ impl CodexClearScannerFixture {
             ))
             .manage(Arc::new(tokio::sync::RwLock::new(sessions)))
             .manage(Arc::new(Mutex::new(PtyManager::new_for_test(backend))))
+            .manage(crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {}))
+            .manage(crate::pty::input_activity::new_typing_hold_state())
             .manage(AppOutbox::new(outbox.to_string_lossy().into_owned()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
@@ -678,5 +680,105 @@ impl CodexClearScannerFixture {
                 .write_attempts
                 .load(Ordering::SeqCst),
         )
+    }
+}
+
+impl CodexClearScannerFixture {
+    pub(crate) fn prepare_spawned_clear_session<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        hooks: &MailboxTestHooks,
+        id: Uuid,
+    ) -> Result<(), String> {
+        let Some(pty) = app.try_state::<Arc<Mutex<PtyManager>>>() else {
+            return Ok(());
+        };
+        let manager = pty.lock().map_err(|e| e.to_string())?;
+        let backend = manager.backend_for_kind(SessionBackendKind::LocalProcess);
+        let Some(backend) = backend.as_any().downcast_ref::<MailboxMockPtyBackend>() else {
+            return Ok(());
+        };
+        if !backend.prepare_clear.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        backend.rows.lock().unwrap().insert(id, Some(Vec::new()));
+        backend.set_live(id);
+        manager
+            .try_record_route(id, SessionBackendKind::LocalProcess)
+            .map_err(|e| e.to_string())?;
+        let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
+        idle.register_session(id, crate::session::profile::IdleTuning::DEFAULT);
+        idle.set_pty_input_ready_for_test(id);
+        hooks.pty_presence.lock().unwrap().insert(id, true);
+        hooks.real_inject_sessions.lock().unwrap().insert(id);
+        Ok(())
+    }
+
+    pub(crate) async fn real_session(&self, cwd: &Path, shell: &str) -> Uuid {
+        let id = add_mailbox_session_with_shape(
+            self.app.handle(),
+            cwd,
+            "clear-real",
+            SessionStatus::Idle,
+            None,
+            shell,
+            Some(shell),
+            false,
+        )
+        .await;
+        Self::prepare_spawned_clear_session(self.app.handle(), &self.hooks, id).unwrap();
+        id
+    }
+
+    pub(crate) async fn submission_state(&self, id: Uuid) -> (bool, bool, bool) {
+        let managers = self.app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let manager = managers.read().await;
+        let session = manager.get_session(id).await.unwrap();
+        let idle = self
+            .app
+            .state::<Arc<crate::pty::idle_detector::IdleDetector>>();
+        (
+            session.agent_turn_armed,
+            session.start_fresh_on_restore,
+            idle.control_write_age(id).is_some(),
+        )
+    }
+
+    pub(crate) async fn mark_ready(&self, id: Uuid) {
+        let managers = self.app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        managers.read().await.mark_idle(id).await;
+    }
+
+    pub(crate) async fn input_progress(&self, id: Uuid) {
+        let pty = self.app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        for bytes in [
+            b"k".as_slice(),
+            &[3],
+            &[27],
+            b"web",
+            b"privileged",
+            b"exit
+",
+        ] {
+            let writer = tokio::time::timeout(
+                Duration::from_millis(500),
+                PtyManager::acquire_input_writer(&pty, id),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            PtyManager::write_with_permit(&writer, bytes).unwrap();
+        }
+        crate::pty::inject::inject_text_into_session(self.app.handle(), id, "direct")
+            .await
+            .unwrap();
+    }
+
+    pub(crate) fn remove_route(&self, id: Uuid) {
+        self.app
+            .state::<Arc<Mutex<PtyManager>>>()
+            .lock()
+            .unwrap()
+            .try_remove_route_if_kind(id, SessionBackendKind::LocalProcess)
+            .unwrap();
     }
 }

@@ -120,6 +120,12 @@ impl MailboxPoller {
                 .get_session(session.id)
                 .await
                 .ok_or_else(|| format!("Session {} not found after test spawn", session.id))?;
+            drop(mgr);
+            super::tests::CodexClearScannerFixture::prepare_spawned_clear_session(
+                app,
+                hooks,
+                inserted.id,
+            )?;
             return Ok(SessionInfo::from(&inserted));
         }
 
@@ -561,13 +567,25 @@ impl MailboxPoller {
             // message delivery; delayed double Enter remains the shared defense.
             // #2336 - this is a peer wake (logical remote command), so it passes
             // through the typing hold like a standard wake.
+            let source = self.codex_clear_source.as_deref().filter(|_| {
+                command == "clear"
+                    && Path::new(shell.trim())
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .is_some_and(|stem| stem.to_lowercase().starts_with("codex"))
+            });
+            let observation = source.map(|_| {
+                let mut observer = self.delivery_poller();
+                observer.clear_reservation = self.clear_reservation.clone();
+                Box::new(move || observer.begin_clear_observation()) as Box<dyn FnOnce() + Send>
+            });
             crate::pty::inject::inject_peer_wake_with_current_facts(
                 app,
                 session_id,
                 resolved.text,
                 &msg.id,
                 settle,
-                None,
+                observation,
                 |session, current| {
                     if owned_replacement.is_none()
                         && crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
@@ -581,6 +599,15 @@ impl MailboxPoller {
                     }) {
                         return Err("replacement work binding requires recapture".into());
                     }
+                    if let Some(source) = source {
+                        if msg.command.as_deref() != Some("clear")
+                            || resolve_remote_pty_command(&session.shell, "clear")? != resolved
+                        {
+                            return Err("codex_clear_execution_error: provider changed".into());
+                        }
+                        super::clear_attempt::persist_attempt(source, msg, session.id)
+                            .map_err(|error| format!("codex_clear_execution_error: {error}"))?;
+                    }
                     Ok(())
                 },
             )
@@ -590,7 +617,7 @@ impl MailboxPoller {
                     return e;
                 }
                 if !crate::pty::menu_guard::is_typing_hold_deferred_error(&e)
-                    && is_permanent_delivery_error(&e)
+                    && (is_permanent_delivery_error(&e) || self.is_terminal_clear_error(msg, &e))
                 {
                     // Terminal rejection of a previously held wake: drop its
                     // count. A transient failure keeps it, because the message

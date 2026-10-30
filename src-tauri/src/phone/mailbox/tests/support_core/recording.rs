@@ -2,7 +2,7 @@ use crate::config::settings::AgentConfig;
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
 use crate::pty::manager::PtyManager;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +21,10 @@ pub(crate) struct MailboxMockPtyBackend {
     pub(crate) kill_attempts: std::sync::atomic::AtomicUsize,
     pub(crate) fail_write: std::sync::atomic::AtomicBool,
     pub(crate) write_attempts: AtomicU32,
+    pub(crate) prepare_clear: std::sync::atomic::AtomicBool,
+    pub(crate) rows: Mutex<HashMap<Uuid, Option<Vec<String>>>>,
+    pub(crate) captures: Mutex<HashMap<Uuid, usize>>,
+    pub(crate) enter_times: Mutex<HashMap<Uuid, Vec<std::time::Instant>>>,
 }
 
 impl MailboxMockPtyBackend {
@@ -78,6 +82,14 @@ impl PtyBackend for MailboxMockPtyBackend {
             ));
         }
         self.writes.lock().unwrap().push((id, data.to_vec()));
+        if data == [13] {
+            self.enter_times
+                .lock()
+                .unwrap()
+                .entry(id)
+                .or_default()
+                .push(std::time::Instant::now());
+        }
         Ok(())
     }
 
@@ -108,8 +120,13 @@ impl PtyBackend for MailboxMockPtyBackend {
         Some((30, 120))
     }
 
-    fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
-        crate::pty::context_scrape::ScreenRowsRead::SessionOver
+    fn get_screen_rows(&self, id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+        *self.captures.lock().unwrap().entry(id).or_default() += 1;
+        match self.rows.lock().unwrap().get(&id) {
+            Some(Some(rows)) => crate::pty::context_scrape::ScreenRowsRead::Rows(rows.clone()),
+            Some(None) => crate::pty::context_scrape::ScreenRowsRead::Unavailable,
+            None => crate::pty::context_scrape::ScreenRowsRead::SessionOver,
+        }
     }
 
     fn register_response_watcher(

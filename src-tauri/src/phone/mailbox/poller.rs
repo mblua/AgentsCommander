@@ -160,7 +160,6 @@ pub(crate) async fn deliver_claimed_wake<R: tauri::Runtime>(
 }
 
 impl MailboxPoller {
-    #[cfg_attr(not(test), expect(dead_code, reason = "P04 activates the T2 callback"))]
     pub(crate) fn begin_clear_observation(&self) {
         if let Some(reservation) = &self.clear_reservation {
             reservation.begin_observation();

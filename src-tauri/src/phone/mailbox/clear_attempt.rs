@@ -62,10 +62,6 @@ pub(crate) fn probe_attempt(content: &str) -> Result<Option<ClearAttempt>, Attem
 }
 
 /// Called only after authorization and while the delivery owns the source claim.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "P04 activates the attempt writer")
-)]
 pub(crate) fn persist_attempt(
     source: &Path,
     authorized: &OutboxMessage,
@@ -144,10 +140,6 @@ pub(crate) fn persist_attempt(
     result
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "P04 activates the attempt writer")
-)]
 fn decode_document(bytes: &[u8]) -> Result<String, AttemptError> {
     if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
         let body = &bytes[2..];

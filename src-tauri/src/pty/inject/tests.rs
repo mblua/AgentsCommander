@@ -463,17 +463,21 @@ async fn capture_watch_route(replace: bool, remove: bool, poison: bool) -> bool 
                 .lock()
                 .unwrap()
                 .poison_route_registry_for_test();
-        } else {
-            std::thread::sleep(std::time::Duration::from_millis(125));
         }
     }));
-    let rows = test_capture(
-        &manager,
-        id,
-        backend.as_ref(),
-        !replace && !remove && !poison,
-    )
-    .await;
+    let rows = if !replace && !remove && !poison {
+        let permit = PtyManager::acquire_input_writer(&manager, id)
+            .await
+            .unwrap();
+        let observation = permit.observation().unwrap();
+        let guard = PtyManager::lock_route_for_write(&permit).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(125)).await;
+        let rows = super::clear_watch::capture_rows(&observation, backend.as_ref());
+        drop(guard);
+        rows
+    } else {
+        test_capture(&manager, id, backend.as_ref(), false).await
+    };
     if poison {
         manager
             .lock()
