@@ -123,6 +123,37 @@ pub(crate) fn analyze_base_bytes(
 
     let (kind, marker) = analyze_managed_marker(root, &mut refresh_blocked);
 
+    let entries = analyze_base_entries(base_path, rows, &mut warnings, &mut refresh_blocked);
+
+    let mut edited = false;
+    if let Some(marker) = &marker {
+        if managed_content_sha256(&entries) != marker.content_sha256 {
+            edited = true;
+            warnings.push(catalog_diagnostic(
+                REPORT_CODE_MANAGED_BASE_EDITED,
+                base_path,
+                "the managed catalog content does not match its recorded contentSha256; it stays \
+                    readable but is never auto-refreshed or auto-migrated",
+            ));
+        }
+    }
+
+    Ok(BaseAnalysis {
+        kind,
+        marker,
+        entries,
+        edited,
+        refresh_blocked,
+        warnings,
+    })
+}
+
+fn analyze_base_entries(
+    base_path: &Path,
+    rows: &[serde_json::Value],
+    warnings: &mut Vec<CatalogDiagnostic>,
+    refresh_blocked: &mut bool,
+) -> Vec<CodingAgentDefinition> {
     let mut entries: Vec<CodingAgentDefinition> = Vec::new();
     let mut seen_keys: HashSet<String> = HashSet::new();
     for (index, raw) in rows.iter().enumerate() {
@@ -198,33 +229,13 @@ pub(crate) fn analyze_base_bytes(
                 ),
             ));
         }
-        if push_unknown_field_warnings(raw_object, &definition.key, base_path, &mut warnings) {
-            refresh_blocked = true;
+        if push_unknown_field_warnings(raw_object, &definition.key, base_path, warnings) {
+            *refresh_blocked = true;
         }
         entries.push(definition);
     }
 
-    let mut edited = false;
-    if let Some(marker) = &marker {
-        if managed_content_sha256(&entries) != marker.content_sha256 {
-            edited = true;
-            warnings.push(catalog_diagnostic(
-                REPORT_CODE_MANAGED_BASE_EDITED,
-                base_path,
-                "the managed catalog content does not match its recorded contentSha256; it stays \
-                    readable but is never auto-refreshed or auto-migrated",
-            ));
-        }
-    }
-
-    Ok(BaseAnalysis {
-        kind,
-        marker,
-        entries,
-        edited,
-        refresh_blocked,
-        warnings,
-    })
+    entries
 }
 
 fn analyze_managed_marker(
@@ -443,81 +454,15 @@ pub(crate) fn resolve_catalog_snapshot(
             return resolved;
         }
     };
-    let journal_present = matches!(&snapshot.journal, Ok(Some(_)));
-
     let Some(base_bytes) = base_bytes else {
-        if snapshot.journal.is_err() {
-            let reason = snapshot.journal.as_ref().err().cloned().unwrap_or_default();
-            resolved.warnings.push(catalog_diagnostic(
-                REPORT_CODE_MIGRATION_CONFLICT,
-                &journal_path,
-                reason,
-            ));
-        }
-        if journal_present {
-            resolved.warnings.push(catalog_diagnostic(
-                REPORT_CODE_MIGRATION_PENDING,
-                &journal_path,
-                "an interrupted managed-catalog migration is pending; it resumes on the next \
-                    initialization",
-            ));
-            let journal_bytes = snapshot
-                .journal
-                .as_ref()
-                .ok()
-                .and_then(|value| value.as_deref());
-            if let Some(journal_bytes) = journal_bytes {
-                match journal_legacy_source(journal_bytes) {
-                    Ok(Some(entries)) => {
-                        resolved.catalog =
-                            apply_support_gate(entries, &base_path, &mut resolved.warnings);
-                        return resolved;
-                    }
-                    Ok(None) => {}
-                    Err(reason) => resolved.warnings.push(catalog_diagnostic(
-                        REPORT_CODE_MIGRATION_CONFLICT,
-                        &journal_path,
-                        reason,
-                    )),
-                }
-            }
-        }
-        if let Some(project) = &snapshot.project {
-            match project {
-                Ok(None) => {}
-                Ok(Some(_)) => resolved.warnings.push(catalog_diagnostic(
-                    REPORT_CODE_MIGRATION_PENDING,
-                    &project_catalog_path(ac_dir),
-                    "a project overrides file exists but no managed base has been published yet; \
-                    the managed base is created on the next initialization",
-                )),
-                Err(reason) => resolved.warnings.push(catalog_diagnostic(
-                    REPORT_CODE_PROJECT_INVALID,
-                    &project_catalog_path(ac_dir),
-                    reason.clone(),
-                )),
-            }
-        }
-        match &snapshot.local {
-            Ok(None) => {}
-            Ok(Some(_)) => resolved.warnings.push(catalog_diagnostic(
-                REPORT_CODE_MIGRATION_PENDING,
-                &local_path,
-                "a local overrides file exists but no managed base has been published yet; the \
-                    managed base is created on the next initialization",
-            )),
-            Err(reason) => resolved.warnings.push(catalog_diagnostic(
-                REPORT_CODE_LOCAL_INVALID,
-                &local_path,
-                reason.clone(),
-            )),
-        }
-        resolved.unavailable = Some(catalog_diagnostic(
-            REPORT_CODE_BASE_UNAVAILABLE,
+        return resolve_missing_base(
+            ac_dir,
+            &snapshot,
             &base_path,
-            "no persisted catalog exists at this path; no embedded defaults are substituted",
-        ));
-        return resolved;
+            &local_path,
+            &journal_path,
+            resolved,
+        );
     };
 
     let analysis = match analyze_base_bytes(&base_path, &base_bytes) {
@@ -602,6 +547,90 @@ pub(crate) fn resolve_catalog_snapshot(
 
     resolved
 }
+
+fn resolve_missing_base(
+    ac_dir: &Path,
+    snapshot: &CatalogSnapshot,
+    base_path: &Path,
+    local_path: &Path,
+    journal_path: &Path,
+    mut resolved: ResolvedCatalog,
+) -> ResolvedCatalog {
+    let journal_present = matches!(&snapshot.journal, Ok(Some(_)));
+    if snapshot.journal.is_err() {
+        let reason = snapshot.journal.as_ref().err().cloned().unwrap_or_default();
+        resolved.warnings.push(catalog_diagnostic(
+            REPORT_CODE_MIGRATION_CONFLICT,
+            journal_path,
+            reason,
+        ));
+    }
+    if journal_present {
+        resolved.warnings.push(catalog_diagnostic(
+            REPORT_CODE_MIGRATION_PENDING,
+            journal_path,
+            "an interrupted managed-catalog migration is pending; it resumes on the next \
+                initialization",
+        ));
+        let journal_bytes = snapshot
+            .journal
+            .as_ref()
+            .ok()
+            .and_then(|value| value.as_deref());
+        if let Some(journal_bytes) = journal_bytes {
+            match journal_legacy_source(journal_bytes) {
+                Ok(Some(entries)) => {
+                    resolved.catalog =
+                        apply_support_gate(entries, base_path, &mut resolved.warnings);
+                    return resolved;
+                }
+                Ok(None) => {}
+                Err(reason) => resolved.warnings.push(catalog_diagnostic(
+                    REPORT_CODE_MIGRATION_CONFLICT,
+                    journal_path,
+                    reason,
+                )),
+            }
+        }
+    }
+    if let Some(project) = &snapshot.project {
+        match project {
+            Ok(None) => {}
+            Ok(Some(_)) => resolved.warnings.push(catalog_diagnostic(
+                REPORT_CODE_MIGRATION_PENDING,
+                &project_catalog_path(ac_dir),
+                "a project overrides file exists but no managed base has been published yet; \
+                the managed base is created on the next initialization",
+            )),
+            Err(reason) => resolved.warnings.push(catalog_diagnostic(
+                REPORT_CODE_PROJECT_INVALID,
+                &project_catalog_path(ac_dir),
+                reason.clone(),
+            )),
+        }
+    }
+    match &snapshot.local {
+        Ok(None) => {}
+        Ok(Some(_)) => resolved.warnings.push(catalog_diagnostic(
+            REPORT_CODE_MIGRATION_PENDING,
+            local_path,
+            "a local overrides file exists but no managed base has been published yet; the \
+                managed base is created on the next initialization",
+        )),
+        Err(reason) => resolved.warnings.push(catalog_diagnostic(
+            REPORT_CODE_LOCAL_INVALID,
+            local_path,
+            reason.clone(),
+        )),
+    }
+    resolved.unavailable = Some(catalog_diagnostic(
+        REPORT_CODE_BASE_UNAVAILABLE,
+        base_path,
+        "no persisted catalog exists at this path; no embedded defaults are substituted",
+    ));
+    resolved
+}
+
 fn compose_managed_layers(
     ac_dir: &Path,
     snapshot: &CatalogSnapshot,
