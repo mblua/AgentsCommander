@@ -86,85 +86,14 @@ pub(super) async fn dispatch_coding_agent_command(
             Ok(json!(null))
         }
 
-        "set_instance_profile_override" => {
-            let agent_path = require_str(args, "agentPath")?;
-            // `profile` is `string | null`; a null clears the override.
-            let profile = args
-                .get("profile")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            // #1940 - clone the handles/request into the owned selection
-            // operation so the guarded write and its broadcast stay serialized
-            // with the desktop paths and the self-switch persist/restart.
-            let state = state.clone();
-            crate::session::selection::run_owned_selection_operation(move || async move {
-                let payload = crate::commands::config::set_instance_profile_override_inner(
-                    &state.settings,
-                    &agent_path,
-                    profile.as_deref(),
-                )
-                .await?;
-                broadcast_all(
-                    state.desktop_events.as_ref(),
-                    &state.broadcaster,
-                    "coding_agent_profile_selection_updated",
-                    &payload,
-                );
-                Ok(json!(null))
-            })
-            .await
-        }
+        "set_instance_profile_override" => set_instance_profile_override_command(state, args).await,
 
         "preview_coding_agent_profile_selection" => {
-            let request: crate::commands::config::PreviewCodingAgentProfileSelectionRequest =
-                require_json(args, "request")?;
-            // #1941 - the preview takes the owned selection turn for a consistent
-            // operation boundary, exactly like its sibling selection arms: a read
-            // queued behind a mutation waits (and may time out at the transport
-            // without canceling the mutation) instead of observing half-settled
-            // state.
-            let state = state.clone();
-            crate::session::selection::run_owned_selection_read_timed(
-                "preview_coding_agent_profile_selection",
-                move || async move {
-                    let result =
-                        crate::commands::config::preview_coding_agent_profile_selection_inner(
-                            &state.session_mgr,
-                            &state.settings,
-                            request,
-                        )
-                        .await?;
-                    serde_json::to_value(result).map_err(|e| e.to_string())
-                },
-            )
-            .await
+            preview_coding_agent_profile_selection_command(state, args).await
         }
 
         "apply_coding_agent_profile_selection" => {
-            let request: crate::commands::config::ApplyCodingAgentProfileSelectionRequest =
-                require_json(args, "request")?;
-            // #1940 - the whole apply runs under the owned selection operation
-            // turn, and its broadcast happens before that turn is released.
-            let state = state.clone();
-            crate::session::selection::run_owned_selection_operation(move || async move {
-                let (result, payload) = state
-                    .operations
-                    .apply_coding_agent_profile_selection(
-                        &state.session_mgr,
-                        &state.pty_mgr,
-                        &state.settings,
-                        request,
-                    )
-                    .await?;
-                broadcast_all(
-                    state.desktop_events.as_ref(),
-                    &state.broadcaster,
-                    "coding_agent_profile_selection_updated",
-                    &payload,
-                );
-                serde_json::to_value(result).map_err(|e| e.to_string())
-            })
-            .await
+            apply_coding_agent_profile_selection_command(state, args).await
         }
 
         // #1941 - the scoped selection-lock API shares the desktop inner
@@ -313,4 +242,93 @@ pub(super) async fn reorder_coding_agent_route_with_saver(
         &crate::commands::config::move_coding_agent_event_payload(id),
     );
     serde_json::to_value(ids).map_err(|e| e.to_string())
+}
+
+async fn set_instance_profile_override_command(
+    state: &WsState,
+    args: &Value,
+) -> Result<Value, String> {
+    let agent_path = require_str(args, "agentPath")?;
+    // `profile` is `string | null`; a null clears the override.
+    let profile = args
+        .get("profile")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    // #1940 - clone the handles/request into the owned selection
+    // operation so the guarded write and its broadcast stay serialized
+    // with the desktop paths and the self-switch persist/restart.
+    let state = state.clone();
+    crate::session::selection::run_owned_selection_operation(move || async move {
+        let payload = crate::commands::config::set_instance_profile_override_inner(
+            &state.settings,
+            &agent_path,
+            profile.as_deref(),
+        )
+        .await?;
+        broadcast_all(
+            state.desktop_events.as_ref(),
+            &state.broadcaster,
+            "coding_agent_profile_selection_updated",
+            &payload,
+        );
+        Ok(json!(null))
+    })
+    .await
+}
+
+async fn preview_coding_agent_profile_selection_command(
+    state: &WsState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request: crate::commands::config::PreviewCodingAgentProfileSelectionRequest =
+        require_json(args, "request")?;
+    // #1941 - the preview takes the owned selection turn for a consistent
+    // operation boundary, exactly like its sibling selection arms: a read
+    // queued behind a mutation waits (and may time out at the transport
+    // without canceling the mutation) instead of observing half-settled
+    // state.
+    let state = state.clone();
+    crate::session::selection::run_owned_selection_read_timed(
+        "preview_coding_agent_profile_selection",
+        move || async move {
+            let result = crate::commands::config::preview_coding_agent_profile_selection_inner(
+                &state.session_mgr,
+                &state.settings,
+                request,
+            )
+            .await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        },
+    )
+    .await
+}
+
+async fn apply_coding_agent_profile_selection_command(
+    state: &WsState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request: crate::commands::config::ApplyCodingAgentProfileSelectionRequest =
+        require_json(args, "request")?;
+    // #1940 - the whole apply runs under the owned selection operation
+    // turn, and its broadcast happens before that turn is released.
+    let state = state.clone();
+    crate::session::selection::run_owned_selection_operation(move || async move {
+        let (result, payload) = state
+            .operations
+            .apply_coding_agent_profile_selection(
+                &state.session_mgr,
+                &state.pty_mgr,
+                &state.settings,
+                request,
+            )
+            .await?;
+        broadcast_all(
+            state.desktop_events.as_ref(),
+            &state.broadcaster,
+            "coding_agent_profile_selection_updated",
+            &payload,
+        );
+        serde_json::to_value(result).map_err(|e| e.to_string())
+    })
+    .await
 }
