@@ -257,7 +257,7 @@ fn issue_3371_storage_faults_gate_recording_continuation() {
         // Synchronous storage-gating harness; P04 proves production injection.
         let result = result.map(|()| {
             backend.record(b"/clear");
-            backend.record(b"");
+            backend.record(b"\r");
         });
         if faulted {
             assert!(result.is_err());
@@ -269,7 +269,7 @@ fn issue_3371_storage_faults_gate_recording_continuation() {
             assert_eq!(probe_attempt(&persisted).unwrap().unwrap().session_id, id);
             assert_eq!(
                 *backend.writes.lock().unwrap(),
-                vec![b"/clear".to_vec(), b"".to_vec()]
+                vec![b"/clear".to_vec(), b"\r".to_vec()]
             );
         }
         assert_eq!(std::fs::read(&unrelated).unwrap(), b"foreign");
