@@ -8,18 +8,19 @@ use tauri::{Emitter, Manager};
 use crate::{
     agent_update, api, apply_main_display_state, centered_default_main_geometry,
     codex_activity_factory, commands, config, effective_main_display_state,
-    install_container_route_remover, is_visible_on_monitors, load_startup_sessions, loops,
-    normalize_persisted_active_flags, physical_to_logical, resource_monitor,
-    response_close_wiring_matches, sessions_persistence, spawn_co_managed_supervisor,
-    start_native_restore_startup, AgentQuotaEngine, ApiServerHandle, ApiServerTask,
-    CoManagedSupervisorHandle, CoManagedTrigger, ContextScraper, DiscoveryBranchWatcher,
-    GitWatcher, IdleDetector, OutputSenderMap, PersistedActiveFlagNormalization, PtyManager,
-    QuotaRows, QuotaSink, QuotaSources, RestoreInProgress, RestoreObserverStartBarrier,
-    ScraperPatterns, ScraperPersist, ScraperRows, ScraperSamples, ScraperSink, SessionManager,
-    SettingsState, ShutdownSignal, UpdateCheckState, WatcherBackends, WatcherDelivery,
-    WatcherEngine, WatcherPatterns, WatcherSink, WebAccessToken, WebServerHandle, WsBroadcaster,
-    WEB_SERVER_START_CANCELLED,
+    install_container_route_remover, load_startup_sessions, loops,
+    normalize_persisted_active_flags, resource_monitor, response_close_wiring_matches,
+    sessions_persistence, spawn_co_managed_supervisor, start_native_restore_startup,
+    AgentQuotaEngine, ApiServerHandle, ApiServerTask, CoManagedSupervisorHandle, CoManagedTrigger,
+    ContextScraper, DiscoveryBranchWatcher, GitWatcher, IdleDetector, OutputSenderMap,
+    PersistedActiveFlagNormalization, PtyManager, QuotaRows, QuotaSink, QuotaSources,
+    RestoreInProgress, RestoreObserverStartBarrier, ScraperPatterns, ScraperPersist, ScraperRows,
+    ScraperSamples, ScraperSink, SessionManager, SettingsState, ShutdownSignal, UpdateCheckState,
+    WatcherBackends, WatcherDelivery, WatcherEngine, WatcherPatterns, WatcherSink, WebAccessToken,
+    WebServerHandle, WsBroadcaster, WEB_SERVER_START_CANCELLED,
 };
+
+mod geometry;
 
 pub(super) struct SetupCtx {
     pub(super) owners: crate::AppOwners,
@@ -85,7 +86,6 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         resource_monitor_for_setup,
         ui_automation_state_for_setup,
     } = ctx;
-    use crate::config::injected_messages as injected;
     use crate::pty::git_watcher::GitSweeper;
     use crate::pty::remote_watcher::RemoteSweeper;
     use tauri::WebviewUrl;
@@ -207,15 +207,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         _owners.git_guard.clone(),
         _owners.spawn,
     )));
-    pty_mgr
-        .lock()
-        .unwrap()
-        .bind_response_close(response_close_for_setup.clone());
-    install_container_route_remover(&pty_mgr);
-    pty_mgr
-        .lock()
-        .unwrap()
-        .cleanup_container_orphans_on_startup();
+    prepare_startup_pty(&pty_mgr, &response_close_for_setup);
     app.manage(pty_mgr.clone());
     // #1327 - startup coding-agent update flow. Spawned BEFORE the
     // restore task is submitted so every session open (restore, GUI,
@@ -332,22 +324,13 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         let guard = managed.read().await;
         guard.clone()
     });
-    let response_close_wired = {
-        let pty = pty_mgr.lock().unwrap();
-        response_close_wiring_matches(
-            &response_close_for_setup,
-            &manager,
-            &pty,
-            &idle_detector_for_setup,
-            &menu_guard,
-        )
-    };
-    if !response_close_wired || response_close_for_setup.try_enable_readiness().is_err() {
-        response_close_for_setup.fail_closed();
-        log::warn!(
-            "[response-close] safety publisher wiring unavailable; readiness remains disabled"
-        );
-    }
+    enable_response_close_readiness(
+        &response_close_for_setup,
+        &manager,
+        &pty_mgr,
+        &idle_detector_for_setup,
+        &menu_guard,
+    );
     crate::config::settings::refresh_shipped_agent_help_from_config_dir();
     menu_guard.start(app.handle().clone(), shutdown_for_setup.clone());
     // (#1652) Started at the top of setup and NOT in the post-restore
@@ -454,57 +437,9 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         }
     }
 
-    // Issue #609 - detached "npm update available" check. Fully fail-silent;
-    // detached so startup is never blocked or delayed (acceptance criterion).
-    {
-        let app_handle_for_update = app.handle().clone();
-        let update_cache = Arc::clone(&update_check_state_for_setup);
-        tauri::async_runtime::spawn(async move {
-            crate::update_check::run_startup_check(app_handle_for_update, update_cache).await;
-        });
-    }
+    start_detached_startup_downloads(app, &update_check_state_for_setup);
 
-    // #1925 - detached remote blocking-menu patterns download. Fail-silent; applies at the
-    // next start.
-    {
-        let app_handle_for_remote_menus = app.handle().clone();
-        tauri::async_runtime::spawn(async move {
-            crate::update_check::run_remote_blocking_menus_startup(app_handle_for_remote_menus)
-                .await;
-        });
-    }
-    // #2133 - detached remote per-agent help download. Fail-silent; applies at the next
-    // start.
-    {
-        let app_handle_for_remote_agent_help = app.handle().clone();
-        tauri::async_runtime::spawn(async move {
-            crate::update_check::run_remote_agent_help_startup(app_handle_for_remote_agent_help)
-                .await;
-        });
-    }
-
-    if let Err(e) = crate::config::root_agent::ensure_root_agent_dir() {
-        log::error!(
-            "[root-agent] Failed to provision root agent directory: {}",
-            e
-        );
-    }
-
-    // #1157 - seed and reconcile the operator-editable injected-message templates. Best effort,
-    // never fatal, matching the block above.
-    //
-    // The ordering is NOT load-bearing: `render` resolves from the registry or the embedded default
-    // and never fails, so an alert firing before this point still renders correctly. The cost is
-    // bounded and small (one read plus at most three small atomic writes on the setup thread), not
-    // "non-blocking"; moving it to tokio::spawn would buy nothing and would race the registry load.
-    if let Some(dir) = crate::config::config_dir() {
-        if let Err(e) = injected::ensure_injected_messages(&dir, messages.as_ref()) {
-            log::warn!("[injected-messages] provisioning failed: {}", e);
-        }
-    }
-    // Force the registry once, so the first alert - whose line() runs
-    // on a tokio worker - never performs a blocking read there.
-    let _ = injected::registry(messages.as_ref());
+    provision_startup_messages(messages.as_ref());
 
     // §224 A.2.5 / G-IMPL-1 — Set restore_in_progress=TRUE BEFORE the
     // mailbox poller starts. The restore task now also owns the root-agent
@@ -530,50 +465,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     // The matching `load_sessions()` call at the original site is
     // removed; `persisted` is reused by the restore task below.
     let restore_settings_snapshot = config::settings::load_settings();
-    // #698 — the orphan purge now takes the async `sessions_save_lock()`
-    // across its load+filter+save so it cannot clobber a concurrently
-    // persisted raise-hand. This sync `setup` body runs on the main
-    // thread (outside any runtime worker), so `block_on` is safe here,
-    // matching the existing `tauri::async_runtime::block_on` uses in the
-    // run-event handler. The lock is uncontended at this point (the
-    // mailbox poller and other writers start below), so it returns
-    // immediately.
-    let mut persisted = load_startup_sessions(&restore_settings_snapshot, |paths| {
-        tauri::async_runtime::block_on(
-            sessions_persistence::load_sessions_purging_outside_project_paths(
-                paths,
-                &restore_settings_snapshot,
-            ),
-        )
-    });
-    if let Err(error) = &persisted {
-        log::error!(
-            "[restore] Project state unavailable; session load/purge skipped: {}",
-            error
-        );
-    }
-    if let Ok(persisted) = &mut persisted {
-        match normalize_persisted_active_flags(persisted) {
-            PersistedActiveFlagNormalization::Zero => {
-                log::debug!("[restore] persisted selection flags normalized: zero");
-            }
-            PersistedActiveFlagNormalization::One { index } => {
-                log::debug!(
-                    "[restore] persisted selection flags normalized: exactly one \
-                        rowIndex={}",
-                    index
-                );
-            }
-            PersistedActiveFlagNormalization::Multiple { identities } => {
-                log::warn!(
-                    "[restore] inconsistent was_active flags count={} rows=[{}]; exact \
-                        target cleared for eligible-live fallback",
-                    identities.len(),
-                    identities.join(", ")
-                );
-            }
-        }
-    }
+    let persisted = load_normalized_startup_sessions(&restore_settings_snapshot);
     let restore_flag = app.state::<Arc<RestoreInProgress>>().inner().clone();
     restore_flag
         .0
@@ -604,18 +496,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         })
         .collect();
 
-    log::info!("[window-setup] {} monitors detected", monitors.len());
-    for (i, (mx, my, mx2, my2, scale)) in monitors.iter().enumerate() {
-        log::info!(
-            "[window-setup]   monitor {}: ({}, {}) -> ({}, {}) scale={}",
-            i,
-            mx,
-            my,
-            mx2,
-            my2,
-            scale
-        );
-    }
+    geometry::log_monitors(&monitors);
 
     // Determine primary monitor size for the default "centered main" layout.
     // Convert to logical pixels (physical / scale) since WebviewWindowBuilder
@@ -645,236 +526,12 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     // minus a small margin if the screen is narrower than 1400.
     let default_main = centered_default_main_geometry(primary_x, primary_y, screen_w, screen_h);
 
-    fn log_main_window_info(win: &tauri::WebviewWindow) {
-        let pid = std::process::id();
-        let pos = win.outer_position().ok();
-        let size = win.outer_size().ok();
-        let maximized = win.is_maximized().ok();
-        log::info!(
-            "[test-window] actual pid={} position={:?} size={:?} maximized={:?}",
-            pid,
-            pos,
-            size,
-            maximized
-        );
-        println!(
-            concat!(
-                "{{\"event\":\"testWindowInfo\",\"pid\":{},\"position\":{},",
-                "\"size\":{},\"maximized\":{}}}"
-            ),
-            pid,
-            serde_json::to_string(&pos.map(|p| serde_json::json!({ "x": p.x, "y": p.y })))
-                .unwrap_or_else(|_| "null".to_string()),
-            serde_json::to_string(
-                &size.map(|s| serde_json::json!({ "width": s.width, "height": s.height }))
-            )
-            .unwrap_or_else(|_| "null".to_string()),
-            serde_json::to_string(&maximized).unwrap_or_else(|_| "null".to_string())
-        );
-    }
-
-    fn apply_test_window_placement(
-        win: &tauri::WebviewWindow,
-        geo: &crate::testability::window_placement::TestWindowPlacement,
-    ) -> bool {
-        let x = geo.x.round() as i32;
-        let y = geo.y.round() as i32;
-        let width = geo.width.round().max(1.0) as u32;
-        let height = geo.height.round().max(1.0) as u32;
-
-        #[cfg(target_os = "windows")]
-        {
-            use windows_sys::Win32::Foundation::{POINT, RECT};
-            use windows_sys::Win32::Graphics::Gdi::{
-                GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-            };
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                GetWindowPlacement, IsZoomed, SetWindowPlacement, SetWindowPos, ShowWindow,
-                SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_RESTORE, SW_SHOWMAXIMIZED,
-                WINDOWPLACEMENT,
-            };
-
-            match win.hwnd() {
-                Ok(hwnd) => unsafe {
-                    let requested = RECT {
-                        left: x,
-                        top: y,
-                        right: x.saturating_add(width as i32),
-                        bottom: y.saturating_add(height as i32),
-                    };
-                    let monitor = MonitorFromRect(&requested, MONITOR_DEFAULTTONEAREST);
-                    if monitor.is_null() {
-                        log::warn!(
-                            "[test-window] MonitorFromRect returned null for requested \
-                                rect ({}, {}) {}x{}",
-                            x,
-                            y,
-                            width,
-                            height
-                        );
-                    } else {
-                        let mut monitor_info = MONITORINFO {
-                            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-                            rcMonitor: RECT {
-                                left: 0,
-                                top: 0,
-                                right: 0,
-                                bottom: 0,
-                            },
-                            rcWork: RECT {
-                                left: 0,
-                                top: 0,
-                                right: 0,
-                                bottom: 0,
-                            },
-                            dwFlags: 0,
-                        };
-                        if GetMonitorInfoW(monitor, &mut monitor_info) == 0 {
-                            log::warn!(
-                                "[test-window] GetMonitorInfoW failed for requested \
-                                    rect ({}, {}) {}x{}",
-                                x,
-                                y,
-                                width,
-                                height
-                            );
-                        } else {
-                            log::info!(
-                                "[test-window] selected monitor rect=({}, {}) {}x{} \
-                                    work=({}, {}) {}x{} for requested rect ({}, {}) \
-                                    {}x{} maximized={}",
-                                monitor_info.rcMonitor.left,
-                                monitor_info.rcMonitor.top,
-                                monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
-                                monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
-                                monitor_info.rcWork.left,
-                                monitor_info.rcWork.top,
-                                monitor_info.rcWork.right - monitor_info.rcWork.left,
-                                monitor_info.rcWork.bottom - monitor_info.rcWork.top,
-                                x,
-                                y,
-                                width,
-                                height,
-                                geo.maximized
-                            );
-                        }
-                    }
-
-                    if IsZoomed(hwnd.0 as _) != 0 || geo.maximized {
-                        ShowWindow(hwnd.0 as _, SW_RESTORE);
-                    }
-                    let ok = SetWindowPos(
-                        hwnd.0 as _,
-                        std::ptr::null_mut(),
-                        x,
-                        y,
-                        width as i32,
-                        height as i32,
-                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                    );
-                    if ok == 0 {
-                        log::warn!("[test-window] native SetWindowPos failed");
-                    }
-                    if geo.maximized {
-                        let mut placement = WINDOWPLACEMENT {
-                            length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
-                            flags: 0,
-                            showCmd: SW_SHOWMAXIMIZED as u32,
-                            ptMinPosition: POINT { x: -1, y: -1 },
-                            ptMaxPosition: POINT { x: -1, y: -1 },
-                            rcNormalPosition: requested,
-                        };
-                        if GetWindowPlacement(hwnd.0 as _, &mut placement) == 0 {
-                            log::warn!("[test-window] GetWindowPlacement failed before maximize");
-                        }
-                        placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
-                        placement.showCmd = SW_SHOWMAXIMIZED as u32;
-                        placement.rcNormalPosition = requested;
-                        if SetWindowPlacement(hwnd.0 as _, &placement) == 0 {
-                            log::warn!("[test-window] SetWindowPlacement maximize failed");
-                            ShowWindow(hwnd.0 as _, SW_SHOWMAXIMIZED);
-                        }
-                    }
-                    return true;
-                },
-                Err(e) => {
-                    log::warn!("[test-window] failed to get HWND: {}", e);
-                }
-            }
-        }
-
-        if let Err(e) = win.set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height })) {
-            log::warn!("[test-window] failed to set physical size: {}", e);
-        }
-        if let Err(e) =
-            win.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }))
-        {
-            log::warn!("[test-window] failed to set physical position: {}", e);
-        }
-        false
-    }
-
-    // Resolve main geometry: saved (physical) -> validate -> convert to logical ->
-    // fallback.
-    // First-boot-after-upgrade users will have `main_geometry` seeded from legacy
-    // `terminal_geometry` via the migration in `config::settings::load_settings`.
-    let main_geo = if let Some(test_geo) = &test_window_placement {
-        let requested = config::settings::WindowGeometry {
-            x: test_geo.x,
-            y: test_geo.y,
-            width: test_geo.width,
-            height: test_geo.height,
-        };
-        let logical = physical_to_logical(&requested, &monitors);
-        log::info!(
-            "[test-window] requested physical ({}, {}) {}x{} maximized={} -> logical \
-                ({}, {}) {}x{}",
-            requested.x,
-            requested.y,
-            requested.width,
-            requested.height,
-            test_geo.maximized,
-            logical.x,
-            logical.y,
-            logical.width,
-            logical.height
-        );
-        logical
-    } else {
-        match &saved_settings.main_geometry {
-            Some(geo) if is_visible_on_monitors(geo, &monitors) => {
-                let logical = physical_to_logical(geo, &monitors);
-                log::info!(
-                    "[window-setup] main: saved physical ({}, {}) {}x{} -> logical ({}, \
-                        {}) {}x{}",
-                    geo.x,
-                    geo.y,
-                    geo.width,
-                    geo.height,
-                    logical.x,
-                    logical.y,
-                    logical.width,
-                    logical.height
-                );
-                logical
-            }
-            Some(geo) => {
-                log::warn!(
-                    "[window-setup] main: saved geometry ({}, {}) {}x{} is off-screen, \
-                        falling back to centered default",
-                    geo.x,
-                    geo.y,
-                    geo.width,
-                    geo.height
-                );
-                default_main.clone()
-            }
-            None => {
-                log::info!("[window-setup] main: no saved geometry, using centered default");
-                default_main.clone()
-            }
-        }
-    };
+    let main_geo = geometry::resolve_main_geometry(
+        test_window_placement.as_ref(),
+        saved_settings.main_geometry.as_ref(),
+        &monitors,
+        &default_main,
+    );
 
     // #2348: resolve the startup display state once. A test placement's
     // `maximized` boolean overrides the saved state entirely; otherwise the
@@ -933,7 +590,6 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     // main thread returns to the event loop so the webview can load
     // while the #1327 update gate is pending.
     {
-        use tauri::Manager;
         let session_mgr_clone = app
             .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
             .inner()
@@ -948,16 +604,11 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         let setting_on = settings_snapshot.restore_coordinator_wake_state;
         let teams = crate::config::teams::discover_teams();
 
-        // #248 Grinch Z10 — diagnostic: empty `teams` after a project-path rename
-        // is a real failure mode; without this line the user sees coords stay
-        // dormant with no log clue. Emits exactly once per launch.
-        log::info!(
-            "[restore] {} teams discovered across {} project paths; setting_on={}; \
-                evaluating {} persisted sessions",
+        log_restore_inventory(
             teams.len(),
             settings_snapshot.project_paths.len(),
             setting_on,
-            persisted.as_ref().map(Vec::len).unwrap_or(0)
+            persisted.as_ref().map(Vec::len).unwrap_or(0),
         );
 
         // §224 A.2.5 — RAII guard inside the closure clears the flag
@@ -997,4 +648,340 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     }
 
     Ok(())
+}
+
+fn log_main_window_info(win: &tauri::WebviewWindow) {
+    let pid = std::process::id();
+    let pos = win.outer_position().ok();
+    let size = win.outer_size().ok();
+    let maximized = win.is_maximized().ok();
+    log::info!(
+        "[test-window] actual pid={} position={:?} size={:?} maximized={:?}",
+        pid,
+        pos,
+        size,
+        maximized
+    );
+    println!(
+        concat!(
+            "{{\"event\":\"testWindowInfo\",\"pid\":{},\"position\":{},",
+            "\"size\":{},\"maximized\":{}}}"
+        ),
+        pid,
+        serde_json::to_string(&pos.map(|p| serde_json::json!({ "x": p.x, "y": p.y })))
+            .unwrap_or_else(|_| "null".to_string()),
+        serde_json::to_string(
+            &size.map(|s| serde_json::json!({ "width": s.width, "height": s.height }))
+        )
+        .unwrap_or_else(|_| "null".to_string()),
+        serde_json::to_string(&maximized).unwrap_or_else(|_| "null".to_string())
+    );
+}
+
+fn apply_test_window_placement(
+    win: &tauri::WebviewWindow,
+    geo: &crate::testability::window_placement::TestWindowPlacement,
+) -> bool {
+    let x = geo.x.round() as i32;
+    let y = geo.y.round() as i32;
+    let width = geo.width.round().max(1.0) as u32;
+    let height = geo.height.round().max(1.0) as u32;
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Foundation::{POINT, RECT};
+        use windows_sys::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowPlacement, IsZoomed, SetWindowPlacement, SetWindowPos, ShowWindow,
+            SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_RESTORE, SW_SHOWMAXIMIZED,
+            WINDOWPLACEMENT,
+        };
+
+        match win.hwnd() {
+            Ok(hwnd) => unsafe {
+                let requested = RECT {
+                    left: x,
+                    top: y,
+                    right: x.saturating_add(width as i32),
+                    bottom: y.saturating_add(height as i32),
+                };
+                let monitor = MonitorFromRect(&requested, MONITOR_DEFAULTTONEAREST);
+                if monitor.is_null() {
+                    log::warn!(
+                        "[test-window] MonitorFromRect returned null for requested \
+                            rect ({}, {}) {}x{}",
+                        x,
+                        y,
+                        width,
+                        height
+                    );
+                } else {
+                    let mut monitor_info = MONITORINFO {
+                        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                        rcMonitor: RECT {
+                            left: 0,
+                            top: 0,
+                            right: 0,
+                            bottom: 0,
+                        },
+                        rcWork: RECT {
+                            left: 0,
+                            top: 0,
+                            right: 0,
+                            bottom: 0,
+                        },
+                        dwFlags: 0,
+                    };
+                    if GetMonitorInfoW(monitor, &mut monitor_info) == 0 {
+                        log::warn!(
+                            "[test-window] GetMonitorInfoW failed for requested \
+                                rect ({}, {}) {}x{}",
+                            x,
+                            y,
+                            width,
+                            height
+                        );
+                    } else {
+                        log::info!(
+                            "[test-window] selected monitor rect=({}, {}) {}x{} \
+                                work=({}, {}) {}x{} for requested rect ({}, {}) \
+                                {}x{} maximized={}",
+                            monitor_info.rcMonitor.left,
+                            monitor_info.rcMonitor.top,
+                            monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
+                            monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
+                            monitor_info.rcWork.left,
+                            monitor_info.rcWork.top,
+                            monitor_info.rcWork.right - monitor_info.rcWork.left,
+                            monitor_info.rcWork.bottom - monitor_info.rcWork.top,
+                            x,
+                            y,
+                            width,
+                            height,
+                            geo.maximized
+                        );
+                    }
+                }
+
+                if IsZoomed(hwnd.0 as _) != 0 || geo.maximized {
+                    ShowWindow(hwnd.0 as _, SW_RESTORE);
+                }
+                let ok = SetWindowPos(
+                    hwnd.0 as _,
+                    std::ptr::null_mut(),
+                    x,
+                    y,
+                    width as i32,
+                    height as i32,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+                if ok == 0 {
+                    log::warn!("[test-window] native SetWindowPos failed");
+                }
+                if geo.maximized {
+                    let mut placement = WINDOWPLACEMENT {
+                        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                        flags: 0,
+                        showCmd: SW_SHOWMAXIMIZED as u32,
+                        ptMinPosition: POINT { x: -1, y: -1 },
+                        ptMaxPosition: POINT { x: -1, y: -1 },
+                        rcNormalPosition: requested,
+                    };
+                    if GetWindowPlacement(hwnd.0 as _, &mut placement) == 0 {
+                        log::warn!("[test-window] GetWindowPlacement failed before maximize");
+                    }
+                    placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+                    placement.showCmd = SW_SHOWMAXIMIZED as u32;
+                    placement.rcNormalPosition = requested;
+                    if SetWindowPlacement(hwnd.0 as _, &placement) == 0 {
+                        log::warn!("[test-window] SetWindowPlacement maximize failed");
+                        ShowWindow(hwnd.0 as _, SW_SHOWMAXIMIZED);
+                    }
+                }
+                return true;
+            },
+            Err(e) => {
+                log::warn!("[test-window] failed to get HWND: {}", e);
+            }
+        }
+    }
+
+    if let Err(e) = win.set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height })) {
+        log::warn!("[test-window] failed to set physical size: {}", e);
+    }
+    if let Err(e) = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y })) {
+        log::warn!("[test-window] failed to set physical position: {}", e);
+    }
+    false
+}
+
+fn provision_startup_messages(messages: &crate::config::injected_messages::MessageWarnings) {
+    use crate::config::injected_messages as injected;
+    if let Err(e) = crate::config::root_agent::ensure_root_agent_dir() {
+        log::error!(
+            "[root-agent] Failed to provision root agent directory: {}",
+            e
+        );
+    }
+
+    // #1157 - seed and reconcile the operator-editable injected-message templates. Best effort,
+    // never fatal, matching the block above.
+    //
+    // The ordering is NOT load-bearing: `render` resolves from the registry or the embedded default
+    // and never fails, so an alert firing before this point still renders correctly. The cost is
+    // bounded and small (one read plus at most three small atomic writes on the setup thread), not
+    // "non-blocking"; moving it to tokio::spawn would buy nothing and would race the registry load.
+    if let Some(dir) = crate::config::config_dir() {
+        if let Err(e) = injected::ensure_injected_messages(&dir, messages) {
+            log::warn!("[injected-messages] provisioning failed: {}", e);
+        }
+    }
+    // Force the registry once, so the first alert - whose line() runs
+    // on a tokio worker - never performs a blocking read there.
+    let _ = injected::registry(messages);
+}
+
+fn load_normalized_startup_sessions(
+    restore_settings_snapshot: &config::settings::AppSettings,
+) -> Result<Vec<sessions_persistence::PersistedSession>, String> {
+    // #698 — the orphan purge now takes the async `sessions_save_lock()`
+    // across its load+filter+save so it cannot clobber a concurrently
+    // persisted raise-hand. This sync `setup` body runs on the main
+    // thread (outside any runtime worker), so `block_on` is safe here,
+    // matching the existing `tauri::async_runtime::block_on` uses in the
+    // run-event handler. The lock is uncontended at this point (the
+    // mailbox poller and other writers start below), so it returns
+    // immediately.
+    let mut persisted = load_startup_sessions(restore_settings_snapshot, |paths| {
+        tauri::async_runtime::block_on(
+            sessions_persistence::load_sessions_purging_outside_project_paths(
+                paths,
+                restore_settings_snapshot,
+            ),
+        )
+    });
+    if let Err(error) = &persisted {
+        log::error!(
+            "[restore] Project state unavailable; session load/purge skipped: {}",
+            error
+        );
+    }
+    if let Ok(persisted) = &mut persisted {
+        match normalize_persisted_active_flags(persisted) {
+            PersistedActiveFlagNormalization::Zero => {
+                log::debug!("[restore] persisted selection flags normalized: zero");
+            }
+            PersistedActiveFlagNormalization::One { index } => {
+                log::debug!(
+                    "[restore] persisted selection flags normalized: exactly one \
+                        rowIndex={}",
+                    index
+                );
+            }
+            PersistedActiveFlagNormalization::Multiple { identities } => {
+                log::warn!(
+                    "[restore] inconsistent was_active flags count={} rows=[{}]; exact \
+                        target cleared for eligible-live fallback",
+                    identities.len(),
+                    identities.join(", ")
+                );
+            }
+        }
+    }
+    persisted
+}
+
+fn prepare_startup_pty(
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    response_close_for_setup: &crate::pty::manager::ResponseCloseState,
+) {
+    pty_mgr
+        .lock()
+        .unwrap()
+        .bind_response_close(response_close_for_setup.clone());
+    install_container_route_remover(pty_mgr);
+    pty_mgr
+        .lock()
+        .unwrap()
+        .cleanup_container_orphans_on_startup();
+}
+
+fn log_restore_inventory(
+    team_count: usize,
+    project_path_count: usize,
+    setting_on: bool,
+    persisted_count: usize,
+) {
+    // #248 Grinch Z10 — diagnostic: empty `teams` after a project-path rename
+    // is a real failure mode; without this line the user sees coords stay
+    // dormant with no log clue. Emits exactly once per launch.
+    log::info!(
+        "[restore] {} teams discovered across {} project paths; setting_on={}; \
+            evaluating {} persisted sessions",
+        team_count,
+        project_path_count,
+        setting_on,
+        persisted_count
+    );
+}
+
+fn enable_response_close_readiness(
+    response_close_for_setup: &crate::pty::manager::ResponseCloseState,
+    manager: &SessionManager,
+    pty_mgr: &Mutex<PtyManager>,
+    idle_detector_for_setup: &IdleDetector,
+    menu_guard: &crate::pty::menu_guard::MenuGuard,
+) {
+    let response_close_wired = {
+        let pty = pty_mgr.lock().unwrap();
+        response_close_wiring_matches(
+            response_close_for_setup,
+            manager,
+            &pty,
+            idle_detector_for_setup,
+            menu_guard,
+        )
+    };
+    if !response_close_wired || response_close_for_setup.try_enable_readiness().is_err() {
+        response_close_for_setup.fail_closed();
+        log::warn!(
+            "[response-close] safety publisher wiring unavailable; readiness remains disabled"
+        );
+    }
+}
+
+fn start_detached_startup_downloads(
+    app: &tauri::App,
+    update_check_state_for_setup: &UpdateCheckState,
+) {
+    // Issue #609 - detached "npm update available" check. Fully fail-silent;
+    // detached so startup is never blocked or delayed (acceptance criterion).
+    {
+        let app_handle_for_update = app.handle().clone();
+        let update_cache = Arc::clone(update_check_state_for_setup);
+        tauri::async_runtime::spawn(async move {
+            crate::update_check::run_startup_check(app_handle_for_update, update_cache).await;
+        });
+    }
+
+    // #1925 - detached remote blocking-menu patterns download. Fail-silent; applies at the
+    // next start.
+    {
+        let app_handle_for_remote_menus = app.handle().clone();
+        tauri::async_runtime::spawn(async move {
+            crate::update_check::run_remote_blocking_menus_startup(app_handle_for_remote_menus)
+                .await;
+        });
+    }
+    // #2133 - detached remote per-agent help download. Fail-silent; applies at the next
+    // start.
+    {
+        let app_handle_for_remote_agent_help = app.handle().clone();
+        tauri::async_runtime::spawn(async move {
+            crate::update_check::run_remote_agent_help_startup(app_handle_for_remote_agent_help)
+                .await;
+        });
+    }
 }
