@@ -22,16 +22,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
-use tauri::Manager;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::settings::SettingsState;
 use crate::filesystem::session_context;
-use crate::phone::mailbox::{
-    InternalNoticeGuard, InternalSystemNotice, InternalSystemTarget, MailboxPoller,
-    RemoteNoticeKind,
-};
+use crate::phone::mailbox::{InternalSystemNotice, InternalSystemTarget, RemoteNoticeKind};
 use crate::pty::remote_watcher::{base_branch_display, RemoteTransition, TransitionKind};
 
 /// At most this many notices per `(room_dir, repo_path)` in a rolling window.
@@ -85,32 +80,18 @@ pub(crate) trait RemoteAlertPorts: Send + Sync {
 }
 
 /// One owner retains the active notice through terminal mailbox completion.
-pub(crate) fn start(
-    app: tauri::AppHandle,
-    transitions: mpsc::Receiver<RemoteTransition>,
-    shutdown: CancellationToken,
-    messages: Arc<crate::config::injected_messages::MessageWarnings>,
-) -> tauri::async_runtime::JoinHandle<()> {
-    let ports = Arc::new(ProductionRemoteAlertPorts::new(
-        app,
-        shutdown.clone(),
-        messages,
-    ));
-    start_with_ports(ports, transitions, shutdown)
-}
-
-fn start_with_ports(
+pub(crate) fn run(
     ports: Arc<dyn RemoteAlertPorts>,
     transitions: mpsc::Receiver<RemoteTransition>,
     shutdown: CancellationToken,
-) -> tauri::async_runtime::JoinHandle<()> {
-    tauri::async_runtime::spawn(run_with_ports(
+) -> impl std::future::Future<Output = ()> + Send + 'static {
+    run_with_ports(
         ports,
         transitions,
         shutdown,
         Arc::new(Instant::now),
         production_retry_wait(),
-    ))
+    )
 }
 
 async fn run_with_ports(
@@ -421,7 +402,7 @@ fn warn_room_once(warned: &Mutex<HashSet<String>>, room: &Path, message: String)
 
 /// The blocking half of resolution, on its own so the tests can exercise the
 /// real path instead of a stub.
-fn resolve_orchestrator_blocking(
+pub(crate) fn resolve_orchestrator_blocking(
     room_dir: &Path,
     warned: &Mutex<HashSet<String>>,
 ) -> Option<InternalSystemTarget> {
@@ -502,99 +483,5 @@ fn resolve_orchestrator_blocking(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Production ports
-// ---------------------------------------------------------------------------
-
-struct ProductionRemoteAlertPorts {
-    messages: Arc<crate::config::injected_messages::MessageWarnings>,
-    app: tauri::AppHandle,
-    shutdown: CancellationToken,
-    warned: Arc<Mutex<HashSet<String>>>,
-}
-
-impl ProductionRemoteAlertPorts {
-    fn new(
-        app: tauri::AppHandle,
-        shutdown: CancellationToken,
-        messages: Arc<crate::config::injected_messages::MessageWarnings>,
-    ) -> Self {
-        Self {
-            messages,
-            app,
-            shutdown,
-            warned: Arc::new(Mutex::new(HashSet::new())),
-        }
-    }
-}
-
-impl RemoteAlertPorts for ProductionRemoteAlertPorts {
-    fn resolve_orchestrator(
-        &self,
-        room_dir: String,
-    ) -> BoxFuture<'static, Option<InternalSystemTarget>> {
-        let warned = Arc::clone(&self.warned);
-        Box::pin(async move {
-            // Resolution does synchronous `read_dir` and `read_to_string`, so it
-            // belongs on the blocking pool.
-            tauri::async_runtime::spawn_blocking(move || {
-                resolve_orchestrator_blocking(Path::new(&room_dir), &warned)
-            })
-            .await
-            .ok()
-            .flatten()
-        })
-    }
-
-    fn deliver(
-        &self,
-        target: InternalSystemTarget,
-        notice: InternalSystemNotice,
-    ) -> BoxFuture<'static, Result<(), String>> {
-        let app = self.app.clone();
-        let messages = Arc::clone(&self.messages);
-        let cancellation = self.shutdown.child_token();
-        Box::pin(async move {
-            // The PERMISSIVE guard, built here rather than copied from the
-            // context-alert actor: a remote notice has no alert state to
-            // re-check, and a purge in progress is already deferred inside the
-            // mailbox, so a second check would be a second source of one fact.
-            let guard: InternalNoticeGuard = Arc::new(|| Ok(()));
-            MailboxPoller::new(messages)
-                .deliver_internal_system_notice(&app, target, notice, cancellation, guard)
-                .await
-        })
-    }
-
-    fn notify_dials(&self) -> BoxFuture<'static, RemoteNotifyDials> {
-        let app = self.app.clone();
-        Box::pin(async move {
-            // An axis that cannot be read is not an axis that is on: delivering
-            // an injection the operator switched off is the one irreversible
-            // mistake here.
-            let Some(state) = app.try_state::<SettingsState>() else {
-                return RemoteNotifyDials {
-                    ci: false,
-                    staleness: false,
-                };
-            };
-            let settings = match state.current_read().await {
-                Ok(settings) => settings,
-                Err(_) => {
-                    log::debug!("[RemoteAlerts] settings unavailable; denying notifications");
-                    return RemoteNotifyDials {
-                        ci: false,
-                        staleness: false,
-                    };
-                }
-            };
-            RemoteNotifyDials {
-                ci: settings.ci_activity_enabled && settings.ci_activity_notify_orchestrator,
-                staleness: settings.branch_staleness_enabled
-                    && settings.branch_staleness_notify_orchestrator,
-            }
-        })
-    }
-}
 #[cfg(test)]
 mod tests;
