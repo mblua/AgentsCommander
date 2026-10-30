@@ -44,6 +44,28 @@
         "files": 0,
         "sites": 0
       }
+    },
+    {
+      "id": "TeamCreation/ConfigMutationLock",
+      "name": ".team-config-write.lock",
+      "scope": "src-tauri/src/config/entity_creation/teams/",
+      "owner": "src-tauri/src/config/entity_creation/teams/store.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
+      "id": "TeamCreation/Conventions",
+      "name": "conventions.md",
+      "scope": "src-tauri/src/config/entity_creation/teams/",
+      "owner": "src-tauri/src/config/entity_creation/teams/conventions.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
     }
   ]
 }
