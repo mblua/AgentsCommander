@@ -19,8 +19,6 @@ use std::time::Duration;
 use crate::filesystem::update_cache::Cache as UpdateCache;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
-use tauri::Manager;
 
 pub trait UpdateEvents {
     fn npm_update_available(&self, info: UpdateInfo);

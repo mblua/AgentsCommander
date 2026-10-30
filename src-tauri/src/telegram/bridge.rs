@@ -284,7 +284,7 @@ impl ReaderDestSender {
             Self::Codex(tx) => {
                 let (out_tx, out_rx) = tokio::sync::watch::channel(self.current());
                 let mut inner = tx.subscribe();
-                tauri::async_runtime::spawn(async move {
+                tokio::spawn(async move {
                     while inner.changed().await.is_ok() {
                         let next = inner.borrow_and_update().clone().map(|target| ReaderDest {
                             token: target.token,
