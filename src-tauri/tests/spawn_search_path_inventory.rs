@@ -107,7 +107,10 @@ enum Reason {
     DesktopOpener,
 }
 
-use Reason::*;
+use Reason::{
+    ContainerInternal, CoveredBy2589, CoveredByP1, DesktopOpener, Owner, PosixBaseUtility,
+    TestOnly, WindowsOnly,
+};
 
 const REASON_VOCABULARY: &str = "owner, covered-by-2589, covered-by-p1, container-internal, \
 windows-only, test-only, posix-base-utility, desktop-opener (precedence in that order, \
