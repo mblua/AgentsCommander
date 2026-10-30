@@ -120,24 +120,62 @@ fn without_scan(mutex_name: String, status: &'static str, message: String) -> Ho
 }
 
 #[cfg(target_os = "windows")]
-pub fn find_holders(probe: &super::ProfileMutexGuard) -> HolderLookup {
-    use std::collections::HashMap;
+fn handle_snapshot() -> Result<(Vec<u64>, u32), String> {
     use windows_sys::Wdk::System::SystemInformation::{
         NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS,
     };
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, CompareObjectHandles, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE,
-        STATUS_INFO_LENGTH_MISMATCH, STATUS_SUCCESS,
-    };
-    use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
+    use windows_sys::Win32::Foundation::{STATUS_INFO_LENGTH_MISMATCH, STATUS_SUCCESS};
 
     /// Not exported by windows-sys 0.59; stable since Windows Vista. Mirrors the
     /// inline constants in `main.rs` and `config/profile.rs`.
     const SYSTEM_EXTENDED_HANDLE_INFORMATION: SYSTEM_INFORMATION_CLASS = 64;
     const INITIAL_BUFFER_BYTES: usize = 1 << 20;
     const MAX_BUFFER_BYTES: usize = 1 << 29;
+
+    // 1. Snapshot the system handle table, growing on STATUS_INFO_LENGTH_MISMATCH.
+    let mut buffer: Vec<u64> = vec![0; INITIAL_BUFFER_BYTES / 8];
+    let mut returned: u32 = 0;
+    loop {
+        let bytes = buffer.len() * 8;
+        // SAFETY: `buffer` is writable for `bytes` bytes and outlives the call;
+        // `returned` is a valid out-pointer.
+        let status = unsafe {
+            NtQuerySystemInformation(
+                SYSTEM_EXTENDED_HANDLE_INFORMATION,
+                buffer.as_mut_ptr().cast(),
+                bytes as u32,
+                &mut returned,
+            )
+        };
+        if status == STATUS_SUCCESS {
+            break;
+        }
+        if status == STATUS_INFO_LENGTH_MISMATCH {
+            if bytes >= MAX_BUFFER_BYTES {
+                return Err("handle table exceeds 512 MiB".to_string());
+            }
+            buffer = vec![0; bytes * 2 / 8];
+            continue;
+        }
+        return Err(format!(
+            "NtQuerySystemInformation(SystemExtendedHandleInformation) returned NTSTATUS \
+                 0x{:08X}",
+            status as u32
+        ));
+    }
+
+    Ok((buffer, returned))
+}
+
+#[cfg(target_os = "windows")]
+pub fn find_holders(probe: &super::ProfileMutexGuard) -> HolderLookup {
+    use std::collections::HashMap;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, CompareObjectHandles, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
 
     /// `SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX`. Fields that are read have plain names;
     /// the rest keep their layout under a leading underscore.
@@ -167,44 +205,10 @@ pub fn find_holders(probe: &super::ProfileMutexGuard) -> HolderLookup {
     let own_handle = probe.0 as usize;
 
     // 1. Snapshot the system handle table, growing on STATUS_INFO_LENGTH_MISMATCH.
-    let mut buffer: Vec<u64> = vec![0; INITIAL_BUFFER_BYTES / 8];
-    let mut returned: u32 = 0;
-    loop {
-        let bytes = buffer.len() * 8;
-        // SAFETY: `buffer` is writable for `bytes` bytes and outlives the call;
-        // `returned` is a valid out-pointer.
-        let status = unsafe {
-            NtQuerySystemInformation(
-                SYSTEM_EXTENDED_HANDLE_INFORMATION,
-                buffer.as_mut_ptr().cast(),
-                bytes as u32,
-                &mut returned,
-            )
-        };
-        if status == STATUS_SUCCESS {
-            break;
-        }
-        if status == STATUS_INFO_LENGTH_MISMATCH {
-            if bytes >= MAX_BUFFER_BYTES {
-                return without_scan(
-                    mutex_name,
-                    STATUS_FAILED,
-                    "handle table exceeds 512 MiB".to_string(),
-                );
-            }
-            buffer = vec![0; bytes * 2 / 8];
-            continue;
-        }
-        return without_scan(
-            mutex_name,
-            STATUS_FAILED,
-            format!(
-                "NtQuerySystemInformation(SystemExtendedHandleInformation) returned NTSTATUS \
-                 0x{:08X}",
-                status as u32
-            ),
-        );
-    }
+    let (buffer, returned) = match handle_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(message) => return without_scan(mutex_name, STATUS_FAILED, message),
+    };
 
     // 2. Parse with unaligned reads; never trust the count beyond the returned length.
     let header_len = std::mem::size_of::<HandleTableHeader>();
