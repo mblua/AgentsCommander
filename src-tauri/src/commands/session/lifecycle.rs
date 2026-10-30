@@ -310,6 +310,49 @@ pub(crate) fn capture_lifecycle_claim(
     }
 }
 
+fn missing_lifecycle_source_admission(
+    operation: Uuid,
+    requested_source: Option<Uuid>,
+    root_request: bool,
+    source_is_pending: bool,
+) -> LifecycleAuthorityAdmission {
+    // A pending exact UUID is present, not a missing-source validation case.
+    if source_is_pending {
+        return LifecycleAuthorityAdmission::Waiting;
+    }
+    let Some(requested) = requested_source else {
+        return LifecycleAuthorityAdmission::Waiting;
+    };
+    LifecycleAuthorityAdmission::Ready(LifecycleEntryAuthority {
+        lease: LifecycleTargetLease::MissingSource { requested },
+        source: None,
+        root_request,
+        operation,
+        reservation: Mutex::new(None),
+        interrupted: std::sync::atomic::AtomicBool::new(false),
+        discard: None,
+        tracker: None,
+    })
+}
+
+fn prepared_lifecycle_identity_matches(
+    lease: &LifecycleTargetLease,
+    source: Option<&LifecycleSourceIdentity>,
+) -> bool {
+    let physical_matches = |expected: &crate::path_identity::VerifiedPathIdentity| {
+        crate::path_identity::verify_directory(&expected.canonical_path).is_ok_and(|actual| {
+            actual.object_id == expected.object_id
+                && actual.canonical_path == expected.canonical_path
+        })
+    };
+    let destination_matches = match lease {
+        LifecycleTargetLease::Keyed { destination, .. }
+        | LifecycleTargetLease::VerifiedNoReplica { destination } => physical_matches(destination),
+        LifecycleTargetLease::MissingSource { .. } => false,
+    };
+    destination_matches && source.is_none_or(|source| physical_matches(&source.directory))
+}
+
 pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
     app: &AppHandle<R>,
     operation: Uuid,
@@ -345,24 +388,11 @@ pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
             .find(|row| row.id == id && !snapshot.pending_ids.contains(&row.id))
     });
     if !root_request && source_row.is_none() {
-        // A pending exact UUID is present, not a missing-source validation case.
-        if requested_source.is_some_and(|id| snapshot.rows.iter().any(|row| row.id == id)) {
-            return Ok(LifecycleAuthorityAdmission::Waiting);
-        }
-        let Some(requested) = requested_source else {
-            return Ok(LifecycleAuthorityAdmission::Waiting);
-        };
-        return Ok(LifecycleAuthorityAdmission::Ready(
-            LifecycleEntryAuthority {
-                lease: LifecycleTargetLease::MissingSource { requested },
-                source: None,
-                root_request,
-                operation,
-                reservation: Mutex::new(None),
-                interrupted: std::sync::atomic::AtomicBool::new(false),
-                discard: None,
-                tracker: None,
-            },
+        return Ok(missing_lifecycle_source_admission(
+            operation,
+            requested_source,
+            root_request,
+            requested_source.is_some_and(|id| snapshot.rows.iter().any(|row| row.id == id)),
         ));
     }
     let needs_root = root_request
@@ -452,22 +482,7 @@ pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
     };
     // Gate acquisition may have suspended. Never admit an identity verified
     // only before those waits; cancellation drops exact then stripe normally.
-    let physical_matches = |expected: &crate::path_identity::VerifiedPathIdentity| {
-        crate::path_identity::verify_directory(&expected.canonical_path).is_ok_and(|actual| {
-            actual.object_id == expected.object_id
-                && actual.canonical_path == expected.canonical_path
-        })
-    };
-    let destination_matches = match &lease {
-        LifecycleTargetLease::Keyed { destination, .. }
-        | LifecycleTargetLease::VerifiedNoReplica { destination } => physical_matches(destination),
-        LifecycleTargetLease::MissingSource { .. } => false,
-    };
-    if !destination_matches
-        || !source
-            .as_ref()
-            .is_none_or(|source| physical_matches(&source.directory))
-    {
+    if !prepared_lifecycle_identity_matches(&lease, source.as_ref()) {
         drop(lease);
         return Ok(LifecycleAuthorityAdmission::Waiting);
     }
