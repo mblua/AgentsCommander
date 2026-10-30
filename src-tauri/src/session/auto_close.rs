@@ -187,17 +187,7 @@ fn destroyed_is_team_coordinator(destroyed_id: Uuid, coord_id_of_team: Option<Uu
 
 async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<String, i64>) {
     let settings = app.state::<SettingsState>();
-    let close_settings = match settings.current_read().await {
-        Ok(s) => Some((
-            s.coordinator_auto_close_enabled,
-            s.coordinator_auto_close_minutes,
-            s.coordinator_auto_close_skip_telegram_assigned,
-        )),
-        Err(_) => {
-            log::debug!("[AutoClose] settings unavailable; skipping auto-close");
-            None
-        }
-    };
+    let close_settings = read_close_settings(&settings).await;
     // NOTE: the enabled/timeout gate moved DOWN: steps 1-2 (advance + badge
     // emit) run even when auto-close is OFF (the badge is informational). Only
     // step 3 (kill) is gated.
@@ -211,13 +201,7 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
 
     // Keep only sessions with a LIVE PTY (M3: deferred/restored members must not
     // veto, and a session with no PTY has nothing to terminate).
-    let members: Vec<(Uuid, String)> = {
-        let pm = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
-        candidates
-            .into_iter()
-            .filter(|(id, _)| pm.has_session(*id))
-            .collect()
-    };
+    let members = live_members(&pty_mgr, candidates);
     let telegram_protected = telegram_protected_members(
         &session_mgr,
         &members,
@@ -226,11 +210,7 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
     .await;
 
     // KILL filter: teams with any member alive past WAKE_GRACE (kill-eligible).
-    let established_teams: HashSet<String> = members
-        .iter()
-        .filter(|(id, _)| idle.alive_age(*id).is_some_and(|a| a >= WAKE_GRACE))
-        .map(|(_, k)| k.clone())
-        .collect();
+    let established_teams = established_teams(&members, &idle);
 
     // #552 auto-closed badge: map each member id -> its team key, and snapshot
     // the live coordinator (fqn, cwd) per team BEFORE destroying (destroy removes
@@ -303,55 +283,24 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
         return;
     }
     let coordinator = app.state::<SelectionCoordinator>();
-    let ticket = match coordinator.reserve_auto_close() {
-        Ok(ticket) => ticket,
-        Err(SelectionCoordinatorError::Busy) => {
-            log::info!("[auto-close] coordinator busy; deferred idle batch to next tick");
-            return;
-        }
-        Err(error) => {
-            log::warn!("[auto-close] coordinator unavailable: {error}");
-            return;
-        }
+    let teams = AutoCloseTeams {
+        id_to_team: &id_to_team,
+        coord_refs: &coord_refs,
+        coord_ids: &coord_ids,
     };
-
-    // (#589) Teams whose COORDINATOR'S OWN session was auto-closed this tick. A
-    // team where only a non-coordinator member was reaped is deliberately absent,
-    // so the surviving coordinator row is never stamped AUTO-CLOSED.
-    let confirmed = confirm_closeable_members(
-        to_close,
+    let Some(coord_closed_teams) = close_idle_batch(
+        &coordinator,
         &clocks,
-        &id_to_team,
-        &coord_refs,
         &idle,
         &session_mgr,
+        to_close,
+        teams,
         policy,
     )
-    .await;
-
-    let outcome = match ticket.finalize(confirmed).await {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            log::warn!("[auto-close] batch finalization failed: {error}");
-            return;
-        }
+    .await
+    else {
+        return;
     };
-    for (id, error) in &outcome.failed {
-        log::warn!(
-            "[auto-close] destroy {} failed: {}",
-            &id.to_string()[..8],
-            error
-        );
-    }
-    let coord_closed_teams = closed_coordinator_teams(
-        outcome
-            .destroyed_ids
-            .iter()
-            .chain(outcome.retained_exited_ids.iter())
-            .copied(),
-        &id_to_team,
-        &coord_ids,
-    );
 
     // #552 mark each genuinely-closed team's coordinator row "auto-closed" and
     // emit so the sidebar shows the pill live (discovery reload self-heals from
@@ -384,6 +333,107 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
             }
         }
     }
+}
+
+fn live_members(
+    pty_mgr: &Mutex<PtyManager>,
+    candidates: Vec<(Uuid, String)>,
+) -> Vec<(Uuid, String)> {
+    let pm = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
+    candidates
+        .into_iter()
+        .filter(|(id, _)| pm.has_session(*id))
+        .collect()
+}
+
+fn established_teams(members: &[(Uuid, String)], idle: &IdleDetector) -> HashSet<String> {
+    members
+        .iter()
+        .filter(|(id, _)| idle.alive_age(*id).is_some_and(|a| a >= WAKE_GRACE))
+        .map(|(_, k)| k.clone())
+        .collect()
+}
+
+async fn read_close_settings(settings: &SettingsState) -> Option<(bool, u32, bool)> {
+    match settings.current_read().await {
+        Ok(s) => Some((
+            s.coordinator_auto_close_enabled,
+            s.coordinator_auto_close_minutes,
+            s.coordinator_auto_close_skip_telegram_assigned,
+        )),
+        Err(_) => {
+            log::debug!("[AutoClose] settings unavailable; skipping auto-close");
+            None
+        }
+    }
+}
+
+struct AutoCloseTeams<'a> {
+    id_to_team: &'a HashMap<Uuid, String>,
+    coord_refs: &'a HashMap<String, (String, String)>,
+    coord_ids: &'a HashMap<String, Uuid>,
+}
+
+async fn close_idle_batch(
+    coordinator: &SelectionCoordinator,
+    clocks: &CoordinatorClocksState,
+    idle: &IdleDetector,
+    session_mgr: &tokio::sync::RwLock<SessionManager>,
+    to_close: Vec<Uuid>,
+    teams: AutoCloseTeams<'_>,
+    policy: AutoClosePolicy,
+) -> Option<HashSet<String>> {
+    let ticket = match coordinator.reserve_auto_close() {
+        Ok(ticket) => ticket,
+        Err(SelectionCoordinatorError::Busy) => {
+            log::info!("[auto-close] coordinator busy; deferred idle batch to next tick");
+            return None;
+        }
+        Err(error) => {
+            log::warn!("[auto-close] coordinator unavailable: {error}");
+            return None;
+        }
+    };
+
+    // (#589) Teams whose COORDINATOR'S OWN session was auto-closed this tick. A
+    // team where only a non-coordinator member was reaped is deliberately absent,
+    // so the surviving coordinator row is never stamped AUTO-CLOSED.
+    let confirmed = confirm_closeable_members(
+        to_close,
+        clocks,
+        teams.id_to_team,
+        teams.coord_refs,
+        idle,
+        session_mgr,
+        policy,
+    )
+    .await;
+
+    let outcome = match ticket.finalize(confirmed).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            log::warn!("[auto-close] batch finalization failed: {error}");
+            return None;
+        }
+    };
+    for (id, error) in &outcome.failed {
+        log::warn!(
+            "[auto-close] destroy {} failed: {}",
+            &id.to_string()[..8],
+            error
+        );
+    }
+    let coord_closed_teams = closed_coordinator_teams(
+        outcome
+            .destroyed_ids
+            .iter()
+            .chain(outcome.retained_exited_ids.iter())
+            .copied(),
+        teams.id_to_team,
+        teams.coord_ids,
+    );
+
+    Some(coord_closed_teams)
 }
 
 fn logged_team_idle_anchor(team: &str, e: Option<&ClockEntry>, now_secs: i64) -> i64 {
