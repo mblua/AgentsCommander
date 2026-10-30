@@ -45,6 +45,8 @@ pub(crate) fn write_mailbox_response(path: &Path, bytes: &[u8]) -> io::Result<()
 }
 
 pub(crate) fn rename_mailbox_document(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    mailbox_fault(MailboxFaultPoint::Replace)?;
     std::fs::rename(from, to)
 }
 
@@ -76,7 +78,74 @@ pub(crate) fn open_pty_metadata_stage(path: &Path) -> io::Result<File> {
 pub(crate) fn write_pty_metadata_stage(file: &mut File, bytes: &[u8]) -> io::Result<()> {
     file.write_all(bytes)?;
     file.flush()?;
+    #[cfg(test)]
+    mailbox_fault(MailboxFaultPoint::StageSync)?;
     file.sync_all()
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MailboxFaultPoint {
+    StageSync,
+    Replace,
+}
+
+#[cfg(test)]
+struct MailboxFault {
+    point: MailboxFaultPoint,
+    consumed: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static MAILBOX_FAULT: std::cell::RefCell<Option<MailboxFault>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// Current-thread-only fault installation; never retain across await.
+#[cfg(test)]
+pub(crate) struct MailboxFaultGuard {
+    consumed: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+#[cfg(test)]
+impl MailboxFaultGuard {
+    pub(crate) fn install(point: MailboxFaultPoint) -> Self {
+        let consumed = std::rc::Rc::new(std::cell::Cell::new(false));
+        MAILBOX_FAULT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(slot.is_none(), "nested mailbox fault installation");
+            *slot = Some(MailboxFault {
+                point,
+                consumed: consumed.clone(),
+            });
+        });
+        Self { consumed }
+    }
+
+    pub(crate) fn consumed(&self) -> bool {
+        self.consumed.get()
+    }
+}
+
+#[cfg(test)]
+impl Drop for MailboxFaultGuard {
+    fn drop(&mut self) {
+        MAILBOX_FAULT.with(|slot| *slot.borrow_mut() = None);
+    }
+}
+
+#[cfg(test)]
+fn mailbox_fault(point: MailboxFaultPoint) -> io::Result<()> {
+    MAILBOX_FAULT.with(|slot| {
+        if let Some(fault) = slot.borrow().as_ref() {
+            if fault.point == point && !fault.consumed.replace(true) {
+                return Err(io::Error::other("issue_3371 mailbox fault"));
+            }
+        }
+        Ok(())
+    })
 }
 
 pub(crate) fn sync_pty_metadata_parent(path: &Path) -> Option<io::Result<()>> {

@@ -20,6 +20,37 @@ use std::sync::Arc;
 use tauri::Manager;
 
 impl MailboxPoller {
+    /// Settlement only: marker presence never enters execution validation or a wake lane.
+    async fn reject_prior_clear_attempt(&self, path: &Path, content: &str) -> Result<(), String> {
+        if wake_claim_has_settled_receipt(path)? {
+            mailbox_disk::remove_mailbox_artifact(path).map_err(|error| error.to_string())?;
+            self.settle_response_source(path, false);
+            return Ok(());
+        }
+        let parent = path.parent().ok_or("No source parent")?;
+        let id = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".json"))
+            .ok_or("No source id")?;
+        // Derive only from the scanner's basename; reject_message owns payload-id safeguards.
+        let reason_path = parent.join("rejected").join(format!("{id}.reason.txt"));
+        let reason = match mailbox_disk::mailbox_path_symlink_metadata(&reason_path) {
+            Ok(_) => {
+                let (bytes, _) = crate::path_identity::read_bounded_regular(&reason_path, 4096)?;
+                String::from_utf8(bytes).map_err(|error| error.to_string())?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                super::clear_attempt::REPLAY_REASON.to_string()
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        match serde_json::from_str::<OutboxMessage>(content) {
+            Ok(message) => self.reject_message(path, &message, &reason).await,
+            Err(_) => Self::reject_raw_file(path, &reason),
+        }
+    }
+
     /// (#1399) A delivery-only poller for a detached worker. `deliver_wake` and
     /// its whole `&self` callee chain read `app.state::<...>()` (see the
     /// #791 note at the top of `deliver_wake`), so a fresh instance sharing
@@ -716,6 +747,25 @@ impl MailboxPoller {
                     }
                     OutboxClassification::Standard(content) => content,
                 };
+                if !matches!(
+                    super::clear_attempt::probe_attempt(&standard_content),
+                    Ok(None)
+                ) {
+                    match self
+                        .reject_prior_clear_attempt(&path, &standard_content)
+                        .await
+                    {
+                        Ok(()) => {
+                            self.retry_tracker.remove(&path);
+                        }
+                        Err(error) => log::warn!(
+                            "[mailbox] prior clear attempt settlement pending {:?}: {}",
+                            path,
+                            error
+                        ),
+                    }
+                    continue;
+                }
                 let mut deferred: Option<ValidatedWake> = None;
                 let outcome = self
                     .process_message_content(

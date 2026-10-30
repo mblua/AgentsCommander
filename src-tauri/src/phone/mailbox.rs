@@ -1,5 +1,6 @@
 #[macro_use]
 mod diagnostics;
+mod clear_attempt;
 mod handoff;
 mod internal_delivery;
 mod notice;
