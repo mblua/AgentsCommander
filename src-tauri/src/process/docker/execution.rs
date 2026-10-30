@@ -306,7 +306,7 @@ impl DockerProcessState {
                 )
                 .unwrap_or(started_at),
         );
-        let (mut owner, status) = self.wait_for_command(
+        let (owner, status) = self.wait_for_command(
             owner,
             control,
             shutdown_behavior,
@@ -315,6 +315,17 @@ impl DockerProcessState {
             command_deadline,
         )?;
 
+        self.collect_command_output(owner, status, &spec, control, hard_deadline)
+    }
+
+    fn collect_command_output(
+        &self,
+        mut owner: DockerCommandOwner,
+        status: std::process::ExitStatus,
+        spec: &DockerCommandSpec,
+        control: &dyn DockerCommandControl,
+        hard_deadline: Instant,
+    ) -> Result<DockerCommandOutput, DockerCommandError> {
         let dynamic_hard_deadline = control
             .shutdown_deadline()
             .map(|deadline| deadline.min(hard_deadline))
@@ -331,8 +342,8 @@ impl DockerProcessState {
                 return Err(self.retain_reader_owner_at_deadline(owner));
             }
         };
-        redact_command_bytes(&mut output.stdout.bytes, &spec);
-        redact_command_bytes(&mut output.stderr.bytes, &spec);
+        redact_command_bytes(&mut output.stdout.bytes, spec);
+        redact_command_bytes(&mut output.stderr.bytes, spec);
         let DockerCommandOutput { stdout, stderr } = output;
         if !status.success() {
             let stderr_text = stderr.trimmed_text();
@@ -342,7 +353,7 @@ impl DockerProcessState {
             } else {
                 stderr_text.trim()
             };
-            let detail = redact_command_values(detail, &spec);
+            let detail = redact_command_values(detail, spec);
             return Err(DockerCommandError {
                 source: AppError::PtyError(format!(
                     "container runtime command exited {}: {}",
