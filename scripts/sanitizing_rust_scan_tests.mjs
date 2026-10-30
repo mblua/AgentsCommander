@@ -3,6 +3,7 @@ import * as rust from './sanitizing_rust_scan.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {runGate as diskGate} from './sanitizing_disk_access.mjs';
+import {runGate as globalStateGate} from './sanitizing_global_state.mjs';
 import {measureSource, runGate as containersGate} from './sanitizing_containers.mjs';
 const rustRoot = 'src-tauri/src/';
 function trees(base, head=base) {
@@ -315,4 +316,57 @@ test('3330 triple-string backtracking never swallows a production target', () =>
     ["['''a''', 1e5]", " # ''']\n"],
     ['{a="""x""", b=1e5}', ' # """}\n'],
   ]) manifestProof(packageHeader + 'x-meta=' + value + '\n' + tail + suffix, true);
+});
+
+test('3447 test thread locals stay out of global state in both snapshots', () => {
+  const path = rustRoot + 'probe.rs';
+  const text = `#[cfg(test)]
+thread_local! {
+  static TEST_CELL: std::cell::Cell<u8> = std::cell::Cell::new(0);
+  static TEST_REF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::new());
+}
+#[cfg(test)] static CONTROL: std::sync::Mutex<u8> = std::sync::Mutex::new(0);
+thread_local! { static PRODUCTION: std::cell::Cell<u8> = std::cell::Cell::new(0); }`;
+  const snapshot = trees({[path]: text});
+  const gate = globalStateGate(snapshot);
+  assert.equal(gate.totals[1].globals, 1);
+  assert.equal(gate.totals[0].globals, 1);
+  for (const result of [rust.scanRust(path, text),
+    rust.createRustScanner(snapshot.baseTree, snapshot.readBlob)(path),
+    rust.createRustScanner(snapshot.headTree, snapshot.readBlob)(path)]) {
+    for (const name of ['TEST_CELL', 'TEST_REF', 'CONTROL'])
+      assert.equal(result.isTestOffset(text.indexOf(name)), true, name);
+    assert.equal(result.isTestOffset(text.indexOf('PRODUCTION')), false);
+  }
+});
+
+test('3447 thread local cfg matrix preserves boundaries and conservative cases', () => {
+  for (const [attribute, expected] of [
+    ['#[cfg(test)]', true], ['#[cfg(all(test, unix))]', true],
+    ['#[allow(dead_code)] /* gap */ #[cfg(test)]', true],
+    ['#[cfg(any(test, all(test, unix)))]', true],
+    ['', false], ['#[cfg(not(test))]', false], ['#[cfg(any(test, unix))]', false],
+    ['#[cfg_attr(unix, cfg(test))]', false], ['#[cfg_attr(test, cfg(test))]', false],
+  ]) for (const macro of ['thread_local', 'std::thread_local', '::std::thread_local']) {
+    for (const [open, close] of [['{', '}'], ['(', ')'], ['[', ']']]) {
+      const text = `${attribute} ${macro}! ${open}
+        static INNER: std::cell::Cell<u8> = { nested!({ 0 }); std::cell::Cell::new(0) };
+      ${close}; static NEXT: u8 = 0; thread_local! { static LAST: u8 = 0; }`;
+      const result = rust.scanRust(rustRoot + 'probe.rs', text);
+      for (const name of ['INNER', 'nested'])
+        assert.equal(result.isTestOffset(text.indexOf(name)), expected, text);
+      for (const name of ['NEXT', 'LAST'])
+        assert.equal(result.isTestOffset(text.indexOf(name)), false, text);
+      assert.equal(result.isTestOffset(text.indexOf(close + '; static NEXT') + 1), false, text);
+      assert.equal(result.productionTokens.some(t => t.name === 'INNER'), !expected, text);
+    }
+  }
+  for (const text of [
+    'outer! { #[cfg(test)] thread_local! { static INNER: u8 = 0; } }',
+    'macro_rules! outer { () => { #[cfg(test)] thread_local! { static INNER: u8 = 0; } } }',
+    '#[cfg(test)] different! { static INNER: u8 = 0; }',
+    'thread_local! { #[cfg(test)] static INNER: u8 = 0; }',
+    '#[cfg(test)] static BEFORE: u8 = 0; thread_local! { static INNER: u8 = 0; }',
+  ]) assert.equal(rust.scanRust(rustRoot + 'probe.rs', text)
+    .isTestOffset(text.indexOf('INNER')), false, text);
 });
