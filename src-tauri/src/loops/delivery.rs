@@ -92,9 +92,7 @@ pub async fn deliver_loop_prompt<H: LoopDeliveryHost + ?Sized>(
 ) -> LoopDeliveryReport {
     let target = match resolve_loop_target(project_dir, config) {
         Ok(target) => target,
-        Err(e) => {
-            return target_unresolved_report(e);
-        }
+        Err(e) => return target_unresolved_report(e),
     };
     let target_fqn = target.target_fqn.clone();
 
@@ -230,28 +228,35 @@ pub async fn deliver_loop_prompt<H: LoopDeliveryHost + ?Sized>(
         )
         .await
     {
-        Ok(()) => {
-            // (#756) loop prompt = AC-injected post-boundary content: drop any
-            // pending fresh intent (record + mirror).
-            app.note_post_boundary(session_id).await;
-            if let Err(e) = set_last_prompt(app, session_id, prompt.clone()).await {
-                log::warn!(
-                    "[loops] Failed to update last_prompt after Loop delivery to {}: {}",
-                    session_id,
-                    e
-                );
-            }
-            LoopDeliveryReport {
-                kind: LoopAuditKind::Delivered,
-                message: "Loop prompt delivered".to_string(),
-                target: Some(target_fqn),
-                session_id: Some(session_id),
-                error: None,
-                prompt_snapshot: Some(prompt),
-                completed_at: Some(Utc::now()),
-            }
-        }
+        Ok(()) => delivered_report(app, target_fqn, session_id, prompt).await,
         Err(e) => failed_report(Some(target_fqn), Some(session_id), e),
+    }
+}
+
+async fn delivered_report<H: LoopDeliveryHost + ?Sized>(
+    app: &H,
+    target_fqn: String,
+    session_id: Uuid,
+    prompt: String,
+) -> LoopDeliveryReport {
+    // (#756) loop prompt = AC-injected post-boundary content: drop any
+    // pending fresh intent (record + mirror).
+    app.note_post_boundary(session_id).await;
+    if let Err(e) = set_last_prompt(app, session_id, prompt.clone()).await {
+        log::warn!(
+            "[loops] Failed to update last_prompt after Loop delivery to {}: {}",
+            session_id,
+            e
+        );
+    }
+    LoopDeliveryReport {
+        kind: LoopAuditKind::Delivered,
+        message: "Loop prompt delivered".to_string(),
+        target: Some(target_fqn),
+        session_id: Some(session_id),
+        error: None,
+        prompt_snapshot: Some(prompt),
+        completed_at: Some(Utc::now()),
     }
 }
 
