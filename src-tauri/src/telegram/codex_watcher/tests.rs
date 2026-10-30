@@ -1,4 +1,6 @@
 use super::*;
+use crate::telegram::output::RecordingEvents;
+
 // The extractor tests drive the kernel directly; production now reads
 // through `read_new_lines_with_starts` (`#2232` phase 1), so the wrapper
 // is imported here instead of by the module's production import list.
@@ -65,12 +67,6 @@ fn room_only_fixture(cwd: &str) -> (tempfile::TempDir, PathBuf) {
     (tmp, path)
 }
 
-fn mock_app() -> tauri::App<tauri::test::MockRuntime> {
-    tauri::test::mock_builder()
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build codex watcher test app")
-}
-
 /// The three global diagnostic files `BridgeLogger::new` and
 /// `DiagLogger::new` truncate (`telegram/output.rs:140`). `None` when this
 /// process has no config dir, in which case the constructors write nothing
@@ -103,7 +99,7 @@ async fn a_room_only_codex_reader_emits_records_with_no_bot_anywhere() {
     let search_root = _fixture.path().to_path_buf();
     let before = global_log_sizes();
 
-    let app = mock_app();
+    let events = Arc::new(RecordingEvents::default());
     let network = OutboundNetwork::new_for_tests(1);
     let cancel = CancellationToken::new();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -119,7 +115,7 @@ async fn a_room_only_codex_reader_emits_records_with_no_bot_anywhere() {
         dest_rx,
         "room-only-session".to_string(),
         cancel.clone(),
-        app.handle().clone(),
+        events.clone(),
         Some(tx),
     );
 
@@ -164,7 +160,7 @@ async fn a_watcher_without_a_sink_touches_no_co_managed_state() {
     let (_fixture, _path) = room_only_fixture(&cwd);
     let search_root = _fixture.path().to_path_buf();
 
-    let app = mock_app();
+    let events = Arc::new(RecordingEvents::default());
     let network = OutboundNetwork::new_for_tests(1);
     let cancel = CancellationToken::new();
     let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
@@ -177,7 +173,7 @@ async fn a_watcher_without_a_sink_touches_no_co_managed_state() {
         dest_rx,
         "no-sink-session".to_string(),
         cancel.clone(),
-        app.handle().clone(),
+        events.clone(),
         None, // no sink: a room without the flag
     );
 
@@ -250,4 +246,62 @@ fn extract_bodies(lines: &[String]) -> Vec<String> {
         .iter()
         .filter_map(|l| extract_assistant_final(l.as_str()))
         .collect()
+}
+
+#[tokio::test]
+async fn forced_read_error_preserves_session_text_and_absent_kind() {
+    let work = tempfile::tempdir().unwrap();
+    let cwd = work.path().to_string_lossy().replace('\\', "\\\\");
+    let (fixture, path) = room_only_fixture(&cwd);
+    let events = Arc::new(RecordingEvents::default());
+    let cancel = CancellationToken::new();
+    let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let task = spawn_watch_task(
+        fixture.path().to_path_buf(),
+        work.path().to_string_lossy().to_string(),
+        Utc::now(),
+        OutboundNetwork::new_for_tests(1),
+        dest_rx,
+        "read-error-codex".to_owned(),
+        cancel.clone(),
+        events.clone(),
+        Some(tx),
+    );
+    tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .expect("reader attaches")
+        .expect("capture proves selected transcript");
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(&[0xff, b'\n'])
+        .unwrap();
+    let expected_error = read_new_lines_with_starts(&path, &mut 0, &mut String::new()).unwrap_err();
+    let observed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let errors = events.0.lock().unwrap().clone();
+            if !errors.is_empty() {
+                break errors;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    cancel.cancel();
+    drop(dest_tx);
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("reader cancels")
+        .expect("reader joins");
+    let expected = (
+        "read-error-codex".to_owned(),
+        format!("Codex JSONL read error: {}", expected_error),
+        None,
+    );
+    assert!(observed
+        .expect("real read branch emits error")
+        .iter()
+        .all(|e| e == &expected));
 }
