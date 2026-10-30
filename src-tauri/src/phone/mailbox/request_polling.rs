@@ -50,6 +50,38 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         reason: &str,
     ) -> Result<(), String> {
+        let id = msg.id.as_str();
+        let stem = id
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(' ');
+        let device = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+            .iter()
+            .any(|name| stem.eq_ignore_ascii_case(name));
+        let port = stem.get(..3).is_some_and(|prefix| {
+            (prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
+                && matches!(
+                    stem.get(3..),
+                    Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+                )
+        });
+        let mut components = Path::new(id).components();
+        let plain = matches!(components.next(), Some(std::path::Component::Normal(_)))
+            && components.next().is_none();
+        if id.is_empty()
+            || id == "."
+            || id == ".."
+            || id.contains(['/', '\\', ':', '\0'])
+            || !plain
+            || device
+            || port
+        {
+            Self::reject_raw_file(path, reason)?;
+            self.settle_response_source(path, false);
+            return Ok(());
+        }
+
         let rejected_dir = path.parent().ok_or("No parent dir")?.join("rejected");
         mailbox_disk::ensure_mailbox_archive_directory(&rejected_dir)
             .map_err(|e| format!("Failed to create rejected dir: {}", e))?;

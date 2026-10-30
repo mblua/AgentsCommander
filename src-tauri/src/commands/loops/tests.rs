@@ -640,8 +640,9 @@ async fn issue_3260_delivery_adapter_background_and_default_gate_delegation() {
     .unwrap();
     let app = delivery_adapter_app(Arc::clone(&sessions), Arc::clone(&backend), settings);
     // This cwd is outside every registered project. The cfg(test) default gate skips it.
+    let settings = app.state::<crate::config::settings::SettingsState>();
     assert!(crate::config::sessions_persistence::enforce_creation_gate(
-        app.handle(),
+        settings.inner(),
         &cwd,
         crate::config::sessions_persistence::CreationGateEnforcement::Enforce,
     )
