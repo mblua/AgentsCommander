@@ -9,19 +9,14 @@ use terminal_snapshot_renderer::TerminalSnapshotReasonCode;
 use terminal_snapshot_renderer::MAX_TRANSPORT_BYTES;
 use uuid::Uuid;
 
-pub(super) fn publish_response_bytes(
-    state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
+fn retain_response_directory(
+    _state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
     response_directory: &Path,
-    request_id: Uuid,
-    bytes: &[u8],
-) -> Result<(), TerminalSnapshotReasonCode> {
-    if bytes.is_empty() || bytes.len() > MAX_TRANSPORT_BYTES {
-        return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
-    }
+) -> Result<crate::path_identity::RetainedDirectory, TerminalSnapshotReasonCode> {
     let validated_directory = crate::path_identity::verify_directory(response_directory)
         .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
     #[cfg(test)]
-    state.run_response_publication_hook(
+    _state.run_response_publication_hook(
         TerminalSnapshotResponsePublicationStage::BeforeDirectoryRetention,
         response_directory,
         response_directory,
@@ -31,6 +26,19 @@ pub(super) fn publish_response_bytes(
     if !crate::path_identity::same_object(&validated_directory, retained_directory.identity()) {
         return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
+    Ok(retained_directory)
+}
+
+pub(super) fn publish_response_bytes(
+    state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
+    response_directory: &Path,
+    request_id: Uuid,
+    bytes: &[u8],
+) -> Result<(), TerminalSnapshotReasonCode> {
+    if bytes.is_empty() || bytes.len() > MAX_TRANSPORT_BYTES {
+        return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+    }
+    let retained_directory = retain_response_directory(state, response_directory)?;
     let directory_identity = retained_directory.identity().clone();
     let reservation = state
         .reserve_artifact(response_directory, &directory_identity)
