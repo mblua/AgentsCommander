@@ -129,83 +129,10 @@ pub(crate) async fn handle_resource_watchdog_backend_request_with_config<H: Back
                 && cfg.resource_watchdog_action
                     == crate::config::settings::ResourceWatchdogAction::KillGroup));
 
-    let mut kill_results = Vec::new();
-    if kill_enabled {
-        for decision in decisions.iter().filter(|decision| decision.kill_required) {
-            let Some(coordinator) = app.selection_coordinator() else {
-                kill_results.push(json!({
-                    "ok": false,
-                    "sessionId": decision.session_id,
-                    "message": "selectionCoordinatorUnavailable",
-                }));
-                continue;
-            };
-            match coordinator
-                .watchdog_resource_kill(decision.session_id)
-                .await
-            {
-                Ok(crate::session::selection::WatchdogKillOutcome::Completed(result)) => {
-                    kill_results.push(json!({
-                        "ok": true,
-                        "result": result,
-                    }))
-                }
-                // #1151 - `alreadyPending` keeps its value and type byte-identical so every
-                // existing automation assertion still passes; `reason` is the additive
-                // discriminator that makes the split observable from outside the process.
-                Ok(crate::session::selection::WatchdogKillOutcome::AlreadyInFlight) => kill_results
-                    .push(json!({
-                        "ok": true,
-                        "sessionId": decision.session_id,
-                        "alreadyPending": true,
-                        "reason": "alreadyInFlight",
-                    })),
-                Ok(crate::session::selection::WatchdogKillOutcome::NoPublicSession) => kill_results
-                    .push(json!({
-                        "ok": true,
-                        "sessionId": decision.session_id,
-                        "alreadyPending": true,
-                        "reason": "noPublicSession",
-                    })),
-                Err(message) => kill_results.push(json!({
-                    "ok": false,
-                    "sessionId": decision.session_id,
-                    "message": message,
-                })),
-            }
-        }
-    }
+    let kill_results = apply_watchdog_kills(app, &decisions, kill_enabled).await;
 
-    // #1151 - run the PRODUCTION quarantine-retry gate and loop, not a mirrored copy, so
-    // these reports are evidence about shipped dispatch logic. The coordinator is resolved
-    // ONCE before the call, because the loop takes it by reference for every group.
-    let mut quarantine_retries = Vec::new();
-    if resource_monitor_enabled
-        && matches!(
-            mode,
-            BackendWatchdogMode::QuarantineRetry | BackendWatchdogMode::Tick
-        )
-    {
-        match app.selection_coordinator() {
-            Some(coordinator) => {
-                for report in crate::resource_monitor::watchdog::run_quarantine_retries(
-                    &monitor,
-                    &coordinator,
-                    &groups,
-                )
-                .await
-                {
-                    quarantine_retries.push(serde_json::to_value(&report).unwrap_or_else(
-                        |error| json!({ "ok": false, "message": error.to_string() }),
-                    ));
-                }
-            }
-            None => quarantine_retries.push(json!({
-                "ok": false,
-                "message": "selectionCoordinatorUnavailable",
-            })),
-        }
-    }
+    let quarantine_retries =
+        apply_quarantine_retries(app, &monitor, &groups, resource_monitor_enabled, mode).await;
 
     let state = watchdog_state(
         resource_monitor_enabled,
@@ -279,6 +206,105 @@ pub(crate) async fn handle_resource_watchdog_backend_request_with_config<H: Back
         timeout_ms: None,
         phase: None,
     }
+}
+
+async fn apply_watchdog_kills<H: BackendWatchdogHost>(
+    app: &H,
+    decisions: &[crate::resource_monitor::watchdog::ResourceWatchdogDecision],
+    kill_enabled: bool,
+) -> Vec<serde_json::Value> {
+    let mut kill_results = Vec::new();
+    if kill_enabled {
+        for decision in decisions.iter().filter(|decision| decision.kill_required) {
+            let Some(coordinator) = app.selection_coordinator() else {
+                kill_results.push(json!({
+                    "ok": false,
+                    "sessionId": decision.session_id,
+                    "message": "selectionCoordinatorUnavailable",
+                }));
+                continue;
+            };
+            match coordinator
+                .watchdog_resource_kill(decision.session_id)
+                .await
+            {
+                Ok(crate::session::selection::WatchdogKillOutcome::Completed(result)) => {
+                    kill_results.push(json!({
+                        "ok": true,
+                        "result": result,
+                    }))
+                }
+                // #1151 - `alreadyPending` keeps its value and type byte-identical so every
+                // existing automation assertion still passes; `reason` is the additive
+                // discriminator that makes the split observable from outside the process.
+                Ok(crate::session::selection::WatchdogKillOutcome::AlreadyInFlight) => kill_results
+                    .push(json!({
+                        "ok": true,
+                        "sessionId": decision.session_id,
+                        "alreadyPending": true,
+                        "reason": "alreadyInFlight",
+                    })),
+                Ok(crate::session::selection::WatchdogKillOutcome::NoPublicSession) => kill_results
+                    .push(json!({
+                        "ok": true,
+                        "sessionId": decision.session_id,
+                        "alreadyPending": true,
+                        "reason": "noPublicSession",
+                    })),
+                Err(message) => kill_results.push(json!({
+                    "ok": false,
+                    "sessionId": decision.session_id,
+                    "message": message,
+                })),
+            }
+        }
+    }
+
+    kill_results
+}
+
+async fn apply_quarantine_retries<H: BackendWatchdogHost>(
+    app: &H,
+    monitor: &crate::resource_monitor::ResourceMonitorState,
+    groups: &[(
+        Uuid,
+        crate::resource_monitor::types::ResourceAgentGroupSnapshot,
+    )],
+    resource_monitor_enabled: bool,
+    mode: BackendWatchdogMode,
+) -> Vec<serde_json::Value> {
+    // #1151 - run the PRODUCTION quarantine-retry gate and loop, not a mirrored copy, so
+    // these reports are evidence about shipped dispatch logic. The coordinator is resolved
+    // ONCE before the call, because the loop takes it by reference for every group.
+    let mut quarantine_retries = Vec::new();
+    if resource_monitor_enabled
+        && matches!(
+            mode,
+            BackendWatchdogMode::QuarantineRetry | BackendWatchdogMode::Tick
+        )
+    {
+        match app.selection_coordinator() {
+            Some(coordinator) => {
+                for report in crate::resource_monitor::watchdog::run_quarantine_retries(
+                    monitor,
+                    &coordinator,
+                    groups,
+                )
+                .await
+                {
+                    quarantine_retries.push(serde_json::to_value(&report).unwrap_or_else(
+                        |error| json!({ "ok": false, "message": error.to_string() }),
+                    ));
+                }
+            }
+            None => quarantine_retries.push(json!({
+                "ok": false,
+                "message": "selectionCoordinatorUnavailable",
+            })),
+        }
+    }
+
+    quarantine_retries
 }
 
 fn watchdog_state(
