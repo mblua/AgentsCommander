@@ -23,6 +23,17 @@ use super::{
     validate_profile_assignment_request,
 };
 
+struct ProfileAssignmentWrites {
+    updated_replica_paths: Vec<String>,
+    newly_protected_paths: Vec<String>,
+    skipped_locked_paths: Vec<String>,
+    invalid_paths: Vec<String>,
+    write_succeeded_keys: BTreeSet<String>,
+    errors: Vec<ProfileAssignmentError>,
+    warnings: Vec<String>,
+    force_applied: bool,
+}
+
 #[tauri::command]
 pub async fn preview_coding_agent_profile_selection(
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
@@ -210,90 +221,23 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
 
     let intent =
         assignment_write_intent(&request.scope, request.assignment_mode, resolved_decision);
-    let mut updated_replica_paths = Vec::new();
-    let mut newly_protected_paths = Vec::new();
-    let mut skipped_locked_paths = Vec::new();
-    let mut invalid_paths = Vec::new();
-    let mut write_succeeded_keys = BTreeSet::new();
-    let mut errors = Vec::new();
-    let mut warnings = enumeration.warnings.clone();
-    let mut force_applied = false;
-    for candidate in &enumeration.candidates {
-        let target = &candidate.target;
-        let key = canonical_compare_key(Path::new(&target.replica_path));
-        if target.selection_state == SelectionState::Invalid {
-            // #1941 - an invalid protection state is an explicit error with no
-            // write and no restart; it is never read as an unlocked replica.
-            invalid_paths.push(target.replica_path.clone());
-            errors.push(ProfileAssignmentError {
-                code: "invalidSelectionState".to_string(),
-                message: target.selection_error.clone().unwrap_or_else(|| {
-                    format!(
-                        "Replica '{}' has an invalid selection state",
-                        target.replica_path
-                    )
-                }),
-                session_ids: target.live_session_ids.clone(),
-                replica_paths: vec![target.replica_path.clone()],
-            });
-            continue;
-        }
-        if !write_eligible_paths.contains(&key) {
-            if target.selection_state == SelectionState::Locked {
-                // #1939/#1941 - ordinary and unlocked-only policies never force
-                // a valid lock: skip it (no write, no restart) and report it.
-                skipped_locked_paths.push(target.replica_path.clone());
-                warnings.push(format!("Skipping locked replica '{}'", target.replica_path));
-            }
-            continue;
-        }
-        let expected = candidate
-            .expected
-            .clone()
-            .ok_or("invalid selection expectation")?;
-        let pair = crate::config::coding_agent_profiles::ReplicaSelectionPair {
-            coding_agent_id: request.coding_agent_id.clone(),
-            requested_profile: normalized_profile.clone(),
-        };
-        // #1940/#1939 - the guarded callback re-reads the strict state and
-        // compares this expectation inside the OS write lock, so a target that
-        // changed after enumeration fails its own CAS instead of being
-        // overwritten; earlier writes stay committed and accurately reported.
-        match crate::config::coding_agent_profiles::write_replica_selection(
-            &settings_snapshot,
-            Path::new(&target.replica_path),
-            &pair,
-            intent,
-            &expected,
-        ) {
-            Ok(outcome) if outcome.changed => {
-                use crate::config::coding_agent_profiles::SelectionLockTransition;
-                if outcome.lock_transition == Some(SelectionLockTransition::UnlockedToLocked) {
-                    newly_protected_paths.push(target.replica_path.clone());
-                }
-                if intent
-                    == crate::config::coding_agent_profiles::SelectionWriteIntent::BulkForceReviewed
-                    && expected.locked
-                {
-                    // #1941 - forceApplied means a protected target was actually
-                    // overwritten, never merely that a decision was selected.
-                    force_applied = true;
-                }
-                updated_replica_paths.push(target.replica_path.clone());
-                write_succeeded_keys.insert(key);
-            }
-            Ok(_unchanged) => warnings.push(format!(
-                "Replica '{}' was already in the requested state",
-                target.replica_path
-            )),
-            Err(e) => errors.push(ProfileAssignmentError {
-                code: selection_error_code(&e).to_string(),
-                message: e,
-                session_ids: target.live_session_ids.clone(),
-                replica_paths: vec![target.replica_path.clone()],
-            }),
-        }
-    }
+    let ProfileAssignmentWrites {
+        updated_replica_paths,
+        newly_protected_paths,
+        skipped_locked_paths,
+        invalid_paths,
+        write_succeeded_keys,
+        mut errors,
+        warnings,
+        force_applied,
+    } = write_profile_assignment(
+        &settings_snapshot,
+        &enumeration,
+        &write_eligible_paths,
+        &request,
+        &normalized_profile,
+        intent,
+    )?;
 
     let mut restarted_session_ids = Vec::new();
     let mut destroyed_but_not_recreated_session_ids = Vec::new();
@@ -380,4 +324,109 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
         "errors": &result.errors,
     });
     Ok((result, payload))
+}
+
+fn write_profile_assignment(
+    settings_snapshot: &crate::config::settings::AppSettings,
+    enumeration: &super::target::ProfileTargetEnumeration,
+    write_eligible_paths: &[String],
+    request: &ApplyCodingAgentProfileSelectionRequest,
+    normalized_profile: &str,
+    intent: crate::config::coding_agent_profiles::SelectionWriteIntent,
+) -> Result<ProfileAssignmentWrites, String> {
+    let mut updated_replica_paths = Vec::new();
+    let mut newly_protected_paths = Vec::new();
+    let mut skipped_locked_paths = Vec::new();
+    let mut invalid_paths = Vec::new();
+    let mut write_succeeded_keys = BTreeSet::new();
+    let mut errors = Vec::new();
+    let mut warnings = enumeration.warnings.clone();
+    let mut force_applied = false;
+    for candidate in &enumeration.candidates {
+        let target = &candidate.target;
+        let key = canonical_compare_key(Path::new(&target.replica_path));
+        if target.selection_state == SelectionState::Invalid {
+            // #1941 - an invalid protection state is an explicit error with no
+            // write and no restart; it is never read as an unlocked replica.
+            invalid_paths.push(target.replica_path.clone());
+            errors.push(ProfileAssignmentError {
+                code: "invalidSelectionState".to_string(),
+                message: target.selection_error.clone().unwrap_or_else(|| {
+                    format!(
+                        "Replica '{}' has an invalid selection state",
+                        target.replica_path
+                    )
+                }),
+                session_ids: target.live_session_ids.clone(),
+                replica_paths: vec![target.replica_path.clone()],
+            });
+            continue;
+        }
+        if !write_eligible_paths.contains(&key) {
+            if target.selection_state == SelectionState::Locked {
+                // #1939/#1941 - ordinary and unlocked-only policies never force
+                // a valid lock: skip it (no write, no restart) and report it.
+                skipped_locked_paths.push(target.replica_path.clone());
+                warnings.push(format!("Skipping locked replica '{}'", target.replica_path));
+            }
+            continue;
+        }
+        let expected = candidate
+            .expected
+            .clone()
+            .ok_or("invalid selection expectation")?;
+        let pair = crate::config::coding_agent_profiles::ReplicaSelectionPair {
+            coding_agent_id: request.coding_agent_id.clone(),
+            requested_profile: normalized_profile.to_string(),
+        };
+        // #1940/#1939 - the guarded callback re-reads the strict state and
+        // compares this expectation inside the OS write lock, so a target that
+        // changed after enumeration fails its own CAS instead of being
+        // overwritten; earlier writes stay committed and accurately reported.
+        match crate::config::coding_agent_profiles::write_replica_selection(
+            settings_snapshot,
+            Path::new(&target.replica_path),
+            &pair,
+            intent,
+            &expected,
+        ) {
+            Ok(outcome) if outcome.changed => {
+                use crate::config::coding_agent_profiles::SelectionLockTransition;
+                if outcome.lock_transition == Some(SelectionLockTransition::UnlockedToLocked) {
+                    newly_protected_paths.push(target.replica_path.clone());
+                }
+                if intent
+                    == crate::config::coding_agent_profiles::SelectionWriteIntent::BulkForceReviewed
+                    && expected.locked
+                {
+                    // #1941 - forceApplied means a protected target was actually
+                    // overwritten, never merely that a decision was selected.
+                    force_applied = true;
+                }
+                updated_replica_paths.push(target.replica_path.clone());
+                write_succeeded_keys.insert(key);
+            }
+            Ok(_unchanged) => warnings.push(format!(
+                "Replica '{}' was already in the requested state",
+                target.replica_path
+            )),
+            Err(e) => errors.push(ProfileAssignmentError {
+                code: selection_error_code(&e).to_string(),
+                message: e,
+                session_ids: target.live_session_ids.clone(),
+                replica_paths: vec![target.replica_path.clone()],
+            }),
+        }
+    }
+
+    Ok(ProfileAssignmentWrites {
+        updated_replica_paths,
+        newly_protected_paths,
+        skipped_locked_paths,
+        invalid_paths,
+        write_succeeded_keys,
+        errors,
+        warnings,
+        force_applied,
+    })
 }
