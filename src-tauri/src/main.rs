@@ -23,90 +23,7 @@ fn main() {
             match agentscommander_lib::cli::Cli::from_arg_matches(&matches) {
                 Ok(cli) => match cli.command {
                     Some(cmd) => {
-                        // Attach to the parent console BEFORE init_logger so
-                        // any startup eprintln! (e.g. the "[log] file logging
-                        // to ..." line) reaches the user's terminal on
-                        // Windows release builds (where the binary is linked
-                        // with `windows_subsystem = "windows"` and starts
-                        // with no attached stderr).
-
-                        agentscommander_lib::cli::attach_parent_console();
-                        if matches!(
-                            cmd,
-                            agentscommander_lib::cli::Commands::ListPeers(_)
-                                | agentscommander_lib::cli::Commands::ListPeersLean(_)
-                                | agentscommander_lib::cli::Commands::ListSessions(_)
-                                | agentscommander_lib::cli::Commands::AgencyTemplates(_)
-                                | agentscommander_lib::cli::Commands::UiQuery(_)
-                                | agentscommander_lib::cli::Commands::UiTerminal(_)
-                                | agentscommander_lib::cli::Commands::UiPointer(_)
-                                | agentscommander_lib::cli::Commands::UiKey(_)
-                                | agentscommander_lib::cli::Commands::UiClick(_)
-                                | agentscommander_lib::cli::Commands::UiContextClick(_)
-                                | agentscommander_lib::cli::Commands::UiHover(_)
-                                | agentscommander_lib::cli::Commands::UiSet(_)
-                                | agentscommander_lib::cli::Commands::UiType(_)
-                                | agentscommander_lib::cli::Commands::UiBackend(_)
-                                | agentscommander_lib::cli::Commands::UiWait(_)
-                                | agentscommander_lib::cli::Commands::TaskSetTitle(_)
-                                | agentscommander_lib::cli::Commands::TaskGet(_)
-                                | agentscommander_lib::cli::Commands::TaskStatusSet(_)
-                                | agentscommander_lib::cli::Commands::CodingAgent(_)
-                                | agentscommander_lib::cli::Commands::TerminalSnapshot(_)
-                        ) {
-                            std::env::set_var("AC_MACHINE_OUTPUT", "1");
-                        }
-                        if !matches!(&cmd, Commands::TestReset(_)) {
-                            if let Err(error) = agentscommander_lib::preflight_config_startup(
-                                owners.startup_summary.as_ref(),
-                            ) {
-                                agentscommander_lib::cli::present_fatal_startup_message(
-                                    &error.to_string(),
-                                );
-                                std::process::exit(1);
-                            }
-                            // Install the same logger backend the GUI uses so
-
-                            // every `log::*` call from CLI verbs (the `[task]`
-                            // audit lines in particular — plan #137 §3a HIGH-1
-                            // mitigation) reaches stderr + <config_dir>/app.log.
-                            // GATED on `cli.command.is_some()` so the GUI branch
-                            // below initializes via `lib::run()` exactly once.
-                            agentscommander_lib::logging::init_logger();
-                            agentscommander_lib::log_naming_migration_summary(
-                                owners.startup_summary.as_ref(),
-                            );
-
-                            // Issue #609 Phase 2 - one-line "update available" notice for
-                            // terminal runs. Cache-only (no network, no blocking). M1: gate
-                            // on an INTERACTIVE stderr, not the AC_MACHINE_OUTPUT allowlist -
-                            // that allowlist (above) covers only ListPeers/ListPeersLean/
-                            // ListSessions/AgencyTemplates/Ui*, so `send`, `task`,
-                            // `window-info`, and any future machine verb would get stderr
-                            // spam for up to 24h while an update is pending. `is_terminal()`
-                            // is the future-proof gate: a human at a terminal sees the
-                            // notice; agents, scripts, and piped/redirected runs (stderr is
-                            // not a tty) stay silent.
-                            {
-                                use std::io::IsTerminal;
-                                if std::io::stderr().is_terminal()
-                                    && std::env::var_os("AC_MACHINE_OUTPUT").is_none()
-                                {
-                                    if let Some(notice) =
-                                        agentscommander_lib::update_check::read_cached_notice()
-                                    {
-                                        eprintln!("{}", notice);
-                                    }
-                                }
-                            }
-                        }
-
-                        let code = agentscommander_lib::cli::handle_cli(
-                            cmd,
-                            owners.messages.as_ref(),
-                            owners.snapshot_stage.as_ref(),
-                        );
-                        std::process::exit(code);
+                        run_cli(cmd, &owners);
                     }
                     None => {
                         // GUI mode (with or without --app)
@@ -185,6 +102,85 @@ fn main() {
             std::process::exit(if e.use_stderr() { 1 } else { 0 });
         }
     }
+}
+
+fn run_cli(cmd: Commands, owners: &agentscommander_lib::AppOwners) -> ! {
+    // Attach to the parent console BEFORE init_logger so
+    // any startup eprintln! (e.g. the "[log] file logging
+    // to ..." line) reaches the user's terminal on
+    // Windows release builds (where the binary is linked
+    // with `windows_subsystem = "windows"` and starts
+    // with no attached stderr).
+
+    agentscommander_lib::cli::attach_parent_console();
+    if matches!(
+        cmd,
+        agentscommander_lib::cli::Commands::ListPeers(_)
+            | agentscommander_lib::cli::Commands::ListPeersLean(_)
+            | agentscommander_lib::cli::Commands::ListSessions(_)
+            | agentscommander_lib::cli::Commands::AgencyTemplates(_)
+            | agentscommander_lib::cli::Commands::UiQuery(_)
+            | agentscommander_lib::cli::Commands::UiTerminal(_)
+            | agentscommander_lib::cli::Commands::UiPointer(_)
+            | agentscommander_lib::cli::Commands::UiKey(_)
+            | agentscommander_lib::cli::Commands::UiClick(_)
+            | agentscommander_lib::cli::Commands::UiContextClick(_)
+            | agentscommander_lib::cli::Commands::UiHover(_)
+            | agentscommander_lib::cli::Commands::UiSet(_)
+            | agentscommander_lib::cli::Commands::UiType(_)
+            | agentscommander_lib::cli::Commands::UiBackend(_)
+            | agentscommander_lib::cli::Commands::UiWait(_)
+            | agentscommander_lib::cli::Commands::TaskSetTitle(_)
+            | agentscommander_lib::cli::Commands::TaskGet(_)
+            | agentscommander_lib::cli::Commands::TaskStatusSet(_)
+            | agentscommander_lib::cli::Commands::CodingAgent(_)
+            | agentscommander_lib::cli::Commands::TerminalSnapshot(_)
+    ) {
+        std::env::set_var("AC_MACHINE_OUTPUT", "1");
+    }
+    if !matches!(&cmd, Commands::TestReset(_)) {
+        if let Err(error) =
+            agentscommander_lib::preflight_config_startup(owners.startup_summary.as_ref())
+        {
+            agentscommander_lib::cli::present_fatal_startup_message(&error.to_string());
+            std::process::exit(1);
+        }
+        // Install the same logger backend the GUI uses so
+
+        // every `log::*` call from CLI verbs (the `[task]`
+        // audit lines in particular — plan #137 §3a HIGH-1
+        // mitigation) reaches stderr + <config_dir>/app.log.
+        // GATED on `cli.command.is_some()` so the GUI branch
+        // below initializes via `lib::run()` exactly once.
+        agentscommander_lib::logging::init_logger();
+        agentscommander_lib::log_naming_migration_summary(owners.startup_summary.as_ref());
+
+        // Issue #609 Phase 2 - one-line "update available" notice for
+        // terminal runs. Cache-only (no network, no blocking). M1: gate
+        // on an INTERACTIVE stderr, not the AC_MACHINE_OUTPUT allowlist -
+        // that allowlist (above) covers only ListPeers/ListPeersLean/
+        // ListSessions/AgencyTemplates/Ui*, so `send`, `task`,
+        // `window-info`, and any future machine verb would get stderr
+        // spam for up to 24h while an update is pending. `is_terminal()`
+        // is the future-proof gate: a human at a terminal sees the
+        // notice; agents, scripts, and piped/redirected runs (stderr is
+        // not a tty) stay silent.
+        {
+            use std::io::IsTerminal;
+            if std::io::stderr().is_terminal() && std::env::var_os("AC_MACHINE_OUTPUT").is_none() {
+                if let Some(notice) = agentscommander_lib::update_check::read_cached_notice() {
+                    eprintln!("{}", notice);
+                }
+            }
+        }
+    }
+
+    let code = agentscommander_lib::cli::handle_cli(
+        cmd,
+        owners.messages.as_ref(),
+        owners.snapshot_stage.as_ref(),
+    );
+    std::process::exit(code);
 }
 
 /// Try to acquire a system-wide named mutex.
