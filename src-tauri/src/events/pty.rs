@@ -6,7 +6,7 @@ use crate::pty::menu_guard::{MenuGuard, MenuGuardEvents};
 use crate::pty::output::{PtyOutputEmitError, PtyOutputTarget, PtyOutputTask};
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionCommunication;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
