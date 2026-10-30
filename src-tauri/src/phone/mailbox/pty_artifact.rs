@@ -627,6 +627,44 @@ impl MailboxPoller {
             .map_err(|_| C::UnsafePath)
     }
 
+    fn validated_pty_queue_marker(
+        &self,
+        path: &Path,
+        value: serde_json::Value,
+        is_app_outbox: bool,
+    ) -> Option<(crate::phone::types::PtyInputQueueMarker, String)> {
+        let marker: crate::phone::types::PtyInputQueueMarker = match serde_json::from_value(value) {
+            Ok(marker) => marker,
+            Err(_) => {
+                self.reject_malformed_pty_candidate(path);
+                return None;
+            }
+        };
+        if marker.version != crate::phone::types::PTY_INPUT_VERSION
+            || crate::phone::types::parse_canonical_uuid_v4(&marker.injection_id).is_err()
+            || marker.injection_id != marker.op_id
+            || path.file_stem().and_then(|value| value.to_str())
+                != Some(marker.injection_id.as_str())
+            || is_app_outbox
+        {
+            self.reject_malformed_pty_candidate(path);
+            return None;
+        }
+        let (current_marker, _marker_identity, owner) =
+            match self.read_verified_host_marker(path, &marker.injection_id) {
+                Ok(marker) => marker,
+                Err(_) => {
+                    self.reject_malformed_pty_candidate(path);
+                    return None;
+                }
+            };
+        if current_marker != marker {
+            self.reject_malformed_pty_candidate(path);
+            return None;
+        }
+        Some((marker, owner))
+    }
+
     pub(crate) async fn process_pty_input_file<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -660,36 +698,10 @@ impl MailboxPoller {
                     return;
                 }
             };
-            let marker: crate::phone::types::PtyInputQueueMarker =
-                match serde_json::from_value(value) {
-                    Ok(marker) => marker,
-                    Err(_) => {
-                        self.reject_malformed_pty_candidate(path);
-                        return;
-                    }
-                };
-            if marker.version != crate::phone::types::PTY_INPUT_VERSION
-                || crate::phone::types::parse_canonical_uuid_v4(&marker.injection_id).is_err()
-                || marker.injection_id != marker.op_id
-                || path.file_stem().and_then(|value| value.to_str())
-                    != Some(marker.injection_id.as_str())
-                || is_app_outbox
-            {
-                self.reject_malformed_pty_candidate(path);
+            let Some((marker, owner)) = self.validated_pty_queue_marker(path, value, is_app_outbox)
+            else {
                 return;
-            }
-            let (current_marker, _marker_identity, owner) =
-                match self.read_verified_host_marker(path, &marker.injection_id) {
-                    Ok(marker) => marker,
-                    Err(_) => {
-                        self.reject_malformed_pty_candidate(path);
-                        return;
-                    }
-                };
-            if current_marker != marker {
-                self.reject_malformed_pty_candidate(path);
-                return;
-            }
+            };
             let row = match store
                 .query_pty_input_by_injection_offloaded(marker.injection_id.clone())
                 .await
