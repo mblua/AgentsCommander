@@ -208,6 +208,23 @@ impl ResourceMonitorState {
             )
         };
 
+        self.execute_group_cleanup(
+            session_id,
+            reason,
+            root_identity,
+            previous_targets,
+            kill_started,
+        )
+    }
+
+    fn execute_group_cleanup(
+        &self,
+        session_id: Uuid,
+        reason: ResourceKillReason,
+        root_identity: ProcessIdentity,
+        previous_targets: Vec<ObservedProcess>,
+        kill_started: Instant,
+    ) -> Result<ResourceKillResult, String> {
         // #942 - we are committed to killing and have touched no process yet: tag the
         // stop as AC-initiated so the PTY child-exit event can never read it as a child
         // that died on its own. Deliberately AFTER the early returns above (a group that
