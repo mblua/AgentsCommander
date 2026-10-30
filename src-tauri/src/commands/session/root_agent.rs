@@ -212,6 +212,83 @@ async fn resolve_root_agent_launch(
     })
 }
 
+async fn reuse_live_root_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    session_id: Uuid,
+    select_after: bool,
+) -> Result<SessionInfo, String> {
+    // Reuse has no new binding/backend or replacement effects. Track
+    // its actual selection/persistence/publication and final lookup.
+    let publication = transaction
+        .start_lifecycle_effect(crate::session::selection::LifecycleEffectSlot::Publication);
+    if transaction.has_lifecycle_entry() && publication.is_none() {
+        return std::future::pending().await;
+    }
+    let result = async {
+        if select_after {
+            let decision = transaction
+                .live_decision(session_id)
+                .ok_or_else(|| "Root session has no displayable PTY".to_string())?;
+            let committed = transaction
+                .commit(
+                    decision,
+                    SelectionCause::UserSwitch,
+                    LifecycleMutations::default(),
+                )
+                .await?;
+            if let Some(selection) = committed.selection.as_ref() {
+                transaction
+                    .persist(SelectionSource::UserSwitch, Some(session_id))
+                    .await;
+                transaction.publish_selection(selection);
+            }
+        }
+        session_mgr
+            .read()
+            .await
+            .get_session(session_id)
+            .await
+            .map(|session| SessionInfo::from(&session))
+            .ok_or_else(|| "Root session disappeared during reuse".to_string())
+    }
+    .await;
+    if let Some(publication) = publication {
+        publication.complete(
+            result
+                .as_ref()
+                .map(|info| Some(info.id.clone()))
+                .map_err(Clone::clone),
+        );
+        transaction.observe_reuse_live_result(&result);
+    }
+    result
+}
+
+async fn select_created_root_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+    intent: TrustedCreateIntent,
+) -> Result<(), String> {
+    let decision = transaction
+        .live_decision(session_id)
+        .ok_or_else(|| "new Root session has no displayable PTY".to_string())?;
+    let committed = transaction
+        .commit(
+            decision,
+            SelectionCause::SessionCreated(intent),
+            LifecycleMutations::default(),
+        )
+        .await?;
+    if let Some(selection) = committed.selection.as_ref() {
+        transaction
+            .persist(SelectionSource::SessionCreated, Some(session_id))
+            .await;
+        transaction.publish_selection(selection);
+    }
+    Ok(())
+}
+
 pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     request: RootJobRequest,
@@ -254,52 +331,13 @@ pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
             .has_session(session_id);
         match classify_existing_root(&existing.status, has_pty) {
             ExistingRootAction::ReuseLive => {
-                // Reuse has no new binding/backend or replacement effects. Track
-                // its actual selection/persistence/publication and final lookup.
-                let publication = transaction.start_lifecycle_effect(
-                    crate::session::selection::LifecycleEffectSlot::Publication,
-                );
-                if transaction.has_lifecycle_entry() && publication.is_none() {
-                    return std::future::pending().await;
-                }
-                let result = async {
-                    if request.select_after {
-                        let decision = transaction
-                            .live_decision(session_id)
-                            .ok_or_else(|| "Root session has no displayable PTY".to_string())?;
-                        let committed = transaction
-                            .commit(
-                                decision,
-                                SelectionCause::UserSwitch,
-                                LifecycleMutations::default(),
-                            )
-                            .await?;
-                        if let Some(selection) = committed.selection.as_ref() {
-                            transaction
-                                .persist(SelectionSource::UserSwitch, Some(session_id))
-                                .await;
-                            transaction.publish_selection(selection);
-                        }
-                    }
-                    session_mgr
-                        .read()
-                        .await
-                        .get_session(session_id)
-                        .await
-                        .map(|session| SessionInfo::from(&session))
-                        .ok_or_else(|| "Root session disappeared during reuse".to_string())
-                }
+                return reuse_live_root_transaction(
+                    transaction,
+                    &session_mgr,
+                    session_id,
+                    request.select_after,
+                )
                 .await;
-                if let Some(publication) = publication {
-                    publication.complete(
-                        result
-                            .as_ref()
-                            .map(|info| Some(info.id.clone()))
-                            .map_err(Clone::clone),
-                    );
-                    transaction.observe_reuse_live_result(&result);
-                }
-                return result;
             }
             ExistingRootAction::WakeDormant | ExistingRootAction::DiscardMissingPty => {
                 let wake_dormant = matches!(
@@ -382,22 +420,7 @@ pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
     .await?;
     let session_id = Uuid::parse_str(&info.id).map_err(|error| error.to_string())?;
     if request.select_after {
-        let decision = transaction
-            .live_decision(session_id)
-            .ok_or_else(|| "new Root session has no displayable PTY".to_string())?;
-        let committed = transaction
-            .commit(
-                decision,
-                SelectionCause::SessionCreated(request.intent),
-                LifecycleMutations::default(),
-            )
-            .await?;
-        if let Some(selection) = committed.selection.as_ref() {
-            transaction
-                .persist(SelectionSource::SessionCreated, Some(session_id))
-                .await;
-            transaction.publish_selection(selection);
-        }
+        select_created_root_transaction(transaction, session_id, request.intent).await?;
     }
     attach_local_config_telegram_if_any(app, session_id, &root_agent_path).await;
     Ok(info)
