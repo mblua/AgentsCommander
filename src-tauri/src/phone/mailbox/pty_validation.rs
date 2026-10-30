@@ -124,29 +124,7 @@ impl MailboxPoller {
                 .await
                 .map_err(|_| C::UnsafePath)?
                 .unwrap_or(in_memory_project_paths);
-        if let Some(replica) = Path::new(&session.working_directory)
-            .ancestors()
-            .find(|candidate| {
-                candidate
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|name| name.starts_with("__agent_"))
-            })
-        {
-            if let Some(project) = replica
-                .parent()
-                .and_then(Path::parent)
-                .and_then(Path::parent)
-            {
-                let project_s = project
-                    .to_str()
-                    .map(crate::path_utils::normalize_windows_verbatim_path)
-                    .ok_or(C::UnsafePath)?;
-                if !project_paths.contains(&project_s) {
-                    project_paths.push(project_s);
-                }
-            }
-        }
+        extend_host_pty_project_paths(&session.working_directory, &mut project_paths)?;
         let route = crate::config::teams::verify_pty_input_route(
             Path::new(&session.working_directory),
             session.is_root_agent,
@@ -469,4 +447,31 @@ impl MailboxPoller {
             operation.await;
         }
     }
+}
+
+fn extend_host_pty_project_paths(
+    working_directory: &str,
+    project_paths: &mut Vec<String>,
+) -> Result<(), crate::phone::types::PtyInputReasonCode> {
+    if let Some(replica) = Path::new(working_directory).ancestors().find(|candidate| {
+        candidate
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| name.starts_with("__agent_"))
+    }) {
+        if let Some(project) = replica
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+        {
+            let project_s = project
+                .to_str()
+                .map(crate::path_utils::normalize_windows_verbatim_path)
+                .ok_or(crate::phone::types::PtyInputReasonCode::UnsafePath)?;
+            if !project_paths.contains(&project_s) {
+                project_paths.push(project_s);
+            }
+        }
+    }
+    Ok(())
 }
