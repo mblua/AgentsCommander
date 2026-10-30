@@ -127,7 +127,7 @@ async fn held_completion_preserves_attempts_and_another_due_batch() {
         let mut slot = Some(InFlightSlot {
             generation,
             cancellation: CancellationToken::new(),
-            join: tauri::async_runtime::spawn(async {}),
+            join: tokio::spawn(async {}),
         });
         handle_delivery_completion(
             &mut state,
@@ -228,7 +228,7 @@ async fn in_flight_policy_pruning_cancels_and_replaces_only_survivors() {
     let slot = InFlightSlot {
         generation: original,
         cancellation: cancellation.clone(),
-        join: tauri::async_runtime::spawn(async {}),
+        join: tokio::spawn(async {}),
     };
 
     reconcile_policy(&mut state, Some(&slot), id, &fingerprint(id), &[75], now);
@@ -258,7 +258,7 @@ async fn exhausted_generation_fails_closed_for_in_flight_replacement() {
     let slot = InFlightSlot {
         generation,
         cancellation: cancellation.clone(),
-        join: tauri::async_runtime::spawn(async {}),
+        join: tokio::spawn(async {}),
     };
 
     reconcile_policy(&mut state, Some(&slot), id, &fingerprint(id), &[75], now);
@@ -281,7 +281,7 @@ async fn stale_matching_completion_clears_slot_without_mutating_replacement() {
     let mut in_flight = Some(InFlightSlot {
         generation: original,
         cancellation: cancellation.clone(),
-        join: tauri::async_runtime::spawn(async {}),
+        join: tokio::spawn(async {}),
     });
     reconcile_policy(
         &mut state,
@@ -323,7 +323,7 @@ async fn explicit_policy_disable_cancels_in_flight_and_removes_all_state() {
     let slot = InFlightSlot {
         generation,
         cancellation: cancellation.clone(),
-        join: tauri::async_runtime::spawn(async {}),
+        join: tokio::spawn(async {}),
     };
 
     apply_numeric_resolution(

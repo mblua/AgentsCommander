@@ -683,11 +683,8 @@ pub(super) async fn dispatch_due_batch(
                 .unwrap_or_default();
             let runtime = Arc::clone(runtime);
             let tx = completion_tx.clone();
-            let join = tauri::async_runtime::spawn(async move {
-                let delivery =
-                    tauri::async_runtime::spawn(
-                        async move { runtime.deliver_attempt(attempt).await },
-                    );
+            let join = tokio::spawn(async move {
+                let delivery = tokio::spawn(async move { runtime.deliver_attempt(attempt).await });
                 let result = match delivery.await {
                     Ok(result) => result,
                     Err(error) => Err(format!("Context alert delivery task failed: {}", error)),
