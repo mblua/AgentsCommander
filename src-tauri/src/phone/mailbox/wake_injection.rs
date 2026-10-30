@@ -14,6 +14,8 @@ use super::settle::{
     classify_injection_error, live_settle_action, live_wake_route, settle_tick, wake_settle_ready,
     LiveWakeRoute, STARTUP_SETTLE_THRESHOLD,
 };
+#[cfg(test)]
+use super::tests::CodexClearScannerFixture;
 use crate::phone::types::OutboxMessage;
 use crate::pty::inject::SettleReadiness;
 use crate::pty::manager::PtyManager;
@@ -121,11 +123,7 @@ impl MailboxPoller {
                 .await
                 .ok_or_else(|| format!("Session {} not found after test spawn", session.id))?;
             drop(mgr);
-            super::tests::CodexClearScannerFixture::prepare_spawned_clear_session(
-                app,
-                hooks,
-                inserted.id,
-            )?;
+            CodexClearScannerFixture::prepare_spawned_clear_session(app, hooks, inserted.id)?;
             return Ok(SessionInfo::from(&inserted));
         }
 

@@ -1,5 +1,6 @@
 use super::CodexClearScannerFixture;
 use crate::errors::AppError;
+use crate::filesystem::phone_mailbox::MailboxFaultGuard;
 use crate::phone::mailbox::clear_attempt::{persist_attempt, probe_attempt};
 use crate::phone::mailbox::handoff::{prune_retry_tracker, wake_claim_path, WakeHandoff};
 use crate::phone::mailbox::poller::MailboxPoller;
@@ -624,7 +625,7 @@ async fn issue_3371_fresh_and_resumed_real_watch_and_publication_only_recovery()
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn issue_3371_activated_reason_failure_then_restart_never_spawns_or_types_twice() {
     for seed in [Some(false), None, Some(true)] {
         for json_failure in [false, true] {
@@ -637,26 +638,63 @@ async fn issue_3371_activated_reason_failure_then_restart_never_spawns_or_types_
             } else {
                 "rejected/publication.reason.txt"
             });
-            std::fs::create_dir_all(&blocked).unwrap();
+            if json_failure {
+                std::fs::create_dir_all(blocked.parent().unwrap()).unwrap();
+            } else {
+                std::fs::create_dir_all(&blocked).unwrap();
+            }
             assert!(matches!(
                 fixture.claim(&mut poller, &source, msg),
                 WakeHandoff::Spawned
             ));
             let id = submitted(&backend, &fixture).await;
             failure_rows(&backend, id);
+            let fault = json_failure.then(|| MailboxFaultGuard::install_document_write(&blocked));
             finish(&mut poller).await;
+            assert!(fault.as_ref().is_none_or(|fault| fault.consumed()));
+            drop(fault);
+            if json_failure {
+                assert!(!blocked.exists());
+                assert_eq!(
+                    std::fs::read_to_string(blocked.with_extension("reason.txt")).unwrap(),
+                    KNOWN
+                );
+            }
             assert!(source.exists(), "failed publication restores actual claim");
             assert!(!wake_claim_path(&source).exists());
             assert!(probe_attempt(&std::fs::read_to_string(&source).unwrap())
                 .unwrap()
                 .is_some());
             let before = fixture.recorded_effect_counts();
+            let fault = json_failure.then(|| MailboxFaultGuard::install_document_write(&blocked));
             fixture.poll(&mut poller).await.unwrap();
+            assert!(fault.as_ref().is_none_or(|fault| fault.consumed()));
+            drop(fault);
+            if json_failure {
+                assert!(!blocked.exists());
+                assert!(source.exists());
+                assert_eq!(
+                    std::fs::read_to_string(blocked.with_extension("reason.txt")).unwrap(),
+                    KNOWN
+                );
+            }
             let mut restart = fixture.poller();
             std::fs::rename(&source, wake_claim_path(&source)).unwrap();
+            let fault = json_failure.then(|| MailboxFaultGuard::install_document_write(&blocked));
             fixture.poll(&mut restart).await.unwrap();
+            assert!(fault.as_ref().is_none_or(|fault| fault.consumed()));
+            drop(fault);
             assert_eq!(fixture.recorded_effect_counts(), before);
-            std::fs::remove_dir(&blocked).unwrap();
+            if json_failure {
+                assert!(!blocked.exists());
+                assert!(source.exists());
+                assert_eq!(
+                    std::fs::read_to_string(blocked.with_extension("reason.txt")).unwrap(),
+                    KNOWN
+                );
+            } else {
+                std::fs::remove_dir(&blocked).unwrap();
+            }
             fixture.poll(&mut restart).await.unwrap();
             assert!(!source.exists());
             assert_eq!(fixture.recorded_effect_counts(), before);
@@ -756,7 +794,7 @@ async fn issue_3371_actual_nine_observers_allow_other_codex_and_non_codex_delive
                 .await,
         );
     }
-    for slot in 0..9 {
+    for (slot, id) in ids.iter().take(9).enumerate() {
         let mut msg = message(&format!("clear-{slot}"));
         msg.to = format!("proj-a:wg-1-dev-team/member-{slot}");
         save(temp.path(), &msg);
@@ -768,10 +806,7 @@ async fn issue_3371_actual_nine_observers_allow_other_codex_and_non_codex_delive
         })
         .await
         .unwrap();
-        assert_eq!(
-            fixture.submission_state(ids[slot]).await,
-            (true, false, false)
-        );
+        assert_eq!(fixture.submission_state(*id).await, (true, false, false));
         if slot == 0 {
             let mut msg = message("below-cap");
             msg.to = "proj-a:wg-1-dev-team/member-9".into();
@@ -806,7 +841,7 @@ async fn issue_3371_actual_nine_observers_allow_other_codex_and_non_codex_delive
 }
 
 async fn await_delivered(
-    fixture: &CodexClearScannerFixture,
+    _fixture: &CodexClearScannerFixture,
     poller: &mut MailboxPoller,
     root: &Path,
     id: &str,

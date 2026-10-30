@@ -85,7 +85,6 @@ impl WakeLanes {
 }
 
 impl WakeLaneReservation {
-    #[cfg_attr(not(test), expect(dead_code, reason = "P04 activates the T2 callback"))]
     pub(crate) fn begin_observation(&self) {
         let mut active = self
             .owner
