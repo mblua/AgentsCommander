@@ -236,16 +236,40 @@ pub(super) async fn process_claimed<R: tauri::Runtime>(
     let prepared = snapshot_state
         .prepare_with_admission(admission, service_request)
         .await;
+    finalize_prepared(
+        &scanner_ownership,
+        &snapshot_state,
+        &response_directory,
+        &request,
+        request_id,
+        prepared,
+        &audit,
+    )
+    .await;
+}
+
+async fn finalize_prepared(
+    scanner_ownership: &ScannerTaskOwnership,
+    snapshot_state: &Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>,
+    response_directory: &std::path::Path,
+    request: &HostTerminalSnapshotRequest,
+    request_id: uuid::Uuid,
+    prepared: Result<
+        crate::pty::terminal_snapshot::TerminalSnapshotPrepared,
+        TerminalSnapshotReasonCode,
+    >,
+    audit: &crate::pty::terminal_snapshot::TerminalSnapshotAuditGuard,
+) {
     let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(reason) => {
             publish_admission_failure(
-                &snapshot_state,
-                &response_directory,
+                snapshot_state,
+                response_directory,
                 request_id,
                 &request.confirmation_tag,
                 reason,
-                &audit,
+                audit,
             )
             .await;
             return;
@@ -267,8 +291,8 @@ pub(super) async fn process_claimed<R: tauri::Runtime>(
     snapshot_state.run_host_cancellation_hook(
         crate::pty::terminal_snapshot::TerminalSnapshotHostCancellationStage::ResponseBytesReady,
     );
-    let response_directory_for_publish = response_directory.clone();
-    let state_for_publish = Arc::clone(&snapshot_state);
+    let response_directory_for_publish = response_directory.to_path_buf();
+    let state_for_publish = Arc::clone(snapshot_state);
     let confirmation_tag = request.confirmation_tag.clone();
     scanner_ownership.mark_finalizer();
     let task = match success_bytes {
