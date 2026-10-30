@@ -182,6 +182,45 @@ pub fn execute(args: TerminalSnapshotArgs, history: &SnapshotStageHistory) -> i3
     }
 }
 
+fn validate_snapshot_output(
+    format: TerminalSnapshotFormat,
+    output: Option<&Path>,
+) -> Result<(), TerminalSnapshotRejection> {
+    use TerminalSnapshotField as F;
+    use TerminalSnapshotReasonCode as C;
+    use TerminalSnapshotRejectionReason as R;
+
+    match (format, output) {
+        (TerminalSnapshotFormat::Json, None) => {}
+        (TerminalSnapshotFormat::Png, Some(output)) => {
+            crate::path_identity::validate_terminal_snapshot_output_path(output).map_err(
+                |reason| {
+                    TerminalSnapshotRejection::new(
+                        reason_code(&reason).unwrap_or(C::Internal),
+                        Some(F::Output),
+                        R::OutputPathRejected,
+                    )
+                },
+            )?;
+        }
+        (TerminalSnapshotFormat::Png, None) => {
+            return Err(TerminalSnapshotRejection::new(
+                C::InvalidRequest,
+                Some(F::Output),
+                R::OutputRequiredForPng,
+            ))
+        }
+        (TerminalSnapshotFormat::Json, Some(_)) => {
+            return Err(TerminalSnapshotRejection::new(
+                C::InvalidRequest,
+                Some(F::Output),
+                R::OutputForbiddenForJson,
+            ))
+        }
+    }
+    Ok(())
+}
+
 fn execute_inner(
     args: TerminalSnapshotArgs,
     history: &SnapshotStageHistory,
@@ -211,34 +250,7 @@ fn execute_inner(
         TerminalSnapshotRejection::new(C::InvalidRequest, Some(F::To), R::TargetSyntaxInvalid)
     })?;
     let format = TerminalSnapshotFormat::from(args.format);
-    match (format, args.output.as_deref()) {
-        (TerminalSnapshotFormat::Json, None) => {}
-        (TerminalSnapshotFormat::Png, Some(output)) => {
-            crate::path_identity::validate_terminal_snapshot_output_path(output).map_err(
-                |reason| {
-                    TerminalSnapshotRejection::new(
-                        reason_code(&reason).unwrap_or(C::Internal),
-                        Some(F::Output),
-                        R::OutputPathRejected,
-                    )
-                },
-            )?;
-        }
-        (TerminalSnapshotFormat::Png, None) => {
-            return Err(TerminalSnapshotRejection::new(
-                C::InvalidRequest,
-                Some(F::Output),
-                R::OutputRequiredForPng,
-            ))
-        }
-        (TerminalSnapshotFormat::Json, Some(_)) => {
-            return Err(TerminalSnapshotRejection::new(
-                C::InvalidRequest,
-                Some(F::Output),
-                R::OutputForbiddenForJson,
-            ))
-        }
-    }
+    validate_snapshot_output(format, args.output.as_deref())?;
 
     let (root_identity, from) = verify_requester_root(&args.root)?;
     let local = args.root.join(crate::config::agent_local_dir_name());
