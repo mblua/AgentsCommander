@@ -36,12 +36,6 @@ pub(crate) fn default_context_dynamic_values(
             replica directories."
             .to_string()
     };
-    enum MessagingContextMode {
-        None,
-        Workgroup(String),
-        Root(String),
-    }
-
     let matrix_section = match matrix_root {
         Some(matrix_root) => format!(
             "3. **Your origin Agent Matrix, but only for the canonical agent state listed \
@@ -71,49 +65,7 @@ pub(crate) fn default_context_dynamic_values(
             Err(_) => MessagingContextMode::None,
         }
     };
-    let workgroup_messaging_entry = match &messaging_mode {
-        MessagingContextMode::Workgroup(path) => Some(format!(
-            concat!(
-                r#"4. **Messaging access:**
-
-You MAY create message files inside this directory:
-
-```
-{path}
-```
-
-Strictly limited to canonical inter-agent message files whose name matches the pattern "#,
-                r#"`YYYYMMDD-HHMMSS-<roomN>-<you>-to-<roomN>-<peer>-<slug>.md` (the CLI rejects "#,
-                r#"any other shape). Do NOT modify or delete any message file once written. "#,
-                r#"Do NOT write any other kind of file here. You may also READ message "#,
-                r#"files inside this directory, and list your room root "#,
-                r#"(`room-<N>-*`) to resolve that directory's path.
-
-You MAY also READ exactly one specifically identified canonical inter-agent message file inside "#,
-                r#"another workspace or room's `messaging` directory, even "#,
-                r#"when its path is outside your own workspace or room, "#,
-                r#"only when either the user directly instructs you "#,
-                r#"in the active conversation to read or process "#,
-                r#"that file, or AgentsCommander provides "#,
-                r#"the canonical `[Message from <peer>] "#,
-                r#"Process this inter-agent message: "#,
-                r#"<path>` notification. The "#,
-                r#"instruction or "#,
-                r#"notification must "#,
-                r#"provide that "#,
-                r#"exact file "#,
-                r#"path without directory discovery, and the filename must match the canonical "#,
-                r#"pattern above. This authorization is read-only and limited to that file. "#,
-                r#"Do NOT list or explore the other workspace or room, read a second "#,
-                r#"external file or any other file or content there, or create, "#,
-                r#"write, modify, or delete anything in its `messaging` directory.
-
-"#
-            ),
-            path = path,
-        )),
-        MessagingContextMode::Root(_) | MessagingContextMode::None => None,
-    };
+    let workgroup_messaging_entry = workgroup_messaging_entry(&messaging_mode);
     let messaging_exception = match &messaging_mode {
         MessagingContextMode::Workgroup(_) => String::new(),
         MessagingContextMode::Root(path) => format!(
@@ -186,13 +138,82 @@ You MAY also READ exactly one specifically identified canonical inter-agent mess
         MessagingContextMode::Root(_) => " (other than the narrow messaging exception above)",
         MessagingContextMode::Workgroup(_) => "",
     };
+    let forbidden_read_scope = forbidden_read_scope(is_root_agent, messaging_read_phrase);
+    let git_scope = if is_root_agent {
+        ROOT_GIT_SCOPE
+    } else if matrix_root.is_some() {
+        WORKGROUP_GIT_SCOPE
+    } else {
+        DIRECT_MATRIX_GIT_SCOPE
+    }
+    .to_string();
+    let peer_name_format = match &messaging_mode {
+        MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified Room orchestrator \
+            replicas only, shaped `<project>:<room>/<agent>`, e.g. \
+            `agentscommander:room-15-dev-team/tech-lead`. Origin orchestrators and \
+            non-orchestrator Room replicas are not valid Root Agent targets in #277."
+            .to_string(),
+        _ => "- **Room replicas** (the common case): `<project>:<room>/<agent>`, e.g. \
+            `agentscommander:room-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/\
+            <agent>`, e.g. `agentscommander/architect`."
+            .to_string(),
+    };
+    let agency_cache_guidance = root_agency_cache_guidance(agent_root);
+    let send_message_instructions = send_message_instructions(&messaging_mode);
+
+    let (root_scope_section, root_authority_section) = if is_root_agent {
+        (
+            ROOT_PROJECT_SCOPE_ENTRY.to_string(),
+            ROOT_AUTHORITY_SECTION.to_string(),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+
+    // #1795: both entries come from ONE resolution of the agent root, so they are
+    // empty together or populated together. No `debug_assert!` that entry 4 implies
+    // entries 5 and 6: under the strict resolver a nested non-replica renders entry 4
+    // and must NOT render entries 5 and 6, so that implication is false by design.
+    let (project_shared_entry, room_shared_entry) = match replica_shared_roots(agent_root) {
+        Some((ac_root, room_root)) => (
+            render_project_shared_entry(&ac_root),
+            render_room_shared_entry(&room_root),
+        ),
+        None => (String::new(), String::new()),
+    };
+    DefaultContextDynamicValues {
+        replica_usage,
+        matrix_section,
+        workgroup_messaging_entry,
+        project_shared_entry,
+        room_shared_entry,
+        messaging_exception,
+        messaging_allowed,
+        forbidden_scope,
+        forbidden_read_scope,
+        git_scope,
+        agency_cache_guidance,
+        peer_name_format,
+        send_message_instructions,
+        root_scope_section,
+        root_authority_section,
+    }
+}
+
+enum MessagingContextMode {
+    None,
+    Workgroup(String),
+    Root(String),
+}
+
+fn forbidden_read_scope(is_root_agent: bool, messaging_read_phrase: &str) -> String {
     // #923: reads are now restricted to the same allowed entries as writes. The Root
     // Agent already holds a project-wide read grant, so it gets a scope sentence rather
     // than the peer-privacy clause that applies to every other agent. D2: that scope is
     // defined by `project-paths.json`, which lives in the app config dir OUTSIDE every
     // registered project in a normal install, so reading it must be granted explicitly
     // or the grant becomes self-referentially unreadable.
-    let forbidden_read_scope = if is_root_agent {
+    if is_root_agent {
         format!(
             "the entries listed above{ms}, except for explicitly requested AgentsCommander CLI \
                 operations covered by the exception below. Your Root Agent scope already grants \
@@ -218,28 +239,57 @@ You MAY also READ exactly one specifically identified canonical inter-agent mess
                 another agent holds, message that agent and ask.",
             ms = messaging_read_phrase,
         )
-    };
-    let git_scope = if is_root_agent {
-        ROOT_GIT_SCOPE
-    } else if matrix_root.is_some() {
-        WORKGROUP_GIT_SCOPE
-    } else {
-        DIRECT_MATRIX_GIT_SCOPE
     }
-    .to_string();
-    let peer_name_format = match &messaging_mode {
-        MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified Room orchestrator \
-            replicas only, shaped `<project>:<room>/<agent>`, e.g. \
-            `agentscommander:room-15-dev-team/tech-lead`. Origin orchestrators and \
-            non-orchestrator Room replicas are not valid Root Agent targets in #277."
-            .to_string(),
-        _ => "- **Room replicas** (the common case): `<project>:<room>/<agent>`, e.g. \
-            `agentscommander:room-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/\
-            <agent>`, e.g. `agentscommander/architect`."
-            .to_string(),
-    };
-    let agency_cache_guidance = root_agency_cache_guidance(agent_root);
-    let send_message_instructions = match &messaging_mode {
+}
+
+fn workgroup_messaging_entry(messaging_mode: &MessagingContextMode) -> Option<String> {
+    match messaging_mode {
+        MessagingContextMode::Workgroup(path) => Some(format!(
+            concat!(
+                r#"4. **Messaging access:**
+
+You MAY create message files inside this directory:
+
+```
+{path}
+```
+
+Strictly limited to canonical inter-agent message files whose name matches the pattern "#,
+                r#"`YYYYMMDD-HHMMSS-<roomN>-<you>-to-<roomN>-<peer>-<slug>.md` (the CLI rejects "#,
+                r#"any other shape). Do NOT modify or delete any message file once written. "#,
+                r#"Do NOT write any other kind of file here. You may also READ message "#,
+                r#"files inside this directory, and list your room root "#,
+                r#"(`room-<N>-*`) to resolve that directory's path.
+
+You MAY also READ exactly one specifically identified canonical inter-agent message file inside "#,
+                r#"another workspace or room's `messaging` directory, even "#,
+                r#"when its path is outside your own workspace or room, "#,
+                r#"only when either the user directly instructs you "#,
+                r#"in the active conversation to read or process "#,
+                r#"that file, or AgentsCommander provides "#,
+                r#"the canonical `[Message from <peer>] "#,
+                r#"Process this inter-agent message: "#,
+                r#"<path>` notification. The "#,
+                r#"instruction or "#,
+                r#"notification must "#,
+                r#"provide that "#,
+                r#"exact file "#,
+                r#"path without directory discovery, and the filename must match the canonical "#,
+                r#"pattern above. This authorization is read-only and limited to that file. "#,
+                r#"Do NOT list or explore the other workspace or room, read a second "#,
+                r#"external file or any other file or content there, or create, "#,
+                r#"write, modify, or delete anything in its `messaging` directory.
+
+"#
+            ),
+            path = path,
+        )),
+        MessagingContextMode::Root(_) | MessagingContextMode::None => None,
+    }
+}
+
+fn send_message_instructions(messaging_mode: &MessagingContextMode) -> String {
+    match messaging_mode {
         MessagingContextMode::Root(path) => format!(
             "Use only the JSON `name` values returned by `list-peers-lean`; Root sessions list \
                 verified Room orchestrator replicas only.\n\n\
@@ -282,44 +332,6 @@ You MAY also READ exactly one specifically identified canonical inter-agent mess
             `[Message from <peer>]` notification gives an absolute path, read that file, act, and \
             report here instead of using `send --send`.\n"
             .to_string(),
-    };
-
-    let (root_scope_section, root_authority_section) = if is_root_agent {
-        (
-            ROOT_PROJECT_SCOPE_ENTRY.to_string(),
-            ROOT_AUTHORITY_SECTION.to_string(),
-        )
-    } else {
-        (String::new(), String::new())
-    };
-
-    // #1795: both entries come from ONE resolution of the agent root, so they are
-    // empty together or populated together. No `debug_assert!` that entry 4 implies
-    // entries 5 and 6: under the strict resolver a nested non-replica renders entry 4
-    // and must NOT render entries 5 and 6, so that implication is false by design.
-    let (project_shared_entry, room_shared_entry) = match replica_shared_roots(agent_root) {
-        Some((ac_root, room_root)) => (
-            render_project_shared_entry(&ac_root),
-            render_room_shared_entry(&room_root),
-        ),
-        None => (String::new(), String::new()),
-    };
-    DefaultContextDynamicValues {
-        replica_usage,
-        matrix_section,
-        workgroup_messaging_entry,
-        project_shared_entry,
-        room_shared_entry,
-        messaging_exception,
-        messaging_allowed,
-        forbidden_scope,
-        forbidden_read_scope,
-        git_scope,
-        agency_cache_guidance,
-        peer_name_format,
-        send_message_instructions,
-        root_scope_section,
-        root_authority_section,
     }
 }
 
