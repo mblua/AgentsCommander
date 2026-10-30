@@ -10,10 +10,11 @@ use super::pty_claim::ResponseWakeWork;
 use super::pty_claim::{InternalSystemBookkeeping, MailboxTestEvent};
 use super::pty_observation::PtyAuthorityState;
 use super::settle::{err_is_pty_session_missing, internal_target_fqn_prefilter_matches};
-use crate::config::settings::SettingsState;
+use crate::config::agent_command::AgentSpawnCommand;
 use crate::phone::consumption::verdict_to_result;
 use crate::phone::consumption::ConsumptionVerdict;
 use crate::phone::types::OutboxMessage;
+use crate::pty::backend::ResolvedAgentHostShell;
 use crate::pty::inject::SettleReadiness;
 use crate::session::manager::SessionManager;
 use crate::session::session::Session;
@@ -23,6 +24,8 @@ use std::sync::Arc;
 use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+mod background_spawn;
 
 enum InternalLiveDelivery {
     Delivered,
@@ -86,40 +89,8 @@ impl MailboxPoller {
             spawn_with_resume = true;
         }
 
-        // Final pre-spawn authorization followed by a fresh exact-path enumeration. A
-        // supported recipient that appeared wins; this attempt returns stale rather than
-        // creating a duplicate.
-        self.authorize_internal_background_spawn(app, &target, &guard)
-            .await?;
-
-        let resolved_command = self
-            .resolve_internal_agent_command(app, &target)
-            .await?
-            .ok_or_else(|| {
-                format!(
-                    "No supported coding-agent command is configured for '{}'",
-                    target.fqn()
-                )
-            })?;
-        let agent_id = resolved_command.agent_id.as_deref().ok_or_else(|| {
-            format!(
-                "Resolved command for '{}' has no trusted coding-agent id",
-                target.fqn()
-            )
-        })?;
-        let cwd = target.replica_dir().to_string_lossy().to_string();
-        let settings_snapshot = {
-            let settings = app.state::<SettingsState>();
-            let snapshot = settings.read().await.clone();
-            snapshot
-        };
-        let (resolved_spawn, resolved_agent_host_shell) =
-            Self::resolve_internal_spawn_profile(settings_snapshot, agent_id, &cwd, &target)
-                .await?;
-
-        // Repeat the guard and exact-path absence check immediately before actuation. Command
-        // and profile resolution above can perform filesystem work and must not widen this race.
-        self.authorize_internal_background_spawn(app, &target, &guard)
+        let (resolved_command, cwd, resolved_spawn, resolved_agent_host_shell) = self
+            .prepare_internal_background_spawn(app, &target, &guard)
             .await?;
 
         if cancellation.is_cancelled() {
@@ -160,30 +131,8 @@ impl MailboxPoller {
             Some(resolved_spawn),
             resolved_agent_host_shell,
         );
-        tokio::pin!(spawn);
-        let spawn_result = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => {
-                return Err(
-                    "Context alert delivery was canceled during background spawn".to_string(),
-                );
-            }
-            result = &mut spawn => result,
-        };
-        let info = match spawn_result {
-            Ok(info) => info,
-            Err(error) => {
-                // #2413 A failed create restores its cleared close markers itself
-                // (commands::session::CoordinatorCreateTicket), for every caller.
-                return Err(format!(
-                    "Failed to spawn supported orchestrator session for '{}': {}",
-                    target.fqn(),
-                    error
-                ));
-            }
-        };
-        let session_id = Uuid::parse_str(&info.id)
-            .map_err(|e| format!("Invalid spawned orchestrator session id: {}", e))?;
+        let session_id =
+            background_spawn::await_internal_spawn(spawn, &cancellation, target.fqn()).await?;
 
         if carried_bot.is_some() {
             self.attach_persisted_telegram_for_wake(app, session_id, carried_bot.as_deref())
@@ -222,6 +171,63 @@ impl MailboxPoller {
         }
         self.inject_internal_system_notice(app, session_id, &target, &notice, guard)
             .await
+    }
+
+    async fn prepare_internal_background_spawn<S: PtyAuthorityState + ?Sized>(
+        &self,
+        app: &S,
+        target: &InternalSystemTarget,
+        guard: &InternalNoticeGuard,
+    ) -> Result<
+        (
+            ResolvedWakeAgentCommand,
+            String,
+            AgentSpawnCommand,
+            Option<ResolvedAgentHostShell>,
+        ),
+        String,
+    > {
+        // Final pre-spawn authorization followed by a fresh exact-path enumeration. A
+        // supported recipient that appeared wins; this attempt returns stale rather than
+        // creating a duplicate.
+        self.authorize_internal_background_spawn(app, target, guard)
+            .await?;
+
+        let resolved_command = self
+            .resolve_internal_agent_command(app, target)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "No supported coding-agent command is configured for '{}'",
+                    target.fqn()
+                )
+            })?;
+        let agent_id = resolved_command.agent_id.as_deref().ok_or_else(|| {
+            format!(
+                "Resolved command for '{}' has no trusted coding-agent id",
+                target.fqn()
+            )
+        })?;
+        let cwd = target.replica_dir().to_string_lossy().to_string();
+        let settings_snapshot = {
+            let settings = app.pty_settings();
+            let snapshot = settings.read().await.clone();
+            snapshot
+        };
+        let (resolved_spawn, resolved_agent_host_shell) =
+            Self::resolve_internal_spawn_profile(settings_snapshot, agent_id, &cwd, target).await?;
+
+        // Repeat the guard and exact-path absence check immediately before actuation. Command
+        // and profile resolution above can perform filesystem work and must not widen this race.
+        self.authorize_internal_background_spawn(app, target, guard)
+            .await?;
+
+        Ok((
+            resolved_command,
+            cwd,
+            resolved_spawn,
+            resolved_agent_host_shell,
+        ))
     }
 
     async fn authorize_internal_exited_session<S: PtyAuthorityState + ?Sized>(
@@ -732,6 +738,15 @@ impl MailboxPoller {
         if let Some(idle) = app.try_state::<Arc<crate::pty::idle_detector::IdleDetector>>() {
             idle.touch_silence(session_id);
         }
+        Self::log_internal_system_notice_delivery(session_id, target, notice);
+        Ok(())
+    }
+
+    fn log_internal_system_notice_delivery(
+        session_id: Uuid,
+        target: &InternalSystemTarget,
+        notice: &InternalSystemNotice,
+    ) {
         let (project, _) = crate::config::teams::split_project_prefix(target.fqn());
         match notice {
             // Byte-identical to the line this feature shipped, including the
@@ -774,7 +789,6 @@ impl MailboxPoller {
                 );
             }
         }
-        Ok(())
     }
 
     pub(crate) async fn has_pty_session_for_wake<
