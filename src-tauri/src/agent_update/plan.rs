@@ -1,5 +1,5 @@
-use super::emit_all;
 use super::gate::AgentUpdateGate;
+use super::{emit_all, AgentUpdateTasks, ManagedBroadcastEvents};
 use crate::agent_version::{
     probe_version_cancellable_retained, probe_version_in, version_probe_args, AgentInstallCache,
     CancellableProbeOutcome, Completion, InstallState, ProbeOutcome, ProbeTicket,
@@ -21,7 +21,6 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
-use tauri::AppHandle;
 
 /// One command's update run: the shell sequences to execute and where.
 #[derive(Debug, Clone)]
@@ -274,23 +273,29 @@ pub fn production_probe() -> ProbeFn {
 /// `lookup_or_begin`, so two overlapping calls can never open two tickets.
 /// #1967 P4 - `Err` when the persisted catalog is unavailable; nothing is probed or
 /// scheduled in that case.
-pub async fn update_overview(
-    app: &AppHandle,
+pub async fn update_overview<E>(
+    app: &E,
     settings: &SettingsState,
     gate: &AgentUpdateGate,
     cache: &Arc<AgentInstallCache>,
-) -> Result<Vec<AgentUpdateOverviewRow>, CatalogUnavailable> {
+) -> Result<Vec<AgentUpdateOverviewRow>, CatalogUnavailable>
+where
+    E: ManagedBroadcastEvents + AgentUpdateTasks + Clone + 'static,
+{
     update_overview_with(app, settings, gate, cache, production_probe()).await
 }
 
 /// `update_overview` with an injectable probe so the scheduling tests control timing.
-pub async fn update_overview_with(
-    app: &AppHandle,
+pub async fn update_overview_with<E>(
+    app: &E,
     settings: &SettingsState,
     gate: &AgentUpdateGate,
     cache: &Arc<AgentInstallCache>,
     probe: ProbeFn,
-) -> Result<Vec<AgentUpdateOverviewRow>, CatalogUnavailable> {
+) -> Result<Vec<AgentUpdateOverviewRow>, CatalogUnavailable>
+where
+    E: ManagedBroadcastEvents + AgentUpdateTasks + Clone + 'static,
+{
     let settings = settings
         .current_snapshot()
         .await
@@ -336,17 +341,16 @@ pub async fn update_overview_with(
 /// `update_overview_with` and the post-pass scheduling of `schedule_post_update_probes`
 /// both come through here. `tauri::async_runtime::spawn`, never `tokio::spawn`, so it
 /// runs from any caller context.
-pub(crate) fn spawn_probe_task(
-    app: &AppHandle,
-    command: &str,
-    ticket: ProbeTicket,
-    probe: ProbeFn,
-) {
+pub(crate) fn spawn_probe_task<E>(app: &E, command: &str, ticket: ProbeTicket, probe: ProbeFn)
+where
+    E: ManagedBroadcastEvents + AgentUpdateTasks + Clone + 'static,
+{
     let app = app.clone();
     let command = command.to_string();
-    tauri::async_runtime::spawn(async move {
+    let spawner = app.clone();
+    spawner.spawn_update_task(Box::pin(async move {
         probe_commit_announce(&app, &command, ticket, move |c| probe(c)).await;
-    });
+    }));
 }
 
 /// #1551 - the probe task body. Announces `agent_install_state_changed` ONLY for a state
@@ -355,7 +359,7 @@ pub(crate) fn spawn_probe_task(
 /// the ticket, which frees the slot so the next overview call schedules fresh work. At most
 /// two processes per command per overview call.
 pub(crate) async fn probe_commit_announce<F, Fut>(
-    app: &AppHandle,
+    app: &impl ManagedBroadcastEvents,
     command: &str,
     ticket: ProbeTicket,
     probe: F,

@@ -8,16 +8,15 @@ use super::notice::{
     validate_root_sender_payload, validate_root_sender_route, OutboxOrigin,
 };
 use super::poller::{MailboxPoller, OutboxAuthenticationFacts, OutboxStage, ValidatedWake};
-use super::pty_observation::PtyReadinessState;
+use super::pty_observation::{PtyAuthorityState, PtyReadinessState};
 use super::settle::session_has_current_pty_submission_provenance;
-use crate::config::settings::SettingsState;
 use crate::config::teams;
+use crate::filesystem::phone_mailbox;
 #[cfg(test)]
 use crate::phone::mailbox::classify_outbox_document;
 #[cfg(test)]
 use crate::phone::mailbox::OutboxClassification;
 use crate::phone::types::OutboxMessage;
-use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
 use crate::MasterToken;
@@ -277,9 +276,9 @@ impl MailboxPoller {
         .await
     }
 
-    async fn parse_and_normalize_outbox<R: tauri::Runtime>(
+    async fn parse_and_normalize_outbox<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         origin: OutboxOrigin,
         content: &str,
@@ -392,16 +391,16 @@ impl MailboxPoller {
         Ok(std::ops::ControlFlow::Continue((msg, outbox_project)))
     }
 
-    async fn normalize_outbox_recipient<R: tauri::Runtime>(
+    async fn normalize_outbox_recipient<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: &mut OutboxMessage,
         outbox_project: &Option<String>,
     ) -> OutboxStage {
         if !msg.to.is_empty() {
             let mut paths = {
-                let cfg = app.state::<SettingsState>();
+                let cfg = app.pty_settings();
                 let c = cfg.read().await;
                 c.project_paths.clone()
             };
@@ -441,16 +440,16 @@ impl MailboxPoller {
         Ok(std::ops::ControlFlow::Continue(()))
     }
 
-    async fn authenticate_outbox_session<R: tauri::Runtime>(
+    async fn authenticate_outbox_session<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: &OutboxMessage,
         token_str: &str,
     ) -> OutboxStage<(bool, bool)> {
         let token_belongs_to_root_agent;
         let saw_session_token;
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let session_mgr = app.pty_sessions();
         let mgr = session_mgr.read().await;
 
         if let Ok(token_uuid) = Uuid::parse_str(token_str) {
@@ -686,9 +685,9 @@ impl MailboxPoller {
         Ok(std::ops::ControlFlow::Continue(()))
     }
 
-    async fn authorize_comanaged_outbox<R: tauri::Runtime>(
+    async fn authorize_comanaged_outbox<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: &OutboxMessage,
         root_agent_recipient: bool,
@@ -698,7 +697,7 @@ impl MailboxPoller {
         // Root through the verified-coordinator validator, everything else
         // through `can_communicate`. An unreachable destination is rejected.
         let mut paths = {
-            let cfg = app.state::<SettingsState>();
+            let cfg = app.pty_settings();
             let c = cfg.read().await;
             c.project_paths.clone()
         };
@@ -709,9 +708,14 @@ impl MailboxPoller {
             .and_then(|room_root| room_root.parent().map(|ac_root| ac_root.to_path_buf()))
             .and_then(|ac_root| ac_root.parent().map(|project| project.to_path_buf()))
         {
-            let canon_project = std::fs::canonicalize(&project_dir).ok();
+            let canon_project = phone_mailbox::canonical_mailbox_path(&project_dir).ok();
             let already_present = paths.iter().any(|p| match &canon_project {
-                Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+                Some(canon_target) => {
+                    phone_mailbox::canonical_mailbox_path(Path::new(p))
+                        .ok()
+                        .as_ref()
+                        == Some(canon_target)
+                }
                 None => std::path::Path::new(p) == project_dir,
             });
             if !already_present {
@@ -747,9 +751,9 @@ impl MailboxPoller {
         Ok(std::ops::ControlFlow::Continue(()))
     }
 
-    async fn authorize_root_sender_outbox<R: tauri::Runtime>(
+    async fn authorize_root_sender_outbox<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: &OutboxMessage,
         outbox_project: &Option<String>,
@@ -757,14 +761,20 @@ impl MailboxPoller {
     ) -> OutboxStage {
         let (is_master, saw_session_token, token_belongs_to_root_agent) = authentication;
         let mut paths = {
-            let cfg = app.state::<SettingsState>();
+            let cfg = app.pty_settings();
             let c = cfg.read().await;
             c.project_paths.clone()
         };
         if let Some(root_project) = outbox_project.as_ref() {
-            let canon_root_project = std::fs::canonicalize(root_project).ok();
+            let canon_root_project =
+                phone_mailbox::canonical_mailbox_path(Path::new(root_project)).ok();
             let already_present = paths.iter().any(|p| match &canon_root_project {
-                Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+                Some(canon_target) => {
+                    phone_mailbox::canonical_mailbox_path(Path::new(p))
+                        .ok()
+                        .as_ref()
+                        == Some(canon_target)
+                }
                 None => p == root_project,
             });
             if !already_present {
@@ -796,9 +806,9 @@ impl MailboxPoller {
         Ok(std::ops::ControlFlow::Continue(()))
     }
 
-    async fn authorize_root_recipient_outbox<R: tauri::Runtime>(
+    async fn authorize_root_recipient_outbox<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: &OutboxMessage,
         outbox_project: &Option<String>,
@@ -810,14 +820,20 @@ impl MailboxPoller {
         // walk-up) so verified_wg_coordinator_target sees the project
         // where the outbox lives.
         let mut paths = {
-            let cfg = app.state::<SettingsState>();
+            let cfg = app.pty_settings();
             let c = cfg.read().await;
             c.project_paths.clone()
         };
         if let Some(root_project) = outbox_project.as_ref() {
-            let canon_root_project = std::fs::canonicalize(root_project).ok();
+            let canon_root_project =
+                phone_mailbox::canonical_mailbox_path(Path::new(root_project)).ok();
             let already_present = paths.iter().any(|p| match &canon_root_project {
-                Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+                Some(canon_target) => {
+                    phone_mailbox::canonical_mailbox_path(Path::new(p))
+                        .ok()
+                        .as_ref()
+                        == Some(canon_target)
+                }
                 None => p == root_project,
             });
             if !already_present {
@@ -841,9 +857,9 @@ impl MailboxPoller {
         Ok(std::ops::ControlFlow::Continue(()))
     }
 
-    async fn authorize_outbox_route<R: tauri::Runtime>(
+    async fn authorize_outbox_route<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: &OutboxMessage,
         origin: OutboxOrigin,

@@ -512,9 +512,13 @@ fn is_transient_replace_error(e: &io::Error) -> bool {
 /// handle kept open, and `ErrorKind::AlreadyExists` means "take the next
 /// ordinal", not failure.
 #[cfg(windows)]
-fn move_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+fn move_no_replace(
+    from: &Path,
+    to: &Path,
+    #[cfg(test)] faults: &MigrationPathFaults,
+) -> io::Result<()> {
     #[cfg(test)]
-    if let Some(kind) = take_migration_path_fault("move_no_replace", to) {
+    if let Some(kind) = faults.take("move_no_replace", to) {
         return Err(io::Error::new(kind, "injected move_no_replace failure"));
     }
     naming_journal::move_migration_file_no_replace(from, to)
@@ -523,14 +527,18 @@ fn move_no_replace(from: &Path, to: &Path) -> io::Result<()> {
 /// `hard_link` is create-only; `std::fs::rename` is not used here because a
 /// POSIX rename silently replaces an existing destination.
 #[cfg(not(windows))]
-fn move_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+fn move_no_replace(
+    from: &Path,
+    to: &Path,
+    #[cfg(test)] faults: &MigrationPathFaults,
+) -> io::Result<()> {
     #[cfg(test)]
-    if let Some(kind) = take_migration_path_fault("move_no_replace", to) {
+    if let Some(kind) = faults.take("move_no_replace", to) {
         return Err(io::Error::new(kind, "injected move_no_replace failure"));
     }
     naming_journal::link_migration_file(from, to)?;
     #[cfg(test)]
-    if let Some(kind) = take_migration_path_fault("remove_file", from) {
+    if let Some(kind) = faults.take("remove_file", from) {
         return Err(io::Error::new(kind, "injected remove_file failure"));
     }
     naming_journal::remove_migration_file(from)
@@ -632,6 +640,7 @@ fn set_aside(
     scope: &str,
     journal_dir: Option<&Path>,
     held: &ScopeLock,
+    #[cfg(test)] faults: &MigrationPathFaults,
 ) -> Outcome {
     let from_path = dir.join(from);
     for _ in 0..SET_ASIDE_CEILING {
@@ -641,7 +650,12 @@ fn set_aside(
         };
         migration_pause_hook("before_set_aside_move", dir);
         let candidate_path = dir.join(&candidate);
-        match move_no_replace(&from_path, &candidate_path) {
+        match move_no_replace(
+            &from_path,
+            &candidate_path,
+            #[cfg(test)]
+            faults,
+        ) {
             Ok(()) => {
                 return match commit_step(
                     journal_dir,
@@ -682,6 +696,7 @@ fn step(
     scope: &str,
     journal_dir: Option<&Path>,
     held: &ScopeLock,
+    #[cfg(test)] faults: &MigrationPathFaults,
 ) -> Outcome {
     let recorded = match read_journal(journal_dir) {
         Ok(journal) => journal.and_then(|j| j.step_state(scope, dir, from, to)),
@@ -701,7 +716,16 @@ fn step(
     };
     let settled = recorded.is_some_and(StepState::is_settled);
     match (from_present, to_present) {
-        (true, true) => set_aside(dir, from, to, scope, journal_dir, held),
+        (true, true) => set_aside(
+            dir,
+            from,
+            to,
+            scope,
+            journal_dir,
+            held,
+            #[cfg(test)]
+            faults,
+        ),
         (true, false) => {
             if let Err(refusal) =
                 commit_step(journal_dir, scope, dir, from, to, StepState::Renaming, None)
@@ -709,11 +733,25 @@ fn step(
                 return Outcome::Refused(refusal);
             }
             migration_pause_hook("before_rename", dir);
-            match move_no_replace(&from_path, &to_path) {
+            match move_no_replace(
+                &from_path,
+                &to_path,
+                #[cfg(test)]
+                faults,
+            ) {
                 Ok(()) => {}
                 // `to` appeared since the probe: both names present.
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                    return set_aside(dir, from, to, scope, journal_dir, held)
+                    return set_aside(
+                        dir,
+                        from,
+                        to,
+                        scope,
+                        journal_dir,
+                        held,
+                        #[cfg(test)]
+                        faults,
+                    )
                 }
                 Err(e) => {
                     let note = leftover_note(from, &to_path);
@@ -769,7 +807,16 @@ pub(crate) fn rename_step(
     journal_dir: Option<&Path>,
     held: &ScopeLock,
 ) -> Outcome {
-    step(dir, r.from, r.to, scope, journal_dir, held)
+    step(
+        dir,
+        r.from,
+        r.to,
+        scope,
+        journal_dir,
+        held,
+        #[cfg(test)]
+        &MigrationPathFaults::default(),
+    )
 }
 
 /// `rename_step` for every `dir` entry between `old_prefix` and `suffix`,
@@ -782,6 +829,30 @@ pub(crate) fn rename_prefix_family(
     scope: &str,
     journal_dir: Option<&Path>,
     held: &ScopeLock,
+) -> Vec<(String, Outcome)> {
+    rename_prefix_family_with_faults(
+        dir,
+        old_prefix,
+        new_prefix,
+        suffix,
+        scope,
+        journal_dir,
+        held,
+        #[cfg(test)]
+        &MigrationPathFaults::default(),
+    )
+}
+
+#[cfg_attr(test, allow(clippy::too_many_arguments))]
+fn rename_prefix_family_with_faults(
+    dir: &Path,
+    old_prefix: &str,
+    new_prefix: &str,
+    suffix: &str,
+    scope: &str,
+    journal_dir: Option<&Path>,
+    held: &ScopeLock,
+    #[cfg(test)] faults: &MigrationPathFaults,
 ) -> Vec<(String, Outcome)> {
     let entries = match naming_journal::migration_entries(dir) {
         Ok(entries) => entries,
@@ -807,7 +878,7 @@ pub(crate) fn rename_prefix_family(
     let mut names = Vec::new();
     for entry in entries {
         #[cfg(test)]
-        let entry = match take_migration_path_fault("read_dir_entry", dir) {
+        let entry = match faults.take("read_dir_entry", dir) {
             Some(kind) => Err(io::Error::new(kind, "injected read_dir entry failure")),
             None => entry,
         };
@@ -834,7 +905,16 @@ pub(crate) fn rename_prefix_family(
         .map(|from| {
             let middle = &from[old_prefix.len()..from.len() - suffix.len()];
             let to = format!("{new_prefix}{middle}{suffix}");
-            let outcome = step(dir, &from, &to, scope, journal_dir, held);
+            let outcome = step(
+                dir,
+                &from,
+                &to,
+                scope,
+                journal_dir,
+                held,
+                #[cfg(test)]
+                faults,
+            );
             (from, outcome)
         })
         .collect()
@@ -862,33 +942,29 @@ struct MigrationPathFault {
 }
 
 #[cfg(test)]
-thread_local! {
-    static MIGRATION_PATH_FAULTS: std::cell::RefCell<Vec<MigrationPathFault>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+#[derive(Default)]
+struct MigrationPathFaults {
+    faults: std::cell::RefCell<Vec<MigrationPathFault>>,
 }
 
-/// Arms one injected failure of `op` (`move_no_replace`, or `remove_file` off
-/// Windows) on `path`, for the current thread.
 #[cfg(test)]
-fn arm_migration_path_fault(op: &'static str, path: &Path, kind: io::ErrorKind) {
-    MIGRATION_PATH_FAULTS.with(|faults| {
-        faults.borrow_mut().push(MigrationPathFault {
+impl MigrationPathFaults {
+    /// Arms one exact operation/path failure for this scenario.
+    fn arm(&self, op: &'static str, path: &Path, kind: io::ErrorKind) {
+        self.faults.borrow_mut().push(MigrationPathFault {
             op,
             path: path.to_path_buf(),
             kind,
-        })
-    });
-}
+        });
+    }
 
-#[cfg(test)]
-fn take_migration_path_fault(op: &str, path: &Path) -> Option<io::ErrorKind> {
-    MIGRATION_PATH_FAULTS.with(|faults| {
-        let mut faults = faults.borrow_mut();
+    fn take(&self, op: &str, path: &Path) -> Option<io::ErrorKind> {
+        let mut faults = self.faults.borrow_mut();
         let index = faults
             .iter()
             .position(|fault| fault.op == op && fault.path == path)?;
         Some(faults.remove(index).kind)
-    })
+    }
 }
 
 /// A copy of the #2682 harness in `config/loops.rs`, which is inside the SCC

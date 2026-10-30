@@ -162,7 +162,7 @@ fn agent_update_emits_only_through_emit_all() {
         .collect();
     assert_eq!(
         production.join("\n").matches(".emit(").count(),
-        1,
+        0,
         "every agent-update emit must go through emit_all"
     );
     let children = [
@@ -184,23 +184,16 @@ fn agent_update_emits_only_through_emit_all() {
     }
     let emit_all_line = production
         .iter()
-        .position(|line| line.starts_with("fn emit_all("))
-        .expect("fn emit_all");
-    let emit_line = production
+        .position(|line| line.starts_with("fn emit_all<"))
+        .expect("generic fn emit_all");
+    let body_end = production[emit_all_line + 1..]
         .iter()
-        .position(|line| line.contains(".emit("))
-        .expect("the single .emit( call site");
-    let next_item = production[emit_all_line + 1..]
-        .iter()
-        .position(|line| {
-            line.starts_with("fn ") || line.starts_with("struct ") || line.starts_with("impl ")
-        })
+        .position(|line| *line == "}")
         .map(|offset| offset + emit_all_line + 1)
-        .unwrap_or(production.len());
-    assert!(
-        emit_all_line < emit_line && emit_line < next_item,
-        "the only .emit( must live inside emit_all"
-    );
+        .expect("emit_all body end");
+    let body = production[emit_all_line + 1..body_end].join("\n");
+    assert_eq!(body.matches(".managed_event(").count(), 1);
+    assert!(body.contains("app.managed_event(event, &payload)"));
 }
 
 // ---------------------------------------------------------------------

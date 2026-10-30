@@ -740,20 +740,21 @@ pub(super) fn source_budgets(sources: &SessionSources) -> bool {
 }
 
 pub(super) fn source_restart(sources: &SessionSources) -> bool {
-    let path = if sources.contains_key(RESTART_SOURCE) {
-        RESTART_SOURCE
-    } else {
-        SESSION_SOURCE
-    };
-    let Some(body) = sources.get(path).and_then(|s| function(s, RESTART_ENTRY)) else {
+    let source = sources
+        .get(RESTART_SOURCE)
+        .or_else(|| sources.get(SESSION_SOURCE));
+    let Some(body) = source.and_then(|s| function(s, RESTART_ENTRY)) else {
         return false;
     };
-    ordered(&body, &[
+    let needles = [
         RESTART_REFUSAL,
-        "crate::config::sessions_persistence::enforce_creation_gate(app,&cwd,enforcement).await?;",
-        "letretirement=", "retire_lifecycle_entry_protection(app,authority).await",
+        "crate::config::sessions_persistence::enforce_creation_gate\
+             (&settings,&cwd,enforcement).await?;",
+        "letretirement=",
+        "retire_lifecycle_entry_protection(app,authority).await",
         "teardown_old_for_restart(transaction,uuid,old_was_dormant).await",
-    ])
+    ];
+    ordered(&body, &needles)
 }
 
 fn all_source_predicates(sources: &SessionSources) -> bool {

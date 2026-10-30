@@ -119,7 +119,8 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
         // and no `finalize_failed_restart` runs. Root-agent restarts already
         // normalized `cwd` to `ensure_root_agent_dir()` above, which the gate
         // exempts by rule 1.
-        crate::config::sessions_persistence::enforce_creation_gate(app, &cwd, enforcement).await?;
+        crate::config::sessions_persistence::enforce_creation_gate(&settings, &cwd, enforcement)
+            .await?;
 
         // 2. Strip auto-injected args before restart so the new session starts from the saved
         // recipe.

@@ -28,21 +28,20 @@ mod plan;
 mod target;
 mod updater;
 
+use crate::agent_version::AgentInstallCache;
 use crate::agent_version::InstallState;
 #[cfg(test)]
 use crate::agent_version::InstallStatus;
 #[cfg(test)]
-use crate::agent_version::{AgentInstallCache, Completion, INSTALL_CACHE_TTL};
+use crate::agent_version::{Completion, INSTALL_CACHE_TTL};
 #[cfg(test)]
 use crate::config::agent_path::effective_search_path;
 use crate::config::agent_path::warm_login_shell_path;
 #[cfg(test)]
 use crate::config::coding_agents_catalog::load_catalog_for_settings;
-#[cfg(test)]
 use crate::config::settings::SettingsState;
 use crate::process::agent::update::OUTPUT_TAIL_BYTES;
-use crate::web::broadcast::WsBroadcaster;
-use crate::web::event_broadcast::broadcast_all;
+pub use crate::web::event_broadcast::ManagedBroadcastEvents;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -52,7 +51,6 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 #[cfg(test)]
 use std::path::{Path, PathBuf};
-#[cfg(test)]
 use std::pin::Pin;
 #[cfg(test)]
 use std::process::Stdio;
@@ -62,7 +60,17 @@ use std::sync::Arc;
 use std::time::Duration;
 #[cfg(test)]
 use std::time::Instant;
-use tauri::{AppHandle, Emitter, Manager};
+
+/// Detached update tasks run on the runtime selected by the command edge.
+pub trait AgentUpdateTasks: Send + Sync {
+    fn spawn_update_task(&self, task: Pin<Box<dyn Future<Output = ()> + Send + 'static>>);
+}
+
+/// Typed, lazy access preserves state lookup timing inside the update supervisor.
+pub trait AgentUpdateState: Send + Sync {
+    fn update_settings(&self) -> &SettingsState;
+    fn install_cache(&self) -> Option<&Arc<AgentInstallCache>>;
+}
 
 pub use cancellation::{cancel_all_updates, cancel_update};
 pub use gate::{AgentUpdateGate, AnswerClaim, ClaimedPrompt, PromptState};
@@ -283,7 +291,7 @@ pub struct AgentUpdateNode {
 /// No await sits between claim, emit and deliver: a cancelled call (a WebSocket connection
 /// dropped mid-command) either never claimed or completed all three.
 pub async fn answer_prompt<P, Fut>(
-    app: &AppHandle,
+    app: &impl ManagedBroadcastEvents,
     gate: &AgentUpdateGate,
     command: &str,
     enabled: bool,
@@ -345,20 +353,15 @@ where
 /// tests that build a bare mock app working. The scrape test
 /// `agent_update_emits_only_through_emit_all` pins that this is the only
 /// `.emit(` call site of the production part of this file.
-fn emit_all(app: &AppHandle, event: &str, payload: Value) {
-    match app.try_state::<WsBroadcaster>() {
-        Some(broadcaster) => broadcast_all(app, &broadcaster, event, &payload),
-        None => {
-            let _ = app.emit(event, payload);
-        }
-    }
+fn emit_all<E: ManagedBroadcastEvents + ?Sized>(app: &E, event: &str, payload: Value) {
+    let _ = app.managed_event(event, &payload);
 }
 
 /// Exercise the production event serializer/broadcaster for transport parity.
 /// The WebSocket transport test compares the untouched text frames emitted by
 /// this same path for both Tauri- and Web-routed cancellation state.
 #[cfg(test)]
-pub(crate) fn emit_agent_update_transport_contract_for_test(app: &AppHandle) {
+pub(crate) fn emit_agent_update_transport_contract_for_test(app: &impl ManagedBroadcastEvents) {
     emit_all(
         app,
         "agent_update_command_verifying",
@@ -393,7 +396,10 @@ pub(crate) fn emit_agent_update_transport_contract_for_test(app: &AppHandle) {
 /// The public startup await owns only a completion receiver. The private
 /// supervisor task owns every target and finalization fence, so aborting or
 /// dropping this outer future cannot abort the pass.
-pub async fn run_startup_updates(app: AppHandle, gate: Arc<AgentUpdateGate>) {
+pub async fn run_startup_updates<E>(app: E, gate: Arc<AgentUpdateGate>)
+where
+    E: ManagedBroadcastEvents + AgentUpdateTasks + AgentUpdateState + Clone + 'static,
+{
     warm_login_shell_path().await;
     let completion = PassSupervisor::spawn(app, gate);
     let _ = completion.await;

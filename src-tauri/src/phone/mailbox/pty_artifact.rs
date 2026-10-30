@@ -1,7 +1,7 @@
 use super::poller::MailboxPoller;
 use super::pty_claim::write_atomic_pty_metadata;
+use super::pty_observation::PtyAuthorityState;
 use super::settle::{reason_code_name, CorrelatedHostPtyMetadata};
-use crate::config::settings::SettingsState;
 use crate::filesystem::phone_mailbox;
 use std::path::Path;
 use std::sync::Arc;
@@ -58,9 +58,9 @@ impl MailboxPoller {
         }
     }
 
-    async fn correlated_host_pty_metadata<R: tauri::Runtime>(
+    async fn correlated_host_pty_metadata<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         envelope: &crate::phone::types::PtyInputHostEnvelope,
     ) -> Option<CorrelatedHostPtyMetadata> {
@@ -120,7 +120,7 @@ impl MailboxPoller {
                 })
         };
         let in_memory_paths = {
-            let settings = app.state::<SettingsState>();
+            let settings = app.pty_settings();
             let paths = settings.read().await.project_paths.clone();
             paths
         };
@@ -168,9 +168,9 @@ impl MailboxPoller {
         })
     }
 
-    async fn reject_unavailable_store_pty_candidate<R: tauri::Runtime>(
+    async fn reject_unavailable_store_pty_candidate<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         source_identity: &crate::path_identity::VerifiedPathIdentity,
         envelope: &crate::phone::types::PtyInputHostEnvelope,
@@ -232,9 +232,9 @@ impl MailboxPoller {
         true
     }
 
-    async fn reject_correlated_host_pty_candidate<R: tauri::Runtime>(
+    async fn reject_correlated_host_pty_candidate<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         source_identity: &crate::path_identity::VerifiedPathIdentity,
         store: &crate::api::message_store::MessageStore,
@@ -315,7 +315,7 @@ impl MailboxPoller {
                 })
         };
         let in_memory_paths = {
-            let settings = app.state::<SettingsState>();
+            let settings = app.pty_settings();
             let paths = settings.read().await.project_paths.clone();
             paths
         };

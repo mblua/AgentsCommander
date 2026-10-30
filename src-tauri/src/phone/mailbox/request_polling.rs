@@ -12,6 +12,34 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::Manager;
 
+fn archive_id_is_plain(id: &str) -> bool {
+    let stem = id
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ');
+    let device = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+        .iter()
+        .any(|name| stem.eq_ignore_ascii_case(name));
+    let port = stem.get(..3).is_some_and(|prefix| {
+        (prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
+            && matches!(
+                stem.get(3..),
+                Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+            )
+    });
+    let mut components = Path::new(id).components();
+    let plain = matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none();
+    !(id.is_empty()
+        || id == "."
+        || id == ".."
+        || id.contains(['/', '\\', ':', '\0'])
+        || !plain
+        || device
+        || port)
+}
+
 impl MailboxPoller {
     /// Move an outbox message to outbox/delivered/ with token stripped.
     pub(crate) async fn move_to_delivered<R: tauri::Runtime>(
@@ -28,7 +56,18 @@ impl MailboxPoller {
         let mut stripped = msg.clone();
         stripped.token = None;
 
-        let dest = delivered_dir.join(format!("{}.json", msg.id));
+        let filename = if archive_id_is_plain(&msg.id) {
+            std::ffi::OsString::from(format!("{}.json", msg.id))
+        } else {
+            let origin = super::handoff::wake_claim_origin(path);
+            origin
+                .as_deref()
+                .unwrap_or(path)
+                .file_name()
+                .ok_or("No source basename for delivered archive")?
+                .to_os_string()
+        };
+        let dest = delivered_dir.join(filename);
         let json = serde_json::to_string_pretty(&stripped)
             .map_err(|e| format!("Failed to serialize: {}", e))?;
         mailbox_disk::write_mailbox_document(&dest, json)
@@ -50,6 +89,12 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         reason: &str,
     ) -> Result<(), String> {
+        if !archive_id_is_plain(&msg.id) {
+            Self::reject_raw_file(path, reason)?;
+            self.settle_response_source(path, false);
+            return Ok(());
+        }
+
         let rejected_dir = path.parent().ok_or("No parent dir")?.join("rejected");
         mailbox_disk::ensure_mailbox_archive_directory(&rejected_dir)
             .map_err(|e| format!("Failed to create rejected dir: {}", e))?;

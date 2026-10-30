@@ -390,12 +390,8 @@ async fn unavailable_project_state_refuses_creation_and_blocked_menu_mutation() 
     };
     let state: crate::config::settings::SettingsState =
         crate::config::settings::new_settings_state(settings.clone());
-    let app = tauri::test::mock_builder()
-        .manage(state)
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
     let creation_result = super::enforce_creation_gate(
-        app.handle(),
+        &state,
         &dir.to_string_lossy(),
         super::CreationGateEnforcement::Enforce,
     )

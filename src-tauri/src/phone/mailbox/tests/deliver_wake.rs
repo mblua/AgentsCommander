@@ -778,3 +778,204 @@ fn gate_reports_busy_when_same_peer_has_busy_and_resize_unsettled_sessions() {
         "resize_unsettled must not mask a busy live session on the same peer"
     );
 }
+
+#[cfg(not(windows))]
+fn rejection_devices() -> Vec<String> {
+    let mut ids: Vec<_> = "CON|PRN|AUX|CONIN$|CONOUT$|cOn.txt|COM1 .txt"
+        .split('|')
+        .map(str::to_owned)
+        .collect();
+    for prefix in ["COM", "LPT"] {
+        for digit in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "¹", "²", "³"] {
+            ids.push(format!("{prefix}{digit}"));
+        }
+    }
+    ids
+}
+fn rejection_inventory(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, dir: &Path, rows: &mut Vec<(PathBuf, Vec<u8>)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let relative = path.strip_prefix(root).unwrap().components().collect();
+            if path.is_dir() {
+                rows.push((relative, Vec::new()));
+                visit(root, &path, rows);
+            } else {
+                rows.push((relative, std::fs::read(path).unwrap()));
+            }
+        }
+    }
+    let mut rows = Vec::new();
+    visit(root, root, &mut rows);
+    rows.sort();
+    rows
+}
+fn rejection_case(id: &str, raw: bool, failure: u8) {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let inbox = root.join("inbox");
+    let rejected = inbox.join("rejected");
+    std::fs::create_dir_all(&rejected).unwrap();
+    std::fs::write(root.join("sentinel"), b"unchanged").unwrap();
+    let ads_file = root.join("ads-file");
+    std::fs::write(&ads_file, b"regular-file").unwrap();
+    let id = match id {
+        "@absolute" => root.join("absolute").to_string_lossy().into_owned(),
+        "@drive-absolute" => {
+            root.to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_owned()
+                + r"\drive-absolute"
+        }
+        "@verbatim" => root.to_string_lossy().into_owned() + r"\verbatim",
+        "@ads" => ads_file.to_string_lossy().into_owned() + ":stream",
+        other => other.to_owned(),
+    };
+    #[cfg(windows)]
+    if id.contains(":stream") {
+        for suffix in [".json", ".reason.txt"] {
+            std::fs::write(format!("{id}{suffix}"), b"stream-sentinel").unwrap();
+        }
+    }
+    let source = inbox.join("actual-source.json");
+    let mut msg = wake_message_to_target();
+    msg.id = id.clone();
+    msg.token = Some("retained-secret".into());
+    let bytes = serde_json::to_vec(&msg).unwrap();
+    if failure != 1 {
+        std::fs::write(&source, &bytes).unwrap();
+    }
+    if failure == 2 {
+        std::fs::create_dir(rejected.join("actual-source.reason.txt")).unwrap();
+    }
+    let mut expected = rejection_inventory(&root);
+    let poller = MailboxPoller::delivery_only_for_tests();
+    let state = crate::pty::manager::ResponseCloseState::default();
+    let mut admission = state.reserve_work(&msg.to, "rejection-work").unwrap();
+    admission.accept_durable("digest").unwrap();
+    drop(admission);
+    poller.response_sources.lock().unwrap().insert(
+        source.clone(),
+        ResponseWakeWork {
+            diagnostic_message_id: None,
+            state,
+            target: msg.to.clone(),
+            key: "rejection-work".into(),
+            digest: "digest".into(),
+            attempt: Arc::default(),
+            return_context: None,
+            return_routes: None,
+            delivery_context: None,
+        },
+    );
+    let result = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(poller.reject_message(&source, &msg, "unchanged reason"));
+    if failure == 1 {
+        let missing = inbox.join("other-missing.json");
+        assert_eq!(
+            result,
+            MailboxPoller::reject_raw_file(&missing, "unchanged reason")
+        );
+    } else {
+        expected.retain(|(path, _)| path != Path::new("inbox/actual-source.json"));
+        let archive = if raw { "actual-source" } else { &id };
+        let archived_bytes = if raw {
+            bytes
+        } else {
+            msg.token = None;
+            serde_json::to_string_pretty(&msg).unwrap().into_bytes()
+        };
+        expected.push((
+            PathBuf::from(format!("inbox/rejected/{archive}.json")),
+            archived_bytes,
+        ));
+        if failure == 2 {
+            assert_eq!(result, Err("Failed to write reason file".into()));
+        } else {
+            assert_eq!(result, Ok(()));
+            expected.push((
+                PathBuf::from(format!("inbox/rejected/{archive}.reason.txt")),
+                b"unchanged reason".to_vec(),
+            ));
+        }
+    }
+    for (path, _) in &mut expected {
+        *path = path.components().collect();
+    }
+    expected.sort();
+    assert_eq!(rejection_inventory(&root), expected, "id={id:?}");
+    let sources = poller.response_sources.lock().unwrap();
+    let unsettled = sources.contains_key(&source);
+    assert_eq!(unsettled, failure != 0);
+    #[cfg(windows)]
+    if id.contains(":stream") {
+        for suffix in [".json", ".reason.txt"] {
+            assert_eq!(
+                std::fs::read(format!("{id}{suffix}")).unwrap(),
+                b"stream-sentinel"
+            );
+        }
+    }
+}
+fn rejection_table(ids: Vec<String>, raw: bool) {
+    let mut failures = Vec::new();
+    for id in ids {
+        match std::panic::catch_unwind(|| rejection_case(&id, raw, 0)) {
+            Ok(()) => println!("PASS id={id:?}"),
+            Err(_) => failures.push(id),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "fallback assertions failed for ids: {failures:?}"
+    );
+}
+#[test]
+fn reject_message_hostile_ids_use_source_basename() {
+    let mut ids: Vec<_> = "|.|..|../escape|nested/slash|nested\\backslash|@absolute|NUL"
+        .split('|')
+        .map(str::to_owned)
+        .collect();
+    ids.push(String::from(char::from(0)));
+    #[cfg(not(windows))]
+    {
+        ids.extend(
+            [
+                "C:relative",
+                "C:/absolute",
+                r"C:\absolute",
+                r"\\server\share\escape",
+                r"\\?\C:\escape",
+                r"\\.\COM1",
+                "a:b",
+            ]
+            .map(str::to_owned),
+        );
+        ids.extend(rejection_devices());
+    }
+    #[cfg(windows)]
+    ids.extend(["@drive-absolute", "@verbatim", "@ads"].map(str::to_owned));
+    rejection_table(ids, true);
+}
+#[test]
+fn reject_message_valid_id_keeps_stripped_archive_and_reason() {
+    rejection_case("8f9d3c54-51c2-4f64-9c54-59afdbde150e", false, 0);
+}
+#[test]
+fn reject_message_plain_non_uuid_id_keeps_existing_behavior() {
+    rejection_table(
+        "msg-sr-origin-switch|embedded.dot|雪|with space|tail.|tail "
+            .split('|')
+            .map(str::to_owned)
+            .collect(),
+        false,
+    );
+}
+#[test]
+fn reject_message_invalid_id_fallback_error_preserves_error() {
+    for failure in [1, 2] {
+        rejection_case("../escape", true, failure);
+    }
+}

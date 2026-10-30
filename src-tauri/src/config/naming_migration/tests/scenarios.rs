@@ -170,6 +170,7 @@ fn an_outsider_created_ordinal_is_never_replaced() {
 #[test]
 fn a_failed_set_aside_move_never_loses_bytes_and_never_leaves_a_stub() {
     let f = fixture();
+    let faults = MigrationPathFaults::default();
     put(&f.data, FROM, b"old");
     put(&f.data, TO, b"new");
     prime_locks(&f.data);
@@ -178,12 +179,21 @@ fn a_failed_set_aside_move_never_loses_bytes_and_never_leaves_a_stub() {
     #[cfg(windows)]
     {
         let candidate = f.data.join(aside(1));
-        arm_migration_path_fault(
+        faults.arm(
             "move_no_replace",
             &candidate,
             io::ErrorKind::PermissionDenied,
         );
-        let outcomes = run_scope(&f.data, &[STEP], SCOPE, Some(&f.cfg));
+        let outcomes = run_scope_with_faults(
+            &f.data,
+            &[STEP],
+            None,
+            SCOPE,
+            Some(&f.cfg),
+            MIGRATION_LOCK_BUDGET,
+            &faults,
+        )
+        .expect("scope ran");
         match outcomes.as_slice() {
             [Outcome::Refused(Refusal::Io(message))] => {
                 assert!(message.contains(&aside(1)), "{message}")
@@ -195,12 +205,21 @@ fn a_failed_set_aside_move_never_loses_bytes_and_never_leaves_a_stub() {
 
     #[cfg(unix)]
     {
-        arm_migration_path_fault(
+        faults.arm(
             "remove_file",
             &f.data.join(FROM),
             io::ErrorKind::PermissionDenied,
         );
-        let outcomes = run_scope(&f.data, &[STEP], SCOPE, Some(&f.cfg));
+        let outcomes = run_scope_with_faults(
+            &f.data,
+            &[STEP],
+            None,
+            SCOPE,
+            Some(&f.cfg),
+            MIGRATION_LOCK_BUDGET,
+            &faults,
+        )
+        .expect("scope ran");
         assert!(
             matches!(outcomes.as_slice(), [Outcome::Refused(Refusal::Io(_))]),
             "{outcomes:?}"
@@ -212,7 +231,16 @@ fn a_failed_set_aside_move_never_loses_bytes_and_never_leaves_a_stub() {
         let notes = journal(&f.cfg).scope(SCOPE).expect("scope").notes.clone();
         assert!(notes.iter().any(|n| n.contains("leftover")), "{notes:?}");
         assert_eq!(
-            run_scope(&f.data, &[STEP], SCOPE, Some(&f.cfg)),
+            run_scope_with_faults(
+                &f.data,
+                &[STEP],
+                None,
+                SCOPE,
+                Some(&f.cfg),
+                MIGRATION_LOCK_BUDGET,
+                &faults,
+            )
+            .expect("scope ran"),
             vec![Outcome::SetAside(aside(2))]
         );
         assert_complete(&f.cfg, SCOPE);
@@ -222,16 +250,18 @@ fn a_failed_set_aside_move_never_loses_bytes_and_never_leaves_a_stub() {
 #[test]
 fn a_family_enumeration_error_refuses_and_the_scope_cannot_complete() {
     let f = fixture();
+    let faults = MigrationPathFaults::default();
     put(&f.data, "legacy.backup.1.json", b"backup one");
     let family = Some(("legacy.backup.", "target.backup.", ".json"));
-    arm_migration_path_fault("read_dir_entry", &f.data, io::ErrorKind::PermissionDenied);
-    let outcomes = run_scope_with(
+    faults.arm("read_dir_entry", &f.data, io::ErrorKind::PermissionDenied);
+    let outcomes = run_scope_with_faults(
         &f.data,
         &[],
         family,
         SCOPE,
         Some(&f.cfg),
         MIGRATION_LOCK_BUDGET,
+        &faults,
     )
     .expect("the scope ran");
     assert!(
@@ -245,13 +275,14 @@ fn a_family_enumeration_error_refuses_and_the_scope_cannot_complete() {
         Some(b"backup one".to_vec())
     );
 
-    let outcomes = run_scope_with(
+    let outcomes = run_scope_with_faults(
         &f.data,
         &[],
         family,
         SCOPE,
         Some(&f.cfg),
         MIGRATION_LOCK_BUDGET,
+        &faults,
     )
     .expect("the scope ran again");
     assert_eq!(outcomes, vec![Outcome::Renamed]);

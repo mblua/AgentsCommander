@@ -1,4 +1,5 @@
 use crate::filesystem::projects;
+use crate::filesystem::settings_sources;
 use std::ops::ControlFlow;
 use std::path::Path;
 
@@ -206,7 +207,7 @@ pub(super) fn validate_fs_candidate(syntactic: &Path) -> SideOutcome {
 /// project or a legacy one-level collection root. A permission/I-O failure that
 /// prevents proving a collection root is surfaced, never flattened to "missing".
 pub(super) fn probe_project_kind(target: &Path) -> Result<ProjectKind, ProbeError> {
-    match std::fs::metadata(target.join(".ac")) {
+    match settings_sources::marker(&target.join(".ac")) {
         Ok(md) if md.is_dir() => return Ok(ProjectKind::DirectProject),
         Ok(_) => {}
         Err(e) => match e.kind() {
@@ -239,7 +240,7 @@ pub(super) fn probe_project_kind(target: &Path) -> Result<ProjectKind, ProbeErro
                 return ControlFlow::Continue(());
             }
         }
-        match std::fs::metadata(child.join(".ac")) {
+        match settings_sources::marker(&child.join(".ac")) {
             Ok(md) if md.is_dir() => ControlFlow::Break(()),
             Ok(_) => ControlFlow::Continue(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => ControlFlow::Continue(()),

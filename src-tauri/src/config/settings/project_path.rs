@@ -9,6 +9,7 @@ use super::{
     AGENTS_INSTANCE_KEYS, CONFIGURATION_COMMAND_PAIRS,
 };
 use crate::config::local_overlay::{DerivedIdClosure, LocalSettingsOverlay};
+use crate::filesystem::settings_sources;
 pub(crate) use resolution::{
     ProjectPathPersistenceState, ProjectSource, RawJsonField, RawPair, RawStringField, RepairKind,
     ResolvedPair, StructuralIssue,
@@ -217,7 +218,7 @@ pub(crate) fn read_merged_top_level_key(path: &Path, key: &str) -> Option<Value>
         !OVERLAY_PREMIGRATION_UNSAFE_KEYS.contains(&key),
         "#1737 D16: {key} is rewritten after the merge; read it through parse_settings_json"
     );
-    let mut value = std::fs::read_to_string(path)
+    let mut value = settings_sources::text(path)
         .ok()
         .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
         .filter(Value::is_object)
