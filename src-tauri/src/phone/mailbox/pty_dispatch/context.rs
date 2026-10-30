@@ -5,7 +5,10 @@ use crate::api::message_store::{
     PtyInputTargetGate, PtyInputTargetGuard,
 };
 use crate::config::teams::VerifiedPtyInputIdentity;
-use crate::phone::mailbox::pty_claim::PtyInputPreBoundaryStop;
+use crate::phone::mailbox::pty_claim::{
+    finish_pty_input_before_boundary, refresh_pty_claim_for_resume,
+    reject_pty_input_before_boundary, PtyClaimRefresh, PtyInputPreBoundaryStop,
+};
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
@@ -219,4 +222,94 @@ pub(super) async fn dispatch_selection_candidates<
         saw_live_inconsistent,
         saw_live_temporary,
     }
+}
+
+pub(crate) struct PreparedDispatchClaim {
+    pub(crate) claimed: ClaimedPtyInputOperation,
+    pub(crate) lease_owner: String,
+    pub(crate) expires: chrono::DateTime<chrono::Utc>,
+    pub(crate) heartbeat: PreparationHeartbeatGuard,
+}
+
+pub(crate) async fn prepare_dispatch_claim(
+    context: &InitialDispatchContext<'_>,
+) -> Option<PreparedDispatchClaim> {
+    let InitialDispatchContext {
+        store,
+        initial,
+        injection_id,
+        source_plane,
+        ..
+    } = *context;
+    use crate::phone::types::{PtyInputPublicStatus as S, PtyInputReasonCode as C};
+    let lease_owner = Uuid::new_v4().to_string();
+    let claimed = match store
+        .claim_pty_input_offloaded(
+            source_plane,
+            Some(injection_id.to_string()),
+            lease_owner.clone(),
+            chrono::Utc::now(),
+        )
+        .await
+    {
+        Ok(Some(claimed)) => claimed,
+        _ => return None,
+    };
+    let expires = match crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at) {
+        Ok(expires) => expires,
+        Err(_) => {
+            if store
+                .terminalize_pty_input_offloaded(
+                    injection_id.to_string(),
+                    S::Rejected,
+                    Some(C::StoreCorrupt),
+                    chrono::Utc::now(),
+                )
+                .await
+                .is_err()
+            {
+                log::warn!(
+                    "[pty-input] corrupt-expiry rejection failed id={} \
+                        code=terminal_store_failed",
+                    injection_id
+                );
+            }
+            return None;
+        }
+    };
+    let mut heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
+        Arc::clone(store),
+        injection_id.to_string(),
+        lease_owner.clone(),
+        expires,
+    );
+    if expires <= chrono::Utc::now() {
+        reject_pty_input_before_boundary(store, &mut heartbeat, injection_id, C::Expired).await;
+        return None;
+    }
+    match refresh_pty_claim_for_resume(store, initial, &claimed).await {
+        Ok(PtyClaimRefresh::Current) => {}
+        Ok(PtyClaimRefresh::Terminal) => {
+            heartbeat.finish().await;
+            return None;
+        }
+        Err(code) => {
+            finish_pty_input_before_boundary(
+                store,
+                &mut heartbeat,
+                injection_id,
+                &lease_owner,
+                code,
+            )
+            .await;
+            return None;
+        }
+    }
+
+    Some(PreparedDispatchClaim {
+        claimed,
+        lease_owner,
+        expires,
+        heartbeat,
+    })
 }

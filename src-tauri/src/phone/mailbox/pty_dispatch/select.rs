@@ -27,10 +27,10 @@ use std::{
 use tauri::Manager;
 use uuid::Uuid;
 
-/// Mutable guards retained through the final validation and write boundary.
-pub(super) struct BoundaryWriteGuards<'a> {
-    pub(super) permit: &'a mut Option<crate::pty::manager::PtyInputPermit>,
-    pub(super) final_api_guard: &'a mut Option<crate::api::auth::ApiClientFreshGuard>,
+/// Owned fresh guard and input permit retained through validation and the write boundary.
+pub(super) struct BoundaryWriteGuards {
+    pub(super) final_api_guard: Option<crate::api::auth::ApiClientFreshGuard>,
+    pub(super) permit: crate::pty::manager::PtyInputPermit,
 }
 
 impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
@@ -574,9 +574,12 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         context: &PtyDispatchContext<'_>,
         guards: &mut PtyDispatchGuards<'_>,
         selection: &DispatchSelection<'_>,
-        permit: &mut Option<crate::pty::manager::PtyInputPermit>,
-        final_api_guard: &mut Option<crate::api::auth::ApiClientFreshGuard>,
-    ) -> Result<BoundaryAuthority, bool> {
+        write_guards: BoundaryWriteGuards,
+    ) -> Result<(BoundaryAuthority, BoundaryWriteGuards), bool> {
+        let BoundaryWriteGuards {
+            permit,
+            mut final_api_guard,
+        } = write_guards;
         let app = self.app;
 
         use crate::phone::types::{PtyInputPublicStatus as S, PtyInputReasonCode as C};
@@ -606,7 +609,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 drop(final_api_guard.take());
                 drop(guards.target_guard.take());
                 drop(guards.target_stripe.take());
-                drop(permit.take());
+                drop(permit);
                 finish_owned_pty_work(app, guards.owned_work, observed).await;
                 if terminal.is_err() {
                     log::error!(
@@ -643,7 +646,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                     drop(final_api_guard.take());
                     drop(guards.target_guard.take());
                     drop(guards.target_stripe.take());
-                    drop(permit.take());
+                    drop(permit);
                     finish_owned_pty_work(app, guards.owned_work, observed).await;
                     if terminal.is_err() {
                         log::error!(
@@ -679,7 +682,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             drop(final_api_guard.take());
             drop(guards.target_guard.take());
             drop(guards.target_stripe.take());
-            drop(permit.take());
+            drop(permit);
             finish_owned_pty_work(app, guards.owned_work, observed).await;
             if terminal.is_err() {
                 log::error!(
@@ -690,29 +693,31 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             return Err(false);
         }
 
-        Ok(BoundaryAuthority {
-            manager,
-            idle_detector,
-            authority_id,
-            authority_backend,
-            authority_container_backend,
-            authority_route,
-            expected_api_binding,
-        })
+        Ok((
+            BoundaryAuthority {
+                manager,
+                idle_detector,
+                authority_id,
+                authority_backend,
+                authority_container_backend,
+                authority_route,
+                expected_api_binding,
+            },
+            BoundaryWriteGuards {
+                final_api_guard,
+                permit,
+            },
+        ))
     }
     pub(super) async fn dispatch_boundary_write(
         &self,
         context: &PtyDispatchContext<'_>,
         guards: &mut PtyDispatchGuards<'_>,
         selection: &DispatchSelection<'_>,
-        write_guards: BoundaryWriteGuards<'_>,
+        mut write_guards: BoundaryWriteGuards,
         input: FinalDispatchInput<'_>,
         authority: &BoundaryAuthority,
-    ) -> Result<Result<bool, bool>, bool> {
-        let BoundaryWriteGuards {
-            permit,
-            final_api_guard,
-        } = write_guards;
+    ) -> Result<(Result<bool, bool>, BoundaryWriteGuards), bool> {
         let FinalDispatchInput {
             final_authority,
             payload,
@@ -766,10 +771,10 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 )
                 .await
                 .is_ok_and(|result| result.terminal);
-            drop(final_api_guard.take());
+            drop(write_guards.final_api_guard.take());
             drop(guards.target_guard.take());
             drop(guards.target_stripe.take());
-            drop(permit.take());
+            drop(write_guards.permit);
             finish_owned_pty_work(app, guards.owned_work, observed).await;
             return Err(false);
         }
@@ -783,7 +788,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 &final_authority.sender,
                 *authority_backend,
                 authority_route,
-                permit.as_ref().expect("dispatch input permit"),
+                &write_guards.permit,
                 idle_detector,
                 &boundary_settings,
                 |session, settings| {
@@ -867,20 +872,20 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             }
         };
 
-        Ok(boundary_write)
+        Ok((boundary_write, write_guards))
     }
     pub(super) async fn dispatch_boundary_result(
         &self,
         context: &PtyDispatchContext<'_>,
         guards: &mut PtyDispatchGuards<'_>,
         selection: &DispatchSelection<'_>,
-        write_guards: BoundaryWriteGuards<'_>,
+        write_guards: BoundaryWriteGuards,
         payload: &[u8],
         boundary_write: Result<bool, bool>,
     ) -> bool {
         let BoundaryWriteGuards {
             permit,
-            final_api_guard,
+            mut final_api_guard,
         } = write_guards;
         let app = self.app;
 
@@ -890,7 +895,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 drop(final_api_guard.take());
                 drop(guards.target_guard.take());
                 drop(guards.target_stripe.take());
-                drop(permit.take());
+                drop(permit);
                 finish_owned_pty_work(app, guards.owned_work, observed).await;
                 return false;
             }
@@ -899,11 +904,9 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         // boundary so a concurrent revocation linearizes before or after it,
         // never between the final authority check and the text write.
         drop(final_api_guard.take());
-        let outcome = crate::pty::inject::submit_exact_agent_input_with_permit(
-            permit.as_ref().expect("dispatch input permit"),
-            text_write_succeeded,
-        )
-        .await;
+        let outcome =
+            crate::pty::inject::submit_exact_agent_input_with_permit(&permit, text_write_succeeded)
+                .await;
         let (status, reason) = self
             .pty_submit_terminal_status(payload, selection.selected_id, outcome)
             .await;
@@ -929,7 +932,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         crate::api::audit::record_pty_input_result("terminal", &result);
         drop(guards.target_guard.take());
         drop(guards.target_stripe.take());
-        drop(permit.take());
+        drop(permit);
         finish_owned_pty_work(app, guards.owned_work, result.terminal).await;
         if !app.pty_input_status(&result) {
             log::warn!(
