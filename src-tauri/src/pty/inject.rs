@@ -463,9 +463,15 @@ where
     R: tauri::Runtime,
     F: FnOnce(&Session) -> Result<(), String>,
 {
-    inject_peer_wake_with_current_facts(app, session_id, text, message_id, settle, |session, _| {
-        pre_write_check(session)
-    })
+    inject_peer_wake_with_current_facts(
+        app,
+        session_id,
+        text,
+        message_id,
+        settle,
+        None,
+        |session, _| pre_write_check(session),
+    )
     .await
 }
 
@@ -477,22 +483,33 @@ pub(crate) async fn inject_peer_wake_with_current_facts<R, F>(
     text: &str,
     message_id: &str,
     settle: SettleReadiness,
+    codex_clear_observation: Option<Box<dyn FnOnce() + Send>>,
     pre_write_check: F,
 ) -> Result<(), String>
 where
     R: tauri::Runtime,
     F: FnOnce(&Session, &crate::session::manager::CarrierSnapshot) -> Result<(), String>,
 {
+    let observe_codex_clear = codex_clear_observation.is_some();
     let result = inject_text_into_session_impl(
         app,
         session_id,
         text,
         HoldPolicy::PeerWake(message_id),
         settle,
-        None,
+        codex_clear_observation,
         |session, current| {
             let session = session.ok_or_else(|| format!("Session not found: {}", session_id))?;
             let current = current.expect("peer boundary supplies current facts");
+            if observe_codex_clear
+                && (!shell_file_stem(&session.shell).starts_with("codex")
+                    || resolve_logical_command_text(&session.shell, LogicalPtyCommand::Clear)
+                        != Some(text))
+            {
+                return Err(clear_watch::ClearWatchOutcome::ExecutionError
+                    .reason()
+                    .into());
+            }
             pre_write_check(session, current)
         },
     )
@@ -500,54 +517,6 @@ where
     if result.is_ok() {
         // The message left the deferred set the moment its text was written; a
         // repeated clear is a no-op.
-        crate::commands::pty::clear_held_wake(app, session_id, message_id);
-    }
-    result
-}
-
-/// Dormant until P04 selects bound logical Codex clears.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "P04 activates the Codex clear watch")
-)]
-pub(crate) async fn inject_peer_codex_clear_with_current_facts<R, F>(
-    app: &tauri::AppHandle<R>,
-    session_id: Uuid,
-    text: &str,
-    message_id: &str,
-    settle: SettleReadiness,
-    pre_write_check: F,
-    on_observation: impl FnOnce() + Send + 'static,
-) -> Result<(), String>
-where
-    R: tauri::Runtime,
-    F: FnOnce(&Session, &crate::session::manager::CarrierSnapshot) -> Result<(), String>,
-{
-    let result = inject_text_into_session_impl(
-        app,
-        session_id,
-        text,
-        HoldPolicy::PeerWake(message_id),
-        settle,
-        Some(Box::new(on_observation)),
-        |session, current| {
-            let session = session.ok_or_else(|| format!("Session not found: {session_id}"))?;
-            if !shell_file_stem(&session.shell).starts_with("codex")
-                || resolve_logical_command_text(&session.shell, LogicalPtyCommand::Clear)
-                    != Some(text)
-            {
-                return Err(clear_watch::ClearWatchOutcome::ExecutionError
-                    .reason()
-                    .into());
-            }
-            pre_write_check(
-                session,
-                current.expect("peer boundary supplies current facts"),
-            )
-        },
-    )
-    .await;
-    if result.is_ok() {
         crate::commands::pty::clear_held_wake(app, session_id, message_id);
     }
     result
@@ -857,7 +826,20 @@ where
     };
 
     let mut watch = if on_observation.is_some() {
-        Some(clear_watch::ClearWatch::from_permit(&permit, &pty_manager)?)
+        let observation = permit.observation().map_err(|_| {
+            clear_watch::ClearWatchOutcome::ExecutionError
+                .reason()
+                .to_string()
+        })?;
+        let backend = pty_manager
+            .lock()
+            .map_err(|_| {
+                clear_watch::ClearWatchOutcome::ExecutionError
+                    .reason()
+                    .to_string()
+            })?
+            .backend_for_kind(observation.backend_kind());
+        Some(clear_watch::ClearWatch::new(backend, observation))
     } else {
         None
     };

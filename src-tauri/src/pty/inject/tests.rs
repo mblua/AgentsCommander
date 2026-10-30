@@ -270,20 +270,21 @@ async fn run_clear_watch(case: WatchCase) -> WatchRun {
             text,
             "watch",
             SettleReadiness::Ready,
+            None,
             |_, _| Ok(()),
         )
         .await
     } else {
-        inject_peer_codex_clear_with_current_facts(
+        inject_peer_wake_with_current_facts(
             app.handle(),
             id,
             text,
             "watch",
             SettleReadiness::Ready,
-            |_, _| Ok(()),
-            move || {
+            Some(Box::new(move || {
                 callback_calls.fetch_add(1, Ordering::SeqCst);
-            },
+            })),
+            |_, _| Ok(()),
         )
         .await
     };
@@ -320,17 +321,17 @@ async fn clear_watch_concurrency(remove: bool, poison: bool, cancel: bool) -> Re
         .read()
         .await
         .clone();
-    let mut future = Box::pin(inject_peer_codex_clear_with_current_facts(
+    let mut future = Box::pin(inject_peer_wake_with_current_facts(
         app.handle(),
         id,
         "/clear",
         "watch",
         SettleReadiness::Ready,
-        |_, _| Ok(()),
-        move || {
+        Some(Box::new(move || {
             callback_calls.fetch_add(1, Ordering::SeqCst);
             notice.notify_one();
-        },
+        })),
+        |_, _| Ok(()),
     ));
     let baseline_refs = Arc::strong_count(&backend);
     let parallel = async {

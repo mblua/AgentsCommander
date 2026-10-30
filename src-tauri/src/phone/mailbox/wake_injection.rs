@@ -567,6 +567,7 @@ impl MailboxPoller {
                 resolved.text,
                 &msg.id,
                 settle,
+                None,
                 |session, current| {
                     if owned_replacement.is_none()
                         && crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
@@ -775,6 +776,7 @@ impl MailboxPoller {
             &payload,
             &msg.id,
             settle,
+            None,
             |session, current| {
                 response_diag_debug_only(|| {
                     diagnostic_prewrite_reached = true;

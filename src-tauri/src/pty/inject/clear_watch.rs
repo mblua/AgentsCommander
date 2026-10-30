@@ -1,8 +1,7 @@
 //! Opt-in observation of the known Codex fresh-session failure family.
 use crate::pty::backend::PtyBackend;
 use crate::pty::input_route::PtyInputObservation;
-use crate::pty::manager::{PtyInputPermit, PtyManager};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const WATCH_DURATION: Duration = Duration::from_secs(45);
@@ -103,26 +102,15 @@ impl Default for FailureSamples {
 }
 
 impl ClearWatch {
-    pub(crate) fn from_permit(
-        permit: &PtyInputPermit,
-        manager: &Arc<Mutex<PtyManager>>,
-    ) -> Result<Self, String> {
-        let observation = permit
-            .observation()
-            .map_err(|_| ClearWatchOutcome::ExecutionError.reason().to_string())?;
-        let backend = manager
-            .lock()
-            .map_err(|_| ClearWatchOutcome::ExecutionError.reason().to_string())?
-            .backend_for_kind(observation.backend_kind());
-        let watch = Self {
+    pub(crate) fn new(backend: Arc<dyn PtyBackend>, observation: PtyInputObservation) -> Self {
+        Self {
             backend,
             observation,
             samples: FailureSamples::default(),
             interval: SAMPLE_INTERVAL,
             #[cfg(test)]
             barrier: None,
-        };
-        Ok(watch)
+        }
     }
 
     pub(crate) fn submitted(&mut self) {
