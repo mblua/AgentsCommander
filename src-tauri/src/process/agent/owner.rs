@@ -769,6 +769,22 @@ impl ProbeProcessOwner {
         }
 
         #[cfg(windows)]
+        self.settle_job(&mut attempt).await;
+        #[cfg(unix)]
+        self.settle_process_group(&mut attempt).await;
+
+        #[cfg(windows)]
+        drop(self.job.take());
+        ProbeSettlement {
+            stdout,
+            stderr,
+            defects: self.defects.clone(),
+        }
+    }
+
+    #[cfg(windows)]
+    async fn settle_job(&mut self, attempt: &mut crate::process::host::job::SettlementAttempt) {
+        let defects = &mut self.defects;
         if let Some(job) = self.job.as_ref() {
             let mut query_defect_recorded = false;
             loop {
@@ -817,8 +833,14 @@ impl ProbeProcessOwner {
                 tokio::time::sleep(ACTIVE_SETTLEMENT_POLL.min(attempt.remaining())).await;
             }
         }
+    }
 
-        #[cfg(unix)]
+    #[cfg(unix)]
+    async fn settle_process_group(
+        &mut self,
+        attempt: &mut crate::process::host::job::SettlementAttempt,
+    ) {
+        let defects = &mut self.defects;
         if self.pgid > 0 {
             let mut errno_defect_recorded = false;
             loop {
@@ -889,14 +911,6 @@ impl ProbeProcessOwner {
                 }
                 tokio::time::sleep(ACTIVE_SETTLEMENT_POLL.min(attempt.remaining())).await;
             }
-        }
-
-        #[cfg(windows)]
-        drop(self.job.take());
-        ProbeSettlement {
-            stdout,
-            stderr,
-            defects: defects.clone(),
         }
     }
 
