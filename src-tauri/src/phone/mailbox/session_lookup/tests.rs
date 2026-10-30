@@ -292,3 +292,123 @@ async fn scripted_presence_returns_before_routes_getter() {
     }
     assert!(state.backend.checks.lock().unwrap().is_empty());
 }
+
+fn close_message(request_id: Option<&str>) -> OutboxMessage {
+    serde_json::from_value(serde_json::json!({
+        "id": "close-lookup",
+        "from": "lookup-project:room-22-team/orchestrator",
+        "to": FQN,
+        "body": "",
+        "timestamp": "2026-10-30T14:30:00Z",
+        "requestId": request_id,
+    }))
+    .unwrap()
+}
+
+fn empty_close_outcome() -> CloseSessionOutcome<'static> {
+    CloseSessionOutcome {
+        target: FQN,
+        restore_in_progress_result: false,
+        session_ids: &[],
+        closed_ids: Vec::new(),
+        failure: None,
+        outcome_unknown: false,
+        actively_closed: false,
+        may_complete_later: false,
+    }
+}
+
+#[tokio::test]
+async fn close_without_request_never_resolves_sender_or_creates_responses() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("outbox/close.json");
+    write_close_session_response(
+        &path,
+        &close_message(None),
+        false,
+        empty_close_outcome(),
+        async { panic!("sender lookup must stay unpolled without a request") },
+    )
+    .await;
+    assert!(!root.path().join("responses").exists());
+}
+
+#[tokio::test]
+async fn close_response_is_written_before_sender_lookup_and_preserves_timeout_details() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("outbox/close.json");
+    let primary = root.path().join("responses/close-request.json");
+    let sender = root.path().join("sender");
+    let mut outcome = empty_close_outcome();
+    outcome.failure = Some("observer_timeout".into());
+    outcome.outcome_unknown = true;
+    outcome.may_complete_later = true;
+    outcome.closed_ids = vec!["already-confirmed".into()];
+    write_close_session_response(
+        &path,
+        &close_message(Some("close-request")),
+        false,
+        outcome,
+        async {
+            assert!(primary.exists(), "primary response precedes sender lookup");
+            Some(sender.to_string_lossy().into_owned())
+        },
+    )
+    .await;
+    let json = std::fs::read_to_string(primary).unwrap();
+    let response: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(response["status"], "timeout");
+    assert_eq!(response["reason"], "observer_timeout");
+    assert_eq!(response["sessions_closed"], 1);
+    assert_eq!(
+        response["session_ids"],
+        serde_json::json!(["already-confirmed"])
+    );
+    assert_eq!(response["outcome_unknown"], true);
+    assert_eq!(response["may_complete_later"], true);
+    assert_eq!(response["target"], FQN);
+    assert_eq!(response["requested_by"], close_message(None).from);
+    let secondary = sender
+        .join(crate::config::agent_local_dir_name())
+        .join("responses/close-request.json");
+    assert_eq!(std::fs::read_to_string(secondary).unwrap(), json);
+}
+
+#[tokio::test]
+async fn app_outbox_close_writes_only_sender_response() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("outbox/close.json");
+    let sender = root.path().join("sender");
+    write_close_session_response(
+        &path,
+        &close_message(Some("app-request")),
+        true,
+        empty_close_outcome(),
+        async { Some(sender.to_string_lossy().into_owned()) },
+    )
+    .await;
+    assert!(!root.path().join("responses").exists());
+    let secondary = sender
+        .join(crate::config::agent_local_dir_name())
+        .join("responses/app-request.json");
+    let response: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(secondary).unwrap()).unwrap();
+    assert_eq!(response["status"], "no_match");
+}
+
+#[tokio::test]
+async fn restore_wait_reprobes_after_cleared_flag_without_touching_routes() {
+    let state = LookupState::new(false, true);
+    let flag = crate::RestoreInProgress(std::sync::atomic::AtomicBool::new(false));
+    let mut ids = Vec::new();
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        MailboxPoller::delivery_only_for_tests()
+            .wait_for_restored_close_targets(&state, FQN, &flag, &mut ids),
+    )
+    .await
+    .unwrap();
+    assert!(!result);
+    assert!(ids.is_empty());
+    assert_eq!(state.accesses(), ["sessions", "sessions"]);
+}

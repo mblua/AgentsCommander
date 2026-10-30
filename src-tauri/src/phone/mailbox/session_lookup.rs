@@ -258,6 +258,43 @@ impl MailboxPoller {
             .collect()
     }
 
+    async fn wait_for_restored_close_targets<S: PtyAuthorityState + ?Sized>(
+        &self,
+        app: &S,
+        target: &str,
+        restore_flag: &crate::RestoreInProgress,
+        session_ids: &mut Vec<Uuid>,
+    ) -> bool {
+        let mut restore_in_progress_result = false;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let poll = std::time::Duration::from_millis(100);
+        // We can't pass `self.find_all_sessions(...)` as a closure
+        // because of the `&self` capture + `async` future shape, so
+        // inline the wait loop instead of going through the pure helper.
+        // The helper's logic is unit-tested separately (D.5a).
+        loop {
+            if std::time::Instant::now() >= deadline {
+                if restore_flag.0.load(std::sync::atomic::Ordering::SeqCst) {
+                    restore_in_progress_result = true;
+                }
+                break;
+            }
+            tokio::time::sleep(poll).await;
+            *session_ids = self.find_all_sessions(app, target).await;
+            if !session_ids.is_empty() {
+                break;
+            }
+            if !restore_flag.0.load(std::sync::atomic::Ordering::SeqCst) {
+                // Flag cleared mid-wait. One final probe (the restore
+                // task may have just inserted our target as its last
+                // act before the guard dropped), then fall through.
+                *session_ids = self.find_all_sessions(app, target).await;
+                break;
+            }
+        }
+        restore_in_progress_result
+    }
+
     /// Handle close-session action: validate coordinator auth, find target sessions, destroy them.
     ///
     /// NEW ACTION HANDLERS: resolve user-supplied target fields via
@@ -356,56 +393,16 @@ impl MailboxPoller {
         if session_ids.is_empty() {
             let restore_flag = app.state::<Arc<crate::RestoreInProgress>>();
             if restore_flag.0.load(std::sync::atomic::Ordering::SeqCst) {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-                let poll = std::time::Duration::from_millis(100);
-                // We can't pass `self.find_all_sessions(...)` as a closure
-                // because of the `&self` capture + `async` future shape, so
-                // inline the wait loop instead of going through the pure helper.
-                // The helper's logic is unit-tested separately (D.5a).
-                loop {
-                    if std::time::Instant::now() >= deadline {
-                        if restore_flag.0.load(std::sync::atomic::Ordering::SeqCst) {
-                            restore_in_progress_result = true;
-                        }
-                        break;
-                    }
-                    tokio::time::sleep(poll).await;
-                    session_ids = self.find_all_sessions(app, target).await;
-                    if !session_ids.is_empty() {
-                        break;
-                    }
-                    if !restore_flag.0.load(std::sync::atomic::Ordering::SeqCst) {
-                        // Flag cleared mid-wait. One final probe (the restore
-                        // task may have just inserted our target as its last
-                        // act before the guard dropped), then fall through.
-                        session_ids = self.find_all_sessions(app, target).await;
-                        break;
-                    }
-                }
+                restore_in_progress_result = self
+                    .wait_for_restored_close_targets(app, target, &restore_flag, &mut session_ids)
+                    .await;
             }
         }
 
         let force = msg.force.unwrap_or(false);
         let timeout_secs = msg.timeout_secs.unwrap_or(30);
 
-        // §224 A.2 — gate the kill-loop log on non-empty session_ids so we
-        // don't emit a misleading "force-killing 0 session(s)" line on the
-        // no_match / restore_in_progress paths.
-        if !session_ids.is_empty() {
-            log::info!(
-                "[mailbox] close-session: {} {} session(s) for '{}' (requested by '{}', \
-                timeout={}s)",
-                if force {
-                    "force-killing"
-                } else {
-                    "gracefully closing"
-                },
-                session_ids.len(),
-                target,
-                msg.from,
-                timeout_secs
-            );
-        }
+        log_close_session_attempt(&session_ids, target, &msg.from, force, timeout_secs);
 
         let mut closed_ids: Vec<String> = Vec::new();
         let mut failure = None;
@@ -487,131 +484,207 @@ impl MailboxPoller {
             }
         }
 
-        // Write response with details.
-        //
-        // §224 A.2 + A.2.5 — four terminal states, all exit-0 from the user's
-        // seat:
-        //   "restore_in_progress" — daemon still in startup; couldn't decide.
-        //   "no_match"            — found zero live sessions matching the FQN.
-        //   "already_closed"      — found some, but every one vanished before
-        //                           destroy (race).
-        //   "closed"              — at least one was actively killed.
-        if let Some(ref rid) = msg.request_id {
-            let status = if failure.is_some() {
-                "timeout"
-            } else if restore_in_progress_result {
-                "restore_in_progress"
-            } else if session_ids.is_empty() {
-                "no_match"
-            } else if !actively_closed {
-                "already_closed"
+        write_close_session_response(
+            path,
+            msg,
+            is_app_outbox,
+            CloseSessionOutcome {
+                target,
+                restore_in_progress_result,
+                session_ids: &session_ids,
+                closed_ids,
+                failure,
+                outcome_unknown,
+                actively_closed,
+                may_complete_later,
+            },
+            self.resolve_repo_path(&msg.from, app),
+        )
+        .await;
+
+        // Move original message to delivered/
+        self.move_to_delivered(app, path, msg).await
+    }
+}
+
+fn log_close_session_attempt(
+    session_ids: &[Uuid],
+    target: &str,
+    requested_by: &str,
+    force: bool,
+    timeout_secs: u32,
+) {
+    // §224 A.2 — gate the kill-loop log on non-empty session_ids so we
+    // don't emit a misleading "force-killing 0 session(s)" line on the
+    // no_match / restore_in_progress paths.
+    if !session_ids.is_empty() {
+        log::info!(
+            "[mailbox] close-session: {} {} session(s) for '{}' (requested by '{}', \
+            timeout={}s)",
+            if force {
+                "force-killing"
             } else {
-                "closed"
-            };
-            let response = serde_json::json!({
-                "action": "close-session",
-                "target": target,
-                "status": status,
-                "sessions_closed": closed_ids.len(),
-                "reason": failure,
-                "outcome_unknown": outcome_unknown,
-                "may_complete_later": may_complete_later,
-                "session_ids": closed_ids,
-                "requested_by": msg.from,
-            });
-            let json = match serde_json::to_string_pretty(&response) {
-                Ok(j) => j,
-                Err(e) => {
-                    log::warn!(
-                        "[mailbox] Failed to serialize close-session response: {}",
-                        e
-                    );
-                    return self.move_to_delivered(app, path, msg).await;
-                }
-            };
+                "gracefully closing"
+            },
+            session_ids.len(),
+            target,
+            requested_by,
+            timeout_secs
+        );
+    }
+}
 
-            // §224 A.6 — dual-write the response:
-            //
-            // (1) <message_file_dir>/../responses/<rid>.json — always derivable
-            //     from `path` (the queued message's file location). This is
-            //     exactly `<ac_dir>/responses/<rid>.json`, the CLI's polled
-            //     location (close_session.rs:194-195), so no resolve_repo_path
-            //     dependency.
-            //
-            // (2) <resolve_repo_path(msg.from)>/<agent_local_dir>/responses/<rid>.json
-            //     — preserves cross-agent delivery for cases where the sender
-            //     FQN points to a different ac_dir than the outbox file's
-            //     parent. Best-effort; failure does not affect (1).
-            //
-            // Either write succeeding is enough for the CLI to receive the
-            // response.
-            //
-            // §224 G-IMPL-2 — skip the derived primary write (1) when the
-            // message came from the app-outbox (master/root-token path).
-            // For app-outbox messages the parent path is
-            // `<config_dir>/instances/<id>/outbox/`, so the derived responses
-            // dir resolves to `<config_dir>/instances/<id>/responses/` — a
-            // directory the CLI never polls (it always polls
-            // `<--root>/.<bin_stem>/responses/`). Writing there leaks orphan
-            // JSON files with no GC; the resolved-sender path (2) is the only
-            // useful target for the master-token case. If `resolve_repo_path`
-            // also fails (msg.from not enumerable), the CLI hits the response
-            // timeout and exits 2 (G-IMPL-3) — "outcome unknown".
-            if !is_app_outbox {
-                let outbox_relative_responses_dir = path
-                    .parent()
-                    .and_then(|p| p.parent())
-                    .map(|ac_dir| ac_dir.join("responses"));
-                if let Some(responses_dir) = outbox_relative_responses_dir {
-                    let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-                    let response_path = responses_dir.join(format!("{}.json", rid));
-                    if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
-                        log::warn!(
-                            "[mailbox] Failed to write close-session response to outbox-relative \
-                            path {:?}: {}",
-                            response_path,
-                            e
-                        );
-                    }
-                } else {
-                    log::warn!(
-                        "[mailbox] close-session: cannot derive outbox-relative responses dir from \
-                        message path {:?}",
-                        path
-                    );
-                }
+struct CloseSessionOutcome<'a> {
+    target: &'a str,
+    restore_in_progress_result: bool,
+    session_ids: &'a [Uuid],
+    closed_ids: Vec<String>,
+    failure: Option<String>,
+    outcome_unknown: bool,
+    actively_closed: bool,
+    may_complete_later: bool,
+}
+
+// The sender lookup stays lazy: resolve only after the outbox-relative write,
+// and never when there is no request ID or serialization fails.
+async fn write_close_session_response(
+    path: &std::path::Path,
+    msg: &OutboxMessage,
+    is_app_outbox: bool,
+    outcome: CloseSessionOutcome<'_>,
+    sender_path: impl std::future::Future<Output = Option<String>>,
+) {
+    let CloseSessionOutcome {
+        target,
+        restore_in_progress_result,
+        session_ids,
+        closed_ids,
+        failure,
+        outcome_unknown,
+        actively_closed,
+        may_complete_later,
+    } = outcome;
+    // Write response with details.
+    //
+    // §224 A.2 + A.2.5 — four terminal states, all exit-0 from the user's
+    // seat:
+    //   "restore_in_progress" — daemon still in startup; couldn't decide.
+    //   "no_match"            — found zero live sessions matching the FQN.
+    //   "already_closed"      — found some, but every one vanished before
+    //                           destroy (race).
+    //   "closed"              — at least one was actively killed.
+    if let Some(ref rid) = msg.request_id {
+        let status = if failure.is_some() {
+            "timeout"
+        } else if restore_in_progress_result {
+            "restore_in_progress"
+        } else if session_ids.is_empty() {
+            "no_match"
+        } else if !actively_closed {
+            "already_closed"
+        } else {
+            "closed"
+        };
+        let response = serde_json::json!({
+            "action": "close-session",
+            "target": target,
+            "status": status,
+            "sessions_closed": closed_ids.len(),
+            "reason": failure,
+            "outcome_unknown": outcome_unknown,
+            "may_complete_later": may_complete_later,
+            "session_ids": closed_ids,
+            "requested_by": msg.from,
+        });
+        let json = match serde_json::to_string_pretty(&response) {
+            Ok(j) => j,
+            Err(e) => {
+                log::warn!(
+                    "[mailbox] Failed to serialize close-session response: {}",
+                    e
+                );
+                return;
             }
+        };
 
-            if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
-                let responses_dir = std::path::PathBuf::from(sender_path)
-                    .join(crate::config::agent_local_dir_name())
-                    .join("responses");
+        // §224 A.6 — dual-write the response:
+        //
+        // (1) <message_file_dir>/../responses/<rid>.json — always derivable
+        //     from `path` (the queued message's file location). This is
+        //     exactly `<ac_dir>/responses/<rid>.json`, the CLI's polled
+        //     location (close_session.rs:194-195), so no resolve_repo_path
+        //     dependency.
+        //
+        // (2) <resolve_repo_path(msg.from)>/<agent_local_dir>/responses/<rid>.json
+        //     — preserves cross-agent delivery for cases where the sender
+        //     FQN points to a different ac_dir than the outbox file's
+        //     parent. Best-effort; failure does not affect (1).
+        //
+        // Either write succeeding is enough for the CLI to receive the
+        // response.
+        //
+        // §224 G-IMPL-2 — skip the derived primary write (1) when the
+        // message came from the app-outbox (master/root-token path).
+        // For app-outbox messages the parent path is
+        // `<config_dir>/instances/<id>/outbox/`, so the derived responses
+        // dir resolves to `<config_dir>/instances/<id>/responses/` — a
+        // directory the CLI never polls (it always polls
+        // `<--root>/.<bin_stem>/responses/`). Writing there leaks orphan
+        // JSON files with no GC; the resolved-sender path (2) is the only
+        // useful target for the master-token case. If `resolve_repo_path`
+        // also fails (msg.from not enumerable), the CLI hits the response
+        // timeout and exits 2 (G-IMPL-3) — "outcome unknown".
+        if !is_app_outbox {
+            let outbox_relative_responses_dir = path
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|ac_dir| ac_dir.join("responses"));
+            if let Some(responses_dir) = outbox_relative_responses_dir {
                 let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                 let response_path = responses_dir.join(format!("{}.json", rid));
                 if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
                     log::warn!(
-                        "[mailbox] Failed to write close-session response to resolved-sender path: \
-                        {}",
+                        "[mailbox] Failed to write close-session response to outbox-relative \
+                        path {:?}: {}",
+                        response_path,
                         e
                     );
                 }
-            } else if is_app_outbox {
-                // §224 G-IMPL-2 — app-outbox call AND resolve_repo_path failed
-                // means the CLI's `--root` is not enumerable in project_paths.
-                // Both write paths above are unreachable; the CLI will hit its
-                // response-poll timeout and exit 2 ("outcome unknown",
-                // G-IMPL-3). Log explicitly so operators can debug.
+            } else {
                 log::warn!(
-                    "[mailbox] close-session app-outbox response is undeliverable: \
-                     resolve_repo_path(msg.from='{}') returned None — the sender's --root \
-                     is not enumerable in project_paths. CLI will timeout with exit 2.",
-                    msg.from
+                    "[mailbox] close-session: cannot derive outbox-relative responses dir from \
+                    message path {:?}",
+                    path
                 );
             }
         }
 
-        // Move original message to delivered/
-        self.move_to_delivered(app, path, msg).await
+        if let Some(sender_path) = sender_path.await {
+            let responses_dir = std::path::PathBuf::from(sender_path)
+                .join(crate::config::agent_local_dir_name())
+                .join("responses");
+            let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+            let response_path = responses_dir.join(format!("{}.json", rid));
+            if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
+                log::warn!(
+                    "[mailbox] Failed to write close-session response to resolved-sender path: \
+                    {}",
+                    e
+                );
+            }
+        } else if is_app_outbox {
+            // §224 G-IMPL-2 — app-outbox call AND resolve_repo_path failed
+            // means the CLI's `--root` is not enumerable in project_paths.
+            // Both write paths above are unreachable; the CLI will hit its
+            // response-poll timeout and exit 2 ("outcome unknown",
+            // G-IMPL-3). Log explicitly so operators can debug.
+            log::warn!(
+                "[mailbox] close-session app-outbox response is undeliverable: \
+                 resolve_repo_path(msg.from='{}') returned None — the sender's --root \
+                 is not enumerable in project_paths. CLI will timeout with exit 2.",
+                msg.from
+            );
+        }
     }
 }
 
