@@ -218,18 +218,12 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
             .filter(|(id, _)| pm.has_session(*id))
             .collect()
     };
-    let telegram_protected: HashSet<Uuid> = if matches!(close_settings, Some((_, _, true))) {
-        let mgr = { session_mgr.read().await.clone() };
-        let mut out = HashSet::new();
-        for (id, _) in &members {
-            if mgr.session_has_telegram_bot(*id).await {
-                out.insert(*id);
-            }
-        }
-        out
-    } else {
-        HashSet::new()
-    };
+    let telegram_protected = telegram_protected_members(
+        &session_mgr,
+        &members,
+        matches!(close_settings, Some((_, _, true))),
+    )
+    .await;
 
     // KILL filter: teams with any member alive past WAKE_GRACE (kill-eligible).
     let established_teams: HashSet<String> = members
@@ -258,20 +252,7 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
     };
 
     // (1) ADVANCE last_activity_at from POST-REPAINT members (REPAINT_GRACE filter).
-    let team_sil = team_min_silence(&members, &|id| {
-        member_post_repaint_silence(idle.alive_age(id), idle.silence_age(id), REPAINT_GRACE)
-    });
-    {
-        let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
-        for (team, (fqn, _)) in &coord_refs {
-            if let Some(sil) = team_sil.get(team) {
-                if let Some(c) = DateTime::<Utc>::from_timestamp(now_secs - sil.as_secs() as i64, 0)
-                {
-                    g.note_activity(fqn, c); // monotonic; dirties only on a real move
-                }
-            }
-        }
-    } // guard dropped before any emit
+    advance_team_activity(&clocks, &members, &idle, &coord_refs, now_secs);
 
     // (2) BADGE: snapshot, RELEASE, then emit the unified anchor per team (deduped).
     let snap = {
@@ -280,22 +261,7 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
     };
     for (team, (fqn, cwd)) in &coord_refs {
         let e = snap.get(fqn);
-        let anchor = team_idle_since_secs(
-            e.and_then(|e| e.last_user_message_at),
-            e.and_then(|e| e.last_activity_at),
-        );
-        log::debug!(
-            "[auto-close] team={} user={:?} activity={:?} anchor={} idle_s={}",
-            team,
-            e.and_then(|e| e.last_user_message_at),
-            e.and_then(|e| e.last_activity_at),
-            anchor,
-            if anchor == i64::MIN {
-                0
-            } else {
-                now_secs - anchor
-            }
-        ); // Decision D: debug-only, no new IPC field
+        let anchor = logged_team_idle_anchor(team, e, now_secs);
         if anchor != i64::MIN && last_emitted.get(team).copied() != Some(anchor) {
             last_emitted.insert(team.clone(), anchor);
             if let Some(dt) = DateTime::<Utc>::from_timestamp(anchor, 0) {
@@ -318,25 +284,20 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
     let timeout_secs = i64::from(timeout_min) * 60;
     // closeable iff: an ESTABLISHED member is present AND idle past timeout.
     // `snap` already reflects step 1's advance (taken after it) -> reuse, no re-lock.
-    let to_close: Vec<Uuid> = members
-        .iter()
-        .filter(|(id, team)| {
-            let is_telegram_protected = session_is_telegram_protected(
-                skip_telegram_assigned,
-                telegram_protected.contains(id),
-            );
-            let anchor =
-                resolve_member_anchor(coord_refs.get(team), &snap, idle.silence_age(*id), now_secs);
-            should_close_member(
-                is_telegram_protected,
-                established_teams.contains(team),
-                anchor,
-                now_secs,
-                timeout_secs,
-            )
-        })
-        .map(|(id, _)| *id)
-        .collect();
+    let policy = AutoClosePolicy {
+        now_secs,
+        timeout_secs,
+        skip_telegram_assigned,
+    };
+    let to_close = closeable_members(
+        &members,
+        &coord_refs,
+        &snap,
+        &idle,
+        &established_teams,
+        &telegram_protected,
+        policy,
+    );
 
     if to_close.is_empty() {
         return;
@@ -357,43 +318,16 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
     // (#589) Teams whose COORDINATOR'S OWN session was auto-closed this tick. A
     // team where only a non-coordinator member was reaped is deliberately absent,
     // so the surviving coordinator row is never stamped AUTO-CLOSED.
-    let mut confirmed = Vec::new();
-    for id in to_close {
-        // TOCTOU re-check (G2): skip if a user message advanced the anchor since
-        // the snapshot, OR this member emitted within REPAINT_GRACE. The second
-        // clause is REQUIRED: a user message to a NON-coordinator member or a
-        // member's first genuine byte only touches the in-memory silence clock,
-        // never last_user_message_at, so the anchor re-read alone is blind to it.
-        let fresh_anchor = {
-            let g = clocks.lock().unwrap_or_else(|e| e.into_inner());
-            match id_to_team.get(&id).and_then(|t| coord_refs.get(t)) {
-                Some((fqn, _)) => {
-                    team_idle_since_secs(g.last_user_message_at(fqn), g.last_activity_at(fqn))
-                }
-                None => i64::MIN,
-            }
-        }; // guard dropped before the destroy await
-        let anchor_fresh = fresh_anchor != i64::MIN && (now_secs - fresh_anchor) <= timeout_secs;
-        let emitted_recently = idle.silence_age(id).is_some_and(|a| a < REPAINT_GRACE);
-        if anchor_fresh || emitted_recently {
-            log::info!(
-                "[auto-close] {} re-activated during destroy window; skipped",
-                &id.to_string()[..8]
-            );
-            continue;
-        }
-        if skip_telegram_assigned {
-            let mgr = { session_mgr.read().await.clone() };
-            if session_is_telegram_protected(true, mgr.session_has_telegram_bot(id).await) {
-                log::info!(
-                    "[auto-close] {} has Telegram assigned; skipped",
-                    &id.to_string()[..8]
-                );
-                continue;
-            }
-        }
-        confirmed.push(id);
-    }
+    let confirmed = confirm_closeable_members(
+        to_close,
+        &clocks,
+        &id_to_team,
+        &coord_refs,
+        &idle,
+        &session_mgr,
+        policy,
+    )
+    .await;
 
     let outcome = match ticket.finalize(confirmed).await {
         Ok(outcome) => outcome,
@@ -409,27 +343,15 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
             error
         );
     }
-    let mut coord_closed_teams: HashSet<String> = HashSet::new();
-    for id in outcome
-        .destroyed_ids
-        .iter()
-        .chain(outcome.retained_exited_ids.iter())
-        .copied()
-    {
-        log::info!(
-            "[auto-close] terminated idle session {}",
-            &id.to_string()[..8]
-        );
-        // (#589) Record the team for the AUTO-CLOSED mark ONLY when the
-        // destroyed session IS this team's coordinator. A sibling member
-        // reaped while the coordinator survives must NOT stamp the live
-        // coordinator row; it keeps its idle counter.
-        if let Some(team) = id_to_team.get(&id) {
-            if destroyed_is_team_coordinator(id, coord_ids.get(team).copied()) {
-                coord_closed_teams.insert(team.clone());
-            }
-        }
-    }
+    let coord_closed_teams = closed_coordinator_teams(
+        outcome
+            .destroyed_ids
+            .iter()
+            .chain(outcome.retained_exited_ids.iter())
+            .copied(),
+        &id_to_team,
+        &coord_ids,
+    );
 
     // #552 mark each genuinely-closed team's coordinator row "auto-closed" and
     // emit so the sidebar shows the pill live (discovery reload self-heals from
@@ -462,6 +384,183 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
             }
         }
     }
+}
+
+fn logged_team_idle_anchor(team: &str, e: Option<&ClockEntry>, now_secs: i64) -> i64 {
+    let anchor = team_idle_since_secs(
+        e.and_then(|e| e.last_user_message_at),
+        e.and_then(|e| e.last_activity_at),
+    );
+    log::debug!(
+        "[auto-close] team={} user={:?} activity={:?} anchor={} idle_s={}",
+        team,
+        e.and_then(|e| e.last_user_message_at),
+        e.and_then(|e| e.last_activity_at),
+        anchor,
+        if anchor == i64::MIN {
+            0
+        } else {
+            now_secs - anchor
+        }
+    ); // Decision D: debug-only, no new IPC field
+    anchor
+}
+
+async fn telegram_protected_members(
+    session_mgr: &tokio::sync::RwLock<SessionManager>,
+    members: &[(Uuid, String)],
+    skip_telegram_assigned: bool,
+) -> HashSet<Uuid> {
+    if skip_telegram_assigned {
+        let mgr = { session_mgr.read().await.clone() };
+        let mut out = HashSet::new();
+        for (id, _) in members {
+            if mgr.session_has_telegram_bot(*id).await {
+                out.insert(*id);
+            }
+        }
+        out
+    } else {
+        HashSet::new()
+    }
+}
+
+fn advance_team_activity(
+    clocks: &CoordinatorClocksState,
+    members: &[(Uuid, String)],
+    idle: &IdleDetector,
+    coord_refs: &HashMap<String, (String, String)>,
+    now_secs: i64,
+) {
+    let team_sil = team_min_silence(members, &|id| {
+        member_post_repaint_silence(idle.alive_age(id), idle.silence_age(id), REPAINT_GRACE)
+    });
+    {
+        let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+        for (team, (fqn, _)) in coord_refs {
+            if let Some(sil) = team_sil.get(team) {
+                if let Some(c) = DateTime::<Utc>::from_timestamp(now_secs - sil.as_secs() as i64, 0)
+                {
+                    g.note_activity(fqn, c); // monotonic; dirties only on a real move
+                }
+            }
+        }
+    } // guard dropped before any emit
+}
+
+fn closed_coordinator_teams(
+    ids: impl Iterator<Item = Uuid>,
+    id_to_team: &HashMap<Uuid, String>,
+    coord_ids: &HashMap<String, Uuid>,
+) -> HashSet<String> {
+    let mut coord_closed_teams = HashSet::new();
+    for id in ids {
+        log::info!(
+            "[auto-close] terminated idle session {}",
+            &id.to_string()[..8]
+        );
+        // (#589) Record the team for the AUTO-CLOSED mark ONLY when the
+        // destroyed session IS this team's coordinator. A sibling member
+        // reaped while the coordinator survives must NOT stamp the live
+        // coordinator row; it keeps its idle counter.
+        if let Some(team) = id_to_team.get(&id) {
+            if destroyed_is_team_coordinator(id, coord_ids.get(team).copied()) {
+                coord_closed_teams.insert(team.clone());
+            }
+        }
+    }
+    coord_closed_teams
+}
+
+#[derive(Clone, Copy)]
+struct AutoClosePolicy {
+    now_secs: i64,
+    timeout_secs: i64,
+    skip_telegram_assigned: bool,
+}
+
+fn closeable_members(
+    members: &[(Uuid, String)],
+    coord_refs: &HashMap<String, (String, String)>,
+    snap: &HashMap<String, ClockEntry>,
+    idle: &IdleDetector,
+    established_teams: &HashSet<String>,
+    telegram_protected: &HashSet<Uuid>,
+    policy: AutoClosePolicy,
+) -> Vec<Uuid> {
+    members
+        .iter()
+        .filter(|(id, team)| {
+            let is_telegram_protected = session_is_telegram_protected(
+                policy.skip_telegram_assigned,
+                telegram_protected.contains(id),
+            );
+            let anchor = resolve_member_anchor(
+                coord_refs.get(team),
+                snap,
+                idle.silence_age(*id),
+                policy.now_secs,
+            );
+            should_close_member(
+                is_telegram_protected,
+                established_teams.contains(team),
+                anchor,
+                policy.now_secs,
+                policy.timeout_secs,
+            )
+        })
+        .map(|(id, _)| *id)
+        .collect()
+}
+
+async fn confirm_closeable_members(
+    to_close: Vec<Uuid>,
+    clocks: &CoordinatorClocksState,
+    id_to_team: &HashMap<Uuid, String>,
+    coord_refs: &HashMap<String, (String, String)>,
+    idle: &IdleDetector,
+    session_mgr: &tokio::sync::RwLock<SessionManager>,
+    policy: AutoClosePolicy,
+) -> Vec<Uuid> {
+    let mut confirmed = Vec::new();
+    for id in to_close {
+        // TOCTOU re-check (G2): skip if a user message advanced the anchor since
+        // the snapshot, OR this member emitted within REPAINT_GRACE. The second
+        // clause is REQUIRED: a user message to a NON-coordinator member or a
+        // member's first genuine byte only touches the in-memory silence clock,
+        // never last_user_message_at, so the anchor re-read alone is blind to it.
+        let fresh_anchor = {
+            let g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+            match id_to_team.get(&id).and_then(|t| coord_refs.get(t)) {
+                Some((fqn, _)) => {
+                    team_idle_since_secs(g.last_user_message_at(fqn), g.last_activity_at(fqn))
+                }
+                None => i64::MIN,
+            }
+        }; // guard dropped before the destroy await
+        let anchor_fresh =
+            fresh_anchor != i64::MIN && (policy.now_secs - fresh_anchor) <= policy.timeout_secs;
+        let emitted_recently = idle.silence_age(id).is_some_and(|a| a < REPAINT_GRACE);
+        if anchor_fresh || emitted_recently {
+            log::info!(
+                "[auto-close] {} re-activated during destroy window; skipped",
+                &id.to_string()[..8]
+            );
+            continue;
+        }
+        if policy.skip_telegram_assigned {
+            let mgr = { session_mgr.read().await.clone() };
+            if session_is_telegram_protected(true, mgr.session_has_telegram_bot(id).await) {
+                log::info!(
+                    "[auto-close] {} has Telegram assigned; skipped",
+                    &id.to_string()[..8]
+                );
+                continue;
+            }
+        }
+        confirmed.push(id);
+    }
+    confirmed
 }
 
 fn flush_clocks<R: tauri::Runtime>(app: &AppHandle<R>) {
