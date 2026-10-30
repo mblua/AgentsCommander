@@ -368,22 +368,14 @@ async fn clear_watch_concurrency(remove: bool, poison: bool, cancel: bool) -> Re
             .expect("direct submission waited for watch")
             .unwrap();
         }
-        use crate::phone::mailbox::teardown::{observe_close_attempt, TeardownOutcome};
-        let close = observe_close_attempt(
+        let close = tokio::time::timeout(
             Duration::from_millis(500),
-            Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            async {
-                test_input_write(&manager, id, &[b'e', b'x', b'i', b't', 13, 10])
-                    .await
-                    .unwrap();
-                TeardownOutcome::Closed
-            },
+            test_input_write(&manager, id, &[b'e', b'x', b'i', b't', 13, 10]),
         )
         .await;
-        assert_eq!(
-            close,
-            TeardownOutcome::Closed,
-            "close observer missed budget"
+        assert!(
+            matches!(close, Ok(Ok(()))),
+            "close writer missed observer budget"
         );
         let other = Uuid::new_v4();
         manager
