@@ -43,11 +43,7 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
         resolved_spawn,
         resolved_agent_host_shell,
         viewport,
-        inline_transaction,
         owned_replacement,
-        lifecycle_domain,
-        create_owner,
-        marker_ticket,
         ..
     } = ctx;
     let ContextReady {
@@ -90,32 +86,15 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
     // or wrapping in a condition reintroduces the exact bug this plan fixes.
     // See _plans/bug-statusbar-dynamic-launch-args.md §10 and §15 for rationale.
     let effective = shell_args.clone();
-    let carrier_args = match with_create_resource_region(
-        create_owner,
+    record_effective_args(
+        ctx,
+        &mgr,
+        &resource_monitor,
         &mut resource_permit,
-        acquire_lifecycle_create_publication_region(
-            create_owner,
-            &mgr,
-            lifecycle_domain,
-            inline_transaction,
-        ),
-    )
-    .await
-    {
-        Ok(permit) => permit,
-        Err(error) => {
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-            return Err(error);
-        }
-    };
-    mgr.set_pending_effective_shell_args_with_carrier_permit(
-        &carrier_args,
         pending_binding,
         effective.clone(),
     )
-    .await
-    .map_err(|error| error.to_string())?;
-    drop(carrier_args);
+    .await?;
     if let Some(continuation) = owned_replacement {
         if !continuation.validate_source().await {
             release_resource_launch_permit(&resource_monitor, &mut resource_permit);
@@ -124,55 +103,25 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
     }
     session.effective_shell_args = Some(effective);
 
-    let extra_env = if agent_id.is_some() {
-        crate::pty::credentials::build_credentials_env(&session.token, cwd)
-    } else {
-        Vec::new()
-    };
-    let configured_env = child_environment(
-        resolved_spawn.map(|spawn| spawn.child_env.as_slice()),
-        injected_claude_config_dir.as_deref(),
-    );
-    let env_remove_keys: Vec<String> = resolved_spawn
-        .map(|spawn| spawn.env_remove_keys.clone())
-        .unwrap_or_default();
-    let mut env_unset = Vec::new();
-    let mut warnings = Vec::new();
-    let configured_env = translate_child_environment(
+    let SpawnEnvironment {
+        extra_env,
         configured_env,
-        &env_remove_keys,
-        session.backend_kind,
-        container_path_context.as_ref().map(|context| &context.map),
-        &mut env_unset,
-        &mut warnings,
+        env_remove_keys,
+        env_unset,
+        resource_registration,
+        logical_resource_slot,
+    } = prepare_environment(
+        ctx,
+        &session,
+        &agent_id,
+        &agent_label,
+        is_root_agent,
+        injected_claude_config_dir.as_deref(),
+        container_path_context.as_ref(),
+        &resource_monitor,
+        &mut resource_permit,
+        &mut session_env_warnings,
     );
-    session_env_warnings.extend(warnings);
-    let (resource_registration, logical_resource_slot): (
-        Option<ResourceLaunchRegistration>,
-        Option<ResourceLogicalAgentSlot>,
-    ) = match session.backend_kind {
-        SessionBackendKind::LocalProcess => resource_permit
-            .take()
-            .map(|permit| {
-                let metadata = resource_launch_metadata(
-                    cwd,
-                    is_root_agent,
-                    id,
-                    &session.name,
-                    &agent_id,
-                    &agent_label,
-                );
-                ResourceLaunchRegistration::new(resource_monitor.as_ref().clone(), permit, metadata)
-            })
-            .map(|registration| (Some(registration), None))
-            .unwrap_or((None, None)),
-        SessionBackendKind::ContainerTransport => (
-            None,
-            resource_permit
-                .take()
-                .and_then(|permit| resource_monitor.hold_logical_agent_slot(permit)),
-        ),
-    };
 
     // #598 - seed the config folder before the PTY starts so the agent sees the
     // templated config. Best-effort: never aborts the spawn. This is the single
@@ -261,6 +210,44 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
             .unwrap_or_default(),
         launch_witness: launch_witness.clone(),
     };
+    let input = PublicationInput {
+        agent_id,
+        agent_label,
+        agent_kind,
+        is_coordinator,
+        is_root_agent,
+        fresh_forced_by_mirror,
+        skip_auto_resume,
+        configured_identity,
+        effective_continuation,
+        pending_binding,
+        session_env_warnings,
+        session,
+        mgr,
+        resource_permit,
+        resource_monitor,
+    };
+    spawn_backend(ctx, input, spawn_spec, launch_witness, spawn_mark).await
+}
+
+async fn spawn_backend<R: tauri::Runtime>(
+    ctx: &CreateBodyContext<'_, R>,
+    mut input: PublicationInput,
+    spawn_spec: BackendSpawnSpec,
+    launch_witness: LaunchWitness,
+    spawn_mark: crate::pty::manager::SpawnMark,
+) -> Result<CreateCompletion, String> {
+    let &CreateBodyContext {
+        app,
+        session_mgr,
+        pty_mgr,
+        inline_transaction,
+        owned_replacement,
+        create_owner,
+        marker_ticket,
+        ..
+    } = ctx;
+    let id = input.session.id;
     // (#2413) Spawn fence: set BEFORE the first await of spawn, so a drop at
     // any point inside or after spawn keeps the close markers cleared.
     if let Some(t) = marker_ticket
@@ -272,16 +259,16 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
     }
     if let Some(continuation) = owned_replacement {
         if !continuation.validate_source().await {
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            release_resource_launch_permit(&input.resource_monitor, &mut input.resource_permit);
             return Ok(CreateCompletion::Retained);
         }
     }
     if owned_replacement.is_some() {
         revalidate_owned_create_effect(
             create_owner,
-            &mut resource_permit,
-            &resource_monitor,
-            &mgr,
+            &mut input.resource_permit,
+            &input.resource_monitor,
+            &input.mgr,
             pty_mgr,
         )
         .await?;
@@ -293,7 +280,7 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
     ) {
         CreateEffectStart::Started(effect) => effect,
         CreateEffectStart::Retain => {
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            release_resource_launch_permit(&input.resource_monitor, &mut input.resource_permit);
             return Ok(CreateCompletion::Retained);
         }
     };
@@ -301,7 +288,7 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
     if !backend_spawn_fixture_ready(owned_replacement).await {
         return Ok(CreateCompletion::Retained);
     }
-    let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;
+    let spawn_result = PtyManager::spawn(pty_mgr, input.session.backend_kind, spawn_spec).await;
     if let Some(effect) = backend_effect {
         effect.complete(
             spawn_result
@@ -328,28 +315,11 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
             );
         }
         let err = e.to_string();
-        drop(mgr);
+        drop(input.mgr);
         rollback_pre_created_session(app, session_mgr, pty_mgr, id, &err).await;
         return Err(err);
     }
 
-    let input = PublicationInput {
-        agent_id,
-        agent_label,
-        agent_kind,
-        is_coordinator,
-        is_root_agent,
-        fresh_forced_by_mirror,
-        skip_auto_resume,
-        configured_identity,
-        effective_continuation,
-        pending_binding,
-        session_env_warnings,
-        session,
-        mgr,
-        resource_permit,
-        resource_monitor,
-    };
     publication::complete(ctx, input).await
 }
 
@@ -601,4 +571,135 @@ async fn backend_spawn_fixture_ready(
         }
         None => true,
     }
+}
+
+struct SpawnEnvironment {
+    extra_env: Vec<(String, String)>,
+    configured_env: Vec<(String, String)>,
+    env_remove_keys: Vec<String>,
+    env_unset: Vec<String>,
+    resource_registration: Option<ResourceLaunchRegistration>,
+    logical_resource_slot: Option<ResourceLogicalAgentSlot>,
+}
+#[allow(clippy::too_many_arguments)]
+fn prepare_environment<R: tauri::Runtime>(
+    ctx: &CreateBodyContext<'_, R>,
+    session: &crate::session::session::Session,
+    agent_id: &Option<String>,
+    agent_label: &Option<String>,
+    is_root_agent: bool,
+    injected_claude_config_dir: Option<&str>,
+    container_path_context: Option<&crate::commands::session::resume_probe::ContainerPathContext>,
+    resource_monitor: &std::sync::Arc<crate::resource_monitor::ResourceMonitorState>,
+    resource_permit: &mut Option<crate::resource_monitor::AgentLaunchPermit>,
+    session_env_warnings: &mut Vec<crate::pty::container_paths::ContainerEnvWarning>,
+) -> SpawnEnvironment {
+    let &CreateBodyContext {
+        cwd,
+        resolved_spawn,
+        ..
+    } = ctx;
+    let id = session.id;
+    let extra_env = if agent_id.is_some() {
+        crate::pty::credentials::build_credentials_env(&session.token, cwd)
+    } else {
+        Vec::new()
+    };
+    let configured_env = child_environment(
+        resolved_spawn.map(|spawn| spawn.child_env.as_slice()),
+        injected_claude_config_dir,
+    );
+    let env_remove_keys: Vec<String> = resolved_spawn
+        .map(|spawn| spawn.env_remove_keys.clone())
+        .unwrap_or_default();
+    let mut env_unset = Vec::new();
+    let mut warnings = Vec::new();
+    let configured_env = translate_child_environment(
+        configured_env,
+        &env_remove_keys,
+        session.backend_kind,
+        container_path_context.as_ref().map(|context| &context.map),
+        &mut env_unset,
+        &mut warnings,
+    );
+    session_env_warnings.extend(warnings);
+    let (resource_registration, logical_resource_slot): (
+        Option<ResourceLaunchRegistration>,
+        Option<ResourceLogicalAgentSlot>,
+    ) = match session.backend_kind {
+        SessionBackendKind::LocalProcess => resource_permit
+            .take()
+            .map(|permit| {
+                let metadata = resource_launch_metadata(
+                    cwd,
+                    is_root_agent,
+                    id,
+                    &session.name,
+                    agent_id,
+                    agent_label,
+                );
+                ResourceLaunchRegistration::new(resource_monitor.as_ref().clone(), permit, metadata)
+            })
+            .map(|registration| (Some(registration), None))
+            .unwrap_or((None, None)),
+        SessionBackendKind::ContainerTransport => (
+            None,
+            resource_permit
+                .take()
+                .and_then(|permit| resource_monitor.hold_logical_agent_slot(permit)),
+        ),
+    };
+
+    SpawnEnvironment {
+        extra_env,
+        configured_env,
+        env_remove_keys,
+        env_unset,
+        resource_registration,
+        logical_resource_slot,
+    }
+}
+
+async fn record_effective_args<R: tauri::Runtime>(
+    ctx: &CreateBodyContext<'_, R>,
+    mgr: &crate::session::manager::SessionManager,
+    resource_monitor: &std::sync::Arc<crate::resource_monitor::ResourceMonitorState>,
+    resource_permit: &mut Option<crate::resource_monitor::AgentLaunchPermit>,
+    pending_binding: crate::session::manager::PendingCreateBinding,
+    effective: Vec<String>,
+) -> Result<(), String> {
+    let &CreateBodyContext {
+        create_owner,
+        lifecycle_domain,
+        inline_transaction,
+        ..
+    } = ctx;
+    let carrier_args = match with_create_resource_region(
+        create_owner,
+        resource_permit,
+        acquire_lifecycle_create_publication_region(
+            create_owner,
+            mgr,
+            lifecycle_domain,
+            inline_transaction,
+        ),
+    )
+    .await
+    {
+        Ok(permit) => permit,
+        Err(error) => {
+            release_resource_launch_permit(resource_monitor, resource_permit);
+            return Err(error);
+        }
+    };
+    mgr.set_pending_effective_shell_args_with_carrier_permit(
+        &carrier_args,
+        pending_binding,
+        effective,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    drop(carrier_args);
+
+    Ok(())
 }

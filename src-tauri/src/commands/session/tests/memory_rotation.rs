@@ -260,15 +260,12 @@ fn create_session_inner_marks_spawning_until_spawn_returns() {
         source_archive(&sources),
         "two archive gates bracket mark and pending creation"
     );
-    let normalized = sources
-        .get("session/create/core.rs")
-        .expect("creation core from the same source map")
-        .split_whitespace()
-        .collect::<String>();
+    let normalized = super::support::expanded_creation(&sources)
+        .expect("expanded creation path from the same source map");
     let first_gate = normalized
         .find(concat!(
-            "enforce_owned_unarchived_for_spawn(app,&cwd,&session_label,&create_owner,",
-            "&create_manager,lifecycle_domain,inline_transaction,).await?;"
+            "enforce_owned_unarchived_for_spawn(app,cwd,&session_label,create_owner,",
+            "create_manager,lifecycle_domain,inline_transaction,).await?;"
         ))
         .expect("first archive gate");
     let mark = normalized
