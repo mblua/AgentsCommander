@@ -144,6 +144,74 @@ pub(crate) async fn execute_external_root_transaction<R: tauri::Runtime>(
     }
 }
 
+struct RootAgentLaunch {
+    shell: String,
+    shell_args: Vec<String>,
+    agent_id: Option<String>,
+    agent_label: Option<String>,
+    resolved_spawn: Option<crate::config::agent_command::AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
+}
+
+async fn resolve_root_agent_launch(
+    settings: &SettingsState,
+    root_agent_path: &str,
+    request: &RootJobRequest,
+) -> Result<RootAgentLaunch, String> {
+    let last_coding_agent = crate::config::root_agent::read_last_coding_agent(root_agent_path);
+    let (shell, shell_args, agent_id, agent_label) = {
+        let settings = settings
+            .current_read()
+            .await
+            .map_err(|error| error.to_string())?;
+        resolve_root_agent_command(
+            &settings,
+            request.requested_agent_id.as_deref(),
+            last_coding_agent.as_deref(),
+        )?
+    };
+    let (resolved_spawn, resolved_agent_host_shell) = if let Some(agent_id) = agent_id.as_deref() {
+        // #1271 - build the spawn and copy the configured default host shell
+        // from the SAME single guard, before any await, so the pair can never
+        // mix across a configuration change (Phase 1 items 1-2; mirrors the
+        // restart pattern).
+        let settings = settings
+            .current_read()
+            .await
+            .map_err(|error| error.to_string())?;
+        let spawn = build_configured_agent_spawn_for_cwd(
+            &settings,
+            agent_id,
+            root_agent_path,
+            request.requested_profile.as_deref(),
+        )?;
+        let host_shell = Some(ResolvedAgentHostShell {
+            program: settings.default_shell.clone(),
+            args: settings.default_shell_args.clone(),
+        });
+        (spawn, host_shell)
+    } else {
+        (None, None)
+    };
+    let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
+        (
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            Some(spawn.trusted_agent_label.clone()),
+        )
+    } else {
+        (shell, shell_args, agent_label)
+    };
+    Ok(RootAgentLaunch {
+        shell,
+        shell_args,
+        agent_id,
+        agent_label,
+        resolved_spawn,
+        resolved_agent_host_shell,
+    })
+}
+
 pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     request: RootJobRequest,
@@ -267,50 +335,14 @@ pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
         }
     }
 
-    let last_coding_agent = crate::config::root_agent::read_last_coding_agent(&root_agent_path);
-    let (shell, shell_args, agent_id, agent_label) = {
-        let settings = settings
-            .current_read()
-            .await
-            .map_err(|error| error.to_string())?;
-        resolve_root_agent_command(
-            &settings,
-            request.requested_agent_id.as_deref(),
-            last_coding_agent.as_deref(),
-        )?
-    };
-    let (resolved_spawn, resolved_agent_host_shell) = if let Some(agent_id) = agent_id.as_deref() {
-        // #1271 - build the spawn and copy the configured default host shell
-        // from the SAME single guard, before any await, so the pair can never
-        // mix across a configuration change (Phase 1 items 1-2; mirrors the
-        // restart pattern).
-        let settings = settings
-            .current_read()
-            .await
-            .map_err(|error| error.to_string())?;
-        let spawn = build_configured_agent_spawn_for_cwd(
-            &settings,
-            agent_id,
-            &root_agent_path,
-            request.requested_profile.as_deref(),
-        )?;
-        let host_shell = Some(ResolvedAgentHostShell {
-            program: settings.default_shell.clone(),
-            args: settings.default_shell_args.clone(),
-        });
-        (spawn, host_shell)
-    } else {
-        (None, None)
-    };
-    let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
-        (
-            spawn.shell.clone(),
-            spawn.shell_args.clone(),
-            Some(spawn.trusted_agent_label.clone()),
-        )
-    } else {
-        (shell, shell_args, agent_label)
-    };
+    let RootAgentLaunch {
+        shell,
+        shell_args,
+        agent_id,
+        agent_label,
+        resolved_spawn,
+        resolved_agent_host_shell,
+    } = resolve_root_agent_launch(&settings, &root_agent_path, &request).await?;
     let target_ownership = context
         .authority()
         .map(|authority| authority.target_ownership())
