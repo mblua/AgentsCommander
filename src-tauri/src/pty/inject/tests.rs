@@ -347,7 +347,6 @@ async fn clear_watch_concurrency(remove: bool, poison: bool, cancel: bool) -> Re
             b"\x1b",
             b"web",
             b"privileged",
-            b"exit\r\n",
         ] {
             tokio::time::timeout(
                 Duration::from_millis(500),
@@ -368,10 +367,7 @@ async fn clear_watch_concurrency(remove: bool, poison: bool, cancel: bool) -> Re
         }
         let close = tokio::time::timeout(
             Duration::from_millis(500),
-            test_input_write(
-                &manager, id, b"exit
-",
-            ),
+            test_input_write(&manager, id, &[b'e', b'x', b'i', b't', 13, 10]),
         )
         .await;
         assert!(
@@ -429,11 +425,7 @@ async fn clear_watch_concurrency(remove: bool, poison: bool, cancel: bool) -> Re
     if !remove && !poison {
         expected.extend([b"second".to_vec(), vec![13], vec![13]]);
     }
-    expected.push(
-        b"exit
-"
-        .to_vec(),
-    );
+    expected.push(vec![b'e', b'x', b'i', b't', 13, 10]);
     assert_eq!(&writes[3..], expected);
     if poison {
         manager
