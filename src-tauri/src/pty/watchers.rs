@@ -338,6 +338,101 @@ struct RegisteredSession {
     // ever drift out of step with the one that counts.
 }
 
+impl RegisteredSession {
+    fn evaluate_watchers(
+        &mut self,
+        id: Uuid,
+        agent: &AgentResolution,
+        compiled: &HashMap<String, Option<Arc<pattern::WatcherPattern>>>,
+        at: chrono::DateTime<chrono::Utc>,
+        logical: &[frame::LogicalRow],
+        selected: &[&frame::LogicalRow],
+    ) -> Vec<WatcherMatchPayload> {
+        let now = std::time::Instant::now();
+        let mut next_seq = self.seq;
+        let mut used_by_session = 0usize;
+        let mut matches = Vec::new();
+
+        for watcher in &agent.running {
+            let Some(Some(compiled)) = compiled.get(&watcher.id) else {
+                continue;
+            };
+            let state = self.watchers.entry(watcher.id.clone()).or_default();
+
+            let signature = (watcher.pattern.clone(), watcher.mode);
+            if state.signature.as_ref() != Some(&signature) {
+                let count = state.count;
+                *state = WatcherSessionState {
+                    signature: Some(signature),
+                    count,
+                    ..WatcherSessionState::default()
+                };
+            }
+
+            // A suspended pair is skipped whole, and stays marked degraded while it is: the UI
+            // must never read "recovered" from a pair that is only being left alone.
+            if let Some(until) = state.suspended_until {
+                if now < until {
+                    continue;
+                }
+                state.suspended_until = None;
+                state.degraded_ticks = 0;
+            }
+
+            // The caps live HERE, immediately before the sink call, which is exactly where
+            // `ContextScraper`'s equality gate lives. Everything that passes them reaches both
+            // the event and the ring, and nothing else reaches either.
+            let budget = MATCHES_PER_WATCHER_PER_TICK
+                .min(MATCHES_PER_SESSION_PER_TICK.saturating_sub(used_by_session));
+
+            let (found, capped) = match watcher.mode {
+                WatcherMode::State => match evaluate_state(state, compiled, logical) {
+                    // Dropped by the cap: the gate is NOT committed, so the same activation is
+                    // offered again next tick. Committing it here would turn the plan's "emits
+                    // nothing further for that key THIS TICK" into "never again", silently -
+                    // `degraded` clears on the next tick, so nothing would ever say the
+                    // activation was lost.
+                    Some(_) if budget == 0 => (Vec::new(), true),
+                    Some((found, commit)) => {
+                        state.commit_gate(commit);
+                        (vec![found], false)
+                    }
+                    None => (Vec::new(), false),
+                },
+                WatcherMode::Occurrence => {
+                    let outcome =
+                        evaluate_occurrence(state, watcher, compiled, selected, now, budget);
+                    state
+                        .keys
+                        .prune(now, Duration::from_millis(watcher.dedupe_window_ms));
+                    outcome
+                }
+            };
+
+            for (captures, row, row_truncated) in found {
+                next_seq += 1;
+                used_by_session += 1;
+                state.count += 1;
+                matches.push(WatcherMatchPayload {
+                    session_id: id.to_string(),
+                    seq: next_seq,
+                    watcher_id: watcher.id.clone(),
+                    mode: watcher.mode,
+                    at,
+                    captures,
+                    row,
+                    row_truncated,
+                });
+            }
+
+            state.update_saturation(id, watcher, now, capped);
+        }
+
+        self.seq = next_seq;
+        matches
+    }
+}
+
 /// Runs every configured watcher over every registered session, five times a second.
 ///
 /// Its total capability is: read one session's screen through a narrowed reader, ask for that
@@ -822,87 +917,7 @@ impl WatcherEngine {
         let logical = logical.unwrap_or_default();
         let selected = frame::select_logical(&logical, &evaluable);
 
-        let now = std::time::Instant::now();
-        let mut next_seq = session.seq;
-        let mut used_by_session = 0usize;
-        let mut matches = Vec::new();
-
-        for watcher in &agent.running {
-            let Some(Some(compiled)) = compiled.get(&watcher.id) else {
-                continue;
-            };
-            let state = session.watchers.entry(watcher.id.clone()).or_default();
-
-            let signature = (watcher.pattern.clone(), watcher.mode);
-            if state.signature.as_ref() != Some(&signature) {
-                let count = state.count;
-                *state = WatcherSessionState {
-                    signature: Some(signature),
-                    count,
-                    ..WatcherSessionState::default()
-                };
-            }
-
-            // A suspended pair is skipped whole, and stays marked degraded while it is: the UI
-            // must never read "recovered" from a pair that is only being left alone.
-            if let Some(until) = state.suspended_until {
-                if now < until {
-                    continue;
-                }
-                state.suspended_until = None;
-                state.degraded_ticks = 0;
-            }
-
-            // The caps live HERE, immediately before the sink call, which is exactly where
-            // `ContextScraper`'s equality gate lives. Everything that passes them reaches both
-            // the event and the ring, and nothing else reaches either.
-            let budget = MATCHES_PER_WATCHER_PER_TICK
-                .min(MATCHES_PER_SESSION_PER_TICK.saturating_sub(used_by_session));
-
-            let (found, capped) = match watcher.mode {
-                WatcherMode::State => match evaluate_state(state, compiled, &logical) {
-                    // Dropped by the cap: the gate is NOT committed, so the same activation is
-                    // offered again next tick. Committing it here would turn the plan's "emits
-                    // nothing further for that key THIS TICK" into "never again", silently -
-                    // `degraded` clears on the next tick, so nothing would ever say the
-                    // activation was lost.
-                    Some(_) if budget == 0 => (Vec::new(), true),
-                    Some((found, commit)) => {
-                        state.commit_gate(commit);
-                        (vec![found], false)
-                    }
-                    None => (Vec::new(), false),
-                },
-                WatcherMode::Occurrence => {
-                    let outcome =
-                        evaluate_occurrence(state, watcher, compiled, &selected, now, budget);
-                    state
-                        .keys
-                        .prune(now, Duration::from_millis(watcher.dedupe_window_ms));
-                    outcome
-                }
-            };
-
-            for (captures, row, row_truncated) in found {
-                next_seq += 1;
-                used_by_session += 1;
-                state.count += 1;
-                matches.push(WatcherMatchPayload {
-                    session_id: id.to_string(),
-                    seq: next_seq,
-                    watcher_id: watcher.id.clone(),
-                    mode: watcher.mode,
-                    at,
-                    captures,
-                    row,
-                    row_truncated,
-                });
-            }
-
-            state.update_saturation(id, watcher, now, capped);
-        }
-
-        session.seq = next_seq;
+        let matches = session.evaluate_watchers(id, agent, compiled, at, &logical, &selected);
 
         // Published while the registration lock is still held, so a retirement cannot
         // interleave: `purge_session_side_state` retires first and then purges, and creation
