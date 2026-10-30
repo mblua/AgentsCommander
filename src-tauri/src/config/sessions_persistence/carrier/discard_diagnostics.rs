@@ -1,6 +1,6 @@
 //! Owned, nonauthoritative observations made only after the discard veto.
 
-use super::publication::{publication_slots, ProtectionPhase};
+use super::publication::{publication_slot_values, ProtectionPhase};
 use crate::session::manager::CarrierMutationPermit;
 use uuid::Uuid;
 
@@ -64,9 +64,9 @@ pub(crate) fn observe_discard_veto(
     _permit: &CarrierMutationPermit,
     id: Uuid,
 ) -> Vec<DiscardVetoObservation> {
-    let slots = match publication_slots().lock() {
-        Ok(slots) => slots.values().cloned().collect::<Vec<_>>(),
-        Err(_) => {
+    let slots = match publication_slot_values() {
+        Some(slots) => slots,
+        None => {
             return vec![DiscardVetoObservation::unknown(
                 id,
                 DiscardVetoReason::RegistryLockUnreadable,

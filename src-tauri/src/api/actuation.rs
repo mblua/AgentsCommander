@@ -71,7 +71,7 @@ pub fn read_send_file_content(
     basename: &str,
 ) -> Result<SendFileContent, ApiError> {
     let abs = resolve_send_file_path(bound_root, basename)?;
-    let bytes = std::fs::read(&abs)
+    let bytes = crate::filesystem::phone_messaging::read_message_snapshot(&abs)
         .map_err(|e| ApiError::BadRequest(format!("message file not readable: {}", e)))?;
     if bytes.len() > INLINE_BODY_MAX_BYTES {
         return Err(ApiError::PayloadTooLarge(format!(

@@ -88,6 +88,17 @@
         "files": 0,
         "sites": 0
       }
+    },
+    {
+      "id": "Screenshots/Native",
+      "name": "screenshots",
+      "scope": "src-tauri/src/screenshot/native/",
+      "owner": "src-tauri/src/screenshot/native/confirm.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 1,
+        "sites": 1
+      }
     }
   ]
 }
