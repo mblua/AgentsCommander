@@ -215,16 +215,8 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
     }
 
     match cmd {
-        "task_get_snapshot" => {
-            let id = require_str(args, "sessionId")?;
-            crate::commands::ac_discovery::task_snapshot_inner(
-                &state.session_mgr,
-                &state.settings,
-                Some(&id),
-                None,
-            )
-            .await
-        }
+        "task_get_snapshot" => task_snapshot_command(state, args).await,
+
         "task_get_snapshot_at" => {
             let root = require_str(args, "workgroupRoot")?;
             crate::commands::ac_discovery::task_snapshot_inner(
@@ -292,21 +284,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         }
 
         // --- Role templates ---
-        "list_role_templates" => {
-            let snapshot = state.settings.read().await.clone();
-            match crate::config::config_dir() {
-                Some(config_dir) => serde_json::to_value(
-                    crate::commands::role_templates::collect_role_templates(&snapshot, &config_dir),
-                )
-                .map_err(|e| e.to_string()),
-                None => {
-                    log::warn!(
-                        "[role-templates] could not resolve config dir; returning no role templates"
-                    );
-                    Ok(json!([]))
-                }
-            }
-        }
+        "list_role_templates" => list_role_templates_command(state).await,
 
         "get_agency_templates_status" => operations.agency_status().await,
         "update_agency_templates" => operations.agency_update().await,
@@ -354,19 +332,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         "fetch_home_markdown" => Err("Home is not available in browser mode".to_string()),
 
         // --- Repos ---
-        "search_repos" => {
-            let query = args
-                .get("query")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let cfg = state.settings.read().await;
-            let repo_paths = cfg.project_paths.clone();
-            drop(cfg);
-
-            let results = crate::repos::search_repositories(&repo_paths, &query);
-            serde_json::to_value(results).map_err(|e| e.to_string())
-        }
+        "search_repos" => search_repos_command(state, args).await,
 
         // --- Debug ---
         "append_rail_diagnostic" => {
@@ -587,6 +553,47 @@ pub(crate) fn binary_pty_write_succeeded(
             false
         }
     }
+}
+
+async fn task_snapshot_command(state: &WsState, args: &Value) -> Result<Value, String> {
+    let id = require_str(args, "sessionId")?;
+    crate::commands::ac_discovery::task_snapshot_inner(
+        &state.session_mgr,
+        &state.settings,
+        Some(&id),
+        None,
+    )
+    .await
+}
+
+async fn list_role_templates_command(state: &WsState) -> Result<Value, String> {
+    let snapshot = state.settings.read().await.clone();
+    match crate::config::config_dir() {
+        Some(config_dir) => serde_json::to_value(
+            crate::commands::role_templates::collect_role_templates(&snapshot, &config_dir),
+        )
+        .map_err(|e| e.to_string()),
+        None => {
+            log::warn!(
+                "[role-templates] could not resolve config dir; returning no role templates"
+            );
+            Ok(json!([]))
+        }
+    }
+}
+
+async fn search_repos_command(state: &WsState, args: &Value) -> Result<Value, String> {
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let cfg = state.settings.read().await;
+    let repo_paths = cfg.project_paths.clone();
+    drop(cfg);
+
+    let results = crate::repos::search_repositories(&repo_paths, &query);
+    serde_json::to_value(results).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

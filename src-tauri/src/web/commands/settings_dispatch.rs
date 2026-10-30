@@ -31,34 +31,7 @@ pub(super) async fn dispatch_settings_command(
             .map_err(|e| e.to_string())
         }
 
-        "save_agent_file_source" => {
-            let source =
-                serde_json::from_value(args.get("source").cloned().ok_or("missing source")?)
-                    .map_err(|e| e.to_string())?;
-            let expected = serde_json::from_value(
-                args.get("expectedRevision")
-                    .cloned()
-                    .ok_or("missing expectedRevision")?,
-            )
-            .map_err(|e| e.to_string())?;
-            let context = args
-                .get("contextRevision")
-                .and_then(Value::as_str)
-                .ok_or("missing contextRevision")?
-                .to_owned();
-            let edits = serde_json::from_value(args.get("edits").cloned().ok_or("missing edits")?)
-                .map_err(|e| e.to_string())?;
-            let reply = crate::commands::config::save_agent_file_source_inner(
-                &state.settings,
-                source,
-                expected,
-                context,
-                edits,
-            )
-            .await?;
-            operations.emit_agent_file_save_events(&reply);
-            serde_json::to_value(reply).map_err(|e| e.to_string())
-        }
+        "save_agent_file_source" => save_agent_file_source_command(state, args).await,
 
         "remember_agent_file_source" => {
             let menu = serde_json::from_value(args.get("menu").cloned().ok_or("missing menu")?)
@@ -213,4 +186,33 @@ async fn save_settings_draft_command(state: &WsState, args: &Value) -> Result<Va
     }
 
     Ok(json!(null))
+}
+
+async fn save_agent_file_source_command(state: &WsState, args: &Value) -> Result<Value, String> {
+    let operations = state.operations.as_ref();
+    let source = serde_json::from_value(args.get("source").cloned().ok_or("missing source")?)
+        .map_err(|e| e.to_string())?;
+    let expected = serde_json::from_value(
+        args.get("expectedRevision")
+            .cloned()
+            .ok_or("missing expectedRevision")?,
+    )
+    .map_err(|e| e.to_string())?;
+    let context = args
+        .get("contextRevision")
+        .and_then(Value::as_str)
+        .ok_or("missing contextRevision")?
+        .to_owned();
+    let edits = serde_json::from_value(args.get("edits").cloned().ok_or("missing edits")?)
+        .map_err(|e| e.to_string())?;
+    let reply = crate::commands::config::save_agent_file_source_inner(
+        &state.settings,
+        source,
+        expected,
+        context,
+        edits,
+    )
+    .await?;
+    operations.emit_agent_file_save_events(&reply);
+    serde_json::to_value(reply).map_err(|e| e.to_string())
 }

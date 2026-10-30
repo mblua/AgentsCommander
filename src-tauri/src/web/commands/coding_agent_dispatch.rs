@@ -101,45 +101,10 @@ pub(super) async fn dispatch_coding_agent_command(
         // acquire the turn for a consistent snapshot, mutations broadcast their
         // event payload before releasing it.
         "preview_selection_lock_removal" => {
-            let request: crate::commands::config::PreviewSelectionLockRemovalRequest =
-                require_json(args, "request")?;
-            let state = state.clone();
-            crate::session::selection::run_owned_selection_read_timed(
-                "preview_selection_lock_removal",
-                move || async move {
-                    let result = crate::commands::config::preview_selection_lock_removal_inner(
-                        &state.session_mgr,
-                        &state.settings,
-                        request,
-                    )
-                    .await?;
-                    serde_json::to_value(result).map_err(|e| e.to_string())
-                },
-            )
-            .await
+            preview_selection_lock_removal_command(state, args).await
         }
 
-        "apply_selection_lock_removal" => {
-            let request: crate::commands::config::ApplySelectionLockRemovalRequest =
-                require_json(args, "request")?;
-            let state = state.clone();
-            crate::session::selection::run_owned_selection_operation(move || async move {
-                let (result, payload) =
-                    crate::commands::config::apply_selection_lock_removal_inner(
-                        &state.settings,
-                        request,
-                    )
-                    .await?;
-                broadcast_all(
-                    state.desktop_events.as_ref(),
-                    &state.broadcaster,
-                    "coding_agent_profile_selection_updated",
-                    &payload,
-                );
-                serde_json::to_value(result).map_err(|e| e.to_string())
-            })
-            .await
-        }
+        "apply_selection_lock_removal" => apply_selection_lock_removal_command(state, args).await,
 
         "get_replica_selection_default" => {
             let request: crate::commands::config::GetReplicaSelectionDefaultRequest =
@@ -322,6 +287,50 @@ async fn apply_coding_agent_profile_selection_command(
                 request,
             )
             .await?;
+        broadcast_all(
+            state.desktop_events.as_ref(),
+            &state.broadcaster,
+            "coding_agent_profile_selection_updated",
+            &payload,
+        );
+        serde_json::to_value(result).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+async fn preview_selection_lock_removal_command(
+    state: &WsState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request: crate::commands::config::PreviewSelectionLockRemovalRequest =
+        require_json(args, "request")?;
+    let state = state.clone();
+    crate::session::selection::run_owned_selection_read_timed(
+        "preview_selection_lock_removal",
+        move || async move {
+            let result = crate::commands::config::preview_selection_lock_removal_inner(
+                &state.session_mgr,
+                &state.settings,
+                request,
+            )
+            .await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        },
+    )
+    .await
+}
+
+async fn apply_selection_lock_removal_command(
+    state: &WsState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request: crate::commands::config::ApplySelectionLockRemovalRequest =
+        require_json(args, "request")?;
+    let state = state.clone();
+    crate::session::selection::run_owned_selection_operation(move || async move {
+        let (result, payload) =
+            crate::commands::config::apply_selection_lock_removal_inner(&state.settings, request)
+                .await?;
         broadcast_all(
             state.desktop_events.as_ref(),
             &state.broadcaster,
