@@ -129,55 +129,75 @@ pub(super) fn publish_response_bytes(
             return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
         }
     };
+    finalize_response_publication(
+        state,
+        &retained_directory,
+        &temporary,
+        &destination,
+        &file,
+        &written_identity,
+        &directory_identity,
+    )
+}
+
+fn finalize_response_publication(
+    state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
+    retained_directory: &crate::path_identity::RetainedDirectory,
+    temporary: &Path,
+    destination: &Path,
+    file: &std::fs::File,
+    written_identity: &crate::path_identity::VerifiedPathIdentity,
+    directory_identity: &crate::path_identity::VerifiedPathIdentity,
+) -> Result<(), TerminalSnapshotReasonCode> {
     #[cfg(test)]
     state.run_response_publication_hook(
         TerminalSnapshotResponsePublicationStage::BeforeAtomicRename,
-        &temporary,
-        &destination,
+        temporary,
+        destination,
     );
     if retained_directory
-        .publish_new_file_atomic(&temporary, &destination)
+        .publish_new_file_atomic(temporary, destination)
         .is_err()
     {
-        cleanup_tracked_artifact(state, &temporary, &written_identity);
+        cleanup_tracked_artifact(state, temporary, written_identity);
         return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
     #[cfg(test)]
     state.run_response_publication_hook(
         TerminalSnapshotResponsePublicationStage::AfterAtomicRename,
-        &temporary,
-        &destination,
+        temporary,
+        destination,
     );
     let mut published = reconcile_published_response(
         state,
-        &retained_directory,
-        &destination,
-        &file,
-        &written_identity,
-        &directory_identity,
+        retained_directory,
+        destination,
+        file,
+        written_identity,
+        directory_identity,
     )?;
     #[cfg(test)]
     state.run_response_publication_hook(
         TerminalSnapshotResponsePublicationStage::AfterFinalVerification,
-        &temporary,
-        &destination,
+        temporary,
+        destination,
     );
     if published.is_some() {
         published = reconcile_published_response(
             state,
-            &retained_directory,
-            &destination,
-            &file,
-            &written_identity,
-            &directory_identity,
+            retained_directory,
+            destination,
+            file,
+            written_identity,
+            directory_identity,
         )?;
     }
     if published.is_some() {
-        published = match state.relocate_artifact(&written_identity, &destination) {
+        published = match state.relocate_artifact(written_identity, destination) {
             Ok(published) => published,
             Err(_) => {
                 #[cfg(not(unix))]
-                cleanup_tracked_artifact(state, &destination, &written_identity);
+                cleanup_tracked_artifact(state, destination, written_identity);
                 return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
             }
         };
@@ -185,17 +205,17 @@ pub(super) fn publish_response_bytes(
     #[cfg(test)]
     state.run_response_publication_hook(
         TerminalSnapshotResponsePublicationStage::AfterRegistryCommit,
-        &temporary,
-        &destination,
+        temporary,
+        destination,
     );
     if published.is_some() {
         published = reconcile_published_response(
             state,
-            &retained_directory,
-            &destination,
-            &file,
-            &written_identity,
-            &directory_identity,
+            retained_directory,
+            destination,
+            file,
+            written_identity,
+            directory_identity,
         )?;
     }
     #[cfg(test)]
@@ -210,17 +230,17 @@ pub(super) fn publish_response_bytes(
     #[cfg(test)]
     state.run_response_publication_hook(
         TerminalSnapshotResponsePublicationStage::AfterParentSync,
-        &temporary,
-        &destination,
+        temporary,
+        destination,
     );
     if published.is_some() {
         let _ = reconcile_published_response(
             state,
-            &retained_directory,
-            &destination,
-            &file,
-            &written_identity,
-            &directory_identity,
+            retained_directory,
+            destination,
+            file,
+            written_identity,
+            directory_identity,
         )?;
     }
     Ok(())
