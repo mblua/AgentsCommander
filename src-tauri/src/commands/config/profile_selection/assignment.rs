@@ -1,3 +1,5 @@
+mod publication;
+
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -9,9 +11,8 @@ use crate::session::manager::SessionManager;
 
 use super::wire::{
     ApplyCodingAgentProfileSelectionRequest, ApplyCodingAgentProfileSelectionResult,
-    AssignmentMode, PreviewCodingAgentProfileSelectionRequest,
-    PreviewCodingAgentProfileSelectionResult, ProfileAssignmentError, ProfileAssignmentTarget,
-    SelectionState,
+    PreviewCodingAgentProfileSelectionRequest, PreviewCodingAgentProfileSelectionResult,
+    ProfileAssignmentError, ProfileAssignmentTarget, SelectionState,
 };
 use super::{
     assignment_expected_fingerprint, assignment_snapshot, assignment_write_intent,
@@ -23,7 +24,7 @@ use super::{
     validate_profile_assignment_request,
 };
 
-struct ProfileAssignmentWrites {
+pub(crate) struct ProfileAssignmentWrites {
     updated_replica_paths: Vec<String>,
     newly_protected_paths: Vec<String>,
     skipped_locked_paths: Vec<String>,
@@ -221,16 +222,7 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
 
     let intent =
         assignment_write_intent(&request.scope, request.assignment_mode, resolved_decision);
-    let ProfileAssignmentWrites {
-        updated_replica_paths,
-        newly_protected_paths,
-        skipped_locked_paths,
-        invalid_paths,
-        write_succeeded_keys,
-        mut errors,
-        warnings,
-        force_applied,
-    } = write_profile_assignment(
+    let mut writes = write_profile_assignment(
         &settings_snapshot,
         &enumeration,
         &write_eligible_paths,
@@ -241,9 +233,10 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
 
     let mut restarted_session_ids = Vec::new();
     let mut destroyed_but_not_recreated_session_ids = Vec::new();
-    if request.restart_sessions && !write_succeeded_keys.is_empty() {
+    if request.restart_sessions && !writes.write_succeeded_keys.is_empty() {
         for target in &enumeration.targets() {
-            if !write_succeeded_keys
+            if !writes
+                .write_succeeded_keys
                 .contains(&canonical_compare_key(Path::new(&target.replica_path)))
             {
                 continue;
@@ -272,7 +265,7 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
                     Err(e) => {
                         let (code, destroyed_but_not_recreated) =
                             classify_restart_failure(session_mgr, uuid).await;
-                        errors.push(ProfileAssignmentError {
+                        writes.errors.push(ProfileAssignmentError {
                             code: code.to_string(),
                             message: e,
                             session_ids: vec![session_id.clone()],
@@ -290,40 +283,15 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
     // #1941 - refresh under the same turn so the reported remaining protection
     // never comes from the pre-write snapshot; an unknowable total is `null`.
     let locked_after_apply_count = refresh_locked_count(&enumeration);
-    let result = ApplyCodingAgentProfileSelectionResult {
-        scope: request.scope.clone(),
-        updated_count: updated_replica_paths.len(),
-        restarted_count: restarted_session_ids.len(),
-        updated_replica_paths,
+    Ok(publication::assignment_publication(
+        request,
+        normalized_profile,
+        target_fingerprint,
+        writes,
         restarted_session_ids,
         destroyed_but_not_recreated_session_ids,
-        target_fingerprint,
-        warnings,
-        errors,
-        newly_protected_paths,
-        skipped_locked_paths,
-        invalid_paths,
         locked_after_apply_count,
-        force_applied,
-    };
-    let operation = match request.assignment_mode {
-        AssignmentMode::Ordinary => "assign",
-        AssignmentMode::AssignAndLock => "assignAndLock",
-    };
-    let payload = serde_json::json!({
-        "scope": request.scope,
-        "operation": operation,
-        "codingAgentId": request.coding_agent_id,
-        "profile": normalized_profile,
-        "updatedCount": result.updated_count,
-        "restartedCount": result.restarted_count,
-        "targetFingerprint": &result.target_fingerprint,
-        "affectedPaths": &result.updated_replica_paths,
-        "newlyProtectedCount": result.newly_protected_paths.len(),
-        "skippedLockedCount": result.skipped_locked_paths.len(),
-        "errors": &result.errors,
-    });
-    Ok((result, payload))
+    ))
 }
 
 fn write_profile_assignment(
