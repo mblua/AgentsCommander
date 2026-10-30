@@ -311,3 +311,62 @@ fn permanently_blocked_stop_is_retained_without_exceeding_the_sweep_deadline() {
         report.retained
     );
 }
+
+struct PendingReaperCancellation(crate::shutdown::ShutdownSignal);
+
+impl Drop for PendingReaperCancellation {
+    fn drop(&mut self) {
+        self.0.trigger();
+    }
+}
+
+#[tokio::test]
+async fn off_runtime_pending_reaper_ticks_immediately_and_releases_backend_on_cancellation() {
+    let id = Uuid::new_v4();
+    let root = "C:/repo/.ac/wg-1/__agent_dev";
+    let (backend, _manager) = backend_with_tuning(ContainerTransportTuning {
+        ticket_ttl: Duration::from_millis(1),
+        ..ContainerTransportTuning::default()
+    });
+    let (removed_tx, removed_rx) = std::sync::mpsc::channel();
+    backend.set_route_remover(Arc::new(move |removed_id, _| {
+        removed_tx.send(removed_id).expect("record expired route");
+        Ok(())
+    }));
+    backend.spawn(test_spec(id, root, PtyOutputTarget::noop())).await.expect("pending");
+    std::thread::sleep(Duration::from_millis(5));
+
+    let backend = Arc::new(backend);
+    let weak = Arc::downgrade(&backend);
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    let _cancellation = PendingReaperCancellation(shutdown.clone());
+    let caller_backend = Arc::clone(&backend);
+    let caller_shutdown = shutdown.clone();
+    let (returned_tx, returned_rx) = std::sync::mpsc::channel();
+    let caller = std::thread::spawn(move || {
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        caller_backend.start_pending_reaper(caller_shutdown);
+        returned_tx.send(()).expect("record reaper dispatch");
+    });
+    returned_rx.recv_timeout(Duration::from_secs(2)).expect("reaper dispatched");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !caller.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(caller.is_finished(), "reaper dispatch did not finish");
+    caller.join().expect("off-runtime reaper caller");
+    assert_eq!(
+        removed_rx.recv_timeout(Duration::from_secs(2)).expect("first reaper tick"),
+        id
+    );
+    assert!(!backend.has_session(id));
+    assert!(removed_rx.try_recv().is_err(), "duplicate route removal");
+
+    shutdown.trigger();
+    drop(backend);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while weak.upgrade().is_some() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(weak.upgrade().is_none(), "cancelled reaper retained backend");
+}

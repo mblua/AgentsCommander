@@ -820,3 +820,91 @@ fn sweep_is_load_bearing_fails_load_bearing_on_a_malformed_registry() {
         &manager
     )));
 }
+
+struct OffRuntimeLifecycle {
+    events: std::sync::mpsc::Sender<(Uuid, Option<i32>)>,
+    release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+impl crate::pty::container_lifecycle::ContainerLifecycle for OffRuntimeLifecycle {
+    fn route_lost(
+        &self,
+        id: Uuid,
+        exit_code: i32,
+    ) -> BoxFuture<
+        '_,
+        Result<crate::pty::container_lifecycle::CriticalAdmissionOutcome<()>, String>,
+    > {
+        let release = self.release.lock().unwrap().take().expect("one reconciliation");
+        Box::pin(async move {
+            self.events.send((id, Some(exit_code))).expect("record route loss");
+            let _ = release.await;
+            Ok(crate::pty::container_lifecycle::CriticalAdmissionOutcome::Completed(()))
+        })
+    }
+}
+
+#[tokio::test]
+async fn off_runtime_full_and_closed_queues_remove_then_reconcile_without_waiting() {
+    for full in [true, false] {
+        let id = Uuid::new_v4();
+        let root = "C:/repo/.ac/wg-1/__agent_dev";
+        let (mut backend, ticket) = pending_backend(id, root).await;
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        backend.lifecycle_sender = Some(ContainerLifecycleSender::new(Arc::new(
+            OffRuntimeLifecycle {
+                events: events_tx.clone(),
+                release: Mutex::new(Some(release_rx)),
+            },
+        )));
+        backend.set_route_remover(Arc::new(move |removed_id, _| {
+            events_tx.send((removed_id, None)).expect("record removal");
+            Ok(())
+        }));
+        let receiver = attach(&backend, id, root, &ticket);
+        let receiver = if full { Some(receiver) } else { None };
+        let backend = Arc::new(backend);
+        let caller_backend = Arc::clone(&backend);
+        let (returned_tx, returned_rx) = std::sync::mpsc::channel();
+        let caller = std::thread::spawn(move || {
+            assert!(tokio::runtime::Handle::try_current().is_err());
+            let authority = crate::pty::manager::BackendWriteAuthority::for_backend_test();
+            if full {
+                for _ in 0..8 {
+                    caller_backend.write(&authority, id, b"x").expect("fill queue");
+                }
+            }
+            let error = caller_backend.write(&authority, id, b"x").expect_err("queue failure");
+            if full {
+                assert!(matches!(error, AppError::PtyError(ref text)
+                    if text.contains("outbound queue full")));
+            } else {
+                assert!(matches!(error, AppError::SessionNotFound(ref text)
+                    if text == &id.to_string()));
+            }
+            returned_tx.send(()).expect("record caller return");
+        });
+
+        // Reconciliation cannot complete until release, but the caller must return.
+        returned_rx.recv_timeout(Duration::from_secs(2)).expect("caller returned");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !caller.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(caller.is_finished(), "off-runtime caller did not finish");
+        caller.join().expect("off-runtime caller");
+        assert_eq!(
+            events_rx.recv_timeout(Duration::from_secs(2)).expect("route removal"),
+            (id, None)
+        );
+        assert_eq!(
+            events_rx.recv_timeout(Duration::from_secs(2)).expect("route loss"),
+            (id, Some(1))
+        );
+        assert!(!backend.has_session(id));
+        assert!(events_rx.try_recv().is_err(), "duplicate callback");
+        release_tx.send(()).expect("release reconciliation");
+        drop(receiver);
+    }
+}

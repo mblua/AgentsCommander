@@ -779,6 +779,14 @@ fn start_remote_alerts(
     tauri::async_runtime::spawn(session::remote_alerts::run(ports, transitions, shutdown))
 }
 
+impl pty::container_backend::ContainerBackgroundTasks
+    for pty::container_backend::ContainerTransportBackend
+{
+    fn spawn_background(future: futures::future::BoxFuture<'static, ()>) {
+        drop(tauri::async_runtime::spawn(future));
+    }
+}
+
 impl restore::RestoreStartupTask for tauri::async_runtime::JoinHandle<()> {
     type Error = tauri::Error;
     fn spawn_owned(future: futures::future::BoxFuture<'static, ()>) -> Self {
