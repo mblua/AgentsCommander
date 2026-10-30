@@ -273,6 +273,7 @@ impl<R: Runtime> SelectionTransaction<R> {
             return self.commit(decision, cause, mutations).await;
         };
         let manager = self.manager().await;
+        let activity_owner = manager.activity_owner();
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         let authorized = owner.state.lock().ok().is_some_and(|state| {
             state.executor_nonce == *nonce
@@ -325,7 +326,7 @@ impl<R: Runtime> SelectionTransaction<R> {
             // ordinary Err which could trigger pending-runtime cleanup.
             return std::future::pending().await;
         }
-        crate::config::activity_log::append_batch(&committed.activity);
+        crate::config::activity_log::append_batch(&committed.activity, &activity_owner);
         Ok(committed)
     }
 
@@ -566,12 +567,15 @@ impl<R: Runtime> SelectionTransaction<R> {
         //
         // The `?` means an `Err` returns before the append and drops `result`
         // whole, so no record survives for a session that was never finalized.
-        let result = self
-            .manager()
-            .await
-            .commit_selection_transition(&self.capability, decision, cause, mutations)
-            .await?;
-        crate::config::activity_log::append_batch(&result.activity);
+        let (result, activity_owner) = {
+            let manager = self.manager().await;
+            let activity_owner = manager.activity_owner();
+            let result = manager
+                .commit_selection_transition(&self.capability, decision, cause, mutations)
+                .await?;
+            (result, activity_owner)
+        };
+        crate::config::activity_log::append_batch(&result.activity, &activity_owner);
         Ok(result)
     }
 
@@ -580,6 +584,7 @@ impl<R: Runtime> SelectionTransaction<R> {
         id: Uuid,
     ) -> Result<CommitResult, String> {
         let manager = self.manager().await;
+        let activity_owner = manager.activity_owner();
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         let decision = manager
             .with_current_carrier_snapshot(&permit, |current| {
@@ -603,7 +608,7 @@ impl<R: Runtime> SelectionTransaction<R> {
             )
             .await?;
         drop(permit);
-        crate::config::activity_log::append_batch(&result.activity);
+        crate::config::activity_log::append_batch(&result.activity, &activity_owner);
         Ok(result)
     }
 

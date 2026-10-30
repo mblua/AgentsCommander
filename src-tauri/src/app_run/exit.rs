@@ -43,6 +43,7 @@ pub(crate) trait ExitHost: ExitEvents + Clone {
 pub(crate) struct ExitCtx<S> {
     pub(crate) detached_set: DetachedSessionsState,
     pub(crate) spec_board_state: S,
+    pub(crate) activity_for_exit: Arc<crate::config::activity_log::ActivityCoalescer>,
     pub(crate) session_mgr_for_exit: Arc<tokio::sync::RwLock<SessionManager>>,
     pub(crate) coordinator_clocks_for_exit:
         crate::config::coordinator_clocks::CoordinatorClocksState,
@@ -157,6 +158,7 @@ pub(crate) fn on_run_event<H, S, F, FF>(
         detached_set,
         spec_board_state,
         session_mgr_for_exit,
+        activity_for_exit,
         coordinator_clocks_for_exit,
         shutdown_for_exit,
         selection_coordinator_for_exit,
@@ -242,7 +244,7 @@ pub(crate) fn on_run_event<H, S, F, FF>(
                 None => vec![crate::config::activity_log::build_app_stop(false, 0)],
             };
             // One open, write and close for all N+1 lines.
-            crate::config::activity_log::append_batch(&activity_batch);
+            crate::config::activity_log::append_batch(&activity_batch, activity_for_exit);
 
             // #632 B1 - trigger background-task shutdown FIRST so the resource
             // watchdog stops dispatching NEW ticks and the idle detectors stop.
