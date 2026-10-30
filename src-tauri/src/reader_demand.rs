@@ -2,17 +2,49 @@
 
 #[cfg(test)]
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
 
+use crate::config::co_managed::CoManagedState;
 use crate::config::settings::SettingsState;
 use crate::session::manager::SessionManager;
-use tauri::Manager;
 
+use crate::capture;
 use crate::co_managed::CoManagedSupervisorHandle;
-use crate::{capture, commands};
+
+/// Lazy access to reader-demand inputs and operations at the application edge.
+pub(crate) trait ReaderDemandHost: Sync {
+    fn reader_settings(&self) -> Option<&SettingsState>;
+    fn reader_sessions(&self) -> Option<&Arc<tokio::sync::RwLock<SessionManager>>>;
+    fn reader_sessions_required(&self) -> &Arc<tokio::sync::RwLock<SessionManager>>;
+    fn reader_registry(&self) -> Option<&Arc<capture::registry::CaptureRegistry>>;
+
+    fn holds_room_reader_demand<'a>(
+        &'a self,
+        session_id: uuid::Uuid,
+    ) -> impl std::future::Future<Output = bool> + Send + 'a;
+    fn raise_room_reader_demand<'a>(
+        &'a self,
+        session_id: uuid::Uuid,
+    ) -> impl std::future::Future<Output = bool> + Send + 'a;
+    fn release_room_reader_demand<'a>(
+        &'a self,
+        session_id: uuid::Uuid,
+    ) -> impl std::future::Future<Output = ()> + Send + 'a;
+    fn co_managed_capturable_for_session<'a>(
+        &'a self,
+        room_root: &'a Path,
+        session_id: &'a str,
+    ) -> impl std::future::Future<Output = Result<bool, String>> + Send + 'a;
+    fn co_managed_effective_state_for_session<'a>(
+        &'a self,
+        room_root: &'a Path,
+        session_id: &'a str,
+    ) -> impl Future<Output = Result<CoManagedState, String>> + Send + 'a;
+}
 
 /// #2456 period of the Room reader-demand re-raise tick.
 pub(crate) const READER_DEMAND_TICK_SECS: u64 = 5;
@@ -50,7 +82,7 @@ pub(crate) fn tick_recheck_calls(session_id: uuid::Uuid) -> usize {
 
 /// #2525 one reader-demand tick: sweep when Co-managed is unavailable
 /// globally, otherwise the unchanged #2456 re-raise pass.
-pub(crate) async fn reader_demand_pass<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+pub(crate) async fn reader_demand_pass<H: ReaderDemandHost + ?Sized>(app: &H) {
     if release_room_reader_demands_when_globally_off(app).await {
         return;
     }
@@ -63,10 +95,10 @@ pub(crate) async fn reader_demand_pass<R: tauri::Runtime>(app: &tauri::AppHandle
 /// for sessions holding nothing too: it still bumps the Room `DemandEpoch`,
 /// which aborts a raise already in flight (D-e). Logs once per pass, and only
 /// when a session actually held a Room demand, so a steady Off is silent.
-pub(crate) async fn release_room_reader_demands_when_globally_off<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn release_room_reader_demands_when_globally_off<H: ReaderDemandHost + ?Sized>(
+    app: &H,
 ) -> bool {
-    let Some(settings) = app.try_state::<SettingsState>() else {
+    let Some(settings) = app.reader_settings() else {
         return false;
     };
     let enabled = match settings.current_read().await {
@@ -80,7 +112,7 @@ pub(crate) async fn release_room_reader_demands_when_globally_off<R: tauri::Runt
         return false;
     }
     let session_ids: Vec<uuid::Uuid> = {
-        let Some(manager) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() else {
+        let Some(manager) = app.reader_sessions() else {
             return false;
         };
         let guard = manager.read().await;
@@ -93,10 +125,10 @@ pub(crate) async fn release_room_reader_demands_when_globally_off<R: tauri::Runt
     };
     let mut held = 0usize;
     for session_id in session_ids {
-        if commands::telegram::holds_room_reader_demand(app, session_id).await {
+        if app.holds_room_reader_demand(session_id).await {
             held += 1;
         }
-        commands::session::release_room_reader_demand(app, session_id).await;
+        app.release_room_reader_demand(session_id).await;
     }
     if held > 0 {
         log::info!(
@@ -116,9 +148,9 @@ pub(crate) async fn release_room_reader_demands_when_globally_off<R: tauri::Runt
 /// installed in the same iteration and then found no longer Ready (D5-h). It
 /// logs only for a session it raised and kept, so a steady state is silent.
 /// The raise's `true` means "a reader is running afterwards", not "inserted".
-pub(crate) async fn reraise_room_reader_demands<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+pub(crate) async fn reraise_room_reader_demands<H: ReaderDemandHost + ?Sized>(app: &H) {
     let session_ids: Vec<uuid::Uuid> = {
-        let Some(manager) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() else {
+        let Some(manager) = app.reader_sessions() else {
             return;
         };
         let guard = manager.read().await;
@@ -130,7 +162,7 @@ pub(crate) async fn reraise_room_reader_demands<R: tauri::Runtime>(app: &tauri::
             .collect()
     };
     for session_id in session_ids {
-        if commands::telegram::holds_room_reader_demand(app, session_id).await {
+        if app.holds_room_reader_demand(session_id).await {
             continue;
         }
         #[cfg(test)]
@@ -141,7 +173,7 @@ pub(crate) async fn reraise_room_reader_demands<R: tauri::Runtime>(app: &tauri::
                 .entry(session_id)
                 .or_insert(0) += 1;
         }
-        if !commands::session::raise_room_reader_demand(app, session_id).await {
+        if !app.raise_room_reader_demand(session_id).await {
             continue;
         }
         #[cfg(test)]
@@ -155,7 +187,7 @@ pub(crate) async fn reraise_room_reader_demands<R: tauri::Runtime>(app: &tauri::
         // D5-h: a disable landing while the raise resolved and installed has
         // already released, so undo the demand this iteration installed.
         if !room_still_capturable(app, session_id).await {
-            commands::session::release_room_reader_demand(app, session_id).await;
+            app.release_room_reader_demand(session_id).await;
             continue;
         }
         log::info!("[co-managed] reader demand re-raised [{session_id}]");
@@ -164,12 +196,12 @@ pub(crate) async fn reraise_room_reader_demands<R: tauri::Runtime>(app: &tauri::
 
 /// #2456 D5-h re-resolve the session's room and capturability after a raise
 /// (#2756 U2a: the same predicate the raise used).
-pub(crate) async fn room_still_capturable<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn room_still_capturable<H: ReaderDemandHost + ?Sized>(
+    app: &H,
     session_id: uuid::Uuid,
 ) -> bool {
     let session = {
-        let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let manager = app.reader_sessions_required();
         let guard = manager.read().await;
         guard.get_session(session_id).await
     };
@@ -182,12 +214,8 @@ pub(crate) async fn room_still_capturable<R: tauri::Runtime>(
         return false;
     };
     matches!(
-        crate::commands::session::co_managed_capturable_for_session(
-            app,
-            &room_root,
-            &session_id.to_string()
-        )
-        .await,
+        app.co_managed_capturable_for_session(&room_root, &session_id.to_string())
+            .await,
         Ok(true)
     )
 }
@@ -199,8 +227,8 @@ pub(crate) async fn room_still_capturable<R: tauri::Runtime>(
 /// goes through the channel so this tick arm never runs a cycle inline, and it
 /// is sent even to a busy session: the handler arms, and the next idle edge
 /// runs the cycle.
-pub(crate) async fn recovery_pass<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn recovery_pass<H: ReaderDemandHost + ?Sized>(
+    app: &H,
     handle: &CoManagedSupervisorHandle,
 ) {
     let marked: Vec<String> = handle
@@ -212,7 +240,7 @@ pub(crate) async fn recovery_pass<R: tauri::Runtime>(
     if marked.is_empty() {
         return;
     }
-    let registry = app.try_state::<Arc<capture::registry::CaptureRegistry>>();
+    let registry = app.reader_registry();
     for id in marked {
         let Some(slot) = registry.as_ref().and_then(|registry| registry.slot(&id)) else {
             handle.lock_state().pending_recovery.remove(&id);
@@ -237,7 +265,7 @@ pub(crate) async fn recovery_pass<R: tauri::Runtime>(
                 continue;
             }
         };
-        let session = match app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() {
+        let session = match app.reader_sessions() {
             Some(manager) => manager.read().await.get_session(session_id).await,
             None => None,
         };
@@ -247,7 +275,7 @@ pub(crate) async fn recovery_pass<R: tauri::Runtime>(
             continue;
         };
         let ready = matches!(
-            crate::commands::session::co_managed_effective_state_for_session(app, &room_root, &id)
+            app.co_managed_effective_state_for_session(&room_root, &id)
                 .await,
             Ok(crate::config::co_managed::CoManagedState::Ready)
         );
@@ -260,15 +288,15 @@ pub(crate) async fn recovery_pass<R: tauri::Runtime>(
     }
 }
 
-pub(crate) async fn watch_capture_slots<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn watch_capture_slots<H: ReaderDemandHost + ?Sized>(
+    app: &H,
     handle: &CoManagedSupervisorHandle,
 ) {
-    let Some(registry) = app.try_state::<Arc<capture::registry::CaptureRegistry>>() else {
+    let Some(registry) = app.reader_registry() else {
         return;
     };
     let session_ids: Vec<uuid::Uuid> = {
-        let Some(manager) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() else {
+        let Some(manager) = app.reader_sessions() else {
             return;
         };
         let guard = manager.read().await;
