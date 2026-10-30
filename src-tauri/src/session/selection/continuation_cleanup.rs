@@ -149,6 +149,19 @@ impl OwnedReplacementContinuation {
             }
     }
 
+    fn reset_recheckpoint_effects(&self) {
+        // Recheckpoint is a new required native publication; retain the first
+        // strict receipt separately before reusing this fixed effect slot.
+        if let Ok(mut state) = self.owner.state.lock() {
+            if state.stage == ReplacementStage::FinalizedRecheckpoint {
+                state.effects[LifecycleEffectSlot::CarrierRename as usize] =
+                    OwnedEffectState::NotStarted;
+                state.effects[LifecycleEffectSlot::Readback as usize] =
+                    OwnedEffectState::NotStarted;
+            }
+        }
+    }
+
     pub(super) async fn publish_checkpoint(
         &self,
         manager: &SessionManager,
@@ -169,16 +182,7 @@ impl OwnedReplacementContinuation {
         let Some(binding) = self.binding() else {
             return false;
         };
-        // Recheckpoint is a new required native publication; retain the first
-        // strict receipt separately before reusing this fixed effect slot.
-        if let Ok(mut state) = self.owner.state.lock() {
-            if state.stage == ReplacementStage::FinalizedRecheckpoint {
-                state.effects[LifecycleEffectSlot::CarrierRename as usize] =
-                    OwnedEffectState::NotStarted;
-                state.effects[LifecycleEffectSlot::Readback as usize] =
-                    OwnedEffectState::NotStarted;
-            }
-        }
+        self.reset_recheckpoint_effects();
         let Some(rename) = self.start_effect(LifecycleEffectSlot::CarrierRename) else {
             return false;
         };
