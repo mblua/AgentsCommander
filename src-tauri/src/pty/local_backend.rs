@@ -235,36 +235,12 @@ impl LocalProcessBackend {
         // desynchronize.
         let launch = prepare_launch(&cmd, &args, resolved_agent_host_shell.as_ref())?;
 
-        // #942 - how many sessions were spawned in the window just before this one,
-        // and how many of them were the same CLI. Concurrent startups against shared
-        // agent state (the global ~/.codex) are a prime suspect for the intermittent
-        // blank terminal, so every spawn record carries its own concurrency context.
-        // Keyed on the CLI, never on the profile id: several profiles run the same
-        // codex binary against the same ~/.codex. Counting only, no behavior change.
-        let diag_thresholds = spawn_diagnostics::Thresholds::from_env();
-        let spawn_window = spawn_diagnostics::note_spawn_attempt(
-            coding_agent,
+        let SpawnPty {
+            pair,
+            spawn_cwd,
             diag_thresholds,
-            self.spawn.as_ref(),
-        );
-        // #1271 - accepted spawns only: the increment sits immediately before
-        // `native_pty_system()`, so every invalid-input rejection above left the
-        // per-instance observer at zero.
-        #[cfg(test)]
-        self.pre_pty_attempts.fetch_add(1, Ordering::SeqCst);
-        let pty_system = native_pty_system();
-        let spawn_cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
-
-        let size = PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        };
-
-        let pair = pty_system
-            .openpty(size)
-            .map_err(|e| AppError::PtyError(e.to_string()))?;
+            spawn_window,
+        } = self.prepare_spawn_pty(coding_agent, &cwd, cols, rows)?;
 
         let SpawnCommand {
             command,
@@ -325,19 +301,7 @@ impl LocalProcessBackend {
                 }
             };
 
-        // #942 - app.log is what users paste into issues, so a secret must never be
-        // echoed back out through the child output or the argv we log. Keyed on the env
-        // NAME (token / key / secret / password / credential), across both AC's own
-        // credential env and the configured rows where AC tells users to keep their API
-        // keys. Deliberately not a sweep of every value: a Codex profile legitimately
-        // carries `MODEL=gpt-5.6-sol`, and blanking that would shred the very argv this
-        // instrumentation exists to record.
-        let redact: Vec<String> = extra_env
-            .iter()
-            .chain(configured_env.iter())
-            .filter(|(key, _)| spawn_diagnostics::is_secret_env_key(key))
-            .map(|(_, value)| value.clone())
-            .collect();
+        let redact = spawn_redaction_values(&extra_env, &configured_env);
 
         // #942 - emits `[pty] spawn-record` (argv, cwd, CLI, profile, CODEX_HOME,
         // concurrency).
@@ -383,6 +347,52 @@ impl LocalProcessBackend {
         .start(self.clone(), id);
 
         Ok(())
+    }
+
+    fn prepare_spawn_pty(
+        &self,
+        coding_agent: Option<crate::session::profile::CodingAgentKind>,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<SpawnPty, AppError> {
+        // #942 - how many sessions were spawned in the window just before this one,
+        // and how many of them were the same CLI. Concurrent startups against shared
+        // agent state (the global ~/.codex) are a prime suspect for the intermittent
+        // blank terminal, so every spawn record carries its own concurrency context.
+        // Keyed on the CLI, never on the profile id: several profiles run the same
+        // codex binary against the same ~/.codex. Counting only, no behavior change.
+        let diag_thresholds = spawn_diagnostics::Thresholds::from_env();
+        let spawn_window = spawn_diagnostics::note_spawn_attempt(
+            coding_agent,
+            diag_thresholds,
+            self.spawn.as_ref(),
+        );
+        // #1271 - accepted spawns only: the increment sits immediately before
+        // `native_pty_system()`, so every invalid-input rejection above left the
+        // per-instance observer at zero.
+        #[cfg(test)]
+        self.pre_pty_attempts.fetch_add(1, Ordering::SeqCst);
+        let pty_system = native_pty_system();
+        let spawn_cwd = crate::path_utils::normalize_windows_verbatim_path(cwd);
+
+        let size = PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+
+        let pair = pty_system
+            .openpty(size)
+            .map_err(|e| AppError::PtyError(e.to_string()))?;
+
+        Ok(SpawnPty {
+            pair,
+            spawn_cwd,
+            diag_thresholds,
+            spawn_window,
+        })
     }
 
     fn prepare_spawn_command(
@@ -888,4 +898,30 @@ struct SpawnCommand {
     command: portable_pty::CommandBuilder,
     exec_argv: Vec<String>,
     codex_home: Option<String>,
+}
+
+struct SpawnPty {
+    pair: portable_pty::PtyPair,
+    spawn_cwd: String,
+    diag_thresholds: spawn_diagnostics::Thresholds,
+    spawn_window: spawn_diagnostics::SpawnWindow,
+}
+
+fn spawn_redaction_values(
+    extra_env: &[(String, String)],
+    configured_env: &[(String, String)],
+) -> Vec<String> {
+    // #942 - app.log is what users paste into issues, so a secret must never be
+    // echoed back out through the child output or the argv we log. Keyed on the env
+    // NAME (token / key / secret / password / credential), across both AC's own
+    // credential env and the configured rows where AC tells users to keep their API
+    // keys. Deliberately not a sweep of every value: a Codex profile legitimately
+    // carries `MODEL=gpt-5.6-sol`, and blanking that would shred the very argv this
+    // instrumentation exists to record.
+    extra_env
+        .iter()
+        .chain(configured_env.iter())
+        .filter(|(key, _)| spawn_diagnostics::is_secret_env_key(key))
+        .map(|(_, value)| value.clone())
+        .collect()
 }
