@@ -202,6 +202,8 @@ enum WatchCase {
     RequiredEnterFault,
     RedundantEnterFault,
     Legacy,
+    LegacyOtherProvider,
+    LegacyCompact,
     WrongProvider,
     WrongCommand,
 }
@@ -216,7 +218,10 @@ struct WatchRun {
 async fn run_clear_watch(case: WatchCase) -> WatchRun {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
-    let shell = if matches!(case, WatchCase::WrongProvider) {
+    let shell = if matches!(
+        case,
+        WatchCase::WrongProvider | WatchCase::LegacyOtherProvider
+    ) {
         "claude"
     } else {
         "codex"
@@ -258,12 +263,15 @@ async fn run_clear_watch(case: WatchCase) -> WatchRun {
     }
     let calls = Arc::new(AtomicUsize::new(0));
     let callback_calls = Arc::clone(&calls);
-    let text = if matches!(case, WatchCase::WrongCommand) {
+    let text = if matches!(case, WatchCase::WrongCommand | WatchCase::LegacyCompact) {
         "/compact"
     } else {
         "/clear"
     };
-    let result = if matches!(case, WatchCase::Legacy) {
+    let result = if matches!(
+        case,
+        WatchCase::Legacy | WatchCase::LegacyOtherProvider | WatchCase::LegacyCompact
+    ) {
         inject_peer_wake_with_current_facts(
             app.handle(),
             id,
@@ -360,14 +368,22 @@ async fn clear_watch_concurrency(remove: bool, poison: bool, cancel: bool) -> Re
             .expect("direct submission waited for watch")
             .unwrap();
         }
-        let close = tokio::time::timeout(
+        use crate::phone::mailbox::teardown::{observe_close_attempt, TeardownOutcome};
+        let close = observe_close_attempt(
             Duration::from_millis(500),
-            test_input_write(&manager, id, &[b'e', b'x', b'i', b't', 13, 10]),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            async {
+                test_input_write(&manager, id, &[b'e', b'x', b'i', b't', 13, 10])
+                    .await
+                    .unwrap();
+                TeardownOutcome::Closed
+            },
         )
         .await;
-        assert!(
-            matches!(close, Ok(Ok(()))),
-            "close writer missed observer budget"
+        assert_eq!(
+            close,
+            TeardownOutcome::Closed,
+            "close observer missed budget"
         );
         let other = Uuid::new_v4();
         manager

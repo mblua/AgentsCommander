@@ -57,7 +57,12 @@ async fn issue_3371_required_and_redundant_enter_faults() {
 
 #[tokio::test]
 async fn issue_3371_healthy_watch_and_legacy_facade_bytes() {
-    for case in [WatchCase::Healthy, WatchCase::Legacy] {
+    for case in [
+        WatchCase::Healthy,
+        WatchCase::Legacy,
+        WatchCase::LegacyOtherProvider,
+        WatchCase::LegacyCompact,
+    ] {
         let run = run_clear_watch(case).await;
         run.result.unwrap();
         assert!(run.armed);
@@ -65,7 +70,12 @@ async fn issue_3371_healthy_watch_and_legacy_facade_bytes() {
             run.callbacks,
             usize::from(matches!(case, WatchCase::Healthy))
         );
-        assert_eq!(run.writes, vec![b"/clear".to_vec(), vec![13], vec![13]]);
+        let text = if matches!(case, WatchCase::LegacyCompact) {
+            b"/compact".to_vec()
+        } else {
+            b"/clear".to_vec()
+        };
+        assert_eq!(run.writes, vec![text, vec![13], vec![13]]);
     }
     for case in [WatchCase::WrongProvider, WatchCase::WrongCommand] {
         let run = run_clear_watch(case).await;
