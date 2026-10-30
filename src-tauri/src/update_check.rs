@@ -11,11 +11,12 @@
 //! blocking-menu patterns (run_remote_blocking_menus_startup); that download never
 //! notifies and applies at the next start.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use crate::filesystem::update_cache::Cache as UpdateCache;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -44,7 +45,6 @@ const REQUEST_TIMEOUT_SECS: u64 = 10;
 /// Hard cap on the dist-tags response body, mirroring fetch_home_markdown's
 /// length-check (L1). The JSON is tiny; 64 KB is a generous bound.
 const DIST_TAGS_MAX_BYTES: usize = 64 * 1024;
-const CACHE_FILE_NAME: &str = "update-check.json";
 
 /// Cached result of an "update available" computation. Sent to the frontend
 /// (serialized camelCase) and stored in `UpdateCheckState`.
@@ -56,41 +56,14 @@ pub struct UpdateInfo {
     pub upgrade_command: String,
 }
 
-/// On-disk throttle cache. `last_checked_at` gates the next network call;
-/// `latest_version` lets us still notify on every boot inside the 24h window
-/// without re-hitting the registry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct UpdateCache {
-    last_checked_at: DateTime<Utc>,
-    latest_version: String,
-}
-
-fn cache_path() -> Option<PathBuf> {
-    crate::config::config_dir().map(|d| d.join(CACHE_FILE_NAME))
-}
-
 fn read_cache() -> Option<UpdateCache> {
-    let path = cache_path()?;
-    let bytes = std::fs::read(&path).ok()?;
-    serde_json::from_slice::<UpdateCache>(&bytes).ok()
+    let directory = crate::config::config_dir();
+    crate::filesystem::update_cache::read(directory.as_deref())
 }
 
 fn write_cache(cache: &UpdateCache) {
-    let Some(path) = cache_path() else { return };
-    let Ok(json) = serde_json::to_string_pretty(cache) else {
-        return;
-    };
-    // Atomic write (L3/E1): write a sibling temp file, then rename over the
-    // target so a concurrent reader (the Phase-2 CLI) never observes a
-    // half-written file. On Windows, std::fs::rename maps to MoveFileExW with
-    // MOVEFILE_REPLACE_EXISTING, so it atomically replaces the existing cache.
-    // Best-effort throughout; a failed write/rename only means we re-check
-    // sooner.
-    let tmp = path.with_extension("json.tmp"); // -> update-check.json.tmp (same dir)
-    if std::fs::write(&tmp, json).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
-    }
+    let directory = crate::config::config_dir();
+    crate::filesystem::update_cache::write(directory.as_deref(), cache);
 }
 
 /// True when we should hit the network now: no cache, stale cache (older than

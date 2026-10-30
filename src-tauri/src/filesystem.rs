@@ -53,6 +53,7 @@ pub(crate) mod tasks;
 pub(crate) mod telegram_logs;
 pub(crate) mod terminal_snapshots;
 pub(crate) mod transcripts;
+pub(crate) mod update_cache;
 
 /// Read the capture catalog without changing the platform's file semantics.
 pub(crate) fn read_capture_catalog(path: &Path) -> std::io::Result<String> {
