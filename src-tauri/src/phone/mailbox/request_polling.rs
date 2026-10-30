@@ -68,6 +68,55 @@ fn sweep_stale_session_results(requests_dir: &Path) {
     }
 }
 
+// #1163: answer each request with a result sidecar on every terminal
+// path (malformed, spawn-rebuild failure, create Ok/Err). Write the
+// result BEFORE deleting the request: a crash in between leaves a
+// re-processable request on disk (the pre-existing hazard), never a
+// lost already-written outcome.
+fn write_session_result(result: crate::cli::create_agent::SessionRequestResult) {
+    if let Err(e) = crate::cli::create_agent::write_session_request_result(&result) {
+        log::warn!(
+            "[session-requests] Failed to write result for '{}': {}",
+            result.id,
+            e
+        );
+    }
+}
+
+fn read_session_request(path: &Path) -> Option<crate::cli::create_agent::SessionRequest> {
+    let content = match read_text_bom_tolerant(path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("[session-requests] Failed to read {:?}: {}", path, e);
+            return None;
+        }
+    };
+
+    let request = match serde_json::from_str(&content) {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("[session-requests] Failed to parse {:?}: {}", path, e);
+            // #1163: answer with a rejected result so the CLI can
+            // distinguish rejection from a missing app. The request
+            // filename IS `<id>.json`, so the id comes from the stem.
+            write_session_result(crate::cli::create_agent::SessionRequestResult {
+                id: path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                status: crate::cli::create_agent::SessionRequestResultStatus::Rejected,
+                session_id: None,
+                error: Some(format!("malformed session request: {e}")),
+            });
+            // Delete malformed file
+            let _ = mailbox_disk::remove_mailbox_artifact(path);
+            return None;
+        }
+    };
+    Some(request)
+}
+
 impl MailboxPoller {
     /// Move an outbox message to outbox/delivered/ with token stripped.
     pub(crate) async fn move_to_delivered<R: tauri::Runtime>(
@@ -239,53 +288,10 @@ impl MailboxPoller {
             Err(_) => return,
         };
 
-        // #1163: answer each request with a result sidecar on every terminal
-        // path (malformed, spawn-rebuild failure, create Ok/Err). Write the
-        // result BEFORE deleting the request: a crash in between leaves a
-        // re-processable request on disk (the pre-existing hazard), never a
-        // lost already-written outcome.
-        let write_result = |result: crate::cli::create_agent::SessionRequestResult| {
-            if let Err(e) = crate::cli::create_agent::write_session_request_result(&result) {
-                log::warn!(
-                    "[session-requests] Failed to write result for '{}': {}",
-                    result.id,
-                    e
-                );
-            }
-        };
-
         for path in entries {
-            let content = match read_text_bom_tolerant(&path) {
-                Ok(c) => c,
-                Err(e) => {
-                    log::warn!("[session-requests] Failed to read {:?}: {}", path, e);
-                    continue;
-                }
+            let Some(request) = read_session_request(&path) else {
+                continue;
             };
-
-            let request: crate::cli::create_agent::SessionRequest =
-                match serde_json::from_str(&content) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        log::warn!("[session-requests] Failed to parse {:?}: {}", path, e);
-                        // #1163: answer with a rejected result so the CLI can
-                        // distinguish rejection from a missing app. The request
-                        // filename IS `<id>.json`, so the id comes from the stem.
-                        write_result(crate::cli::create_agent::SessionRequestResult {
-                            id: path
-                                .file_stem()
-                                .and_then(|value| value.to_str())
-                                .unwrap_or("unknown")
-                                .to_string(),
-                            status: crate::cli::create_agent::SessionRequestResultStatus::Rejected,
-                            session_id: None,
-                            error: Some(format!("malformed session request: {e}")),
-                        });
-                        // Delete malformed file
-                        let _ = mailbox_disk::remove_mailbox_artifact(&path);
-                        continue;
-                    }
-                };
 
             log::info!(
                 "[session-requests] Processing: name='{}' cwd='{}' agent='{}'",
@@ -323,7 +329,7 @@ impl MailboxPoller {
                             request.session_name,
                             e
                         );
-                        write_result(crate::cli::create_agent::SessionRequestResult {
+                        write_session_result(crate::cli::create_agent::SessionRequestResult {
                             id: request.id.clone(),
                             status: crate::cli::create_agent::SessionRequestResultStatus::Rejected,
                             session_id: None,
@@ -396,7 +402,7 @@ impl MailboxPoller {
                     error: Some(e.to_string()),
                 },
             };
-            write_result(result);
+            write_session_result(result);
 
             // Delete processed request file regardless of success/failure
             let _ = mailbox_disk::remove_mailbox_artifact(&path);
