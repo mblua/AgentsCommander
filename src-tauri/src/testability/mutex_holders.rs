@@ -168,6 +168,31 @@ fn handle_snapshot() -> Result<(Vec<u64>, u32), String> {
 }
 
 #[cfg(target_os = "windows")]
+/// `SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX`. Fields that are read have plain names;
+/// the rest keep their layout under a leading underscore.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct HandleEntry {
+    _object: *mut core::ffi::c_void,
+    unique_process_id: usize,
+    handle_value: usize,
+    _granted_access: u32,
+    _creator_back_trace_index: u16,
+    object_type_index: u16,
+    _handle_attributes: u32,
+    _reserved: u32,
+}
+
+#[cfg(target_os = "windows")]
+/// `SYSTEM_HANDLE_INFORMATION_EX` header; entries follow immediately.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct HandleTableHeader {
+    number_of_handles: usize,
+    _reserved: usize,
+}
+
+#[cfg(target_os = "windows")]
 pub fn find_holders(probe: &super::ProfileMutexGuard) -> HolderLookup {
     use std::collections::HashMap;
     use windows_sys::Win32::Foundation::{
@@ -176,29 +201,6 @@ pub fn find_holders(probe: &super::ProfileMutexGuard) -> HolderLookup {
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION,
     };
-
-    /// `SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX`. Fields that are read have plain names;
-    /// the rest keep their layout under a leading underscore.
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct HandleEntry {
-        _object: *mut core::ffi::c_void,
-        unique_process_id: usize,
-        handle_value: usize,
-        _granted_access: u32,
-        _creator_back_trace_index: u16,
-        object_type_index: u16,
-        _handle_attributes: u32,
-        _reserved: u32,
-    }
-
-    /// `SYSTEM_HANDLE_INFORMATION_EX` header; entries follow immediately.
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct HandleTableHeader {
-        number_of_handles: usize,
-        _reserved: usize,
-    }
 
     let mutex_name = display_mutex_name();
     let own_pid = std::process::id() as usize;
