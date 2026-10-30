@@ -831,13 +831,18 @@ impl crate::pty::container_lifecycle::ContainerLifecycle for OffRuntimeLifecycle
         &self,
         id: Uuid,
         exit_code: i32,
-    ) -> BoxFuture<
-        '_,
-        Result<crate::pty::container_lifecycle::CriticalAdmissionOutcome<()>, String>,
-    > {
-        let release = self.release.lock().unwrap().take().expect("one reconciliation");
+    ) -> BoxFuture<'_, Result<crate::pty::container_lifecycle::CriticalAdmissionOutcome<()>, String>>
+    {
+        let release = self
+            .release
+            .lock()
+            .unwrap()
+            .take()
+            .expect("one reconciliation");
         Box::pin(async move {
-            self.events.send((id, Some(exit_code))).expect("record route loss");
+            self.events
+                .send((id, Some(exit_code)))
+                .expect("record route loss");
             let _ = release.await;
             Ok(crate::pty::container_lifecycle::CriticalAdmissionOutcome::Completed(()))
         })
@@ -872,10 +877,14 @@ async fn off_runtime_full_and_closed_queues_remove_then_reconcile_without_waitin
             let authority = crate::pty::manager::BackendWriteAuthority::for_backend_test();
             if full {
                 for _ in 0..8 {
-                    caller_backend.write(&authority, id, b"x").expect("fill queue");
+                    caller_backend
+                        .write(&authority, id, b"x")
+                        .expect("fill queue");
                 }
             }
-            let error = caller_backend.write(&authority, id, b"x").expect_err("queue failure");
+            let error = caller_backend
+                .write(&authority, id, b"x")
+                .expect_err("queue failure");
             if full {
                 assert!(matches!(error, AppError::PtyError(ref text)
                     if text.contains("outbound queue full")));
@@ -887,7 +896,9 @@ async fn off_runtime_full_and_closed_queues_remove_then_reconcile_without_waitin
         });
 
         // Reconciliation cannot complete until release, but the caller must return.
-        returned_rx.recv_timeout(Duration::from_secs(2)).expect("caller returned");
+        returned_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("caller returned");
         let deadline = Instant::now() + Duration::from_secs(2);
         while !caller.is_finished() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(2));
@@ -895,11 +906,15 @@ async fn off_runtime_full_and_closed_queues_remove_then_reconcile_without_waitin
         assert!(caller.is_finished(), "off-runtime caller did not finish");
         caller.join().expect("off-runtime caller");
         assert_eq!(
-            events_rx.recv_timeout(Duration::from_secs(2)).expect("route removal"),
+            events_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("route removal"),
             (id, None)
         );
         assert_eq!(
-            events_rx.recv_timeout(Duration::from_secs(2)).expect("route loss"),
+            events_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("route loss"),
             (id, Some(1))
         );
         assert!(!backend.has_session(id));

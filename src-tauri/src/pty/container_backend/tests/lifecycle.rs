@@ -333,7 +333,10 @@ async fn off_runtime_pending_reaper_ticks_immediately_and_releases_backend_on_ca
         removed_tx.send(removed_id).expect("record expired route");
         Ok(())
     }));
-    backend.spawn(test_spec(id, root, PtyOutputTarget::noop())).await.expect("pending");
+    backend
+        .spawn(test_spec(id, root, PtyOutputTarget::noop()))
+        .await
+        .expect("pending");
     std::thread::sleep(Duration::from_millis(5));
 
     let backend = Arc::new(backend);
@@ -348,7 +351,9 @@ async fn off_runtime_pending_reaper_ticks_immediately_and_releases_backend_on_ca
         caller_backend.start_pending_reaper(caller_shutdown);
         returned_tx.send(()).expect("record reaper dispatch");
     });
-    returned_rx.recv_timeout(Duration::from_secs(2)).expect("reaper dispatched");
+    returned_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("reaper dispatched");
     let deadline = Instant::now() + Duration::from_secs(2);
     while !caller.is_finished() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(2));
@@ -356,7 +361,9 @@ async fn off_runtime_pending_reaper_ticks_immediately_and_releases_backend_on_ca
     assert!(caller.is_finished(), "reaper dispatch did not finish");
     caller.join().expect("off-runtime reaper caller");
     assert_eq!(
-        removed_rx.recv_timeout(Duration::from_secs(2)).expect("first reaper tick"),
+        removed_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first reaper tick"),
         id
     );
     assert!(!backend.has_session(id));
@@ -368,5 +375,8 @@ async fn off_runtime_pending_reaper_ticks_immediately_and_releases_backend_on_ca
     while weak.upgrade().is_some() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(2));
     }
-    assert!(weak.upgrade().is_none(), "cancelled reaper retained backend");
+    assert!(
+        weak.upgrade().is_none(),
+        "cancelled reaper retained backend"
+    );
 }
