@@ -9,9 +9,39 @@ use uuid::Uuid;
 
 /// The process publication gate is shared with P05 persistence. It holds no
 /// directory protection map or settings state.
+struct ProcessCarrierPublicationGate {
+    mutex: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl ProcessCarrierPublicationGate {
+    async fn acquire(&self) -> CarrierMutationPermit {
+        let gate = self.mutex.clone();
+        let guard = gate.clone().lock_owned().await;
+        CarrierMutationPermit {
+            gate,
+            _guard: guard,
+        }
+    }
+
+    fn proves(&self, permit: &CarrierMutationPermit) -> bool {
+        Arc::ptr_eq(&permit.gate, &self.mutex)
+    }
+
+    fn compatibility_mutex(&self) -> &Arc<tokio::sync::Mutex<()>> {
+        &self.mutex
+    }
+}
+
+fn process_carrier_publication_gate_owner() -> &'static ProcessCarrierPublicationGate {
+    static PUBLICATION_GATE: std::sync::OnceLock<ProcessCarrierPublicationGate> =
+        std::sync::OnceLock::new();
+    PUBLICATION_GATE.get_or_init(|| ProcessCarrierPublicationGate {
+        mutex: Arc::new(tokio::sync::Mutex::new(())),
+    })
+}
+
 pub(crate) fn process_carrier_publication_gate() -> &'static Arc<tokio::sync::Mutex<()>> {
-    static GATE: std::sync::OnceLock<Arc<tokio::sync::Mutex<()>>> = std::sync::OnceLock::new();
-    GATE.get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+    process_carrier_publication_gate_owner().compatibility_mutex()
 }
 
 pub(crate) struct CarrierMutationPermit {
@@ -20,17 +50,12 @@ pub(crate) struct CarrierMutationPermit {
 }
 
 pub(crate) async fn acquire_carrier_mutation_permit() -> CarrierMutationPermit {
-    let gate = process_carrier_publication_gate().clone();
-    let guard = gate.clone().lock_owned().await;
-    CarrierMutationPermit {
-        gate,
-        _guard: guard,
-    }
+    process_carrier_publication_gate_owner().acquire().await
 }
 
 impl CarrierMutationPermit {
     fn proves(&self) -> bool {
-        Arc::ptr_eq(&self.gate, process_carrier_publication_gate())
+        process_carrier_publication_gate_owner().proves(self)
     }
 }
 

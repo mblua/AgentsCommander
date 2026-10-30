@@ -7,8 +7,9 @@ pub(crate) use discard_diagnostics::{
 };
 
 pub(super) use self::publication::{
-    all_carrier_protections, prepare_protected_publication, probe_publication_directory,
-    publication_slot, publication_slots, published_initial_carrier, resolve_publication_slot,
+    all_carrier_protections, existing_publication_slot, prepare_protected_publication,
+    probe_publication_directory, publication_slot, publication_slot_entries,
+    publication_slot_values, published_initial_carrier, resolve_publication_slot,
     same_carrier_projection, CarrierProtection, ProtectionPhase, PublicationCheckpoint,
     PublicationDirectoryIdentity, PublicationSlot, PublicationState, RetiredLocalCarrierFact,
 };
@@ -73,7 +74,7 @@ pub(crate) fn retained_carrier_for_replacement(
     })?;
     let version = *current.versions.get(&session_id)?;
     let scope = classify_create_carrier_scope(_permit, target, Path::new(&row.working_directory));
-    let slot = publication_slots().lock().ok()?.get(directory)?.clone();
+    let slot = existing_publication_slot(directory)?;
     let state = slot.lock().ok()?;
     let checkpoint = state.checkpoint.as_ref().filter(|checkpoint| {
         checkpoint.confirmed
@@ -165,12 +166,7 @@ pub(crate) fn manual_discard_carrier(
     {
         return None;
     }
-    let candidates = publication_slots()
-        .lock()
-        .ok()?
-        .iter()
-        .map(|(directory, slot)| (directory.clone(), slot.clone()))
-        .collect::<Vec<_>>();
+    let candidates = publication_slot_entries()?;
     let mut found: Option<PublishedCarrier> = None;
     for (directory, slot) in candidates {
         if found
@@ -665,9 +661,9 @@ pub(crate) fn with_confirmed_carrier<T>(
 }
 
 pub(crate) fn retire_carrier_for_discard(_permit: &CarrierMutationPermit, id: Uuid) -> bool {
-    let slots = match publication_slots().lock() {
-        Ok(slots) => slots.values().cloned().collect::<Vec<_>>(),
-        Err(_) => return false,
+    let slots = match publication_slot_values() {
+        Some(slots) => slots,
+        None => return false,
     };
     for slot in &slots {
         let Ok(state) = slot.lock() else {
@@ -899,12 +895,7 @@ pub(crate) fn restore_test_carrier_scopes_are_empty(
     _permit: &CarrierMutationPermit,
     scope: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Option<bool> {
-    let slots = publication_slots()
-        .lock()
-        .ok()?
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
+    let slots = publication_slot_values()?;
     let mut seen = std::collections::HashSet::new();
     for slot in slots {
         if !seen.insert(std::sync::Arc::as_ptr(&slot) as usize) {
