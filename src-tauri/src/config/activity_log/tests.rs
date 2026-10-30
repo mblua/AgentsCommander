@@ -6,6 +6,7 @@ use std::cell::Cell;
 use tempfile::TempDir;
 
 mod reducer;
+mod writer;
 
 // ---------------------------------------------------------------------
 // Probes. `read_rotated_records` is the single place that opens the
@@ -208,8 +209,8 @@ fn append_at_writes_exactly_one_line_per_record() {
     let dir = TempDir::new().expect("temp dir");
     let path = dir.path().join(FILE_NAME);
     let s = sample_session(Uuid::new_v4(), None);
-    append_at(&path, &[build_busy(s.id, &s, BusyReason::MarkBusy, &c)]);
-    append_at(&path, &[build_idle(s.id, &s, IdleReason::MarkIdle, &c)]);
+    append_at(&path, &[build_busy(s.id, &s, BusyReason::MarkBusy, &c)], &c);
+    append_at(&path, &[build_idle(s.id, &s, IdleReason::MarkIdle, &c)], &c);
     assert_eq!(lines_of(&path).len(), 2);
 }
 
@@ -228,7 +229,7 @@ fn append_batch_writes_all_lines_in_one_open() {
         build_idle(second.id, &second, IdleReason::AppStop, &c),
         build_app_stop(true, 2),
     ];
-    append_at(&path, &batch);
+    append_at(&path, &batch, &c);
     let events: Vec<String> = parsed_lines(&path)
         .iter()
         .map(|value| value["event"].as_str().unwrap_or_default().to_string())
@@ -250,6 +251,7 @@ fn every_written_line_parses_as_json_and_carries_v_at_run_id_event() {
             build_app_alive(vec![s.id]),
             build_app_stop(false, 0),
         ],
+        &c,
     );
     for line in lines_of(&path) {
         let record = parse_record(&line);
@@ -322,7 +324,7 @@ fn metrics_is_re_emitted_as_the_first_record_of_a_freshly_rotated_file() {
     let path = dir.path().join(FILE_NAME);
     write_file_at_cap(&path, "previous-run");
     let s = sample_session(Uuid::new_v4(), None);
-    append_at(&path, &[build_busy(s.id, &s, BusyReason::MarkBusy, &c)]);
+    append_at(&path, &[build_busy(s.id, &s, BusyReason::MarkBusy, &c)], &c);
 
     let records = parsed_lines(&path);
     assert_eq!(
@@ -491,8 +493,8 @@ fn append_with_no_sink_configured_is_a_no_op() {
     // test process and this holds for every unit test in the crate.
     let dir = TempDir::new().expect("temp dir");
     let s = sample_session(Uuid::new_v4(), None);
-    append(build_busy(s.id, &s, BusyReason::MarkBusy, &c));
-    append_batch(&[build_idle(s.id, &s, IdleReason::MarkIdle, &c)]);
+    append(build_busy(s.id, &s, BusyReason::MarkBusy, &c), &c);
+    append_batch(&[build_idle(s.id, &s, IdleReason::MarkIdle, &c)], &c);
     assert!(
         !dir.path().join(FILE_NAME).exists(),
         "an unconfigured sink must write nothing"
@@ -501,14 +503,15 @@ fn append_with_no_sink_configured_is_a_no_op() {
 
 #[test]
 fn init_run_disabled_stores_no_sink_and_writes_nothing() {
+    let c = ActivityCoalescer::new();
     let dir = TempDir::new().expect("temp dir");
-    init_run(dir.path(), "run-disabled", false);
-    init_run(dir.path(), "run-disabled", false);
+    init_run(dir.path(), "run-disabled", false, &c);
+    init_run(dir.path(), "run-disabled", false, &c);
     assert!(sink_path().is_none());
     assert!(run_id().is_empty());
     assert!(!dir.path().join(FILE_NAME).exists());
-    append(build_app_alive(vec![]));
-    append_batch(&[build_app_stop(true, 0)]);
+    append(build_app_alive(vec![]), &c);
+    append_batch(&[build_app_stop(true, 0)], &c);
     assert!(
         !dir.path().join(FILE_NAME).exists(),
         "a disabled run must never create the activity file"
@@ -521,29 +524,8 @@ fn append_at_an_unwritable_path_does_not_panic_and_returns() {
     let dir = TempDir::new().expect("temp dir");
     let path = dir.path().join("does-not-exist").join(FILE_NAME);
     let s = sample_session(Uuid::new_v4(), None);
-    append_at(&path, &[build_busy(s.id, &s, BusyReason::MarkBusy, &c)]);
+    append_at(&path, &[build_busy(s.id, &s, BusyReason::MarkBusy, &c)], &c);
     assert!(!path.exists());
-}
-
-#[test]
-fn a_poisoned_writer_mutex_does_not_panic_a_later_append() {
-    let c = ActivityCoalescer::new();
-    let handle = std::thread::spawn(|| {
-        let _guard = writer_lock()
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        panic!("poison the writer mutex on purpose");
-    });
-    assert!(
-        handle.join().is_err(),
-        "the helper thread must have panicked"
-    );
-
-    let dir = TempDir::new().expect("temp dir");
-    let path = dir.path().join(FILE_NAME);
-    let s = sample_session(Uuid::new_v4(), None);
-    append_at(&path, &[build_busy(s.id, &s, BusyReason::MarkBusy, &c)]);
-    assert_eq!(lines_of(&path).len(), 1);
 }
 
 #[test]
@@ -566,33 +548,6 @@ fn a_poisoned_coalescer_mutex_does_not_panic_a_later_build() {
     assert_eq!(idle["event"], "idle");
     let busy = json_of(&build_busy(s.id, &s, BusyReason::MarkBusy, &c));
     assert_eq!(busy["continuesBlock"], json!(true));
-}
-
-#[test]
-fn concurrent_appends_never_interleave_a_line() {
-    let c = ActivityCoalescer::new();
-    let dir = TempDir::new().expect("temp dir");
-    let path = dir.path().join(FILE_NAME);
-    std::thread::scope(|scope| {
-        for _ in 0..8 {
-            let path = path.as_path();
-            let c = &c;
-            scope.spawn(move || {
-                for _ in 0..100 {
-                    let s = sample_session(Uuid::new_v4(), None);
-                    append_at(path, &[build_busy(s.id, &s, BusyReason::MarkBusy, c)]);
-                }
-            });
-        }
-    });
-    let lines = lines_of(&path);
-    assert_eq!(lines.len(), 800);
-    for line in lines {
-        assert!(
-            parse_record(&line).is_some(),
-            "a line was torn by a concurrent append: {line}"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------
@@ -884,9 +839,10 @@ fn app_start_of(dir: &TempDir) -> Value {
 
 #[test]
 fn init_run_at_on_a_file_smaller_than_the_tail_window() {
+    let c = ActivityCoalescer::new();
     let dir = TempDir::new().expect("temp dir");
     seed_live(&dir, &record_line("run-a", "app_stop", 0));
-    init_run_at(dir.path(), "run-b");
+    init_run_at(dir.path(), "run-b", &c);
 
     let start = app_start_of(&dir);
     assert_eq!(start["runId"], "run-b");
@@ -899,6 +855,7 @@ fn init_run_at_on_a_file_smaller_than_the_tail_window() {
 
 #[test]
 fn init_run_at_on_a_tail_split_mid_utf8_character() {
+    let c = ActivityCoalescer::new();
     let dir = TempDir::new().expect("temp dir");
     let mut content = String::new();
     let filler = format!("{{\"pad\":\"{}\"}}\n", "ü".repeat(2_000));
@@ -908,7 +865,7 @@ fn init_run_at_on_a_tail_split_mid_utf8_character() {
     content.push_str(&record_line("run-a", "app_stop", 0));
     seed_live(&dir, &content);
 
-    init_run_at(dir.path(), "run-b");
+    init_run_at(dir.path(), "run-b", &c);
     let start = app_start_of(&dir);
     assert_eq!(start["previousRun"]["runId"], "run-a");
     assert_eq!(start["previousRun"]["clean"], json!(true));
@@ -916,10 +873,11 @@ fn init_run_at_on_a_tail_split_mid_utf8_character() {
 
 #[test]
 fn init_run_at_rotates_when_the_live_file_is_exactly_at_the_cap() {
+    let c = ActivityCoalescer::new();
     let dir = TempDir::new().expect("temp dir");
     write_file_at_cap(&dir.path().join(FILE_NAME), "run-a");
 
-    init_run_at(dir.path(), "run-b");
+    init_run_at(dir.path(), "run-b", &c);
 
     assert!(dir.path().join(format!("{FILE_NAME}.1")).exists());
     let records = parsed_lines(&dir.path().join(FILE_NAME));
@@ -934,27 +892,29 @@ fn init_run_at_rotates_when_the_live_file_is_exactly_at_the_cap() {
 
 #[test]
 fn init_run_at_on_a_read_only_directory_does_not_panic() {
+    let c = ActivityCoalescer::new();
     // Windows ignores the read-only attribute on directories, so the
     // portable stand-ins for "this sink cannot be written" are a directory
     // that does not exist and a sink path that is itself a directory.
     let dir = TempDir::new().expect("temp dir");
-    init_run_at(&dir.path().join("absent"), "run-b");
+    init_run_at(&dir.path().join("absent"), "run-b", &c);
     assert!(!dir.path().join("absent").exists());
 
     std::fs::create_dir(dir.path().join(FILE_NAME)).expect("occupy the sink path");
-    init_run_at(dir.path(), "run-c");
+    init_run_at(dir.path(), "run-c", &c);
     assert!(dir.path().join(FILE_NAME).is_dir());
 }
 
 #[test]
 fn init_run_at_reads_daemon_pid_from_its_argument_directory_not_the_live_config_dir() {
+    let c = ActivityCoalescer::new();
     let dir = TempDir::new().expect("temp dir");
     // PID 4 is the Windows System process: always present, and reported
     // alive even when `OpenProcess` is denied. The developer's real
     // `daemon.pid` never holds it, so observing it proves the argument
     // directory was the one read.
     std::fs::write(dir.path().join("daemon.pid"), "4").expect("seed daemon.pid");
-    init_run_at(dir.path(), "run-b");
+    init_run_at(dir.path(), "run-b", &c);
     assert_eq!(app_start_of(&dir)["concurrentInstancePid"], json!(4));
 
     let own = TempDir::new().expect("temp dir");
@@ -963,7 +923,7 @@ fn init_run_at_reads_daemon_pid_from_its_argument_directory_not_the_live_config_
         std::process::id().to_string(),
     )
     .expect("seed daemon.pid");
-    init_run_at(own.path(), "run-c");
+    init_run_at(own.path(), "run-c", &c);
     assert!(
         app_start_of(&own).get("concurrentInstancePid").is_none(),
         "our own PID is not a concurrent instance"
@@ -972,8 +932,9 @@ fn init_run_at_reads_daemon_pid_from_its_argument_directory_not_the_live_config_
 
 #[test]
 fn app_start_always_declares_interval_count_unsupported() {
+    let c = ActivityCoalescer::new();
     let dir = TempDir::new().expect("temp dir");
-    init_run_at(dir.path(), "run-a");
+    init_run_at(dir.path(), "run-a", &c);
     let metrics = &app_start_of(&dir)["metrics"];
     assert_eq!(
         metrics["supported"],

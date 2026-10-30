@@ -81,7 +81,7 @@
 //! error or panics: I/O failures warn and are swallowed, a record that fails to
 //! serialize is skipped while the rest of its batch continues, and a poisoned
 //! mutex is recovered with `into_inner()`. `append` and `append_batch` are inert
-//! no-ops until [`init_run`] stores a sink, which happens only in `lib.rs::run()`
+//! no-ops until [`init_run`] stores a sink during application startup
 //! - so unit tests and every CLI subcommand write nothing, by construction.
 
 use std::collections::HashMap;
@@ -289,20 +289,17 @@ struct Sink {
 /// no-op, which is what keeps unit tests and CLI subcommands out of a live log.
 static SINK: OnceLock<Sink> = OnceLock::new();
 
-/// Serializes the rotate-check-plus-write critical section. Always the innermost
-/// lock: it is taken only inside the append path, which is called with no
-/// manager or detector lock held.
-static WRITER: OnceLock<Mutex<()>> = OnceLock::new();
-
 /// When each session last went idle, in both clock domains.
 type LastIdleAt = HashMap<Uuid, (Instant, DateTime<Utc>)>;
 
-/// `last_idle_at` per session, the module's only emitter state. Every value
+/// `last_idle_at` per session, the module's coalescing state. Every value
 /// duplicates a fact already durably on disk, so losing it costs exactly one
 /// annotation and cannot lose, invent, shorten or lengthen a millisecond of
 /// busy time. Taken only while the manager's write guard is held, so at most one
 /// thread is ever inside it.
 pub struct ActivityCoalescer {
+    /// Serializes rotation and writes; always acquired innermost in append.
+    writer: Mutex<()>,
     last_idle_at: OnceLock<Mutex<LastIdleAt>>,
 }
 
@@ -310,13 +307,14 @@ pub struct ActivityCoalescer {
 impl ActivityCoalescer {
     pub fn new() -> Self {
         Self {
+            writer: Mutex::new(()),
             last_idle_at: OnceLock::new(),
         }
     }
 }
 
-fn writer_lock() -> &'static Mutex<()> {
-    WRITER.get_or_init(|| Mutex::new(()))
+fn writer_lock(owner: &ActivityCoalescer) -> &Mutex<()> {
+    &owner.writer
 }
 
 fn coalescer(owner: &ActivityCoalescer) -> &Mutex<LastIdleAt> {
@@ -514,24 +512,24 @@ fn metrics_record(run_id: String) -> ActivityRecord {
 /// whatever guard the call site held.
 ///
 /// Inert until [`init_run`] has stored a sink.
-pub fn append(record: ActivityRecord) {
+pub fn append(record: ActivityRecord, owner: &ActivityCoalescer) {
     #[cfg(test)]
     capture::note(std::slice::from_ref(&record));
     let Some(path) = sink_path() else { return };
-    append_at(&path, std::slice::from_ref(&record));
+    append_at(&path, std::slice::from_ref(&record), owner);
 }
 
 /// Append several records in one open-write-close.
 ///
 /// Inert until [`init_run`] has stored a sink.
-pub fn append_batch(records: &[ActivityRecord]) {
+pub fn append_batch(records: &[ActivityRecord], owner: &ActivityCoalescer) {
     #[cfg(test)]
     capture::note(records);
     if records.is_empty() {
         return;
     }
     let Some(path) = sink_path() else { return };
-    append_at(&path, records);
+    append_at(&path, records, owner);
 }
 
 /// Test-only, in-memory mirror of the emission calls.
@@ -554,11 +552,11 @@ pub(crate) mod capture;
 /// `FILE_APPEND_DATA` guarantees an atomic seek-to-end but carries no documented
 /// atomicity for an arbitrary-length `WriteFile`, which is why the consumer
 /// contract specifies skip-and-count for torn lines.
-fn append_at(path: &Path, records: &[ActivityRecord]) {
+fn append_at(path: &Path, records: &[ActivityRecord], owner: &ActivityCoalescer) {
     if records.is_empty() {
         return;
     }
-    let _writer = writer_lock()
+    let _writer = writer_lock(owner)
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     let mut buffer = String::new();
@@ -656,9 +654,9 @@ fn rotate_if_needed(path: &Path) -> bool {
 /// Start this process's run: store the sink, scan for the previous run, and
 /// append `app_start`.
 ///
-/// Called exactly once, from `lib.rs::run()`, before the Tauri builder exists.
+/// Called exactly once during application startup, before the Tauri builder exists.
 /// Every append before this call is a no-op.
-pub fn init_run(dir: &Path, run_id: &str, enabled: bool) {
+pub fn init_run(dir: &Path, run_id: &str, enabled: bool, owner: &ActivityCoalescer) {
     if !enabled {
         log::info!(
             "[activity] recording disabled by settings (activityLogEnabled=false); \
@@ -672,13 +670,13 @@ pub fn init_run(dir: &Path, run_id: &str, enabled: bool) {
         path: dir.join(FILE_NAME),
         run_id: run_id.to_string(),
     });
-    init_run_at(dir, run_id);
+    init_run_at(dir, run_id, owner);
 }
 
 /// Path-parameterized startup work, and the test seam for it. Writes only under
 /// `dir`, so a test can never touch the live binary's `activity.jsonl` or read
 /// the developer's real `daemon.pid`.
-fn init_run_at(dir: &Path, run_id: &str) {
+fn init_run_at(dir: &Path, run_id: &str, owner: &ActivityCoalescer) {
     let report = scan_previous_run_at(dir);
     let scan = report.scan;
     // Path-parameterized on purpose: at this point `daemon.pid` still holds the
@@ -710,7 +708,7 @@ fn init_run_at(dir: &Path, run_id: &str) {
     };
     // After the scan, so a rotation triggered by this very append cannot
     // invalidate what the scan just read.
-    append_at(&dir.join(FILE_NAME), std::slice::from_ref(&record));
+    append_at(&dir.join(FILE_NAME), std::slice::from_ref(&record), owner);
     log::info!(
         "[activity] run {} started, previous-run scan {:?}, concurrent instance {:?}",
         run_id,

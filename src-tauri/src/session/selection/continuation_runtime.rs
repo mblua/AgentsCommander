@@ -32,6 +32,7 @@ impl OwnedReplacementContinuation {
             return None;
         }
         let manager = transaction.manager().await;
+        let activity_owner = manager.activity_owner();
         let pty = transaction
             .app()
             .state::<Arc<Mutex<PtyManager>>>()
@@ -161,7 +162,7 @@ impl OwnedReplacementContinuation {
             }
             progress.activity_started = true;
         }
-        crate::config::activity_log::append_batch(&committed.activity);
+        crate::config::activity_log::append_batch(&committed.activity, &activity_owner);
         if let Ok(mut state) = self.owner.state.lock() {
             if let Some(progress) = state.replacement.as_mut() {
                 progress.activity_completed = true;
@@ -214,6 +215,7 @@ impl OwnedReplacementContinuation {
             .as_ref()?
             .current_checkpoint
             .clone()?;
+        let activity_owner = manager.activity_owner();
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         let decision = manager
             .with_current_carrier_snapshot(&permit, |current| {
@@ -294,7 +296,7 @@ impl OwnedReplacementContinuation {
             .as_ref()?
             .activity
             .clone();
-        crate::config::activity_log::append_batch(&activity);
+        crate::config::activity_log::append_batch(&activity, &activity_owner);
         transaction
             .lifecycle_executor()
             .expect("selection start contract violated: lifecycle executor binding missing")
