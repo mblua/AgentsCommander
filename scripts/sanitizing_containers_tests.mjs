@@ -39,7 +39,7 @@ test('04 accepts safe basenames and enforces their scoped owner', () => {
 });
 test('04 rejects unsafe basenames and nonstrings', () => {
   for (const name of [
-    '', '.', '..', '../Role.md', './Role.md', 'a/b', 'a\b', 'C:Role.md',
+    '', '.', '..', '../Role.md', './Role.md', 'a/b', 'a\\b', 'C:Role.md',
     'a b', ' a', 'a ', '\n', 'a\n', 'a:b', 'a*', 'é.md', null, 1, true, {}, [],
   ]) {
     const registry = attemptsRegistry();
