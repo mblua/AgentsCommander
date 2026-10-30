@@ -31,10 +31,15 @@ fn archive_id_is_plain(id: &str) -> bool {
     let mut components = Path::new(id).components();
     let plain = matches!(components.next(), Some(std::path::Component::Normal(_)))
         && components.next().is_none();
-    !(id.is_empty()
+    // Reserve 11 suffix bytes for .reason.txt within a 255-byte component.
+    !(id.len() > 244
+        || id.is_empty()
         || id == "."
         || id == ".."
         || id.contains(['/', '\\', ':', '\0'])
+        || id
+            .chars()
+            .any(|c| matches!(c, '<' | '>' | '"' | '|' | '?' | '*' | '\u{1}'..='\u{1f}'))
         || !plain
         || device
         || port)

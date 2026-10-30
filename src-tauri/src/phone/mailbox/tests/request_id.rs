@@ -704,8 +704,13 @@ async fn move_to_delivered_valid_ids_keep_exact_archive_and_complete_work() {
             "with space",
             "tail.",
             "tail ",
+            "\u{7f}",
+            "\u{85}",
         ] {
             delivered_case(id, true, claimed, 0).await;
+        }
+        for id in ["a".repeat(244), "雪".repeat(81) + "a"] {
+            delivered_case(&id, true, claimed, 0).await;
         }
     }
 }
@@ -725,5 +730,89 @@ async fn move_to_delivered_remove_error_keeps_archive_and_work() {
         for (id, valid) in [("safe-id", true), ("../escape", false)] {
             delivered_case(id, valid, claimed, 2).await;
         }
+    }
+}
+
+#[tokio::test]
+async fn move_to_delivered_windows_invalid_ids_use_origin_basename() {
+    let ids = ['<', '>', '"', '|', '?', '*']
+        .into_iter()
+        .chain('\u{1}'..='\u{1f}')
+        .map(|c| format!("a{c}b"))
+        .chain(["a".repeat(245), "a".repeat(251), "雪".repeat(81) + "ab"]);
+    for id in ids {
+        for claimed in [false, true] {
+            delivered_case(&id, false, claimed, 0).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn move_to_delivered_windows_invalid_id_is_injected_once() {
+    for id in ["a?b".into(), "a\u{1}b".into(), "a".repeat(251)] {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let sessions = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let coordinator = crate::session::selection::SelectionCoordinator::new(
+            Arc::clone(sessions.inner()),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        assert!(app.manage(coordinator));
+        let session =
+            add_mailbox_session(&app, &fixture.target_cwd, "live", SessionStatus::Idle, None).await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(session, true);
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        hooks
+            .consumption_results
+            .lock()
+            .unwrap()
+            .push_back(ConsumptionVerdict::Observed);
+        let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let temp = tempfile::TempDir::new().unwrap();
+        let origin = temp.path().join("src.json");
+        let claim = super::super::handoff::wake_claim_path(&origin);
+        let mut msg = wake_message_to_target();
+        msg.id = id.clone();
+        msg.token = Some("delivery-secret".into());
+        save(&origin, &msg);
+        assert!(matches!(
+            poller.claim_and_spawn_wake(&app, &origin, msg.clone()),
+            WakeHandoff::Spawned
+        ));
+        let joined = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut joined = 0;
+            while let Some(result) = poller.wake_workers.join_next().await {
+                assert!(result.is_ok(), "worker failed: {result:?}");
+                joined += 1;
+            }
+            joined
+        })
+        .await
+        .expect("wake worker timed out");
+        assert_eq!(joined, 1);
+        poller.drain_wake_outcomes().await;
+        assert_eq!(*hooks.inject_calls.lock().unwrap(), vec![session]);
+        assert!(!origin.exists(), "id={id:?}");
+        assert!(!claim.exists());
+        let archived: OutboxMessage =
+            serde_json::from_slice(&std::fs::read(temp.path().join("delivered/src.json")).unwrap())
+                .unwrap();
+        assert_eq!(archived.id, id);
+        assert!(archived.token.is_none());
+        assert_eq!(
+            super::super::handoff::wake_claim_has_settled_receipt(&origin),
+            Ok(true)
+        );
+        assert!(poller.retry_tracker.is_empty());
+        assert!(matches!(
+            poller.claim_and_spawn_wake(&app, &origin, msg),
+            WakeHandoff::LaneBusy
+        ));
+        assert!(poller.wake_workers.is_empty());
+        assert_eq!(*hooks.inject_calls.lock().unwrap(), vec![session]);
+        app.state::<crate::session::selection::SelectionCoordinator>()
+            .close_and_join()
+            .await;
     }
 }

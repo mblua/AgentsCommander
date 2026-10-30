@@ -939,6 +939,13 @@ fn reject_message_hostile_ids_use_source_basename() {
         .map(str::to_owned)
         .collect();
     ids.push(String::from(char::from(0)));
+    ids.extend(
+        ['<', '>', '"', '|', '?', '*']
+            .into_iter()
+            .chain('\u{1}'..='\u{1f}')
+            .map(|c| format!("a{c}b")),
+    );
+    ids.extend(["a".repeat(245), "a".repeat(251), "雪".repeat(81) + "ab"]);
     #[cfg(not(windows))]
     {
         ids.extend(
@@ -969,6 +976,12 @@ fn reject_message_plain_non_uuid_id_keeps_existing_behavior() {
         "msg-sr-origin-switch|embedded.dot|雪|with space|tail.|tail "
             .split('|')
             .map(str::to_owned)
+            .chain([
+                "\u{7f}".into(),
+                "\u{85}".into(),
+                "a".repeat(244),
+                "雪".repeat(81) + "a",
+            ])
             .collect(),
         false,
     );
