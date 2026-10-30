@@ -660,7 +660,6 @@ async fn issue_3371_activated_reason_failure_then_restart_never_spawns_or_types_
                     KNOWN
                 );
             }
-            assert!(source.exists(), "failed publication restores actual claim");
             assert!(!wake_claim_path(&source).exists());
             assert!(probe_attempt(&std::fs::read_to_string(&source).unwrap())
                 .unwrap()
@@ -672,7 +671,6 @@ async fn issue_3371_activated_reason_failure_then_restart_never_spawns_or_types_
             drop(fault);
             if json_failure {
                 assert!(!blocked.exists());
-                assert!(source.exists());
                 assert_eq!(
                     std::fs::read_to_string(blocked.with_extension("reason.txt")).unwrap(),
                     KNOWN
@@ -680,6 +678,8 @@ async fn issue_3371_activated_reason_failure_then_restart_never_spawns_or_types_
             }
             let mut restart = fixture.poller();
             std::fs::rename(&source, wake_claim_path(&source)).unwrap();
+            fixture.poll(&mut restart).await.unwrap();
+            assert!(source.exists() && !wake_claim_path(&source).exists());
             let fault = json_failure.then(|| MailboxFaultGuard::install_document_write(&blocked));
             fixture.poll(&mut restart).await.unwrap();
             assert!(fault.as_ref().is_none_or(|fault| fault.consumed()));
