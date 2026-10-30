@@ -16,12 +16,12 @@ pub(crate) trait TelegramEvents: Send + Sync {
 }
 
 fn report_send_error(
-    events: &dyn TelegramEvents,
+    event_port: &dyn TelegramEvents,
     session_id: &str,
     msg: &str,
     kind: TelegramErrKind,
 ) {
-    events.bridge_error(session_id, msg, Some(kind.as_str()));
+    event_port.bridge_error(session_id, msg, Some(kind.as_str()));
 }
 
 // ── #280 §3.2 — error classification + throttling ─────────────
@@ -199,7 +199,7 @@ pub(crate) async fn flush_buffer(
     token: &str,
     chat_id: i64,
     session_id: &str,
-    events: &dyn TelegramEvents,
+    event_port: &dyn TelegramEvents,
     logger: &mut BridgeLogger,
     diag: &mut DiagLogger,
     skip_dedup: bool,
@@ -257,7 +257,7 @@ pub(crate) async fn flush_buffer(
                 token_prefix,
                 msg
             );
-            report_send_error(events, session_id, &msg, kind);
+            report_send_error(event_port, session_id, &msg, kind);
         }
         // Rate limit: 35ms between sends
         tokio::time::sleep(Duration::from_millis(35)).await;

@@ -70,7 +70,7 @@ pub fn spawn_watch_task(
     dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
     session_id: String,
     cancel: CancellationToken,
-    events: Arc<dyn TelegramEvents>,
+    event_port: Arc<dyn TelegramEvents>,
     sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -82,7 +82,7 @@ pub fn spawn_watch_task(
             dest,
             session_id.clone(),
             cancel,
-            events.clone(),
+            event_port.clone(),
             sink,
         )
         .await;
@@ -530,7 +530,7 @@ async fn watch_loop(
     dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
     session_id: String,
     cancel: CancellationToken,
-    events: Arc<dyn TelegramEvents>,
+    event_port: Arc<dyn TelegramEvents>,
     sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) {
     let mut dest_rx = dest;
@@ -805,7 +805,7 @@ async fn watch_loop(
                         Err(e) => {
                             bridge_log!("CODEX_ERR", &e.to_string());
                             log::error!("[CODEX_ERR] Read error for session {}: {}", session_id, e);
-                            events.bridge_error(
+                            event_port.bridge_error(
                                 &session_id,
                                 &format!("Codex JSONL read error: {}", e),
                                 None,
@@ -822,7 +822,7 @@ async fn watch_loop(
                         {
                             flush_buffer(
                                 &mut buffer, &network, &target.token, target.chat_id,
-                                &session_id, events.as_ref(), bridge_logger, diag_logger,
+                                &session_id, event_port.as_ref(), bridge_logger, diag_logger,
                                 true,
                             ).await;
                         } else {
@@ -873,7 +873,7 @@ async fn watch_loop(
                 &target.token,
                 target.chat_id,
                 &session_id,
-                events.as_ref(),
+                event_port.as_ref(),
                 bridge_logger,
                 diag_logger,
                 true,

@@ -14,9 +14,8 @@ use crate::config::settings::TelegramNetworkPollErrorLogging;
 use crate::network::OutboundNetwork;
 use crate::pty::manager::PtyManager;
 use crate::session::profile::CodingAgentKind;
-use crate::telegram::output::{
-    flush_buffer, BridgeLogger, DiagLogger, TelegramErrKind, TelegramEvents,
-};
+use crate::telegram::output::TelegramEvents;
+use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger, TelegramErrKind};
 use crate::telegram::types::BridgeInfo;
 
 mod filter;
@@ -331,7 +330,7 @@ pub fn spawn_reader(
     session_id: Uuid,
     dest: Option<ReaderDest>,
     network: OutboundNetwork,
-    events: Arc<dyn TelegramEvents>,
+    event_port: Arc<dyn TelegramEvents>,
     sink: Option<mpsc::UnboundedSender<Arc<CapturedRecord>>>,
     capture: Option<(CaptureSlot, mpsc::UnboundedReceiver<Arc<CapturedRecord>>)>,
 ) -> ReaderTask {
@@ -356,7 +355,7 @@ pub fn spawn_reader(
                 dest_rx,
                 session_id_str,
                 cancel.clone(),
-                events,
+                event_port,
                 sink,
             );
             (task, ReaderDestSender::Claude(dest_tx))
@@ -375,7 +374,7 @@ pub fn spawn_reader(
                 dest_rx,
                 session_id_str,
                 cancel.clone(),
-                events,
+                event_port,
                 sink,
             );
             (task, ReaderDestSender::Codex(dest_tx))
@@ -487,7 +486,7 @@ async fn output_task(
     chat_id: i64,
     session_id: String,
     cancel: CancellationToken,
-    events: Arc<dyn TelegramEvents>,
+    event_port: Arc<dyn TelegramEvents>,
     agent_kind: Option<CodingAgentKind>,
 ) {
     let mut logger = BridgeLogger::new(&session_id);
@@ -549,7 +548,7 @@ async fn output_task(
                     if since_last >= flush_delay || buf_len > 2000 {
                         flush_buffer(
                             &mut buffer, &network, &token, chat_id,
-                            &session_id, events.as_ref(), &mut logger, &mut diag,
+                            &session_id, event_port.as_ref(), &mut logger, &mut diag,
                             false,
                         ).await;
                     }
@@ -591,7 +590,7 @@ async fn output_task(
             &token,
             chat_id,
             &session_id,
-            events.as_ref(),
+            event_port.as_ref(),
             &mut logger,
             &mut diag,
             false,

@@ -24,7 +24,8 @@ use crate::telegram::jsonl_kernel::{
     PINNED_ATTACH_WAIT_SECS, POLL_INTERVAL_MS, PREAMBLE_MAX_BYTES, RACE_GRACE_SECS,
     ROTATION_STALE_SECS,
 };
-use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger, TelegramEvents};
+use crate::telegram::output::TelegramEvents;
+use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger};
 
 const FLUSH_DELAY_MS: u64 = 500;
 
@@ -51,7 +52,7 @@ pub fn spawn_watch_task(
     dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
     session_id: String,
     cancel: CancellationToken,
-    events: Arc<dyn TelegramEvents>,
+    event_port: Arc<dyn TelegramEvents>,
     sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -62,7 +63,7 @@ pub fn spawn_watch_task(
             dest,
             session_id.clone(),
             cancel,
-            events.clone(),
+            event_port.clone(),
             sink,
         )
         .await;
@@ -452,7 +453,7 @@ struct ClaudeReader {
     project_dir: PathBuf,
     network: OutboundNetwork,
     session_id: String,
-    events: Arc<dyn TelegramEvents>,
+    event_port: Arc<dyn TelegramEvents>,
     current_dest: Option<BotTarget>,
     logger: Option<BridgeLogger>,
     diag: Option<DiagLogger>,
@@ -482,7 +483,7 @@ impl ClaudeReader {
         network: OutboundNetwork,
         current_dest: Option<BotTarget>,
         session_id: String,
-        events: Arc<dyn TelegramEvents>,
+        event_port: Arc<dyn TelegramEvents>,
         sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
     ) -> Self {
         // #2232 phase 4 section 8: with no bot demand no diagnostic is built, so
@@ -498,7 +499,7 @@ impl ClaudeReader {
             project_dir,
             network,
             session_id,
-            events,
+            event_port,
             current_dest,
             logger,
             diag,
@@ -832,7 +833,7 @@ impl ClaudeReader {
                     self.session_id,
                     e
                 );
-                self.events.bridge_error(
+                self.event_port.bridge_error(
                     &self.session_id,
                     &format!("JSONL read error: {}", e),
                     None,
@@ -859,7 +860,7 @@ impl ClaudeReader {
                     &target.token,
                     target.chat_id,
                     &self.session_id,
-                    self.events.as_ref(),
+                    self.event_port.as_ref(),
                     bridge_logger,
                     diag_logger,
                     true, // skip_dedup: JSONL text is clean, repeated lines are legitimate
@@ -917,7 +918,7 @@ impl ClaudeReader {
                     &target.token,
                     target.chat_id,
                     &self.session_id,
-                    self.events.as_ref(),
+                    self.event_port.as_ref(),
                     bridge_logger,
                     diag_logger,
                     true,
@@ -936,7 +937,7 @@ async fn watch_loop(
     dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
     session_id: String,
     cancel: CancellationToken,
-    events: Arc<dyn TelegramEvents>,
+    event_port: Arc<dyn TelegramEvents>,
     sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) {
     let mut dest_rx = dest;
@@ -947,7 +948,7 @@ async fn watch_loop(
         network,
         current_dest,
         session_id,
-        events,
+        event_port,
         sink,
     );
 
