@@ -62,6 +62,7 @@ impl MailboxPoller {
         #[cfg(test)]
         let poller = Self {
             test_hooks: self.test_hooks.clone(),
+            clear_observation_probe: self.clear_observation_probe.clone(),
             ..poller
         };
         poller
@@ -272,10 +273,13 @@ impl MailboxPoller {
             Some(Ok(reservation)) => Some(reservation),
         };
         // A queued or requeued outcome can outlive both its worker and lane.
-        // Cap `live_claims` separately so pending reports cannot exceed the
-        // same global limit.
-        if self.wake_workers.len() >= crate::phone::wake_lanes::WAKE_WORKER_LIMIT
-            || self.live_claims.len() >= crate::phone::wake_lanes::WAKE_WORKER_LIMIT
+        // Cap both ledgers excluding live post-T2 observers. Completed observers
+        // count again until their report drains, retaining settlement backpressure.
+        let observing_count = self.wake_lanes.observing_count();
+        if self.wake_workers.len().saturating_sub(observing_count)
+            >= crate::phone::wake_lanes::WAKE_WORKER_LIMIT
+            || self.live_claims.len().saturating_sub(observing_count)
+                >= crate::phone::wake_lanes::WAKE_WORKER_LIMIT
         {
             return WakeHandoff::LaneBusy;
         }
@@ -302,7 +306,10 @@ impl MailboxPoller {
         let worker_app = app.clone();
         let outcomes = self.wake_outcomes_tx.clone();
         let origin = path.to_path_buf();
-        let delivery = self.delivery_poller();
+        let reservation = Arc::new(reservation);
+        let mut delivery = self.delivery_poller();
+        delivery.codex_clear_source = Some(claim.clone());
+        delivery.clear_reservation = Some(Arc::clone(&reservation));
         let worker_claim = claim.clone();
         self.wake_workers.spawn(async move {
             let _reservation = reservation;

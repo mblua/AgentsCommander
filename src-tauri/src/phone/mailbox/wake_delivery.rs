@@ -115,8 +115,9 @@ impl MailboxPoller {
         // whose shared `deliver_wake` tail carries no attribution and must keep
         // its exact behaviour for every other origin.
         if origin == OutboxOrigin::CoManaged {
-            let annotated = self.deliver_validated_wake(app, &validated, true).await?;
-            return self.move_to_delivered(app, path, &annotated).await;
+            return self
+                .deliver_bound_outbox_tail(app, path, &validated, true)
+                .await;
         }
         if let Some(slot) = deferred_tail {
             *slot = Some(validated);
@@ -125,10 +126,37 @@ impl MailboxPoller {
         // #1635-2 D4: write the annotated message so the `Delivered:` CLI
         // receipt can report the effective agent/profile. No-flag messages are
         // still byte-identical to today.
-        let annotated = self.deliver_validated_wake(app, &validated, false).await?;
+        self.deliver_bound_outbox_tail(app, path, &validated, false)
+            .await
+    }
 
-        // Move to delivered/ with token stripped
-        self.move_to_delivered(app, path, &annotated).await
+    async fn deliver_bound_outbox_tail<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        validated: &ValidatedWake,
+        comanaged: bool,
+    ) -> Result<(), String> {
+        let mut delivery = self.delivery_poller();
+        delivery.codex_clear_source = Some(path.to_path_buf());
+        match delivery
+            .deliver_validated_wake(app, validated, comanaged)
+            .await
+        {
+            Ok(annotated) => self.move_to_delivered(app, path, &annotated).await,
+            Err(error) => {
+                if delivery.is_terminal_clear_error(&validated.message, &error) {
+                    if let Err(publication) =
+                        self.reject_message(path, &validated.message, &error).await
+                    {
+                        log::warn!(
+                            "[mailbox] terminal clear reason {error}; rejection: {publication}"
+                        );
+                    }
+                }
+                Err(error)
+            }
+        }
     }
 
     /// Deliver mode: wake — inject into the recipient's PTY for any non-Exited

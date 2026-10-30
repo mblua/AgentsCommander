@@ -121,6 +121,10 @@ pub(crate) async fn deliver_claimed_wake<R: tauri::Runtime>(
     origin: &Path,
     validated: &ValidatedWake,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(probe) = &delivery.clear_observation_probe {
+        probe.enter(delivery).await;
+    }
     let _candidate_disposal = validated
         .response
         .as_ref()
@@ -137,6 +141,16 @@ pub(crate) async fn deliver_claimed_wake<R: tauri::Runtime>(
             }
         },
         Err(error) => {
+            if delivery.is_terminal_clear_error(&validated.message, &error) {
+                if let Err(publication) = delivery
+                    .reject_message(claim, &validated.message, &error)
+                    .await
+                {
+                    log::warn!("[mailbox] terminal clear reason {error}; rejection: {publication}");
+                    release_wake_claim(claim, origin);
+                }
+                return Err(error);
+            }
             release_wake_claim(claim, origin);
             Err(error)
         }
@@ -144,6 +158,20 @@ pub(crate) async fn deliver_claimed_wake<R: tauri::Runtime>(
 }
 
 impl MailboxPoller {
+    #[cfg_attr(not(test), expect(dead_code, reason = "P04 activates the T2 callback"))]
+    pub(crate) fn begin_clear_observation(&self) {
+        if let Some(reservation) = &self.clear_reservation {
+            reservation.begin_observation();
+        }
+    }
+
+    pub(crate) fn is_terminal_clear_error(&self, msg: &OutboxMessage, error: &str) -> bool {
+        self.codex_clear_source.is_some()
+            && msg.command.as_deref() == Some("clear")
+            && (error.starts_with("codex_clear_failed:")
+                || error.starts_with("codex_clear_execution_error:"))
+    }
+
     pub(crate) fn active_terminal_snapshot_shutdown_owner(
     ) -> Option<crate::phone::terminal_snapshot::SnapshotScannerShutdownOwner> {
         crate::phone::terminal_snapshot::SnapshotScannerShutdownOwner::active()
@@ -491,6 +519,8 @@ pub struct MailboxPoller {
     pub(crate) poll_interval: std::time::Duration,
     pub(crate) retry_tracker: HashMap<PathBuf, RetryState>,
     pub(crate) response_sources: Arc<Mutex<HashMap<PathBuf, ResponseWakeWork>>>,
+    pub(crate) codex_clear_source: Option<PathBuf>,
+    pub(crate) clear_reservation: Option<Arc<crate::phone::wake_lanes::WakeLaneReservation>>,
     pub(crate) snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner,
     /// (#1399) Claim paths this process has handed off whose outcome has not yet
     /// been successfully settled by `drain_wake_outcomes`. Membership includes
@@ -500,15 +530,15 @@ pub struct MailboxPoller {
     /// (#1399) Per-target delivery lanes shared with every spawned worker.
     pub(crate) wake_lanes: Arc<crate::phone::wake_lanes::WakeLanes>,
     pub(crate) wake_workers: tokio::task::JoinSet<()>,
-    /// (#1399) Unbounded is safe by construction: admission caps both running
-    /// workers and owned claims at `WAKE_WORKER_LIMIT`. Each owned claim has at
-    /// most one report, and a failed settlement requeues that same report, so
-    /// at most 8 reports are pending while worker sends remain non-blocking.
+    /// Each owned claim emits at most one report. Admission caps active work at eight;
+    /// post-T2 observers retain one claim per recipient until finite outcome drain.
     pub(crate) wake_outcomes_tx: tokio::sync::mpsc::UnboundedSender<(PathBuf, Result<(), String>)>,
     pub(crate) wake_outcomes_rx:
         tokio::sync::mpsc::UnboundedReceiver<(PathBuf, Result<(), String>)>,
     #[cfg(test)]
     pub(crate) test_hooks: Option<MailboxTestHooks>,
+    #[cfg(test)]
+    pub(crate) clear_observation_probe: Option<Arc<super::tests::ClearObservationProbe>>,
 }
 
 /// (#885) One peer's correlated gate input. Built from the three snapshots

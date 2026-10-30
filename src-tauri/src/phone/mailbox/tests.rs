@@ -1,4 +1,5 @@
 mod claim_and;
+mod clear_watch;
 mod deliver_wake;
 mod handle_self;
 mod handle_self_2;
@@ -939,4 +940,4 @@ impl std::task::Wake for Issue3189Wake {
     }
 }
 
-pub(crate) use support_core::CodexClearScannerFixture;
+pub(crate) use support_core::{ClearObservationProbe, CodexClearScannerFixture};

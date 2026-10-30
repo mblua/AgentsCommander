@@ -787,3 +787,136 @@ impl CodexClearScannerFixture {
         ]
     }
 }
+
+/// Fixture-owned barrier records the dormant adapter without activating PTY detection.
+pub(crate) struct ClearObservationProbe {
+    demote: bool,
+    sources: Mutex<Vec<PathBuf>>,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+}
+
+impl ClearObservationProbe {
+    pub(crate) async fn enter(&self, delivery: &MailboxPoller) {
+        let source = delivery
+            .codex_clear_source
+            .clone()
+            .expect("worker claim source");
+        let child = delivery.delivery_poller();
+        assert!(child.codex_clear_source.is_none());
+        assert!(child.clear_reservation.is_none());
+        if self.demote {
+            delivery.begin_clear_observation();
+            delivery.begin_clear_observation();
+        }
+        self.sources.lock().unwrap().push(source);
+        self.entered.notify_one();
+        self.release.acquire().await.unwrap().forget();
+    }
+
+    pub(crate) async fn wait_for(&self, count: usize) -> Vec<PathBuf> {
+        loop {
+            let entered = self.entered.notified();
+            let sources = self.sources.lock().unwrap().clone();
+            if sources.len() >= count {
+                return sources;
+            }
+            entered.await;
+        }
+    }
+
+    pub(crate) fn release(&self, count: usize) {
+        self.release.add_permits(count);
+    }
+}
+
+impl CodexClearScannerFixture {
+    pub(crate) fn observe_deliveries(
+        &self,
+        poller: &mut MailboxPoller,
+        demote: bool,
+    ) -> Arc<ClearObservationProbe> {
+        let probe = Arc::new(ClearObservationProbe {
+            demote,
+            sources: Mutex::new(Vec::new()),
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        poller.clear_observation_probe = Some(probe.clone());
+        probe
+    }
+
+    pub(crate) fn claim(
+        &self,
+        poller: &mut MailboxPoller,
+        source: &Path,
+        message: OutboxMessage,
+    ) -> WakeHandoff {
+        poller.claim_and_spawn_wake(self.app.handle(), source, message)
+    }
+
+    pub(crate) async fn seed_session(&self, cwd: &Path, exited: bool) -> Uuid {
+        let id = add_mailbox_session(
+            self.app.handle(),
+            cwd,
+            "clear-fixture",
+            if exited {
+                SessionStatus::Exited(0)
+            } else {
+                SessionStatus::Idle
+            },
+            None,
+        )
+        .await;
+        self.hooks.pty_presence.lock().unwrap().insert(id, !exited);
+        id
+    }
+
+    pub(crate) fn injection_error(&self, error: &str) {
+        self.hooks
+            .inject_results
+            .lock()
+            .unwrap()
+            .push_back(Err(error.into()));
+    }
+
+    pub(crate) fn panic_on_inject(&self, id: Uuid) {
+        self.hooks.panic_on_inject.lock().unwrap().insert(id);
+    }
+
+    pub(crate) async fn inline(
+        &self,
+        poller: &MailboxPoller,
+        source: &Path,
+        message: OutboxMessage,
+        comanaged: bool,
+    ) -> Result<(), String> {
+        let content = serde_json::to_string(&message).unwrap();
+        poller
+            .deliver_outbox_tail(
+                self.app.handle(),
+                source,
+                message,
+                &content,
+                (
+                    if comanaged {
+                        OutboxOrigin::CoManaged
+                    } else {
+                        OutboxOrigin::Master
+                    },
+                    None,
+                ),
+                (true, false, false, false, false),
+            )
+            .await
+    }
+}
+
+impl CodexClearScannerFixture {
+    pub(crate) async fn configure_project(&self, root: &Path) {
+        let state = self.app.state::<crate::config::settings::SettingsState>();
+        let mut settings = state.write().await;
+        settings.project_paths = vec![root.to_string_lossy().into_owned()];
+        settings.agents = wake_agents();
+    }
+}
