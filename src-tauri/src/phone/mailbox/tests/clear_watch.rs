@@ -419,6 +419,7 @@ async fn issue_3371_owned_replacement_remains_source_free_and_retained_on_inject
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     let output = child.wait_with_output().unwrap();
+    assert!(String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed;"));
     assert!(
         output.status.success(),
         "{}\n{}",
