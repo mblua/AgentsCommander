@@ -30,6 +30,7 @@ pub(super) struct MailboxMockPtyBackend {
     pub(super) fail_kill_once: std::sync::atomic::AtomicBool,
     pub(super) kill_attempts: std::sync::atomic::AtomicUsize,
     pub(super) fail_write: std::sync::atomic::AtomicBool,
+    write_attempts: AtomicU32,
 }
 
 impl MailboxMockPtyBackend {
@@ -80,6 +81,7 @@ impl PtyBackend for MailboxMockPtyBackend {
     ) -> Result<(), crate::errors::AppError> {
         // #1883 — test-only failure switch so both mailbox injection sites
         // can exercise the real-error path end to end.
+        self.write_attempts.fetch_add(1, Ordering::SeqCst);
         if self.fail_write.load(Ordering::SeqCst) {
             return Err(crate::errors::AppError::PtyError(
                 "synthetic write failure".to_string(),
@@ -930,7 +932,7 @@ impl CodexClearScannerFixture {
 }
 
 impl CodexClearScannerFixture {
-    pub(crate) async fn owned_clear_exclusion(temp: tempfile::TempDir) -> (bool, u32, bool) {
+    pub(crate) async fn owned_clear_exclusion(temp: tempfile::TempDir) -> (bool, u32, bool, u32) {
         let fixture = make_mailbox_fixture_in(temp);
         let (coordinator, _, _, _) = prepare_retained_exited_respawn(&fixture).await;
         let app = fixture.app.handle();
@@ -984,6 +986,12 @@ impl CodexClearScannerFixture {
             pending,
             probe.owned_children.load(Ordering::SeqCst),
             no_marker,
+            backend
+                .as_any()
+                .downcast_ref::<MailboxMockPtyBackend>()
+                .unwrap()
+                .write_attempts
+                .load(Ordering::SeqCst),
         )
     }
 }

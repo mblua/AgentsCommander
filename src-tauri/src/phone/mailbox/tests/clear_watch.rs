@@ -386,7 +386,7 @@ async fn issue_3371_owned_replacement_remains_source_free_and_retained_on_inject
         let temp = tempfile::tempdir().unwrap();
         assert_eq!(
             CodexClearScannerFixture::owned_clear_exclusion(temp).await,
-            (true, 1, true)
+            (true, 1, true, 1)
         );
         return;
     }
