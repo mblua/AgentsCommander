@@ -2,7 +2,7 @@
 //! chain. The `.setup` hook lives in `setup.rs` and the run-event handler in
 //! `exit.rs`.
 
-mod exit;
+pub(crate) mod exit;
 mod setup;
 
 use std::collections::{HashMap, HashSet};
@@ -514,7 +514,7 @@ pub(crate) fn run(
                 resource_monitor_for_exit,
                 ui_automation_state_for_exit,
             };
-            move |app_handle, event| exit::on_run_event(app_handle, event, &ctx)
+            crate::exit_callback(ctx, commands::spec_board::spec_board_close_all)
         });
     Ok(())
 }

@@ -9,7 +9,7 @@ pub(super) fn sorted_labels(labels: &HashSet<String>) -> Vec<String> {
     labels
 }
 
-pub(super) fn available_window_labels(app: &AppHandle) -> Vec<String> {
+pub(crate) fn available_window_labels(app: &AppHandle) -> Vec<String> {
     let mut labels: Vec<String> = app.webview_windows().keys().cloned().collect();
     labels.sort();
     labels

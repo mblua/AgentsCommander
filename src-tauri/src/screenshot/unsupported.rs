@@ -6,10 +6,8 @@
 //! `lib.rs` wiring are identical across targets: every capture path reports an
 //! unsupported status, and hotkey "registration" only validates syntax.
 
-use tauri::{AppHandle, Manager};
-
 use super::{
-    ScreenshotCaptureResult, ScreenshotCaptureState, ScreenshotHotkeyState, ScreenshotOverlayState,
+    ScreenshotCaptureResult, ScreenshotCaptureState, ScreenshotHotkeyOwner, ScreenshotOverlayState,
     ScreenshotSelection,
 };
 
@@ -32,10 +30,13 @@ pub struct ScreenshotHotkeyRuntime {
 
 /// Validate hotkey syntax (so bad config is still rejected at settings time) and
 /// record an unsupported status. Returns `Ok(())` so startup does not warn.
-pub fn register_configured_hotkey(app: &AppHandle, configured: &str) -> Result<(), String> {
+pub fn register_configured_hotkey<H: ScreenshotHotkeyOwner>(
+    app: &H,
+    configured: &str,
+) -> Result<(), String> {
     // Surface a genuine syntax error; otherwise record the unsupported status.
     super::parse_screenshot_hotkey(configured)?;
-    let state = app.state::<ScreenshotHotkeyState>();
+    let state = app.hotkey_state();
     let mut runtime = state.lock().unwrap();
     runtime.status.configured = configured.to_string();
     runtime.status.registered = false;
@@ -44,14 +45,14 @@ pub fn register_configured_hotkey(app: &AppHandle, configured: &str) -> Result<(
 }
 
 /// No-op: the global-shortcut plugin is never registered off Windows.
-pub fn begin_capture_from_hotkey(_app: AppHandle) {}
+pub fn begin_capture_from_hotkey<H>(_app: H) {}
 
-pub async fn begin_capture(_app: AppHandle) -> Result<(), String> {
+pub async fn begin_capture<H>(_app: H) -> Result<(), String> {
     Err(UNSUPPORTED.to_string())
 }
 
-pub async fn overlay_state(
-    _app: &AppHandle,
+pub async fn overlay_state<H>(
+    _app: &H,
     _state: &ScreenshotCaptureState,
     _capture_id: &str,
     _monitor_id: u32,
@@ -59,16 +60,16 @@ pub async fn overlay_state(
     Err(UNSUPPORTED.to_string())
 }
 
-pub async fn confirm_selection(
-    _app: &AppHandle,
+pub async fn confirm_selection<H>(
+    _app: &H,
     _state: &ScreenshotCaptureState,
     _selection: ScreenshotSelection,
 ) -> Result<ScreenshotCaptureResult, String> {
     Err(UNSUPPORTED.to_string())
 }
 
-pub async fn cancel_capture(
-    _app: &AppHandle,
+pub async fn cancel_capture<H>(
+    _app: &H,
     _state: &ScreenshotCaptureState,
     _capture_id: &str,
 ) -> Result<(), String> {
@@ -76,8 +77,8 @@ pub async fn cancel_capture(
     Ok(())
 }
 
-pub async fn clear_capture_and_destroy_overlays(
-    _app: &AppHandle,
+pub async fn clear_capture_and_destroy_overlays<H>(
+    _app: &H,
     _state: &ScreenshotCaptureState,
     _capture_id: Option<uuid::Uuid>,
     _reason: &str,
@@ -85,7 +86,7 @@ pub async fn clear_capture_and_destroy_overlays(
     Ok(())
 }
 
-pub async fn handle_overlay_window_destroyed(_app: AppHandle, _label: String) {}
+pub async fn handle_overlay_window_destroyed<H>(_app: H, _label: String) {}
 
 #[cfg(test)]
 mod tests;

@@ -243,18 +243,26 @@ pub(crate) fn load_startup_sessions(
     Ok(load(&paths))
 }
 
+pub(crate) trait RestoreStartupTask:
+    std::future::Future<Output = Result<(), Self::Error>> + Send + Unpin + 'static
+{
+    type Error;
+
+    fn spawn_owned(future: futures::future::BoxFuture<'static, ()>) -> Self;
+}
+
 /// Shared admission and completion boundary for native startup restore.
 /// Callbacks are invoked inside the unwind boundary, including synchronous panics.
-pub(crate) fn spawn_restore_startup(
+pub(crate) fn spawn_restore_startup<J: RestoreStartupTask>(
     restore_barrier: crate::session::selection::RestoreBarrierGuard,
     restore_observer_barrier: Arc<RestoreObserverStartBarrier>,
     restore_flag: Arc<RestoreInProgress>,
     settings_state: SettingsState,
     body: Box<dyn FnOnce() -> futures::future::BoxFuture<'static, ()> + Send + 'static>,
     continuation: Box<dyn FnOnce() -> futures::future::BoxFuture<'static, ()> + Send + 'static>,
-) -> tauri::async_runtime::JoinHandle<()> {
+) -> J {
     use futures::FutureExt;
-    tauri::async_runtime::spawn(async move {
+    J::spawn_owned(Box::pin(async move {
         struct RestoreGuard(Arc<RestoreInProgress>);
         impl Drop for RestoreGuard {
             fn drop(&mut self) {
@@ -292,5 +300,5 @@ pub(crate) fn spawn_restore_startup(
                 panic
             );
         }
-    })
+    }))
 }

@@ -5,8 +5,10 @@ use crate::resource_monitor::registry::{QuarantineRetryOutcome, QuarantineRetryS
 use crate::resource_monitor::types::{ProcessIdentity, ResourceGroupState, ResourceLimits};
 use crate::resource_monitor::ResourceMonitorState;
 use crate::session::selection::{SelectionCoordinator, WatchdogKillOutcome};
+#[cfg(test)]
 use crate::shutdown::ShutdownSignal;
 use serde::Serialize;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::types::ResourceAgentGroupSnapshot;
@@ -81,25 +83,31 @@ fn should_run_orphan_fallback(outcome: &WatchdogKillOutcome) -> bool {
     matches!(outcome, WatchdogKillOutcome::NoPublicSession)
 }
 
-pub fn start(
+pub(crate) trait ResourceWatchdogTaskScope: Clone + Send + Sync + 'static {
+    fn token(&self) -> &CancellationToken;
+    fn spawn_owned(&self, future: futures::future::BoxFuture<'static, ()>);
+}
+
+pub(crate) fn start<S: ResourceWatchdogTaskScope>(
     monitor: ResourceMonitorState,
     settings: SettingsState,
     coordinator: SelectionCoordinator,
-    shutdown: ShutdownSignal,
+    shutdown: S,
 ) {
     if !watchdog_eligible(&monitor) {
         return;
     }
-    tauri::async_runtime::spawn(async move {
+    let task_scope = shutdown.clone();
+    shutdown.spawn_owned(Box::pin(async move {
         loop {
             tokio::select! {
-                _ = shutdown.token().cancelled() => break,
+                _ = task_scope.token().cancelled() => break,
                 _ = tokio::time::sleep(next_delay(&monitor, &settings).await) => {
                     run_tick(&monitor, &settings, &coordinator).await;
                 }
             }
         }
-    });
+    }));
 }
 
 fn watchdog_eligible(monitor: &ResourceMonitorState) -> bool {

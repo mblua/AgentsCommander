@@ -21,7 +21,7 @@ use crate::pty::container_backend::{
     HostToBridgeFrame, MAX_TRANSPORT_FRAME_BYTES, TRANSPORT_PROTOCOL_VERSION,
 };
 use crate::session::warnings::{
-    emit_session_warning, SessionWarning, CONTAINER_TRANSPORT_PROTOCOL_KEY,
+    emit_session_warning, SessionWarning, SessionWarningEvents, CONTAINER_TRANSPORT_PROTOCOL_KEY,
     WARNING_KIND_PROTOCOL_MISMATCH,
 };
 
@@ -50,7 +50,7 @@ pub async fn handle(
         Err(err) => return err.into_response(),
     };
 
-    let app_handle = state.app_handle.clone();
+    let resources = state.resources.clone();
     ws.max_message_size(MAX_TRANSPORT_FRAME_BYTES)
         .max_frame_size(MAX_TRANSPORT_FRAME_BYTES)
         .on_upgrade(move |socket| {
@@ -59,7 +59,7 @@ pub async fn handle(
                 authorized.backend,
                 authorized.session_id,
                 authorized.bound_root,
-                app_handle,
+                resources,
             )
         })
 }
@@ -253,12 +253,12 @@ fn classify_fresh_transport_auth(
     }
 }
 
-async fn handle_ws_connection(
+async fn handle_ws_connection<E: SessionWarningEvents + Send + Sync + ?Sized + 'static>(
     mut socket: WebSocket,
     backend: std::sync::Arc<ContainerTransportBackend>,
     session_id: Uuid,
     bound_root: String,
-    app_handle: tauri::AppHandle,
+    resources: std::sync::Arc<E>,
 ) {
     let first = match tokio::time::timeout(
         backend.tuning().handshake_timeout,
@@ -278,7 +278,7 @@ async fn handle_ws_connection(
         let reason = rejection.message();
         log::error!("[container-transport] {reason}");
         if let Some(warning) = rejection.session_warning(session_id) {
-            emit_session_warning(&app_handle, warning);
+            emit_session_warning(resources.as_ref(), warning);
         }
         backend.handle_handshake_failed(session_id).await;
         return;

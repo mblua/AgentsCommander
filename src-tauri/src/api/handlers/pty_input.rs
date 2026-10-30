@@ -7,7 +7,6 @@ use axum::extract::{ConnectInfo, OriginalUri, Path as AxumPath, State};
 use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use tauri::Manager;
 use uuid::Uuid;
 
 use crate::api::error::ApiError;
@@ -171,9 +170,7 @@ async fn post_inner(
         .map_err(|_| pty_input_error(crate::phone::types::PtyInputReasonCode::ApiClientUnbound))?;
     let authority = crate::api::identity::verify_live_pty_input_authority(state, proof).await?;
     let mut project_paths = {
-        let settings = state
-            .app_handle
-            .state::<crate::config::settings::SettingsState>();
+        let settings = state.resources.required_settings();
         current_pty_input_project_paths(
             &settings,
             crate::config::settings::read_pty_input_project_paths_strict_offloaded(),

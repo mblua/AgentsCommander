@@ -759,8 +759,139 @@ pub(crate) async fn is_tcp_listening(addr: SocketAddr) -> bool {
     is_tcp_socket_listening(addr).await
 }
 
+impl crate::api::ApiSendSettings for tauri::AppHandle {
+    fn api_send_settings(&self) -> SettingsState {
+        Arc::clone(self.state::<SettingsState>().inner())
+    }
+}
+
+impl crate::api::ApiRequestResources for tauri::AppHandle {
+    fn required_settings(&self) -> SettingsState {
+        Arc::clone(self.state::<SettingsState>().inner())
+    }
+
+    fn try_settings(&self) -> Option<SettingsState> {
+        self.try_state::<SettingsState>()
+            .map(|state| Arc::clone(state.inner()))
+    }
+
+    fn snapshot_state(&self) -> Option<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>> {
+        self.try_state::<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>()
+            .map(|state| Arc::clone(state.inner()))
+    }
+
+    fn restore_flag(&self) -> Option<Arc<crate::app_state::RestoreInProgress>> {
+        self.try_state::<Arc<crate::app_state::RestoreInProgress>>()
+            .map(|state| Arc::clone(state.inner()))
+    }
+
+    fn purge_guard(&self) -> Option<Arc<crate::session::purge_guard::PurgeGuard>> {
+        self.try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+            .map(|state| Arc::clone(state.inner()))
+    }
+}
+
+#[cfg(test)]
+impl crate::api::ApiState {
+    pub(crate) fn resources_from_native(
+        app: tauri::AppHandle,
+    ) -> Arc<dyn crate::api::ApiRequestResources> {
+        Arc::new(app)
+    }
+}
+
 impl crate::api::ApiMessageWarnings for tauri::AppHandle {
     fn message_warnings(&self) -> Arc<crate::config::injected_messages::MessageWarnings> {
         Arc::clone(&self.state::<crate::app_state::AppOwners>().messages)
+    }
+}
+
+impl crate::api::ApiJoinTask for tauri::async_runtime::JoinHandle<()> {
+    type Error = tauri::Error;
+
+    fn abort(&self) {
+        tauri::async_runtime::JoinHandle::abort(self);
+    }
+}
+
+impl crate::api::NativeApiSpawner for tauri::AppHandle {
+    type Join = tauri::async_runtime::JoinHandle<()>;
+
+    fn spawn_owned(
+        &self,
+        future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>,
+    ) -> Self::Join {
+        tauri::async_runtime::spawn(future)
+    }
+}
+
+impl crate::api::ApiServerFactory for tauri::AppHandle {
+    type Error = tauri::Error;
+    type Join = tauri::async_runtime::JoinHandle<()>;
+
+    fn start_api_owned(
+        self,
+        bind: String,
+        port: u16,
+        sessions: Arc<tokio::sync::RwLock<SessionManager>>,
+        pty: Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> crate::api::ApiServerStart<Self::Join> {
+        crate::api::start_server_core(bind, port, self, sessions, pty, shutdown)
+    }
+}
+
+impl crate::api::dispatcher::DispatcherDelivery for tauri::AppHandle {
+    fn purging(&self) -> bool {
+        self.try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+            .map(|guard| guard.is_active())
+            .unwrap_or(false)
+    }
+
+    fn message_store_state(&self) -> Option<crate::api::message_store::MessageStoreState> {
+        self.try_state::<crate::api::message_store::MessageStoreState>()
+            .map(|state| state.inner().clone())
+    }
+
+    fn restoring(&self) -> bool {
+        self.try_state::<Arc<crate::RestoreInProgress>>()
+            .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    fn deliver_wake<'a>(
+        &'a self,
+        msg: crate::phone::types::OutboxMessage,
+        messages: Arc<crate::config::injected_messages::MessageWarnings>,
+    ) -> futures::future::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            crate::phone::mailbox::MailboxPoller::new(messages)
+                .deliver_wake_with_origin(
+                    self,
+                    &msg,
+                    crate::phone::mailbox::WakeDeliveryOrigin::DbQueue,
+                )
+                .await
+                .map(|_| ())
+        })
+    }
+
+    fn dispatch_pty<'a>(
+        &'a self,
+        state: &'a crate::api::message_store::MessageStoreState,
+        id: &'a str,
+        client: &'a Arc<crate::api::auth::ApiClientStore>,
+        messages: Arc<crate::config::injected_messages::MessageWarnings>,
+    ) -> futures::future::BoxFuture<'a, ()> {
+        Box::pin(async move {
+            crate::phone::mailbox::MailboxPoller::new(messages)
+                .dispatch_pty_input_operation(
+                    self,
+                    state,
+                    id,
+                    crate::phone::types::PtyInputSourcePlane::ContainerApi,
+                    Some(client),
+                )
+                .await;
+        })
     }
 }

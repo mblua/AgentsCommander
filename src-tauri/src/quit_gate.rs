@@ -5,8 +5,6 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tauri::Manager;
-
 // ---------------------------------------------------------------------------
 // #2296 — backend quit gate.
 //
@@ -178,43 +176,41 @@ pub(crate) fn exit_closing_detached(host: &dyn QuitGateHost) {
     host.exit(0);
 }
 
-/// Production host: targeted Tauri emits and `AppHandle::exit`.
+type QuitEventCallback =
+    Box<dyn Fn(&str, &str, serde_json::Value) -> Result<(), String> + Send + Sync>;
+
+/// Production host operations supplied by composition.
 pub struct TauriQuitHost {
-    app: tauri::AppHandle,
+    emit_to: QuitEventCallback,
+    close_detached_terminals: Box<dyn Fn() -> Vec<String> + Send + Sync>,
+    exit: Box<dyn Fn(i32) + Send + Sync>,
 }
 
 impl TauriQuitHost {
-    pub fn new(app: tauri::AppHandle) -> Self {
-        Self { app }
+    pub(crate) fn from_callbacks(
+        emit_to: QuitEventCallback,
+        close_detached_terminals: Box<dyn Fn() -> Vec<String> + Send + Sync>,
+        exit: Box<dyn Fn(i32) + Send + Sync>,
+    ) -> Self {
+        Self {
+            emit_to,
+            close_detached_terminals,
+            exit,
+        }
     }
 }
 
 impl QuitGateHost for TauriQuitHost {
     fn emit_to(&self, label: &str, event: &str, payload: serde_json::Value) -> Result<(), String> {
-        tauri::Emitter::emit_to(&self.app, label, event, payload).map_err(|e| e.to_string())
+        (self.emit_to)(label, event, payload)
     }
 
     fn close_detached_terminals(&self) -> Vec<String> {
-        // Never touches `was_detached`: restore reads the session flag, not
-        // the live window set, so detached sessions restore detached.
-        let mut closed = Vec::new();
-        for (label, window) in self.app.webview_windows() {
-            if !label.starts_with("terminal-") {
-                continue;
-            }
-            if let Err(e) = window.destroy() {
-                log::warn!("[shutdown] detached window destroy failed: {label}: {e}");
-            }
-            closed.push(label);
-        }
-        closed
+        (self.close_detached_terminals)()
     }
 
     fn exit(&self, code: i32) {
-        // SINGLE production exit site for the quit gate. Everything else routes
-        // its Exiting decision through `quit_gate_run`, which calls this once
-        // per terminal Exiting (see `try_claim_exit`).
-        self.app.exit(code);
+        (self.exit)(code);
     }
 }
 

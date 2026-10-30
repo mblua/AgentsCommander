@@ -88,16 +88,10 @@ use project_git::{
     parse_nul_records, read_project_file_difference, strip_line_terminator,
     PROJECT_GIT_REDIRECT_ENV,
 };
-#[cfg(test)]
-pub(crate) use project_registry::ProjectArchiveChanged;
 pub use project_registry::{
     __cmd__new_project, __cmd__open_project, __cmd__remove_project,
     __tauri_command_name_new_project, __tauri_command_name_open_project,
     __tauri_command_name_remove_project, new_project, open_project, remove_project,
-};
-pub(crate) use project_registry::{
-    broadcast_project_archive_changed, open_project_inner, remove_project_inner,
-    ArchiveChangeReason,
 };
 #[cfg(test)]
 use project_registry::{
@@ -106,6 +100,9 @@ use project_registry::{
     open_project_inner_with_event_and_settings_path, open_project_inner_with_settings_path,
     remove_project_inner_with_settings_path, NewProjectTransactionHooks,
 };
+pub(crate) use project_registry::{open_project_inner, remove_project_inner};
+#[cfg(test)]
+pub(crate) use project_registry::{ArchiveChangeReason, ProjectArchiveChanged};
 #[cfg(all(test, windows))]
 use replica_read::projected_path_string;
 #[cfg(test)]

@@ -1,7 +1,7 @@
 use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use crate::config::settings::{AppSettings, SettingsState};
 use std::path::Path;
-use tauri::State;
+use tauri::{Manager, State};
 
 // ── #191 — shared open/new project commands ──────────────────────────────
 
@@ -87,6 +87,22 @@ pub(crate) fn broadcast_project_archive_changed<R: tauri::Runtime>(
         session_name: session_name.map(|name| name.to_string()),
     });
     crate::web::commands::broadcast_all_r(app, "project_archive_changed", &payload);
+}
+
+impl<R: tauri::Runtime> crate::config::archive_gate::ArchiveGateHost for tauri::AppHandle<R> {
+    fn archive_settings(&self) -> SettingsState {
+        std::sync::Arc::clone(self.state::<SettingsState>().inner())
+    }
+
+    fn auto_unarchived(&self, path: &str, session_label: &str) {
+        broadcast_project_archive_changed(
+            self,
+            path,
+            false,
+            ArchiveChangeReason::AutoUnarchive,
+            Some(session_label),
+        );
+    }
 }
 
 /// Validate an existing AC project at `path` and register it in
