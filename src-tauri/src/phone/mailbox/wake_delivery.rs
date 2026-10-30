@@ -763,6 +763,10 @@ impl MailboxPoller {
         let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
         let app = app.clone();
         let delivery = self.delivery_poller();
+        #[cfg(test)]
+        if let Some(probe) = &self.clear_observation_probe {
+            probe.record_owned_child(&delivery);
+        }
         // Relocates the one existing create core around its owned work tail.
         // Common create borrows this lexical proof and never spawns another core.
         let result = crate::config::sessions_persistence::run_owned_persist_core(async move {

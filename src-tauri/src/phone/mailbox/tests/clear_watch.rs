@@ -374,3 +374,55 @@ async fn issue_3371_pathless_and_unrelated_errors_keep_legacy_release() {
     assert!(source.exists());
     assert!(!temp.path().join("rejected").exists());
 }
+
+#[tokio::test]
+async fn issue_3371_owned_replacement_remains_source_free_and_retained_on_injection_error() {
+    const NAME: &str = concat!(
+        "phone::mailbox::tests::clear_watch::",
+        "issue_3371_owned_replacement_remains_source_free_and_retained_on_injection_error"
+    );
+    const CHILD: &str = "AC_3371_OWNED_CLEAR_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            CodexClearScannerFixture::owned_clear_exclusion(temp).await,
+            (true, 1, true)
+        );
+        return;
+    }
+    let config = tempfile::tempdir().unwrap();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([NAME, "--exact", "--nocapture", "--test-threads=1"])
+        .env(CHILD, "1")
+        .env("AGENTSCOMMANDER_CONFIG_DIR", config.path())
+        .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", config.path())
+        .env("RUST_MIN_STACK", "33554432")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let mut child = command.spawn().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(45);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            let output = child.wait_with_output().unwrap();
+            panic!("owned clear child timed out: {output:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

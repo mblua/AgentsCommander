@@ -791,12 +791,19 @@ impl CodexClearScannerFixture {
 /// Fixture-owned barrier records the dormant adapter without activating PTY detection.
 pub(crate) struct ClearObservationProbe {
     demote: bool,
+    owned_children: AtomicU32,
     sources: Mutex<Vec<PathBuf>>,
     entered: tokio::sync::Notify,
     release: tokio::sync::Semaphore,
 }
 
 impl ClearObservationProbe {
+    pub(crate) fn record_owned_child(&self, child: &MailboxPoller) {
+        assert!(child.codex_clear_source.is_none());
+        assert!(child.clear_reservation.is_none());
+        self.owned_children.fetch_add(1, Ordering::SeqCst);
+    }
+
     pub(crate) async fn enter(&self, delivery: &MailboxPoller) {
         let source = delivery
             .codex_clear_source
@@ -838,6 +845,7 @@ impl CodexClearScannerFixture {
     ) -> Arc<ClearObservationProbe> {
         let probe = Arc::new(ClearObservationProbe {
             demote,
+            owned_children: AtomicU32::new(0),
             sources: Mutex::new(Vec::new()),
             entered: tokio::sync::Notify::new(),
             release: tokio::sync::Semaphore::new(0),
@@ -918,5 +926,64 @@ impl CodexClearScannerFixture {
         let mut settings = state.write().await;
         settings.project_paths = vec![root.to_string_lossy().into_owned()];
         settings.agents = wake_agents();
+    }
+}
+
+impl CodexClearScannerFixture {
+    pub(crate) async fn owned_clear_exclusion(temp: tempfile::TempDir) -> (bool, u32, bool) {
+        let fixture = make_mailbox_fixture_in(temp);
+        let (coordinator, _, _, _) = prepare_retained_exited_respawn(&fixture).await;
+        let app = fixture.app.handle();
+        let control = Arc::new(crate::session::selection::ReplacementFixtureControl::default());
+        control.mock_backend.store(true, Ordering::Release);
+        control.ticket_only.store(false, Ordering::Release);
+        let hooks = MailboxTestHooks::default();
+        *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+        let mut poller = MailboxPoller::new_with_test_hooks(hooks);
+        let probe = Arc::new(ClearObservationProbe {
+            demote: true,
+            owned_children: AtomicU32::new(0),
+            sources: Mutex::new(Vec::new()),
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        poller.clear_observation_probe = Some(probe.clone());
+        let mut msg = wake_message_to_target();
+        msg.command = Some("clear".into());
+        let source = fixture._temp.path().join(format!("{}.json", msg.id));
+        std::fs::write(&source, serde_json::to_vec(&msg).unwrap()).unwrap();
+        poller.codex_clear_source = Some(source.clone());
+        let pty = app.state::<Arc<Mutex<PtyManager>>>();
+        let backend = pty
+            .lock()
+            .unwrap()
+            .backend_for_kind(SessionBackendKind::LocalProcess);
+        backend
+            .as_any()
+            .downcast_ref::<MailboxMockPtyBackend>()
+            .unwrap()
+            .fail_write
+            .store(true, Ordering::Release);
+        let result = tokio::time::timeout(
+            Duration::from_secs(15),
+            retained_fixture_ordinary_wake(&poller, app, &msg, &control),
+        )
+        .await;
+        let pending = result.expect("bounded owned clear tail").is_none();
+        let no_marker =
+            super::super::clear_attempt::probe_attempt(&std::fs::read_to_string(&source).unwrap())
+                .unwrap()
+                .is_none();
+        assert!(probe.sources.lock().unwrap().is_empty());
+        assert!(!source.parent().unwrap().join("delivered").exists());
+        coordinator.shutdown_token().cancel();
+        tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+            .await
+            .unwrap();
+        (
+            pending,
+            probe.owned_children.load(Ordering::SeqCst),
+            no_marker,
+        )
     }
 }
