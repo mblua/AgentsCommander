@@ -467,3 +467,257 @@ async fn malformed_json_keeps_existing_parse_error_and_raw_rejection() {
         .iter()
         .any(|reason| reason.starts_with("invalid_envelope:")));
 }
+
+// Include directories as well as bytes so an escaped write or extra archive is visible.
+fn delivered_inventory(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+    fn visit(root: &Path, dir: &Path, rows: &mut Vec<(PathBuf, Option<Vec<u8>>)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let directory = path.is_dir();
+            rows.push((
+                path.strip_prefix(root).unwrap().to_path_buf(),
+                (!directory).then(|| std::fs::read(&path).unwrap()),
+            ));
+            if directory {
+                visit(root, &path, rows);
+            }
+        }
+    }
+    let mut rows = Vec::new();
+    visit(root, root, &mut rows);
+    rows.sort();
+    rows
+}
+
+fn delivered_work_state() -> crate::pty::manager::ResponseCloseState {
+    use crate::pty::manager::ResponseClosePublisher;
+    let state = crate::pty::manager::ResponseCloseState::default();
+    for publisher in [
+        ResponseClosePublisher::Manager,
+        ResponseClosePublisher::Pty,
+        ResponseClosePublisher::RawOutput,
+        ResponseClosePublisher::Detector,
+        ResponseClosePublisher::Menu,
+        ResponseClosePublisher::Hold,
+    ] {
+        state.bind_publisher(publisher);
+    }
+    state.mark_work_bootstrapped();
+    state.try_enable_readiness().unwrap();
+    state.apply_settings(true, 30, std::time::Instant::now());
+    state
+}
+
+fn assert_delivered_work_terminal(
+    state: &crate::pty::manager::ResponseCloseState,
+    target: &str,
+    terminal: bool,
+) {
+    // The API checks terminal work before looking up a route. With no routes,
+    // Conflict proves terminal dedupe; Unknown proves the work is still pending.
+    let identity = crate::pty::manager::ResponseRouteIdentity {
+        target: target.into(),
+        session_id: Uuid::new_v4(),
+        token: Uuid::new_v4(),
+        generation: 1,
+        carrier_version: 1,
+        backend: crate::pty::backend_kind::SessionBackendKind::LocalProcess,
+    };
+    let result = state.reserve_policy_candidate(
+        identity.clone(),
+        identity,
+        "delivery-work".into(),
+        "digest".into(),
+        std::time::Instant::now(),
+    );
+    let error = result.err().expect("no route was registered");
+    let expected = if terminal {
+        crate::pty::manager::ResponseCloseError::Conflict
+    } else {
+        crate::pty::manager::ResponseCloseError::Unknown
+    };
+    assert_eq!(error, expected);
+}
+
+async fn delivered_case(raw: &str, valid: bool, claimed: bool, failure: u8) {
+    let fixture = make_mailbox_fixture();
+    let app = app_handle(&fixture.app);
+    // Two parents below TempDir contain every traversal in this table, even on pin.
+    let temp = tempfile::TempDir::new().unwrap();
+    let root = temp.path();
+    let outbox = root.join("nested/outbox");
+    let delivered = outbox.join("delivered");
+    std::fs::create_dir_all(&delivered).unwrap();
+    std::fs::write(root.join("sentinel"), b"outside unchanged").unwrap();
+    let absolute = root.join("absolute-escape");
+    let id = match raw {
+        "@absolute" => absolute.to_string_lossy().into_owned(),
+        "@verbatim" => std::fs::canonicalize(root)
+            .unwrap()
+            .join("verbatim-escape")
+            .to_string_lossy()
+            .into_owned(),
+        _ => raw.into(),
+    };
+    let origin = outbox.join("src.json");
+    let source = if claimed {
+        super::super::handoff::wake_claim_path(&origin)
+    } else {
+        origin.clone()
+    };
+    let mut msg = wake_message_to_target();
+    msg.id = id.clone();
+    msg.token = Some("delivery-secret".into());
+    let bytes = serde_json::to_vec_pretty(&msg).unwrap();
+    if failure != 2 {
+        save(&source, &msg);
+    }
+    let archive = if valid {
+        delivered.join(format!("{id}.json"))
+    } else {
+        delivered.join("src.json")
+    };
+    if failure == 1 {
+        std::fs::create_dir(&archive).unwrap();
+    }
+    let mut expected = delivered_inventory(root);
+    let poller = MailboxPoller::delivery_only_for_tests();
+    let state = delivered_work_state();
+    let mut admission = state.reserve_work(&msg.to, "delivery-work").unwrap();
+    assert!(admission.accept_durable("digest").unwrap());
+    drop(admission);
+    poller.response_sources.lock().unwrap().insert(
+        origin.clone(),
+        ResponseWakeWork {
+            diagnostic_message_id: None,
+            state: state.clone(),
+            target: msg.to.clone(),
+            key: "delivery-work".into(),
+            digest: "digest".into(),
+            attempt: Arc::default(),
+            return_context: None,
+            return_routes: None,
+            delivery_context: None,
+        },
+    );
+    assert_delivered_work_terminal(&state, &msg.to, false);
+    let result = poller.move_to_delivered(&app, &source, &msg).await;
+    if failure == 1 {
+        assert!(result
+            .unwrap_err()
+            .starts_with("Failed to write delivered file:"));
+        assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    } else {
+        let mut stripped = msg.clone();
+        stripped.token = None;
+        let archived_bytes = serde_json::to_vec_pretty(&stripped).unwrap();
+        expected.push((
+            archive.strip_prefix(root).unwrap().to_path_buf(),
+            Some(archived_bytes.clone()),
+        ));
+        if failure == 2 {
+            assert!(result
+                .unwrap_err()
+                .starts_with("Failed to remove outbox file:"));
+        } else {
+            assert_eq!(result, Ok(()), "id={id:?}, claimed={claimed}");
+            expected.retain(|(path, _)| path != source.strip_prefix(root).unwrap());
+            assert!(!source.exists());
+        }
+        assert_eq!(std::fs::read(&archive).unwrap(), archived_bytes);
+        let archived: OutboxMessage =
+            serde_json::from_slice(&std::fs::read(&archive).unwrap()).unwrap();
+        assert!(archived.token.is_none());
+        assert_eq!(archived.id, id);
+        assert_eq!(
+            serde_json::to_value(archived).unwrap(),
+            serde_json::to_value(stripped).unwrap()
+        );
+        if claimed && !valid && failure == 0 {
+            assert!(!outbox.join("rejected/src.json").exists());
+            assert_eq!(
+                super::super::handoff::wake_claim_has_settled_receipt(&origin),
+                Ok(true)
+            );
+            assert!(delivered.join("src.json").is_file());
+            assert!(!delivered.join("src.json.in-flight").exists());
+        }
+    }
+    expected.sort();
+    assert_eq!(
+        delivered_inventory(root),
+        expected,
+        "id={id:?}, claimed={claimed}"
+    );
+    assert_eq!(
+        poller
+            .response_sources
+            .lock()
+            .unwrap()
+            .contains_key(&origin),
+        failure != 0
+    );
+    assert_delivered_work_terminal(&state, &msg.to, failure == 0);
+    app.state::<crate::session::selection::SelectionCoordinator>()
+        .close_and_join()
+        .await;
+}
+
+#[tokio::test]
+async fn move_to_delivered_hostile_ids_use_origin_basename() {
+    for claimed in [false, true] {
+        for id in [
+            "",
+            ".",
+            "..",
+            "../escape",
+            "nested/slash",
+            r"nested\backslash",
+            "\0",
+            "@absolute",
+            "@verbatim",
+        ] {
+            delivered_case(id, false, claimed, 0).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn move_to_delivered_claimed_invalid_id_has_settled_receipt() {
+    delivered_case("../escape", false, true, 0).await;
+}
+
+#[tokio::test]
+async fn move_to_delivered_valid_ids_keep_exact_archive_and_complete_work() {
+    for claimed in [false, true] {
+        for id in [
+            V4,
+            "msg-sr-origin-switch",
+            "embedded.dot",
+            "雪",
+            "with space",
+            "tail.",
+            "tail ",
+        ] {
+            delivered_case(id, true, claimed, 0).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn move_to_delivered_write_error_keeps_source_and_work() {
+    for claimed in [false, true] {
+        for (id, valid) in [("safe-id", true), ("../escape", false)] {
+            delivered_case(id, valid, claimed, 1).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn move_to_delivered_remove_error_keeps_archive_and_work() {
+    for claimed in [false, true] {
+        for (id, valid) in [("safe-id", true), ("../escape", false)] {
+            delivered_case(id, valid, claimed, 2).await;
+        }
+    }
+}
