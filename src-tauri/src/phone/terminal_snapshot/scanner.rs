@@ -231,6 +231,57 @@ impl SnapshotMailboxScanner {
         }
     }
 
+    fn select_requests(
+        &mut self,
+        request_directory: &Path,
+        request_object: crate::path_identity::FileObjectId,
+    ) -> Option<Vec<String>> {
+        let cursor = self
+            .cursors
+            .get(&request_object)
+            .cloned()
+            .unwrap_or_default();
+        let mut next = std::collections::BTreeSet::new();
+        let mut wrapped = std::collections::BTreeSet::new();
+        let Ok(entries) = terminal_snapshots::snapshot_entries(request_directory) else {
+            return None;
+        };
+        for (index, entry) in entries.enumerate() {
+            if index >= MAX_DIRECTORY_ENTRIES {
+                log::warn!("[terminal-snapshot] stage=publish code=directory_capacity");
+                return None;
+            }
+            let Ok((_, name)) = entry else {
+                return None;
+            };
+            let Ok(name) = name.into_string() else {
+                continue;
+            };
+            if protocol_request_name(&name).is_none() {
+                continue;
+            }
+            let candidates = if name.as_str() > cursor.as_str() {
+                &mut next
+            } else {
+                &mut wrapped
+            };
+            candidates.insert(name);
+            if candidates.len() > MAX_PER_POLL {
+                candidates.pop_last();
+            }
+        }
+        let selected: Vec<String> = if next.is_empty() {
+            wrapped.into_iter().collect()
+        } else {
+            next.into_iter().collect()
+        };
+        if let Some(last) = selected.last() {
+            self.cursors.insert(request_object, last.clone());
+        }
+
+        Some(selected)
+    }
+
     pub(crate) fn scan_root<R: tauri::Runtime>(
         &mut self,
         app: &tauri::AppHandle<R>,
@@ -256,49 +307,11 @@ impl SnapshotMailboxScanner {
         self.observed.insert(request_directory_identity.object_id);
         sweep_directory(&request_directory, &request_directory_identity, false);
         sweep_directory(&response_directory, &response_directory_identity, true);
-        let cursor = self
-            .cursors
-            .get(&request_directory_identity.object_id)
-            .cloned()
-            .unwrap_or_default();
-        let mut next = std::collections::BTreeSet::new();
-        let mut wrapped = std::collections::BTreeSet::new();
-        let Ok(entries) = terminal_snapshots::snapshot_entries(&request_directory) else {
+        let Some(selected) =
+            self.select_requests(&request_directory, request_directory_identity.object_id)
+        else {
             return;
         };
-        for (index, entry) in entries.enumerate() {
-            if index >= MAX_DIRECTORY_ENTRIES {
-                log::warn!("[terminal-snapshot] stage=publish code=directory_capacity");
-                return;
-            }
-            let Ok((_, name)) = entry else {
-                return;
-            };
-            let Ok(name) = name.into_string() else {
-                continue;
-            };
-            if protocol_request_name(&name).is_none() {
-                continue;
-            }
-            let candidates = if name.as_str() > cursor.as_str() {
-                &mut next
-            } else {
-                &mut wrapped
-            };
-            candidates.insert(name);
-            if candidates.len() > MAX_PER_POLL {
-                candidates.pop_last();
-            }
-        }
-        let selected: Vec<String> = if next.is_empty() {
-            wrapped.into_iter().collect()
-        } else {
-            next.into_iter().collect()
-        };
-        if let Some(last) = selected.last() {
-            self.cursors
-                .insert(request_directory_identity.object_id, last.clone());
-        }
 
         let Some(snapshot_state) =
             app.try_state::<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>()
@@ -425,3 +438,6 @@ fn private_directory_mode(path: &Path) -> bool {
 fn private_regular_file_mode(path: &Path) -> bool {
     terminal_snapshots::private_snapshot_file_mode(path)
 }
+
+#[cfg(test)]
+mod tests;
