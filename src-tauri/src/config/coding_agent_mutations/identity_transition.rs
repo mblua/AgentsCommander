@@ -335,6 +335,31 @@ pub(super) fn commit_source_candidate_internal(
             Err(uncertain) => Err(uncertain.into()),
         };
     }
+    continue_candidate_intent(
+        (&identity, &lease, context),
+        operation_id,
+        &authority,
+        &rediscover,
+        reload,
+        #[cfg(test)]
+        controls,
+    )
+}
+
+fn continue_candidate_intent(
+    coordination: (
+        &crate::config::settings::IdentityWriteLease,
+        &crate::config::settings::SourceWriteContext,
+        &crate::config::settings::SourceReadContext,
+    ),
+    operation_id: String,
+    authority: &crate::config::settings::SourceInventoryProof,
+    rediscover: &dyn Fn() -> Result<(), SourceTransitionError>,
+    reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+    #[cfg(test)] controls: &IdentityTransitionTestControls,
+) -> Result<IdentityTransitionRead, SourceTransitionError> {
+    let (identity, lease, context) = coordination;
+    let validate = || authority.validate(identity, lease, context);
     let continuation = (|| -> Result<IdentityTransitionRead, SourceTransitionError> {
         source_durable_boundary(
             "intentInventory",
@@ -350,12 +375,12 @@ pub(super) fn commit_source_candidate_internal(
         validate()?;
         authority.verify_affected_before_fence()?;
         drive_identity_transition(
-            &identity,
-            &lease,
+            identity,
+            lease,
             context,
             &operation_id,
-            &authority,
-            &rediscover,
+            authority,
+            rediscover,
             #[cfg(not(test))]
             reload,
             #[cfg(test)]
@@ -516,12 +541,9 @@ pub(super) fn drive_identity_transition(
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
     #[cfg(test)]
     let (reload, controls) = reload_and_controls;
-    use crate::config::coding_agent_profiles::apply_identity_reference_patch;
     use crate::config::settings::{
         publish_source_intent_with_validation, read_own_source_journal,
-        release_identity_reference_pair_guarded, source_complete_proof,
-        source_transition_digest_bytes, verify_completed_source_target, SourceCoordinationError,
-        SourceLocalProgress, SourceReceipt,
+        source_transition_digest_bytes, SourceCoordinationError, SourceLocalProgress,
     };
     let validate = || authority.validate(identity, lease, context);
     rediscover()?;
@@ -602,6 +624,32 @@ pub(super) fn drive_identity_transition(
         #[cfg(test)]
         controls,
     )?;
+    complete_identity_transition(&packets, context, progress, after, &persist, reload)
+}
+
+fn complete_identity_transition(
+    packets: &packets::TransitionPackets<'_>,
+    context: &crate::config::settings::SourceReadContext,
+    mut progress: crate::config::settings::SourceLocalProgress,
+    after: crate::config::settings::SourceRevision,
+    persist: &dyn Fn(
+        crate::config::settings::SourceLocalProgress,
+    )
+        -> Result<crate::config::settings::SourceLocalProgress, SourceTransitionError>,
+    reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+) -> Result<IdentityTransitionRead, SourceTransitionError> {
+    use crate::config::coding_agent_profiles::apply_identity_reference_patch;
+    use crate::config::settings::{
+        release_identity_reference_pair_guarded, source_complete_proof,
+        verify_completed_source_target, SourceCoordinationError, SourceReceipt,
+    };
+    let lease = packets.lease;
+    let operation_id = packets.operation_id;
+    let inventory = packets.authority.inventory();
+    let rediscover = packets.rediscover;
+    let validate = packets.validate;
+    #[cfg(test)]
+    let controls = packets.controls;
     rediscover()?;
     for row in &progress.packets {
         let target = inventory
@@ -610,7 +658,7 @@ pub(super) fn drive_identity_transition(
             .find(|t| t.decisions == row.target)
             .ok_or(SourceCoordinationError::Invalid)?;
         if progress.receipt.is_some() {
-            verify_completed_source_target(target, row, &validate)?;
+            verify_completed_source_target(target, row, validate)?;
         } else {
             apply_identity_reference_patch(
                 &target.decisions,
@@ -618,7 +666,7 @@ pub(super) fn drive_identity_transition(
                 &target.reservation,
                 operation_id,
                 &row.plan_digest,
-                &validate,
+                validate,
             )?;
         }
         source_durable_boundary(
@@ -673,14 +721,14 @@ pub(super) fn drive_identity_transition(
             .iter()
             .find(|t| t.decisions == row.target)
             .ok_or(SourceCoordinationError::Invalid)?;
-        verify_completed_source_target(target, row, &validate)?;
-        let proof = source_complete_proof(lease, context, operation_id, &row.target_id, &validate)?;
+        verify_completed_source_target(target, row, validate)?;
+        let proof = source_complete_proof(lease, context, operation_id, &row.target_id, validate)?;
         release_identity_reference_pair_guarded(
             &target.decisions,
             &target.state,
             &target.reservation,
             &proof,
-            &validate,
+            validate,
         )?;
         source_durable_boundary(
             "release",
