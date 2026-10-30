@@ -323,13 +323,8 @@ impl MailboxPoller {
         // §AR2-G1: resolve the target to a canonical FQN BEFORE authorization.
         // Even if the CLI skipped resolution (direct outbox write, old client,
         // hand-crafted JSON), the mailbox is the authoritative gate.
-        let resolved_target = {
-            let paths = {
-                let cfg = app.state::<SettingsState>();
-                let c = cfg.read().await;
-                c.project_paths.clone()
-            };
-            match crate::config::teams::resolve_agent_target(raw_target, &paths) {
+        let resolved_target =
+            match resolve_close_session_target(app.pty_settings(), raw_target).await {
                 Ok(fqn) => fqn,
                 Err(e) => {
                     return self
@@ -340,8 +335,7 @@ impl MailboxPoller {
                         )
                         .await;
                 }
-            }
-        };
+            };
         let target = resolved_target.as_str();
 
         // Re-check master token for coordinator auth bypass (independent of routing bypass above)
@@ -436,52 +430,8 @@ impl MailboxPoller {
             }
         }
 
-        // §224 A.7 — active ghost cleanup. After A.2.5 has confirmed (with
-        // wait-and-retry) that no session matches the target, force a
-        // sessions.json rewrite from the live SessionManager to drop any
-        // stale persisted entry. Without this, a user with only the ghost
-        // session sees the contradiction persist across multiple
-        // close-session invocations (zero lifecycle events to trigger
-        // passive cleanup). Cost: one disk write per no-match call.
-        //
-        // Skip when A.2.5 returned restore_in_progress: the restore task
-        // is itself about to write the snapshot when it completes; racing
-        // that write is wasted I/O and would clobber recipes for sessions
-        // whose restore is pending.
-        //
-        // Skip when session_ids is non-empty: that's either "closed" or
-        // "already_closed", and the destroy path's downstream events will
-        // trigger persist_current_state organically.
-        //
-        // §224 G-IMPL-4 (NIT, accepted) — snapshot vs concurrent create_session
-        // is racy in the ~5-50ms window between `snapshot_sessions` and
-        // `save_sessions`. If a `create_session` for any target lands in
-        // that window and runs its own `persist_current_state` BEFORE our
-        // `save_sessions` writes, the new session is dropped from disk
-        // until the next lifecycle event re-persists. Impact: brief disk
-        // inconsistency, recoverable. Accepted.
-        //
-        // §224 G-IMPL-6 (NIT, accepted) — A.7 also drops unrelated failed-
-        // recoverable ghosts. The snapshot includes only live SessionManager
-        // entries; if `sessions.json` has a failed-recoverable ghost for
-        // unrelated agent X, this rewrite drops X's ghost too. This is the
-        // pre-existing behavior of every `persist_current_state` caller
-        // (see `persist_merging_failed` docstring); A.7 just introduces a
-        // new caller outside lifecycle events. Accepted.
         if session_ids.is_empty() && !restore_in_progress_result {
-            // Persist through the serialized snapshot+write path so this cleanup
-            // cannot replay a stale snapshot after a completed Telegram toggle.
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = session_mgr.read().await;
-            if let Err(e) =
-                crate::config::sessions_persistence::persist_current_state_result(&mgr).await
-            {
-                log::warn!(
-                    "[mailbox] close-session: failed to persist cleaned sessions.json after \
-                    no_match: {}",
-                    e
-                );
-            }
+            persist_unmatched_close_sessions(app.pty_sessions()).await;
         }
 
         write_close_session_response(
@@ -504,6 +454,62 @@ impl MailboxPoller {
 
         // Move original message to delivered/
         self.move_to_delivered(app, path, msg).await
+    }
+}
+
+async fn resolve_close_session_target(
+    settings: &SettingsState,
+    raw_target: &str,
+) -> Result<String, teams::ResolutionError> {
+    let paths = {
+        let c = settings.read().await;
+        c.project_paths.clone()
+    };
+    crate::config::teams::resolve_agent_target(raw_target, &paths)
+}
+
+// §224 A.7 — active ghost cleanup. After A.2.5 has confirmed (with
+// wait-and-retry) that no session matches the target, force a
+// sessions.json rewrite from the live SessionManager to drop any
+// stale persisted entry. Without this, a user with only the ghost
+// session sees the contradiction persist across multiple
+// close-session invocations (zero lifecycle events to trigger
+// passive cleanup). Cost: one disk write per no-match call.
+//
+// Skip when A.2.5 returned restore_in_progress: the restore task
+// is itself about to write the snapshot when it completes; racing
+// that write is wasted I/O and would clobber recipes for sessions
+// whose restore is pending.
+//
+// Skip when session_ids is non-empty: that's either "closed" or
+// "already_closed", and the destroy path's downstream events will
+// trigger persist_current_state organically.
+//
+// §224 G-IMPL-4 (NIT, accepted) — snapshot vs concurrent create_session
+// is racy in the ~5-50ms window between `snapshot_sessions` and
+// `save_sessions`. If a `create_session` for any target lands in
+// that window and runs its own `persist_current_state` BEFORE our
+// `save_sessions` writes, the new session is dropped from disk
+// until the next lifecycle event re-persists. Impact: brief disk
+// inconsistency, recoverable. Accepted.
+//
+// §224 G-IMPL-6 (NIT, accepted) — A.7 also drops unrelated failed-
+// recoverable ghosts. The snapshot includes only live SessionManager
+// entries; if `sessions.json` has a failed-recoverable ghost for
+// unrelated agent X, this rewrite drops X's ghost too. This is the
+// pre-existing behavior of every `persist_current_state` caller
+// (see `persist_merging_failed` docstring); A.7 just introduces a
+// new caller outside lifecycle events. Accepted.
+async fn persist_unmatched_close_sessions(session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>) {
+    // Persist through the serialized snapshot+write path so this cleanup
+    // cannot replay a stale snapshot after a completed Telegram toggle.
+    let mgr = session_mgr.read().await;
+    if let Err(e) = crate::config::sessions_persistence::persist_current_state_result(&mgr).await {
+        log::warn!(
+            "[mailbox] close-session: failed to persist cleaned sessions.json after \
+            no_match: {}",
+            e
+        );
     }
 }
 
