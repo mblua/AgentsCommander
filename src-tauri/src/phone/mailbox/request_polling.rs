@@ -45,6 +45,29 @@ fn archive_id_is_plain(id: &str) -> bool {
         || port)
 }
 
+fn sweep_stale_session_results(requests_dir: &Path) {
+    // #1163: sweep stale result sidecars. The CLI consumes the result it
+    // reads and waits at most `SESSION_REQUEST_RESULT_TIMEOUT` (30 s); a
+    // result older than 5 minutes is litter from a timed-out or crashed
+    // CLI and is removed here (worst case a few KB in an already-ephemeral,
+    // ignored instance-artifact directory).
+    if let Ok(rd) = mailbox_disk::mailbox_directory_paths(requests_dir) {
+        for path in rd.filter_map(|e| e.ok()) {
+            if !crate::cli::create_agent::is_session_request_result_path(&path) {
+                continue;
+            }
+            let stale = mailbox_disk::mailbox_path_metadata(&path)
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|age| age >= std::time::Duration::from_secs(5 * 60));
+            if stale {
+                let _ = mailbox_disk::remove_mailbox_artifact(&path);
+            }
+        }
+    }
+}
+
 impl MailboxPoller {
     /// Move an outbox message to outbox/delivered/ with token stripped.
     pub(crate) async fn move_to_delivered<R: tauri::Runtime>(
@@ -201,26 +224,7 @@ impl MailboxPoller {
             return;
         }
 
-        // #1163: sweep stale result sidecars. The CLI consumes the result it
-        // reads and waits at most `SESSION_REQUEST_RESULT_TIMEOUT` (30 s); a
-        // result older than 5 minutes is litter from a timed-out or crashed
-        // CLI and is removed here (worst case a few KB in an already-ephemeral,
-        // ignored instance-artifact directory).
-        if let Ok(rd) = mailbox_disk::mailbox_directory_paths(&requests_dir) {
-            for path in rd.filter_map(|e| e.ok()) {
-                if !crate::cli::create_agent::is_session_request_result_path(&path) {
-                    continue;
-                }
-                let stale = mailbox_disk::mailbox_path_metadata(&path)
-                    .ok()
-                    .and_then(|metadata| metadata.modified().ok())
-                    .and_then(|modified| modified.elapsed().ok())
-                    .is_some_and(|age| age >= std::time::Duration::from_secs(5 * 60));
-                if stale {
-                    let _ = mailbox_disk::remove_mailbox_artifact(&path);
-                }
-            }
-        }
+        sweep_stale_session_results(&requests_dir);
 
         let entries: Vec<PathBuf> = match mailbox_disk::mailbox_directory_paths(&requests_dir) {
             Ok(rd) => rd
