@@ -8,6 +8,8 @@ use super::pty_claim::MailboxTestHooks;
 use super::pty_claim::{
     current_response_row, ResponseCandidateAttempt, ResponseRequestCandidate, ResponseWakeWork,
 };
+#[cfg(test)]
+use super::tests::ClearObservationProbe;
 use crate::config::settings::SettingsState;
 use crate::filesystem::phone_mailbox as mailbox_disk;
 use crate::phone::types::OutboxMessage;
@@ -538,7 +540,7 @@ pub struct MailboxPoller {
     #[cfg(test)]
     pub(crate) test_hooks: Option<MailboxTestHooks>,
     #[cfg(test)]
-    pub(crate) clear_observation_probe: Option<Arc<super::tests::ClearObservationProbe>>,
+    pub(crate) clear_observation_probe: Option<Arc<ClearObservationProbe>>,
 }
 
 /// (#885) One peer's correlated gate input. Built from the three snapshots
