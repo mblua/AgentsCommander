@@ -121,38 +121,7 @@ pub(crate) fn analyze_base_bytes(
         refresh_blocked = true;
     }
 
-    let (kind, marker) = match root.get("managed") {
-        None => (CatalogBaseKind::Legacy, None),
-        Some(serde_json::Value::Object(object)) => {
-            if unknown_field_names(object.keys(), MANAGED_MARKER_FIELDS).is_some() {
-                refresh_blocked = true;
-            }
-            let owner = object.get("owner").and_then(serde_json::Value::as_str);
-            let version = object.get("version").and_then(serde_json::Value::as_u64);
-            if owner == Some(MANAGED_OWNER) && version == Some(MANAGED_VERSION as u64) {
-                match (
-                    object.get("revision").and_then(serde_json::Value::as_str),
-                    object
-                        .get("contentSha256")
-                        .and_then(serde_json::Value::as_str),
-                ) {
-                    (Some(revision), Some(content_sha256)) => (
-                        CatalogBaseKind::Managed,
-                        Some(ManagedCatalogMarker {
-                            owner: MANAGED_OWNER.to_string(),
-                            version: MANAGED_VERSION,
-                            revision: revision.to_string(),
-                            content_sha256: content_sha256.to_string(),
-                        }),
-                    ),
-                    _ => (CatalogBaseKind::ForeignManaged, None),
-                }
-            } else {
-                (CatalogBaseKind::ForeignManaged, None)
-            }
-        }
-        Some(_) => (CatalogBaseKind::ForeignManaged, None),
-    };
+    let (kind, marker) = analyze_managed_marker(root, &mut refresh_blocked);
 
     let mut entries: Vec<CodingAgentDefinition> = Vec::new();
     let mut seen_keys: HashSet<String> = HashSet::new();
@@ -256,6 +225,44 @@ pub(crate) fn analyze_base_bytes(
         refresh_blocked,
         warnings,
     })
+}
+
+fn analyze_managed_marker(
+    root: &serde_json::Map<String, serde_json::Value>,
+    refresh_blocked: &mut bool,
+) -> (CatalogBaseKind, Option<ManagedCatalogMarker>) {
+    match root.get("managed") {
+        None => (CatalogBaseKind::Legacy, None),
+        Some(serde_json::Value::Object(object)) => {
+            if unknown_field_names(object.keys(), MANAGED_MARKER_FIELDS).is_some() {
+                *refresh_blocked = true;
+            }
+            let owner = object.get("owner").and_then(serde_json::Value::as_str);
+            let version = object.get("version").and_then(serde_json::Value::as_u64);
+            if owner == Some(MANAGED_OWNER) && version == Some(MANAGED_VERSION as u64) {
+                match (
+                    object.get("revision").and_then(serde_json::Value::as_str),
+                    object
+                        .get("contentSha256")
+                        .and_then(serde_json::Value::as_str),
+                ) {
+                    (Some(revision), Some(content_sha256)) => (
+                        CatalogBaseKind::Managed,
+                        Some(ManagedCatalogMarker {
+                            owner: MANAGED_OWNER.to_string(),
+                            version: MANAGED_VERSION,
+                            revision: revision.to_string(),
+                            content_sha256: content_sha256.to_string(),
+                        }),
+                    ),
+                    _ => (CatalogBaseKind::ForeignManaged, None),
+                }
+            } else {
+                (CatalogBaseKind::ForeignManaged, None)
+            }
+        }
+        Some(_) => (CatalogBaseKind::ForeignManaged, None),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -540,39 +547,13 @@ pub(crate) fn resolve_catalog_snapshot(
 
     match analysis.kind {
         CatalogBaseKind::Managed => {
-            let mut effective = analysis.entries;
-            for (observation, path, description) in snapshot
-                .project
-                .as_ref()
-                .map(|value| {
-                    (
-                        value,
-                        project_catalog_path(ac_dir),
-                        LayerDescription::Project,
-                    )
-                })
-                .into_iter()
-                .chain(std::iter::once((
-                    &snapshot.local,
-                    local_path.clone(),
-                    LayerDescription::Local,
-                )))
-            {
-                let result = match observation {
-                    Ok(Some(bytes)) => parse_local_layer(bytes, description)
-                        .and_then(|layer| compose_local_layer(&effective, &layer, description)),
-                    Ok(None) => continue,
-                    Err(reason) => Err(reason.clone()),
-                };
-                match result {
-                    Ok(candidate) => effective = candidate,
-                    Err(reason) => resolved.warnings.push(catalog_diagnostic(
-                        description.invalid_code(),
-                        &path,
-                        reason,
-                    )),
-                }
-            }
+            let effective = compose_managed_layers(
+                ac_dir,
+                &snapshot,
+                &local_path,
+                analysis.entries,
+                &mut resolved.warnings,
+            );
             resolved.catalog = apply_support_gate(effective, &base_path, &mut resolved.warnings);
         }
         CatalogBaseKind::ForeignManaged => {
@@ -621,6 +602,48 @@ pub(crate) fn resolve_catalog_snapshot(
 
     resolved
 }
+fn compose_managed_layers(
+    ac_dir: &Path,
+    snapshot: &CatalogSnapshot,
+    local_path: &Path,
+    mut effective: Vec<CodingAgentDefinition>,
+    warnings: &mut Vec<CatalogDiagnostic>,
+) -> Vec<CodingAgentDefinition> {
+    for (observation, path, description) in snapshot
+        .project
+        .as_ref()
+        .map(|value| {
+            (
+                value,
+                project_catalog_path(ac_dir),
+                LayerDescription::Project,
+            )
+        })
+        .into_iter()
+        .chain(std::iter::once((
+            &snapshot.local,
+            local_path.to_path_buf(),
+            LayerDescription::Local,
+        )))
+    {
+        let result = match observation {
+            Ok(Some(bytes)) => parse_local_layer(bytes, description)
+                .and_then(|layer| compose_local_layer(&effective, &layer, description)),
+            Ok(None) => continue,
+            Err(reason) => Err(reason.clone()),
+        };
+        match result {
+            Ok(candidate) => effective = candidate,
+            Err(reason) => warnings.push(catalog_diagnostic(
+                description.invalid_code(),
+                &path,
+                reason,
+            )),
+        }
+    }
+    effective
+}
+
 /// Per-item validation of a raw `updateCommands` value BEFORE deserialization,
 /// so a non-string or unsafe item reports on that definition instead of failing
 /// the whole file as malformed JSON. Returns a reason on the first offending
