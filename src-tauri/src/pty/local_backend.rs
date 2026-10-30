@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::Write;
 #[cfg(windows)]
 use std::sync::atomic::AtomicU64;
+#[cfg(any(test, windows))]
 use std::sync::atomic::Ordering;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicUsize};
