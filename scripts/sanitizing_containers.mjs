@@ -17,7 +17,7 @@ export function parseRegistry(text) {
   const ids = new Set(), names = new Set();
   for (const c of doc.containers) {
     if (!c || typeof c.id !== 'string' || !c.id.trim() || ids.has(c.id) ||
-        typeof c.name !== 'string' || !/^[\w.-]+\.jsonl?$/.test(c.name) ||
+        typeof c.name !== 'string' || !/^(?!\.{1,2}$)[\w.-]+$/.test(c.name) ||
         !validPath(c.scope) || !c.scope.endsWith('/') ||
         !validPath(c.owner) || !c.owner.startsWith(c.scope) || !c.owner.endsWith('.rs') ||
         c.externalLiteralBaseline !== 0 ||
