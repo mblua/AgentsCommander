@@ -110,56 +110,8 @@ pub(super) fn init_for_project_path(
         )]);
     }
 
-    let mut seen = HashSet::new();
-    let mut variants = Vec::new();
-    let mut preflight_errors = Vec::new();
-    for variant in &args.variants {
-        if variant.is_empty() {
-            preflight_errors.push(err(
-                "variant_name_empty",
-                "Variant name cannot be empty",
-                None,
-            ));
-            continue;
-        }
-        if let Err(mut e) = validate_slug_identity(variant, "Variant", "variant_name_invalid") {
-            preflight_errors.append(&mut e);
-            continue;
-        }
-        if !seen.insert(variant.clone()) {
-            preflight_errors.push(err(
-                "variant_name_duplicate",
-                format!("Variant '{}' is duplicated", variant),
-                Some(variant.as_str()),
-            ));
-            continue;
-        }
-        let agent_name = variant_agent_name(&source_agent, variant);
-        if let Err(e) = validate_existing_name(&agent_name, "Agent") {
-            preflight_errors.push(err("variant_name_invalid", e, Some(variant.as_str())));
-            continue;
-        }
-        let target = variant_matrix_path(&ac_root, &source_agent, variant);
-        if directories::experiment_path_exists(&target) {
-            if is_link_path(&target) {
-                preflight_errors.push(err(
-                    "variant_role_link_or_reparse",
-                    format!(
-                        "Variant matrix path is a link or reparse point: {}",
-                        target.display()
-                    ),
-                    Some(variant.as_str()),
-                ));
-            } else {
-                preflight_errors.push(err(
-                    "variant_matrix_exists",
-                    format!("Variant matrix already exists: {}", target.display()),
-                    Some(variant.as_str()),
-                ));
-            }
-        }
-        variants.push(variant.clone());
-    }
+    let (variants, mut preflight_errors) =
+        collect_init_variants_preflight(&args.variants, &ac_root, &source_agent);
 
     let experiment_dir = experiments_dir(&ac_root).join(&args.name);
     reject_link_or_reparse(&experiment_dir, "experiment_metadata_link_or_reparse", None)?;
@@ -279,6 +231,64 @@ pub(super) fn init_for_project_path(
         warnings,
         errors: Vec::new(),
     })
+}
+
+fn collect_init_variants_preflight(
+    requested_variants: &[String],
+    ac_root: &Path,
+    source_agent: &str,
+) -> (Vec<String>, Vec<CliError>) {
+    let mut seen = HashSet::new();
+    let mut variants = Vec::new();
+    let mut preflight_errors = Vec::new();
+    for variant in requested_variants {
+        if variant.is_empty() {
+            preflight_errors.push(err(
+                "variant_name_empty",
+                "Variant name cannot be empty",
+                None,
+            ));
+            continue;
+        }
+        if let Err(mut e) = validate_slug_identity(variant, "Variant", "variant_name_invalid") {
+            preflight_errors.append(&mut e);
+            continue;
+        }
+        if !seen.insert(variant.clone()) {
+            preflight_errors.push(err(
+                "variant_name_duplicate",
+                format!("Variant '{}' is duplicated", variant),
+                Some(variant.as_str()),
+            ));
+            continue;
+        }
+        let agent_name = variant_agent_name(source_agent, variant);
+        if let Err(e) = validate_existing_name(&agent_name, "Agent") {
+            preflight_errors.push(err("variant_name_invalid", e, Some(variant.as_str())));
+            continue;
+        }
+        let target = variant_matrix_path(ac_root, source_agent, variant);
+        if directories::experiment_path_exists(&target) {
+            if is_link_path(&target) {
+                preflight_errors.push(err(
+                    "variant_role_link_or_reparse",
+                    format!(
+                        "Variant matrix path is a link or reparse point: {}",
+                        target.display()
+                    ),
+                    Some(variant.as_str()),
+                ));
+            } else {
+                preflight_errors.push(err(
+                    "variant_matrix_exists",
+                    format!("Variant matrix already exists: {}", target.display()),
+                    Some(variant.as_str()),
+                ));
+            }
+        }
+        variants.push(variant.clone());
+    }
+    (variants, preflight_errors)
 }
 
 pub(super) fn list(args: ProjectArgs) -> Result<CommandOutput, Vec<CliError>> {

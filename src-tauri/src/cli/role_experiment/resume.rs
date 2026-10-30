@@ -48,24 +48,10 @@ pub(super) fn load_and_validate_resume_artifacts(
     let report_path = run_dir.join("report.json");
     let markdown_path = run_dir.join("report.md");
     let state_dir = run_dir.join("attempt-state");
-    for path in [&run_path, &attempts_path, &report_path, &markdown_path] {
-        reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
-        if !directories::experiment_path_is_file(path) {
-            return Err(vec![err_at_path(
-                "run_artifact_missing",
-                format!("Run artifact not found: {}", path.display()),
-                path,
-            )]);
-        }
-    }
-    reject_link_or_reparse(&state_dir, "run_artifact_link_or_reparse", None)?;
-    if !directories::experiment_path_is_dir(&state_dir) {
-        return Err(vec![err_at_path(
-            "run_artifact_missing",
-            format!("Run artifact directory not found: {}", state_dir.display()),
-            &state_dir,
-        )]);
-    }
+    validate_resume_artifact_presence(
+        [&run_path, &attempts_path, &report_path, &markdown_path],
+        &state_dir,
+    )?;
 
     let run_artifact: RunArtifact = read_json(&run_path)
         .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &run_path)])?;
@@ -234,6 +220,31 @@ pub(super) fn load_and_validate_resume_artifacts(
     } else {
         Err(errors)
     }
+}
+
+fn validate_resume_artifact_presence(
+    paths: [&Path; 4],
+    state_dir: &Path,
+) -> Result<(), Vec<CliError>> {
+    for path in paths {
+        reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
+        if !directories::experiment_path_is_file(path) {
+            return Err(vec![err_at_path(
+                "run_artifact_missing",
+                format!("Run artifact not found: {}", path.display()),
+                path,
+            )]);
+        }
+    }
+    reject_link_or_reparse(state_dir, "run_artifact_link_or_reparse", None)?;
+    if !directories::experiment_path_is_dir(state_dir) {
+        return Err(vec![err_at_path(
+            "run_artifact_missing",
+            format!("Run artifact directory not found: {}", state_dir.display()),
+            state_dir,
+        )]);
+    }
+    Ok(())
 }
 
 fn validate_attempt_state_contract(
