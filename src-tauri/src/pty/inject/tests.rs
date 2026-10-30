@@ -341,13 +341,7 @@ async fn clear_watch_concurrency(remove: bool, poison: bool, cancel: bool) -> Re
             recorded_writes(&backend, id),
             vec![b"/clear".to_vec(), vec![13], vec![13]]
         );
-        for bytes in [
-            b"k".as_slice(),
-            b"\x03",
-            b"\x1b",
-            b"web",
-            b"privileged",
-        ] {
+        for bytes in [b"k".as_slice(), b"\x03", b"\x1b", b"web", b"privileged"] {
             tokio::time::timeout(
                 Duration::from_millis(500),
                 test_input_write(&manager, id, bytes),
