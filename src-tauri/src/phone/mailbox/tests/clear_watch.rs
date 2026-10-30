@@ -203,7 +203,7 @@ async fn issue_3371_pre_t2_cancel_and_panic_release_worker_claims() {
             finish(&mut poller).await;
             assert!(source.exists());
             assert!(!wake_claim_path(&source).exists());
-            assert_eq!(poller.retry_tracker[&source].attempts, 1);
+            assert_eq!(poller.retry_tracker[&source].attempt_count, 1);
         }
     }
 }
@@ -243,7 +243,7 @@ async fn issue_3371_terminal_reason_worker_drain_prune_and_source_defaults() {
         assert!(!source.exists());
         assert!(!wake_claim_path(&source).exists());
         assert!(!temp.path().join("delivered/terminal.json").exists());
-        assert_eq!(poller.retry_tracker[&source].attempts, 1);
+        assert_eq!(poller.retry_tracker[&source].attempt_count, 1);
         prune_retry_tracker(&mut poller.retry_tracker, &poller.live_claims, None);
         assert!(poller.retry_tracker.is_empty());
         assert_eq!(fixture.recorded_effect_counts()[1], 1);
