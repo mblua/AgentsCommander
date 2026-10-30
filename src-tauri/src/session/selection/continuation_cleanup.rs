@@ -281,65 +281,15 @@ impl OwnedReplacementContinuation {
                 }
                 OwnedReplacementPublicationOutcome::Pending(carrier) => {
                     rename.complete(Ok(Some(carrier.session_id.to_string())));
-                    {
-                        let Ok(mut state) = self.owner.state.lock() else {
-                            return false;
-                        };
-                        let Some(progress) = state.replacement.as_mut() else {
-                            return false;
-                        };
-                        progress.pending_carrier = Some(carrier.clone());
-                        state.stage = ReplacementStage::FinalizedPendingReadback;
-                    }
-                    // The rename is observed. Native recovery reads this same
-                    // publication only; it never repeats preparation or rename.
-                    for delay in [10, 50, 200] {
-                        tokio::time::sleep(Duration::from_millis(delay)).await;
-                        if !self.validate_source().await {
-                            return false;
-                        }
-                        let permit =
-                            crate::session::manager::acquire_carrier_mutation_permit().await;
-                        let confirmed = manager
-                            .with_current_carrier_snapshot(&permit, |current| {
-                                if !self.publication_region_current(current, pty) {
-                                    return None;
-                                }
-                                use crate::config::sessions_persistence as persistence;
-                                persistence::reconcile_owned_replacement_readback(
-                                    &permit,
-                                    &carrier,
-                                    self.owner.operation,
-                                    descriptor.previous.id,
-                                    current,
-                                )
-                            })
-                            .await;
-                        drop(permit);
-                        if let Some(confirmed) = confirmed {
-                            readback.complete(Ok(Some(confirmed.nonce.to_string())));
-                            let Ok(mut state) = self.owner.state.lock() else {
-                                return false;
-                            };
-                            let Some(progress) = state.replacement.as_mut() else {
-                                return false;
-                            };
-                            if progress.first_checkpoint.is_none() {
-                                progress.first_checkpoint = Some(confirmed.clone());
-                            }
-                            progress.current_checkpoint = Some(confirmed);
-                            progress.pending_carrier = None;
-                            return true;
-                        }
-                    }
-                    readback.complete(Err("replacement readback is Pending".into()));
-                    if let Ok(mut state) = self.owner.state.lock() {
-                        state.retained_reason = Some(
-                            "replacement native rename observed; strict readback unavailable"
-                                .into(),
-                        );
-                    }
-                    return false;
+                    return self
+                        .reconcile_pending_checkpoint(
+                            manager,
+                            pty,
+                            descriptor.previous.id,
+                            carrier,
+                            readback,
+                        )
+                        .await;
                 }
                 OwnedReplacementPublicationOutcome::Recapture => {
                     rename.complete(Err("replacement publication stale before rename".into()));
@@ -356,6 +306,72 @@ impl OwnedReplacementContinuation {
             }
             // Exact existing native backoffs, with no U/M/lifecycle/leaf guard.
             tokio::time::sleep(Duration::from_millis([10, 50, 200][attempt])).await;
+        }
+        false
+    }
+
+    async fn reconcile_pending_checkpoint(
+        &self,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        previous: Uuid,
+        carrier: crate::config::sessions_persistence::PublishedCarrier,
+        readback: LifecycleEffectGuard,
+    ) -> bool {
+        {
+            let Ok(mut state) = self.owner.state.lock() else {
+                return false;
+            };
+            let Some(progress) = state.replacement.as_mut() else {
+                return false;
+            };
+            progress.pending_carrier = Some(carrier.clone());
+            state.stage = ReplacementStage::FinalizedPendingReadback;
+        }
+        // The rename is observed. Native recovery reads this same
+        // publication only; it never repeats preparation or rename.
+        for delay in [10, 50, 200] {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+            if !self.validate_source().await {
+                return false;
+            }
+            let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+            let confirmed = manager
+                .with_current_carrier_snapshot(&permit, |current| {
+                    if !self.publication_region_current(current, pty) {
+                        return None;
+                    }
+                    use crate::config::sessions_persistence as persistence;
+                    persistence::reconcile_owned_replacement_readback(
+                        &permit,
+                        &carrier,
+                        self.owner.operation,
+                        previous,
+                        current,
+                    )
+                })
+                .await;
+            drop(permit);
+            if let Some(confirmed) = confirmed {
+                readback.complete(Ok(Some(confirmed.nonce.to_string())));
+                let Ok(mut state) = self.owner.state.lock() else {
+                    return false;
+                };
+                let Some(progress) = state.replacement.as_mut() else {
+                    return false;
+                };
+                if progress.first_checkpoint.is_none() {
+                    progress.first_checkpoint = Some(confirmed.clone());
+                }
+                progress.current_checkpoint = Some(confirmed);
+                progress.pending_carrier = None;
+                return true;
+            }
+        }
+        readback.complete(Err("replacement readback is Pending".into()));
+        if let Ok(mut state) = self.owner.state.lock() {
+            state.retained_reason =
+                Some("replacement native rename observed; strict readback unavailable".into());
         }
         false
     }
