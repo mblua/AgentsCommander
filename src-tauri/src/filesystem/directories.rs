@@ -302,6 +302,17 @@ pub(crate) fn ensure_ui_automation_directory(path: &Path) -> io::Result<()> {
     std::fs::create_dir_all(path)
 }
 
+pub(crate) fn visit_ui_automation_request_paths(
+    root: &Path,
+    mut visit: impl FnMut(PathBuf),
+) -> io::Result<()> {
+    let entries = std::fs::read_dir(root)?;
+    for entry in entries.flatten() {
+        visit(entry.path());
+    }
+    Ok(())
+}
+
 pub(crate) fn ui_automation_path_exists(path: &Path) -> bool {
     path.exists()
 }

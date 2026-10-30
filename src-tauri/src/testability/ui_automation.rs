@@ -44,11 +44,13 @@ use liveness::process_path;
 use liveness::{current_exe_path_string, now_unix_ms, paths_equal_for_compare, sorted_labels};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::{fs, io};
 use uuid::Uuid;
 
 pub const UI_AUTOMATION_DIR: &str = crate::config::instance_artifacts::UI_AUTOMATION_DIR_NAME;
@@ -249,8 +251,8 @@ impl UiAutomationState {
 
     fn initialize_files(&self) -> io::Result<()> {
         cleanup_stale_automation_files(&self.inner.automation_dir)?;
-        fs::create_dir_all(self.requests_dir())?;
-        fs::create_dir_all(self.responses_dir())?;
+        crate::filesystem::directories::ensure_ui_automation_directory(&self.requests_dir())?;
+        crate::filesystem::directories::ensure_ui_automation_directory(&self.responses_dir())?;
         self.write_session_snapshot()
     }
 
@@ -296,24 +298,21 @@ impl UiAutomationState {
         self.expire_pending_requests();
 
         let requests_dir = self.requests_dir();
-        let entries = match fs::read_dir(&requests_dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e),
-        };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(request_file) = RequestFile::from_path(&path) else {
-                continue;
-            };
-            if self.is_pending(&request_file.request_id) {
-                continue;
-            }
-            self.process_request_file(app, request_file);
+        match crate::filesystem::directories::visit_ui_automation_request_paths(
+            &requests_dir,
+            |path| {
+                let Some(request_file) = RequestFile::from_path(&path) else {
+                    return;
+                };
+                if self.is_pending(&request_file.request_id) {
+                    return;
+                }
+                self.process_request_file(app, request_file);
+            },
+        ) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            result => result,
         }
-
-        Ok(())
     }
 
     fn sync_live_window_labels(&self, live_labels: Vec<String>) -> io::Result<()> {
@@ -376,7 +375,7 @@ impl UiAutomationState {
     }
 
     fn process_request_file<H: UiAutomationHost>(&self, app: &H, request_file: RequestFile) {
-        let raw = match fs::read_to_string(&request_file.path) {
+        let raw = match crate::filesystem::documents::read_ui_automation_text(&request_file.path) {
             Ok(raw) => raw,
             Err(e) => {
                 log::warn!(
