@@ -702,3 +702,88 @@ pub(super) async fn prepare_retained_exited_respawn(
     retire_retained_fixture_member(fixture, &coordinator, &route, sender, previous).await;
     (coordinator, route, sender, previous)
 }
+
+/// Owns transport for the Tauri-free Codex clear recovery tests.
+pub(crate) struct CodexClearScannerFixture {
+    app: tauri::App<tauri::test::MockRuntime>,
+    hooks: crate::phone::mailbox::pty_claim::MailboxTestHooks,
+    delivered_events: Arc<Mutex<usize>>,
+}
+
+impl CodexClearScannerFixture {
+    pub(crate) fn new(outbox: &Path, backend: Arc<dyn PtyBackend>) -> Self {
+        let owners = crate::app_state::AppOwners::new();
+        let sessions = SessionManager::with_activity_coalescer(owners.activity.clone());
+        let app = tauri::test::mock_builder()
+            .manage(owners)
+            .manage(crate::config::settings::new_settings_state(
+                Default::default(),
+            ))
+            .manage(Arc::new(tokio::sync::RwLock::new(sessions)))
+            .manage(Arc::new(Mutex::new(PtyManager::new_for_test(backend))))
+            .manage(AppOutbox::new(outbox.to_string_lossy().into_owned()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let delivered_events = Arc::new(Mutex::new(0));
+        let recorded = delivered_events.clone();
+        tauri::Listener::listen_any(&app, "message_delivered", move |_| {
+            *recorded.lock().unwrap() += 1;
+        });
+        Self {
+            app,
+            hooks: Default::default(),
+            delivered_events,
+        }
+    }
+
+    pub(crate) fn poller(&self) -> MailboxPoller {
+        MailboxPoller::new_with_test_hooks(self.hooks.clone())
+    }
+
+    pub(crate) async fn poll(&self, poller: &mut MailboxPoller) -> Result<(), String> {
+        poller.poll(self.app.handle()).await
+    }
+
+    pub(crate) async fn deliver_claimed(
+        &self,
+        poller: &MailboxPoller,
+        claim: &Path,
+        origin: &Path,
+        validated: &crate::phone::mailbox::poller::ValidatedWake,
+    ) -> Result<(), String> {
+        crate::phone::mailbox::poller::deliver_claimed_wake(
+            poller,
+            self.app.handle(),
+            claim,
+            origin,
+            validated,
+        )
+        .await
+    }
+
+    pub(crate) async fn publish_delivered(
+        &self,
+        poller: &MailboxPoller,
+        source: &Path,
+        message: &OutboxMessage,
+    ) -> Result<(), String> {
+        poller
+            .move_to_delivered(self.app.handle(), source, message)
+            .await
+    }
+
+    pub(crate) fn install_authentication(&self, token: &str) {
+        self.app.manage(MasterToken::new(token.into()));
+    }
+
+    /// Spawn, injection, hook event, follow-up and delivered event counts.
+    pub(crate) fn recorded_effect_counts(&self) -> [usize; 5] {
+        [
+            self.hooks.spawn_calls.lock().unwrap().len(),
+            self.hooks.inject_calls.lock().unwrap().len(),
+            self.hooks.events.lock().unwrap().len(),
+            self.hooks.internal_bookkeeping.lock().unwrap().len(),
+            *self.delivered_events.lock().unwrap(),
+        ]
+    }
+}

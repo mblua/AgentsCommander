@@ -1,13 +1,12 @@
 use super::*;
 use crate::errors::AppError;
 use crate::phone::mailbox::handoff::{release_wake_claim, wake_claim_path};
-use crate::phone::mailbox::poller::{deliver_claimed_wake, MailboxPoller, ValidatedWake};
-use crate::phone::mailbox::pty_claim::MailboxTestHooks;
+use crate::phone::mailbox::poller::{MailboxPoller, ValidatedWake};
+use crate::phone::mailbox::tests::CodexClearScannerFixture;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
 use crate::pty::manager::PtyManager;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
 
 fn envelope(id: &str) -> Value {
     serde_json::json!({
@@ -290,9 +289,8 @@ fn issue_3371_fault_guard_restores_on_unwind_and_rejects_nesting() {
 struct ScannerFixture {
     _temp: tempfile::TempDir,
     outbox: PathBuf,
-    app: tauri::App<tauri::test::MockRuntime>,
+    scanner: CodexClearScannerFixture,
     backend: Arc<RecordingBackend>,
-    hooks: MailboxTestHooks,
 }
 
 impl ScannerFixture {
@@ -303,43 +301,24 @@ impl ScannerFixture {
         );
         let outbox = root.join("outbox");
         std::fs::create_dir(&outbox).unwrap();
-        let owners = crate::app_state::AppOwners::new();
-        let sessions = crate::session::manager::SessionManager::with_activity_coalescer(
-            owners.activity.clone(),
-        );
         let backend = Arc::new(RecordingBackend::default());
-        let app = tauri::test::mock_builder()
-            .manage(owners)
-            .manage(crate::config::settings::new_settings_state(
-                Default::default(),
-            ))
-            .manage(Arc::new(tokio::sync::RwLock::new(sessions)))
-            .manage(Arc::new(Mutex::new(PtyManager::new_for_test(
-                backend.clone(),
-            ))))
-            .manage(crate::AppOutbox::new(outbox.to_string_lossy().into_owned()))
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap();
+        let scanner = CodexClearScannerFixture::new(&outbox, backend.clone());
         Self {
             _temp: temp,
             outbox,
-            app,
+            scanner,
             backend,
-            hooks: MailboxTestHooks::default(),
         }
     }
 
     fn poller(&self) -> MailboxPoller {
-        MailboxPoller::new_with_test_hooks(self.hooks.clone())
+        self.scanner.poller()
     }
 
     fn assert_no_actuation(&self, poller: &MailboxPoller) {
         assert!(self.backend.writes.lock().unwrap().is_empty());
         assert_eq!(*self.backend.spawns.lock().unwrap(), 0);
-        assert!(self.hooks.spawn_calls.lock().unwrap().is_empty());
-        assert!(self.hooks.inject_calls.lock().unwrap().is_empty());
-        assert!(self.hooks.events.lock().unwrap().is_empty());
-        assert!(self.hooks.internal_bookkeeping.lock().unwrap().is_empty());
+        assert_eq!(self.scanner.recorded_effect_counts(), [0; 5]);
         assert!(poller.live_claims.is_empty());
         assert!(poller.wake_workers.is_empty());
     }
@@ -361,7 +340,7 @@ async fn issue_3371_crash_before_first_text_and_malformed_markers_never_execute(
     let path = fixture.outbox.join("crash-before-text.json");
     mark(&path, "crash-before-text");
     let mut poller = fixture.poller();
-    poller.poll(fixture.app.handle()).await.unwrap();
+    fixture.scanner.poll(&mut poller).await.unwrap();
     fixture.assert_no_actuation(&poller);
     for id in ["corrupt-0", "corrupt-1", "crash-before-text"] {
         assert!(!fixture.outbox.join(format!("{id}.json")).exists());
@@ -407,7 +386,7 @@ async fn issue_3371_rejection_failure_retries_only_publication_across_restart() 
                 REPLAY_REASON
             );
         } else {
-            poller.poll(fixture.app.handle()).await.unwrap();
+            fixture.scanner.poll(&mut poller).await.unwrap();
         }
         assert_eq!(std::fs::read(&path).unwrap(), original);
         fixture.assert_no_actuation(&poller);
@@ -415,7 +394,7 @@ async fn issue_3371_rejection_failure_retries_only_publication_across_restart() 
         let reason = "codex_clear_execution_error: retained live failure";
         std::fs::write(rejected.join("m.reason.txt"), reason).unwrap();
         let mut restarted = fixture.poller();
-        restarted.poll(fixture.app.handle()).await.unwrap();
+        fixture.scanner.poll(&mut restarted).await.unwrap();
         fixture.assert_no_actuation(&restarted);
         assert!(!path.exists());
         assert_eq!(
@@ -436,7 +415,7 @@ async fn issue_3371_payload_receipts_win_with_dotted_leftover_source() {
         let receipt_path = directory.join("dotted.id.json");
         std::fs::write(&receipt_path, b"receipt-preserved").unwrap();
         let mut poller = fixture.poller();
-        poller.poll(fixture.app.handle()).await.unwrap();
+        fixture.scanner.poll(&mut poller).await.unwrap();
         assert!(!path.exists());
         assert_eq!(std::fs::read(&receipt_path).unwrap(), b"receipt-preserved");
         assert!(!fixture
@@ -462,15 +441,11 @@ async fn issue_3371_worker_restore_drain_and_restart_preserve_marker() {
                     message: message("m"),
                     response: None,
                 };
-                assert!(deliver_claimed_wake(
-                    &poller,
-                    fixture.app.handle(),
-                    &claim,
-                    &path,
-                    &validated
-                )
-                .await
-                .is_err());
+                assert!(fixture
+                    .scanner
+                    .deliver_claimed(&poller, &claim, &path, &validated)
+                    .await
+                    .is_err());
             }
             "drain" => {
                 poller.live_claims.insert(claim.clone());
@@ -480,10 +455,10 @@ async fn issue_3371_worker_restore_drain_and_restart_preserve_marker() {
                     .unwrap();
                 poller.drain_wake_outcomes().await;
             }
-            _ => poller.poll(fixture.app.handle()).await.unwrap(),
+            _ => fixture.scanner.poll(&mut poller).await.unwrap(),
         }
         assert_eq!(std::fs::read(&path).unwrap(), before);
-        poller.poll(fixture.app.handle()).await.unwrap();
+        fixture.scanner.poll(&mut poller).await.unwrap();
         assert!(!path.exists());
         fixture.assert_no_actuation(&poller);
     }
@@ -514,7 +489,7 @@ async fn issue_3371_nonplain_ids_keep_legacy_raw_archive_order_and_token() {
     assert!(reason.is_dir());
     std::fs::remove_dir(&reason).unwrap();
     let mut restarted = fixture.poller();
-    restarted.poll(fixture.app.handle()).await.unwrap();
+    fixture.scanner.poll(&mut restarted).await.unwrap();
     assert!(!reason.exists());
     fixture.assert_no_actuation(&restarted);
 }
@@ -530,14 +505,15 @@ async fn issue_3371_delivered_publication_failure_before_receipt_restores_fence(
     let blocker = fixture.outbox.join("delivered/m.json");
     std::fs::create_dir(&blocker).unwrap();
     let mut poller = fixture.poller();
-    assert!(poller
-        .move_to_delivered(fixture.app.handle(), &claim, &message("m"))
+    assert!(fixture
+        .scanner
+        .publish_delivered(&poller, &claim, &message("m"))
         .await
         .is_err());
     assert_eq!(std::fs::read(&claim).unwrap(), bytes);
     std::fs::remove_dir(&blocker).unwrap();
     release_wake_claim(&claim, &origin);
-    poller.poll(fixture.app.handle()).await.unwrap();
+    fixture.scanner.poll(&mut poller).await.unwrap();
     assert!(!origin.exists());
     assert!(fixture.outbox.join("rejected/m.json").is_file());
     fixture.assert_no_actuation(&poller);
@@ -559,8 +535,9 @@ async fn issue_3371_receipt_written_source_remove_failure_retries_cleanup_only()
             .unwrap();
         let mut poller = fixture.poller();
         let result = if receipt == "delivered" {
-            poller
-                .move_to_delivered(fixture.app.handle(), &origin, &message("m"))
+            fixture
+                .scanner
+                .publish_delivered(&poller, &origin, &message("m"))
                 .await
         } else {
             poller
@@ -571,11 +548,11 @@ async fn issue_3371_receipt_written_source_remove_failure_retries_cleanup_only()
         assert_eq!(std::fs::read(&origin).unwrap(), original);
         let receipt_path = fixture.outbox.join(receipt).join("m.json");
         let receipt_bytes = std::fs::read(&receipt_path).unwrap();
-        poller.poll(fixture.app.handle()).await.unwrap();
+        fixture.scanner.poll(&mut poller).await.unwrap();
         assert_eq!(std::fs::read(&origin).unwrap(), original);
         drop(file);
         let mut restarted = fixture.poller();
-        restarted.poll(fixture.app.handle()).await.unwrap();
+        fixture.scanner.poll(&mut restarted).await.unwrap();
         assert!(!origin.exists());
         assert_eq!(std::fs::read(&receipt_path).unwrap(), receipt_bytes);
         fixture.assert_no_actuation(&restarted);
@@ -585,14 +562,14 @@ async fn issue_3371_receipt_written_source_remove_failure_retries_cleanup_only()
 #[tokio::test]
 async fn issue_3371_unmarked_ordinary_message_retains_existing_validation() {
     let fixture = ScannerFixture::new();
-    fixture.app.manage(crate::MasterToken::new("secret".into()));
+    fixture.scanner.install_authentication("secret");
     let path = fixture.outbox.join("ordinary.json");
     let mut document = envelope("ordinary");
     document.as_object_mut().unwrap().remove("command");
     document["mode"] = Value::String("ordinary".into());
     save(&path, &document);
     let mut poller = fixture.poller();
-    poller.poll(fixture.app.handle()).await.unwrap();
+    fixture.scanner.poll(&mut poller).await.unwrap();
     assert!(!path.exists());
     let reason =
         std::fs::read_to_string(fixture.outbox.join("rejected/ordinary.reason.txt")).unwrap();
@@ -607,7 +584,7 @@ async fn issue_3371_malformed_payload_uses_raw_rejection_without_execution() {
     let path = fixture.outbox.join("broken.json");
     save(&path, &serde_json::json!({"id": "broken", MEMBER: null}));
     let mut poller = fixture.poller();
-    poller.poll(fixture.app.handle()).await.unwrap();
+    fixture.scanner.poll(&mut poller).await.unwrap();
     assert!(!path.exists());
     assert_eq!(
         std::fs::read_to_string(fixture.outbox.join("rejected/broken.reason.txt")).unwrap(),
@@ -623,7 +600,7 @@ async fn issue_3371_crash_stage_has_no_scanner_authority() {
     save(&stage, &envelope("m"));
     let before = std::fs::read(&stage).unwrap();
     let mut poller = fixture.poller();
-    poller.poll(fixture.app.handle()).await.unwrap();
+    fixture.scanner.poll(&mut poller).await.unwrap();
     assert_eq!(std::fs::read(&stage).unwrap(), before);
     assert!(!fixture.outbox.join("rejected").exists());
     fixture.assert_no_actuation(&poller);

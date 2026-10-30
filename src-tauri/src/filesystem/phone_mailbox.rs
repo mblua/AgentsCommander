@@ -97,10 +97,15 @@ struct MailboxFault {
 }
 
 #[cfg(test)]
-thread_local! {
-    static MAILBOX_FAULT: std::cell::RefCell<Option<MailboxFault>> = const {
-        std::cell::RefCell::new(None)
-    };
+fn with_mailbox_fault_slot<T>(
+    action: impl FnOnce(&std::cell::RefCell<Option<MailboxFault>>) -> T,
+) -> T {
+    thread_local! {
+        static MAILBOX_FAULT: std::cell::RefCell<Option<MailboxFault>> = const {
+            std::cell::RefCell::new(None)
+        };
+    }
+    MAILBOX_FAULT.with(action)
 }
 
 /// Current-thread-only fault installation; never retain across await.
@@ -113,7 +118,7 @@ pub(crate) struct MailboxFaultGuard {
 impl MailboxFaultGuard {
     pub(crate) fn install(point: MailboxFaultPoint) -> Self {
         let consumed = std::rc::Rc::new(std::cell::Cell::new(false));
-        MAILBOX_FAULT.with(|slot| {
+        with_mailbox_fault_slot(|slot| {
             let mut slot = slot.borrow_mut();
             assert!(slot.is_none(), "nested mailbox fault installation");
             *slot = Some(MailboxFault {
@@ -132,13 +137,13 @@ impl MailboxFaultGuard {
 #[cfg(test)]
 impl Drop for MailboxFaultGuard {
     fn drop(&mut self) {
-        MAILBOX_FAULT.with(|slot| *slot.borrow_mut() = None);
+        with_mailbox_fault_slot(|slot| *slot.borrow_mut() = None);
     }
 }
 
 #[cfg(test)]
 fn mailbox_fault(point: MailboxFaultPoint) -> io::Result<()> {
-    MAILBOX_FAULT.with(|slot| {
+    with_mailbox_fault_slot(|slot| {
         if let Some(fault) = slot.borrow().as_ref() {
             if fault.point == point && !fault.consumed.replace(true) {
                 return Err(io::Error::other("issue_3371 mailbox fault"));

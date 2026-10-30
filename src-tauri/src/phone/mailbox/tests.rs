@@ -938,3 +938,5 @@ impl std::task::Wake for Issue3189Wake {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
+
+pub(crate) use support_core::CodexClearScannerFixture;
