@@ -10,21 +10,23 @@ use super::handoff::SELF_CLEAR_SETTLE;
 use super::handoff::{
     build_self_clear_handoff_prompt, decode_restart_profile_from_seam, resolve_self_restart_recipe,
     resolve_switch_targets, validate_self_switch_spawn, validate_self_switch_wg_replica,
-    ForgottenSummary, SelfHandoffFlavor, ARCHIVE_TIMESTAMP_FORMAT, SELF_CLEAR_ACTION,
-    SELF_HANDOFF_FLAVOR_RESTART, SELF_HANDOFF_FLAVOR_SWITCH, SELF_HANDOFF_ROOT_NAME,
+    ForgottenSummary, SelfHandoffFlavor, SelfRestartRecipe, SelfSwitchTargets,
+    ARCHIVE_TIMESTAMP_FORMAT, SELF_CLEAR_ACTION, SELF_HANDOFF_FLAVOR_RESTART,
+    SELF_HANDOFF_FLAVOR_SWITCH, SELF_HANDOFF_ROOT_NAME,
 };
 use super::poller::MailboxPoller;
 use super::settle::{
     archive_root_md, capture_self_forget_summary, inject_handoff_prompt_with_archive,
     self_clear_gate_advance, SelfClearBoundary, SelfClearGateAction, SelfClearGateState,
 };
-use crate::config::settings::SettingsState;
+use crate::config::settings::{AppSettings, SettingsState};
 use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
 use crate::session::maintenance::{MaintenanceError, PendingSelfClear};
 use crate::session::manager::SessionManager;
+use crate::session::session::SessionInfo;
 use failure::{consume_outcome, SelfHandoffFailure, SelfHandoffOutcome, CONTINUATION_FAILURE};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::Manager;
@@ -105,42 +107,11 @@ impl MailboxPoller {
             let snapshot = settings.read().await.clone();
             snapshot
         };
-        let session_cwd = PathBuf::from(&session.working_directory);
-        let replica_path = match validate_self_switch_wg_replica(&settings_snapshot, &session_cwd) {
-            Ok(path) => path,
-            Err(reason) => return self.reject_message(path, msg, &reason).await,
-        };
-        let targets = match resolve_switch_targets(
-            &settings_snapshot,
-            &replica_path,
-            msg.switch_coding_agent.as_deref(),
-            msg.switch_profile.as_deref(),
-            session.agent_id.as_deref(),
-            session.effective_profile.as_deref(),
-            session.requested_profile.as_deref(),
-        ) {
-            Ok(targets) => targets,
-            Err(reason) => return self.reject_message(path, msg, &reason).await,
-        };
-        if let Err(reason) = validate_self_switch_spawn(&settings_snapshot, &replica_path, &targets)
-        {
-            return self.reject_message(path, msg, &reason).await;
-        }
-
-        let handoff_path = replica_path.join(SELF_HANDOFF_ROOT_NAME);
-        if !handoff_path.is_file() {
-            return self
-                .reject_message(
-                    path,
-                    msg,
-                    &format!(
-                        "self-handoff-and-switch: SELF-HANDOFF.md not found in your root ({}); \
-                        write it before requesting self-handoff-and-switch.",
-                        replica_path.display()
-                    ),
-                )
-                .await;
-        }
+        let (replica_path, targets) =
+            match resolve_self_switch_request(&settings_snapshot, &session, msg) {
+                Ok(request) => request,
+                Err(reason) => return self.reject_message(path, msg, &reason).await,
+            };
 
         let reservation = {
             let pending = app.state::<Arc<PendingSelfClear>>();
@@ -160,23 +131,8 @@ impl MailboxPoller {
         };
 
         if newly_inserted {
-            let forgotten_summary = capture_self_forget_summary(&replica_path);
-            let ts = chrono::Local::now()
-                .format(ARCHIVE_TIMESTAMP_FORMAT)
-                .to_string();
-            match archive_root_md(&replica_path, "SELF-FORGET", &ts) {
-                Ok(Some(p)) => log::info!(
-                    "[mailbox] self-handoff-and-switch: archived SELF-FORGET.md -> {}",
-                    p.display()
-                ),
-                Ok(None) => {}
-                Err(e) => log::warn!(
-                    "[mailbox] self-handoff-and-switch: SELF-FORGET.md archive failed for session \
-                    {} (non-fatal): {}",
-                    session_id,
-                    e
-                ),
-            }
+            let forgotten_summary =
+                archive_self_forget(&replica_path, session_id, "self-handoff-and-switch");
 
             #[cfg(not(test))]
             {
@@ -295,34 +251,10 @@ impl MailboxPoller {
             }
         };
 
-        // 4. D1 identity gate. No coding-agent identity means no recipe to respawn, and passing
-        //    None would hand the choice back to `resolve_restart_selected_agent_id`.
-        let recipe = match resolve_self_restart_recipe(
-            session.agent_id.as_deref(),
-            session.effective_profile.as_deref(),
-            session.requested_profile.as_deref(),
-        ) {
+        let recipe = match resolve_self_restart_request(&session) {
             Ok(recipe) => recipe,
             Err(reason) => return self.reject_message(path, msg, &reason).await,
         };
-
-        // 5. Existence gate on the session's OWN cwd. Restart runs no replica validation, so the
-        //    session cwd is the only correct source for a Root Agent or an origin matrix agent.
-        let handoff_path =
-            std::path::Path::new(&session.working_directory).join(SELF_HANDOFF_ROOT_NAME);
-        if !handoff_path.is_file() {
-            return self
-                .reject_message(
-                    path,
-                    msg,
-                    &format!(
-                        "self-handoff-and-restart: SELF-HANDOFF.md not found in your root ({}); \
-                        write it before requesting self-handoff-and-restart.",
-                        session.working_directory
-                    ),
-                )
-                .await;
-        }
 
         // 6. Launchability pre-flight on the pinned recipe, through the VERY function the restart
         //    transaction calls (`commands/session.rs`), so the pre-flight cannot disagree with the
@@ -359,23 +291,8 @@ impl MailboxPoller {
             // 8. Archive SELF-FORGET.md so the next cycle starts fresh. Best-effort, log-only on
             //    failure, in ALL cfgs (as `handle_self_clear` does) so the harness can assert it.
             let root = std::path::Path::new(&session.working_directory);
-            let forgotten_summary = capture_self_forget_summary(root);
-            let ts = chrono::Local::now()
-                .format(ARCHIVE_TIMESTAMP_FORMAT)
-                .to_string();
-            match archive_root_md(root, "SELF-FORGET", &ts) {
-                Ok(Some(p)) => log::info!(
-                    "[mailbox] self-handoff-and-restart: archived SELF-FORGET.md -> {}",
-                    p.display()
-                ),
-                Ok(None) => {} // no SELF-FORGET.md; nothing to archive
-                Err(e) => log::warn!(
-                    "[mailbox] self-handoff-and-restart: SELF-FORGET.md archive failed for session \
-                    {} (non-fatal): {}",
-                    session_id,
-                    e
-                ),
-            }
+            let forgotten_summary =
+                archive_self_forget(root, session_id, "self-handoff-and-restart");
 
             // 9. Spawn the deferred two-phase sustained-idle gate (detached; never blocks the
             //    poller). Gated under cfg(not(test)) exactly like the other two handlers.
@@ -953,4 +870,79 @@ fn validate_self_restart_spawn(
         }
     }
     Ok(())
+}
+
+fn resolve_self_switch_request(
+    settings: &AppSettings,
+    session: &SessionInfo,
+    msg: &OutboxMessage,
+) -> Result<(PathBuf, SelfSwitchTargets), String> {
+    let session_cwd = PathBuf::from(&session.working_directory);
+    let replica_path = validate_self_switch_wg_replica(settings, &session_cwd)?;
+    let targets = resolve_switch_targets(
+        settings,
+        &replica_path,
+        msg.switch_coding_agent.as_deref(),
+        msg.switch_profile.as_deref(),
+        session.agent_id.as_deref(),
+        session.effective_profile.as_deref(),
+        session.requested_profile.as_deref(),
+    )?;
+    validate_self_switch_spawn(settings, &replica_path, &targets)?;
+
+    let handoff_path = replica_path.join(SELF_HANDOFF_ROOT_NAME);
+    if !handoff_path.is_file() {
+        return Err(format!(
+            "self-handoff-and-switch: SELF-HANDOFF.md not found in your root ({}); \
+            write it before requesting self-handoff-and-switch.",
+            replica_path.display()
+        ));
+    }
+    Ok((replica_path, targets))
+}
+
+fn resolve_self_restart_request(session: &SessionInfo) -> Result<SelfRestartRecipe, String> {
+    // 4. D1 identity gate. No coding-agent identity means no recipe to respawn, and passing
+    //    None would hand the choice back to `resolve_restart_selected_agent_id`.
+    let recipe = resolve_self_restart_recipe(
+        session.agent_id.as_deref(),
+        session.effective_profile.as_deref(),
+        session.requested_profile.as_deref(),
+    )?;
+
+    // 5. Existence gate on the session's OWN cwd. Restart runs no replica validation, so the
+    //    session cwd is the only correct source for a Root Agent or an origin matrix agent.
+    let handoff_path =
+        std::path::Path::new(&session.working_directory).join(SELF_HANDOFF_ROOT_NAME);
+    if !handoff_path.is_file() {
+        return Err(format!(
+            "self-handoff-and-restart: SELF-HANDOFF.md not found in your root ({}); \
+            write it before requesting self-handoff-and-restart.",
+            session.working_directory
+        ));
+    }
+    Ok(recipe)
+}
+
+fn archive_self_forget(root: &Path, session_id: Uuid, action: &str) -> Option<ForgottenSummary> {
+    let forgotten_summary = capture_self_forget_summary(root);
+    let ts = chrono::Local::now()
+        .format(ARCHIVE_TIMESTAMP_FORMAT)
+        .to_string();
+    match archive_root_md(root, "SELF-FORGET", &ts) {
+        Ok(Some(p)) => log::info!(
+            "[mailbox] {}: archived SELF-FORGET.md -> {}",
+            action,
+            p.display()
+        ),
+        Ok(None) => {}
+        Err(e) => log::warn!(
+            "[mailbox] {}: SELF-FORGET.md archive failed for session \
+            {} (non-fatal): {}",
+            action,
+            session_id,
+            e
+        ),
+    }
+    forgotten_summary
 }
