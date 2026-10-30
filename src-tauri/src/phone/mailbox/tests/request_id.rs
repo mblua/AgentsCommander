@@ -542,6 +542,12 @@ fn assert_delivered_work_terminal(
 async fn delivered_case(raw: &str, valid: bool, claimed: bool, failure: u8) {
     let fixture = make_mailbox_fixture();
     let app = app_handle(&fixture.app);
+    let sessions = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+    let coordinator = crate::session::selection::SelectionCoordinator::new(
+        Arc::clone(sessions.inner()),
+        tokio_util::sync::CancellationToken::new(),
+    );
+    assert!(app.manage(coordinator));
     // Two parents below TempDir contain every traversal in this table, even on pin.
     let temp = tempfile::TempDir::new().unwrap();
     let root = temp.path();
