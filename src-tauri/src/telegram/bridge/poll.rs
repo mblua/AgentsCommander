@@ -2,6 +2,7 @@ use super::PollNetworkErrorState;
 use super::PollNetworkLogAction;
 use super::TelegramRuntime;
 use super::{BridgeLogger, TelegramErrKind};
+use crate::config::settings::TelegramNetworkPollErrorLogging;
 use crate::network::NetworkBackoff;
 use crate::network::OutboundNetwork;
 use crate::pty::manager::PtyManager;
@@ -29,7 +30,7 @@ pub(super) async fn poll_task(
 ) {
     let mut logger = BridgeLogger::new(&session_id_str);
     let mut offset: i64 = 0;
-    let network_error_policy = runtime.poll_error_policy().await;
+    let network_error_policy: TelegramNetworkPollErrorLogging = runtime.poll_error_policy().await;
     let mut network_error_state = PollNetworkErrorState::new();
     let mut poll_backoff = new_poll_backoff(&session_id_str);
 
