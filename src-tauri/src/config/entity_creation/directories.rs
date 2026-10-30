@@ -195,7 +195,7 @@ pub(crate) fn agent_matrix_candidates(root: &Path) -> impl Iterator<Item = PathB
 }
 
 pub(crate) fn agent_matrix_role(matrix: &Path) -> Option<String> {
-    let role = matrix.join("Role.md");
+    let role = matrix.join(super::roles::ROLE_FILE_NAME);
     if disk::agent_matrix_role_present(&role) {
         crate::filesystem::documents::read_repository_role(&role).ok()
     } else {

@@ -66,6 +66,28 @@
         "files": 0,
         "sites": 0
       }
+    },
+    {
+      "id": "AgentCreation/Role",
+      "name": "Role.md",
+      "scope": "src-tauri/src/config/entity_creation/",
+      "owner": "src-tauri/src/config/entity_creation/roles.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
+      "id": "RoomCreation/InitialTask",
+      "name": "TASK.md",
+      "scope": "src-tauri/src/cli/task_ops/",
+      "owner": "src-tauri/src/cli/task_ops/initialization.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
     }
   ]
 }
