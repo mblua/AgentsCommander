@@ -640,6 +640,68 @@ fn normalize_launch_path_for_spawn(launch_path: Option<&Path>) -> Option<PathBuf
     launch_path.map(crate::path_utils::normalize_windows_verbatim_path_buf)
 }
 
+fn resolve_spawn_command_placeholders(
+    agent: &AgentConfig,
+    profile_resolution: &ProfileResolution,
+    effective_command: &str,
+    launch_path: Option<&Path>,
+    seed_active: bool,
+) -> Result<(NormalizedAgentCommand, Option<PlaceholderContext>), String> {
+    let normalized = normalize_legacy_agent_command(effective_command).map_err(|e| {
+        format!(
+            "Invalid profile command for '{}:{}': {}. command={:?}",
+            agent.id, profile_resolution.effective_profile, e, effective_command
+        )
+    })?;
+    let mut command_tokens = Vec::with_capacity(normalized.shell_args.len() + 1);
+    command_tokens.push(normalized.shell);
+    command_tokens.extend(normalized.shell_args);
+    let needs_placeholder_context = command_tokens
+        .iter()
+        .any(|value| value_contains_ac_placeholder(value))
+        || agent
+            .envs
+            .iter()
+            .filter(|row| row.enabled)
+            .any(|row| value_contains_ac_placeholder(&row.value))
+        || profile_resolution
+            .cell
+            .env
+            .values()
+            .any(|value| value_contains_ac_placeholder(value))
+        // #598: an active seed needs the placeholder context (for the dest, the
+        // tier candidates, and content substitution). The `launch_path.is_some()`
+        // guard keeps a configured seed from turning a no-path build (e.g.
+        // prevalidation) into a hard error at the `?` below.
+        || (seed_active && launch_path.is_some());
+    let placeholder_context = if needs_placeholder_context {
+        Some(
+            launch_path
+                .ok_or_else(|| ac_placeholder_error().to_string())
+                .and_then(placeholder_context_for_launch_root)?,
+        )
+    } else {
+        None
+    };
+    let expanded_command_tokens = if let Some(context) = placeholder_context.as_ref() {
+        expand_placeholders_in_args(&command_tokens, context)?
+    } else {
+        for token in &command_tokens {
+            reject_unexpanded_markers(token, "Agent command", false)?;
+        }
+        command_tokens
+    };
+    let Some((shell, shell_args)) = expanded_command_tokens.split_first() else {
+        return Err("agent command is empty".to_string());
+    };
+    let shell = shell.clone();
+    let shell_args = shell_args.to_vec();
+    Ok((
+        NormalizedAgentCommand { shell, shell_args },
+        placeholder_context,
+    ))
+}
+
 pub(crate) fn resolve_agent_spawn_command(
     settings: &AppSettings,
     agent_id: &str,
@@ -710,55 +772,14 @@ pub(crate) fn resolve_agent_spawn_command(
         merged_profile_env.len(),
     );
 
-    let normalized = normalize_legacy_agent_command(&effective_command).map_err(|e| {
-        format!(
-            "Invalid profile command for '{}:{}': {}. command={:?}",
-            agent.id, profile_resolution.effective_profile, e, effective_command
-        )
-    })?;
-    let mut command_tokens = Vec::with_capacity(normalized.shell_args.len() + 1);
-    command_tokens.push(normalized.shell);
-    command_tokens.extend(normalized.shell_args);
-    let needs_placeholder_context = command_tokens
-        .iter()
-        .any(|value| value_contains_ac_placeholder(value))
-        || agent
-            .envs
-            .iter()
-            .filter(|row| row.enabled)
-            .any(|row| value_contains_ac_placeholder(&row.value))
-        || profile_resolution
-            .cell
-            .env
-            .values()
-            .any(|value| value_contains_ac_placeholder(value))
-        // #598: an active seed needs the placeholder context (for the dest, the
-        // tier candidates, and content substitution). The `launch_path.is_some()`
-        // guard keeps a configured seed from turning a no-path build (e.g.
-        // prevalidation) into a hard error at the `?` below.
-        || (seed_choice.is_some() && launch_path.is_some());
-    let placeholder_context = if needs_placeholder_context {
-        Some(
-            launch_path
-                .ok_or_else(|| ac_placeholder_error().to_string())
-                .and_then(placeholder_context_for_launch_root)?,
-        )
-    } else {
-        None
-    };
-    let expanded_command_tokens = if let Some(context) = placeholder_context.as_ref() {
-        expand_placeholders_in_args(&command_tokens, context)?
-    } else {
-        for token in &command_tokens {
-            reject_unexpanded_markers(token, "Agent command", false)?;
-        }
-        command_tokens
-    };
-    let Some((shell, shell_args)) = expanded_command_tokens.split_first() else {
-        return Err("agent command is empty".to_string());
-    };
-    let shell = shell.clone();
-    let shell_args = shell_args.to_vec();
+    let (NormalizedAgentCommand { shell, shell_args }, placeholder_context) =
+        resolve_spawn_command_placeholders(
+            agent,
+            &profile_resolution,
+            &effective_command,
+            launch_path,
+            seed_choice.is_some(),
+        )?;
 
     let agent_env = collect_agent_env(agent, placeholder_context.as_ref())?;
     let profile_env = collect_profile_env(
