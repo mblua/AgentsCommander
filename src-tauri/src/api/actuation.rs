@@ -12,12 +12,14 @@
 
 use std::path::Path;
 
-use tauri::Manager;
-
 use crate::api::message_store::INLINE_BODY_MAX_BYTES;
 use crate::config::settings::SettingsState;
 
 use super::error::ApiError;
+
+pub(crate) trait ApiSendSettings {
+    fn api_send_settings(&self) -> SettingsState;
+}
 
 /// Reject either direction of a Root-Agent send (§0.5 HIGH-3). Pure, so it is
 /// unit-testable without an `AppHandle`.
@@ -119,8 +121,8 @@ fn resolve_send_file_path(
 }
 
 /// Resolve and authorize the API send target without delivering.
-pub async fn resolve_api_send_target<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub async fn resolve_api_send_target<H: ApiSendSettings + ?Sized>(
+    app: &H,
     from: &str,
     to: &str,
 ) -> Result<String, ApiError> {
@@ -128,7 +130,7 @@ pub async fn resolve_api_send_target<R: tauri::Runtime>(
 
     // Project paths: the same source `process_message` reads (SettingsState).
     let paths = {
-        let state = app.state::<SettingsState>();
+        let state = app.api_send_settings();
         let settings = state
             .current_read()
             .await

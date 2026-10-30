@@ -3,15 +3,14 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use tauri::{AppHandle, Emitter};
-use tauri_plugin_clipboard_manager::ClipboardExt;
 use uuid::Uuid;
+
+use crate::screenshot::ScreenshotHost;
 
 use super::{
     destroy_overlays_for_capture, is_link_or_reparse, revalidate_replica_target,
     ActiveScreenshotCapture, ScreenshotCaptureEvent, ScreenshotCaptureLifecycle,
-    ScreenshotCaptureResult, ScreenshotCaptureState, ScreenshotSelection, FAILED_EVENT,
-    MAX_COLLISION_SUFFIX, SAVED_EVENT,
+    ScreenshotCaptureResult, ScreenshotCaptureState, ScreenshotSelection, MAX_COLLISION_SUFFIX,
 };
 
 // ── Confirm ────────────────────────────────────────────────────────────────
@@ -20,8 +19,8 @@ use super::{
 /// resolved replica root, copy the path to the clipboard, and tear down overlays.
 /// The async mutex is dropped before any file I/O. Any post-take failure destroys
 /// overlays, deletes a partial PNG, and emits a failure event.
-pub async fn confirm_selection(
-    app: &AppHandle,
+pub async fn confirm_selection<H: ScreenshotHost>(
+    app: &H,
     state: &ScreenshotCaptureState,
     selection: ScreenshotSelection,
 ) -> Result<ScreenshotCaptureResult, String> {
@@ -50,14 +49,23 @@ pub async fn confirm_selection(
 
     let capture_id = capture.id;
     let result = save_selection(capture, &selection).await;
+    complete_confirmation(app, state, capture_id, result).await
+}
+
+pub(crate) async fn complete_confirmation<H: ScreenshotHost>(
+    app: &H,
+    state: &ScreenshotCaptureState,
+    capture_id: Uuid,
+    result: Result<ScreenshotCaptureResult, (Option<PathBuf>, String)>,
+) -> Result<ScreenshotCaptureResult, String> {
     let outcome = match result {
         Ok(saved) => {
             // Best-effort clipboard copy; the PNG already exists, so a clipboard
             // failure must not fail the capture (plan §E).
-            if let Err(e) = app.clipboard().write_text(saved.path.clone()) {
+            if let Err(e) = app.copy_path(saved.path.clone()) {
                 log::warn!("[screenshot] clipboard copy failed: {e}");
             }
-            let _ = app.emit(SAVED_EVENT, saved.clone());
+            app.capture_saved(saved.clone());
             destroy_overlays_for_capture(app, capture_id);
             Ok(saved)
         }
@@ -66,12 +74,9 @@ pub async fn confirm_selection(
                 let _ = std::fs::remove_file(&path);
             }
             destroy_overlays_for_capture(app, capture_id);
-            let _ = app.emit(
-                FAILED_EVENT,
-                ScreenshotCaptureEvent {
-                    message: msg.clone(),
-                },
-            );
+            app.capture_failed(ScreenshotCaptureEvent {
+                message: msg.clone(),
+            });
             Err(msg)
         }
     };

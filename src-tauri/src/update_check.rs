@@ -18,7 +18,17 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
+#[cfg(test)]
+use tauri::Manager;
+
+pub trait UpdateEvents {
+    fn npm_update_available(&self, info: UpdateInfo);
+}
+
+pub trait UpdateCheckHost: UpdateEvents + Send + Sync {
+    fn update_settings(&self) -> crate::config::settings::SettingsState;
+    fn outbound_network(&self) -> crate::network::OutboundNetwork;
+}
 
 /// The published package. Used verbatim in the upgrade command shown to the
 /// user (literal `/`, because that is exactly what they type into a shell).
@@ -193,10 +203,10 @@ fn upgrade_command() -> String {
 /// caller: own no-ops log at debug; a registry that responds with a bad/
 /// unparseable body logs at warn (see `fetch_latest`, H1); everything is
 /// swallowed so startup is never affected.
-pub async fn run_startup_check(app: AppHandle, cache_state: Arc<OnceLock<UpdateInfo>>) {
+pub async fn run_startup_check<H: UpdateCheckHost>(app: H, cache_state: Arc<OnceLock<UpdateInfo>>) {
     // 1. Read the settings toggle (default ON) once.
     let enabled = {
-        let settings_state = app.state::<crate::config::settings::SettingsState>();
+        let settings_state = app.update_settings();
         let s = settings_state.read().await;
         s.npm_update_notifications_enabled
     };
@@ -247,7 +257,7 @@ pub async fn run_startup_check(app: AppHandle, cache_state: Arc<OnceLock<UpdateI
             upgrade_command: upgrade_command(),
         };
         let _ = cache_state.set(info.clone());
-        let _ = app.emit("npm_update_available", &info);
+        app.npm_update_available(info.clone());
         log::info!(
             "[update-check] update available: {} -> {}",
             info.current_version,
@@ -268,8 +278,8 @@ pub async fn run_startup_check(app: AppHandle, cache_state: Arc<OnceLock<UpdateI
 /// wrong URL or a future registry-shape change leaves a breadcrumb in app.log.
 /// This warn-on-bad-response posture is the safety net for the no-test-gate
 /// path: plain offline stays silent, a broken contract is loud.
-async fn fetch_latest(app: &AppHandle) -> Option<String> {
-    let network = app.state::<crate::network::OutboundNetwork>();
+async fn fetch_latest<H: UpdateCheckHost>(app: &H) -> Option<String> {
+    let network = app.outbound_network();
     let _permit = network.acquire("update_check.dist_tags").await.ok()?;
     let resp = tokio::time::timeout(
         Duration::from_secs(REQUEST_TIMEOUT_SECS),
@@ -473,24 +483,24 @@ pub(crate) async fn run_remote_blocking_menus_check(
 
 /// #1925 (D3) - read the remote flag once, exactly as `run_startup_check` reads its own
 /// flag, then hand the rest to `run_remote_blocking_menus_check`.
-pub(crate) async fn run_remote_blocking_menus_for_app<R: tauri::Runtime>(
-    app: &AppHandle<R>,
+pub(crate) async fn run_remote_blocking_menus_for_app<H: UpdateCheckHost>(
+    app: &H,
     settings_path: &Path,
     url: &str,
     now: DateTime<Utc>,
 ) -> RemoteMenusCheck {
     let enabled = {
-        let settings_state = app.state::<crate::config::settings::SettingsState>();
+        let settings_state = app.update_settings();
         let settings = settings_state.read().await;
         settings.remote_blocking_menus_enabled
     };
-    let network = app.state::<crate::network::OutboundNetwork>();
+    let network = app.outbound_network();
     run_remote_blocking_menus_check(&network, settings_path, enabled, url, now).await
 }
 
 /// #1925 - the detached startup wrapper. Fail-silent: an accepted download logs one info
 /// line, every other outcome logs at debug, and this never returns an error to the caller.
-pub async fn run_remote_blocking_menus_startup(app: AppHandle) {
+pub async fn run_remote_blocking_menus_startup<H: UpdateCheckHost>(app: H) {
     let Some(settings_path) = crate::config::settings::settings_path() else {
         log::debug!("[remote-menus] no settings path; skipping the remote download");
         return;
@@ -611,17 +621,17 @@ pub(crate) async fn run_remote_agent_help_check(
 
 /// #2133 - the detached startup wrapper. Fail-silent: an accepted download logs one info line,
 /// every other outcome logs at debug, and this never returns an error to the caller.
-pub async fn run_remote_agent_help_startup(app: AppHandle) {
+pub async fn run_remote_agent_help_startup<H: UpdateCheckHost>(app: H) {
     let Some(settings_path) = crate::config::settings::settings_path() else {
         log::debug!("[agent-help] no settings path; skipping the remote download");
         return;
     };
     let enabled = {
-        let settings_state = app.state::<crate::config::settings::SettingsState>();
+        let settings_state = app.update_settings();
         let settings = settings_state.read().await;
         settings.remote_agent_help_enabled
     };
-    let network = app.state::<crate::network::OutboundNetwork>();
+    let network = app.outbound_network();
     let outcome = run_remote_agent_help_check(
         &network,
         &settings_path,

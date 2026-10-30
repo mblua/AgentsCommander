@@ -618,3 +618,172 @@ impl ApiServerTask {
 
 #[cfg(test)]
 mod tests;
+
+impl testability::ui_automation::UiAutomationHost for tauri::AppHandle {
+    fn available_windows(&self) -> Vec<String> {
+        testability::ui_automation::liveness::available_window_labels(self)
+    }
+    fn spawn_background(&self, future: futures::future::BoxFuture<'static, ()>) {
+        tauri::async_runtime::spawn(future);
+    }
+    fn backend_request<'a>(
+        &'a self,
+        request: &'a testability::ui_automation::UiAutomationRequest,
+    ) -> futures::future::BoxFuture<'a, testability::ui_automation::UiAutomationResponse> {
+        Box::pin(
+            testability::ui_automation::backend_watchdog::handle_backend_request(self, request),
+        )
+    }
+}
+
+impl<R: tauri::Runtime> testability::ui_automation::backend_watchdog::BackendWatchdogHost
+    for tauri::AppHandle<R>
+{
+    fn resource_monitor(&self) -> Option<Arc<resource_monitor::ResourceMonitorState>> {
+        use tauri::Manager;
+        self.try_state::<Arc<resource_monitor::ResourceMonitorState>>()
+            .map(|state| Arc::clone(state.inner()))
+    }
+    fn selection_coordinator(&self) -> Option<session::selection::SelectionCoordinator> {
+        use tauri::Manager;
+        self.try_state::<session::selection::SelectionCoordinator>()
+            .map(|state| state.inner().clone())
+    }
+}
+
+impl<R: tauri::Runtime> update_check::UpdateCheckHost for tauri::AppHandle<R> {
+    fn update_settings(&self) -> config::settings::SettingsState {
+        Clone::clone(tauri::Manager::state::<SettingsState>(self).inner())
+    }
+    fn outbound_network(&self) -> network::OutboundNetwork {
+        Clone::clone(tauri::Manager::state::<network::OutboundNetwork>(self).inner())
+    }
+}
+
+impl restore::RestoreStartupTask for tauri::async_runtime::JoinHandle<()> {
+    type Error = tauri::Error;
+    fn spawn_owned(future: futures::future::BoxFuture<'static, ()>) -> Self {
+        tauri::async_runtime::spawn(future)
+    }
+}
+
+impl resource_monitor::watchdog::ResourceWatchdogTaskScope for ShutdownSignal {
+    fn token(&self) -> &tokio_util::sync::CancellationToken {
+        ShutdownSignal::token(self)
+    }
+    fn spawn_owned(&self, future: futures::future::BoxFuture<'static, ()>) {
+        tauri::async_runtime::spawn(future);
+    }
+}
+
+impl TauriQuitHost {
+    pub fn new(app: tauri::AppHandle) -> Self {
+        use tauri::Manager;
+        let emit_app = app.clone();
+        let windows = app.clone();
+        Self::from_callbacks(
+            Box::new(move |label, event, payload| {
+                events::quit_gate::emit_to(&emit_app, label, event, payload)
+            }),
+            Box::new(move || {
+                // Never touches `was_detached`: restore reads the session flag, not
+                // the live window set, so detached sessions restore detached.
+                let mut closed = Vec::new();
+                for (label, window) in windows.webview_windows() {
+                    if !label.starts_with("terminal-") {
+                        continue;
+                    }
+                    if let Err(e) = window.destroy() {
+                        log::warn!("[shutdown] detached window destroy failed: {label}: {e}");
+                    }
+                    closed.push(label);
+                }
+                closed
+            }),
+            Box::new(move |code| {
+                // SINGLE production exit site for the quit gate. Everything else routes
+                // its Exiting decision through quit_gate_run, which calls this once
+                // per terminal Exiting (see try_claim_exit).
+                app.exit(code);
+            }),
+        )
+    }
+}
+
+use tauri::Manager;
+
+impl app_run::exit::ExitHost for tauri::AppHandle {
+    fn quit_window_gone(&self, label: &str) {
+        if let Some(gate) = self.try_state::<Arc<QuitGate>>() {
+            let gate = Arc::clone(gate.inner());
+            quit_gate_window_gone(&gate, &TauriQuitHost::new(self.clone()), label);
+        }
+    }
+    fn optional_pty(&self) -> Option<Arc<Mutex<PtyManager>>> {
+        self.try_state::<Arc<Mutex<PtyManager>>>()
+            .map(|state| Arc::clone(state.inner()))
+    }
+    fn required_pty(&self) -> Arc<Mutex<PtyManager>> {
+        Arc::clone(self.state::<Arc<Mutex<PtyManager>>>().inner())
+    }
+    fn context_alert_monitor(&self) -> Option<Arc<session::context_alerts::ContextAlertMonitor>> {
+        self.try_state::<Arc<session::context_alerts::ContextAlertMonitor>>()
+            .map(|monitor| Arc::clone(monitor.inner()))
+    }
+    fn destroy_main_dependents(&self) {
+        if let Some(rm) = self.get_webview_window("resource-monitor") {
+            if let Err(e) = rm.destroy() {
+                log::warn!("[shutdown] RM window destroy failed: {e}");
+            }
+        }
+        let destroyed = TauriQuitHost::new(self.clone())
+            .close_detached_terminals()
+            .len();
+        if destroyed > 0 {
+            log::info!(
+                "[shutdown] main destroyed: destroyed {} detached terminal window(s)",
+                destroyed
+            );
+        }
+    }
+    fn overlay_destroyed(&self, label: String) {
+        let app = self.clone();
+        tauri::async_runtime::spawn(async move {
+            screenshot::handle_overlay_window_destroyed(app, label).await;
+        });
+    }
+    fn spawn_background<F: std::future::Future<Output = ()> + Send + 'static>(&self, future: F) {
+        tauri::async_runtime::spawn(future);
+    }
+    fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        tauri::async_runtime::block_on(future)
+    }
+}
+
+pub(crate) fn exit_callback<S, F, FF>(
+    ctx: app_run::exit::ExitCtx<S>,
+    close_spec: F,
+) -> impl FnMut(&tauri::AppHandle, tauri::RunEvent)
+where
+    S: Clone + Send + 'static,
+    F: Fn(S) -> FF + Clone + Send + 'static,
+    FF: std::future::Future<Output = ()> + Send + 'static,
+{
+    let policy = app_run::exit::ExitPolicy {
+        cleanup_budget_secs: SHUTDOWN_CLEANUP_BUDGET_SECS,
+        persistence_allowed: shutdown_persistence_allowed,
+        retained_diagnostics: combined_shutdown_retained_diagnostics_with_scanner,
+    };
+    move |host, event| {
+        let event = match event {
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Destroyed,
+                ..
+            } => app_run::exit::RunExitEvent::WindowDestroyed(label),
+            tauri::RunEvent::Exit => app_run::exit::RunExitEvent::Exit,
+            _ => return,
+        };
+        app_run::exit::on_run_event(host, event, &ctx, &policy, &close_spec);
+    }
+}

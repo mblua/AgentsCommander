@@ -1,51 +1,16 @@
 //! Overlay windows and overlay IPC.
 
-use tauri::{AppHandle, Manager};
 use uuid::Uuid;
+
+use crate::screenshot::{
+    MonitorGeometry, OverlayPlacement, OverlayWindowSpec, PlacementFrame, ScreenshotHost,
+};
 
 use super::{
     CapturedMonitor, ScreenshotCaptureLifecycle, ScreenshotCaptureState, ScreenshotOverlayState,
 };
 
 // ── Overlay windows ────────────────────────────────────────────────────────
-
-/// Where an overlay window goes. `frame` names the coordinate space `x`, `y`,
-/// `width` and `height` are expressed in.
-pub(super) struct OverlayPlacement {
-    pub(super) label: String,
-    pub(super) monitor_id: u32,
-    /// Physical pixels on `PlacementFrame::Physical`, logical points on
-    /// `PlacementFrame::Logical`.
-    pub(super) x: i32,
-    pub(super) y: i32,
-    pub(super) width: u32,
-    pub(super) height: u32,
-    pub(super) scale_factor: f64,
-    pub(super) frame: PlacementFrame,
-}
-
-/// A monitor as either source can describe it. `scale` is that source's own
-/// scale factor.
-///
-/// The rule this type exists to enforce (#2173): **tao owns the screen
-/// coordinate space** — every value handed to Tauri is derived from
-/// `tauri::Monitor` alone — and **xcap owns pixels** — the captured bitmap stays
-/// the sole authority for the crop. The xcap scale factor is used for exactly
-/// one thing: converting the bitmap size to points, so that an xcap monitor can
-/// be compared to a tao monitor. The two scales disagree on macOS and the
-/// disagreement is not reconcilable by a factor: xcap reports
-/// `pixel_width / CGDisplayBounds.width` (1.714 in "More Space") while tao
-/// reports `backingScaleFactor` (2.0) for the same display. Points are the only
-/// frame in which both describe the monitor exactly.
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct MonitorGeometry {
-    pub(super) name: Option<String>,
-    /// The source's own frame: physical pixels for tao, points for xcap on macOS.
-    pub(super) position: (i32, i32),
-    /// tao: the physical monitor size. xcap: the captured bitmap, always pixels.
-    pub(super) size: (u32, u32),
-    pub(super) scale: f64,
-}
 
 /// A monitor's frame in logical points — the only cross-source comparison space.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -65,16 +30,6 @@ pub(super) struct PlacementGeometry {
     pub(super) height: u32,
     pub(super) scale_factor: f64,
     pub(super) frame: PlacementFrame,
-}
-
-/// The coordinate frame overlay geometry is expressed in. macOS must use
-/// `Logical`: its two sources disagree on the physical scale, so points are the
-/// only frame where `tauri::Monitor` describes the monitor exactly. Windows and
-/// Linux keep `Physical`, where the two sources agree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PlacementFrame {
-    Physical,
-    Logical,
 }
 
 pub(super) const fn placement_frame() -> PlacementFrame {
@@ -150,19 +105,19 @@ fn logical_origin_distance(a: &LogicalFrame, b: &LogicalFrame) -> f64 {
 /// and size both fall inside the rounding tolerance, else fall back to the
 /// nearest origin, which is what shipped before.
 pub(super) fn match_monitor(
-    tauri: &[MonitorGeometry],
+    window_monitors: &[MonitorGeometry],
     captured: &MonitorGeometry,
     frame: PlacementFrame,
 ) -> Option<usize> {
     if frame == PlacementFrame::Physical {
-        if let Some(idx) = tauri
+        if let Some(idx) = window_monitors
             .iter()
             .position(|tm| tm.name.is_some() && tm.name == captured.name)
         {
             return Some(idx);
         }
         let (cx, cy) = captured.position;
-        return tauri
+        return window_monitors
             .iter()
             .enumerate()
             .min_by_key(|(_, tm)| {
@@ -174,7 +129,7 @@ pub(super) fn match_monitor(
     }
 
     let want = xcap_logical_frame(captured);
-    if let Some(idx) = tauri.iter().position(|tm| {
+    if let Some(idx) = window_monitors.iter().position(|tm| {
         let got = tauri_logical_frame(tm);
         logical_origin_distance(&got, &want) <= LOGICAL_ORIGIN_TOLERANCE_PT
             && (got.width - want.width).abs() + (got.height - want.height).abs()
@@ -182,7 +137,7 @@ pub(super) fn match_monitor(
     }) {
         return Some(idx);
     }
-    tauri
+    window_monitors
         .iter()
         .enumerate()
         .min_by(|(_, a), (_, b)| {
@@ -209,11 +164,11 @@ impl PlacementGeometry {
 /// for every Tauri coordinate — and fall back to the xcap geometry when nothing
 /// matched.
 pub(super) fn build_placement(
-    tauri: Option<&MonitorGeometry>,
+    window_monitor: Option<&MonitorGeometry>,
     captured: &MonitorGeometry,
     frame: PlacementFrame,
 ) -> PlacementGeometry {
-    match (frame, tauri) {
+    match (frame, window_monitor) {
         (PlacementFrame::Physical, Some(tm)) => PlacementGeometry {
             x: tm.position.0,
             y: tm.position.1,
@@ -242,27 +197,13 @@ pub(super) fn build_placement(
 /// Decide where each overlay goes. The adapter around the pure functions above:
 /// describe both sides as `MonitorGeometry`, pair them, and build the placement
 /// in this target's frame.
-pub(super) fn build_placements(
-    app: &AppHandle,
+pub(super) fn build_placements<H: ScreenshotHost>(
+    app: &H,
     capture_id: Uuid,
     monitors: &[CapturedMonitor],
 ) -> Vec<OverlayPlacement> {
     let frame = placement_frame();
-    let tauri_monitors: Vec<MonitorGeometry> = app
-        .available_monitors()
-        .unwrap_or_default()
-        .iter()
-        .map(|tm| {
-            let pos = tm.position();
-            let size = tm.size();
-            MonitorGeometry {
-                name: tm.name().cloned(),
-                position: (pos.x, pos.y),
-                size: (size.width, size.height),
-                scale: tm.scale_factor(),
-            }
-        })
-        .collect();
+    let tauri_monitors = app.available_monitors();
     monitors
         .iter()
         .map(|m| {
@@ -356,13 +297,11 @@ pub(super) const fn overlay_window_traits() -> OverlayWindowTraits {
 /// Resource Monitor builder (`commands::window`): logical inner size/position from
 /// the monitor scale, corrected to physical bounds post-build. On any failure the
 /// caller clears state and destroys already-created overlays.
-pub(super) fn open_overlay_windows(
-    app: &AppHandle,
+pub(super) fn open_overlay_windows<H: ScreenshotHost>(
+    app: &H,
     capture_id: Uuid,
     placements: &[OverlayPlacement],
 ) -> Result<(), String> {
-    use tauri::{WebviewUrl, WebviewWindowBuilder};
-
     let traits = overlay_window_traits();
     for p in placements {
         // Builder-time size/position are logical points on every target. On the
@@ -384,80 +323,29 @@ pub(super) fn open_overlay_windows(
             "index.html?window=screenshot-overlay&captureId={capture_id}&monitorId={}",
             p.monitor_id
         );
-        let builder = WebviewWindowBuilder::new(app, &p.label, WebviewUrl::App(url.into()))
-            .title("Screenshot Capture")
-            .decorations(false);
-        // Tauri gates `transparent` behind `macos-private-api` on macOS; the
-        // overlay paints an opaque frozen image, so transparency is unnecessary
-        // there.
-        #[cfg(not(target_os = "macos"))]
-        let builder = builder.transparent(true);
-        let window = builder
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .resizable(traits.resizable)
-            .focused(true)
-            .zoom_hotkeys_enabled(false)
-            .inner_size(logical_w, logical_h)
-            .position(logical_x, logical_y)
-            .build()
-            .map_err(|e| format!("failed to create overlay '{}': {e}", p.label))?;
-
-        // Post-build correction, in the placement's own frame. `Physical` is the
-        // historical path byte for byte; `Logical` is macOS, where the overlay
-        // must be stated in points or a scaled display mode undersizes it.
-        let (size, position) = match p.frame {
-            PlacementFrame::Physical => (
-                tauri::Size::Physical(tauri::PhysicalSize {
-                    width: p.width,
-                    height: p.height,
-                }),
-                tauri::Position::Physical(tauri::PhysicalPosition { x: p.x, y: p.y }),
-            ),
-            PlacementFrame::Logical => (
-                tauri::Size::Logical(tauri::LogicalSize {
-                    width: p.width as f64,
-                    height: p.height as f64,
-                }),
-                tauri::Position::Logical(tauri::LogicalPosition {
-                    x: p.x as f64,
-                    y: p.y as f64,
-                }),
-            ),
-        };
-        window
-            .set_size(size)
-            .map_err(|e| format!("failed to size overlay '{}': {e}", p.label))?;
-        window
-            .set_position(position)
-            .map_err(|e| format!("failed to position overlay '{}': {e}", p.label))?;
-
-        if traits.fullscreen {
-            // AFTER set_position: fullscreen targets the monitor the window
-            // is on. Tauri returns Ok(()) even when the WM declines (E5a), so
-            // this is best-effort and must not fail the capture.
-            if let Err(e) = window.set_fullscreen(true) {
-                log::warn!("[screenshot] overlay '{}' fullscreen refused: {e}", p.label);
-            }
-        }
+        app.open_overlay(&OverlayWindowSpec {
+            label: p.label.clone(),
+            url,
+            logical_width: logical_w,
+            logical_height: logical_h,
+            logical_x,
+            logical_y,
+            frame: p.frame,
+            x: p.x,
+            y: p.y,
+            width: p.width,
+            height: p.height,
+            resizable: traits.resizable,
+            fullscreen: traits.fullscreen,
+        })?;
     }
     Ok(())
 }
 
 /// Destroy every overlay window belonging to a capture id (by label prefix).
 /// Idempotent: missing windows are skipped. Returns how many were destroyed.
-pub(super) fn destroy_overlays_for_capture(app: &AppHandle, capture_id: Uuid) -> usize {
-    let prefix = format!("screenshot-overlay-{}-", capture_id.simple());
-    let mut destroyed = 0;
-    for (label, window) in app.webview_windows() {
-        if label.starts_with(&prefix) {
-            match window.destroy() {
-                Ok(()) => destroyed += 1,
-                Err(e) => log::warn!("[screenshot] failed to destroy overlay '{label}': {e}"),
-            }
-        }
-    }
-    destroyed
+pub(super) fn destroy_overlays_for_capture<H: ScreenshotHost>(app: &H, capture_id: Uuid) -> usize {
+    app.destroy_capture_overlays(capture_id)
 }
 
 // ── Overlay IPC ────────────────────────────────────────────────────────────
@@ -471,8 +359,8 @@ pub(super) enum OverlayDecision {
 /// Return overlay state for an `Active` capture matching `capture_id`. While the
 /// capture is still `Starting`, report that. For a stale id, destroy that id's
 /// overlays without touching a different active capture.
-pub async fn overlay_state(
-    app: &AppHandle,
+pub async fn overlay_state<H: ScreenshotHost>(
+    app: &H,
     state: &ScreenshotCaptureState,
     capture_id: &str,
     monitor_id: u32,

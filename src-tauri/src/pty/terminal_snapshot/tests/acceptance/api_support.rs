@@ -13,12 +13,14 @@ pub(super) fn direct_api_state(fixture: &AcceptanceFixture) -> crate::api::ApiSt
                 .expect("fixture message store is alive"),
         ),
         lockout: Arc::new(crate::api::auth::FailedAuthLockout::default()),
-        app_handle: fixture
-            .app
-            .as_ref()
-            .expect("fixture app is alive")
-            .handle()
-            .clone(),
+        resources: crate::api::ApiState::resources_from_native(
+            fixture
+                .app
+                .as_ref()
+                .expect("fixture app is alive")
+                .handle()
+                .clone(),
+        ),
         session_mgr: Arc::clone(&fixture.session_manager),
         pty_mgr: Arc::clone(&fixture.pty_manager),
     }

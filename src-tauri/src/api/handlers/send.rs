@@ -57,7 +57,8 @@ async fn handle_inner(
     let client = handlers::authenticate(state, headers, ip, SCOPE_SEND)?;
     let from = crate::api::identity::resolve_from(&client)?;
 
-    let target = actuation::resolve_api_send_target(&state.app_handle, &from, &req.to).await?;
+    let target =
+        actuation::resolve_api_send_target(state.resources.as_ref(), &from, &req.to).await?;
     let content_type = req
         .message
         .content_type

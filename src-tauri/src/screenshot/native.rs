@@ -22,16 +22,16 @@ use base64::Engine as _;
 use chrono::Utc;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder};
-use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
 use uuid::Uuid;
 
 use super::{
     HotkeyModifier, ParsedHotkey, ScreenshotCaptureEvent, ScreenshotCaptureResult,
-    ScreenshotCaptureState, ScreenshotHotkeyState, ScreenshotHotkeyStatus, ScreenshotOverlayState,
+    ScreenshotCaptureState, ScreenshotHost, ScreenshotHotkeyStatus, ScreenshotOverlayState,
     ScreenshotSelection,
 };
-use crate::session::manager::SessionManager;
+#[cfg(test)]
+use crate::screenshot::{MonitorGeometry, PlacementFrame};
 
 mod confirm;
 #[cfg(target_os = "linux")]
@@ -41,6 +41,8 @@ mod replica_root;
 #[cfg(target_os = "windows")]
 mod window_capture;
 
+#[cfg(test)]
+pub(crate) use confirm::complete_confirmation;
 pub use confirm::confirm_selection;
 #[cfg(test)]
 use confirm::{
@@ -56,7 +58,7 @@ pub use overlay::overlay_state;
 #[cfg(test)]
 use overlay::{
     build_placement, match_monitor, overlay_label, overlay_window_traits, placement_frame,
-    xcap_logical_frame, MonitorGeometry, OverlayWindowTraits, PlacementFrame, PlacementGeometry,
+    xcap_logical_frame, OverlayWindowTraits, PlacementGeometry,
 };
 use overlay::{build_placements, destroy_overlays_for_capture, open_overlay_windows};
 #[cfg(test)]
@@ -72,9 +74,6 @@ use window_capture::{capture_window_worker, BoundedPngWriter, TargetWindowCaptur
 /// Upper bound on the `-<n>.png` collision suffix, mirroring
 /// `phone::messaging::MAX_COLLISION_SUFFIX`.
 const MAX_COLLISION_SUFFIX: u32 = 9999;
-
-const SAVED_EVENT: &str = "screenshot_capture_saved";
-const FAILED_EVENT: &str = "screenshot_capture_failed";
 
 // ── Lifecycle + runtime state ──────────────────────────────────────────────
 
@@ -200,12 +199,15 @@ fn key_char_to_code(c: char) -> Option<Code> {
 ///
 /// Never propagate this `Err` into a settings-save failure: callers in
 /// `commands::config` swallow it and surface a visible event instead.
-pub fn register_configured_hotkey(app: &AppHandle, configured: &str) -> Result<(), String> {
+pub fn register_configured_hotkey<H: ScreenshotHost>(
+    app: &H,
+    configured: &str,
+) -> Result<(), String> {
     let parsed = super::parse_screenshot_hotkey(configured)?;
     let shortcut = parsed_to_shortcut(&parsed)?;
 
     #[cfg(target_os = "linux")]
-    if classify_display_server(&app.state::<DisplayEnvSnapshot>()) == LinuxDisplayServer::Wayland {
+    if classify_display_server(&app.display_snapshot()) == LinuxDisplayServer::Wayland {
         // The snapshot is READ here and TAKEN in run() during builder assembly
         // (§3.5.1). Do not replace this with a call to display_env_snapshot():
         // by the time this line runs, GTK has already unsetenv()'d
@@ -216,48 +218,49 @@ pub fn register_configured_hotkey(app: &AppHandle, configured: &str) -> Result<(
         // turns a silently dead hotkey into the sticky toast that
         // src/sidebar/listeners-screenshot.ts:47 already renders from
         // `!registered && error`. No frontend change.
-        let state = app.state::<ScreenshotHotkeyState>();
+        let state = app.hotkey_state();
         let mut runtime = state.lock().unwrap();
         runtime.registered_shortcut = None;
         runtime.status = hotkey_status_after_attempt(configured, Err(WAYLAND_UNSUPPORTED));
         return Err(WAYLAND_UNSUPPORTED.to_string());
     }
 
-    let gs = app.global_shortcut();
-    let state = app.state::<ScreenshotHotkeyState>();
-    let mut runtime = state.lock().unwrap();
+    app.with_shortcuts(|gs| {
+        let state = app.hotkey_state();
+        let mut runtime = state.lock().unwrap();
 
-    // No-op save of the same key: it is already ours, so just record success and
-    // avoid a spurious "already registered" error from re-registering.
-    if gs.is_registered(shortcut) {
-        runtime.registered_shortcut = Some(shortcut);
-        runtime.status = hotkey_status_after_attempt(configured, Ok(()));
-        return Ok(());
-    }
-
-    match gs.register(shortcut) {
-        Ok(()) => {
-            if let Some(prev) = runtime.registered_shortcut.take() {
-                if prev != shortcut {
-                    let _ = gs.unregister(prev);
-                }
-            }
+        // No-op save of the same key: it is already ours, so just record success and
+        // avoid a spurious "already registered" error from re-registering.
+        if gs.is_registered(shortcut) {
             runtime.registered_shortcut = Some(shortcut);
             runtime.status = hotkey_status_after_attempt(configured, Ok(()));
-            Ok(())
+            return Ok(());
         }
-        Err(e) => {
-            // The configured shortcut did NOT register. Keep any previously
-            // registered fallback alive (do not take `registered_shortcut`) so it
-            // keeps working and a later save can unregister it, but report the
-            // configured shortcut as NOT registered so the UI surfaces the
-            // conflict (Grinch #714 LOW): `status.registered` describes the
-            // configured shortcut, not the internal fallback.
-            let msg = e.to_string();
-            runtime.status = hotkey_status_after_attempt(configured, Err(msg.as_str()));
-            Err(msg)
+
+        match gs.register(shortcut) {
+            Ok(()) => {
+                if let Some(prev) = runtime.registered_shortcut.take() {
+                    if prev != shortcut {
+                        let _ = gs.unregister(prev);
+                    }
+                }
+                runtime.registered_shortcut = Some(shortcut);
+                runtime.status = hotkey_status_after_attempt(configured, Ok(()));
+                Ok(())
+            }
+            Err(e) => {
+                // The configured shortcut did NOT register. Keep any previously
+                // registered fallback alive (do not take `registered_shortcut`) so it
+                // keeps working and a later save can unregister it, but report the
+                // configured shortcut as NOT registered so the UI surfaces the
+                // conflict (Grinch #714 LOW): `status.registered` describes the
+                // configured shortcut, not the internal fallback.
+                let msg = e.to_string();
+                runtime.status = hotkey_status_after_attempt(configured, Err(msg.as_str()));
+                Err(msg)
+            }
         }
-    }
+    })
 }
 
 /// Compute the frontend-facing hotkey status after a registration attempt. Pure,
@@ -321,8 +324,8 @@ fn cancellable_capture_id(state: &ScreenshotCaptureLifecycle) -> Option<Uuid> {
 /// failure that happens before overlays exist, surfaces the error visibly because
 /// the hotkey normally fires while another app is focused. A `Busy` outcome (a
 /// rapid repeat press while a capture is in flight) is a silent no-op.
-pub fn begin_capture_from_hotkey(app: AppHandle) {
-    tauri::async_runtime::spawn(async move {
+pub fn begin_capture_from_hotkey<H: ScreenshotHost>(app: H) {
+    app.clone().spawn_background(Box::pin(async move {
         match begin_capture(app.clone()).await {
             Ok(BeginOutcome::Started) => {}
             Ok(BeginOutcome::Busy(cancellable)) => {
@@ -339,10 +342,10 @@ pub fn begin_capture_from_hotkey(app: AppHandle) {
                 // today's silent no-op.
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 if let Some(id) = cancellable {
-                    let state = app.state::<ScreenshotCaptureState>();
+                    let state = app.capture_state();
                     let _ = clear_capture_and_destroy_overlays(
                         &app,
-                        state.inner(),
+                        &state,
                         Some(id),
                         "second hotkey press cancelled the capture",
                     )
@@ -361,28 +364,17 @@ pub fn begin_capture_from_hotkey(app: AppHandle) {
             }
             Err(e) => surface_hotkey_failure(&app, &e),
         }
-    });
+    }));
 }
 
 /// Emit the failure event AND bring the app forward so the toast is actually
 /// visible when the hotkey fired over another foreground app.
-fn surface_hotkey_failure(app: &AppHandle, message: &str) {
+fn surface_hotkey_failure<H: ScreenshotHost>(app: &H, message: &str) {
     log::warn!("[screenshot] capture failed before overlay: {message}");
-    let _ = app.emit(
-        FAILED_EVENT,
-        ScreenshotCaptureEvent {
-            message: message.to_string(),
-        },
-    );
-    if let Some(win) = app
-        .get_webview_window("main")
-        .or_else(|| app.get_webview_window("sidebar"))
-    {
-        let _ = win.unminimize();
-        let _ = win.show();
-        let _ = win.set_focus();
-        let _ = win.request_user_attention(Some(tauri::UserAttentionType::Critical));
-    }
+    app.capture_failed(ScreenshotCaptureEvent {
+        message: message.to_string(),
+    });
+    app.focus_capture_failure();
 }
 
 // ── Capture ────────────────────────────────────────────────────────────────
@@ -391,7 +383,7 @@ fn surface_hotkey_failure(app: &AppHandle, message: &str) {
 /// Every early-return path leaves the lifecycle `Idle` (no leaked `Starting`).
 /// Returns `BeginOutcome::Busy` (a no-op, not an error) when a capture is already
 /// in flight, so a debounced repeat hotkey press is silently ignored.
-pub async fn begin_capture(app: AppHandle) -> Result<BeginOutcome, String> {
+pub async fn begin_capture<H: ScreenshotHost>(app: H) -> Result<BeginOutcome, String> {
     // 0. Busy pre-gate. If a capture is already in flight, bail out as a typed
     //    Busy no-op BEFORE any fallible active-session/CWD resolution below. A
     //    debounced repeat press during an in-flight capture whose active session
@@ -401,18 +393,15 @@ pub async fn begin_capture(app: AppHandle) -> Result<BeginOutcome, String> {
     //    failure). The locked reserve in step 2 stays the race-closing
     //    compare-and-set for the Idle path.
     {
-        let state = app.state::<ScreenshotCaptureState>();
-        if let Some(outcome) = busy_pregate(state.inner()).await {
+        let state = app.capture_state();
+        if let Some(outcome) = busy_pregate(&state).await {
             return Ok(outcome);
         }
     }
 
     // 1. Resolve the active session and its owning replica root.
-    let selection = app
-        .state::<crate::session::selection::SelectionCoordinator>()
-        .snapshot()
-        .await?;
-    let session_mgr = app.state::<std::sync::Arc<tokio::sync::RwLock<SessionManager>>>();
+    let selection = app.selection().snapshot().await?;
+    let session_mgr = app.sessions();
     let sessions = session_mgr.read().await.list_sessions().await;
     let active_id = resolve_live_capture_session(&selection, &sessions)?;
     let session = session_mgr
@@ -430,7 +419,7 @@ pub async fn begin_capture(app: AppHandle) -> Result<BeginOutcome, String> {
     //    second rapid hotkey press is rejected instead of double-capturing.
     let capture_id = Uuid::new_v4();
     {
-        let state = app.state::<ScreenshotCaptureState>();
+        let state = app.capture_state();
         let mut guard = state.lock().await;
         if !matches!(&*guard, ScreenshotCaptureLifecycle::Idle) {
             // A capture is already starting/active/finishing: a debounced repeat
@@ -467,7 +456,7 @@ pub async fn begin_capture(app: AppHandle) -> Result<BeginOutcome, String> {
     let placements = build_placements(&app, capture_id, &monitors);
     let overlay_labels: Vec<String> = placements.iter().map(|p| p.label.clone()).collect();
     {
-        let state = app.state::<ScreenshotCaptureState>();
+        let state = app.capture_state();
         let mut guard = state.lock().await;
         let still_ours =
             matches!(&*guard, ScreenshotCaptureLifecycle::Starting(s) if s.id == capture_id);
@@ -491,10 +480,10 @@ pub async fn begin_capture(app: AppHandle) -> Result<BeginOutcome, String> {
 
     // 5. Open overlays AFTER the capture is stored so overlay IPC sees `Active`.
     if let Err(e) = open_overlay_windows(&app, capture_id, &placements) {
-        let state = app.state::<ScreenshotCaptureState>();
+        let state = app.capture_state();
         let _ = clear_capture_and_destroy_overlays(
             &app,
-            state.inner(),
+            &state,
             Some(capture_id),
             &format!("overlay build failed: {e}"),
         )
@@ -544,8 +533,8 @@ async fn busy_pregate(state: &ScreenshotCaptureState) -> Option<BeginOutcome> {
     }
 }
 
-async fn reset_starting_if_matches(app: &AppHandle, id: Uuid) {
-    let state = app.state::<ScreenshotCaptureState>();
+async fn reset_starting_if_matches<H: ScreenshotHost>(app: &H, id: Uuid) {
+    let state = app.capture_state();
     let mut guard = state.lock().await;
     if matches!(&*guard, ScreenshotCaptureLifecycle::Starting(s) if s.id == id) {
         *guard = ScreenshotCaptureLifecycle::Idle;
@@ -613,8 +602,8 @@ fn encode_preview_data_url(
 // ── Cancel + cleanup ───────────────────────────────────────────────────────
 
 /// Explicit cancel (Escape / overlay close request). Idempotent.
-pub async fn cancel_capture(
-    app: &AppHandle,
+pub async fn cancel_capture<H: ScreenshotHost>(
+    app: &H,
     state: &ScreenshotCaptureState,
     capture_id: &str,
 ) -> Result<(), String> {
@@ -625,8 +614,8 @@ pub async fn cancel_capture(
 /// Centralized, idempotent cleanup: take a matching `Starting`/`Active` capture
 /// to `Idle` and destroy its overlays by label prefix. `capture_id == None`
 /// clears whatever is active. Safe to call repeatedly; later calls are no-ops.
-pub async fn clear_capture_and_destroy_overlays(
-    app: &AppHandle,
+pub async fn clear_capture_and_destroy_overlays<H: ScreenshotHost>(
+    app: &H,
     state: &ScreenshotCaptureState,
     capture_id: Option<Uuid>,
     reason: &str,
@@ -667,11 +656,11 @@ pub async fn clear_capture_and_destroy_overlays(
 /// `RunEvent::WindowEvent::Destroyed` hook for `screenshot-overlay-*` labels.
 /// If the destroyed overlay belongs to the live capture, clear state and destroy
 /// its siblings; otherwise no-op (our own teardown already cleared state).
-pub async fn handle_overlay_window_destroyed(app: AppHandle, label: String) {
+pub async fn handle_overlay_window_destroyed<H: ScreenshotHost>(app: H, label: String) {
     let Some(hex) = capture_hex_from_overlay_label(&label) else {
         return;
     };
-    let state = app.state::<ScreenshotCaptureState>();
+    let state = app.capture_state();
     let active_id = {
         let guard = state.lock().await;
         match &*guard {
@@ -687,7 +676,7 @@ pub async fn handle_overlay_window_destroyed(app: AppHandle, label: String) {
         if id.simple().to_string() == hex {
             let _ = clear_capture_and_destroy_overlays(
                 &app,
-                state.inner(),
+                &state,
                 Some(id),
                 "overlay window destroyed",
             )

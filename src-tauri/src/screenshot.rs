@@ -112,6 +112,113 @@ pub struct ScreenshotCaptureEvent {
     pub message: String,
 }
 
+/// Typed screenshot notifications, delivered by the native event adapter.
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub trait ScreenshotEvents {
+    fn capture_saved(&self, result: ScreenshotCaptureResult);
+    fn capture_failed(&self, event: ScreenshotCaptureEvent);
+}
+
+pub trait ScreenshotHotkeyOwner {
+    fn hotkey_state(&self) -> ScreenshotHotkeyState;
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub trait ShortcutRegistrar {
+    fn is_registered(&self, shortcut: tauri_plugin_global_shortcut::Shortcut) -> bool;
+    fn register(&self, shortcut: tauri_plugin_global_shortcut::Shortcut) -> Result<(), String>;
+    fn unregister(&self, shortcut: tauri_plugin_global_shortcut::Shortcut) -> Result<(), String>;
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub trait ScreenshotHost:
+    ScreenshotHotkeyOwner + ScreenshotEvents + Clone + Send + Sync + 'static
+{
+    fn capture_state(&self) -> ScreenshotCaptureState;
+    fn selection(&self) -> crate::session::selection::SelectionCoordinator;
+    fn sessions(&self) -> Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>;
+    fn available_monitors(&self) -> Vec<MonitorGeometry>;
+    fn with_shortcuts<T, F: FnOnce(&dyn ShortcutRegistrar) -> T>(&self, callback: F) -> T;
+    #[cfg(target_os = "linux")]
+    fn display_snapshot(&self) -> DisplayEnvSnapshot;
+    fn open_overlay(&self, spec: &OverlayWindowSpec) -> Result<(), String>;
+    fn destroy_capture_overlays(&self, capture_id: uuid::Uuid) -> usize;
+    fn copy_path(&self, path: String) -> Result<(), String>;
+    fn focus_capture_failure(&self);
+    fn spawn_background(
+        &self,
+        future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>,
+    );
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub struct OverlayWindowSpec {
+    pub(crate) label: String,
+    pub(crate) url: String,
+    pub(crate) logical_width: f64,
+    pub(crate) logical_height: f64,
+    pub(crate) logical_x: f64,
+    pub(crate) logical_y: f64,
+    pub(crate) frame: PlacementFrame,
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) resizable: bool,
+    pub(crate) fullscreen: bool,
+}
+
+/// Where an overlay window goes. `frame` names the coordinate space `x`, `y`,
+/// `width` and `height` are expressed in.
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub(crate) struct OverlayPlacement {
+    pub(crate) label: String,
+    pub(crate) monitor_id: u32,
+    /// Physical pixels on `PlacementFrame::Physical`, logical points on
+    /// `PlacementFrame::Logical`.
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) scale_factor: f64,
+    pub(crate) frame: PlacementFrame,
+}
+
+/// A monitor as either source can describe it. `scale` is that source's own
+/// scale factor.
+///
+/// The rule this type exists to enforce (#2173): **tao owns the screen
+/// coordinate space** — every value handed to Tauri is derived from
+/// `tauri::Monitor` alone — and **xcap owns pixels** — the captured bitmap stays
+/// the sole authority for the crop. The xcap scale factor is used for exactly
+/// one thing: converting the bitmap size to points, so that an xcap monitor can
+/// be compared to a tao monitor. The two scales disagree on macOS and the
+/// disagreement is not reconcilable by a factor: xcap reports
+/// `pixel_width / CGDisplayBounds.width` (1.714 in "More Space") while tao
+/// reports `backingScaleFactor` (2.0) for the same display. Points are the only
+/// frame in which both describe the monitor exactly.
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct MonitorGeometry {
+    pub(crate) name: Option<String>,
+    /// The source's own frame: physical pixels for tao, points for xcap on macOS.
+    pub(crate) position: (i32, i32),
+    /// tao: the physical monitor size. xcap: the captured bitmap, always pixels.
+    pub(crate) size: (u32, u32),
+    pub(crate) scale: f64,
+}
+
+/// The coordinate frame overlay geometry is expressed in. macOS must use
+/// `Logical`: its two sources disagree on the physical scale, so points are the
+/// only frame where `tauri::Monitor` describes the monitor exactly. Windows and
+/// Linux keep `Physical`, where the two sources agree.
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlacementFrame {
+    Physical,
+    Logical,
+}
+
 /// Hotkey registration status exposed to the frontend. Never carries the
 /// internal `Shortcut`; commands clone this out of `ScreenshotHotkeyRuntime`.
 #[derive(Debug, Clone, Serialize, Deserialize)]

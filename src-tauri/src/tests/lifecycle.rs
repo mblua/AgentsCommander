@@ -481,7 +481,7 @@ async fn p51_restore_lifecycle_case(mode: &'static str) {
             })
         })
     };
-    let restore = super::spawn_restore_startup(
+    let restore = super::spawn_restore_startup::<tauri::async_runtime::JoinHandle<()>>(
         barrier,
         Arc::clone(&observer),
         Arc::clone(&flag),

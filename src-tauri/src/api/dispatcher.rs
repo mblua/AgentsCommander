@@ -4,13 +4,34 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures::future::BoxFuture;
 use futures::Future;
-use tauri::Manager;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::api::message_store::{DuePtyInputCandidate, LeasedMessage, MessageStore};
-use crate::phone::types::{OutboxMessage, PtyInputSourcePlane};
+use crate::api::message_store::{
+    DuePtyInputCandidate, LeasedMessage, MessageStore, MessageStoreState,
+};
+use crate::config::injected_messages::MessageWarnings;
+use crate::phone::types::OutboxMessage;
+
+pub(crate) trait DispatcherDelivery: Clone + Send + Sync + 'static {
+    fn purging(&self) -> bool;
+    fn message_store_state(&self) -> Option<MessageStoreState>;
+    fn restoring(&self) -> bool;
+    fn deliver_wake<'a>(
+        &'a self,
+        msg: OutboxMessage,
+        messages: Arc<MessageWarnings>,
+    ) -> BoxFuture<'a, Result<(), String>>;
+    fn dispatch_pty<'a>(
+        &'a self,
+        state: &'a MessageStoreState,
+        id: &'a str,
+        client: &'a Arc<crate::api::auth::ApiClientStore>,
+        messages: Arc<MessageWarnings>,
+    ) -> BoxFuture<'a, ()>;
+}
 
 #[derive(Debug, Clone)]
 pub struct DispatcherConfig {
@@ -144,144 +165,120 @@ async fn stop_pty_workers(workers: &mut JoinSet<()>, grace: Duration) {
     }
 }
 
-pub fn start_dispatcher(
+pub(crate) async fn run_dispatcher<H: DispatcherDelivery>(
     store: Arc<MessageStore>,
     client_store: Arc<crate::api::auth::ApiClientStore>,
-    app: tauri::AppHandle,
+    app: H,
     shutdown: CancellationToken,
     config: DispatcherConfig,
-    messages: Arc<crate::config::injected_messages::MessageWarnings>,
-) -> tauri::async_runtime::JoinHandle<()> {
-    tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(config.poll_interval);
-        let mut pty_workers = JoinSet::new();
-        let pty_targets = Arc::new(PtyWorkerTargets::default());
-        loop {
-            tokio::select! {
-                _ = shutdown.cancelled() => {
-                    log::info!("[api-dispatcher] shutdown signal received, stopping");
-                    stop_pty_workers(&mut pty_workers, PTY_WORKER_SHUTDOWN_GRACE).await;
-                    break;
-                }
-                _ = interval.tick() => {
-                    reap_pty_workers(&mut pty_workers);
-                    // (#885 F-5) Skip DISPATCH (not the reaper) while a purge
-                    // holds a lease. Leasing a row we cannot deliver burns an
-                    // attempt against max_attempts (5) and can poison the
-                    // message permanently. A purge is bounded; the next tick
-                    // delivers.
-                    let purging = app
-                        .try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>()
-                        .map(|g| g.is_active())
-                        .unwrap_or(false);
-                    if !purging {
-                        if let Err(e) = dispatch_due_with(
-                            &store,
-                            chrono::Utc::now(),
-                            &config,
-                            |msg| {
-                                    let app = app.clone();
-                                    let messages = Arc::clone(&messages);
-                                    async move {
-                                        crate::phone::mailbox::MailboxPoller::new(messages)
-                                            .deliver_wake_with_origin(
-                                                &app,
-                                                &msg,
-                                                crate::phone::mailbox::WakeDeliveryOrigin::DbQueue,
-                                            )
-                                            .await
-                                            .map(|_| ())
-                                    }
-                                },
-                            )
-                            .await
-                        {
-                            log::warn!("[api-dispatcher] dispatch tick failed: {}", e);
-                        }
-                    }
-                    if let Some(managed_state) =
-                        app.try_state::<crate::api::message_store::MessageStoreState>()
+    messages: Arc<MessageWarnings>,
+) {
+    let mut interval = tokio::time::interval(config.poll_interval);
+    let mut pty_workers = JoinSet::new();
+    let pty_targets = Arc::new(PtyWorkerTargets::default());
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                log::info!("[api-dispatcher] shutdown signal received, stopping");
+                stop_pty_workers(&mut pty_workers, PTY_WORKER_SHUTDOWN_GRACE).await;
+                break;
+            }
+            _ = interval.tick() => {
+                reap_pty_workers(&mut pty_workers);
+                // (#885 F-5) Skip DISPATCH (not the reaper) while a purge
+                // holds a lease. Leasing a row we cannot deliver burns an
+                // attempt against max_attempts (5) and can poison the
+                // message permanently. A purge is bounded; the next tick
+                // delivers.
+                let purging = app.purging();
+                if !purging {
+                    if let Err(e) = dispatch_due_with(
+                        &store,
+                        chrono::Utc::now(),
+                        &config,
+                        |msg| {
+                            let app = app.clone();
+                            let messages = Arc::clone(&messages);
+                            async move { app.deliver_wake(msg, messages).await }
+                        },
+                    )
+                    .await
                     {
-                        let state = managed_state.inner().clone();
-                        let active = state.active_operations.snapshot();
-                        if store
-                            .recover_pty_input_runtime_offloaded(active, chrono::Utc::now())
-                            .await
-                            .is_err()
-                        {
-                            log::warn!(
-                                "[api-dispatcher] PTY recovery failed code=store_transient"
-                            );
-                        }
-                        let restoring = app
-                            .try_state::<Arc<crate::RestoreInProgress>>()
-                            .is_some_and(|flag| {
-                                flag.0.load(std::sync::atomic::Ordering::SeqCst)
-                            });
-                        if !purging && !restoring && pty_workers.len() < PTY_WORKER_LIMIT {
-                            match store
-                                .due_container_pty_input_candidates_fair_offloaded(
-                                    chrono::Utc::now(),
-                                    PTY_CANDIDATE_SCAN_LIMIT,
-                                )
-                                .await
-                            {
-                                Ok(candidates) => {
-                                    if let Some(candidate) = candidates
-                                        .into_iter()
-                                        .find(|candidate| {
-                                            !pty_targets.contains(&candidate.target_fqn)
-                                        })
-                                    {
-                                        let worker_app = app.clone();
-                                        let worker_messages = Arc::clone(&messages);
-                                        let worker_state = state.clone();
-                                        let worker_client_store = Arc::clone(&client_store);
-                                        let injection_id = candidate.injection_id.clone();
-                                        spawn_pty_worker(
-                                            &mut pty_workers,
-                                            &pty_targets,
-                                            &shutdown,
-                                            candidate,
-                                            async move {
-                                                crate::phone::mailbox::MailboxPoller::new(
-                                                    worker_messages,
-                                                )
-                                                    .dispatch_pty_input_operation(
-                                                        &worker_app,
-                                                        &worker_state,
-                                                        &injection_id,
-                                                        PtyInputSourcePlane::ContainerApi,
-                                                        Some(&worker_client_store),
-                                                    )
-                                                    .await;
-                                            },
-                                        );
-                                    }
-                                }
-                                Err(_) => log::warn!(
-                                    "[api-dispatcher] PTY input tick failed code=store_transient"
-                                ),
-                            }
-                        }
+                        log::warn!("[api-dispatcher] dispatch tick failed: {}", e);
                     }
-                    let cutoff = chrono::Utc::now() - config.retention;
-                    if let Err(e) = store.reap_terminal_before_offloaded(cutoff).await {
-                        log::warn!("[api-dispatcher] reaper failed: {}", e);
-                    }
+                }
+                if let Some(state) = app.message_store_state() {
+                    let active = state.active_operations.snapshot();
                     if store
-                        .compact_pty_terminal_maintenance_offloaded(chrono::Utc::now(), 64)
+                        .recover_pty_input_runtime_offloaded(active, chrono::Utc::now())
                         .await
                         .is_err()
                     {
                         log::warn!(
-                            "[api-dispatcher] PTY compaction failed code=store_transient"
+                            "[api-dispatcher] PTY recovery failed code=store_transient"
                         );
                     }
+                    let restoring = app.restoring();
+                    if !purging && !restoring && pty_workers.len() < PTY_WORKER_LIMIT {
+                        match store
+                            .due_container_pty_input_candidates_fair_offloaded(
+                                chrono::Utc::now(),
+                                PTY_CANDIDATE_SCAN_LIMIT,
+                            )
+                            .await
+                        {
+                            Ok(candidates) => {
+                                if let Some(candidate) = candidates
+                                    .into_iter()
+                                    .find(|candidate| {
+                                        !pty_targets.contains(&candidate.target_fqn)
+                                    })
+                                {
+                                    let worker_app = app.clone();
+                                    let worker_messages = Arc::clone(&messages);
+                                    let worker_state = state.clone();
+                                    let worker_client_store = Arc::clone(&client_store);
+                                    let injection_id = candidate.injection_id.clone();
+                                    spawn_pty_worker(
+                                        &mut pty_workers,
+                                        &pty_targets,
+                                        &shutdown,
+                                        candidate,
+                                        async move {
+                                            worker_app
+                                                .dispatch_pty(
+                                                    &worker_state,
+                                                    &injection_id,
+                                                    &worker_client_store,
+                                                    worker_messages,
+                                                )
+                                                .await;
+                                        },
+                                    );
+                                }
+                            }
+                            Err(_) => log::warn!(
+                                "[api-dispatcher] PTY input tick failed code=store_transient"
+                            ),
+                        }
+                    }
+                }
+                let cutoff = chrono::Utc::now() - config.retention;
+                if let Err(e) = store.reap_terminal_before_offloaded(cutoff).await {
+                    log::warn!("[api-dispatcher] reaper failed: {}", e);
+                }
+                if store
+                    .compact_pty_terminal_maintenance_offloaded(chrono::Utc::now(), 64)
+                    .await
+                    .is_err()
+                {
+                    log::warn!(
+                        "[api-dispatcher] PTY compaction failed code=store_transient"
+                    );
                 }
             }
         }
-    })
+    }
 }
 
 pub async fn dispatch_due_with<F, Fut>(
