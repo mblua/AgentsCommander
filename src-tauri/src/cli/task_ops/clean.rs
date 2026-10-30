@@ -281,6 +281,92 @@ fn finish_clean_locked(
     Ok(())
 }
 
+fn archive_clean_pair(
+    root: &Path,
+    journal: &mut CleanJournal,
+    original_task: &crate::filesystem::tasks::TaskSourceState,
+    original_status: &crate::filesystem::tasks::TaskSourceState,
+) -> Result<(), TaskOpError> {
+    let stamp = &journal.stamp;
+    let task_path = root.join(TASK_FILE_NAME);
+    let status_path = root.join(STATUS_NAME);
+    if journal.task.existed || journal.status.existed {
+        let mut reserved = None;
+        for n in 0..=99 {
+            let (task_name, status_name) = backup_names(stamp, n);
+            io_boundary("task_backup_create").map_err(write_failed)?;
+            let task_file = match create_task_artifact(&root.join(&task_name)) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(write_failed(e)),
+            };
+            let status_file = io_boundary("status_backup_create")
+                .and_then(|()| create_task_artifact(&root.join(&status_name)));
+            match status_file {
+                Ok(f) => {
+                    reserved = Some((n, task_name, status_name, task_file, f));
+                    break;
+                }
+                Err(e) => {
+                    drop(task_file);
+                    cleanup_owned(&root.join(&task_name), &hash_bytes(&[]));
+                    if e.kind() == std::io::ErrorKind::AlreadyExists {
+                        continue;
+                    }
+                    return Err(write_failed(e));
+                }
+            }
+        }
+        let (n, task_name, status_name, mut task_file, mut status_file) =
+            reserved.ok_or_else(|| {
+                TaskOpError::BackupExhausted(root.join(format!("TASK.{stamp}.bak.md")))
+            })?;
+        journal.suffix = n;
+        journal.task.backup = Some(task_name.clone());
+        journal.status.backup = Some(status_name.clone());
+        // Track bytes actually written, so failure cleanup cannot delete a
+        // foreign replacement. Successfully synced archives stay immutable.
+        let mut task_owned_hash = hash_bytes(&[]);
+        let mut status_owned_hash = hash_bytes(&[]);
+        let task_result = task_file.copy_archive_from(
+            &task_path,
+            journal.task.existed,
+            "task_backup",
+            &mut task_owned_hash,
+        );
+        let task_finished = task_result.is_ok();
+        let copied = task_result.and_then(|()| {
+            status_file.copy_archive_from(
+                &status_path,
+                journal.status.existed,
+                "status_backup",
+                &mut status_owned_hash,
+            )
+        });
+        drop(task_file);
+        drop(status_file);
+        if let Err(e) = copied {
+            if !task_finished {
+                cleanup_owned(&root.join(&task_name), &task_owned_hash);
+            }
+            cleanup_owned(&root.join(&status_name), &status_owned_hash);
+            return Err(write_failed(e));
+        }
+        for (side, expected) in [
+            (&journal.task, original_task),
+            (&journal.status, original_status),
+        ] {
+            let backup_hash = task_source_state(&root.join(side.backup.as_ref().unwrap()))
+                .map_err(write_failed)?
+                .hash;
+            if backup_hash != Some(expected.hash.clone().unwrap_or_else(|| hash_bytes(&[]))) {
+                return Err(clean_conflict("archive source changed"));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn clean_pair_locked(
     root: &Path,
     existing: &str,
@@ -358,80 +444,7 @@ pub(super) fn clean_pair_locked(
             stage: format!("TASK-status.jsonl.tmp.{tx}"),
         },
     };
-    if journal.task.existed || journal.status.existed {
-        let mut reserved = None;
-        for n in 0..=99 {
-            let (task_name, status_name) = backup_names(&stamp, n);
-            io_boundary("task_backup_create").map_err(write_failed)?;
-            let task_file = match create_task_artifact(&root.join(&task_name)) {
-                Ok(f) => f,
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(write_failed(e)),
-            };
-            let status_file = io_boundary("status_backup_create")
-                .and_then(|()| create_task_artifact(&root.join(&status_name)));
-            match status_file {
-                Ok(f) => {
-                    reserved = Some((n, task_name, status_name, task_file, f));
-                    break;
-                }
-                Err(e) => {
-                    drop(task_file);
-                    cleanup_owned(&root.join(&task_name), &hash_bytes(&[]));
-                    if e.kind() == std::io::ErrorKind::AlreadyExists {
-                        continue;
-                    }
-                    return Err(write_failed(e));
-                }
-            }
-        }
-        let (n, task_name, status_name, mut task_file, mut status_file) =
-            reserved.ok_or_else(|| {
-                TaskOpError::BackupExhausted(root.join(format!("TASK.{stamp}.bak.md")))
-            })?;
-        journal.suffix = n;
-        journal.task.backup = Some(task_name.clone());
-        journal.status.backup = Some(status_name.clone());
-        // Track bytes actually written, so failure cleanup cannot delete a
-        // foreign replacement. Successfully synced archives stay immutable.
-        let mut task_owned_hash = hash_bytes(&[]);
-        let mut status_owned_hash = hash_bytes(&[]);
-        let task_result = task_file.copy_archive_from(
-            &task_path,
-            journal.task.existed,
-            "task_backup",
-            &mut task_owned_hash,
-        );
-        let task_finished = task_result.is_ok();
-        let copied = task_result.and_then(|()| {
-            status_file.copy_archive_from(
-                &status_path,
-                journal.status.existed,
-                "status_backup",
-                &mut status_owned_hash,
-            )
-        });
-        drop(task_file);
-        drop(status_file);
-        if let Err(e) = copied {
-            if !task_finished {
-                cleanup_owned(&root.join(&task_name), &task_owned_hash);
-            }
-            cleanup_owned(&root.join(&status_name), &status_owned_hash);
-            return Err(write_failed(e));
-        }
-        for (side, expected) in [
-            (&journal.task, &original_task),
-            (&journal.status, &original_status),
-        ] {
-            let backup_hash = task_source_state(&root.join(side.backup.as_ref().unwrap()))
-                .map_err(write_failed)?
-                .hash;
-            if backup_hash != Some(expected.hash.clone().unwrap_or_else(|| hash_bytes(&[]))) {
-                return Err(clean_conflict("archive source changed"));
-            }
-        }
-    }
+    archive_clean_pair(root, &mut journal, &original_task, &original_status)?;
     for (side, bytes, boundary) in [
         (&journal.task, new_content.as_bytes(), "task_stage"),
         (&journal.status, seed_bytes.as_slice(), "status_stage"),
