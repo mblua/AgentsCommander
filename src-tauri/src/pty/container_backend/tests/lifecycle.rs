@@ -337,7 +337,7 @@ async fn off_runtime_pending_reaper_ticks_immediately_and_releases_backend_on_ca
         .spawn(test_spec(id, root, PtyOutputTarget::noop()))
         .await
         .expect("pending");
-    std::thread::sleep(Duration::from_millis(5));
+    tokio::time::sleep(Duration::from_millis(5)).await;
 
     let backend = Arc::new(backend);
     let weak = Arc::downgrade(&backend);
@@ -356,7 +356,7 @@ async fn off_runtime_pending_reaper_ticks_immediately_and_releases_backend_on_ca
         .expect("reaper dispatched");
     let deadline = Instant::now() + Duration::from_secs(2);
     while !caller.is_finished() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(2));
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
     assert!(caller.is_finished(), "reaper dispatch did not finish");
     caller.join().expect("off-runtime reaper caller");
@@ -373,7 +373,7 @@ async fn off_runtime_pending_reaper_ticks_immediately_and_releases_backend_on_ca
     drop(backend);
     let deadline = Instant::now() + Duration::from_secs(2);
     while weak.upgrade().is_some() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(2));
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
     assert!(
         weak.upgrade().is_none(),

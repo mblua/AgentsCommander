@@ -906,7 +906,7 @@ async fn off_runtime_full_and_closed_queues_remove_then_reconcile_without_waitin
             .expect("caller returned");
         let deadline = Instant::now() + Duration::from_secs(2);
         while !caller.is_finished() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(2));
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
         assert!(caller.is_finished(), "off-runtime caller did not finish");
         caller.join().expect("off-runtime caller");
