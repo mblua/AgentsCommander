@@ -238,6 +238,53 @@ pub(crate) async fn create_session_inner_with_pty_target_ownership<R: tauri::Run
     }
 }
 
+pub(crate) async fn create_persisted_root_for_restore<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    ps: &crate::config::sessions_persistence::PersistedSession,
+    root_path: String,
+    resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
+) -> Result<SessionInfo, String> {
+    let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
+        (
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            Some(spawn.trusted_agent_label.clone()),
+        )
+    } else {
+        (
+            ps.shell.clone(),
+            ps.shell_args.clone(),
+            ps.agent_label.clone(),
+        )
+    };
+    create_session_inner_for_restore(
+        transaction,
+        session_mgr,
+        pty_mgr,
+        shell,
+        shell_args,
+        root_path,
+        Some(ps.name.clone()),
+        ps.agent_id.clone(),
+        agent_label,
+        false,
+        ps.git_repos.clone(),
+        ps.start_fresh_on_restore,
+        resolved_spawn,
+        resolved_agent_host_shell,
+        None,
+        Some(ps.start_fresh_on_restore),
+        None,
+        ps.binding_metadata()
+            .expect("restore binding validated before spawn"),
+        Some(ps),
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
