@@ -119,6 +119,12 @@ type Row = (&'static str, usize, usize, &'static [(Reason, usize)]);
 
 const INVENTORY: &[Row] = &[
     (
+        "src-tauri/src/phone/mailbox/tests/clear_watch.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
         "src-tauri/src/commands/web/tests.rs",
         1,
         0,

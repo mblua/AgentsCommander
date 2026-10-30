@@ -971,6 +971,10 @@ impl CodexClearScannerFixture {
             retained_fixture_ordinary_wake(&poller, app, &msg, &control),
         )
         .await;
+        coordinator.shutdown_token().cancel();
+        tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+            .await
+            .unwrap();
         let pending = result.expect("bounded owned clear tail").is_none();
         let no_marker =
             super::super::clear_attempt::probe_attempt(&std::fs::read_to_string(&source).unwrap())
@@ -978,10 +982,6 @@ impl CodexClearScannerFixture {
                 .is_none();
         assert!(probe.sources.lock().unwrap().is_empty());
         assert!(!source.parent().unwrap().join("delivered").exists());
-        coordinator.shutdown_token().cancel();
-        tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
-            .await
-            .unwrap();
         (
             pending,
             probe.owned_children.load(Ordering::SeqCst),
