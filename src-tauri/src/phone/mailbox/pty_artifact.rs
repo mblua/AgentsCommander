@@ -241,122 +241,18 @@ impl MailboxPoller {
         envelope: &crate::phone::types::PtyInputHostEnvelope,
         code: crate::phone::types::PtyInputReasonCode,
     ) -> bool {
-        use crate::phone::types::{
-            parse_canonical_pty_timestamp, parse_canonical_uuid_v4, pty_input_confirmation_tag,
-            pty_input_host_request_fingerprint, sha256_hex, PtyInputEnterMode,
-            PtyInputHostArtifact, PtyInputHostFingerprint, PTY_INPUT_TTL_SECS, PTY_INPUT_VERSION,
-        };
+        use crate::phone::types::{sha256_hex, PtyInputHostArtifact};
 
+        let Some(metadata) = self.correlated_host_pty_metadata(app, path, envelope).await else {
+            return false;
+        };
         let payload = &envelope.pty_input;
-        let immutable_shape_valid = envelope.action == "pty-input"
-            && envelope.body.is_empty()
-            && envelope.mode == "wake"
-            && !envelope.get_output
-            && envelope.preferred_agent.is_empty()
-            && envelope.priority == "normal"
-            && payload.version == PTY_INPUT_VERSION
-            && payload.enter == PtyInputEnterMode::AgentSubmit
-            && envelope.id == payload.injection_id
-            && payload.op_id == payload.injection_id
-            && path.file_stem().and_then(|value| value.to_str())
-                == Some(payload.injection_id.as_str());
-        if !immutable_shape_valid {
-            return false;
-        }
-        let Ok(injection_id) = parse_canonical_uuid_v4(&payload.injection_id) else {
-            return false;
-        };
-        let Ok(nonce) = parse_canonical_uuid_v4(&payload.nonce) else {
-            return false;
-        };
-        if injection_id == nonce
-            || parse_canonical_uuid_v4(&envelope.token).is_err()
-            || crate::pty::inject::validate_pty_input_text(&payload.text).is_err()
-        {
-            return false;
-        }
-        let Ok(issued) = parse_canonical_pty_timestamp(&payload.issued_at) else {
-            return false;
-        };
-        let Ok(expires) = parse_canonical_pty_timestamp(&payload.expires_at) else {
-            return false;
-        };
-        if envelope.timestamp != payload.issued_at
-            || expires - issued != chrono::Duration::seconds(PTY_INPUT_TTL_SECS)
-        {
-            return false;
-        }
-
-        let Some(outbox) = path.parent() else {
-            return false;
-        };
-        let Some(root) = outbox.parent().and_then(Path::parent) else {
-            return false;
-        };
-        let owner = match self.verified_pty_outbox_owner(path) {
-            Ok(owner) => owner,
-            Err(_) => return false,
-        };
-        let sender_is_root = crate::config::root_agent::verify_live_root_agent_path(root).is_ok();
-        let sender_project = if sender_is_root {
-            None
-        } else {
-            let sender = match crate::config::teams::verify_pty_input_coordinator_root(root) {
-                Ok(sender) => sender,
-                Err(_) => return false,
-            };
-            sender
-                .ac_root_identity
-                .canonical_path
-                .parent()
-                .and_then(|path| {
-                    path.to_str()
-                        .map(crate::path_utils::normalize_windows_verbatim_path)
-                })
-        };
-        let in_memory_paths = {
-            let settings = app.pty_settings();
-            let paths = settings.read().await.project_paths.clone();
-            paths
-        };
-        let mut project_paths =
-            match crate::config::settings::read_pty_input_project_paths_strict_offloaded().await {
-                Ok(paths) => paths.unwrap_or(in_memory_paths),
-                Err(_) => return false,
-            };
-        if let Some(project) = sender_project {
-            if !project_paths.contains(&project) {
-                project_paths.push(project);
-            }
-        }
-        let route = match crate::config::teams::verify_pty_input_route(
-            root,
-            sender_is_root,
-            &envelope.to,
-            &project_paths,
-        ) {
-            Ok(route) => route,
-            Err(_) => return false,
-        };
-        if owner != route.sender.canonical_fqn || envelope.from != route.sender.canonical_fqn {
-            return false;
-        }
-
-        let confirmation_tag =
-            pty_input_confirmation_tag(&payload.injection_id, &payload.op_id, &payload.nonce);
-        let request_fingerprint = pty_input_host_request_fingerprint(&PtyInputHostFingerprint {
-            injection_id: &payload.injection_id,
-            op_id: &payload.op_id,
-            token: &envelope.token,
-            sender_fqn: &route.sender.canonical_fqn,
-            target_fqn: &route.target.canonical_fqn,
-            nonce: &payload.nonce,
-            issued_at: &payload.issued_at,
-            expires_at: &payload.expires_at,
-            text: &payload.text,
-            agent_id: payload.agent_id.as_deref(),
-            confirmation_tag: &confirmation_tag,
-        });
+        let CorrelatedHostPtyMetadata {
+            route,
+            confirmation_tag,
+            request_fingerprint,
+            ..
+        } = metadata;
         let result = match store
             .record_host_pty_input_rejection_offloaded(
                 crate::api::message_store::HostPtyInputRejectionRequest {
@@ -665,6 +561,76 @@ impl MailboxPoller {
         Some((marker, owner))
     }
 
+    async fn prepare_pty_queue_marker(
+        &self,
+        path: &Path,
+        value: serde_json::Value,
+        is_app_outbox: bool,
+        store: &crate::api::message_store::MessageStore,
+    ) -> Option<crate::phone::types::PtyInputQueueMarker> {
+        let (marker, owner) = self.validated_pty_queue_marker(path, value, is_app_outbox)?;
+        let row = match store
+            .query_pty_input_by_injection_offloaded(marker.injection_id.clone())
+            .await
+        {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                self.reject_malformed_pty_candidate(path);
+                return None;
+            }
+            Err(_) => {
+                log::debug!(
+                    "[pty-input] marker status deferred id={} code=store_transient",
+                    marker.injection_id
+                );
+                return None;
+            }
+        };
+        if row.source_plane != Some(crate::phone::types::PtyInputSourcePlane::HostCli)
+            || row.op_id.as_deref() != Some(marker.op_id.as_str())
+            || row.sender.as_deref() != Some(owner.as_str())
+        {
+            self.reject_malformed_pty_candidate(path);
+            return None;
+        }
+        if row.terminal {
+            if let Err(code) = self
+                .materialize_host_terminal_artifact(path, store, &marker.injection_id)
+                .await
+            {
+                log::warn!(
+                    "[pty-input] artifact repair failed id={} code={}",
+                    marker.injection_id,
+                    code
+                );
+            }
+            return None;
+        }
+        Some(marker)
+    }
+
+    fn record_host_pty_ingress_rejection(code: crate::phone::types::PtyInputReasonCode) {
+        log::warn!(
+            "[pty-input] host ingress rejected code={}",
+            reason_code_name(code)
+        );
+        crate::api::audit::record_pty_input(&crate::api::audit::PtyInputAuditMetadata {
+            event: "ingress_rejection".to_string(),
+            injection_id: None,
+            op_id: None,
+            sender_fqn: None,
+            target_fqn: None,
+            payload_bytes: None,
+            payload_sha256: None,
+            source_plane: Some("host_cli".to_string()),
+            selected_session_id: None,
+            selected_backend: None,
+            status: "rejected".to_string(),
+            reason_code: Some(reason_code_name(code).to_string()),
+            timestamp: crate::phone::types::canonical_pty_timestamp(chrono::Utc::now()),
+        });
+    }
+
     pub(crate) async fn process_pty_input_file<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -698,47 +664,12 @@ impl MailboxPoller {
                     return;
                 }
             };
-            let Some((marker, owner)) = self.validated_pty_queue_marker(path, value, is_app_outbox)
+            let Some(marker) = self
+                .prepare_pty_queue_marker(path, value, is_app_outbox, &store)
+                .await
             else {
                 return;
             };
-            let row = match store
-                .query_pty_input_by_injection_offloaded(marker.injection_id.clone())
-                .await
-            {
-                Ok(Some(row)) => row,
-                Ok(None) => {
-                    self.reject_malformed_pty_candidate(path);
-                    return;
-                }
-                Err(_) => {
-                    log::debug!(
-                        "[pty-input] marker status deferred id={} code=store_transient",
-                        marker.injection_id
-                    );
-                    return;
-                }
-            };
-            if row.source_plane != Some(crate::phone::types::PtyInputSourcePlane::HostCli)
-                || row.op_id.as_deref() != Some(marker.op_id.as_str())
-                || row.sender.as_deref() != Some(owner.as_str())
-            {
-                self.reject_malformed_pty_candidate(path);
-                return;
-            }
-            if row.terminal {
-                if let Err(code) = self
-                    .materialize_host_terminal_artifact(path, &store, &marker.injection_id)
-                    .await
-                {
-                    log::warn!(
-                        "[pty-input] artifact repair failed id={} code={}",
-                        marker.injection_id,
-                        code
-                    );
-                }
-                return;
-            }
             self.dispatch_pty_input_operation(
                 app,
                 &state,
@@ -811,25 +742,7 @@ impl MailboxPoller {
                     );
                     return;
                 }
-                log::warn!(
-                    "[pty-input] host ingress rejected code={}",
-                    reason_code_name(code)
-                );
-                crate::api::audit::record_pty_input(&crate::api::audit::PtyInputAuditMetadata {
-                    event: "ingress_rejection".to_string(),
-                    injection_id: None,
-                    op_id: None,
-                    sender_fqn: None,
-                    target_fqn: None,
-                    payload_bytes: None,
-                    payload_sha256: None,
-                    source_plane: Some("host_cli".to_string()),
-                    selected_session_id: None,
-                    selected_backend: None,
-                    status: "rejected".to_string(),
-                    reason_code: Some(reason_code_name(code).to_string()),
-                    timestamp: crate::phone::types::canonical_pty_timestamp(chrono::Utc::now()),
-                });
+                Self::record_host_pty_ingress_rejection(code);
                 if !self
                     .reject_correlated_host_pty_candidate(
                         app,
