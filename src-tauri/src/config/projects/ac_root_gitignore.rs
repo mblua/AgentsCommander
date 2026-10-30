@@ -64,11 +64,6 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         CODING_AGENTS_SET_ASIDE_ARTIFACT,
     ]
     .map(|artifact| format!("/{artifact}"));
-    let [catalog_local, catalog_migration_backup, catalog_migration_journal, ..] = &catalog;
-    let [_, _, _, catalog_lock, catalog_base_tmp, catalog_local_tmp, ..] = &catalog;
-    let [.., catalog_migration_backup_tmp, catalog_migration_journal_tmp, _, _] = &catalog;
-    let [.., catalog_retired_lock, catalog_set_aside] = &catalog;
-
     let custom_patterns = custom_instructions_patterns(configured);
 
     // Each entry: (pattern, comment explaining why)
@@ -154,6 +149,37 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
             "_agent_*/**/*.pyc",
             "# AgentsCommander: exclude Python bytecode inside agent folders.",
         ),
+    ];
+    required_entries.extend(catalog_ignore_entries(&catalog));
+    required_entries.extend([
+        // #2807 - the agent state file beside each tracked `config.json`, its
+        // lock sidecar and its publish temporary.
+        config_state_row,
+        config_state_lock_row,
+        config_state_tmp_row,
+    ]);
+    for pattern in &custom_patterns {
+        required_entries.push((
+            pattern.as_str(),
+            "# AgentsCommander: exclude managed session context files inside replica agent \
+                folders.",
+        ));
+    }
+
+    write_required_gitignore(
+        &gitignore_path,
+        &required_entries,
+        project_settings_gitignore_pattern,
+    )
+}
+
+fn catalog_ignore_entries(catalog: &[String; 10]) -> [(&str, &str); 10] {
+    let [catalog_local, catalog_migration_backup, catalog_migration_journal, ..] = catalog;
+    let [_, _, _, catalog_lock, catalog_base_tmp, catalog_local_tmp, ..] = catalog;
+    let [.., catalog_migration_backup_tmp, catalog_migration_journal_tmp, _, _] = catalog;
+    let [.., catalog_retired_lock, catalog_set_aside] = catalog;
+
+    [
         // #1968 - the machine-local coding-agent catalog children. The tracked
         // `agents.json` and `_seed/` masters stay tracked; these are the
         // sidecars, lock and publication temporaries that must never be
@@ -205,25 +231,7 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
             catalog_set_aside.as_str(),
             "# AgentsCommander: exclude coding-agent catalog files the naming migration set aside.",
         ),
-        // #2807 - the agent state file beside each tracked `config.json`, its
-        // lock sidecar and its publish temporary.
-        config_state_row,
-        config_state_lock_row,
-        config_state_tmp_row,
-    ];
-    for pattern in &custom_patterns {
-        required_entries.push((
-            pattern.as_str(),
-            "# AgentsCommander: exclude managed session context files inside replica agent \
-                folders.",
-        ));
-    }
-
-    write_required_gitignore(
-        &gitignore_path,
-        &required_entries,
-        project_settings_gitignore_pattern,
-    )
+    ]
 }
 
 const SEED_MANIFEST_COORDINATION_BLOCK: &str = "# AgentsCommander: exclude seed-manifest \
