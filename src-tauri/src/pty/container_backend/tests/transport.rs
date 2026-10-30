@@ -1,4 +1,5 @@
 use super::*;
+use crate::pty::container_lifecycle::CriticalAdmissionOutcome;
 
 #[tokio::test]
 async fn canceled_handshake_stops_installed_runtime_handle_and_removes_pending_state() {
@@ -831,8 +832,7 @@ impl crate::pty::container_lifecycle::ContainerLifecycle for OffRuntimeLifecycle
         &self,
         id: Uuid,
         exit_code: i32,
-    ) -> BoxFuture<'_, Result<crate::pty::container_lifecycle::CriticalAdmissionOutcome<()>, String>>
-    {
+    ) -> BoxFuture<'_, Result<CriticalAdmissionOutcome<()>, String>> {
         let release = self
             .release
             .lock()
@@ -844,7 +844,7 @@ impl crate::pty::container_lifecycle::ContainerLifecycle for OffRuntimeLifecycle
                 .send((id, Some(exit_code)))
                 .expect("record route loss");
             let _ = release.await;
-            Ok(crate::pty::container_lifecycle::CriticalAdmissionOutcome::Completed(()))
+            Ok(CriticalAdmissionOutcome::Completed(()))
         })
     }
 }
