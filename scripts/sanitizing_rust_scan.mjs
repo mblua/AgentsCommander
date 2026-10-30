@@ -358,6 +358,23 @@ export function scanRust(path, text) {
     }
   }
   const cfgTest = attrs => attrs.some(a => a.meta.name === 'cfg' && impliesTest(a.meta.args[0]));
+  const threadLocalTestRanges = [];
+  for (const group of macroGroups) {
+    if (tokens[group.start - 1]?.text !== '!' ||
+        tokens[group.start - 2]?.name !== 'thread_local') continue;
+    let first = group.start - 2;
+    if (inMacro(first)) continue;
+    while (tokens[first - 1]?.text === '::' && tokens[first - 2]?.kind === 'ident')
+      first -= 2;
+    if (tokens[first - 1]?.text === '::') first--;
+    const attached = [];
+    while (attrEnds.has(first - 1) && !attrEnds.get(first - 1).inner) {
+      const attr = attrEnds.get(first - 1);
+      attached.unshift(attr); first = attr.first;
+    }
+    if (cfgTest(attached))
+      threadLocalTestRanges.push({ start: tokens[first].start, end: tokens[group.end].end });
+  }
   const fileTest = /(?:(?:^|\/)(?:tests\/|tests\.rs$)|_tests\.rs$)/.test(path);
   for (const item of items) {
     let cfg = cfgTest(item.attributes);
@@ -368,6 +385,7 @@ export function scanRust(path, text) {
     if (item.bodyScope) item.bodyScope.item = item;
   }
   const isTestOffset = offset => fileTest || scopes.some(s => offset >= s.start && offset < s.end && cfgTest(s.attributes)) ||
+    threadLocalTestRanges.some(range => offset >= range.start && offset < range.end) ||
     items.some(item => offset >= item.start && offset < item.end && item.cfgTest ||
       item.directTest && offset >= item.bodyStart && offset < item.end);
   for (const scope of scopes) for (const binding of scope.bindings.values()) if (binding.ambiguous)
