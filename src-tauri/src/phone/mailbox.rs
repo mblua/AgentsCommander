@@ -56,8 +56,6 @@ use crate::config::injected_messages::TOKEN_WORKGROUP;
 #[cfg(test)]
 use crate::config::instance_artifacts::SESSION_REQUESTS_DIR_NAME;
 #[cfg(test)]
-use crate::config::settings::AgentConfig;
-#[cfg(test)]
 use crate::config::settings::SettingsState;
 #[cfg(test)]
 use crate::phone::consumption::ConsumptionVerdict;
