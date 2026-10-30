@@ -254,7 +254,7 @@ pub(crate) async fn raise_reader_demand_guarded<R: tauri::Runtime>(
         session_id,
         dest,
         network,
-        app.clone(),
+        Arc::new(app.clone()),
         Some(capture.tx.clone()),
         rx.map(|rx| (capture.slot.clone(), rx)),
     );

@@ -1,5 +1,20 @@
 use super::*;
 
+#[derive(Default)]
+struct RecordingEvents {
+    errors: std::sync::Mutex<Vec<(String, String, Option<String>)>>,
+}
+
+impl TelegramEvents for RecordingEvents {
+    fn bridge_error(&self, session_id: &str, error: &str, kind: Option<&str>) {
+        self.errors.lock().unwrap().push((
+            session_id.to_owned(),
+            error.to_owned(),
+            kind.map(str::to_owned),
+        ));
+    }
+}
+
 use std::io::Write;
 
 /// A Claude fixture line with a timestamp, as the preamble scan needs.
@@ -97,9 +112,7 @@ async fn a_room_only_claude_reader_truncates_no_global_log_and_still_emits() {
         None => Vec::new(),
     };
 
-    let app = tauri::test::mock_builder()
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build claude watcher test app");
+    let events = Arc::new(RecordingEvents::default());
     let network = crate::network::OutboundNetwork::new_for_tests(1);
     let cancel = CancellationToken::new();
     let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
@@ -112,7 +125,7 @@ async fn a_room_only_claude_reader_truncates_no_global_log_and_still_emits() {
         dest_rx,
         "room-only-claude".to_string(),
         cancel.clone(),
-        app.handle().clone(),
+        events.clone(),
         Some(tx),
     );
 
@@ -520,7 +533,6 @@ fn decide_attach_falls_back_to_mtime_when_the_deadline_expires() {
 
 /// A reader over a fixture projects dir, with a live sink.
 struct Reader {
-    _app: tauri::App<tauri::test::MockRuntime>,
     _dest_tx: tokio::sync::watch::Sender<Option<BotTarget>>,
     cancel: CancellationToken,
     task: tokio::task::JoinHandle<()>,
@@ -529,9 +541,7 @@ struct Reader {
 
 impl Reader {
     fn start(project_dir: &Path, transcript_id: Option<String>) -> Self {
-        let app = tauri::test::mock_builder()
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build claude watcher test app");
+        let events = Arc::new(RecordingEvents::default());
         let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let cancel = CancellationToken::new();
@@ -542,11 +552,10 @@ impl Reader {
             dest_rx,
             "pin-session".to_string(),
             cancel.clone(),
-            app.handle().clone(),
+            events.clone(),
             Some(tx),
         );
         Self {
-            _app: app,
             _dest_tx: dest_tx,
             cancel,
             task,
@@ -930,4 +939,60 @@ fn decide_attach_falls_back_only_after_the_deadline() {
         decide_attach(inputs(Some(PIN_ID), None, Some(old), false, true)),
         AttachDecision::MtimeFallback(old.to_path_buf())
     );
+}
+
+#[tokio::test]
+async fn forced_read_error_preserves_session_text_and_absent_kind() {
+    let fixture = transcript(Utc::now());
+    let events = Arc::new(RecordingEvents::default());
+    let cancel = CancellationToken::new();
+    let (dest_tx, dest_rx) = tokio::sync::watch::channel(None);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let task = spawn_watch_task(
+        fixture._dir.path().to_path_buf(),
+        None,
+        OutboundNetwork::new_for_tests(1),
+        dest_rx,
+        "read-error-claude".to_owned(),
+        cancel.clone(),
+        events.clone(),
+        Some(tx),
+    );
+    tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .expect("reader attaches")
+        .expect("capture proves selected transcript");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&fixture.path)
+        .unwrap()
+        .write_all(&[0xff, b'\n'])
+        .unwrap();
+    let expected_error =
+        read_new_lines_with_starts(&fixture.path, &mut 0, &mut String::new()).unwrap_err();
+    let observed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let errors = events.errors.lock().unwrap().clone();
+            if !errors.is_empty() {
+                break errors;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    cancel.cancel();
+    drop(dest_tx);
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("reader cancels")
+        .expect("reader joins");
+    let expected = (
+        "read-error-claude".to_owned(),
+        format!("JSONL read error: {}", expected_error),
+        None,
+    );
+    assert!(observed
+        .expect("real read branch emits error")
+        .iter()
+        .all(|e| e == &expected));
 }

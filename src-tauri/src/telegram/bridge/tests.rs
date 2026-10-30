@@ -410,3 +410,73 @@ fn agy_filter_shared_predicates_identical_to_claude_filter() {
         assert!(claude.keep_line(line), "claude should keep: {line:?}");
     }
 }
+
+#[derive(Default)]
+struct ReaderEvents {
+    errors: Mutex<Vec<String>>,
+}
+
+impl TelegramEvents for ReaderEvents {
+    fn bridge_error(&self, _session_id: &str, error: &str, _kind: Option<&str>) {
+        self.errors.lock().unwrap().push(error.to_owned());
+    }
+}
+
+#[tokio::test]
+async fn reader_keeps_capture_destination_and_cancellation_ownership() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bridge-reader.jsonl");
+    let line = serde_json::json!({
+        "type": "assistant",
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "message": {"content": [{"type": "text", "text": "bridge capture"}]}
+    });
+    std::fs::write(&path, format!("{line}\n")).unwrap();
+    let session_id = Uuid::new_v4();
+    let registry = crate::capture::registry::CaptureRegistry::new();
+    let (capture, rx) = registry.open(&session_id.to_string());
+    let events = Arc::new(ReaderEvents::default());
+    let network = OutboundNetwork::new_for_tests(1);
+    let reader = spawn_reader(
+        SessionReaderKind::Claude {
+            project_dir: dir.path().to_path_buf(),
+            transcript_id: None,
+        },
+        session_id,
+        None,
+        network.clone(),
+        events.clone(),
+        Some(capture.tx),
+        Some((capture.slot, rx.unwrap())),
+    );
+    assert_eq!(reader.tasks.len(), 2, "watcher and capture pump only");
+    assert!(reader.dest.current().is_none());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while reader.frontier.lock().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("capture pump observes transcript");
+    let cut = reader.frontier.lock().unwrap().clone().unwrap();
+    assert_eq!(cut.path, normalise_path(&path));
+    assert_eq!(cut.len, std::fs::metadata(&path).unwrap().len());
+    assert!(cut.reader_seq.is_some());
+    let target = ReaderDest {
+        token: "unused".to_owned(),
+        chat_id: 42,
+    };
+    reader.dest.send(Some(target.clone()));
+    assert_eq!(reader.dest.current(), Some(target));
+    reader.dest.send(None);
+    assert!(reader.dest.current().is_none());
+    reader.cancel.cancel();
+    for task in reader.tasks {
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("owned task cancels")
+            .expect("owned task joins");
+    }
+    assert!(events.errors.lock().unwrap().is_empty());
+    assert!(network.acquired_labels_for_tests().is_empty());
+}

@@ -102,7 +102,7 @@ async fn a_codex_hot_attach_sends_once_and_a_detach_stops_without_restarting() {
     let (fixture, path) = room_only_fixture(&cwd);
     let search_root = fixture.path().to_path_buf();
 
-    let app = mock_app();
+    let events = Arc::new(RecordingEvents::default());
     let network = OutboundNetwork::new_for_tests(1);
     let cancel = CancellationToken::new();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -116,7 +116,7 @@ async fn a_codex_hot_attach_sends_once_and_a_detach_stops_without_restarting() {
         dest_rx,
         "hot-attach-session".to_string(),
         cancel.clone(),
-        app.handle().clone(),
+        events.clone(),
         Some(tx),
     );
 
