@@ -13,6 +13,8 @@ use crate::telegram::api;
 
 pub(crate) trait TelegramEvents: Send + Sync {
     fn bridge_error(&self, session_id: &str, error: &str, kind: Option<&str>);
+    fn incoming(&self, _session_id: &str, _text: &str, _from: &str) {}
+    fn last_prompt(&self, _session_id: &str, _text: &str) {}
 }
 
 fn report_send_error(

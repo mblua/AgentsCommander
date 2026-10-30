@@ -1,4 +1,6 @@
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -17,6 +19,31 @@ use crate::session::profile::CodingAgentKind;
 use crate::telegram::output::TelegramEvents;
 use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger, TelegramErrKind};
 use crate::telegram::types::BridgeInfo;
+
+pub(crate) trait TelegramRuntime: Send + Sync {
+    fn poll_error_policy<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = TelegramNetworkPollErrorLogging> + Send + 'a>>;
+    fn voice_settings<'a>(&'a self) -> Pin<Box<dyn Future<Output = (String, String)> + Send + 'a>>;
+    fn inject_text<'a>(
+        &'a self,
+        id: Uuid,
+        text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+    fn note_user_message<'a>(&'a self, id: Uuid) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    fn set_last_prompt<'a>(
+        &'a self,
+        session_id_str: &'a str,
+        prompt: &'a str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    fn transcribe_audio<'a>(
+        &'a self,
+        network: &'a OutboundNetwork,
+        audio: &'a [u8],
+        key: &'a str,
+        model: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
+}
 
 mod filter;
 mod poll;
@@ -408,14 +435,15 @@ pub fn spawn_reader(
 /// 6-phase pipeline is then skipped, and the reader itself is owned by the
 /// supervisor, not by this handle (#2232 phase 4).
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_bridge<R: tauri::Runtime>(
+pub fn spawn_bridge(
     bot_token: String,
     chat_id: i64,
     session_id: Uuid,
     info: BridgeInfo,
     pty_mgr: Arc<Mutex<PtyManager>>,
     network: OutboundNetwork,
-    app_handle: tauri::AppHandle<R>,
+    event_port: Arc<dyn TelegramEvents>,
+    runtime: Arc<dyn TelegramRuntime>,
     reader_mode: bool,
     agent_kind: Option<CodingAgentKind>,
 ) -> BridgeHandle {
@@ -435,7 +463,7 @@ pub fn spawn_bridge<R: tauri::Runtime>(
             chat_id,
             session_id_str.clone(),
             cancel.clone(),
-            Arc::new(app_handle.clone()),
+            Arc::clone(&event_port),
             agent_kind,
         )));
     }
@@ -449,7 +477,8 @@ pub fn spawn_bridge<R: tauri::Runtime>(
         pty_mgr,
         network,
         cancel.clone(),
-        app_handle,
+        event_port,
+        runtime,
     )));
 
     BridgeHandle {

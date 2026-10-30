@@ -1,16 +1,14 @@
 use super::PollNetworkErrorState;
 use super::PollNetworkLogAction;
+use super::TelegramRuntime;
 use super::{BridgeLogger, TelegramErrKind};
 use crate::network::NetworkBackoff;
 use crate::network::OutboundNetwork;
-use crate::pty::inject::inject_text_into_session;
 use crate::pty::manager::PtyManager;
-use crate::session::manager::SessionManager;
 use crate::telegram::api;
+use crate::telegram::output::TelegramEvents;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::{Emitter, Manager};
-use tokio::sync::RwLock;
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -18,7 +16,7 @@ use uuid::Uuid;
 // ── Poll task (Telegram -> PTY) ──────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn poll_task<R: tauri::Runtime>(
+pub(super) async fn poll_task(
     token: String,
     chat_id: i64,
     session_id: Uuid,
@@ -26,15 +24,12 @@ pub(super) async fn poll_task<R: tauri::Runtime>(
     _pty_mgr: Arc<Mutex<PtyManager>>,
     network: OutboundNetwork,
     cancel: CancellationToken,
-    app: tauri::AppHandle<R>,
+    event_port: Arc<dyn TelegramEvents>,
+    runtime: Arc<dyn TelegramRuntime>,
 ) {
     let mut logger = BridgeLogger::new(&session_id_str);
     let mut offset: i64 = 0;
-    let network_error_policy = {
-        let settings = app.state::<crate::config::settings::SettingsState>();
-        let cfg = settings.read().await;
-        cfg.telegram_network_poll_error_logging.clone()
-    };
+    let network_error_policy = runtime.poll_error_policy().await;
     let mut network_error_state = PollNetworkErrorState::new();
     let mut poll_backoff = new_poll_backoff(&session_id_str);
 
@@ -175,7 +170,7 @@ pub(super) async fn poll_task<R: tauri::Runtime>(
                                 }
                                 api::TelegramContent::Voice { file_id } => {
                                     match transcribe_voice_update(
-                                        &app,
+                                        runtime.as_ref(),
                                         &network,
                                         &token,
                                         chat_id,
@@ -192,48 +187,16 @@ pub(super) async fn poll_task<R: tauri::Runtime>(
                                 }
                             };
 
-                            if let Err(e) =
-                                inject_text_into_session(&app, session_id, &inject_text)
-                                    .await
-                            {
-                                logger.log("PTY_ERR", &session_id_str, &e.to_string());
-                                log::error!("Failed to write Telegram input to PTY: {}", e);
-                            }
-
-                            // #552 a Telegram message is a real user message to this
-                            // coordinator: reset the badge clock + auto-close silence
-                            // (covers text and transcribed-voice inbound; both converge here).
-                            crate::commands::pty::note_user_message_to_session(
-                                &app,
+                            deliver_text(
+                                runtime.as_ref(),
+                                event_port.as_ref(),
                                 session_id,
-                                crate::commands::pty::UserInputSource::CompleteMessage,
+                                &session_id_str,
+                                &inject_text,
+                                &update.from_name,
+                                &mut logger,
                             )
                             .await;
-
-                            let _ = app.emit(
-                                "telegram_incoming",
-                                serde_json::json!({
-                                    "sessionId": session_id_str,
-                                    "text": inject_text,
-                                    "from": update.from_name,
-                                }),
-                            );
-
-                            let tg_prompt = format!("[TG] {}", inject_text);
-                            {
-                                let mgr_state = app.state::<Arc<RwLock<SessionManager>>>();
-                                let mgr = mgr_state.read().await;
-                                if let Ok(uuid) = uuid::Uuid::parse_str(&session_id_str) {
-                                    mgr.set_last_prompt(uuid, tg_prompt.clone()).await;
-                                }
-                            }
-                            let _ = app.emit(
-                                "last_prompt",
-                                serde_json::json!({
-                                    "text": tg_prompt,
-                                    "sessionId": session_id_str,
-                                }),
-                            );
                         }
                     }
                     Err(e) => {
@@ -356,11 +319,34 @@ pub(super) fn new_poll_backoff(session_id: &str) -> NetworkBackoff {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn deliver_text(
+    runtime: &dyn TelegramRuntime,
+    event_port: &dyn TelegramEvents,
+    session_id: Uuid,
+    session_id_str: &str,
+    text: &str,
+    from: &str,
+    logger: &mut BridgeLogger,
+) {
+    if let Err(e) = runtime.inject_text(session_id, text).await {
+        logger.log("PTY_ERR", session_id_str, &e.to_string());
+        log::error!("Failed to write Telegram input to PTY: {}", e);
+    }
+
+    // Text and transcribed voice both reset the real-user badge clock (#552).
+    runtime.note_user_message(session_id).await;
+    event_port.incoming(session_id_str, text, from);
+    let tg_prompt = format!("[TG] {}", text);
+    runtime.set_last_prompt(session_id_str, &tg_prompt).await;
+    event_port.last_prompt(session_id_str, &tg_prompt);
+}
+
 /// Transcribes one inbound Telegram voice message. Returns `None` when the
 /// update must be skipped (no API key, download or transcription failure).
 #[allow(clippy::too_many_arguments)]
-async fn transcribe_voice_update<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+async fn transcribe_voice_update(
+    runtime: &dyn TelegramRuntime,
     network: &OutboundNetwork,
     token: &str,
     chat_id: i64,
@@ -375,11 +361,7 @@ async fn transcribe_voice_update<R: tauri::Runtime>(
         &format!("from={} file_id={}", from_name, file_id),
     );
 
-    let settings = app.state::<crate::config::settings::SettingsState>();
-    let cfg = settings.read().await;
-    let api_key = cfg.gemini_api_key.clone();
-    let model_raw = cfg.gemini_model.clone();
-    drop(cfg);
+    let (api_key, model_raw) = runtime.voice_settings().await;
 
     let model = if model_raw.is_empty() {
         "gemini-2.5-flash".to_string()
@@ -437,14 +419,9 @@ async fn transcribe_voice_update<R: tauri::Runtime>(
         }
     };
 
-    match crate::commands::voice::transcribe_audio_with_network(
-        network,
-        &audio_bytes,
-        "audio/ogg",
-        &api_key,
-        &model,
-    )
-    .await
+    match runtime
+        .transcribe_audio(network, &audio_bytes, &api_key, &model)
+        .await
     {
         Ok(text) => {
             logger.log(
@@ -473,3 +450,6 @@ async fn transcribe_voice_update<R: tauri::Runtime>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
