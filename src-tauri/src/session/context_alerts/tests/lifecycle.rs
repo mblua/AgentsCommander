@@ -384,7 +384,7 @@ async fn closed_sample_receiver_prepares_due_retry_before_next_backlog_sample() 
     let shutdown = CancellationToken::new();
     let release_live_check = runtime.block_next_live_check();
     let (sender, receiver) = mpsc::channel(2_048);
-    let actor = tauri::async_runtime::spawn(run_context_alert_actor(
+    let actor = tokio::spawn(run_context_alert_actor(
         Arc::clone(&runtime) as Arc<dyn ContextAlertRuntime>,
         Arc::clone(&clock) as Arc<dyn AlertClock>,
         receiver,

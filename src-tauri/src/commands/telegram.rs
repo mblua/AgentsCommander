@@ -1,4 +1,6 @@
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -16,6 +18,84 @@ use crate::telegram::bridge::{self, ReaderDest, SessionReaderKind};
 pub(crate) use crate::telegram::manager::release_all_reader_demands;
 use crate::telegram::manager::{DemandEpoch, ReaderConsumer, ReaderEntry, TelegramBridgeState};
 use crate::telegram::types::{BridgeInfo, TelegramBotConfig};
+
+impl<R: tauri::Runtime> bridge::TelegramRuntime for AppHandle<R> {
+    fn poll_error_policy<'a>(
+        &'a self,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = crate::config::settings::TelegramNetworkPollErrorLogging>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let settings = self.state::<SettingsState>();
+            let cfg = settings.read().await;
+            cfg.telegram_network_poll_error_logging.clone()
+        })
+    }
+
+    fn voice_settings<'a>(&'a self) -> Pin<Box<dyn Future<Output = (String, String)> + Send + 'a>> {
+        Box::pin(async move {
+            let settings = self.state::<SettingsState>();
+            let cfg = settings.read().await;
+            (cfg.gemini_api_key.clone(), cfg.gemini_model.clone())
+        })
+    }
+
+    fn inject_text<'a>(
+        &'a self,
+        id: Uuid,
+        text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move { crate::pty::inject::inject_text_into_session(self, id, text).await })
+    }
+
+    fn note_user_message<'a>(&'a self, id: Uuid) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            crate::commands::pty::note_user_message_to_session(
+                self,
+                id,
+                crate::commands::pty::UserInputSource::CompleteMessage,
+            )
+            .await;
+        })
+    }
+
+    fn set_last_prompt<'a>(
+        &'a self,
+        session_id_str: &'a str,
+        prompt: &'a str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let mgr_state = self.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = mgr_state.read().await;
+            if let Ok(id) = Uuid::parse_str(session_id_str) {
+                mgr.set_last_prompt(id, prompt.to_string()).await;
+            }
+        })
+    }
+
+    fn transcribe_audio<'a>(
+        &'a self,
+        network: &'a OutboundNetwork,
+        audio: &'a [u8],
+        key: &'a str,
+        model: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
+        Box::pin(async move {
+            crate::commands::voice::transcribe_audio_with_network(
+                network,
+                audio,
+                "audio/ogg",
+                key,
+                model,
+            )
+            .await
+        })
+    }
+}
 
 /// Derive which session-reader pipeline to spawn for a given session.
 ///
@@ -254,7 +334,7 @@ pub(crate) async fn raise_reader_demand_guarded<R: tauri::Runtime>(
         session_id,
         dest,
         network,
-        app.clone(),
+        Arc::new(app.clone()),
         Some(capture.tx.clone()),
         rx.map(|rx| (capture.slot.clone(), rx)),
     );
@@ -407,7 +487,8 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
                 &bot,
                 pty_mgr.inner().clone(),
                 network.clone(),
-                app.clone(),
+                Arc::new(app.clone()),
+                Arc::new(app.clone()),
                 reader_mode,
                 agent_kind,
             )

@@ -14,7 +14,6 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use tauri::Emitter;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -29,7 +28,7 @@ use crate::telegram::jsonl_kernel::{
     self, read_new_lines_with_starts, read_preamble_for_race, POLL_INTERVAL_MS, PREAMBLE_MAX_BYTES,
     RACE_GRACE_SECS, ROTATION_STALE_SECS,
 };
-use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger};
+use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger, TelegramEvents};
 
 /// Buffer thresholds for Codex final answers: the extracted prose of a turn is
 /// coalesced into one Telegram message once it settles for `FLUSH_DELAY_MS` or
@@ -63,7 +62,7 @@ pub struct BotTarget {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_watch_task<R: tauri::Runtime>(
+pub fn spawn_watch_task(
     search_root: PathBuf,
     expected_cwd: String,
     attach_time: DateTime<Utc>,
@@ -71,7 +70,7 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
     dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
     session_id: String,
     cancel: CancellationToken,
-    app: tauri::AppHandle<R>,
+    event_port: Arc<dyn TelegramEvents>,
     sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -83,7 +82,7 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
             dest,
             session_id.clone(),
             cancel,
-            app.clone(),
+            event_port.clone(),
             sink,
         )
         .await;
@@ -523,7 +522,7 @@ pub(crate) async fn lock_global_diagnostic_files() -> tokio::sync::MutexGuard<'s
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn watch_loop<R: tauri::Runtime>(
+async fn watch_loop(
     search_root: PathBuf,
     expected_cwd: String,
     attach_time: DateTime<Utc>,
@@ -531,7 +530,7 @@ async fn watch_loop<R: tauri::Runtime>(
     dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
     session_id: String,
     cancel: CancellationToken,
-    app: tauri::AppHandle<R>,
+    event_port: Arc<dyn TelegramEvents>,
     sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) {
     let mut dest_rx = dest;
@@ -806,12 +805,10 @@ async fn watch_loop<R: tauri::Runtime>(
                         Err(e) => {
                             bridge_log!("CODEX_ERR", &e.to_string());
                             log::error!("[CODEX_ERR] Read error for session {}: {}", session_id, e);
-                            let _ = app.emit(
-                                "telegram_bridge_error",
-                                serde_json::json!({
-                                    "sessionId": session_id,
-                                    "error": format!("Codex JSONL read error: {}", e),
-                                }),
+                            event_port.bridge_error(
+                                &session_id,
+                                &format!("Codex JSONL read error: {}", e),
+                                None,
                             );
                         }
                     }
@@ -825,7 +822,7 @@ async fn watch_loop<R: tauri::Runtime>(
                         {
                             flush_buffer(
                                 &mut buffer, &network, &target.token, target.chat_id,
-                                &session_id, &app, bridge_logger, diag_logger,
+                                &session_id, event_port.as_ref(), bridge_logger, diag_logger,
                                 true,
                             ).await;
                         } else {
@@ -876,7 +873,7 @@ async fn watch_loop<R: tauri::Runtime>(
                 &target.token,
                 target.chat_id,
                 &session_id,
-                &app,
+                event_port.as_ref(),
                 bridge_logger,
                 diag_logger,
                 true,

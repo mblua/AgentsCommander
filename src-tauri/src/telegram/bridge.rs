@@ -1,4 +1,6 @@
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -14,8 +16,34 @@ use crate::config::settings::TelegramNetworkPollErrorLogging;
 use crate::network::OutboundNetwork;
 use crate::pty::manager::PtyManager;
 use crate::session::profile::CodingAgentKind;
+use crate::telegram::output::TelegramEvents;
 use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger, TelegramErrKind};
 use crate::telegram::types::BridgeInfo;
+
+pub(crate) trait TelegramRuntime: Send + Sync {
+    fn poll_error_policy<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = TelegramNetworkPollErrorLogging> + Send + 'a>>;
+    fn voice_settings<'a>(&'a self) -> Pin<Box<dyn Future<Output = (String, String)> + Send + 'a>>;
+    fn inject_text<'a>(
+        &'a self,
+        id: Uuid,
+        text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+    fn note_user_message<'a>(&'a self, id: Uuid) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    fn set_last_prompt<'a>(
+        &'a self,
+        session_id_str: &'a str,
+        prompt: &'a str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    fn transcribe_audio<'a>(
+        &'a self,
+        network: &'a OutboundNetwork,
+        audio: &'a [u8],
+        key: &'a str,
+        model: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
+}
 
 mod filter;
 mod poll;
@@ -324,12 +352,12 @@ fn spawn_capture_pump(
 /// new destination through the returned `watch`). `sink` is the live
 /// `CaptureRegistry` sender — passing `Some(tx)` here is what makes phases 1
 /// and 3 reachable from production (acceptance criterion 8).
-pub fn spawn_reader<R: tauri::Runtime>(
+pub fn spawn_reader(
     kind: SessionReaderKind,
     session_id: Uuid,
     dest: Option<ReaderDest>,
     network: OutboundNetwork,
-    app_handle: tauri::AppHandle<R>,
+    event_port: Arc<dyn TelegramEvents>,
     sink: Option<mpsc::UnboundedSender<Arc<CapturedRecord>>>,
     capture: Option<(CaptureSlot, mpsc::UnboundedReceiver<Arc<CapturedRecord>>)>,
 ) -> ReaderTask {
@@ -354,7 +382,7 @@ pub fn spawn_reader<R: tauri::Runtime>(
                 dest_rx,
                 session_id_str,
                 cancel.clone(),
-                app_handle,
+                event_port,
                 sink,
             );
             (task, ReaderDestSender::Claude(dest_tx))
@@ -373,7 +401,7 @@ pub fn spawn_reader<R: tauri::Runtime>(
                 dest_rx,
                 session_id_str,
                 cancel.clone(),
-                app_handle,
+                event_port,
                 sink,
             );
             (task, ReaderDestSender::Codex(dest_tx))
@@ -407,14 +435,15 @@ pub fn spawn_reader<R: tauri::Runtime>(
 /// 6-phase pipeline is then skipped, and the reader itself is owned by the
 /// supervisor, not by this handle (#2232 phase 4).
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_bridge<R: tauri::Runtime>(
+pub fn spawn_bridge(
     bot_token: String,
     chat_id: i64,
     session_id: Uuid,
     info: BridgeInfo,
     pty_mgr: Arc<Mutex<PtyManager>>,
     network: OutboundNetwork,
-    app_handle: tauri::AppHandle<R>,
+    event_port: Arc<dyn TelegramEvents>,
+    runtime: Arc<dyn TelegramRuntime>,
     reader_mode: bool,
     agent_kind: Option<CodingAgentKind>,
 ) -> BridgeHandle {
@@ -434,7 +463,7 @@ pub fn spawn_bridge<R: tauri::Runtime>(
             chat_id,
             session_id_str.clone(),
             cancel.clone(),
-            app_handle.clone(),
+            Arc::clone(&event_port),
             agent_kind,
         )));
     }
@@ -448,7 +477,8 @@ pub fn spawn_bridge<R: tauri::Runtime>(
         pty_mgr,
         network,
         cancel.clone(),
-        app_handle,
+        event_port,
+        runtime,
     )));
 
     BridgeHandle {
@@ -478,14 +508,14 @@ const FLUSH_DELAY_MS: u64 = 500;
 // The 8-argument signature is the frozen plan spec (#1549 §5.4): the PTY-bridge
 // chain threads `agent_kind` as a loose parameter by design (no struct grouping).
 #[allow(clippy::too_many_arguments)]
-async fn output_task<R: tauri::Runtime>(
+async fn output_task(
     mut rx: mpsc::Receiver<Vec<u8>>,
     network: OutboundNetwork,
     token: String,
     chat_id: i64,
     session_id: String,
     cancel: CancellationToken,
-    app: tauri::AppHandle<R>,
+    event_port: Arc<dyn TelegramEvents>,
     agent_kind: Option<CodingAgentKind>,
 ) {
     let mut logger = BridgeLogger::new(&session_id);
@@ -547,7 +577,7 @@ async fn output_task<R: tauri::Runtime>(
                     if since_last >= flush_delay || buf_len > 2000 {
                         flush_buffer(
                             &mut buffer, &network, &token, chat_id,
-                            &session_id, &app, &mut logger, &mut diag,
+                            &session_id, event_port.as_ref(), &mut logger, &mut diag,
                             false,
                         ).await;
                     }
@@ -589,7 +619,7 @@ async fn output_task<R: tauri::Runtime>(
             &token,
             chat_id,
             &session_id,
-            &app,
+            event_port.as_ref(),
             &mut logger,
             &mut diag,
             false,

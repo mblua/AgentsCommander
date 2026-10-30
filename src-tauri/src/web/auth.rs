@@ -24,3 +24,14 @@ impl WebAccessToken {
         &self.0
     }
 }
+
+pub(crate) fn read_persisted_web_token(
+    config_dir: Option<&std::path::Path>,
+) -> Result<String, String> {
+    let token_path = config_dir.ok_or("No config dir")?.join("web-token.txt");
+    crate::filesystem::documents::read_config_document(&token_path)
+        .map_err(|e| format!("Cannot read web token: {e}"))
+}
+
+#[cfg(test)]
+mod tests;

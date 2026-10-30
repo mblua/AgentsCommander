@@ -1,6 +1,7 @@
 use super::AttemptPreparation;
 use super::AttemptSnapshot;
 use super::ContextAlertRuntime;
+use super::ContextAlertServices;
 use super::MemberIdentityFingerprint;
 use super::MemberPolicyResolution;
 use super::ReadyAttempt;
@@ -13,23 +14,18 @@ use crate::filesystem::session_context;
 use crate::phone::mailbox::InternalNoticeGuard;
 use crate::phone::mailbox::InternalSystemNotice;
 use crate::phone::mailbox::InternalSystemTarget;
-use crate::phone::mailbox::MailboxPoller;
-use crate::pty::context_scrape::ContextScraper;
-use crate::session::manager::SessionManager;
 use crate::session::session::Session;
 use crate::session::session::SessionStatus;
 use futures::future::BoxFuture;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 #[derive(Clone)]
 pub(super) struct ProductionContextAlertRuntime {
-    pub(super) app: tauri::AppHandle,
-    pub(super) messages: Arc<crate::config::injected_messages::MessageWarnings>,
+    pub(super) services: Arc<dyn ContextAlertServices>,
 }
 
 impl ContextAlertRuntime for ProductionContextAlertRuntime {
@@ -47,9 +43,7 @@ impl ContextAlertRuntime for ProductionContextAlertRuntime {
     }
 
     fn retire_sample_registration(&self, session_id: Uuid) {
-        if let Some(scraper) = self.app.try_state::<Arc<ContextScraper>>() {
-            scraper.retire_session(session_id);
-        }
+        self.services.retire_sample_registration(session_id);
     }
 
     fn prepare_attempt(
@@ -62,12 +56,10 @@ impl ContextAlertRuntime for ProductionContextAlertRuntime {
     }
 
     fn deliver_attempt(&self, attempt: ReadyAttempt) -> BoxFuture<'static, Result<(), String>> {
-        let app = self.app.clone();
-        let messages = Arc::clone(&self.messages);
+        let services = Arc::clone(&self.services);
         Box::pin(async move {
-            MailboxPoller::new(messages)
-                .deliver_internal_system_notice(
-                    &app,
+            services
+                .deliver(
                     attempt.target,
                     attempt.notice,
                     attempt.cancellation,
@@ -79,29 +71,16 @@ impl ContextAlertRuntime for ProductionContextAlertRuntime {
 }
 
 impl ProductionContextAlertRuntime {
-    async fn public_session(&self, session_id: Uuid) -> Option<Session> {
-        let state = self
-            .app
-            .try_state::<Arc<tokio::sync::RwLock<SessionManager>>>()?;
-        let manager = state.read().await.clone();
-        manager.get_session(session_id).await
-    }
-
-    fn registered(&self, session_id: Uuid) -> bool {
-        self.app
-            .try_state::<Arc<ContextScraper>>()
-            .is_some_and(|scraper| scraper.is_session_registered(session_id))
-    }
-
     async fn session_and_registration_live(&self, session_id: Uuid) -> bool {
-        self.public_session(session_id)
+        self.services
+            .public_session(session_id)
             .await
             .is_some_and(|session| !matches!(session.status, SessionStatus::Exited(_)))
-            && self.registered(session_id)
+            && self.services.registered(session_id)
     }
 
     async fn resolve_member_policy_inner(&self, session_id: Uuid) -> MemberPolicyResolution {
-        let Some(session) = self.public_session(session_id).await else {
+        let Some(session) = self.services.public_session(session_id).await else {
             return MemberPolicyResolution::PermanentIneligible(
                 "sampled session is no longer present".to_string(),
             );
@@ -109,7 +88,7 @@ impl ProductionContextAlertRuntime {
         if session.is_root_agent
             || matches!(session.status, SessionStatus::Exited(_))
             || session.agent_id.is_none()
-            || !self.registered(session_id)
+            || !self.services.registered(session_id)
         {
             return MemberPolicyResolution::PermanentIneligible(
                 "sampled session is no longer an eligible registered member".to_string(),
@@ -137,13 +116,13 @@ impl ProductionContextAlertRuntime {
                 | MemberPolicyResolution::Disabled(_)
                 | MemberPolicyResolution::Paused { .. }
         ) {
-            let current = self.public_session(session_id).await;
+            let current = self.services.public_session(session_id).await;
             if !session_matches_policy_snapshot(
                 current.as_ref(),
                 session_id,
                 &agent_id,
                 &working_directory,
-                self.registered(session_id),
+                self.services.registered(session_id),
             ) {
                 return MemberPolicyResolution::PermanentIneligible(
                     "sampled session identity changed during policy resolution".to_string(),
@@ -230,7 +209,7 @@ impl ProductionContextAlertRuntime {
                 ))
             }
         };
-        let guard_app = self.app.clone();
+        let guard_services = Arc::clone(&self.services);
         let guard_fingerprint = snapshot.fingerprint.clone();
         let guard_target = target.clone();
         let guard_thresholds = notice
@@ -240,7 +219,7 @@ impl ProductionContextAlertRuntime {
         let guard_cancellation = cancellation.clone();
         let guard: InternalNoticeGuard = Arc::new(move || {
             validate_attempt_guard(
-                &guard_app,
+                guard_services.as_ref(),
                 &guard_fingerprint,
                 &guard_target,
                 &guard_thresholds,
@@ -558,8 +537,8 @@ pub(super) fn prepare_internal_route_blocking(
     Ok((target, notice))
 }
 
-pub(super) fn validate_attempt_guard<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(super) fn validate_attempt_guard(
+    services: &dyn ContextAlertServices,
     fingerprint: &MemberIdentityFingerprint,
     target: &InternalSystemTarget,
     thresholds: &[u8],
@@ -568,18 +547,7 @@ pub(super) fn validate_attempt_guard<R: tauri::Runtime>(
     if cancellation.is_cancelled() {
         return Err("Context alert attempt was canceled".to_string());
     }
-    if app
-        .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
-        .is_some_and(|guard| guard.blocks_agent(target.fqn()))
-    {
-        return Err(format!("purge-room blocks '{}'", target.fqn()));
-    }
-    let scraper = app
-        .try_state::<Arc<ContextScraper>>()
-        .ok_or_else(|| "Context scraper is unavailable".to_string())?;
-    if !scraper.is_session_registered(fingerprint.session_id) {
-        return Err("Sampled session is no longer registered".to_string());
-    }
+    services.validate_delivery_state(fingerprint.session_id, target)?;
     let replica = canonical_real_directory(&fingerprint.replica_dir, "Member replica")?;
     let workgroup = canonical_real_directory(&fingerprint.workgroup_dir, "Room")?;
     let ac_root = canonical_real_directory(&fingerprint.ac_root, "Project AC Root")?;
