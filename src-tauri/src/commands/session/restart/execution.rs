@@ -1,13 +1,15 @@
+mod selection;
+mod source;
+
 use super::context::{ensure_lifecycle_root_directory, LifecycleExecutionContext};
 use super::settlement::{
     accept_restart_deferred_completion, accept_restart_teardown, finalize_restart_deferred,
     publish_restart_after_warnings, publish_restart_before_warnings, teardown_old_for_restart,
 };
 use crate::commands::session::agent_command::{
-    carry_communication_for_restart, effective_restart_requested_profile, matched_selection,
-    restart_skip_auto_resume_with_intent, MatchedSelection,
+    carry_communication_for_restart, effective_restart_requested_profile,
+    restart_skip_auto_resume_with_intent,
 };
-use crate::commands::session::create::launch::resolve_configured_agent_spawn_for_cwd;
 use crate::commands::session::create::{create_session_inner_impl, CreateSelectionIntent};
 use crate::commands::session::lifecycle::retire_lifecycle_entry_protection;
 #[cfg(test)]
@@ -39,56 +41,22 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
         .clone();
     let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
     let settings = app.state::<SettingsState>().inner().clone();
-    let RestartJobRequest {
-        session_id: uuid,
-        agent_id,
-        requested_profile,
-        skip_auto_resume,
-        activate_after,
-        intent,
-        communication_override,
-        enforcement,
-    } = request;
-    // 1. Read config from existing session BEFORE destroying it
-    let RestartSource {
-        shell,
-        shell_args,
-        cwd,
+    // 1. Read config from existing session BEFORE destroying it.
+    let source = read_restart_source(transaction, &session_mgr, request.session_id).await?;
+    let (input, continuation) = source.into_preparation(request);
+    let source::RestartContinuation {
+        uuid,
         name,
-        stored_agent_id,
-        stored_agent_label,
         git_repos,
         is_root_agent,
         telegram_bot_id,
-        stored_requested_profile,
-        stored_start_fresh,
-        stored_communication,
         old_status,
         old_selected,
-    } = read_restart_source(transaction, &session_mgr, uuid).await?;
-
-    let prepared = prepare_restart(
-        transaction,
-        context,
-        &settings,
-        RestartPreparation {
-            shell,
-            shell_args,
-            cwd,
-            stored_agent_id,
-            stored_agent_label,
-            is_root_agent,
-            stored_requested_profile,
-            stored_start_fresh,
-            stored_communication,
-            agent_id,
-            requested_profile,
-            skip_auto_resume,
-            communication_override,
-            enforcement,
-        },
-    )
-    .await;
+        activate_after,
+        intent,
+        enforcement,
+    } = continuation;
+    let prepared = prepare_restart(transaction, context, &settings, input).await;
     let PreparedRestart {
         shell,
         shell_args,
@@ -206,7 +174,7 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
     .await
 }
 
-struct RestartSource {
+pub(crate) struct RestartSource {
     shell: String,
     shell_args: Vec<String>,
     cwd: String,
@@ -223,7 +191,7 @@ struct RestartSource {
     old_selected: bool,
 }
 
-struct RestartPreparation {
+pub(crate) struct RestartPreparation {
     shell: String,
     shell_args: Vec<String>,
     cwd: String,
@@ -351,65 +319,22 @@ async fn prepare_restart<R: tauri::Runtime>(
         // read guard. No await is held across the guard; it is dropped at the end of
         // this block. The #1271 host-shell snapshot is copied from the SAME guard so
         // program and args can never pair across a configuration change.
-        let (selected_agent_id, resolved_spawn, resolved_agent_host_shell) = {
+        let selection::RestartSelection {
+            selected_agent_id,
+            resolved_spawn,
+            resolved_agent_host_shell,
+        } = {
             let cfg = settings
                 .current_read()
                 .await
                 .map_err(|error| error.to_string())?;
-            let selection = matched_selection(
+            selection::resolve_restart_selection(
                 &cfg,
                 &cwd,
                 requested_agent_id.as_deref(),
                 stored_agent_id.as_deref(),
                 selected_requested_profile.as_deref(),
-            );
-            let (selected_agent_id, resolved_spawn) = match selection {
-                MatchedSelection::NoAgent => (None, None),
-                MatchedSelection::Unresolved { reference } => {
-                    return Err(format!(
-                    "unresolved_coding_agent_reference: '{}' matches no configured coding agent",
-                        reference
-                    ));
-                }
-                MatchedSelection::Agent {
-                    agent_id,
-                    profile_letter,
-                    authoritative,
-                    tier,
-                    original_letter,
-                } => {
-                    let spawn = resolve_configured_agent_spawn_for_cwd(
-                        &cfg,
-                        &agent_id,
-                        &cwd,
-                        profile_letter.as_deref(),
-                        authoritative,
-                    )?
-                    .map(|mut spawn| {
-                        // A matched restart records the ORIGINAL request; the matched
-                        // letter lives in `effective_profile`, its provenance in the
-                        // #2451 carriers.
-                        if authoritative {
-                            if let Some(original) = selected_requested_profile.as_ref() {
-                                spawn.profile_resolution.requested_profile = original.clone();
-                            }
-                        }
-                        spawn.match_tier = tier.map(|tier| tier.as_wire_str().to_string());
-                        spawn.original_profile_letter = original_letter;
-                        spawn
-                    });
-                    (Some(agent_id), spawn)
-                }
-            };
-            let resolved_agent_host_shell = if resolved_spawn.is_some() {
-                Some(ResolvedAgentHostShell {
-                    program: cfg.default_shell.clone(),
-                    args: cfg.default_shell_args.clone(),
-                })
-            } else {
-                None
-            };
-            (selected_agent_id, resolved_spawn, resolved_agent_host_shell)
+            )?
         };
         // #2434 - prepare (isolated CODEX_HOME, OpenCode config dir) outside the
         // settings guard and BEFORE any teardown: a failure aborts the restart and
