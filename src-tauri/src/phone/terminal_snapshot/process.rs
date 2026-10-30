@@ -12,6 +12,100 @@ use terminal_snapshot_renderer::canonical_timestamp;
 use terminal_snapshot_renderer::TerminalSnapshotReasonCode;
 use terminal_snapshot_renderer::MAX_REQUEST_BYTES;
 
+fn read_correlated_request(
+    snapshot_state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
+    processing: &std::path::Path,
+    claimed: &crate::path_identity::VerifiedPathIdentity,
+    filename_request_id: String,
+) -> Option<(HostTerminalSnapshotRequest, uuid::Uuid)> {
+    let read = crate::path_identity::read_bounded_regular(processing, MAX_REQUEST_BYTES);
+    let (bytes, identity) = match read {
+        Ok(value) if crate::path_identity::same_object(claimed, &value.1) => value,
+        Ok(_) => {
+            record_host_ingress_failure(
+                Some(filename_request_id.clone()),
+                None,
+                TerminalSnapshotReasonCode::ResponseUnavailable,
+            );
+            return None;
+        }
+        Err(_) => {
+            remove_tracked_processing(snapshot_state, processing, claimed);
+            record_host_ingress_failure(
+                Some(filename_request_id.clone()),
+                None,
+                TerminalSnapshotReasonCode::InvalidRequest,
+            );
+            return None;
+        }
+    };
+    let request: HostTerminalSnapshotRequest =
+        match terminal_snapshot_renderer::decode_bounded(&bytes, MAX_REQUEST_BYTES) {
+            Ok(request) => request,
+            Err(_) => {
+                remove_tracked_processing(snapshot_state, processing, &identity);
+                record_host_ingress_failure(
+                    Some(filename_request_id.clone()),
+                    None,
+                    TerminalSnapshotReasonCode::InvalidRequest,
+                );
+                return None;
+            }
+        };
+    remove_tracked_processing(snapshot_state, processing, &identity);
+    let request_id = match request.validate_correlation(&filename_request_id) {
+        Ok(request_id) => request_id,
+        Err(reason) => {
+            record_host_ingress_failure(Some(filename_request_id), None, reason);
+            return None;
+        }
+    };
+    Some((request, request_id))
+}
+
+fn authorization_deadline(
+    expires_at: chrono::DateTime<chrono::Utc>,
+) -> Result<std::time::Instant, TerminalSnapshotReasonCode> {
+    let remaining = match expires_at
+        .signed_duration_since(chrono::Utc::now())
+        .to_std()
+        .ok()
+        .filter(|remaining| !remaining.is_zero())
+    {
+        Some(remaining) => remaining,
+        None => {
+            return Err(TerminalSnapshotReasonCode::SnapshotTimeout);
+        }
+    };
+    let Some(monotonic_deadline) = std::time::Instant::now().checked_add(remaining) else {
+        return Err(TerminalSnapshotReasonCode::Internal);
+    };
+    Ok(monotonic_deadline)
+}
+
+async fn publish_admission_failure(
+    snapshot_state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
+    response_directory: &std::path::Path,
+    request_id: uuid::Uuid,
+    confirmation_tag: &str,
+    reason: TerminalSnapshotReasonCode,
+    audit: &crate::pty::terminal_snapshot::TerminalSnapshotAuditGuard,
+) {
+    audit.wait_for_retained_owners(1).await;
+    let published = publish_trusted_failure(
+        snapshot_state,
+        response_directory,
+        request_id,
+        confirmation_tag,
+        reason,
+    );
+    audit.finalize_failure(if published.is_ok() {
+        reason
+    } else {
+        TerminalSnapshotReasonCode::ResponseUnavailable
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn process_claimed<R: tauri::Runtime>(
     scanner_ownership: ScannerTaskOwnership,
@@ -31,47 +125,10 @@ pub(super) async fn process_claimed<R: tauri::Runtime>(
     snapshot_state.run_host_cancellation_hook(
         crate::pty::terminal_snapshot::TerminalSnapshotHostCancellationStage::Processing,
     );
-    let read = crate::path_identity::read_bounded_regular(&processing, MAX_REQUEST_BYTES);
-    let (bytes, identity) = match read {
-        Ok(value) if crate::path_identity::same_object(&claimed, &value.1) => value,
-        Ok(_) => {
-            record_host_ingress_failure(
-                Some(filename_request_id.clone()),
-                None,
-                TerminalSnapshotReasonCode::ResponseUnavailable,
-            );
-            return;
-        }
-        Err(_) => {
-            remove_tracked_processing(&snapshot_state, &processing, &claimed);
-            record_host_ingress_failure(
-                Some(filename_request_id.clone()),
-                None,
-                TerminalSnapshotReasonCode::InvalidRequest,
-            );
-            return;
-        }
-    };
-    let request: HostTerminalSnapshotRequest =
-        match terminal_snapshot_renderer::decode_bounded(&bytes, MAX_REQUEST_BYTES) {
-            Ok(request) => request,
-            Err(_) => {
-                remove_tracked_processing(&snapshot_state, &processing, &identity);
-                record_host_ingress_failure(
-                    Some(filename_request_id.clone()),
-                    None,
-                    TerminalSnapshotReasonCode::InvalidRequest,
-                );
-                return;
-            }
-        };
-    remove_tracked_processing(&snapshot_state, &processing, &identity);
-    let request_id = match request.validate_correlation(&filename_request_id) {
-        Ok(request_id) => request_id,
-        Err(reason) => {
-            record_host_ingress_failure(Some(filename_request_id), None, reason);
-            return;
-        }
+    let Some((request, request_id)) =
+        read_correlated_request(&snapshot_state, &processing, &claimed, filename_request_id)
+    else {
+        return;
     };
     let (_, token, expires_at) = match request.validate(chrono::Utc::now()) {
         Ok(validated) => validated,
@@ -121,21 +178,12 @@ pub(super) async fn process_claimed<R: tauri::Runtime>(
         publish_error(TerminalSnapshotReasonCode::ServiceUnavailable);
         return;
     };
-    let remaining = match expires_at
-        .signed_duration_since(chrono::Utc::now())
-        .to_std()
-        .ok()
-        .filter(|remaining| !remaining.is_zero())
-    {
-        Some(remaining) => remaining,
-        None => {
-            publish_error(TerminalSnapshotReasonCode::SnapshotTimeout);
+    let monotonic_deadline = match authorization_deadline(expires_at) {
+        Ok(deadline) => deadline,
+        Err(reason) => {
+            publish_error(reason);
             return;
         }
-    };
-    let Some(monotonic_deadline) = std::time::Instant::now().checked_add(remaining) else {
-        publish_error(TerminalSnapshotReasonCode::Internal);
-        return;
     };
     let context = crate::pty::terminal_snapshot::TerminalSnapshotServiceContext {
         session_manager: session_manager.inner().clone(),
@@ -172,19 +220,15 @@ pub(super) async fn process_claimed<R: tauri::Runtime>(
         Ok(admission) => admission,
         Err(reason) => {
             drop(ingress);
-            audit.wait_for_retained_owners(1).await;
-            let published = publish_trusted_failure(
+            publish_admission_failure(
                 &snapshot_state,
                 &response_directory,
                 request_id,
                 &request.confirmation_tag,
                 reason,
-            );
-            audit.finalize_failure(if published.is_ok() {
-                reason
-            } else {
-                TerminalSnapshotReasonCode::ResponseUnavailable
-            });
+                &audit,
+            )
+            .await;
             return;
         }
     };
@@ -195,19 +239,15 @@ pub(super) async fn process_claimed<R: tauri::Runtime>(
     let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(reason) => {
-            audit.wait_for_retained_owners(1).await;
-            let published = publish_trusted_failure(
+            publish_admission_failure(
                 &snapshot_state,
                 &response_directory,
                 request_id,
                 &request.confirmation_tag,
                 reason,
-            );
-            audit.finalize_failure(if published.is_ok() {
-                reason
-            } else {
-                TerminalSnapshotReasonCode::ResponseUnavailable
-            });
+                &audit,
+            )
+            .await;
             return;
         }
     };
