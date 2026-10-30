@@ -1,12 +1,10 @@
 use std::collections::HashMap;
-#[cfg(not(windows))]
-use std::io::Read;
 use std::io::Write;
 #[cfg(windows)]
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 #[cfg(test)]
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -31,9 +29,10 @@ mod git_guard;
 mod instance;
 mod launch;
 mod liveness;
+mod reader;
 
 use blocking_spawn::spawn_blocking_cancel_safe;
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 use cursor_query::{pump_cursor_query, write_cursor_reply};
 #[cfg(all(test, windows))]
 use cursor_query::{CursorReplyObserver, OneShotCursorQuery};
@@ -41,9 +40,9 @@ use cursor_query::{CursorReplyObserver, OneShotCursorQuery};
 use git_guard::write_git_guard_file_if_changed;
 #[cfg(windows)]
 use git_guard::{ensure_git_guard_wrapper, resolve_real_git_path, GitGuardEnv};
+use instance::{hand_over_held_size, resize_instance, PtyInstance};
 #[cfg(test)]
-use instance::send_size_to_conpty;
-use instance::{hand_over_held_size, resize_instance, PtyInstance, StartupGate};
+use instance::{send_size_to_conpty, StartupGate};
 use launch::prepare_launch;
 #[cfg(test)]
 use launch::{
@@ -266,90 +265,24 @@ impl LocalProcessBackend {
             .openpty(size)
             .map_err(|e| AppError::PtyError(e.to_string()))?;
 
-        let mut command = launch.command_builder();
-        command.cwd(&spawn_cwd);
-        // #2683 - set PATH to the #2589 effective search path, which is also
-        // what portable_pty searches to resolve a bare program name. Placement
-        // is the precedence rule: the env-removal loop and the configured-env
-        // loop below run later, so a configured PATH still wins and a removed
-        // PATH is still removed. The Windows git-guard PATH also runs later.
-        crate::config::agent_path::apply_search_path_to_pty_command(&mut command);
-
-        // #942 - the argv exactly as executed, adapted host-shell wrapper
-        // included. Built from the SAME `PreparedLaunch` the `CommandBuilder`
-        // came from (one adapter decision), never mirrored by hand.
-        let exec_argv = launch.exec_argv();
-
-        // #942 - what the child will really see for CODEX_HOME: an explicit configured
-        // value wins, then an explicit removal, then the AC environment the child
-        // inherits. None here means this Codex shares the global ~/.codex with every
-        // other one.
-        let codex_home = configured_env
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case("CODEX_HOME"))
-            .map(|(_, value)| value.clone())
-            .or_else(|| {
-                if env_remove_keys
-                    .iter()
-                    .any(|key| key.eq_ignore_ascii_case("CODEX_HOME"))
-                {
-                    None
-                } else {
-                    crate::config::environment::codex_home().ok()
-                }
-            });
-
-        for key in &env_remove_keys {
-            command.env_remove(key);
-        }
-        for (key, value) in &configured_env {
-            command.env(key, value);
-        }
-        if !configured_env.is_empty() || !env_remove_keys.is_empty() {
-            log::info!(
-                "[pty] Applied {} configured env vars and removed {} inherited env vars for \
-                    session {}",
-                configured_env.len(),
-                env_remove_keys.len(),
-                id
-            );
-        }
-        crate::pty::credentials::apply_credential_env_to_pty_command(&mut command, &extra_env);
-        command.env("TERM", "xterm-256color");
-
-        if !extra_env.is_empty() {
-            log::info!(
-                "[pty] Applied {} per-process credential environment variables for session {}",
-                extra_env.len(),
-                id
-            );
-        }
-
-        if let Some(git_ceiling_dirs) =
-            crate::config::session_context::git_ceiling_directories_for_session_root(&spawn_cwd)
-        {
-            command.env("GIT_CEILING_DIRECTORIES", &git_ceiling_dirs);
-            log::info!(
-                "[pty] Applied GIT_CEILING_DIRECTORIES for session cwd {}: {}",
-                spawn_cwd,
-                git_ceiling_dirs
-            );
-
-            #[cfg(windows)]
-            if let Some(git_guard_env) = build_git_guard_env(&self.git_guard)? {
-                command.env("PATH", &git_guard_env.path);
-                command.env("PATHEXT", &git_guard_env.pathext);
-                command.env("AC_REAL_GIT", &git_guard_env.real_git);
-                log::info!(
-                    "[pty] Enabled git guard wrapper for session cwd {}",
-                    spawn_cwd
-                );
-            }
-        }
+        let SpawnCommand {
+            command,
+            exec_argv,
+            codex_home,
+        } = self.prepare_spawn_command(
+            &launch,
+            &spawn_cwd,
+            id,
+            SpawnEnvironment {
+                configured_env: &configured_env,
+                env_remove_keys: &env_remove_keys,
+                extra_env: &extra_env,
+            },
+        )?;
 
         // #942 - time zero for time-to-first-output.
         let spawn_started = Instant::now();
-        let mut child = pair
+        let child = pair
             .slave
             .spawn_command(command)
             .map_err(|e| AppError::PtyError(e.to_string()))?;
@@ -362,57 +295,11 @@ impl LocalProcessBackend {
             child_pid
         );
 
-        let job = child
-            .process_id()
-            .and_then(crate::pty::job::JobObject::for_child);
-
-        if let Some(registration) = resource_registration.as_mut() {
-            let Some(pid) = child.process_id() else {
-                let _ = child.kill();
-                return Err(AppError::PtyError(
-                    "Resource Monitor could not capture spawned child pid".to_string(),
-                ));
-            };
-            if let Err(err) = registration.register_root_pid(pid) {
-                let _ = child.kill();
-                return Err(AppError::PtyError(err));
-            }
-        }
-
-        drop(pair.slave);
-
-        let writer = match pair.master.take_writer() {
-            Ok(writer) => writer,
-            Err(e) => {
-                if let Some(registration) = resource_registration.as_ref() {
-                    registration.rollback_registered();
-                }
-                return Err(AppError::PtyError(e.to_string()));
-            }
-        };
-
-        let mut reader = match pair.master.try_clone_reader() {
-            Ok(reader) => reader,
-            Err(e) => {
-                if let Some(registration) = resource_registration.as_ref() {
-                    registration.rollback_registered();
-                }
-                return Err(AppError::PtyError(e.to_string()));
-            }
-        };
-
-        // #973 (B) - the child has rendered nothing yet, so the gate starts closed.
-        let rendered = Arc::new(AtomicBool::new(false));
-        let instance = PtyInstance {
-            master: Arc::new(Mutex::new(pair.master)),
-            writer: Arc::new(Mutex::new(writer)),
-            child: Some(child),
-            job,
-            // #973 - the size we actually opened the ConPTY at (see PtyViewport).
-            size: Mutex::new((cols, rows)),
-            startup_gate: Mutex::new(StartupGate::Holding(None)),
-            rendered: Arc::clone(&rendered),
-        };
+        let instance::SpawnedInstance {
+            instance,
+            reader,
+            rendered,
+        } = instance::prepare_spawn_instance(pair, child, &mut resource_registration, cols, rows)?;
 
         #[cfg(windows)]
         let cursor_writer = Arc::downgrade(&instance.writer);
@@ -482,74 +369,119 @@ impl LocalProcessBackend {
             monitor_backend.probe_child(id)
         });
 
-        let session_id_str = id.to_string();
-        let fanout = self.fanout.clone();
-        let gate_backend = self.clone();
-        std::thread::spawn(move || {
+        reader::OutputReader {
+            reader,
+            record,
+            rendered,
+            output_token,
             #[cfg(windows)]
-            pump_cursor_query(
-                &mut reader,
-                |bytes| {
-                    let read_at = Instant::now();
-                    record.note_output(bytes);
-                    fanout.observe_raw_read_for_reader(&output_token, bytes.len(), read_at)
-                },
-                |bytes| {
-                    fanout.handle_output(&output_token, &session_id_str, bytes.to_vec());
-                    if !rendered.load(Ordering::Relaxed) && fanout.has_rendered_visible_content(id)
-                    {
-                        gate_backend.open_startup_gate(id);
-                    }
-                },
-                || {
-                    write_cursor_reply(
-                        &cursor_writer,
-                        fanout.cursor_position_for_reader(&output_token),
-                    )
-                },
-                #[cfg(test)]
-                cursor_observer.as_deref(),
-            );
-            #[cfg(not(windows))]
-            {
-                let mut buf = [0u8; 4096];
-                loop {
-                    match reader.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            // #942 - time-to-first-output and the retained head bytes. Hot
-                            // path: once the first byte is stamped and the head buffer is
-                            // full this is two relaxed loads and one relaxed add.
-                            record.note_output(&buf[..n]);
-                            fanout.handle_output(&output_token, &session_id_str, buf[..n].to_vec());
-                            // #973 (B) - has the child PAINTED anything yet? Asked of the real
-                            // vt100 parser that `handle_output` has just fed this chunk to, which
-                            // is why it is asked after it and not before.
-                            //
-                            // Once the child has painted, this is a single relaxed load per chunk
-                            // and nothing else: no lock, no scan, no allocation. Before it has, it
-                            // is one uncontended lock and a bounded scan of the grid - and it
-                            // REPLACED a second `from_utf8_lossy` + `strip_ansi_csi` over the whole
-                            // chunk, which `handle_output` was already paying for the idle detector
-                            // on the very same bytes. One less chunk-sized allocation per chunk,
-                            // not one more.
-                            //
-                            // Locks: the query takes `screen_parsers` and RELEASES it before
-                            // `open_startup_gate` takes `ptys`. The two are sequential, never
-                            // nested, so the order stays `ptys -> startup_gate -> size -> master`.
-                            if !rendered.load(Ordering::Relaxed)
-                                && fanout.has_rendered_visible_content(id)
-                            {
-                                gate_backend.open_startup_gate(id);
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }
-        });
+            cursor_writer,
+            #[cfg(all(test, windows))]
+            cursor_observer,
+        }
+        .start(self.clone(), id);
 
         Ok(())
+    }
+
+    fn prepare_spawn_command(
+        &self,
+        launch: &launch::PreparedLaunch,
+        spawn_cwd: &str,
+        id: Uuid,
+        environment: SpawnEnvironment<'_>,
+    ) -> Result<SpawnCommand, AppError> {
+        let SpawnEnvironment {
+            configured_env,
+            env_remove_keys,
+            extra_env,
+        } = environment;
+        let mut command = launch.command_builder();
+        command.cwd(spawn_cwd);
+        // #2683 - set PATH to the #2589 effective search path, which is also
+        // what portable_pty searches to resolve a bare program name. Placement
+        // is the precedence rule: the env-removal loop and the configured-env
+        // loop below run later, so a configured PATH still wins and a removed
+        // PATH is still removed. The Windows git-guard PATH also runs later.
+        crate::config::agent_path::apply_search_path_to_pty_command(&mut command);
+
+        // #942 - the argv exactly as executed, adapted host-shell wrapper
+        // included. Built from the SAME `PreparedLaunch` the `CommandBuilder`
+        // came from (one adapter decision), never mirrored by hand.
+        let exec_argv = launch.exec_argv();
+
+        // #942 - what the child will really see for CODEX_HOME: an explicit configured
+        // value wins, then an explicit removal, then the AC environment the child
+        // inherits. None here means this Codex shares the global ~/.codex with every
+        // other one.
+        let codex_home = configured_env
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("CODEX_HOME"))
+            .map(|(_, value)| value.clone())
+            .or_else(|| {
+                if env_remove_keys
+                    .iter()
+                    .any(|key| key.eq_ignore_ascii_case("CODEX_HOME"))
+                {
+                    None
+                } else {
+                    crate::config::environment::codex_home().ok()
+                }
+            });
+
+        for key in env_remove_keys {
+            command.env_remove(key);
+        }
+        for (key, value) in configured_env {
+            command.env(key, value);
+        }
+        if !configured_env.is_empty() || !env_remove_keys.is_empty() {
+            log::info!(
+                "[pty] Applied {} configured env vars and removed {} inherited env vars for \
+                    session {}",
+                configured_env.len(),
+                env_remove_keys.len(),
+                id
+            );
+        }
+        crate::pty::credentials::apply_credential_env_to_pty_command(&mut command, extra_env);
+        command.env("TERM", "xterm-256color");
+
+        if !extra_env.is_empty() {
+            log::info!(
+                "[pty] Applied {} per-process credential environment variables for session {}",
+                extra_env.len(),
+                id
+            );
+        }
+
+        if let Some(git_ceiling_dirs) =
+            crate::config::session_context::git_ceiling_directories_for_session_root(spawn_cwd)
+        {
+            command.env("GIT_CEILING_DIRECTORIES", &git_ceiling_dirs);
+            log::info!(
+                "[pty] Applied GIT_CEILING_DIRECTORIES for session cwd {}: {}",
+                spawn_cwd,
+                git_ceiling_dirs
+            );
+
+            #[cfg(windows)]
+            if let Some(git_guard_env) = build_git_guard_env(&self.git_guard)? {
+                command.env("PATH", &git_guard_env.path);
+                command.env("PATHEXT", &git_guard_env.pathext);
+                command.env("AC_REAL_GIT", &git_guard_env.real_git);
+                log::info!(
+                    "[pty] Enabled git guard wrapper for session cwd {}",
+                    spawn_cwd
+                );
+            }
+        }
+
+        Ok(SpawnCommand {
+            command,
+            exec_argv,
+            codex_home,
+        })
     }
 
     /// #973 (B) - the child rendered. Hand the ConPTY the size the view has been waiting to
@@ -944,3 +876,15 @@ fn reap_child_in_background(
 
 #[cfg(test)]
 mod tests;
+
+struct SpawnEnvironment<'a> {
+    configured_env: &'a [(String, String)],
+    env_remove_keys: &'a [String],
+    extra_env: &'a [(String, String)],
+}
+
+struct SpawnCommand {
+    command: portable_pty::CommandBuilder,
+    exec_argv: Vec<String>,
+    codex_home: Option<String>,
+}
