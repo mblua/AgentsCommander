@@ -44,25 +44,16 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
         other => panic!("expected eligible resolution, got {other:?}"),
     };
     let (target, _) = prepare_internal_route_blocking(&policy.fingerprint, 80, &[50, 75]).unwrap();
-    let scraper = ContextScraper::new(
-        Arc::new(GuardRows),
-        Arc::new(GuardPatterns),
-        Arc::new(GuardEvents),
-        Arc::new(GuardSamples),
-        Arc::new(GuardPersist),
-    );
-    scraper.register_session(fixture.session.id, "claude".to_string());
-    let purge = Arc::new(crate::session::purge_guard::PurgeGuard::default());
-    let app = tauri::test::mock_builder()
-        .manage(Arc::clone(&scraper))
-        .manage(Arc::clone(&purge))
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
-    let app_handle = app.handle().clone();
+    let services = FakeContextAlertServices::default();
+    services
+        .registrations
+        .lock()
+        .unwrap()
+        .insert(fixture.session.id);
     let cancellation = CancellationToken::new();
 
     validate_attempt_guard(
-        &app_handle,
+        &services,
         &policy.fingerprint,
         &target,
         &[50, 75],
@@ -70,10 +61,11 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
     )
     .unwrap();
 
+    let checks_before_cancel = services.state_checks.load(Ordering::SeqCst);
     let canceled = CancellationToken::new();
     canceled.cancel();
     assert!(validate_attempt_guard(
-        &app_handle,
+        &services,
         &policy.fingerprint,
         &target,
         &[50, 75],
@@ -82,11 +74,14 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
     .unwrap_err()
     .contains("canceled"));
 
-    let purge_lease = purge
-        .acquire(HashSet::new(), HashSet::from([target.fqn().to_string()]))
-        .await;
+    assert_eq!(
+        services.state_checks.load(Ordering::SeqCst),
+        checks_before_cancel,
+        "cancellation must precede state validation",
+    );
+    services.blocked.store(true, Ordering::SeqCst);
     assert!(validate_attempt_guard(
-        &app_handle,
+        &services,
         &policy.fingerprint,
         &target,
         &[50, 75],
@@ -94,7 +89,14 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
     )
     .unwrap_err()
     .contains("purge-room"));
-    drop(purge_lease);
+    let mut missing_paths = policy.fingerprint.clone();
+    missing_paths.replica_dir = fixture.replica.join("missing");
+    assert!(
+        validate_attempt_guard(&services, &missing_paths, &target, &[50, 75], &cancellation,)
+            .unwrap_err()
+            .contains("purge-room")
+    );
+    services.blocked.store(false, Ordering::SeqCst);
 
     std::fs::write(
         &fixture.team_config,
@@ -105,7 +107,7 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
     )
     .unwrap();
     assert!(validate_attempt_guard(
-        &app_handle,
+        &services,
         &policy.fingerprint,
         &target,
         &[50, 75],
@@ -123,7 +125,7 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
     )
     .unwrap();
     assert!(validate_attempt_guard(
-        &app_handle,
+        &services,
         &policy.fingerprint,
         &target,
         &[50, 75],
@@ -141,7 +143,7 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
     )
     .unwrap();
     assert!(validate_attempt_guard(
-        &app_handle,
+        &services,
         &policy.fingerprint,
         &target,
         &[50, 75],
@@ -150,9 +152,9 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
     .unwrap_err()
     .contains("roster"));
 
-    scraper.retire_session(fixture.session.id);
+    services.retire_sample_registration(fixture.session.id);
     assert!(validate_attempt_guard(
-        &app_handle,
+        &services,
         &policy.fingerprint,
         &target,
         &[50, 75],

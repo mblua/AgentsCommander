@@ -6,39 +6,51 @@ mod batching;
 mod lifecycle;
 mod resolution;
 
-struct GuardRows;
+#[derive(Default)]
+struct FakeContextAlertServices {
+    sessions: Mutex<HashMap<Uuid, Session>>,
+    registrations: Mutex<std::collections::HashSet<Uuid>>,
+    blocked: AtomicBool,
+    state_checks: AtomicUsize,
+}
 
-impl crate::pty::context_scrape::ScreenRowsSource for GuardRows {
-    fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
-        crate::pty::context_scrape::ScreenRowsRead::Unavailable
+impl ContextAlertServices for FakeContextAlertServices {
+    fn public_session(&self, id: Uuid) -> BoxFuture<'static, Option<Session>> {
+        let session = self.sessions.lock().unwrap().get(&id).cloned();
+        Box::pin(async move { session })
     }
-}
 
-struct GuardPatterns;
-
-impl crate::pty::context_scrape::ContextPatternSource for GuardPatterns {
-    fn patterns(&self) -> BoxFuture<'_, Option<HashMap<String, String>>> {
-        Box::pin(async { Some(HashMap::new()) })
+    fn registered(&self, id: Uuid) -> bool {
+        self.registrations.lock().unwrap().contains(&id)
     }
-}
 
-struct GuardEvents;
+    fn retire_sample_registration(&self, id: Uuid) {
+        self.registrations.lock().unwrap().remove(&id);
+    }
 
-impl crate::pty::context_scrape::ContextEventSink for GuardEvents {
-    fn emit(&self, _payload: crate::pty::context_scrape::ContextUsagePayload) {}
-}
+    fn validate_delivery_state(
+        &self,
+        id: Uuid,
+        target: &InternalSystemTarget,
+    ) -> Result<(), String> {
+        self.state_checks.fetch_add(1, Ordering::SeqCst);
+        if self.blocked.load(Ordering::SeqCst) {
+            return Err(format!("purge-room blocks '{}'", target.fqn()));
+        }
+        if !self.registered(id) {
+            return Err("Sampled session is no longer registered".to_string());
+        }
+        Ok(())
+    }
 
-struct GuardSamples;
-
-impl crate::pty::context_scrape::ContextSampleSink for GuardSamples {
-    fn observe(&self, _sample: ContextSample) {}
-}
-
-struct GuardPersist;
-
-impl crate::pty::context_scrape::ContextPersistSink for GuardPersist {
-    fn commit(&self, _changed: Vec<(Uuid, Option<u8>)>) -> BoxFuture<'_, ()> {
-        Box::pin(async {})
+    fn deliver(
+        &self,
+        _target: InternalSystemTarget,
+        _notice: InternalSystemNotice,
+        _cancellation: CancellationToken,
+        _guard: InternalNoticeGuard,
+    ) -> BoxFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
     }
 }
 

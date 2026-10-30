@@ -270,7 +270,7 @@ impl RemoteAlertPorts for ResolvingPorts {
         room_dir: String,
     ) -> BoxFuture<'static, Option<InternalSystemTarget>> {
         Box::pin(async move {
-            tauri::async_runtime::spawn_blocking(move || {
+            tokio::task::spawn_blocking(move || {
                 resolve_orchestrator_blocking(Path::new(&room_dir), &Mutex::new(HashSet::new()))
             })
             .await
@@ -616,8 +616,7 @@ fn gap_is_rendered_in_human_units() {
 async fn channel_close_ends_the_monitor() {
     let ports = Arc::new(RecordingPorts::new(dials(true, false), None));
     let (sender, receiver) = mpsc::channel(4);
-    let handle =
-        tauri::async_runtime::spawn(run(ports.clone(), receiver, CancellationToken::new()));
+    let handle = tokio::spawn(run(ports.clone(), receiver, CancellationToken::new()));
     sender
         .send(transition(
             TransitionKind::CiStarted,
@@ -639,7 +638,7 @@ async fn shutdown_ends_the_monitor() {
     let ports = Arc::new(RecordingPorts::new(dials(true, true), None));
     let (_sender, receiver) = mpsc::channel(4);
     let cancellation = CancellationToken::new();
-    let handle = tauri::async_runtime::spawn(run(ports.clone(), receiver, cancellation.clone()));
+    let handle = tokio::spawn(run(ports.clone(), receiver, cancellation.clone()));
     cancellation.cancel();
 
     tokio::time::timeout(Duration::from_secs(10), handle)
