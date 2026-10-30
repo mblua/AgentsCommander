@@ -50,7 +50,7 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
         enforcement,
     } = request;
     // 1. Read config from existing session BEFORE destroying it
-    let (
+    let RestartSource {
         shell,
         shell_args,
         cwd,
@@ -65,179 +65,31 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
         stored_communication,
         old_status,
         old_selected,
-    ) = {
-        let mgr = session_mgr.read().await;
-        let session = match mgr.get_session(uuid).await {
-            Some(session) => session,
-            None => {
-                transaction.observe_lifecycle_missing_source();
-                return Err("Session not found".to_string());
-            }
-        };
-        let old_selected = mgr.selection_payload().await.id() == Some(uuid);
-        (
-            session.shell.clone(),
-            session.shell_args.clone(),
-            session.working_directory.clone(),
-            session.name.clone(),
-            session.agent_id.clone(),
-            session.agent_label.clone(),
-            session.git_repos.clone(),
-            session.is_root_agent
-                || crate::config::root_agent::is_root_agent_path(&session.working_directory),
-            session.telegram_bot_id.clone(),
-            session.requested_profile.clone(),
-            session.start_fresh_on_restore, // (#630/#631) honor an unconsumed durable fresh intent
-            session.communication.clone(),  // (#747) candidate raised-hand carry across the reopen
-            session.status.clone(),
-            old_selected,
-        )
-    };
+    } = read_restart_source(transaction, &session_mgr, uuid).await?;
 
-    let preparation = transaction
-        .start_lifecycle_effect(crate::session::selection::LifecycleEffectSlot::ContextPreparation);
-    if transaction.has_lifecycle_entry() && preparation.is_none() {
-        if let Some(authority) = context.authority() {
-            authority
-                .interrupted
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
-        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
-    }
-    let prepared = async {
-        let cwd = if is_root_agent {
-            ensure_lifecycle_root_directory(transaction, context).await?
-        } else {
-            cwd
-        };
-        let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
-        crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;
-        // §1295 5.1b / B2: the creation gate runs AFTER `probe_spawn_refusal` but
-        // WELL BEFORE `teardown_old_for_restart` (below). A rejected restart of a
-        // live outside-roots session therefore DECLINES: the old session stays
-        // running (live PTY untouched), `Err(sessionCreateBlocked: ...)` propagates,
-        // and no `finalize_failed_restart` runs. Root-agent restarts already
-        // normalized `cwd` to `ensure_root_agent_dir()` above, which the gate
-        // exempts by rule 1.
-        crate::config::sessions_persistence::enforce_creation_gate(&settings, &cwd, enforcement)
-            .await?;
-
-        // 2. Strip auto-injected args before restart so the new session starts from the saved
-        // recipe.
-        let clean_args =
-            crate::config::sessions_persistence::strip_auto_injected_args(&shell, &shell_args);
-
-        let requested_agent_id = agent_id;
-        let selected_requested_profile =
-            effective_restart_requested_profile(requested_profile, stored_requested_profile);
-        // #537 read-side / #2434: resolve the launch agent through the one matched
-        // selection drift also reads, and resolve its spawn under a single settings
-        // read guard. No await is held across the guard; it is dropped at the end of
-        // this block. The #1271 host-shell snapshot is copied from the SAME guard so
-        // program and args can never pair across a configuration change.
-        let (selected_agent_id, resolved_spawn, resolved_agent_host_shell) = {
-            let cfg = settings
-                .current_read()
-                .await
-                .map_err(|error| error.to_string())?;
-            let selection = matched_selection(
-                &cfg,
-                &cwd,
-                requested_agent_id.as_deref(),
-                stored_agent_id.as_deref(),
-                selected_requested_profile.as_deref(),
-            );
-            let (selected_agent_id, resolved_spawn) = match selection {
-                MatchedSelection::NoAgent => (None, None),
-                MatchedSelection::Unresolved { reference } => {
-                    return Err(format!(
-                    "unresolved_coding_agent_reference: '{}' matches no configured coding agent",
-                    reference
-                ));
-                }
-                MatchedSelection::Agent {
-                    agent_id,
-                    profile_letter,
-                    authoritative,
-                    tier,
-                    original_letter,
-                } => {
-                    let spawn = resolve_configured_agent_spawn_for_cwd(
-                        &cfg,
-                        &agent_id,
-                        &cwd,
-                        profile_letter.as_deref(),
-                        authoritative,
-                    )?
-                    .map(|mut spawn| {
-                        // A matched restart records the ORIGINAL request; the matched
-                        // letter lives in `effective_profile`, its provenance in the
-                        // #2451 carriers.
-                        if authoritative {
-                            if let Some(original) = selected_requested_profile.as_ref() {
-                                spawn.profile_resolution.requested_profile = original.clone();
-                            }
-                        }
-                        spawn.match_tier = tier.map(|tier| tier.as_wire_str().to_string());
-                        spawn.original_profile_letter = original_letter;
-                        spawn
-                    });
-                    (Some(agent_id), spawn)
-                }
-            };
-            let resolved_agent_host_shell = if resolved_spawn.is_some() {
-                Some(ResolvedAgentHostShell {
-                    program: cfg.default_shell.clone(),
-                    args: cfg.default_shell_args.clone(),
-                })
-            } else {
-                None
-            };
-            (selected_agent_id, resolved_spawn, resolved_agent_host_shell)
-        };
-        // #2434 - prepare (isolated CODEX_HOME, OpenCode config dir) outside the
-        // settings guard and BEFORE any teardown: a failure aborts the restart and
-        // leaves the old session running.
-        if let Some(spawn) = resolved_spawn.as_ref() {
-            crate::config::agent_command::prepare_agent_spawn_command(spawn)?;
-        }
-        let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
-            (
-                spawn.shell.clone(),
-                spawn.shell_args.clone(),
-                Some(spawn.trusted_agent_label.clone()),
-            )
-        } else {
-            (shell, clean_args, stored_agent_label)
-        };
-
-        // (#630/#631) Fresh on an explicit "Restart Session" (None -> true), OR if the
-        // session still carries an unconsumed durable fresh intent. Root agents are
-        // scoped out (separate restore path ignores the marker, §8): they are never
-        // stamped below, so `stored_start_fresh` is false for root and this reduces to
-        // today's `effective_restart_skip_auto_resume`.
-        let restart_start_fresh =
-            restart_skip_auto_resume_with_intent(stored_start_fresh, skip_auto_resume);
-        let carried_communication = communication_override
-            .or_else(|| carry_communication_for_restart(stored_communication, restart_start_fresh));
-
-        Ok::<_, String>((
+    let prepared = prepare_restart(
+        transaction,
+        context,
+        &settings,
+        RestartPreparation {
             shell,
             shell_args,
             cwd,
-            selected_agent_id,
-            agent_label,
-            resolved_spawn,
-            resolved_agent_host_shell,
-            restart_start_fresh,
-            carried_communication,
-        ))
-    }
+            stored_agent_id,
+            stored_agent_label,
+            is_root_agent,
+            stored_requested_profile,
+            stored_start_fresh,
+            stored_communication,
+            agent_id,
+            requested_profile,
+            skip_auto_resume,
+            communication_override,
+            enforcement,
+        },
+    )
     .await;
-    if let Some(preparation) = preparation {
-        preparation.complete(prepared.as_ref().map(|_| None).map_err(Clone::clone));
-    }
-    let (
+    let PreparedRestart {
         shell,
         shell_args,
         cwd,
@@ -247,37 +99,9 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
         resolved_agent_host_shell,
         restart_start_fresh,
         carried_communication,
-    ) = match prepared {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            transaction.observe_lifecycle_preparation_failure();
-            return Err(error);
-        }
-    };
+    } = prepared?;
 
-    let retirement = transaction
-        .start_lifecycle_effect(crate::session::selection::LifecycleEffectSlot::Retirement);
-    if transaction.has_lifecycle_entry() && retirement.is_none() {
-        if let Some(authority) = context.authority() {
-            authority
-                .interrupted
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
-        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
-    }
-    if let Some(authority) = context.authority() {
-        if !retire_lifecycle_entry_protection(app, authority).await {
-            transaction.invalidate_restore_ownership();
-            authority
-                .interrupted
-                .store(true, std::sync::atomic::Ordering::Release);
-            // External adapters suppress this internal exit via Interrupted.
-            // Restore unwinds its actual executor/barrier with Unavailable.
-            return Err(
-                crate::session::selection::SelectionCoordinatorError::Unavailable.to_string(),
-            );
-        }
-    }
+    let retirement = begin_restart_retirement(transaction, context).await?;
 
     // 3. Release the old runtime slot while retaining its canonical manager row.
     // Dormant rows skip teardown and remain retryable until replacement success.
@@ -380,4 +204,290 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
         publication,
     )
     .await
+}
+
+struct RestartSource {
+    shell: String,
+    shell_args: Vec<String>,
+    cwd: String,
+    name: String,
+    stored_agent_id: Option<String>,
+    stored_agent_label: Option<String>,
+    git_repos: Vec<crate::session::session::SessionRepo>,
+    is_root_agent: bool,
+    telegram_bot_id: Option<String>,
+    stored_requested_profile: Option<String>,
+    stored_start_fresh: bool,
+    stored_communication: Option<crate::session::session::SessionCommunication>,
+    old_status: SessionStatus,
+    old_selected: bool,
+}
+
+struct RestartPreparation {
+    shell: String,
+    shell_args: Vec<String>,
+    cwd: String,
+    stored_agent_id: Option<String>,
+    stored_agent_label: Option<String>,
+    is_root_agent: bool,
+    stored_requested_profile: Option<String>,
+    stored_start_fresh: bool,
+    stored_communication: Option<crate::session::session::SessionCommunication>,
+    agent_id: Option<String>,
+    requested_profile: Option<String>,
+    skip_auto_resume: Option<bool>,
+    communication_override: Option<crate::session::session::SessionCommunication>,
+    enforcement: crate::config::sessions_persistence::CreationGateEnforcement,
+}
+
+struct PreparedRestart {
+    shell: String,
+    shell_args: Vec<String>,
+    cwd: String,
+    selected_agent_id: Option<String>,
+    agent_label: Option<String>,
+    resolved_spawn: Option<crate::config::agent_command::AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
+    restart_start_fresh: bool,
+    carried_communication: Option<crate::session::session::SessionCommunication>,
+}
+
+async fn read_restart_source<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    uuid: uuid::Uuid,
+) -> Result<RestartSource, String> {
+    let mgr = session_mgr.read().await;
+    let session = match mgr.get_session(uuid).await {
+        Some(session) => session,
+        None => {
+            transaction.observe_lifecycle_missing_source();
+            return Err("Session not found".to_string());
+        }
+    };
+    let old_selected = mgr.selection_payload().await.id() == Some(uuid);
+    Ok(RestartSource {
+        shell: session.shell.clone(),
+        shell_args: session.shell_args.clone(),
+        cwd: session.working_directory.clone(),
+        name: session.name.clone(),
+        stored_agent_id: session.agent_id.clone(),
+        stored_agent_label: session.agent_label.clone(),
+        git_repos: session.git_repos.clone(),
+        is_root_agent: session.is_root_agent
+            || crate::config::root_agent::is_root_agent_path(&session.working_directory),
+        telegram_bot_id: session.telegram_bot_id.clone(),
+        stored_requested_profile: session.requested_profile.clone(),
+        // (#630/#631) honor an unconsumed durable fresh intent
+        stored_start_fresh: session.start_fresh_on_restore,
+        // (#747) candidate raised-hand carry across the reopen
+        stored_communication: session.communication.clone(),
+        old_status: session.status.clone(),
+        old_selected,
+    })
+}
+
+async fn prepare_restart<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    context: &LifecycleExecutionContext<'_>,
+    settings: &SettingsState,
+    input: RestartPreparation,
+) -> Result<PreparedRestart, String> {
+    let preparation = transaction
+        .start_lifecycle_effect(crate::session::selection::LifecycleEffectSlot::ContextPreparation);
+    if transaction.has_lifecycle_entry() && preparation.is_none() {
+        if let Some(authority) = context.authority() {
+            authority
+                .interrupted
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    }
+    let app = transaction.app();
+    let RestartPreparation {
+        shell,
+        shell_args,
+        cwd,
+        stored_agent_id,
+        stored_agent_label,
+        is_root_agent,
+        stored_requested_profile,
+        stored_start_fresh,
+        stored_communication,
+        agent_id,
+        requested_profile,
+        skip_auto_resume,
+        communication_override,
+        enforcement,
+    } = input;
+    let prepared = async {
+        let cwd = if is_root_agent {
+            ensure_lifecycle_root_directory(transaction, context).await?
+        } else {
+            cwd
+        };
+        let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
+        crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;
+        // §1295 5.1b / B2: the creation gate runs AFTER `probe_spawn_refusal` but
+        // WELL BEFORE `teardown_old_for_restart` (below). A rejected restart of a
+        // live outside-roots session therefore DECLINES: the old session stays
+        // running (live PTY untouched), `Err(sessionCreateBlocked: ...)` propagates,
+        // and no `finalize_failed_restart` runs. Root-agent restarts already
+        // normalized `cwd` to `ensure_root_agent_dir()` above, which the gate
+        // exempts by rule 1.
+        crate::config::sessions_persistence::enforce_creation_gate(settings, &cwd, enforcement).await?;
+
+        // 2. Strip auto-injected args before restart so the new session starts from the saved
+        // recipe.
+        let clean_args =
+            crate::config::sessions_persistence::strip_auto_injected_args(&shell, &shell_args);
+
+        let requested_agent_id = agent_id;
+        let selected_requested_profile =
+            effective_restart_requested_profile(requested_profile, stored_requested_profile);
+        // #537 read-side / #2434: resolve the launch agent through the one matched
+        // selection drift also reads, and resolve its spawn under a single settings
+        // read guard. No await is held across the guard; it is dropped at the end of
+        // this block. The #1271 host-shell snapshot is copied from the SAME guard so
+        // program and args can never pair across a configuration change.
+        let (selected_agent_id, resolved_spawn, resolved_agent_host_shell) = {
+            let cfg = settings
+                .current_read()
+                .await
+                .map_err(|error| error.to_string())?;
+            let selection = matched_selection(
+                &cfg,
+                &cwd,
+                requested_agent_id.as_deref(),
+                stored_agent_id.as_deref(),
+                selected_requested_profile.as_deref(),
+            );
+            let (selected_agent_id, resolved_spawn) = match selection {
+                MatchedSelection::NoAgent => (None, None),
+                MatchedSelection::Unresolved { reference } => {
+                    return Err(format!(
+                        "unresolved_coding_agent_reference: '{}' matches no configured coding agent",
+                        reference
+                    ));
+                }
+                MatchedSelection::Agent {
+                    agent_id,
+                    profile_letter,
+                    authoritative,
+                    tier,
+                    original_letter,
+                } => {
+                    let spawn = resolve_configured_agent_spawn_for_cwd(
+                        &cfg,
+                        &agent_id,
+                        &cwd,
+                        profile_letter.as_deref(),
+                        authoritative,
+                    )?
+                    .map(|mut spawn| {
+                        // A matched restart records the ORIGINAL request; the matched
+                        // letter lives in `effective_profile`, its provenance in the
+                        // #2451 carriers.
+                        if authoritative {
+                            if let Some(original) = selected_requested_profile.as_ref() {
+                                spawn.profile_resolution.requested_profile = original.clone();
+                            }
+                        }
+                        spawn.match_tier = tier.map(|tier| tier.as_wire_str().to_string());
+                        spawn.original_profile_letter = original_letter;
+                        spawn
+                    });
+                    (Some(agent_id), spawn)
+                }
+            };
+            let resolved_agent_host_shell = if resolved_spawn.is_some() {
+                Some(ResolvedAgentHostShell {
+                    program: cfg.default_shell.clone(),
+                    args: cfg.default_shell_args.clone(),
+                })
+            } else {
+                None
+            };
+            (selected_agent_id, resolved_spawn, resolved_agent_host_shell)
+        };
+        // #2434 - prepare (isolated CODEX_HOME, OpenCode config dir) outside the
+        // settings guard and BEFORE any teardown: a failure aborts the restart and
+        // leaves the old session running.
+        if let Some(spawn) = resolved_spawn.as_ref() {
+            crate::config::agent_command::prepare_agent_spawn_command(spawn)?;
+        }
+        let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
+            (
+                spawn.shell.clone(),
+                spawn.shell_args.clone(),
+                Some(spawn.trusted_agent_label.clone()),
+            )
+        } else {
+            (shell, clean_args, stored_agent_label)
+        };
+
+        // (#630/#631) Fresh on an explicit "Restart Session" (None -> true), OR if the
+        // session still carries an unconsumed durable fresh intent. Root agents are
+        // scoped out (separate restore path ignores the marker, §8): they are never
+        // stamped below, so `stored_start_fresh` is false for root and this reduces to
+        // today's `effective_restart_skip_auto_resume`.
+        let restart_start_fresh =
+            restart_skip_auto_resume_with_intent(stored_start_fresh, skip_auto_resume);
+        let carried_communication = communication_override
+            .or_else(|| carry_communication_for_restart(stored_communication, restart_start_fresh));
+
+        Ok(PreparedRestart {
+            shell,
+            shell_args,
+            cwd,
+            selected_agent_id,
+            agent_label,
+            resolved_spawn,
+            resolved_agent_host_shell,
+            restart_start_fresh,
+            carried_communication,
+        })
+    }.await;
+    if let Some(preparation) = preparation {
+        preparation.complete(prepared.as_ref().map(|_| None).map_err(Clone::clone));
+    }
+    match prepared {
+        Ok(prepared) => Ok(prepared),
+        Err(error) => {
+            transaction.observe_lifecycle_preparation_failure();
+            Err(error)
+        }
+    }
+}
+
+async fn begin_restart_retirement<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    context: &LifecycleExecutionContext<'_>,
+) -> Result<Option<crate::session::selection::LifecycleEffectGuard>, String> {
+    let app = transaction.app();
+    let retirement = transaction
+        .start_lifecycle_effect(crate::session::selection::LifecycleEffectSlot::Retirement);
+    if transaction.has_lifecycle_entry() && retirement.is_none() {
+        if let Some(authority) = context.authority() {
+            authority
+                .interrupted
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    }
+    if let Some(authority) = context.authority() {
+        if !retire_lifecycle_entry_protection(app, authority).await {
+            transaction.invalidate_restore_ownership();
+            authority
+                .interrupted
+                .store(true, std::sync::atomic::Ordering::Release);
+            // External adapters suppress this internal exit via Interrupted.
+            // Restore unwinds its actual executor/barrier with Unavailable.
+            return Err(
+                crate::session::selection::SelectionCoordinatorError::Unavailable.to_string(),
+            );
+        }
+    }
+
+    Ok(retirement)
 }
