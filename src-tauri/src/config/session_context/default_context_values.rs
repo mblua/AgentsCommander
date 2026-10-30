@@ -49,58 +49,9 @@ pub(crate) fn default_context_dynamic_values(
         ),
         None => String::new(),
     };
-    // Invariant: messaging stays name-gated (is_root_agent_dir_name) only because
-    // the `send` / `list-peers` backends are independently path-gated
-    // (is_root_agent_path at cli/send.rs:218, cli/list_peers.rs:1132). If
-    // messaging ever trusts this prompt text alone, re-gate it on the path check.
-    let messaging_mode = if super::super::root_agent::is_root_agent_dir_name(agent_root) {
-        MessagingContextMode::Root(display_path(
-            &std::path::Path::new(agent_root).join(crate::phone::messaging::MESSAGING_DIR_NAME),
-        ))
-    } else {
-        match crate::phone::messaging::workgroup_root(std::path::Path::new(agent_root)) {
-            Ok(wg) => MessagingContextMode::Workgroup(display_path(
-                &wg.join(crate::phone::messaging::MESSAGING_DIR_NAME),
-            )),
-            Err(_) => MessagingContextMode::None,
-        }
-    };
+    let messaging_mode = messaging_context_mode(agent_root);
     let workgroup_messaging_entry = workgroup_messaging_entry(&messaging_mode);
-    let messaging_exception = match &messaging_mode {
-        MessagingContextMode::Workgroup(_) => String::new(),
-        MessagingContextMode::Root(path) => format!(
-            "**Narrow exception — Root Agent messaging directory:**\n\n\
-             You MAY create message files inside this directory:\n\n\
-             ```\n\
-             {path}\n\
-             ```\n\n\
-             Strictly limited to canonical Root Agent inter-agent message files whose name matches \
-             the pattern `YYYYMMDD-HHMMSS-root-to-<roomN>-<orchestrator>-<slug>.md` (the CLI \
-             rejects any other shape). Do NOT modify or delete any message file once written. Do \
-             NOT write any other kind of file here. You may also READ message files inside this \
-             directory.\n\n",
-            path = path,
-        ),
-        MessagingContextMode::None => String::new(),
-    };
-    let messaging_allowed = match &messaging_mode {
-        // Workgroup messaging renders in the standard entry-4 block and Root
-        // messaging remains in its Narrow exception; neither uses this fine bullet.
-        MessagingContextMode::Workgroup(_) | MessagingContextMode::Root(_) => String::new(),
-        // #923 D3: this session has no messaging directory of its own (no `wg-<N>-*`
-        // ancestor, not the Root Agent), so `send --send` rejects it outright
-        // (cli/send.rs:406). It can still be a delivery target, and the Inter-Agent
-        // Messaging block tells it to read the notified path. Grant exactly that read,
-        // and nothing more, so the document never orders an operation it forbids.
-        MessagingContextMode::None => {
-            "- **Allowed (read-only)**: Read an inter-agent message file \
-            when AgentsCommander hands you its absolute path in an incoming `[Message from \
-            <peer>]` notification. This grant covers that file only; no other path outside the \
-            entries above becomes readable.
-"
-            .to_string()
-        }
-    };
+    let (messaging_exception, messaging_allowed) = messaging_access_grants(&messaging_mode);
     let has_messaging_exception = matches!(&messaging_mode, MessagingContextMode::Root(_));
     let ac_root_phrase = if has_messaging_exception {
         "the workspace root (other than the narrow messaging exception above)"
@@ -204,6 +155,64 @@ enum MessagingContextMode {
     None,
     Workgroup(String),
     Root(String),
+}
+
+fn messaging_context_mode(agent_root: &str) -> MessagingContextMode {
+    // Invariant: messaging stays name-gated (is_root_agent_dir_name) only because
+    // the `send` / `list-peers` backends are independently path-gated
+    // (is_root_agent_path at cli/send.rs:218, cli/list_peers.rs:1132). If
+    // messaging ever trusts this prompt text alone, re-gate it on the path check.
+    if super::super::root_agent::is_root_agent_dir_name(agent_root) {
+        MessagingContextMode::Root(display_path(
+            &std::path::Path::new(agent_root).join(crate::phone::messaging::MESSAGING_DIR_NAME),
+        ))
+    } else {
+        match crate::phone::messaging::workgroup_root(std::path::Path::new(agent_root)) {
+            Ok(wg) => MessagingContextMode::Workgroup(display_path(
+                &wg.join(crate::phone::messaging::MESSAGING_DIR_NAME),
+            )),
+            Err(_) => MessagingContextMode::None,
+        }
+    }
+}
+
+fn messaging_access_grants(messaging_mode: &MessagingContextMode) -> (String, String) {
+    let messaging_exception = match messaging_mode {
+        MessagingContextMode::Workgroup(_) => String::new(),
+        MessagingContextMode::Root(path) => format!(
+            "**Narrow exception — Root Agent messaging directory:**\n\n\
+             You MAY create message files inside this directory:\n\n\
+             ```\n\
+             {path}\n\
+             ```\n\n\
+             Strictly limited to canonical Root Agent inter-agent message files whose name matches \
+             the pattern `YYYYMMDD-HHMMSS-root-to-<roomN>-<orchestrator>-<slug>.md` (the CLI \
+             rejects any other shape). Do NOT modify or delete any message file once written. Do \
+             NOT write any other kind of file here. You may also READ message files inside this \
+             directory.\n\n",
+            path = path,
+        ),
+        MessagingContextMode::None => String::new(),
+    };
+    let messaging_allowed = match messaging_mode {
+        // Workgroup messaging renders in the standard entry-4 block and Root
+        // messaging remains in its Narrow exception; neither uses this fine bullet.
+        MessagingContextMode::Workgroup(_) | MessagingContextMode::Root(_) => String::new(),
+        // #923 D3: this session has no messaging directory of its own (no `wg-<N>-*`
+        // ancestor, not the Root Agent), so `send --send` rejects it outright
+        // (cli/send.rs:406). It can still be a delivery target, and the Inter-Agent
+        // Messaging block tells it to read the notified path. Grant exactly that read,
+        // and nothing more, so the document never orders an operation it forbids.
+        MessagingContextMode::None => {
+            "- **Allowed (read-only)**: Read an inter-agent message file \
+            when AgentsCommander hands you its absolute path in an incoming `[Message from \
+            <peer>]` notification. This grant covers that file only; no other path outside the \
+            entries above becomes readable.
+"
+            .to_string()
+        }
+    };
+    (messaging_exception, messaging_allowed)
 }
 
 fn forbidden_read_scope(is_root_agent: bool, messaging_read_phrase: &str) -> String {
