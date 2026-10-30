@@ -21,7 +21,9 @@ use crate::session::profile::CodingAgentKind;
 mod instructions;
 mod matching;
 mod profile_hash;
+mod seed_candidates;
 mod seed_warning;
+mod spawn_stamp;
 
 pub use seed_warning::compute_config_dir_warning;
 
@@ -748,28 +750,11 @@ pub(crate) fn resolve_agent_spawn_command(
     // drift. SUPERSEDES the #592 cell-only hash input.
     // #2431 - via `cell_identity`, the single composition site in this module.
     let profile_hash = cell_identity(agent, &profile_resolution.cell);
-    let merged_profile_env = raw_merged_profile_env(agent, &profile_resolution.cell.env);
-    // #592/#597 - surface exactly what gets hashed at spawn so a later drift
-    // mismatch can be traced. Kept at debug for support; off the hot path (fires
-    // once per spawn). Env VALUES are intentionally omitted (they may hold
-    // secrets); the hash already fingerprints them, and the key set + count
-    // reveal whether an env row participated.
-    log::debug!(
-        concat!(
-            "[profile-hash] spawn-stamp: agent={} profile={} hash={} ",
-            "effective_command={:?} canonical_command={:?} env_keys=[{}] ({} entries)",
-        ),
-        agent.id,
-        profile_resolution.effective_profile,
-        profile_hash,
-        effective_command,
-        canonical_command_text(&effective_command),
-        merged_profile_env
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", "),
-        merged_profile_env.len(),
+    spawn_stamp::log_profile_stamp(
+        agent,
+        &profile_resolution,
+        &profile_hash,
+        &effective_command,
     );
 
     let (NormalizedAgentCommand { shell, shell_args }, placeholder_context) =
@@ -817,45 +802,12 @@ pub(crate) fn resolve_agent_spawn_command(
                 os_token,
             );
             if let Some(r) = resolved.as_mut() {
-                // #769 P2 + #1318: append the absent-only, non-empty CatalogDefault
-                // tier LAST (lowest precedence). Pure path math here;
-                // perform_config_seed gates it on absent-dest + non-empty master,
-                // so it never overwrites an existing replica config. The master
-                // lives in the session workspace's `.ac/coding-agents/_seed/<dest>`
-                // (replicas always have a workspace); a session without a workspace
-                // falls back to the legacy `<config_dir>/coding-agents/_seed/<dest>`
-                // location. The master exists only for built-ins that ship one; for
-                // any other dest the candidate path is absent and the tier is inert.
-                let dest = cfg.dest.trim();
-                let master_root = placeholder_context
-                    .as_ref()
-                    .and_then(|ctx| ctx.ac_root.as_ref())
-                    .cloned()
-                    .or_else(crate::config::config_dir);
-                if let Some(master_root) = master_root {
-                    // #2162: the OS variant of the master precedes the base one,
-                    // inside the same (absent-only, non-empty-gated) tier.
-                    if let Some(os) = os_token {
-                        r.candidates
-                            .push(crate::config::config_seed::ConfigSeedCandidate {
-                                tier: crate::config::config_seed::ConfigSeedTier::CatalogDefault,
-                                os_specific: true,
-                                path: crate::config::coding_agents_catalog::master_dir_for_dest(
-                                    &master_root,
-                                    &format!("{dest}.{os}"),
-                                ),
-                            });
-                    }
-                    r.candidates
-                        .push(crate::config::config_seed::ConfigSeedCandidate {
-                            tier: crate::config::config_seed::ConfigSeedTier::CatalogDefault,
-                            os_specific: false,
-                            path: crate::config::coding_agents_catalog::master_dir_for_dest(
-                                &master_root,
-                                dest,
-                            ),
-                        });
-                }
+                seed_candidates::append_catalog_defaults(
+                    &cfg.dest,
+                    placeholder_context.as_ref(),
+                    os_token,
+                    &mut r.candidates,
+                );
                 r.config_dir_warning = compute_config_dir_warning(
                     &r.dest,
                     &shell,
