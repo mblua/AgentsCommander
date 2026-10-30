@@ -153,3 +153,26 @@ fn issue_3371_oversized_unusable_capture_and_missing_enter_never_succeed() {
         Some(ClearWatchOutcome::ExecutionError)
     );
 }
+
+#[test]
+fn issue_3371_unsubmitted_watch_drops_observation_callback() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    for submitted in [false, true] {
+        let mut state = FailureSamples::default();
+        if submitted {
+            state.first_enter = Some(Instant::now());
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = Arc::clone(&calls);
+        state.on_observation(Some(Box::new(move || {
+            callback_calls.fetch_add(1, Ordering::SeqCst);
+        })));
+        assert_eq!(calls.load(Ordering::SeqCst), usize::from(submitted));
+        assert_eq!(
+            Arc::strong_count(&calls),
+            1,
+            "callback owner was not released"
+        );
+    }
+}

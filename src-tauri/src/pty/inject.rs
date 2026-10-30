@@ -904,9 +904,7 @@ where
 
     drop(permit);
     if let Some(mut watch) = watch {
-        if let Some(callback) = on_observation {
-            callback();
-        }
+        watch.on_observation(on_observation);
         watch.finish().await.into_result()?;
     }
 

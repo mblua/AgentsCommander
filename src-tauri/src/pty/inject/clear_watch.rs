@@ -113,6 +113,10 @@ impl ClearWatch {
         }
     }
 
+    pub(crate) fn on_observation(&self, callback: Option<Box<dyn FnOnce() + Send>>) {
+        self.samples.on_observation(callback);
+    }
+
     pub(crate) fn submitted(&mut self) {
         self.samples.first_enter = Some(Instant::now());
     }
@@ -166,6 +170,12 @@ impl ClearWatch {
 }
 
 impl FailureSamples {
+    fn on_observation(&self, callback: Option<Box<dyn FnOnce() + Send>>) {
+        if let Some(callback) = callback.filter(|_| self.first_enter.is_some()) {
+            callback();
+        }
+    }
+
     fn failure_present(rows: Option<&[String]>) -> Option<bool> {
         let normalized = normalize_failure_rows(rows?)?;
         let prefix: String = FAILURE_PREFIX
