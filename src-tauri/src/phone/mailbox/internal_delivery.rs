@@ -24,6 +24,11 @@ use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+enum InternalLiveDelivery {
+    Delivered,
+    Exited(Option<SessionInfo>),
+}
+
 impl MailboxPoller {
     pub(crate) async fn deliver_internal_system_wake<R: tauri::Runtime>(
         &self,
@@ -47,102 +52,27 @@ impl MailboxPoller {
         Self::run_internal_guard(Arc::clone(&guard)).await?;
 
         let envelope = internal_system_envelope(&target);
-        let mut exited: Option<SessionInfo> = None;
-        for (candidate, has_pty) in self.find_internal_system_candidates(app, &target).await? {
-            match candidate.status {
-                SessionStatus::Exited(_) => {
-                    if exited.is_none() {
-                        exited = Some(candidate);
-                    }
-                }
-                _ if has_pty => {
-                    let session_id = Uuid::parse_str(&candidate.id).map_err(|e| {
-                        format!("Invalid orchestrator session id '{}': {}", candidate.id, e)
-                    })?;
-                    let blocked = tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => {
-                            return Err(
-                                "Context alert delivery was canceled before live injection"
-                                    .to_string(),
-                            );
-                        }
-                        reason = crate::pty::inject::internal_notice_block_reason(
-                            app,
-                            session_id,
-                        ) => reason,
-                    };
-                    if cancellation.is_cancelled() {
-                        return Err(
-                            "Context alert delivery was canceled before live injection".to_string()
-                        );
-                    }
-                    if let Some(reason) = blocked {
-                        return Err(reason);
-                    }
-                    tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => {
-                            return Err(
-                                "Context alert delivery was canceled during live settle"
-                                    .to_string(),
-                            );
-                        }
-                        _ = self.settle_internal_live_before_inject(app, session_id) => {}
-                    }
-                    if cancellation.is_cancelled() {
-                        return Err(
-                            "Context alert delivery was canceled before live injection".to_string()
-                        );
-                    }
-                    match self
-                        .inject_internal_system_notice(
-                            app,
-                            session_id,
-                            &target,
-                            &notice,
-                            Arc::clone(&guard),
-                        )
-                        .await
-                    {
-                        Ok(()) => return Ok(()),
-                        Err(error) if err_is_pty_session_missing(&error) => {
-                            log::warn!(
-                                "[context-alert] coordinator session {} vanished before injection: \
-                                {}",
-                                session_id,
-                                error
-                            );
-                        }
-                        Err(error) => return Err(error),
-                    }
-                }
-                _ => {}
-            }
-        }
+        let exited = match self
+            .deliver_internal_live_notice(app, &target, &notice, &cancellation, &guard)
+            .await?
+        {
+            InternalLiveDelivery::Delivered => return Ok(()),
+            InternalLiveDelivery::Exited(exited) => exited,
+        };
 
         let mut spawn_with_resume = false;
         let mut carried_bot: Option<String> = None;
         let mut carried_communication = None;
         if let Some(exited_candidate) = exited {
-            if cancellation.is_cancelled() {
-                return Err(
-                    "Context alert delivery was canceled before exited-session actuation"
-                        .to_string(),
-                );
-            }
-            let exited_id = Uuid::parse_str(&exited_candidate.id)
-                .map_err(|e| format!("Invalid exited orchestrator session id: {}", e))?;
-            self.recheck_internal_exited_candidate(app, exited_id, &target)
+            let exited_id = self
+                .authorize_internal_exited_session(
+                    app,
+                    &target,
+                    &exited_candidate,
+                    &cancellation,
+                    &guard,
+                )
                 .await?;
-            Self::run_internal_guard(Arc::clone(&guard)).await?;
-            self.recheck_internal_exited_record(
-                app,
-                exited_id,
-                &target,
-                &exited_candidate.working_directory,
-            )
-            .await?;
             carried_bot = exited_candidate.telegram_bot_id.clone();
             carried_communication = exited_candidate.communication.clone();
             self.destroy_exited_wake_session(app, exited_id)
@@ -159,17 +89,8 @@ impl MailboxPoller {
         // Final pre-spawn authorization followed by a fresh exact-path enumeration. A
         // supported recipient that appeared wins; this attempt returns stale rather than
         // creating a duplicate.
-        Self::run_internal_guard(Arc::clone(&guard)).await?;
-        if !self
-            .find_internal_system_candidates(app, &target)
-            .await?
-            .is_empty()
-        {
-            return Err(format!(
-                "Orchestrator recipient '{}' changed immediately before background spawn",
-                target.fqn()
-            ));
-        }
+        self.authorize_internal_background_spawn(app, &target, &guard)
+            .await?;
 
         let resolved_command = self
             .resolve_internal_agent_command(app, &target)
@@ -192,62 +113,14 @@ impl MailboxPoller {
             let snapshot = settings.read().await.clone();
             snapshot
         };
-        // #1271 - copy the configured default host shell from the SAME snapshot
-        // that builds the spawn below, before the snapshot moves into the
-        // resolution task (Phase 1 items 1-2: never read one half of the pair
-        // after configuration has changed).
-        let resolved_agent_host_shell = Some(crate::pty::backend::ResolvedAgentHostShell {
-            program: settings_snapshot.default_shell.clone(),
-            args: settings_snapshot.default_shell_args.clone(),
-        });
-        let spawn_agent_id = agent_id.to_string();
-        let spawn_cwd = cwd.clone();
-        let resolved_spawn = tokio::task::spawn_blocking(move || {
-            crate::commands::session::build_configured_agent_spawn_for_cwd(
-                &settings_snapshot,
-                &spawn_agent_id,
-                &spawn_cwd,
-                None,
-            )
-        })
-        .await
-        .map_err(|error| format!("Internal profile resolution task failed: {}", error))??
-        .ok_or_else(|| {
-            format!(
-                "Configured coding-agent '{}' could not produce a trusted spawn for '{}'",
-                agent_id,
-                target.fqn()
-            )
-        })?;
-        if resolved_spawn.trusted_agent_id.trim().is_empty()
-            || resolved_spawn.trusted_agent_id != agent_id
-        {
-            return Err(format!(
-                "Resolved spawn for '{}' lost its trusted coding-agent identity",
-                target.fqn()
-            ));
-        }
-        if !crate::pty::inject::needs_explicit_enter(&resolved_spawn.shell) {
-            return Err(format!(
-                "Resolved spawn shell '{}' for '{}' is not a supported coding-agent CLI",
-                resolved_spawn.shell,
-                target.fqn()
-            ));
-        }
+        let (resolved_spawn, resolved_agent_host_shell) =
+            Self::resolve_internal_spawn_profile(settings_snapshot, agent_id, &cwd, &target)
+                .await?;
 
         // Repeat the guard and exact-path absence check immediately before actuation. Command
         // and profile resolution above can perform filesystem work and must not widen this race.
-        Self::run_internal_guard(Arc::clone(&guard)).await?;
-        if !self
-            .find_internal_system_candidates(app, &target)
-            .await?
-            .is_empty()
-        {
-            return Err(format!(
-                "Orchestrator recipient '{}' changed immediately before background spawn",
-                target.fqn()
-            ));
-        }
+        self.authorize_internal_background_spawn(app, &target, &guard)
+            .await?;
 
         if cancellation.is_cancelled() {
             return Err("Context alert delivery was canceled before background spawn".to_string());
@@ -351,25 +224,211 @@ impl MailboxPoller {
             .await
     }
 
-    async fn settle_internal_live_before_inject<R: tauri::Runtime>(
+    async fn authorize_internal_exited_session<S: PtyAuthorityState + ?Sized>(
+        &self,
+        app: &S,
+        target: &InternalSystemTarget,
+        exited_candidate: &SessionInfo,
+        cancellation: &CancellationToken,
+        guard: &InternalNoticeGuard,
+    ) -> Result<Uuid, String> {
+        if cancellation.is_cancelled() {
+            return Err(
+                "Context alert delivery was canceled before exited-session actuation".to_string(),
+            );
+        }
+        let exited_id = Uuid::parse_str(&exited_candidate.id)
+            .map_err(|e| format!("Invalid exited orchestrator session id: {}", e))?;
+        self.recheck_internal_exited_candidate(app, exited_id, target)
+            .await?;
+        Self::run_internal_guard(Arc::clone(guard)).await?;
+        self.recheck_internal_exited_record(
+            app,
+            exited_id,
+            target,
+            &exited_candidate.working_directory,
+        )
+        .await?;
+        Ok(exited_id)
+    }
+
+    async fn authorize_internal_background_spawn<S: PtyAuthorityState + ?Sized>(
+        &self,
+        app: &S,
+        target: &InternalSystemTarget,
+        guard: &InternalNoticeGuard,
+    ) -> Result<(), String> {
+        Self::run_internal_guard(Arc::clone(guard)).await?;
+        if !self
+            .find_internal_system_candidates(app, target)
+            .await?
+            .is_empty()
+        {
+            return Err(format!(
+                "Orchestrator recipient '{}' changed immediately before background spawn",
+                target.fqn()
+            ));
+        }
+        Ok(())
+    }
+
+    async fn deliver_internal_live_notice<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        session_id: Uuid,
-    ) {
-        #[cfg(test)]
-        if let Some(hooks) = &self.test_hooks {
-            let gate = hooks.internal_live_settle_gate.lock().unwrap().take();
-            if let Some(gate) = gate {
-                // notify_one, not notify_waiters: this stores a permit when the canceller
-                // has not been polled yet, which on a current_thread runtime is the norm.
-                hooks.internal_live_settle_entered.notify_one();
-                let _ = gate.await;
-                return;
+        target: &InternalSystemTarget,
+        notice: &InternalSystemNotice,
+        cancellation: &CancellationToken,
+        guard: &InternalNoticeGuard,
+    ) -> Result<InternalLiveDelivery, String> {
+        let mut exited: Option<SessionInfo> = None;
+        for (candidate, has_pty) in self.find_internal_system_candidates(app, target).await? {
+            match candidate.status {
+                SessionStatus::Exited(_) => {
+                    if exited.is_none() {
+                        exited = Some(candidate);
+                    }
+                }
+                _ if has_pty => {
+                    let session_id = Uuid::parse_str(&candidate.id).map_err(|e| {
+                        format!("Invalid orchestrator session id '{}': {}", candidate.id, e)
+                    })?;
+                    let blocked = tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => {
+                            return Err(
+                                "Context alert delivery was canceled before live injection"
+                                    .to_string(),
+                            );
+                        }
+                        reason = crate::pty::inject::internal_notice_block_reason(
+                            app,
+                            session_id,
+                        ) => reason,
+                    };
+                    if cancellation.is_cancelled() {
+                        return Err(
+                            "Context alert delivery was canceled before live injection".to_string()
+                        );
+                    }
+                    if let Some(reason) = blocked {
+                        return Err(reason);
+                    }
+                    let settle = async {
+                        #[cfg(test)]
+                        if let Some(hooks) = &self.test_hooks {
+                            let gate = hooks.internal_live_settle_gate.lock().unwrap().take();
+                            if let Some(gate) = gate {
+                                // notify_one stores a permit when the canceller has not been polled
+                                // yet, which on a current_thread runtime is the norm.
+                                hooks.internal_live_settle_entered.notify_one();
+                                let _ = gate.await;
+                                return;
+                            }
+                        }
+                        // #2586 - the internal-notice injector is a non-wake path that reports
+                        // `Unknown`, so this readiness is not carried.
+                        let _ = self.settle_live_before_inject(app, session_id).await;
+                    };
+                    tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => {
+                            return Err(
+                                "Context alert delivery was canceled during live settle"
+                                    .to_string(),
+                            );
+                        }
+                        _ = settle => {}
+                    }
+                    if cancellation.is_cancelled() {
+                        return Err(
+                            "Context alert delivery was canceled before live injection".to_string()
+                        );
+                    }
+                    match self
+                        .inject_internal_system_notice(
+                            app,
+                            session_id,
+                            target,
+                            notice,
+                            Arc::clone(guard),
+                        )
+                        .await
+                    {
+                        Ok(()) => return Ok(InternalLiveDelivery::Delivered),
+                        Err(error) if err_is_pty_session_missing(&error) => {
+                            log::warn!(
+                                "[context-alert] coordinator session {} vanished before injection: \
+                                {}",
+                                session_id,
+                                error
+                            );
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                _ => {}
             }
         }
-        // #2586 - the internal-notice injector is a non-wake path that reports
-        // `Unknown`, so this readiness is not carried.
-        let _ = self.settle_live_before_inject(app, session_id).await;
+
+        Ok(InternalLiveDelivery::Exited(exited))
+    }
+
+    async fn resolve_internal_spawn_profile(
+        settings_snapshot: crate::config::settings::AppSettings,
+        agent_id: &str,
+        cwd: &str,
+        target: &InternalSystemTarget,
+    ) -> Result<
+        (
+            crate::config::agent_command::AgentSpawnCommand,
+            Option<crate::pty::backend::ResolvedAgentHostShell>,
+        ),
+        String,
+    > {
+        // #1271 - copy the configured default host shell from the SAME snapshot
+        // that builds the spawn below, before the snapshot moves into the
+        // resolution task (Phase 1 items 1-2: never read one half of the pair
+        // after configuration has changed).
+        let resolved_agent_host_shell = Some(crate::pty::backend::ResolvedAgentHostShell {
+            program: settings_snapshot.default_shell.clone(),
+            args: settings_snapshot.default_shell_args.clone(),
+        });
+        let spawn_agent_id = agent_id.to_string();
+        let spawn_cwd = cwd.to_string();
+        let resolved_spawn = tokio::task::spawn_blocking(move || {
+            crate::commands::session::build_configured_agent_spawn_for_cwd(
+                &settings_snapshot,
+                &spawn_agent_id,
+                &spawn_cwd,
+                None,
+            )
+        })
+        .await
+        .map_err(|error| format!("Internal profile resolution task failed: {}", error))??
+        .ok_or_else(|| {
+            format!(
+                "Configured coding-agent '{}' could not produce a trusted spawn for '{}'",
+                agent_id,
+                target.fqn()
+            )
+        })?;
+        if resolved_spawn.trusted_agent_id.trim().is_empty()
+            || resolved_spawn.trusted_agent_id != agent_id
+        {
+            return Err(format!(
+                "Resolved spawn for '{}' lost its trusted coding-agent identity",
+                target.fqn()
+            ));
+        }
+        if !crate::pty::inject::needs_explicit_enter(&resolved_spawn.shell) {
+            return Err(format!(
+                "Resolved spawn shell '{}' for '{}' is not a supported coding-agent CLI",
+                resolved_spawn.shell,
+                target.fqn()
+            ));
+        }
+
+        Ok((resolved_spawn, resolved_agent_host_shell))
     }
 
     async fn run_internal_guard(guard: InternalNoticeGuard) -> Result<(), String> {
