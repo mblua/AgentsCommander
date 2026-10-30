@@ -95,7 +95,12 @@ pub(crate) fn run(
     // which `daemon.pid` still holds the PREVIOUS writer's PID, which is what
     // lets the scan tell a dead predecessor from a live sibling.
     let activity_log_enabled = config::settings::read_activity_log_enabled_only();
-    crate::config::activity_log::init_run(&config_dir, &instance_id, activity_log_enabled);
+    crate::config::activity_log::init_run(
+        &config_dir,
+        &instance_id,
+        activity_log_enabled,
+        &owners.activity,
+    );
     let (_app_outbox_path, app_outbox) = prepare_app_outbox(&config_dir, &instance_id)?;
     let ui_automation_state = crate::testability::ui_automation::UiAutomationState::new(
         ui_automation_enabled,
@@ -161,7 +166,8 @@ pub(crate) fn run(
     let handle_for_busy = Arc::clone(&app_handle_lock);
     let response_close_for_idle = response_close.clone();
     let response_close_for_busy = response_close.clone();
-    let idle_detector = IdleDetector::new(
+    let idle_detector = IdleDetector::with_activity_coalescer(
+        Arc::clone(&owners.activity),
         move |id| {
             response_close_for_idle.observe_detector(id, false, std::time::Instant::now());
             log::debug!("[idle] >>> EMIT session_idle for {}", &id.to_string()[..8]);
@@ -246,6 +252,7 @@ pub(crate) fn run(
     let session_mgr_for_discovery = Arc::clone(&session_mgr);
     let session_mgr_for_web = Arc::clone(&session_mgr);
     let session_mgr_for_api = Arc::clone(&session_mgr);
+    let activity_for_exit = Arc::clone(&owners.activity);
     let session_mgr_for_exit = Arc::clone(&session_mgr);
     // #1088 - handed to `ScraperPersist` so the context scraper can persist
     // changed readings through the same path the idle/busy callbacks use.
@@ -507,6 +514,7 @@ pub(crate) fn run(
                 detached_set,
                 spec_board_state,
                 session_mgr_for_exit,
+                activity_for_exit,
                 coordinator_clocks_for_exit,
                 shutdown_for_exit,
                 selection_coordinator_for_exit,

@@ -291,3 +291,222 @@ async fn issue_3145_reused_root_live_and_dormant_seed_event_never_overwrite_new_
         }
     }
 }
+
+async fn root_restore_case(
+    fresh: Option<bool>,
+    provider: Option<&str>,
+    args: &[&str],
+    configured: bool,
+) -> (
+    crate::pty::backend::BackendSpawnSpec,
+    SessionInfo,
+    Option<crate::config::agent_command::AgentSpawnCommand>,
+) {
+    let cwd = tempfile::tempdir().unwrap();
+    let cwd_text = cwd.path().to_string_lossy().into_owned();
+    let mut settings = test_settings();
+    let claude_config = cwd.path().join("claude-config");
+    if provider == Some("claude") {
+        let projects = super::super::claude_projects_dir_for_config_dir(
+            claude_config.to_str().unwrap(),
+            &cwd_text,
+        );
+        std::fs::create_dir_all(projects).unwrap();
+        settings.agents[0]
+            .envs
+            .push(crate::config::settings::CodingAgentEnv {
+                key: "CLAUDE_CONFIG_DIR".into(),
+                value: claude_config.to_string_lossy().into_owned(),
+                source: Default::default(),
+                enabled: true,
+            });
+    }
+    let spawn = if configured {
+        let mut spawn = super::super::build_configured_agent_spawn_for_cwd(
+            &settings,
+            provider.unwrap(),
+            &cwd_text,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        spawn.shell_args = args.iter().map(|arg| (*arg).into()).collect();
+        Some(spawn)
+    } else {
+        None
+    };
+    let mut recipe = crate::config::sessions_persistence::PersistedSession {
+        name: "3431 persisted Root".into(),
+        shell: provider.unwrap_or("ordinary-shell").into(),
+        shell_args: args.iter().map(|arg| (*arg).into()).collect(),
+        agent_label: Some("persisted label".into()),
+        working_directory: cwd_text.clone(),
+        agent_id: provider.map(str::to_owned),
+        ..Default::default()
+    };
+    if configured {
+        recipe.shell = "stale-recipe-shell".into();
+        recipe.shell_args = vec!["stale-recipe-argument".into()];
+    }
+    if let Some(fresh) = fresh {
+        recipe.start_fresh_on_restore = fresh;
+    } else {
+        let mut value = serde_json::to_value(&recipe).unwrap();
+        assert!(value
+            .as_object_mut()
+            .unwrap()
+            .remove("startFreshOnRestore")
+            .is_some());
+        recipe = serde_json::from_value(value).unwrap();
+        assert!(!recipe.start_fresh_on_restore);
+    }
+    let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let backend = Arc::new(CapturingSpawnBackend::default());
+    let pty = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+        backend.clone(),
+    )));
+    let app = session_test_app(settings, sessions.clone(), pty.clone());
+    let no_mirror = app
+        .try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+        .is_none();
+    let transaction =
+        crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
+    let host_shell = spawn
+        .as_ref()
+        .map(|_| crate::pty::backend::ResolvedAgentHostShell {
+            program: "configured-host-shell".into(),
+            args: vec!["host-only-argument".into()],
+        });
+    super::super::coordinator_create_seam::force_root(&cwd_text);
+    let result = super::super::create_persisted_root_for_restore(
+        &transaction,
+        &sessions,
+        &pty,
+        &recipe,
+        cwd_text.clone(),
+        spawn.clone(),
+        host_shell.clone(),
+    )
+    .await;
+    super::super::coordinator_create_seam::unforce_root(&cwd_text);
+    drop(transaction);
+    close_test_coordinator(&app).await;
+    assert!(
+        no_mirror,
+        "Root fixture must have no coordinator clocks mirror"
+    );
+    let info = result.expect("persisted Root creation");
+    let mut specs = backend.specs.lock().unwrap();
+    assert_eq!(specs.len(), 1, "exactly one backend spawn");
+    let spec = specs.remove(0);
+    assert!(info.is_root_agent, "fixture must reach Root creation");
+    assert_eq!(info.start_fresh_on_restore, fresh.unwrap_or(false));
+    assert_eq!(spec.resolved_agent_host_shell, host_shell);
+    assert_eq!(
+        spec.cmd,
+        spawn.as_ref().map_or(&recipe.shell, |s| &s.shell).as_str()
+    );
+    assert_eq!(
+        info.agent_label,
+        spawn
+            .as_ref()
+            .map(|s| s.trusted_agent_label.clone())
+            .or(recipe.agent_label.filter(|_| provider.is_some()))
+    );
+    (spec, info, spawn)
+}
+
+#[tokio::test]
+async fn issue_3431_root_restore_intent() {
+    let mut failures = Vec::new();
+    for fresh in [Some(true), Some(false), None] {
+        let (spec, _, _) = root_restore_case(fresh, Some("codex"), &["-m", "model"], false).await;
+        let expected = if fresh == Some(true) {
+            vec!["-m", "model"]
+        } else {
+            vec!["resume", "--last", "-m", "model"]
+        };
+        eprintln!(
+            "intent fresh={fresh:?} observed={:?} expected={expected:?}",
+            spec.args
+        );
+        if spec.args != expected {
+            failures.push(format!("fresh={fresh:?}: {:?} != {expected:?}", spec.args));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[tokio::test]
+async fn issue_3431_root_restore_recipe() {
+    let mut failures = Vec::new();
+    for fresh in [true, false] {
+        for configured in [true, false] {
+            let args = if configured {
+                ["-m", "configured"]
+            } else {
+                ["-m", "persisted"]
+            };
+            let (spec, _, spawn) =
+                root_restore_case(Some(fresh), Some("codex"), &args, configured).await;
+            let mut expected = spawn.map_or_else(
+                || args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>(),
+                |spawn| spawn.shell_args,
+            );
+            if !fresh {
+                expected.splice(0..0, ["resume".into(), "--last".into()]);
+            }
+            eprintln!(
+                "recipe fresh={fresh} configured={configured} observed={:?}",
+                spec.args
+            );
+            if spec.args != expected {
+                failures.push(format!(
+                    "{fresh}/{configured}: {:?} != {expected:?}",
+                    spec.args
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[tokio::test]
+async fn issue_3431_root_restore_command_controls() {
+    let mut failures = Vec::new();
+    for fresh in [true, false] {
+        for (provider, args) in [
+            (Some("codex"), vec!["exec", "task"]),
+            (Some("codex"), vec!["resume", "--last"]),
+            (None, vec!["ordinary-argument"]),
+            (Some("claude"), vec!["--model", "test-model"]),
+        ] {
+            let claude = provider == Some("claude");
+            let (spec, _, _) = root_restore_case(Some(fresh), provider, &args, claude).await;
+            let mut expected: Vec<String> = args.iter().map(|arg| (*arg).into()).collect();
+            if claude {
+                if fresh {
+                    let session_id = spec.args.last().expect("fresh Claude session id");
+                    if Uuid::parse_str(session_id).is_err() {
+                        failures.push(format!("fresh Claude resumed: {:?}", spec.args));
+                        continue;
+                    }
+                    expected.extend(["--session-id".into(), session_id.clone()]);
+                } else {
+                    expected.push("--continue".into());
+                }
+            }
+            eprintln!(
+                "control fresh={fresh} provider={provider:?} observed={:?}",
+                spec.args
+            );
+            if spec.args != expected {
+                failures.push(format!(
+                    "{fresh}/{provider:?}: {:?} != {expected:?}",
+                    spec.args
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

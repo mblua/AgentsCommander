@@ -61,10 +61,12 @@ impl DedupeKeys {
         self.order.retain(|key| self.seen.contains_key(key));
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.seen.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.seen.is_empty()
     }

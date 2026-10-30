@@ -286,43 +286,14 @@ pub(crate) fn start_native_restore_startup(
                                     None
                                 };
                                 if !rebuild_failed {
-                                    let (shell, shell_args, agent_label) =
-                                        if let Some(spawn) = resolved_spawn.as_ref() {
-                                            (
-                                                spawn.shell.clone(),
-                                                spawn.shell_args.clone(),
-                                                Some(spawn.trusted_agent_label.clone()),
-                                            )
-                                        } else {
-                                            (
-                                                ps.shell.clone(),
-                                                ps.shell_args.clone(),
-                                                ps.agent_label.clone(),
-                                            )
-                                        };
-                                    match commands::session::create_session_inner_for_restore(
+                                    match commands::session::create_persisted_root_for_restore(
                                         &restore_transaction_for_task,
                                         &session_mgr_clone,
                                         &pty_mgr_clone,
-                                        shell,
-                                        shell_args,
+                                        ps,
                                         root_path.clone(),
-                                        Some(ps.name.clone()),
-                                        ps.agent_id.clone(),
-                                        agent_label,
-                                        false,
-                                        ps.git_repos.clone(),
-                                        false,
                                         resolved_spawn,
                                         resolved_agent_host_shell,
-                                        // #973 - headless caller: no terminal to measure, keep
-                                        // 120x30.
-                                        None,
-                                        Some(ps.start_fresh_on_restore),
-                                        None,
-                                        ps.binding_metadata()
-                                            .expect("restore binding validated before spawn"),
-                                        Some(ps),
                                     )
                                     .await
                                     {
