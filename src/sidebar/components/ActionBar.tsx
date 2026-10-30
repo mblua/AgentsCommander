@@ -318,6 +318,21 @@ const ActionBar: Component = () => {
           >
             &#x1F3E0;
           </button>
+          {/* #3367 — native window over the pane; desktop app only. */}
+          <Show when={!isBrowser}>
+            <button
+              class={`toolbar-gear-btn web-browser-toggle-btn ${activeClass(centralViewStore.isBrowser)}`}
+              onClick={() => centralViewStore.toggleBrowser()}
+              title={centralViewStore.isBrowser ? "Hide web browser" : "Show web browser"}
+              aria-label={centralViewStore.isBrowser ? "Hide web browser" : "Show web browser"}
+              aria-pressed={centralViewStore.isBrowser}
+              data-ac-testid="actionBar.webBrowser"
+              data-ac-role="button"
+              data-ac-state={centralViewStore.isBrowser ? "visible" : "hidden"}
+            >
+              WWW
+            </button>
+          </Show>
           <button
             class={`toolbar-gear-btn coord-sort-activity-btn ${activeClass(sessionsStore.coordSortByActivity)}`}
             disabled={!sessionsStore.hydrated || sessionsStore.toggleInFlight}

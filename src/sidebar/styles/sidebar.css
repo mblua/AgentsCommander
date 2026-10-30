@@ -10722,3 +10722,10 @@ html.light-theme .agent-comparison-table-head {
 @media (prefers-reduced-motion: reduce) {
   .replica-menu-halo { animation: none; }
 }
+
+/* #3367 — "WWW" text glyph sized to the emoji siblings. */
+.toolbar-gear-btn.web-browser-toggle-btn {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
