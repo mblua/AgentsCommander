@@ -163,17 +163,8 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
 
 pub(crate) async fn prepare_resume<'a: 'b, 'b, R: tauri::Runtime>(
     ctx: &'b CreateBodyContext<'a, R>,
-    input: ContextReady,
+    mut input: ContextReady,
 ) -> Result<CreateCompletion, String> {
-    let ContextReady {
-        mut effective_continuation,
-        spawn_cwd,
-        container_credential,
-        injected_claude_config_dir,
-        mut session_env_warnings,
-        pending,
-    } = input;
-    let input = pending;
     let &CreateBodyContext {
         shell,
         cwd,
@@ -184,40 +175,22 @@ pub(crate) async fn prepare_resume<'a: 'b, 'b, R: tauri::Runtime>(
         create_owner,
         ..
     } = ctx;
-    let PendingLaunch {
-        resource_monitor,
-        mut resource_permit,
-        mgr,
-        spawn_mark,
-        mut session,
-        agent_id,
-        agent_label,
-        agent_kind,
-        is_coordinator,
-        is_root_agent,
-        fresh_forced_by_mirror,
-        skip_auto_resume,
-        pending_binding,
-        mut shell_args,
-        container_path_context,
-        container_repos,
-        context_target,
-        full_cmd,
-        configured_identity,
-    } = input;
-    let id = session.id;
     // Resolve and inspect Claude transcript storage only for a canonically
     // detected Claude launch. Provider-looking Pi option values must not cause
     // any Claude path resolution, filesystem check, warning, or stored memo.
-    let is_claude = agent_kind == Some(CodingAgentKind::Claude);
+    let is_claude = input.pending.agent_kind == Some(CodingAgentKind::Claude);
     let resume_probe = claude_resume_probe_target_for_kind(
-        agent_kind,
-        session.backend_kind,
-        container_path_context.as_ref().map(|context| &context.map),
+        input.pending.agent_kind,
+        input.pending.session.backend_kind,
+        input
+            .pending
+            .container_path_context
+            .as_ref()
+            .map(|context| &context.map),
         resolved_spawn,
-        injected_claude_config_dir.as_deref(),
+        input.injected_claude_config_dir.as_deref(),
         shell,
-        &shell_args,
+        &input.pending.shell_args,
         cwd,
     );
     let resolved_claude_projects_dir = resume_probe
@@ -225,10 +198,10 @@ pub(crate) async fn prepare_resume<'a: 'b, 'b, R: tauri::Runtime>(
         .and_then(|probe| probe.host_probe_path.clone());
     let carrier_projects = match with_create_resource_region(
         create_owner,
-        &mut resource_permit,
+        &mut input.pending.resource_permit,
         acquire_lifecycle_create_publication_region(
             create_owner,
-            &mgr,
+            &input.pending.mgr,
             lifecycle_domain,
             inline_transaction,
         ),
@@ -237,25 +210,34 @@ pub(crate) async fn prepare_resume<'a: 'b, 'b, R: tauri::Runtime>(
     {
         Ok(permit) => permit,
         Err(error) => {
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            release_resource_launch_permit(
+                &input.pending.resource_monitor,
+                &mut input.pending.resource_permit,
+            );
             return Err(error);
         }
     };
-    mgr.set_pending_resolved_claude_projects_dir_with_carrier_permit(
-        &carrier_projects,
-        pending_binding,
-        resolved_claude_projects_dir.clone(),
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    input
+        .pending
+        .mgr
+        .set_pending_resolved_claude_projects_dir_with_carrier_permit(
+            &carrier_projects,
+            input.pending.pending_binding,
+            resolved_claude_projects_dir.clone(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     drop(carrier_projects);
     if let Some(continuation) = owned_replacement {
         if !continuation.validate_source().await {
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            release_resource_launch_permit(
+                &input.pending.resource_monitor,
+                &mut input.pending.resource_permit,
+            );
             return Ok(CreateCompletion::Retained);
         }
     }
-    session.resolved_claude_projects_dir = resolved_claude_projects_dir.clone();
+    input.pending.session.resolved_claude_projects_dir = resolved_claude_projects_dir.clone();
     let claude_project_exists = resume_probe
         .as_ref()
         .and_then(|probe| probe.host_probe_path.as_ref())
@@ -264,38 +246,28 @@ pub(crate) async fn prepare_resume<'a: 'b, 'b, R: tauri::Runtime>(
         .as_ref()
         .and_then(|probe| probe.warning.clone())
     {
-        session_env_warnings.push(warning);
+        input.session_env_warnings.push(warning);
     }
     let will_inject_continue = should_inject_continue(
         is_claude,
-        skip_auto_resume,
+        input.pending.skip_auto_resume,
         claude_project_exists,
-        &full_cmd,
+        &input.pending.full_cmd,
     );
-    if let Some(probe) = resume_probe.as_ref() {
-        log::info!(
-            "[session] claude-resume-decision {} cwd={:?} projects_dir={:?} filesystem={} \
-             exists={} skip_auto_resume={} -> inject_continue={}",
-            &id.to_string()[..8],
-            cwd,
-            resolved_claude_projects_dir,
-            probe.filesystem,
-            claude_project_exists,
-            skip_auto_resume,
-            will_inject_continue
-        );
-    } else if let Some(kind) = agent_kind {
-        log::info!(
-            "[session] resume-decision {} agent={} cwd={:?} skip_auto_resume={}",
-            &id.to_string()[..8],
-            kind.as_str(),
-            cwd,
-            skip_auto_resume
-        );
-    }
+    log_resume_decision(
+        cwd,
+        &input.pending,
+        resume_probe.as_ref(),
+        &resolved_claude_projects_dir,
+        claude_project_exists,
+        will_inject_continue,
+    );
     if will_inject_continue {
-        effective_continuation |=
-            inject_claude_continue_args(shell, agent_id.as_deref(), &mut shell_args);
+        input.effective_continuation |= inject_claude_continue_args(
+            shell,
+            input.pending.agent_id.as_deref(),
+            &mut input.pending.shell_args,
+        );
     }
 
     // (#756) Rider: on Claude spawns where AC suppresses resume, mint the fresh
@@ -305,64 +277,34 @@ pub(crate) async fn prepare_resume<'a: 'b, 'b, R: tauri::Runtime>(
     // the --continue block above by construction (will_inject_continue requires
     // skip_auto_resume=false). `full_cmd` predates both blocks' mutations, so
     // the veto scan sees user-configured identity flags, never AC's own.
-    if should_inject_fresh_session_id(is_claude, skip_auto_resume, &full_cmd) {
-        inject_claude_fresh_args(shell, agent_id.as_deref(), &mut shell_args);
+    if should_inject_fresh_session_id(
+        is_claude,
+        input.pending.skip_auto_resume,
+        &input.pending.full_cmd,
+    ) {
+        inject_claude_fresh_args(
+            shell,
+            input.pending.agent_id.as_deref(),
+            &mut input.pending.shell_args,
+        );
     }
 
-    effective_continuation |= inject_other_provider_resume_args(
-        agent_kind,
+    input.effective_continuation |= inject_other_provider_resume_args(
+        input.pending.agent_kind,
         resolved_spawn,
-        skip_auto_resume,
+        input.pending.skip_auto_resume,
         shell,
-        agent_id.as_deref(),
-        &mut shell_args,
+        input.pending.agent_id.as_deref(),
+        &mut input.pending.shell_args,
     );
 
-    let pending = PendingLaunch {
-        agent_id,
-        agent_label,
-        agent_kind,
-        is_coordinator,
-        is_root_agent,
-        fresh_forced_by_mirror,
-        skip_auto_resume,
-        pending_binding,
-        shell_args,
-        container_path_context,
-        container_repos,
-        context_target,
-        full_cmd,
-        configured_identity,
-        session,
-        spawn_mark,
-        mgr,
-        resource_permit,
-        resource_monitor,
-    };
-    let input = ContextReady {
-        effective_continuation,
-        spawn_cwd,
-        container_credential,
-        injected_claude_config_dir,
-        session_env_warnings,
-        pending,
-    };
     prepare_instructions(ctx, input).await
 }
 
 pub(crate) async fn prepare_instructions<'a: 'b, 'b, R: tauri::Runtime>(
     ctx: &'b CreateBodyContext<'a, R>,
-    input: ContextReady,
+    mut input: ContextReady,
 ) -> Result<CreateCompletion, String> {
-    let ContextReady {
-        effective_continuation,
-        spawn_cwd,
-        container_credential,
-        injected_claude_config_dir,
-        session_env_warnings,
-        pending,
-    } = input;
-    let input = pending;
     let &CreateBodyContext {
         app,
         session_mgr,
@@ -374,28 +316,7 @@ pub(crate) async fn prepare_instructions<'a: 'b, 'b, R: tauri::Runtime>(
         create_owner,
         ..
     } = ctx;
-    let PendingLaunch {
-        resource_monitor,
-        mut resource_permit,
-        mgr,
-        spawn_mark,
-        session,
-        agent_id,
-        agent_label,
-        agent_kind,
-        is_coordinator,
-        is_root_agent,
-        fresh_forced_by_mirror,
-        skip_auto_resume,
-        pending_binding,
-        shell_args,
-        container_path_context,
-        container_repos,
-        context_target,
-        full_cmd,
-        configured_identity,
-    } = input;
-    let id = session.id;
+    let id = input.pending.session.id;
     // #529 - resolve the instructions filename from the configured coding agent
     // (falling back to detection for ad-hoc launches), plus the union of every
     // configured agent's filename for cleanup. Computed under a single settings
@@ -407,22 +328,26 @@ pub(crate) async fn prepare_instructions<'a: 'b, 'b, R: tauri::Runtime>(
             Ok(cfg) => cfg,
             Err(error) => {
                 let error = error.to_string();
-                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-                drop(mgr);
+                release_resource_launch_permit(
+                    &input.pending.resource_monitor,
+                    &mut input.pending.resource_permit,
+                );
+                drop(input.pending.mgr);
                 rollback_pre_created_session(app, session_mgr, pty_mgr, id, &error).await;
                 return Err(error);
             }
         };
         let managed = crate::config::agent_command::managed_instructions_filenames(&cfg);
         let target = crate::config::agent_command::resolve_target_filename(
-            agent_id.as_deref(),
+            input.pending.agent_id.as_deref(),
             &cfg,
-            context_target,
+            input.pending.context_target,
         );
         // Resolve under the same guard; no second lock is held across I/O.
         // Eligibility is an explicit direct-shell capability, independent of
         // CodingAgentKind provider tuning.
-        let auto_self_clear = resolve_launch_auto_self_clear(&cfg, shell, cwd, is_coordinator);
+        let auto_self_clear =
+            resolve_launch_auto_self_clear(&cfg, shell, cwd, input.pending.is_coordinator);
         (target, managed, auto_self_clear)
     };
 
@@ -430,9 +355,9 @@ pub(crate) async fn prepare_instructions<'a: 'b, 'b, R: tauri::Runtime>(
         if owned_replacement.is_some() {
             revalidate_owned_create_effect(
                 create_owner,
-                &mut resource_permit,
-                &resource_monitor,
-                &mgr,
+                &mut input.pending.resource_permit,
+                &input.pending.resource_monitor,
+                &input.pending.mgr,
                 pty_mgr,
             )
             .await?;
@@ -444,7 +369,10 @@ pub(crate) async fn prepare_instructions<'a: 'b, 'b, R: tauri::Runtime>(
         ) {
             CreateEffectStart::Started(effect) => effect,
             CreateEffectStart::Retain => {
-                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                release_resource_launch_permit(
+                    &input.pending.resource_monitor,
+                    &mut input.pending.resource_permit,
+                );
                 return Ok(CreateCompletion::Retained);
             }
         };
@@ -453,9 +381,9 @@ pub(crate) async fn prepare_instructions<'a: 'b, 'b, R: tauri::Runtime>(
             ContextWorkInput {
                 target_filename,
                 managed_filenames: &managed_filenames,
-                container_repos: &container_repos,
-                skip_auto_resume,
-                is_coordinator,
+                container_repos: &input.pending.container_repos,
+                skip_auto_resume: input.pending.skip_auto_resume,
+                is_coordinator: input.pending.is_coordinator,
                 auto_self_clear,
                 context_effect,
             },
@@ -465,8 +393,11 @@ pub(crate) async fn prepare_instructions<'a: 'b, 'b, R: tauri::Runtime>(
             Ok(result) => result,
             Err(error) => {
                 let error = format!("replica context blocking preparation failed: {error}");
-                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-                drop(mgr);
+                release_resource_launch_permit(
+                    &input.pending.resource_monitor,
+                    &mut input.pending.resource_permit,
+                );
+                drop(input.pending.mgr);
                 rollback_pre_created_session(app, session_mgr, pty_mgr, id, &error).await;
                 return Err(error);
             }
@@ -475,43 +406,17 @@ pub(crate) async fn prepare_instructions<'a: 'b, 'b, R: tauri::Runtime>(
             Ok(_) => {}
             Err(e) => {
                 notify_replica_context_failure(app, owned_replacement, &e);
-                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-                drop(mgr);
+                release_resource_launch_permit(
+                    &input.pending.resource_monitor,
+                    &mut input.pending.resource_permit,
+                );
+                drop(input.pending.mgr);
                 rollback_pre_created_session(app, session_mgr, pty_mgr, id, &e).await;
                 return Err(e);
             }
         }
     }
 
-    let pending = PendingLaunch {
-        agent_id,
-        agent_label,
-        agent_kind,
-        is_coordinator,
-        is_root_agent,
-        fresh_forced_by_mirror,
-        skip_auto_resume,
-        pending_binding,
-        shell_args,
-        container_path_context,
-        container_repos,
-        context_target,
-        full_cmd,
-        configured_identity,
-        session,
-        spawn_mark,
-        mgr,
-        resource_permit,
-        resource_monitor,
-    };
-    let input = ContextReady {
-        effective_continuation,
-        spawn_cwd,
-        container_credential,
-        injected_claude_config_dir,
-        session_env_warnings,
-        pending,
-    };
     backend::spawn(ctx, input).await
 }
 
@@ -956,4 +861,35 @@ pub(crate) fn pending_is_observed<R: tauri::Runtime>(
         return false;
     }
     true
+}
+
+fn log_resume_decision(
+    cwd: &str,
+    pending: &PendingLaunch,
+    resume_probe: Option<&crate::commands::session::resume_probe::ResumeProbeTarget>,
+    resolved_claude_projects_dir: &Option<std::path::PathBuf>,
+    claude_project_exists: bool,
+    will_inject_continue: bool,
+) {
+    if let Some(probe) = resume_probe {
+        log::info!(
+            "[session] claude-resume-decision {} cwd={:?} projects_dir={:?} filesystem={} \
+             exists={} skip_auto_resume={} -> inject_continue={}",
+            &pending.session.id.to_string()[..8],
+            cwd,
+            resolved_claude_projects_dir,
+            probe.filesystem,
+            claude_project_exists,
+            pending.skip_auto_resume,
+            will_inject_continue
+        );
+    } else if let Some(kind) = pending.agent_kind {
+        log::info!(
+            "[session] resume-decision {} agent={} cwd={:?} skip_auto_resume={}",
+            &pending.session.id.to_string()[..8],
+            kind.as_str(),
+            cwd,
+            pending.skip_auto_resume
+        );
+    }
 }

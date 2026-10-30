@@ -38,11 +38,6 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
         app,
         session_mgr,
         pty_mgr,
-        shell,
-        cwd,
-        resolved_spawn,
-        resolved_agent_host_shell,
-        viewport,
         owned_replacement,
         ..
     } = ctx;
@@ -54,7 +49,6 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
         mut session_env_warnings,
         pending,
     } = input;
-    let input = pending;
     let PendingLaunch {
         resource_monitor,
         mut resource_permit,
@@ -72,10 +66,9 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
         shell_args,
         container_path_context,
         container_repos,
-        context_target: _,
-        full_cmd: _,
         configured_identity,
-    } = input;
+        ..
+    } = pending;
     let id = session.id;
     // Capture the effective arg vector BEFORE spawn so SessionInfo::from(&session)
     // (emitted at line ~439 as "session_created") carries provider resume flags.
@@ -103,14 +96,7 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
     }
     session.effective_shell_args = Some(effective);
 
-    let SpawnEnvironment {
-        extra_env,
-        configured_env,
-        env_remove_keys,
-        env_unset,
-        resource_registration,
-        logical_resource_slot,
-    } = prepare_environment(
+    let environment = prepare_environment(
         ctx,
         SpawnEnvironmentInput {
             session: &session,
@@ -141,7 +127,6 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
         }
     }
 
-    let viewport = viewport.unwrap_or(PtyViewport::DEFAULT);
     // #2124 - the idle tuning this launch hands the detector: the agent kind
     // plus the EFFECTIVE catalog entry matched to the configured command.
     // One settings snapshot, released before the blocking filesystem read;
@@ -159,58 +144,21 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
         }
     };
     let launch_witness = LaunchWitness::default();
-    let spawn_spec = BackendSpawnSpec {
-        id,
-        agent_id: agent_id.clone(),
-        // #942 - the CLI identity from the canonical detector (`agent_kind`, resolved
-        // at the top of this function). The profile id above cannot stand in for it:
-        // it is opaque, several profiles can drive the same CLI, and a coding-agent
-        // launch can carry no profile id at all.
-        coding_agent: agent_kind,
-        cmd: shell.to_owned(),
-        args: shell_args.clone(),
-        // #1271 - the configured host shell paired with a resolved agent
-        // command, carried as one immutable snapshot (never as loose
-        // program/argument fields, so the pairing invariant cannot drift).
-        resolved_agent_host_shell: resolved_agent_host_shell.cloned(),
-        cwd: spawn_cwd.clone(),
-        selected_cwd: if spawn_cwd != cwd {
-            Some(cwd.to_owned())
-        } else {
-            None
+    let spawn_spec = build_spawn_spec(
+        ctx,
+        SpawnSpecification {
+            id,
+            agent_id: &agent_id,
+            agent_kind,
+            shell_args: &shell_args,
+            spawn_cwd: &spawn_cwd,
+            container_repos: &container_repos,
+            container_credential,
+            environment,
+            launch_idle_tuning,
+            launch_witness: &launch_witness,
         },
-        // #973 - open the PTY at the size the terminal is actually going to be, so the
-        // frontend never has to resize a child that is still starting up. Callers with no
-        // view (restore loop, delivery loop, mailbox, CLI, tests) get PtyViewport::DEFAULT,
-        // which is the 120x30 AC always used.
-        cols: viewport.cols,
-        rows: viewport.rows,
-        container_image: resolved_spawn.and_then(|spawn| spawn.backend.image.clone()),
-        configured_env,
-        env_remove_keys,
-        env_unset,
-        extra_env,
-        idle_tuning: launch_idle_tuning,
-        output_target: output_target(app.clone()),
-        resource_registration,
-        logical_resource_slot,
-        container_credential,
-        container_repo_mounts: container_repos
-            .as_ref()
-            .map(|resolution| {
-                resolution
-                    .mounts()
-                    .map(
-                        |(host, container)| crate::pty::container_repos::ContainerRepoMount {
-                            host_path: host.to_path_buf(),
-                            container_path: container.to_string(),
-                        },
-                    )
-                    .collect()
-            })
-            .unwrap_or_default(),
-        launch_witness: launch_witness.clone(),
-    };
+    );
     let input = PublicationInput {
         agent_id,
         agent_label,
@@ -718,4 +666,105 @@ async fn record_effective_args<R: tauri::Runtime>(
     drop(carrier_args);
 
     Ok(())
+}
+
+struct SpawnSpecification<'a> {
+    id: uuid::Uuid,
+    agent_id: &'a Option<String>,
+    agent_kind: Option<crate::session::profile::CodingAgentKind>,
+    shell_args: &'a [String],
+    spawn_cwd: &'a str,
+    container_repos: &'a Option<crate::pty::container_repos::RepoMountResolution>,
+    container_credential: Option<crate::pty::container_credentials::ContainerCredentialPlan>,
+    environment: SpawnEnvironment,
+    launch_idle_tuning: crate::session::profile::IdleTuning,
+    launch_witness: &'a LaunchWitness,
+}
+
+fn build_spawn_spec<R: tauri::Runtime>(
+    ctx: &CreateBodyContext<'_, R>,
+    input: SpawnSpecification<'_>,
+) -> BackendSpawnSpec {
+    let SpawnSpecification {
+        id,
+        agent_id,
+        agent_kind,
+        shell_args,
+        spawn_cwd,
+        container_repos,
+        container_credential,
+        environment,
+        launch_idle_tuning,
+        launch_witness,
+    } = input;
+    let &CreateBodyContext {
+        app,
+        shell,
+        cwd,
+        resolved_spawn,
+        resolved_agent_host_shell,
+        viewport,
+        ..
+    } = ctx;
+    let viewport = viewport.unwrap_or(PtyViewport::DEFAULT);
+    let SpawnEnvironment {
+        extra_env,
+        configured_env,
+        env_remove_keys,
+        env_unset,
+        resource_registration,
+        logical_resource_slot,
+    } = environment;
+    BackendSpawnSpec {
+        id,
+        agent_id: agent_id.clone(),
+        // #942 - the CLI identity from the canonical detector (`agent_kind`, resolved
+        // at the top of this function). The profile id above cannot stand in for it:
+        // it is opaque, several profiles can drive the same CLI, and a coding-agent
+        // launch can carry no profile id at all.
+        coding_agent: agent_kind,
+        cmd: shell.to_owned(),
+        args: shell_args.to_vec(),
+        // #1271 - the configured host shell paired with a resolved agent
+        // command, carried as one immutable snapshot (never as loose
+        // program/argument fields, so the pairing invariant cannot drift).
+        resolved_agent_host_shell: resolved_agent_host_shell.cloned(),
+        cwd: spawn_cwd.to_owned(),
+        selected_cwd: if spawn_cwd != cwd {
+            Some(cwd.to_owned())
+        } else {
+            None
+        },
+        // #973 - open the PTY at the size the terminal is actually going to be, so the
+        // frontend never has to resize a child that is still starting up. Callers with no
+        // view (restore loop, delivery loop, mailbox, CLI, tests) get PtyViewport::DEFAULT,
+        // which is the 120x30 AC always used.
+        cols: viewport.cols,
+        rows: viewport.rows,
+        container_image: resolved_spawn.and_then(|spawn| spawn.backend.image.clone()),
+        configured_env,
+        env_remove_keys,
+        env_unset,
+        extra_env,
+        idle_tuning: launch_idle_tuning,
+        output_target: output_target(app.clone()),
+        resource_registration,
+        logical_resource_slot,
+        container_credential,
+        container_repo_mounts: container_repos
+            .as_ref()
+            .map(|resolution| {
+                resolution
+                    .mounts()
+                    .map(
+                        |(host, container)| crate::pty::container_repos::ContainerRepoMount {
+                            host_path: host.to_path_buf(),
+                            container_path: container.to_string(),
+                        },
+                    )
+                    .collect()
+            })
+            .unwrap_or_default(),
+        launch_witness: launch_witness.clone(),
+    }
 }
