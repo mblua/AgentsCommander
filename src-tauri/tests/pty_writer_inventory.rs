@@ -214,8 +214,8 @@ fn every_production_pty_writer_is_in_the_explicit_permit_inventory() {
             &normalized(&source("src/pty/container_backend/tests/transport.rs")),
             "backend.write("
         ),
-        3,
-        "exactly three cfg(test) transport-write probes"
+        5,
+        "exactly five cfg(test) transport-write probes"
     );
 
     // 5. The privileged first-write boundary stays centralized in pty::inject,
