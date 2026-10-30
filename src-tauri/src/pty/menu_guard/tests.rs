@@ -739,7 +739,11 @@ impl crate::pty::backend::PtyBackend for ScanBackend {
     }
     fn screen_rows_since(&self, _: Uuid, seen: Option<FrameStamp>) -> ScreenRowsSince {
         self.seen.lock().unwrap().push(seen);
-        self.next.lock().unwrap().take().expect("scripted scan read")
+        self.next
+            .lock()
+            .unwrap()
+            .take()
+            .expect("scripted scan read")
     }
 }
 
@@ -751,11 +755,15 @@ struct ScanEvents {
 
 impl MenuGuardEvents for ScanEvents {
     fn publish(&self, id: Uuid, communication: Option<&SessionCommunication>) {
-        assert!(self.pty.try_lock().is_ok(), "PTY released before publication");
+        assert!(
+            self.pty.try_lock().is_ok(),
+            "PTY released before publication"
+        );
         let rows = futures::executor::block_on(self.manager.list_sessions());
         let row = rows.iter().find(|row| row.id == id.to_string()).unwrap();
         assert_eq!(
-            row.communication.as_ref(), communication,
+            row.communication.as_ref(),
+            communication,
             "mutation precedes event"
         );
         self.published
@@ -838,14 +846,24 @@ async fn scan_transitions_preserve_frames_publication_and_disabled_cleanup() {
         ..AppSettings::default()
     };
 
-    guard.scan_tick_with(&settings, &managers, None, &events).await;
+    guard
+        .scan_tick_with(&settings, &managers, None, &events)
+        .await;
     assert!(backend.seen.lock().unwrap().is_empty());
     assert!(events.published.lock().unwrap().is_empty());
     *backend.next.lock().unwrap() = Some(scan_frame("Trust project folder?", 1));
-    guard.scan_tick_with(&settings, &managers, Some(&pty), &events).await;
+    guard
+        .scan_tick_with(&settings, &managers, Some(&pty), &events)
+        .await;
     assert!(guard.is_blocked(id));
     assert_eq!(events.published.lock().unwrap().len(), 1);
-    assert!(events.published.lock().unwrap()[0].1.as_ref().unwrap().visible);
+    assert!(
+        events.published.lock().unwrap()[0]
+            .1
+            .as_ref()
+            .unwrap()
+            .visible
+    );
     let stamp = guard.sessions.lock().unwrap()[&id].last_seen_stamp;
     assert_eq!(
         stamp,
@@ -862,7 +880,9 @@ async fn scan_transitions_preserve_frames_publication_and_disabled_cleanup() {
         scan_frame("Trust project folder?", 2),
     ] {
         *backend.next.lock().unwrap() = Some(next);
-        guard.scan_tick_with(&settings, &managers, Some(&pty), &events).await;
+        guard
+            .scan_tick_with(&settings, &managers, Some(&pty), &events)
+            .await;
         assert!(guard.is_blocked(id));
         assert_eq!(guard.sessions.lock().unwrap()[&id].episode_id, episode);
         assert_eq!(events.published.lock().unwrap().len(), 1);
@@ -870,20 +890,30 @@ async fn scan_transitions_preserve_frames_publication_and_disabled_cleanup() {
     assert_eq!(backend.seen.lock().unwrap()[1], stamp);
     assert!(guard.resolve_current_episode(id));
     *backend.next.lock().unwrap() = Some(scan_frame("Trust project folder?", 3));
-    guard.scan_tick_with(&settings, &managers, Some(&pty), &events).await;
+    guard
+        .scan_tick_with(&settings, &managers, Some(&pty), &events)
+        .await;
     assert!(!guard.is_blocked(id));
     assert_eq!(events.published.lock().unwrap().len(), 1);
     *backend.next.lock().unwrap() = Some(scan_frame("normal output", 4));
-    guard.scan_tick_with(&settings, &managers, Some(&pty), &events).await;
+    guard
+        .scan_tick_with(&settings, &managers, Some(&pty), &events)
+        .await;
     assert_eq!(events.published.lock().unwrap().as_slice()[1], (id, None));
     *backend.next.lock().unwrap() = Some(scan_frame("Trust project folder?", 5));
-    guard.scan_tick_with(&settings, &managers, Some(&pty), &events).await;
+    guard
+        .scan_tick_with(&settings, &managers, Some(&pty), &events)
+        .await;
     assert!(guard.is_blocked(id));
     assert_ne!(guard.sessions.lock().unwrap()[&id].episode_id, episode);
     assert_eq!(events.published.lock().unwrap().len(), 3);
     settings.menu_guard_enabled = false;
-    guard.scan_tick_with(&settings, &managers, None, &events).await;
-    guard.scan_tick_with(&settings, &managers, None, &events).await;
+    guard
+        .scan_tick_with(&settings, &managers, None, &events)
+        .await;
+    guard
+        .scan_tick_with(&settings, &managers, None, &events)
+        .await;
     assert!(!guard.is_blocked(id));
     assert_eq!(events.published.lock().unwrap().as_slice()[3], (id, None));
     assert_eq!(events.published.lock().unwrap().len(), 4);
@@ -893,10 +923,14 @@ async fn scan_transitions_preserve_frames_publication_and_disabled_cleanup() {
     );
     settings.menu_guard_enabled = true;
     *backend.next.lock().unwrap() = Some(scan_frame("Trust project folder?", 6));
-    guard.scan_tick_with(&settings, &managers, Some(&pty), &events).await;
+    guard
+        .scan_tick_with(&settings, &managers, Some(&pty), &events)
+        .await;
     let communication = events.published.lock().unwrap()[4].1.clone();
     *backend.next.lock().unwrap() = Some(ScreenRowsSince::Gone);
-    guard.scan_tick_with(&settings, &managers, Some(&pty), &events).await;
+    guard
+        .scan_tick_with(&settings, &managers, Some(&pty), &events)
+        .await;
     assert!(!guard.sessions.lock().unwrap().contains_key(&id));
     assert_eq!(
         response.inner.lock().unwrap().routes[&id].menu_blocked,

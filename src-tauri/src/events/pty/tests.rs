@@ -238,12 +238,11 @@ async fn menu_edge_resolves_current_settings_and_tolerates_missing_state() {
     // Missing SettingsState; then missing SessionManager, even with disabled settings.
     guard.scan_tick(app.handle()).await;
     assert!(guard.is_blocked(id));
-    let settings = crate::config::settings::new_settings_state(
-        crate::config::settings::AppSettings {
+    let settings =
+        crate::config::settings::new_settings_state(crate::config::settings::AppSettings {
             menu_guard_enabled: false,
             ..Default::default()
-        },
-    );
+        });
     app.manage(settings.clone());
     guard.scan_tick(app.handle()).await;
     assert!(guard.is_blocked(id));
