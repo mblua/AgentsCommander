@@ -8,18 +8,21 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tauri::Manager;
 use uuid::Uuid;
 
 use crate::config::sessions_persistence::BlockedMenuPersistOutcome;
 use crate::config::settings::{
-    AgentConfig, BlockingMenuConfig, BlockingMenuEntry, BlockingMenusStore, SettingsState,
+    AgentConfig, AppSettings, BlockingMenuConfig, BlockingMenuEntry, BlockingMenusStore,
 };
 use crate::pty::manager::PtyManager;
 use crate::pty::watchers::frame::{logical_rows, LogicalRow};
 use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 use crate::session::manager::SessionManager;
+use crate::session::session::SessionCommunication;
+
+pub(crate) trait MenuGuardEvents: Send + Sync {
+    fn publish(&self, id: Uuid, communication: Option<&SessionCommunication>);
+}
 
 pub const ERR_MENU_GUARD_DEFERRED: &str = "menu_guard_deferred";
 
@@ -254,9 +257,9 @@ impl MenuGuard {
             .unwrap_or(false)
     }
 
-    async fn clear_disabled_menus<R: tauri::Runtime>(
+    async fn clear_disabled_menus(
         &self,
-        app: &tauri::AppHandle<R>,
+        events: &dyn MenuGuardEvents,
         session_mgr_state: &Arc<tokio::sync::RwLock<SessionManager>>,
     ) {
         let manager = { session_mgr_state.read().await.clone() };
@@ -296,36 +299,24 @@ impl MenuGuard {
                 )
                 .await
                 {
-                    crate::session::selection::publish_session_communication(app, id, None);
+                    events.publish(id, None);
                 }
             }
         }
     }
 
-    pub async fn scan_tick<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) {
-        let Some(settings_state) = app.try_state::<SettingsState>() else {
-            return;
-        };
-        let settings = match settings_state.current_read().await {
-            Ok(settings) => settings.clone(),
-            Err(_) => {
-                log::debug!("[MenuGuard] settings unavailable; skipping scan");
-                return;
-            }
-        };
-
-        let Some(session_mgr_state) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-        else {
-            return;
-        };
-
+    pub(crate) async fn scan_tick_with(
+        &self,
+        settings: &AppSettings,
+        session_mgr_state: &Arc<tokio::sync::RwLock<SessionManager>>,
+        pty_mgr_state: Option<&Arc<Mutex<PtyManager>>>,
+        events: &dyn MenuGuardEvents,
+    ) {
         if !settings.menu_guard_enabled {
-            self.clear_disabled_menus(app, session_mgr_state.inner())
-                .await;
+            self.clear_disabled_menus(events, session_mgr_state).await;
             return;
         }
-
-        let Some(pty_mgr_state) = app.try_state::<Arc<std::sync::Mutex<PtyManager>>>() else {
+        let Some(pty_mgr_state) = pty_mgr_state else {
             return;
         };
 
@@ -405,15 +396,11 @@ impl MenuGuard {
                                     session_uuid,
                                     msg,
                                     chrono::Utc::now(),
-                                    &settings,
+                                    settings,
                                 )
                                 .await
                             {
-                                crate::session::selection::publish_session_communication(
-                                    app,
-                                    session_uuid,
-                                    Some(&comm),
-                                );
+                                events.publish(session_uuid, Some(&comm));
                             }
                         }
                     } else if eval.should_clear_notification
@@ -423,11 +410,7 @@ impl MenuGuard {
                         )
                         .await
                     {
-                        crate::session::selection::publish_session_communication(
-                            app,
-                            session_uuid,
-                            None,
-                        );
+                        events.publish(session_uuid, None);
                     }
                 }
                 ScreenRowsSince::Gone => {
@@ -441,27 +424,6 @@ impl MenuGuard {
                 ScreenRowsSince::Missing => {}
             }
         }
-    }
-
-    pub fn start(
-        self: &Arc<Self>,
-        app: tauri::AppHandle,
-        shutdown: crate::shutdown::ShutdownSignal,
-    ) {
-        let this = Arc::clone(self);
-        tauri::async_runtime::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(250));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = shutdown.token().cancelled() => break,
-                    _ = interval.tick() => {
-                        this.scan_tick(&app).await;
-                    }
-                }
-            }
-        });
     }
 }
 

@@ -685,3 +685,226 @@ fn a_legacy_array_on_the_agent_wins_over_both_files() {
 }
 
 mod response_close_menu;
+
+#[derive(Default)]
+struct ScanBackend {
+    next: Mutex<Option<ScreenRowsSince>>,
+    seen: Mutex<Vec<Option<FrameStamp>>>,
+}
+
+impl crate::pty::backend::PtyBackend for ScanBackend {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn spawn(
+        &self,
+        _: crate::pty::backend::BackendSpawnSpec,
+    ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+        unreachable!("scan must not spawn")
+    }
+    fn write(
+        &self,
+        _: &crate::pty::manager::BackendWriteAuthority,
+        _: Uuid,
+        _: &[u8],
+    ) -> Result<(), crate::errors::AppError> {
+        unreachable!("scan must not write")
+    }
+    fn resize(&self, _: Uuid, _: u16, _: u16) -> Result<(), crate::errors::AppError> {
+        unreachable!("scan must not resize")
+    }
+    fn kill(&self, _: Uuid) -> Result<(), crate::errors::AppError> {
+        unreachable!("scan must not kill")
+    }
+    fn has_session(&self, _: Uuid) -> bool {
+        true
+    }
+    fn get_screen_snapshot(&self, _: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+        unreachable!("scan uses frames")
+    }
+    fn get_pty_size(&self, _: Uuid) -> Option<(u16, u16)> {
+        unreachable!("scan uses frames")
+    }
+    fn get_screen_rows(&self, _: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+        unreachable!("scan uses frames")
+    }
+    fn register_response_watcher(&self, _: Uuid, _: String, _: std::path::PathBuf) {
+        unreachable!("scan must not register watchers")
+    }
+    fn terminate_job_for_session(&self, _: Uuid) -> bool {
+        unreachable!("scan must not terminate")
+    }
+    fn kill_all_jobs(&self) -> (usize, usize) {
+        unreachable!("scan must not terminate")
+    }
+    fn screen_rows_since(&self, _: Uuid, seen: Option<FrameStamp>) -> ScreenRowsSince {
+        self.seen.lock().unwrap().push(seen);
+        self.next.lock().unwrap().take().expect("scripted scan read")
+    }
+}
+
+struct ScanEvents {
+    manager: SessionManager,
+    pty: Arc<Mutex<PtyManager>>,
+    published: Mutex<Vec<(Uuid, Option<SessionCommunication>)>>,
+}
+
+impl MenuGuardEvents for ScanEvents {
+    fn publish(&self, id: Uuid, communication: Option<&SessionCommunication>) {
+        assert!(self.pty.try_lock().is_ok(), "PTY released before publication");
+        let rows = futures::executor::block_on(self.manager.list_sessions());
+        let row = rows.iter().find(|row| row.id == id.to_string()).unwrap();
+        assert_eq!(
+            row.communication.as_ref(), communication,
+            "mutation precedes event"
+        );
+        self.published
+            .lock()
+            .unwrap()
+            .push((id, communication.cloned()));
+    }
+}
+
+fn scan_frame(text: &str, sequence: u64) -> ScreenRowsSince {
+    ScreenRowsSince::Frame(ScreenFrame {
+        rows: vec![text.into()],
+        wrapped: vec![false],
+        cursor_row: 0,
+        stamp: Some(FrameStamp {
+            sequence,
+            rows: 1,
+            cols: 80,
+        }),
+    })
+}
+
+#[tokio::test]
+async fn scan_transitions_preserve_frames_publication_and_disabled_cleanup() {
+    const CHILD: &str = "AC_3469_MENU_SCAN_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                concat!(
+                    "pty::menu_guard::tests::",
+                    "scan_transitions_preserve_frames_publication_and_disabled_cleanup"
+                ),
+                "--nocapture",
+            ])
+            .env(CHILD, temp.path())
+            .env("AGENTSCOMMANDER_CONFIG_DIR", temp.path())
+            .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", temp.path())
+            .status()
+            .unwrap();
+        assert!(status.success(), "isolated scan test: {status}");
+        return;
+    }
+    let dir = std::path::PathBuf::from(std::env::var_os(CHILD).unwrap());
+    assert_eq!(crate::config::config_dir().unwrap(), dir);
+    let manager = SessionManager::new();
+    let session = manager
+        .create_session(
+            "pi".into(),
+            vec![],
+            dir.to_string_lossy().into_owned(),
+            Some("pi-scan".into()),
+            None,
+            vec![],
+            false,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+        )
+        .await
+        .unwrap();
+    let id = session.id;
+    let backend = Arc::new(ScanBackend::default());
+    let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+    pty.lock()
+        .unwrap()
+        .record_route(id, crate::pty::backend::SessionBackendKind::LocalProcess);
+    let events = ScanEvents {
+        manager: manager.clone(),
+        pty: pty.clone(),
+        published: Mutex::new(Vec::new()),
+    };
+    let managers = Arc::new(tokio::sync::RwLock::new(manager));
+    let response = crate::pty::manager::ResponseCloseState::default();
+    response.register_route(id, 1, std::time::Instant::now());
+    let guard =
+        MenuGuard::with_response_close(BlockingMenusStore::shipped_only(), response.clone());
+    let mut settings = AppSettings {
+        menu_guard_enabled: true,
+        agents: vec![agent("pi-scan", "pi", None)],
+        ..AppSettings::default()
+    };
+
+    guard.scan_tick_with(&settings, &managers, None, &events).await;
+    assert!(backend.seen.lock().unwrap().is_empty());
+    assert!(events.published.lock().unwrap().is_empty());
+    *backend.next.lock().unwrap() = Some(scan_frame("Trust project folder?", 1));
+    guard.scan_tick_with(&settings, &managers, Some(&pty), &events).await;
+    assert!(guard.is_blocked(id));
+    assert_eq!(events.published.lock().unwrap().len(), 1);
+    assert!(events.published.lock().unwrap()[0].1.as_ref().unwrap().visible);
+    let stamp = guard.sessions.lock().unwrap()[&id].last_seen_stamp;
+    assert_eq!(
+        stamp,
+        Some(FrameStamp {
+            sequence: 1,
+            rows: 1,
+            cols: 80,
+        })
+    );
+    let episode = guard.sessions.lock().unwrap()[&id].episode_id;
+    for next in [
+        ScreenRowsSince::Unchanged,
+        ScreenRowsSince::Missing,
+        scan_frame("Trust project folder?", 2),
+    ] {
+        *backend.next.lock().unwrap() = Some(next);
+        guard.scan_tick_with(&settings, &managers, Some(&pty), &events).await;
+        assert!(guard.is_blocked(id));
+        assert_eq!(guard.sessions.lock().unwrap()[&id].episode_id, episode);
+        assert_eq!(events.published.lock().unwrap().len(), 1);
+    }
+    assert_eq!(backend.seen.lock().unwrap()[1], stamp);
+    assert!(guard.resolve_current_episode(id));
+    *backend.next.lock().unwrap() = Some(scan_frame("Trust project folder?", 3));
+    guard.scan_tick_with(&settings, &managers, Some(&pty), &events).await;
+    assert!(!guard.is_blocked(id));
+    assert_eq!(events.published.lock().unwrap().len(), 1);
+    *backend.next.lock().unwrap() = Some(scan_frame("normal output", 4));
+    guard.scan_tick_with(&settings, &managers, Some(&pty), &events).await;
+    assert_eq!(events.published.lock().unwrap().as_slice()[1], (id, None));
+    *backend.next.lock().unwrap() = Some(scan_frame("Trust project folder?", 5));
+    guard.scan_tick_with(&settings, &managers, Some(&pty), &events).await;
+    assert!(guard.is_blocked(id));
+    assert_ne!(guard.sessions.lock().unwrap()[&id].episode_id, episode);
+    assert_eq!(events.published.lock().unwrap().len(), 3);
+    settings.menu_guard_enabled = false;
+    guard.scan_tick_with(&settings, &managers, None, &events).await;
+    guard.scan_tick_with(&settings, &managers, None, &events).await;
+    assert!(!guard.is_blocked(id));
+    assert_eq!(events.published.lock().unwrap().as_slice()[3], (id, None));
+    assert_eq!(events.published.lock().unwrap().len(), 4);
+    assert_eq!(
+        response.inner.lock().unwrap().routes[&id].menu_blocked,
+        Some(false)
+    );
+    settings.menu_guard_enabled = true;
+    *backend.next.lock().unwrap() = Some(scan_frame("Trust project folder?", 6));
+    guard.scan_tick_with(&settings, &managers, Some(&pty), &events).await;
+    let communication = events.published.lock().unwrap()[4].1.clone();
+    *backend.next.lock().unwrap() = Some(ScreenRowsSince::Gone);
+    guard.scan_tick_with(&settings, &managers, Some(&pty), &events).await;
+    assert!(!guard.sessions.lock().unwrap().contains_key(&id));
+    assert_eq!(
+        response.inner.lock().unwrap().routes[&id].menu_blocked,
+        None
+    );
+    assert_eq!(events.published.lock().unwrap().len(), 5);
+    assert_eq!(
+        managers.read().await.list_sessions().await[0].communication,
+        communication
+    );
+}
