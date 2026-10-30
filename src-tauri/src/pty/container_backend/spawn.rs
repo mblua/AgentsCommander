@@ -372,14 +372,39 @@ impl ContainerTransportBackend {
                 return Err(err);
             }
         };
+        self.start_runtime_and_attach(
+            id,
+            runtime,
+            request,
+            token,
+            &launch_witness,
+            attach_notify,
+            &mut cancellation_guard,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn start_runtime_and_attach(
+        &self,
+        id: Uuid,
+        runtime: Arc<dyn ContainerRuntime>,
+        request: crate::pty::container_runtime::ContainerStartRequest,
+        token: crate::pty::container_tokens::ContainerApiToken,
+        launch_witness: &crate::pty::backend::LaunchWitness,
+        attach_notify: Arc<Notify>,
+        cancellation_guard: &mut ContainerSpawnCancellationGuard<'_>,
+    ) -> Result<(), AppError> {
+        let canceled = &cancellation_guard.canceled;
+        let late_handle = &cancellation_guard.late_handle;
         let Some(start_producer) = cancellation_guard.shutdown_producer.as_ref() else {
             return Err(AppError::Other(
                 "container runtime start lost shutdown ownership".to_string(),
             ));
         };
         let start_runtime = runtime.clone();
-        let canceled_for_start = Arc::clone(&canceled);
-        let late_handle_for_start = Arc::clone(&late_handle);
+        let canceled_for_start = Arc::clone(canceled);
+        let late_handle_for_start = Arc::clone(late_handle);
         let canceled_cleanup_ownership = Arc::clone(&self.cleanup_ownership);
         let canceled_cleanup_epoch = self.cleanup_attempt_epoch.fetch_add(1, Ordering::Relaxed);
         let (start_result_sender, start_result_receiver) = oneshot::channel();
