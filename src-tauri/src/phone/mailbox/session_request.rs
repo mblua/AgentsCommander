@@ -8,7 +8,7 @@ use super::handoff::SELF_CLEAR_POLL;
 use super::handoff::SELF_CLEAR_SETTLE;
 use super::handoff::{ARCHIVE_TIMESTAMP_FORMAT, PURGE_WG_ACTION, SELF_HANDOFF_ROOT_NAME};
 use super::notice::derive_project_from_outbox_path;
-use super::poller::{evaluate_gate, MailboxPoller, PurgeGatePeer};
+use super::poller::{evaluate_gate, MailboxPoller};
 use super::settle::{archive_root_md, capture_self_forget_summary};
 use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::SettingsState;
@@ -210,31 +210,17 @@ impl MailboxPoller {
                 .await;
         }
 
-        let snapshot = self.execute_room_purge(app, msg, &gate_peers).await?;
-        let response =
-            purge::completion_response(&wg.project, &wg.wg_name, msg, quiet, &decision, &snapshot);
-
-        self.write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
-            .await
-    }
-
-    async fn execute_room_purge<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        msg: &OutboxMessage,
-        gate_peers: &[PurgeGatePeer],
-    ) -> Result<super::teardown::PurgeSnapshot, String> {
         // 11. Acquire the lease (F-14: clone Arc into a named local first).
         let mut target_sids: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
         let mut target_fqns: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for peer in gate_peers {
+        for peer in &gate_peers {
             for session in &peer.live {
                 target_sids.insert(session.session_id);
             }
             target_fqns.insert(peer.fqn.clone());
         }
         // Also include non-live session IDs (Exited records) for destruction.
-        for peer in gate_peers {
+        for peer in &gate_peers {
             for sid_str in &peer.all_session_ids {
                 if let Ok(sid) = Uuid::parse_str(sid_str) {
                     target_sids.insert(sid);
@@ -251,7 +237,7 @@ impl MailboxPoller {
             .ok_or_else(|| "purge observation budget overflow".to_string())?;
         let mut ids = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for peer in gate_peers {
+        for peer in &gate_peers {
             for id in &peer.all_session_ids {
                 if let Ok(sid) = Uuid::parse_str(id) {
                     if seen.insert(sid) {
@@ -289,7 +275,12 @@ impl MailboxPoller {
                 }
             },
         ));
-        super::teardown::observe_purge(progress, worker).await
+        let snapshot = super::teardown::observe_purge(progress, worker).await?;
+        let response =
+            purge::completion_response(&wg.project, &wg.wg_name, msg, quiet, &decision, &snapshot);
+
+        self.write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
+            .await
     }
 
     /// Returns fast: the 30s sustained-idle wait runs in a detached task so the
@@ -442,7 +433,63 @@ impl MailboxPoller {
         //    decision policy is covered separately by the pure `self_clear_gate_advance` tests.
         //    Durations are passed in so a future integration test can drive it fast.
         if newly_inserted {
-            self.queue_legacy_self_clear(app, msg, &session, session_id, clear_text);
+            // #626 - archive SELF-FORGET.md so the next cycle starts fresh. Best-effort: a failure
+            // must not block the clear/handoff. The agent already wrote SELF-HANDOFF.md
+            // (existence-gated above), so SELF-FORGET.md is present iff the agent kept one. FOLD-3:
+            // runs in ALL cfgs (NOT inside the cfg(not(test)) spawn) so the harness archive
+            // assertion can pass. Decoupled from clear success (queue-time): an abandoned cycle
+            // leaves SELF-FORGET archived but uncleared; content is preserved in
+            // self-clear/<ts>_SELF-FORGET.md, re-issue continues normally.
+            let root = std::path::Path::new(&session.working_directory);
+            let forgotten_summary = capture_self_forget_summary(root);
+            let ts = chrono::Local::now()
+                .format(ARCHIVE_TIMESTAMP_FORMAT)
+                .to_string();
+            match archive_root_md(root, "SELF-FORGET", &ts) {
+                Ok(Some(p)) => log::info!(
+                    "[mailbox] self-handoff-and-clear: archived SELF-FORGET.md -> {}",
+                    p.display()
+                ),
+                Ok(None) => {} // no SELF-FORGET.md; nothing to archive
+                Err(e) => log::warn!(
+                    "[mailbox] self-handoff-and-clear: SELF-FORGET.md archive failed for session \
+                        {} (non-fatal): {}",
+                    session_id,
+                    e
+                ),
+            }
+
+            #[cfg(not(test))]
+            {
+                let app_clone = app.clone();
+                // #749 - the root travels with the task (same queue-time snapshot the
+                // SELF-FORGET archive above used) so Phase 2 can archive the handoff
+                // without a mid-flight session-manager lookup. A session's working
+                // directory never changes while its id stays alive.
+                let root = root.to_path_buf();
+                Self::launch_self_clear_driver(async move {
+                    Self::run_self_clear_after_sustained_idle(
+                        &app_clone,
+                        session_id,
+                        clear_text,
+                        root,
+                        forgotten_summary,
+                        SELF_CLEAR_SETTLE,
+                        SELF_CLEAR_POLL,
+                        SELF_CLEAR_MAX_DEFER,
+                    )
+                    .await;
+                });
+            }
+            #[cfg(test)]
+            let _ = (clear_text, &forgotten_summary);
+            log::info!(
+                "[mailbox] self-handoff-and-clear queued for session {} (from '{}')",
+                session_id,
+                msg.from
+            );
+            #[cfg(test)]
+            let _ = app;
         } else {
             log::info!(
                 "[mailbox] self-handoff-and-clear already pending for session {} (from '{}')",
@@ -454,73 +501,6 @@ impl MailboxPoller {
         // 5. Write the queue-ack response, then move the message to delivered/.
         self.write_self_clear_response(app, path, msg, session_id, status, is_app_outbox)
             .await
-    }
-
-    fn queue_legacy_self_clear<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        msg: &OutboxMessage,
-        session: &SessionInfo,
-        session_id: Uuid,
-        clear_text: &'static str,
-    ) {
-        // #626 - archive SELF-FORGET.md so the next cycle starts fresh. Best-effort: a failure
-        // must not block the clear/handoff. The agent already wrote SELF-HANDOFF.md
-        // (existence-gated above), so SELF-FORGET.md is present iff the agent kept one. FOLD-3:
-        // runs in ALL cfgs (NOT inside the cfg(not(test)) spawn) so the harness archive
-        // assertion can pass. Decoupled from clear success (queue-time): an abandoned cycle
-        // leaves SELF-FORGET archived but uncleared; content is preserved in
-        // self-clear/<ts>_SELF-FORGET.md, re-issue continues normally.
-        let root = std::path::Path::new(&session.working_directory);
-        let forgotten_summary = capture_self_forget_summary(root);
-        let ts = chrono::Local::now()
-            .format(ARCHIVE_TIMESTAMP_FORMAT)
-            .to_string();
-        match archive_root_md(root, "SELF-FORGET", &ts) {
-            Ok(Some(p)) => log::info!(
-                "[mailbox] self-handoff-and-clear: archived SELF-FORGET.md -> {}",
-                p.display()
-            ),
-            Ok(None) => {} // no SELF-FORGET.md; nothing to archive
-            Err(e) => log::warn!(
-                "[mailbox] self-handoff-and-clear: SELF-FORGET.md archive failed for session \
-                    {} (non-fatal): {}",
-                session_id,
-                e
-            ),
-        }
-
-        #[cfg(not(test))]
-        {
-            let app_clone = app.clone();
-            // #749 - the root travels with the task (same queue-time snapshot the
-            // SELF-FORGET archive above used) so Phase 2 can archive the handoff
-            // without a mid-flight session-manager lookup. A session's working
-            // directory never changes while its id stays alive.
-            let root = root.to_path_buf();
-            Self::launch_self_clear_driver(async move {
-                Self::run_self_clear_after_sustained_idle(
-                    &app_clone,
-                    session_id,
-                    clear_text,
-                    root,
-                    forgotten_summary,
-                    SELF_CLEAR_SETTLE,
-                    SELF_CLEAR_POLL,
-                    SELF_CLEAR_MAX_DEFER,
-                )
-                .await;
-            });
-        }
-        #[cfg(test)]
-        let _ = (clear_text, &forgotten_summary);
-        log::info!(
-            "[mailbox] self-handoff-and-clear queued for session {} (from '{}')",
-            session_id,
-            msg.from
-        );
-        #[cfg(test)]
-        let _ = app;
     }
 
     fn session_has_visible_raise_hand_slot(session: &SessionInfo) -> bool {
