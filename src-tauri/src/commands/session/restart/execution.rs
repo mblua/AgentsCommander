@@ -335,7 +335,8 @@ async fn prepare_restart<R: tauri::Runtime>(
         // and no `finalize_failed_restart` runs. Root-agent restarts already
         // normalized `cwd` to `ensure_root_agent_dir()` above, which the gate
         // exempts by rule 1.
-        crate::config::sessions_persistence::enforce_creation_gate(settings, &cwd, enforcement).await?;
+        crate::config::sessions_persistence::enforce_creation_gate(settings, &cwd, enforcement)
+            .await?;
 
         // 2. Strip auto-injected args before restart so the new session starts from the saved
         // recipe.
@@ -366,7 +367,7 @@ async fn prepare_restart<R: tauri::Runtime>(
                 MatchedSelection::NoAgent => (None, None),
                 MatchedSelection::Unresolved { reference } => {
                     return Err(format!(
-                        "unresolved_coding_agent_reference: '{}' matches no configured coding agent",
+                    "unresolved_coding_agent_reference: '{}' matches no configured coding agent",
                         reference
                     ));
                 }
@@ -447,7 +448,8 @@ async fn prepare_restart<R: tauri::Runtime>(
             restart_start_fresh,
             carried_communication,
         })
-    }.await;
+    }
+    .await;
     if let Some(preparation) = preparation {
         preparation.complete(prepared.as_ref().map(|_| None).map_err(Clone::clone));
     }

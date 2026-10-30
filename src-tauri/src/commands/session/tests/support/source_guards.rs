@@ -275,21 +275,49 @@ pub(crate) fn source_budgets(sources: &SessionSources) -> bool {
 }
 
 pub(crate) fn source_restart(sources: &SessionSources) -> bool {
-    let source = sources
-        .get(RESTART_SOURCE)
-        .or_else(|| sources.get(SESSION_SOURCE));
-    let Some(body) = source.and_then(|s| function(s, RESTART_ENTRY)) else {
+    let Some(source) = sources.get(RESTART_SOURCE) else {
         return false;
     };
-    let needles = [
-        RESTART_REFUSAL,
-        "crate::config::sessions_persistence::enforce_creation_gate\
-             (&settings,&cwd,enforcement).await?;",
-        "letretirement=",
-        "retire_lifecycle_entry_protection(app,authority).await",
-        "teardown_old_for_restart(transaction,uuid,old_was_dormant).await",
-    ];
-    ordered(&body, &needles)
+    let Some(entry) = function(source, RESTART_ENTRY) else {
+        return false;
+    };
+    let Some(preparation) = function(source, "prepare_restart") else {
+        return false;
+    };
+    let Some(retirement) = function(source, "begin_restart_retirement") else {
+        return false;
+    };
+    [RESTART_ENTRY, "prepare_restart", "begin_restart_retirement"]
+        .iter()
+        .all(|name| definition_count(sources, name) == 1)
+        && ordered(
+            &entry,
+            &[
+                "letprepared=prepare_restart(",
+                ".await;",
+                "}=prepared?;",
+                "letretirement=begin_restart_retirement(transaction,context).await?;",
+                "teardown_old_for_restart(transaction,uuid,old_was_dormant).await",
+            ],
+        )
+        && ordered(
+            &preparation,
+            &[
+                RESTART_REFUSAL,
+                concat!(
+                    "crate::config::sessions_persistence::enforce_creation_gate",
+                    "(settings,&cwd,enforcement).await?;"
+                ),
+            ],
+        )
+        && ordered(
+            &retirement,
+            &[
+                "letretirement=",
+                "retire_lifecycle_entry_protection(app,authority).await",
+                "Ok(retirement)",
+            ],
+        )
 }
 
 fn all_source_predicates(sources: &SessionSources) -> bool {
