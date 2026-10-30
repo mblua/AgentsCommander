@@ -2,8 +2,7 @@
 use super::TerminalSnapshotUnixCleanupControl;
 use super::{
     decrement_counter, TerminalSnapshotArtifactCleanupTaskScope, TerminalSnapshotState,
-    SNAPSHOT_ARTIFACT_DIRECTORY_CAP,
-    SNAPSHOT_ARTIFACT_FILE_CAP, SNAPSHOT_ARTIFACT_TTL,
+    SNAPSHOT_ARTIFACT_DIRECTORY_CAP, SNAPSHOT_ARTIFACT_FILE_CAP, SNAPSHOT_ARTIFACT_TTL,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
