@@ -27,6 +27,57 @@ use std::sync::Arc;
 use tauri::Manager;
 use uuid::Uuid;
 
+fn missing_switch_reservation(
+    original_session_id: Uuid,
+    cwd: PathBuf,
+    flavor: &SelfHandoffFlavor,
+    forgotten: bool,
+) -> SelfHandoffOutcome {
+    SelfHandoffOutcome::Failed(SelfHandoffFailure {
+        action: flavor.action,
+        attempt: Uuid::new_v4(),
+        original: original_session_id,
+        current: Some(original_session_id),
+        root: cwd,
+        continuation: false,
+        reason: format!("switch driver missing legacy reservation for {original_session_id}"),
+        forgotten,
+    })
+}
+
+fn resolve_restarted_session(
+    restarted: Result<String, String>,
+    flavor: &SelfHandoffFlavor,
+    original_session_id: Uuid,
+    current: &mut Option<Uuid>,
+) -> Result<Uuid, String> {
+    match restarted {
+        Ok(id) => match Uuid::parse_str(&id) {
+            Ok(uuid) => Ok(uuid),
+            Err(e) => {
+                log::warn!(
+                    "[mailbox] {}: restarted session id '{}' could not be parsed: \
+                    {}",
+                    flavor.action,
+                    id,
+                    e
+                );
+                *current = None;
+                Err(e.to_string())
+            }
+        },
+        Err(e) => {
+            log::warn!(
+                "[mailbox] {}: restart failed for session {}: {}",
+                flavor.action,
+                original_session_id,
+                e
+            );
+            Err(e)
+        }
+    }
+}
+
 impl MailboxPoller {
     /// #1632 - despite the name, this drives BOTH self-handoff flavors: pass
     /// `SELF_HANDOFF_FLAVOR_SWITCH` for self-handoff-and-switch and
@@ -81,18 +132,12 @@ impl MailboxPoller {
                 "[mailbox] switch driver missing legacy reservation for {}",
                 original_session_id
             );
-            return SelfHandoffOutcome::Failed(SelfHandoffFailure {
-                action: flavor.action,
-                attempt: Uuid::new_v4(),
-                original: original_session_id,
-                current: Some(original_session_id),
-                root: cwd,
-                continuation: false,
-                reason: format!(
-                    "switch driver missing legacy reservation for {original_session_id}"
-                ),
-                forgotten: forgotten_summary.is_some(),
-            });
+            return missing_switch_reservation(
+                original_session_id,
+                cwd,
+                &flavor,
+                forgotten_summary.is_some(),
+            );
         };
         let attempt = Uuid::new_v4();
         let mut continuation = false;
@@ -158,30 +203,14 @@ impl MailboxPoller {
                     }
                     let restarted =
                         restart(session_id, target_agent.clone(), target_profile.clone()).await;
-                    let new_id = match restarted {
-                        Ok(id) => match Uuid::parse_str(&id) {
-                            Ok(uuid) => uuid,
-                            Err(e) => {
-                                log::warn!(
-                                    "[mailbox] {}: restarted session id '{}' could not be parsed: \
-                                    {}",
-                                    flavor.action,
-                                    id,
-                                    e
-                                );
-                                current = None;
-                                break Some(e.to_string());
-                            }
-                        },
-                        Err(e) => {
-                            log::warn!(
-                                "[mailbox] {}: restart failed for session {}: {}",
-                                flavor.action,
-                                original_session_id,
-                                e
-                            );
-                            break Some(e);
-                        }
+                    let new_id = match resolve_restarted_session(
+                        restarted,
+                        &flavor,
+                        original_session_id,
+                        &mut current,
+                    ) {
+                        Ok(id) => id,
+                        Err(error) => break Some(error),
                     };
                     if let Err(error) = pending.alias(&lease, new_id) {
                         log::warn!(
