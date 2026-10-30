@@ -8,9 +8,9 @@ use futures::stream::StreamExt;
 use crate::config::remote_activity_cache::PersistedRepoCi;
 
 use super::super::{
-    activity_for, persisted_repo_ci, query_key, CiState, KeyOutcome, KeyPlan, PathFacts, QueryKey,
-    RemoteActivity, RemoteActivityPayload, SnapshotPersistence, StalenessCarry,
-    DEFAULT_BRANCH_LABEL, GH_BUDGET_BURST, QUERY_CONCURRENCY,
+    activity_for, due, persisted_repo_ci, query_key, CiState, KeyOutcome, KeyPlan, PathFacts,
+    QueryKey, RemoteActivity, RemoteActivityPayload, SnapshotPersistence, StalenessCarry,
+    DEFAULT_BRANCH_LABEL, GH_BUDGET_BURST, MAX_GH_CALLS_PER_MINUTE, QUERY_CONCURRENCY,
 };
 use super::RemoteSweeper;
 
@@ -22,6 +22,88 @@ pub(super) struct RoundReservations {
 }
 
 impl RemoteSweeper {
+    /// Plan due queries and refresh the round budget gate.
+    pub(super) fn plan_round_queries(
+        &self,
+        groups: &BTreeMap<QueryKey, Vec<usize>>,
+        now: Instant,
+        ci_enabled: bool,
+        staleness_enabled: bool,
+        gh_path: Option<&Path>,
+    ) -> (Vec<(QueryKey, KeyPlan)>, bool) {
+        let mut plans: Vec<(QueryKey, KeyPlan)> = Vec::with_capacity(groups.len());
+        {
+            let state = self.lock_state();
+            for key in groups.keys() {
+                let ci_due = match state.keys.get(key) {
+                    Some(entry) => due(now, entry.ci.next_due),
+                    None => true,
+                };
+                let staleness_due = match state.keys.get(key) {
+                    Some(entry) => due(now, entry.staleness.next_due),
+                    None => true,
+                };
+                plans.push((
+                    key.clone(),
+                    KeyPlan {
+                        ci: ci_enabled && gh_path.is_some() && ci_due,
+                        staleness: staleness_enabled && gh_path.is_some() && staleness_due,
+                    },
+                ));
+            }
+        }
+
+        // Refill the global `gh` budget before any call is considered, then
+        // read the gate. A gated round issues NO `gh` call: no resolution, no
+        // query. Nothing else about the round changes.
+        let throttled = {
+            let mut state = self.lock_state();
+            let elapsed = state
+                .budget_refilled_at
+                .map(|last| now.saturating_duration_since(last))
+                .unwrap_or_default();
+            state.budget_tokens = (state.budget_tokens
+                + elapsed.as_secs_f64() * MAX_GH_CALLS_PER_MINUTE / 60.0)
+                .min(GH_BUDGET_BURST);
+            state.budget_refilled_at = Some(now);
+            match state.throttled_until {
+                Some(until) if now < until => true,
+                _ => {
+                    state.throttled_until = None;
+                    false
+                }
+            }
+        };
+
+        // Priority order, built once: a key the user is watching (`Running`)
+        // first, then the least recently confirmed. A missing entry or a `None`
+        // timestamp sorts first (never checked, so most owed) and the trailing
+        // key makes the order total.
+        let mut due_keys: Vec<(QueryKey, KeyPlan)> = plans
+            .iter()
+            .filter(|(_, plan)| plan.ci || plan.staleness)
+            .cloned()
+            .collect();
+        {
+            let state = self.lock_state();
+            due_keys.sort_by_cached_key(|(key, _)| {
+                let entry = state.keys.get(key);
+                (
+                    if entry.map(|e| e.ci.confirmed) == Some(Some(CiState::Running)) {
+                        0u8
+                    } else {
+                        1u8
+                    },
+                    entry.and_then(|e| e.ci.last_confirmed_at),
+                    entry.and_then(|e| e.staleness.last_confirmed_at),
+                    key.clone(),
+                )
+            });
+        }
+
+        (due_keys, throttled)
+    }
+
     pub(super) fn carry_staleness(&self, groups: &BTreeMap<QueryKey, Vec<usize>>) {
         // #2141: retire keys no path maps to any more, carrying the STALENESS
         // axis to a live key on the same `(nwo, branch)` first. A local commit
