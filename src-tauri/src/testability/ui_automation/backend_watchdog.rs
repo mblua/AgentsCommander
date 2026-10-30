@@ -207,17 +207,12 @@ pub(crate) async fn handle_resource_watchdog_backend_request_with_config<H: Back
         }
     }
 
-    let state = if !resource_monitor_enabled {
-        "disabled"
-    } else if !kill_results.is_empty() {
-        "enforcing"
-    } else if kill_matches > 0 {
-        "critical"
-    } else if warn_matches > 0 {
-        "warn"
-    } else {
-        "ok"
-    };
+    let state = watchdog_state(
+        resource_monitor_enabled,
+        !kill_results.is_empty(),
+        kill_matches,
+        warn_matches,
+    );
 
     let snapshot_diagnostics = if monitor.supports_process_tree_enforcement() {
         json!({
@@ -283,5 +278,24 @@ pub(crate) async fn handle_resource_watchdog_backend_request_with_config<H: Back
         available_windows: None,
         timeout_ms: None,
         phase: None,
+    }
+}
+
+fn watchdog_state(
+    resource_monitor_enabled: bool,
+    kill_applied: bool,
+    kill_matches: usize,
+    warn_matches: usize,
+) -> &'static str {
+    if !resource_monitor_enabled {
+        "disabled"
+    } else if kill_applied {
+        "enforcing"
+    } else if kill_matches > 0 {
+        "critical"
+    } else if warn_matches > 0 {
+        "warn"
+    } else {
+        "ok"
     }
 }
