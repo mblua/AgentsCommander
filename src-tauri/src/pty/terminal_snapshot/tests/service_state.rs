@@ -390,7 +390,9 @@ fn tracked_cleanup_artifact(
     expired: bool,
 ) -> std::path::PathBuf {
     let directory_identity = crate::path_identity::verify_directory(directory).unwrap();
-    let reservation = state.reserve_artifact(directory, &directory_identity).unwrap();
+    let reservation = state
+        .reserve_artifact(directory, &directory_identity)
+        .unwrap();
     let path = directory.join(format!("{}.json", Uuid::new_v4()));
     std::fs::write(&path, b"tracked response").unwrap();
     let identity = crate::path_identity::verify_regular_file(&path).unwrap();
@@ -478,9 +480,8 @@ fn artifact_cleanup_shutdown_awaits_blocking_sweep() {
         std::task::Poll::Ready(future.as_mut().poll(context).is_pending())
     }));
     drop(registry);
-    let completed = runtime.block_on(async {
-        tokio::time::timeout(Duration::from_secs(15), future).await
-    });
+    let completed =
+        runtime.block_on(async { tokio::time::timeout(Duration::from_secs(15), future).await });
     assert!(pending, "cleanup must await the registry-blocked worker");
     completed.expect("blocking sweep deadline");
     assert!(!path.exists());
