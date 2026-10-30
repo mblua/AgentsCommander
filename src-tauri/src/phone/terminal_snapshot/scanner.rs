@@ -42,6 +42,65 @@ pub(crate) fn verified_requester_root_from_discovered_path(path: &Path) -> Optio
         .map(|identity| identity.replica_root)
 }
 
+struct ScanDirectories {
+    root_identity: crate::path_identity::VerifiedPathIdentity,
+    request_directory: PathBuf,
+    response_directory: PathBuf,
+    request_directory_identity: crate::path_identity::VerifiedPathIdentity,
+    response_directory_identity: crate::path_identity::VerifiedPathIdentity,
+}
+
+fn verified_scan_directories(requester_root: &Path) -> Option<ScanDirectories> {
+    let Ok(root_identity) = crate::path_identity::verify_directory(requester_root) else {
+        return None;
+    };
+    let local = requester_root.join(crate::config::agent_local_dir_name());
+    let outbox = local.join("outbox");
+    let request_directory = outbox.join(REQUEST_DIRECTORY);
+    let response_directory = local.join(RESPONSE_DIRECTORY);
+    if !terminal_snapshots::snapshot_is_dir(&request_directory)
+        || !terminal_snapshots::snapshot_is_dir(&response_directory)
+    {
+        return None;
+    }
+    let (
+        Ok(local_identity),
+        Ok(outbox_identity),
+        Ok(request_directory_identity),
+        Ok(response_directory_identity),
+    ) = (
+        crate::path_identity::verify_directory(&local),
+        crate::path_identity::verify_directory(&outbox),
+        crate::path_identity::verify_directory(&request_directory),
+        crate::path_identity::verify_directory(&response_directory),
+    )
+    else {
+        return None;
+    };
+    if !private_directory_mode(&request_directory)
+        || !private_directory_mode(&response_directory)
+        || !crate::path_identity::is_verified_descendant(&local_identity, &root_identity)
+        || !crate::path_identity::is_verified_descendant(&outbox_identity, &local_identity)
+        || !crate::path_identity::is_verified_descendant(
+            &request_directory_identity,
+            &outbox_identity,
+        )
+        || !crate::path_identity::is_verified_descendant(
+            &response_directory_identity,
+            &local_identity,
+        )
+    {
+        return None;
+    }
+    Some(ScanDirectories {
+        root_identity,
+        request_directory,
+        response_directory,
+        request_directory_identity,
+        response_directory_identity,
+    })
+}
+
 impl SnapshotMailboxScanner {
     /// (#1399) For a delivery-only poller. Reuses whatever owner is currently
     /// registered, so no second owner is created, and falls back to a
@@ -177,47 +236,16 @@ impl SnapshotMailboxScanner {
         app: &tauri::AppHandle<R>,
         requester_root: &Path,
     ) {
-        let Ok(root_identity) = crate::path_identity::verify_directory(requester_root) else {
-            return;
-        };
-        let local = requester_root.join(crate::config::agent_local_dir_name());
-        let outbox = local.join("outbox");
-        let request_directory = outbox.join(REQUEST_DIRECTORY);
-        let response_directory = local.join(RESPONSE_DIRECTORY);
-        if !terminal_snapshots::snapshot_is_dir(&request_directory)
-            || !terminal_snapshots::snapshot_is_dir(&response_directory)
-        {
-            return;
-        }
-        let (
-            Ok(local_identity),
-            Ok(outbox_identity),
-            Ok(request_directory_identity),
-            Ok(response_directory_identity),
-        ) = (
-            crate::path_identity::verify_directory(&local),
-            crate::path_identity::verify_directory(&outbox),
-            crate::path_identity::verify_directory(&request_directory),
-            crate::path_identity::verify_directory(&response_directory),
-        )
+        let Some(ScanDirectories {
+            root_identity,
+            request_directory,
+            response_directory,
+            request_directory_identity,
+            response_directory_identity,
+        }) = verified_scan_directories(requester_root)
         else {
             return;
         };
-        if !private_directory_mode(&request_directory)
-            || !private_directory_mode(&response_directory)
-            || !crate::path_identity::is_verified_descendant(&local_identity, &root_identity)
-            || !crate::path_identity::is_verified_descendant(&outbox_identity, &local_identity)
-            || !crate::path_identity::is_verified_descendant(
-                &request_directory_identity,
-                &outbox_identity,
-            )
-            || !crate::path_identity::is_verified_descendant(
-                &response_directory_identity,
-                &local_identity,
-            )
-        {
-            return;
-        }
         if self.cursors.len() >= CURSOR_CAP
             && !self
                 .cursors
