@@ -10,7 +10,7 @@ use super::copy::{
     is_readable_dir, remove_seed_scratch, SeedFileCollector,
 };
 use super::{
-    os_marker, ConfigSeedFailure, ConfigSeedPublication, ConfigSeedReport,
+    os_marker, ConfigSeedCandidate, ConfigSeedFailure, ConfigSeedPublication, ConfigSeedReport,
     ConfigSeedRollbackFailure, ConfigSeedSkipReason, ConfigSeedTier, ResolvedConfigSeed,
 };
 
@@ -181,73 +181,9 @@ pub(super) fn perform_config_seed_with_clock_and_hooks(
         });
     }
 
-    // 1. Pick the winning tier by source-folder presence (highest precedence first).
-    //    The four legacy tiers are unchanged (readable dir wins and overwrites).
-    //    The #769 P2 CatalogDefault tier is gated ABSENT-ONLY + NON-EMPTY here, so
-    //    it never overwrites an existing replica config and an empty/absent master
-    //    reads as "not present".
-    let mut selected = seed
-        .candidates
-        .iter()
-        .find(|c| c.tier != ConfigSeedTier::CatalogDefault && is_readable_dir(&c.path));
-    if selected.is_none() {
-        if let Some(candidate) = seed
-            .candidates
-            .iter()
-            .find(|c| c.tier == ConfigSeedTier::CatalogDefault && is_nonempty_seed_dir(&c.path))
-        {
-            match destination_absent_no_follow(&seed.dest) {
-                Ok(true) => selected = Some(candidate),
-                Ok(false) => {}
-                Err(error) => {
-                    log::warn!(
-                        "[config-seed] cannot inspect catalog-default destination {} without \
-                        following links: {}; skipping",
-                        seed.dest.display(),
-                        error
-                    );
-                    return ConfigSeedReport::Skipped(ConfigSeedSkipReason::DestinationInUse {
-                        dest: seed.dest.clone(),
-                        error,
-                    });
-                }
-            }
-        }
-    }
-    let Some(candidate) = selected else {
-        // #598: seeding is active but no template exists at any tier. This is a
-        // benign no-op (nothing to copy), but a SILENT one confused users who
-        // enabled the feature, created no template, and saw nothing happen. Log
-        // it at info with the exact candidate paths so they know WHERE to create
-        // a template. Only fires here, at the real spawn chokepoint (callers gate
-        // on a resolved seed), never during prevalidation/delivery builds.
-        let replica_label = seed
-            .context
-            .replica_root
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("?");
-        let looked_in = seed
-            .candidates
-            .iter()
-            .map(|c| {
-                format!(
-                    "{:?}{}={}",
-                    c.tier,
-                    os_marker(c.os_specific),
-                    c.path.display()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        log::info!(
-            "[config-seed] active for replica '{}' dest '{}' but no source template found at any \
-            tier; skipped (looked for: {})",
-            replica_label,
-            seed.dest.display(),
-            looked_in
-        );
-        return ConfigSeedReport::Skipped(ConfigSeedSkipReason::NoSource);
+    let candidate = match select_seed_candidate(seed) {
+        Ok(candidate) => candidate,
+        Err(report) => return report,
     };
 
     let (Some(parent), Some(dest_name)) = (
@@ -417,6 +353,83 @@ pub(super) fn perform_config_seed_with_clock_and_hooks(
         files,
         published_at,
     })
+}
+
+fn select_seed_candidate(
+    seed: &ResolvedConfigSeed,
+) -> Result<&ConfigSeedCandidate, ConfigSeedReport> {
+    // 1. Pick the winning tier by source-folder presence (highest precedence first).
+    //    The four legacy tiers are unchanged (readable dir wins and overwrites).
+    //    The #769 P2 CatalogDefault tier is gated ABSENT-ONLY + NON-EMPTY here, so
+    //    it never overwrites an existing replica config and an empty/absent master
+    //    reads as "not present".
+    let mut selected = seed
+        .candidates
+        .iter()
+        .find(|c| c.tier != ConfigSeedTier::CatalogDefault && is_readable_dir(&c.path));
+    if selected.is_none() {
+        if let Some(candidate) = seed
+            .candidates
+            .iter()
+            .find(|c| c.tier == ConfigSeedTier::CatalogDefault && is_nonempty_seed_dir(&c.path))
+        {
+            match destination_absent_no_follow(&seed.dest) {
+                Ok(true) => selected = Some(candidate),
+                Ok(false) => {}
+                Err(error) => {
+                    log::warn!(
+                        "[config-seed] cannot inspect catalog-default destination {} without \
+                        following links: {}; skipping",
+                        seed.dest.display(),
+                        error
+                    );
+                    return Err(ConfigSeedReport::Skipped(
+                        ConfigSeedSkipReason::DestinationInUse {
+                            dest: seed.dest.clone(),
+                            error,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    let Some(candidate) = selected else {
+        // #598: seeding is active but no template exists at any tier. This is a
+        // benign no-op (nothing to copy), but a SILENT one confused users who
+        // enabled the feature, created no template, and saw nothing happen. Log
+        // it at info with the exact candidate paths so they know WHERE to create
+        // a template. Only fires here, at the real spawn chokepoint (callers gate
+        // on a resolved seed), never during prevalidation/delivery builds.
+        let replica_label = seed
+            .context
+            .replica_root
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("?");
+        let looked_in = seed
+            .candidates
+            .iter()
+            .map(|c| {
+                format!(
+                    "{:?}{}={}",
+                    c.tier,
+                    os_marker(c.os_specific),
+                    c.path.display()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        log::info!(
+            "[config-seed] active for replica '{}' dest '{}' but no source template found at any \
+            tier; skipped (looked for: {})",
+            replica_label,
+            seed.dest.display(),
+            looked_in
+        );
+        return Err(ConfigSeedReport::Skipped(ConfigSeedSkipReason::NoSource));
+    };
+
+    Ok(candidate)
 }
 
 pub(super) fn destination_absent_no_follow(path: &Path) -> Result<bool, String> {
