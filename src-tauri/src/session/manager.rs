@@ -218,6 +218,10 @@ impl Default for SessionManager {
 }
 
 impl SessionManager {
+    pub(crate) fn activity_owner(&self) -> Arc<crate::config::activity_log::ActivityCoalescer> {
+        Arc::clone(&self.activity)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn mark_idle_with_carrier_permit(
         &self,
@@ -261,7 +265,7 @@ impl SessionManager {
             }
         }; // write guard released here
         if let Some(record) = record {
-            crate::config::activity_log::append(record);
+            crate::config::activity_log::append(record, &self.activity);
         }
     }
 
@@ -316,7 +320,7 @@ impl SessionManager {
             }
         }; // write guard released here
         if let Some(record) = record {
-            crate::config::activity_log::append(record);
+            crate::config::activity_log::append(record, &self.activity);
         }
     }
 
@@ -494,7 +498,7 @@ impl SessionManager {
             route_guard.retain_settings_guard(settings_guard);
             (route_guard, was_idle, activity)
         }; // write guard released here
-        crate::config::activity_log::append(activity);
+        crate::config::activity_log::append(activity, &self.activity);
         // The `mark_busy` this reaches through the idle callback then sees no
         // edge and emits nothing, so there is exactly one record per injection.
         idle_detector.notify_pty_input_busy(id, was_idle);

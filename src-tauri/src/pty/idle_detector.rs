@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
+use crate::config::activity_log::ActivityCoalescer;
 use crate::session::profile::{ActivityDetectorKind, IdleTuning};
 
 const CHECK_INTERVAL: Duration = Duration::from_millis(500);
@@ -111,6 +112,7 @@ pub(crate) struct ActivityConsumerHandle {
 }
 
 pub struct IdleDetector {
+    activity_log_owner: Arc<ActivityCoalescer>,
     raw_output_observer: std::sync::OnceLock<(usize, RawOutputObserver)>,
     activity: Arc<Mutex<ActivityState>>,
     /// #552 auto-close silence clock. SEPARATE from `activity` (which drives the
@@ -234,7 +236,16 @@ impl IdleDetector {
         on_idle: impl Fn(Uuid) + Send + Sync + 'static,
         on_busy: impl Fn(Uuid) + Send + Sync + 'static,
     ) -> Arc<Self> {
+        Self::with_activity_coalescer(Arc::new(ActivityCoalescer::new()), on_idle, on_busy)
+    }
+
+    pub(crate) fn with_activity_coalescer(
+        owner: Arc<ActivityCoalescer>,
+        on_idle: impl Fn(Uuid) + Send + Sync + 'static,
+        on_busy: impl Fn(Uuid) + Send + Sync + 'static,
+    ) -> Arc<Self> {
         Arc::new(Self {
+            activity_log_owner: owner,
             raw_output_observer: std::sync::OnceLock::new(),
             activity: Arc::new(Mutex::new(ActivityState::default())),
             silence: Arc::new(Mutex::new(HashMap::new())),
@@ -954,6 +965,7 @@ impl IdleDetector {
                 if let Some(working_session_ids) = heartbeat {
                     crate::config::activity_log::append(
                         crate::config::activity_log::build_app_alive(working_session_ids),
+                        &detector.activity_log_owner,
                     );
                 }
             }

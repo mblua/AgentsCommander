@@ -617,3 +617,20 @@ fn remove_session_clears_the_control_write_mark() {
         "remove_session must drop the control-write mark"
     );
 }
+
+#[test]
+fn detector_retains_the_injected_activity_owner() {
+    let owner = Arc::new(ActivityCoalescer::new());
+    let detector = IdleDetector::with_activity_coalescer(Arc::clone(&owner), |_| {}, |_| {});
+    assert!(Arc::ptr_eq(&detector.activity_log_owner, &owner));
+}
+
+#[test]
+fn convenience_detectors_have_separate_activity_owners() {
+    let first = IdleDetector::new(|_| {}, |_| {});
+    let second = IdleDetector::new(|_| {}, |_| {});
+    assert!(!Arc::ptr_eq(
+        &first.activity_log_owner,
+        &second.activity_log_owner
+    ));
+}
