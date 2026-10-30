@@ -380,6 +380,11 @@ async fn clear_watch_concurrency(remove: bool, poison: bool, cancel: bool) -> Re
         .await
         .unwrap()
         .unwrap();
+        manager
+            .lock()
+            .unwrap()
+            .try_remove_route_if_kind(other, SessionBackendKind::LocalProcess)
+            .unwrap();
         if remove {
             manager
                 .lock()
