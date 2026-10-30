@@ -654,6 +654,13 @@ impl MailboxPoller {
                 self.handle_raise_hand(app, path, msg, is_app_outbox).await,
             ));
         }
+        // (#3367) Same pre-routing block: the embedded web browser belongs to the
+        // app, so the token-owning caller is authorized by role, not team reach.
+        if crate::commands::web_browser::is_web_browser_action(msg.action.as_deref()) {
+            return Ok(std::ops::ControlFlow::Break(
+                self.handle_web_browser(app, path, msg, is_app_outbox).await,
+            ));
+        }
 
         // (#885 F-7) `purge-wg` dispatches pre-routing, after the anti-spoof block.
         // `msg.from` is anti-spoof-verified ONLY inside the `if !is_master` block

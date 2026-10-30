@@ -5,7 +5,9 @@ import { SettingsAPI } from "../../shared/ipc";
 // Issue #587 — the main central pane shows one of two views at a time: the
 // always-mounted terminal, or the Resource Monitor overlaid on top of it (same
 // shape as the Home overlay, see home.ts). This tiny store owns that choice.
-export type CentralView = "terminal" | "resourceMonitor";
+// #3367 adds the embedded web browser as a third view; only the Resource
+// Monitor choice is persisted.
+export type CentralView = "terminal" | "resourceMonitor" | "browser";
 
 const [view, setView] = createSignal<CentralView>("terminal");
 
@@ -38,6 +40,9 @@ export const centralViewStore = {
   get isResourceMonitor() {
     return view() === "resourceMonitor";
   },
+  get isBrowser() {
+    return view() === "browser";
+  },
 
   // Restore-only: set the signal without persisting or touching windows.
   // Called once from MainApp.onMount after settings load.
@@ -56,13 +61,26 @@ export const centralViewStore = {
     // Guard against write storms: session_switched fires often, and without
     // this early return every switch would re-persist `false`.
     if (view() === "terminal") return;
+    const leavingResourceMonitor = view() === "resourceMonitor";
     setView("terminal");
-    persist(false);
+    if (leavingResourceMonitor) persist(false);
+  },
+
+  showBrowser() {
+    if (view() === "browser") return;
+    const leavingResourceMonitor = view() === "resourceMonitor";
+    setView("browser");
+    if (leavingResourceMonitor) persist(false);
   },
 
   toggleResourceMonitor() {
     if (view() === "resourceMonitor") this.showTerminal();
     else this.showResourceMonitor();
+  },
+
+  toggleBrowser() {
+    if (view() === "browser") this.showTerminal();
+    else this.showBrowser();
   },
 };
 

@@ -26,6 +26,7 @@ mod task_set_title;
 pub(crate) mod team;
 mod telegram_send_image;
 pub(crate) mod terminal_snapshot;
+mod web_browser;
 #[cfg(target_os = "windows")]
 mod window_list;
 #[cfg(target_os = "windows")]
@@ -154,6 +155,9 @@ pub enum Commands {
     /// Show this session's raised-hand communication indicator in the Sidebar orchestrator row
     #[command(name = "raise-hand")]
     RaiseHand(raise_hand::RaiseHandArgs),
+    /// Drive the web browser shown over the terminal pane: navigate, reload, status
+    #[command(name = "web-browser")]
+    WebBrowser(web_browser::WebBrowserArgs),
     /// List reachable peers (returns JSON array with name, status, role, teams)
     ListPeers(list_peers::ListPeersArgs),
     /// List reachable peers (lean JSON — name, working, sessionStatus, reachable, teams)
@@ -450,6 +454,7 @@ pub fn handle_cli(
         Commands::SelfSwitch(args) => self_switch::execute(args),
         Commands::SelfRestart(args) => self_restart::execute(args),
         Commands::RaiseHand(args) => raise_hand::execute(args),
+        Commands::WebBrowser(args) => web_browser::execute(args),
         Commands::ListPeers(args) => list_peers::execute(args),
         Commands::ListPeersLean(args) => list_peers::execute_lean(args),
         Commands::ListSessions(args) => list_sessions::execute(args),
