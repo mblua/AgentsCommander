@@ -42,94 +42,12 @@ pub(crate) fn run(
     #[cfg(target_os = "linux")]
     let display_env = crate::screenshot::display_env_snapshot();
 
-    preflight_config_startup(owners.startup_summary.as_ref())?;
-
-    // Same backend the CLI path now installs in `main.rs` — see `logging.rs`
-    // for the rationale. Idempotent, so a hypothetical second call (or the
-    // CLI path having already run in this process) is a no-op.
-    crate::logging::init_logger();
-    log_naming_migration_summary(owners.startup_summary.as_ref());
-
-    // Generate master token — printed to stdout and persisted to master-token.txt for CLI use
-    let master_token = MasterToken::new(uuid::Uuid::new_v4().to_string());
-
-    // Create instance-private outbox directory and clean up stale ones
-    let config_dir = config::config_dir().expect("Cannot determine home directory");
-    let instances_dir = config_dir.join(crate::config::instance_artifacts::INSTANCES_DIR_NAME);
-
-    // Clean up old instance dirs (from previous runs)
-    if let Ok(entries) = std::fs::read_dir(&instances_dir) {
-        for entry in entries.flatten() {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-        log::info!("[app-outbox] Cleaned stale instance directories");
-    }
-
-    // #769 Phase 1 + #1318 - seed the externalized coding-agent catalog and the
-    // dest-keyed default config-folder masters once per registered project
-    // (whole-file seed-once + create-if-absent, fail-soft; never aborts boot).
-    // Must run before the frontend can call `get_coding_agent_catalog`. The
-    // read-only CLI loader avoids a boot-time settings write (no root_token
-    // auto-gen); the Tauri setup's own `load_settings()` performs the standard
-    // migrations. The per-project steady-state pre-check keeps the common
-    // already-seeded case lock-free.
-    let settings = config::settings::load_settings_for_cli();
-    let registered_roots = config::coding_agents_catalog::registered_project_roots(&settings);
-    if registered_roots.is_empty() {
-        // #2021: with no registered project, initialize or refresh the instance
-        // catalog at <config_dir>/coding-agents so the Welcome surface lists
-        // the built-in agents on first run. Fail-soft: log-only, never aborts
-        // boot.
-        if let Some(dir) = config::config_dir() {
-            config::coding_agents_catalog::ensure_seeded_instance(&dir);
-        }
-    }
-    for root in registered_roots {
-        config::coding_agents_catalog::ensure_seeded_for_project(&root);
-    }
-
-    let instance_id = uuid::Uuid::new_v4().to_string();
-    // #1149 - open the activity run here, before the rest of boot: a panic in the
-    // remaining path then still leaves a run that had started and never stopped,
-    // which the next startup reports as unclean. This is also the last point at
-    // which `daemon.pid` still holds the PREVIOUS writer's PID, which is what
-    // lets the scan tell a dead predecessor from a live sibling.
-    let activity_log_enabled = config::settings::read_activity_log_enabled_only();
-    crate::config::activity_log::init_run(
-        &config_dir,
-        &instance_id,
-        activity_log_enabled,
-        &owners.activity,
-    );
-    let (_app_outbox_path, app_outbox) = prepare_app_outbox(&config_dir, &instance_id)?;
-    let ui_automation_state = crate::testability::ui_automation::UiAutomationState::new(
-        ui_automation_enabled,
-        config_dir.clone(),
-    );
-
-    // Generate web access token — separate from master token for limited blast radius
-    let web_access_token = Arc::new(WebAccessToken::new(uuid::Uuid::new_v4().to_string()));
-
-    println!("[master-token] {}", master_token.value());
-    println!("[web-token] {}", web_access_token.value());
-    println!("[app-outbox] {}", app_outbox.path());
-    log::info!("[master-token] Generated (see stdout)");
-    log::info!("[web-token] Generated (see stdout)");
-    log::info!("[app-outbox] {} (see stdout)", app_outbox.path());
-
-    // Write web token to a file so external tools can read it
-    if let Some(token_path) = config::config_dir().map(|d| d.join("web-token.txt")) {
-        let _ = std::fs::write(&token_path, web_access_token.value());
-    }
-
-    // Persist master token and app outbox path so the CLI can use them
-    if let Some(dir) = config::config_dir() {
-        let _ = std::fs::write(dir.join("master-token.txt"), master_token.value());
-        let _ = std::fs::write(dir.join("app-outbox-path.txt"), app_outbox.path());
-    }
-
-    // Issue #231: write daemon.pid so CLI verbs can detect a dead daemon.
-    config::daemon_pid::write_pid_file();
+    let BootPreamble {
+        master_token,
+        app_outbox,
+        ui_automation_state,
+        web_access_token,
+    } = prepare_boot(&owners, ui_automation_enabled)?;
 
     // Create WS broadcaster (shared between Tauri commands and web server)
     let broadcaster = WsBroadcaster::new();
@@ -279,99 +197,49 @@ pub(crate) fn run(
         TelegramBridgeManager::with_captures(output_senders, capture_registry),
     ));
 
-    let loaded_settings = config::settings::load_settings();
-    response_close.apply_settings(
-        loaded_settings.response_close_enabled,
-        loaded_settings.response_close_idle_seconds,
-        std::time::Instant::now(),
+    let RuntimeState {
+        settings,
+        coordinator_clocks,
+        coordinator_clocks_for_exit,
+        resource_monitor_state,
+        screenshot_capture_state,
+        screenshot_hotkey_state,
+        settings_for_web,
+        detached_sessions,
+        voice_tracking,
+        spec_board_state,
+        loop_scheduler,
+        loop_scheduler_for_setup,
+        non_stop_state,
+        non_stop_state_for_setup,
+        ipc_observer,
+        ipc_observer_for_setup,
+        ipc_observer_for_handler,
+        config_seed_lock,
+        update_check_state,
+        update_check_state_for_setup,
+        agent_update_gate,
+        agent_update_gate_for_setup,
+        agent_install_cache,
+        shutdown_for_setup,
+        shutdown_for_exit,
+        selection_coordinator_for_setup,
+        selection_coordinator_for_exit,
+        tg_mgr_for_exit,
+        resource_monitor_for_setup,
+        resource_monitor_for_exit,
+        ui_automation_state_for_setup,
+        ui_automation_state_for_exit,
+        message_store_state,
+        pty_target_gate_state,
+    } = prepare_runtime_state(
+        &owners,
+        &response_close,
+        &shutdown_signal,
+        &selection_coordinator,
+        &tg_mgr,
+        &ui_automation_state,
     );
-    // (#621) Snapshot registered project paths for the startup orphan-clock prune
-    // below (taken before the value is moved into the RwLock).
-    let startup_project_paths = loaded_settings.project_paths.clone();
-    let settings: SettingsState = crate::config::settings::new_settings_state(loaded_settings);
-    // #552 persisted coordinator badge clock + auto-closed marker store (loaded
-    // once at startup; flushed by the auto-close tick and on app exit).
-    let coordinator_clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
-        Arc::new(Mutex::new(crate::config::coordinator_clocks::load()));
-    // (#621) Conservative backstop: drop clock keys for workgroups confirmed gone
-    // on disk (historical orphans + CLI-removed wgs). Keep-on-any-doubt.
-    crate::config::coordinator_clocks::prune_orphaned_workgroups_and_persist(
-        &coordinator_clocks,
-        &startup_project_paths,
-    );
-    let coordinator_clocks_for_exit = Arc::clone(&coordinator_clocks);
-    let resource_monitor_state = Arc::new(
-        resource_monitor::ResourceMonitorState::with_spawn_registry(owners.spawn.clone()),
-    );
-    // #714 screenshot capture lifecycle + global-hotkey registration state.
-    let screenshot_capture_state: screenshot::ScreenshotCaptureState = Arc::new(
-        tokio::sync::Mutex::new(screenshot::ScreenshotCaptureLifecycle::Idle),
-    );
-    let screenshot_hotkey_state: screenshot::ScreenshotHotkeyState = Arc::new(
-        std::sync::Mutex::new(screenshot::ScreenshotHotkeyRuntime::default()),
-    );
-    let settings_for_web = Arc::clone(&settings);
-    let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
-    let voice_tracking: VoiceTrackingState = Arc::new(Mutex::new(VoiceTracker::new()));
-    let spec_board_state: SpecBoardState = Arc::new(tokio::sync::RwLock::new(
-        commands::spec_board::SpecBoardManager::new(),
-    ));
-    let loop_scheduler = Arc::new(loops::scheduler::LoopScheduler::new());
-    let loop_scheduler_for_setup = Arc::clone(&loop_scheduler);
-
-    // (#777) Non-stop watchdog: timing + actuation state. Managed for the
-    // `non_stop_report` command; the background loop is started in setup.
-    let non_stop_state = crate::loops::non_stop_watchdog::NonStopWatchdogState::new();
-    let non_stop_state_for_setup = non_stop_state.clone();
-
-    // (#1652) IPC observer: the process-side view of the frontend -> backend
-    // invoke stream. Managed for `ipc_blackbox_report`, stamped by the
-    // `invoke_handler` wrapper below, and watched by the loop started in setup.
-    let ipc_observer = crate::loops::ipc_observer::IpcObserver::new();
-    let ipc_observer_for_setup = std::sync::Arc::clone(&ipc_observer);
-    let ipc_observer_for_handler = std::sync::Arc::clone(&ipc_observer);
-
-    // Config-seed critical-section lock. Serializes `perform_config_seed` for a
-    // replica so concurrent same-replica spawns cannot clobber each other's
-    // in-flight seed scratch (see `ConfigSeedLockState`).
-    let config_seed_lock: ConfigSeedLockState = Arc::new(tokio::sync::Mutex::new(()));
-
-    // Issue #609 - cached "npm update available" result, set ONCE by the
-    // detached startup check below and read by `get_update_status`.
-    let update_check_state: UpdateCheckState = Arc::new(std::sync::OnceLock::new());
-    let update_check_state_for_setup = Arc::clone(&update_check_state);
-
-    // Issue #1327 - startup coding-agent update flow: blocks every session open
-    // (via `create_session_inner_impl`) until the per-command update run
-    // finishes or times out. Managed before the restore task is submitted.
-    let agent_update_gate: Arc<agent_update::AgentUpdateGate> =
-        Arc::new(agent_update::AgentUpdateGate::new());
-    let agent_update_gate_for_setup = Arc::clone(&agent_update_gate);
-    // #1551 - process-lifetime install-state cache for the coding-agent version
-    // probes (Settings overview, the pass's pre-update probes and the post-pass
-    // re-probes all schedule through it).
-    let agent_install_cache: Arc<crate::agent_version::AgentInstallCache> =
-        Arc::new(crate::agent_version::AgentInstallCache::new());
-
-    let shutdown_for_setup = shutdown_signal.clone();
-    let shutdown_for_exit = shutdown_signal.clone();
-    let selection_coordinator_for_setup = selection_coordinator.clone();
-    let selection_coordinator_for_exit = selection_coordinator.clone();
-    let tg_mgr_for_exit = tg_mgr.clone();
-    let resource_monitor_for_setup = Arc::clone(&resource_monitor_state);
-    let resource_monitor_for_exit = Arc::clone(&resource_monitor_state);
-    let ui_automation_state_for_setup = ui_automation_state.clone();
-    let ui_automation_state_for_exit = ui_automation_state.clone();
-
-    // One recovered operation store is shared by the filesystem poller and
-    // both API start paths. A failure disables only privileged PTY input.
-    let message_store_state = crate::api::message_store::MessageStoreState::initialize();
-    if let Ok(store) = &message_store_state.store {
-        store.bind_response_close(response_close.clone());
-    } else {
-        response_close.fail_closed();
-    }
-    let pty_target_gate_state = message_store_state.target_gate_state();
 
     // #714/#1842/#2079 clipboard + global-shortcut plugins are referenced ONLY
     // on Windows, Linux and macOS; every other target never links them. The
@@ -525,4 +393,289 @@ pub(crate) fn run(
             crate::exit_callback(ctx, commands::spec_board::spec_board_close_all)
         });
     Ok(())
+}
+
+struct BootPreamble {
+    master_token: MasterToken,
+    app_outbox: crate::AppOutbox,
+    ui_automation_state: crate::testability::ui_automation::UiAutomationState,
+    web_access_token: Arc<WebAccessToken>,
+}
+
+fn prepare_boot(
+    owners: &crate::AppOwners,
+    ui_automation_enabled: bool,
+) -> Result<BootPreamble, StartupError> {
+    preflight_config_startup(owners.startup_summary.as_ref())?;
+
+    // Same backend the CLI path now installs in `main.rs` — see `logging.rs`
+    // for the rationale. Idempotent, so a hypothetical second call (or the
+    // CLI path having already run in this process) is a no-op.
+    crate::logging::init_logger();
+    log_naming_migration_summary(owners.startup_summary.as_ref());
+
+    // Generate master token — printed to stdout and persisted to master-token.txt for CLI use
+    let master_token = MasterToken::new(uuid::Uuid::new_v4().to_string());
+
+    // Create instance-private outbox directory and clean up stale ones
+    let config_dir = config::config_dir().expect("Cannot determine home directory");
+    let instances_dir = config_dir.join(crate::config::instance_artifacts::INSTANCES_DIR_NAME);
+
+    // Clean up old instance dirs (from previous runs)
+    if let Ok(entries) = std::fs::read_dir(&instances_dir) {
+        for entry in entries.flatten() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+        log::info!("[app-outbox] Cleaned stale instance directories");
+    }
+
+    // #769 Phase 1 + #1318 - seed the externalized coding-agent catalog and the
+    // dest-keyed default config-folder masters once per registered project
+    // (whole-file seed-once + create-if-absent, fail-soft; never aborts boot).
+    // Must run before the frontend can call `get_coding_agent_catalog`. The
+    // read-only CLI loader avoids a boot-time settings write (no root_token
+    // auto-gen); the Tauri setup's own `load_settings()` performs the standard
+    // migrations. The per-project steady-state pre-check keeps the common
+    // already-seeded case lock-free.
+    let settings = config::settings::load_settings_for_cli();
+    let registered_roots = config::coding_agents_catalog::registered_project_roots(&settings);
+    if registered_roots.is_empty() {
+        // #2021: with no registered project, initialize or refresh the instance
+        // catalog at <config_dir>/coding-agents so the Welcome surface lists
+        // the built-in agents on first run. Fail-soft: log-only, never aborts
+        // boot.
+        if let Some(dir) = config::config_dir() {
+            config::coding_agents_catalog::ensure_seeded_instance(&dir);
+        }
+    }
+    for root in registered_roots {
+        config::coding_agents_catalog::ensure_seeded_for_project(&root);
+    }
+
+    let instance_id = uuid::Uuid::new_v4().to_string();
+    // #1149 - open the activity run here, before the rest of boot: a panic in the
+    // remaining path then still leaves a run that had started and never stopped,
+    // which the next startup reports as unclean. This is also the last point at
+    // which `daemon.pid` still holds the PREVIOUS writer's PID, which is what
+    // lets the scan tell a dead predecessor from a live sibling.
+    let activity_log_enabled = config::settings::read_activity_log_enabled_only();
+    crate::config::activity_log::init_run(
+        &config_dir,
+        &instance_id,
+        activity_log_enabled,
+        &owners.activity,
+    );
+    let (_app_outbox_path, app_outbox) = prepare_app_outbox(&config_dir, &instance_id)?;
+    let ui_automation_state = crate::testability::ui_automation::UiAutomationState::new(
+        ui_automation_enabled,
+        config_dir.clone(),
+    );
+
+    // Generate web access token — separate from master token for limited blast radius
+    let web_access_token = Arc::new(WebAccessToken::new(uuid::Uuid::new_v4().to_string()));
+
+    println!("[master-token] {}", master_token.value());
+    println!("[web-token] {}", web_access_token.value());
+    println!("[app-outbox] {}", app_outbox.path());
+    log::info!("[master-token] Generated (see stdout)");
+    log::info!("[web-token] Generated (see stdout)");
+    log::info!("[app-outbox] {} (see stdout)", app_outbox.path());
+
+    // Write web token to a file so external tools can read it
+    if let Some(token_path) = config::config_dir().map(|d| d.join("web-token.txt")) {
+        let _ = std::fs::write(&token_path, web_access_token.value());
+    }
+
+    // Persist master token and app outbox path so the CLI can use them
+    if let Some(dir) = config::config_dir() {
+        let _ = std::fs::write(dir.join("master-token.txt"), master_token.value());
+        let _ = std::fs::write(dir.join("app-outbox-path.txt"), app_outbox.path());
+    }
+
+    // Issue #231: write daemon.pid so CLI verbs can detect a dead daemon.
+    config::daemon_pid::write_pid_file();
+
+    Ok(BootPreamble {
+        master_token,
+        app_outbox,
+        ui_automation_state,
+        web_access_token,
+    })
+}
+
+struct RuntimeState {
+    settings: SettingsState,
+    coordinator_clocks: crate::config::coordinator_clocks::CoordinatorClocksState,
+    coordinator_clocks_for_exit: crate::config::coordinator_clocks::CoordinatorClocksState,
+    resource_monitor_state: Arc<resource_monitor::ResourceMonitorState>,
+    screenshot_capture_state: screenshot::ScreenshotCaptureState,
+    screenshot_hotkey_state: screenshot::ScreenshotHotkeyState,
+    settings_for_web: SettingsState,
+    detached_sessions: DetachedSessionsState,
+    voice_tracking: VoiceTrackingState,
+    spec_board_state: SpecBoardState,
+    loop_scheduler: Arc<loops::scheduler::LoopScheduler>,
+    loop_scheduler_for_setup: Arc<loops::scheduler::LoopScheduler>,
+    non_stop_state: crate::loops::non_stop_watchdog::NonStopWatchdogState,
+    non_stop_state_for_setup: crate::loops::non_stop_watchdog::NonStopWatchdogState,
+    ipc_observer: Arc<crate::loops::ipc_observer::IpcObserver>,
+    ipc_observer_for_setup: Arc<crate::loops::ipc_observer::IpcObserver>,
+    ipc_observer_for_handler: Arc<crate::loops::ipc_observer::IpcObserver>,
+    config_seed_lock: ConfigSeedLockState,
+    update_check_state: UpdateCheckState,
+    update_check_state_for_setup: UpdateCheckState,
+    agent_update_gate: Arc<agent_update::AgentUpdateGate>,
+    agent_update_gate_for_setup: Arc<agent_update::AgentUpdateGate>,
+    agent_install_cache: Arc<crate::agent_version::AgentInstallCache>,
+    shutdown_for_setup: ShutdownSignal,
+    shutdown_for_exit: ShutdownSignal,
+    selection_coordinator_for_setup: crate::session::selection::SelectionCoordinator,
+    selection_coordinator_for_exit: crate::session::selection::SelectionCoordinator,
+    tg_mgr_for_exit: TelegramBridgeState,
+    resource_monitor_for_setup: Arc<resource_monitor::ResourceMonitorState>,
+    resource_monitor_for_exit: Arc<resource_monitor::ResourceMonitorState>,
+    ui_automation_state_for_setup: crate::testability::ui_automation::UiAutomationState,
+    ui_automation_state_for_exit: crate::testability::ui_automation::UiAutomationState,
+    message_store_state: crate::api::message_store::MessageStoreState,
+    pty_target_gate_state: crate::api::message_store::PtyInputTargetGateState,
+}
+
+fn prepare_runtime_state(
+    owners: &crate::AppOwners,
+    response_close: &crate::pty::manager::ResponseCloseState,
+    shutdown_signal: &ShutdownSignal,
+    selection_coordinator: &crate::session::selection::SelectionCoordinator,
+    tg_mgr: &TelegramBridgeState,
+    ui_automation_state: &crate::testability::ui_automation::UiAutomationState,
+) -> RuntimeState {
+    let loaded_settings = config::settings::load_settings();
+    response_close.apply_settings(
+        loaded_settings.response_close_enabled,
+        loaded_settings.response_close_idle_seconds,
+        std::time::Instant::now(),
+    );
+    // (#621) Snapshot registered project paths for the startup orphan-clock prune
+    // below (taken before the value is moved into the RwLock).
+    let startup_project_paths = loaded_settings.project_paths.clone();
+    let settings: SettingsState = crate::config::settings::new_settings_state(loaded_settings);
+    // #552 persisted coordinator badge clock + auto-closed marker store (loaded
+    // once at startup; flushed by the auto-close tick and on app exit).
+    let coordinator_clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
+        Arc::new(Mutex::new(crate::config::coordinator_clocks::load()));
+    // (#621) Conservative backstop: drop clock keys for workgroups confirmed gone
+    // on disk (historical orphans + CLI-removed wgs). Keep-on-any-doubt.
+    crate::config::coordinator_clocks::prune_orphaned_workgroups_and_persist(
+        &coordinator_clocks,
+        &startup_project_paths,
+    );
+    let coordinator_clocks_for_exit = Arc::clone(&coordinator_clocks);
+    let resource_monitor_state = Arc::new(
+        resource_monitor::ResourceMonitorState::with_spawn_registry(owners.spawn.clone()),
+    );
+    // #714 screenshot capture lifecycle + global-hotkey registration state.
+    let screenshot_capture_state: screenshot::ScreenshotCaptureState = Arc::new(
+        tokio::sync::Mutex::new(screenshot::ScreenshotCaptureLifecycle::Idle),
+    );
+    let screenshot_hotkey_state: screenshot::ScreenshotHotkeyState = Arc::new(
+        std::sync::Mutex::new(screenshot::ScreenshotHotkeyRuntime::default()),
+    );
+    let settings_for_web = Arc::clone(&settings);
+    let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
+    let voice_tracking: VoiceTrackingState = Arc::new(Mutex::new(VoiceTracker::new()));
+    let spec_board_state: SpecBoardState = Arc::new(tokio::sync::RwLock::new(
+        commands::spec_board::SpecBoardManager::new(),
+    ));
+    let loop_scheduler = Arc::new(loops::scheduler::LoopScheduler::new());
+    let loop_scheduler_for_setup = Arc::clone(&loop_scheduler);
+
+    // (#777) Non-stop watchdog: timing + actuation state. Managed for the
+    // `non_stop_report` command; the background loop is started in setup.
+    let non_stop_state = crate::loops::non_stop_watchdog::NonStopWatchdogState::new();
+    let non_stop_state_for_setup = non_stop_state.clone();
+
+    // (#1652) IPC observer: the process-side view of the frontend -> backend
+    // invoke stream. Managed for `ipc_blackbox_report`, stamped by the
+    // `invoke_handler` wrapper below, and watched by the loop started in setup.
+    let ipc_observer = crate::loops::ipc_observer::IpcObserver::new();
+    let ipc_observer_for_setup = std::sync::Arc::clone(&ipc_observer);
+    let ipc_observer_for_handler = std::sync::Arc::clone(&ipc_observer);
+
+    // Config-seed critical-section lock. Serializes `perform_config_seed` for a
+    // replica so concurrent same-replica spawns cannot clobber each other's
+    // in-flight seed scratch (see `ConfigSeedLockState`).
+    let config_seed_lock: ConfigSeedLockState = Arc::new(tokio::sync::Mutex::new(()));
+
+    // Issue #609 - cached "npm update available" result, set ONCE by the
+    // detached startup check below and read by `get_update_status`.
+    let update_check_state: UpdateCheckState = Arc::new(std::sync::OnceLock::new());
+    let update_check_state_for_setup = Arc::clone(&update_check_state);
+
+    // Issue #1327 - startup coding-agent update flow: blocks every session open
+    // (via `create_session_inner_impl`) until the per-command update run
+    // finishes or times out. Managed before the restore task is submitted.
+    let agent_update_gate: Arc<agent_update::AgentUpdateGate> =
+        Arc::new(agent_update::AgentUpdateGate::new());
+    let agent_update_gate_for_setup = Arc::clone(&agent_update_gate);
+    // #1551 - process-lifetime install-state cache for the coding-agent version
+    // probes (Settings overview, the pass's pre-update probes and the post-pass
+    // re-probes all schedule through it).
+    let agent_install_cache: Arc<crate::agent_version::AgentInstallCache> =
+        Arc::new(crate::agent_version::AgentInstallCache::new());
+
+    let shutdown_for_setup = shutdown_signal.clone();
+    let shutdown_for_exit = shutdown_signal.clone();
+    let selection_coordinator_for_setup = selection_coordinator.clone();
+    let selection_coordinator_for_exit = selection_coordinator.clone();
+    let tg_mgr_for_exit = tg_mgr.clone();
+    let resource_monitor_for_setup = Arc::clone(&resource_monitor_state);
+    let resource_monitor_for_exit = Arc::clone(&resource_monitor_state);
+    let ui_automation_state_for_setup = ui_automation_state.clone();
+    let ui_automation_state_for_exit = ui_automation_state.clone();
+
+    // One recovered operation store is shared by the filesystem poller and
+    // both API start paths. A failure disables only privileged PTY input.
+    let message_store_state = crate::api::message_store::MessageStoreState::initialize();
+    if let Ok(store) = &message_store_state.store {
+        store.bind_response_close(response_close.clone());
+    } else {
+        response_close.fail_closed();
+    }
+    let pty_target_gate_state = message_store_state.target_gate_state();
+
+    RuntimeState {
+        settings,
+        coordinator_clocks,
+        coordinator_clocks_for_exit,
+        resource_monitor_state,
+        screenshot_capture_state,
+        screenshot_hotkey_state,
+        settings_for_web,
+        detached_sessions,
+        voice_tracking,
+        spec_board_state,
+        loop_scheduler,
+        loop_scheduler_for_setup,
+        non_stop_state,
+        non_stop_state_for_setup,
+        ipc_observer,
+        ipc_observer_for_setup,
+        ipc_observer_for_handler,
+        config_seed_lock,
+        update_check_state,
+        update_check_state_for_setup,
+        agent_update_gate,
+        agent_update_gate_for_setup,
+        agent_install_cache,
+        shutdown_for_setup,
+        shutdown_for_exit,
+        selection_coordinator_for_setup,
+        selection_coordinator_for_exit,
+        tg_mgr_for_exit,
+        resource_monitor_for_setup,
+        resource_monitor_for_exit,
+        ui_automation_state_for_setup,
+        ui_automation_state_for_exit,
+        message_store_state,
+        pty_target_gate_state,
+    }
 }
