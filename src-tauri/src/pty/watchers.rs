@@ -37,7 +37,7 @@
 //! tree, because `load_sessions_raw_from_dir_for_test` is `#[cfg(debug_assertions)]`.
 
 mod activity;
-pub mod dedupe;
+mod dedupe;
 mod evaluation;
 pub(crate) mod frame;
 pub(crate) mod history;

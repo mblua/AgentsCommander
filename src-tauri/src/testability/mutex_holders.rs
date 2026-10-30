@@ -14,10 +14,15 @@
 
 use serde::Serialize;
 
+#[cfg(any(test, windows))]
 pub const STATUS_FOUND: &str = "found";
+#[cfg(any(test, windows))]
 pub const STATUS_NOT_FOUND: &str = "not_found";
+#[cfg(any(test, windows))]
 pub const STATUS_INCOMPLETE: &str = "incomplete";
+#[cfg(windows)]
 pub const STATUS_FAILED: &str = "failed";
+#[cfg(not(windows))]
 pub const STATUS_UNSUPPORTED: &str = "unsupported";
 
 #[derive(Debug, Serialize)]
@@ -56,6 +61,7 @@ pub struct HolderLookup {
 /// processes in the snapshot, compared or not. `uninspectable_processes`: distinct
 /// PIDs whose `OpenProcess` returned null. `skipped_handles`: handles not compared,
 /// for either reason. The message states counts only; it never names a cause.
+#[cfg(any(test, windows))]
 pub fn status_for(
     holders: usize,
     scanned_mutant_handles: u32,
