@@ -20,6 +20,50 @@ use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+async fn prepare_replacement_context(
+    execution: &OwnedPeerWakeExecution,
+    continuation: &crate::session::selection::OwnedReplacementContinuation,
+    manager: &SessionManager,
+    pty: &Arc<Mutex<PtyManager>>,
+) -> Result<bool, String> {
+    use crate::session::selection::LifecycleEffectSlot;
+    if let Some(spawn) = execution.request.resolved_spawn.as_ref() {
+        if !continuation.validate_pre_effect_region(manager, pty).await {
+            return Ok(false);
+        }
+        let Some(effect) = continuation.start_effect(LifecycleEffectSlot::ContextPreparation)
+        else {
+            return Ok(false);
+        };
+        let prepared = crate::config::agent_command::prepare_agent_spawn_command(spawn);
+        effect.complete(prepared.as_ref().map(|_| None).map_err(Clone::clone));
+        if let Err(error) = prepared {
+            continuation
+                .rollback_failed_create(manager, pty, &error)
+                .await;
+            return Err(error);
+        }
+        if !continuation.preserve_context_prerequisite() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn replacement_delivery(execution: &OwnedPeerWakeExecution) -> OutboxMessage {
+    let mut delivered = execution.message.clone();
+    if execution.flags_present {
+        if let Some(spawn) = execution.request.resolved_spawn.as_ref() {
+            delivered.effective_agent_id = Some(spawn.trusted_agent_id.clone());
+            delivered.effective_profile = Some(spawn.profile_resolution.effective_profile.clone());
+            delivered.profile_fallback_applied = spawn.profile_resolution.fallback_applied;
+        } else {
+            delivered.effective_agent_id = execution.resolved_command.agent_id.clone();
+        }
+    }
+    delivered
+}
+
 impl MailboxPoller {
     pub(crate) async fn execute_owned_peer_replacement<R: tauri::Runtime>(
         &self,
@@ -60,28 +104,8 @@ impl MailboxPoller {
         if !continuation.validate_source().await {
             return Ok(OwnedPeerWakeStep::Retained);
         }
-        if let Some(spawn) = execution.request.resolved_spawn.as_ref() {
-            if !continuation
-                .validate_pre_effect_region(&manager, &pty)
-                .await
-            {
-                return Ok(OwnedPeerWakeStep::Retained);
-            }
-            let Some(effect) = continuation.start_effect(LifecycleEffectSlot::ContextPreparation)
-            else {
-                return Ok(OwnedPeerWakeStep::Retained);
-            };
-            let prepared = crate::config::agent_command::prepare_agent_spawn_command(spawn);
-            effect.complete(prepared.as_ref().map(|_| None).map_err(Clone::clone));
-            if let Err(error) = prepared {
-                continuation
-                    .rollback_failed_create(&manager, &pty, &error)
-                    .await;
-                return Err(error);
-            }
-            if !continuation.preserve_context_prerequisite() {
-                return Ok(OwnedPeerWakeStep::Retained);
-            }
+        if !prepare_replacement_context(execution, continuation, &manager, &pty).await? {
+            return Ok(OwnedPeerWakeStep::Retained);
         }
         #[cfg(test)]
         let fixture = fixture_control.filter(|control| {
@@ -230,18 +254,9 @@ impl MailboxPoller {
         continuation
             .finish_observed_work_transfer(&manager, &pty, effect, true)
             .await;
-        let mut delivered = execution.message.clone();
-        if execution.flags_present {
-            if let Some(spawn) = execution.request.resolved_spawn.as_ref() {
-                delivered.effective_agent_id = Some(spawn.trusted_agent_id.clone());
-                delivered.effective_profile =
-                    Some(spawn.profile_resolution.effective_profile.clone());
-                delivered.profile_fallback_applied = spawn.profile_resolution.fallback_applied;
-            } else {
-                delivered.effective_agent_id = execution.resolved_command.agent_id.clone();
-            }
-        }
-        Ok(OwnedPeerWakeStep::Delivered(delivered))
+        Ok(OwnedPeerWakeStep::Delivered(replacement_delivery(
+            execution,
+        )))
     }
 
     async fn try_inject_peer_candidate<R: tauri::Runtime>(
