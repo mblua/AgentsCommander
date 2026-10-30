@@ -16,7 +16,7 @@ mod error;
 pub(crate) mod handlers;
 mod identity;
 pub mod message_store;
-pub mod schema;
+pub(crate) mod schema;
 
 use std::fmt::Display;
 use std::future::Future;

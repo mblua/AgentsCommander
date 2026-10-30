@@ -50,9 +50,10 @@ pub use crate::pty::backend::screen_frame::{FrameStamp, ScreenFrame, ScreenRowsS
 pub(crate) use activity::{ActivityConsumer, ActivityFactory, ActivityObservation};
 use activity::{ActivityDelivery, CODEX_WORKING_PATTERN};
 use evaluation::{evaluate_occurrence, evaluate_state, status_of};
+#[cfg(test)]
+pub use resolution::ResolutionNotice;
 pub use resolution::{
-    resolve_watchers, AgentResolution, ResolutionLog, ResolutionNotice, ResolvedWatcher,
-    WatcherAgent,
+    resolve_watchers, AgentResolution, ResolutionLog, ResolvedWatcher, WatcherAgent,
 };
 
 use std::collections::HashMap;
@@ -66,9 +67,12 @@ use uuid::Uuid;
 use crate::pty::backend::PtyBackend;
 use crate::pty::context_scrape::ContextSessionLiveness;
 
+#[cfg(test)]
+pub use crate::config::settings::WatcherDedupe;
+
 /// Re-exported so every watcher type reads from one module. They are DEFINED in
 /// `config/settings.rs`, because that is where the user writes them.
-pub use crate::config::settings::{WatcherDedupe, WatcherMode};
+pub use crate::config::settings::WatcherMode;
 
 /// 200 ms, against `ContextScraper`'s 5 s. The engine has to catch rows in transit, and a row
 /// that scrolls past between two samples is gone: the mirror keeps zero scrollback.
@@ -328,6 +332,8 @@ pub struct WatcherEngine {
 }
 
 impl WatcherEngine {
+    // Retained for unit-test callers; production uses new_with_activity_factory.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(
         backends: Arc<dyn WatcherBackendSource>,
         patterns: Arc<dyn WatcherPatternSource>,
@@ -485,6 +491,8 @@ impl WatcherEngine {
             .any(|session| session.activity.is_some())
     }
 
+    // Retained for unit-test assertions; production does not query registration.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_session_registered(&self, id: Uuid) -> bool {
         self.registered
             .lock()
