@@ -285,22 +285,7 @@ pub(crate) fn sync_one_template(
         );
     }
 
-    if spec.distribution_owned {
-        return repair_distribution_template(
-            project_dir,
-            ac_root,
-            path,
-            spec,
-            loaded,
-            snapshot,
-            current_default_sha256,
-            carried_publication,
-            current_default,
-            repair,
-            clock,
-        );
-    }
-    sync_customized_template(
+    let context = ExistingTemplateSync {
         project_dir,
         ac_root,
         path,
@@ -309,25 +294,40 @@ pub(crate) fn sync_one_template(
         snapshot,
         current_default_sha256,
         carried_publication,
-        return_pending,
-        clock,
-    )
+    };
+    if spec.distribution_owned {
+        return repair_distribution_template(context, current_default, repair, clock);
+    }
+    sync_customized_template(context, return_pending, clock)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn repair_distribution_template(
-    project_dir: Option<&Path>,
-    ac_root: &Path,
+struct ExistingTemplateSync<'a> {
+    project_dir: Option<&'a Path>,
+    ac_root: &'a Path,
     path: PathBuf,
     spec: SeededContextTemplateSpec,
-    loaded: &mut LoadedState,
+    loaded: &'a mut LoadedState,
     snapshot: super::state::FileSnapshot,
     current_default_sha256: String,
     carried_publication: Option<ContextPublication>,
+}
+
+fn repair_distribution_template(
+    context: ExistingTemplateSync<'_>,
     current_default: &str,
     repair: bool,
     clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
 ) -> ContextTemplateExecution<TemplateSyncOutcome> {
+    let ExistingTemplateSync {
+        project_dir,
+        ac_root,
+        path,
+        spec,
+        loaded,
+        snapshot,
+        current_default_sha256,
+        carried_publication,
+    } = context;
     if !repair {
         // D2: no reporting channel on this path, so the repair is deferred to
         // the scan rather than replacing operator bytes with no notification.
@@ -428,19 +428,21 @@ fn repair_distribution_template(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn sync_customized_template(
-    project_dir: Option<&Path>,
-    ac_root: &Path,
-    path: PathBuf,
-    spec: SeededContextTemplateSpec,
-    loaded: &mut LoadedState,
-    snapshot: super::state::FileSnapshot,
-    current_default_sha256: String,
-    carried_publication: Option<ContextPublication>,
+    context: ExistingTemplateSync<'_>,
     return_pending: bool,
     clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
 ) -> ContextTemplateExecution<TemplateSyncOutcome> {
+    let ExistingTemplateSync {
+        project_dir,
+        ac_root,
+        path,
+        spec,
+        loaded,
+        snapshot,
+        current_default_sha256,
+        carried_publication,
+    } = context;
     // Root migration authority comes only from exact shipped bytes, independently
     // of absent, stale, or forged persisted state.
     if spec.id == "rootAgent"

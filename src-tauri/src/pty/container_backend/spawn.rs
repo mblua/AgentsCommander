@@ -22,6 +22,15 @@ use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, Notify};
 use uuid::Uuid;
 
+struct RuntimeStartContext<'a> {
+    id: Uuid,
+    runtime: Arc<dyn ContainerRuntime>,
+    request: crate::pty::container_runtime::ContainerStartRequest,
+    token: crate::pty::container_tokens::ContainerApiToken,
+    launch_witness: &'a crate::pty::backend::LaunchWitness,
+    attach_notify: Arc<Notify>,
+}
+
 pub(super) struct ContainerSpawnCancellationGuard<'a> {
     pub(super) backend: &'a ContainerTransportBackend,
     pub(super) session_id: Uuid,
@@ -373,28 +382,32 @@ impl ContainerTransportBackend {
             }
         };
         self.start_runtime_and_attach(
-            id,
-            runtime,
-            request,
-            token,
-            &launch_witness,
-            attach_notify,
+            RuntimeStartContext {
+                id,
+                runtime,
+                request,
+                token,
+                launch_witness: &launch_witness,
+                attach_notify,
+            },
             &mut cancellation_guard,
         )
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn start_runtime_and_attach(
         &self,
-        id: Uuid,
-        runtime: Arc<dyn ContainerRuntime>,
-        request: crate::pty::container_runtime::ContainerStartRequest,
-        token: crate::pty::container_tokens::ContainerApiToken,
-        launch_witness: &crate::pty::backend::LaunchWitness,
-        attach_notify: Arc<Notify>,
+        context: RuntimeStartContext<'_>,
         cancellation_guard: &mut ContainerSpawnCancellationGuard<'_>,
     ) -> Result<(), AppError> {
+        let RuntimeStartContext {
+            id,
+            runtime,
+            request,
+            token,
+            launch_witness,
+            attach_notify,
+        } = context;
         let canceled = &cancellation_guard.canceled;
         let late_handle = &cancellation_guard.late_handle;
         let Some(start_producer) = cancellation_guard.shutdown_producer.as_ref() else {
