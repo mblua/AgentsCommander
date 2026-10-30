@@ -124,6 +124,59 @@ pub(super) fn load_and_validate_resume_artifacts(
             ));
         }
     }
+    validate_resume_attempt_and_report_identity(
+        &attempts,
+        &expected_attempts,
+        &report_artifact,
+        &expected_variants,
+        suite,
+        &mut errors,
+    );
+
+    let Some(workgroup) = run_artifact.workgroup.clone() else {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Run artifact is missing room metadata",
+            None,
+        ));
+        return Err(errors);
+    };
+    if workgroup.run_id != run_id
+        || workgroup.experiment != loaded.experiment.name
+        || !workgroup.retained
+        || workgroup.cleanup_supported
+    {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Run room metadata does not match resume arguments",
+            None,
+        ));
+    }
+    if let Err(mut workgroup_errors) = validate_workgroup_under_ac_root(&loaded.ac_root, &workgroup)
+    {
+        errors.append(&mut workgroup_errors);
+    }
+    if let Err(mut state_errors) =
+        validate_attempt_state_contract(&state_dir, &attempts, &workgroup)
+    {
+        errors.append(&mut state_errors);
+    }
+
+    if errors.is_empty() {
+        Ok((run_artifact, attempts, report_artifact, workgroup))
+    } else {
+        Err(errors)
+    }
+}
+
+fn validate_resume_attempt_and_report_identity(
+    attempts: &[AttemptArtifact],
+    expected_attempts: &[AttemptArtifact],
+    report_artifact: &ReportArtifact,
+    expected_variants: &[RunVariantArtifact],
+    suite: &ParsedPromptSuite,
+    errors: &mut Vec<CliError>,
+) {
     if attempts.len() != expected_attempts.len() {
         errors.push(err(
             "run_artifact_mismatch",
@@ -184,41 +237,6 @@ pub(super) fn load_and_validate_resume_artifacts(
                 None,
             ));
         }
-    }
-
-    let Some(workgroup) = run_artifact.workgroup.clone() else {
-        errors.push(err(
-            "run_artifact_mismatch",
-            "Run artifact is missing room metadata",
-            None,
-        ));
-        return Err(errors);
-    };
-    if workgroup.run_id != run_id
-        || workgroup.experiment != loaded.experiment.name
-        || !workgroup.retained
-        || workgroup.cleanup_supported
-    {
-        errors.push(err(
-            "run_artifact_mismatch",
-            "Run room metadata does not match resume arguments",
-            None,
-        ));
-    }
-    if let Err(mut workgroup_errors) = validate_workgroup_under_ac_root(&loaded.ac_root, &workgroup)
-    {
-        errors.append(&mut workgroup_errors);
-    }
-    if let Err(mut state_errors) =
-        validate_attempt_state_contract(&state_dir, &attempts, &workgroup)
-    {
-        errors.append(&mut state_errors);
-    }
-
-    if errors.is_empty() {
-        Ok((run_artifact, attempts, report_artifact, workgroup))
-    } else {
-        Err(errors)
     }
 }
 
