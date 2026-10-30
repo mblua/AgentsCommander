@@ -2,13 +2,15 @@
 use crate::filesystem::projects::entities::publication;
 use std::path::{Path, PathBuf};
 
+pub(crate) const ROLE_FILE_NAME: &str = "Role.md";
+
 pub(crate) struct RoleProfileRef<'a> {
     pub id: &'a str,
     pub body: &'a str,
 }
 
 pub(crate) fn write_created_role(root: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
-    let path = root.join("Role.md");
+    let path = root.join(ROLE_FILE_NAME);
     publication::write_created_role(&path, bytes)
         .map_err(|e| format!("Failed to write Role.md: {}", e))?;
     Ok(path)

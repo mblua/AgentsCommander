@@ -1,6 +1,7 @@
 use super::apply_edit;
 use super::clean::clean_pair_locked;
 use super::clean::recover_clean_pair_locked;
+use super::initialization::TASK_FILE_NAME;
 use super::is_user_owned_title;
 use super::parse_task;
 use super::render;
@@ -31,7 +32,7 @@ pub(crate) fn perform_inner<F>(
 where
     F: FnOnce() -> DateTime<Utc>,
 {
-    let task_path = wg_root.join("TASK.md");
+    let task_path = wg_root.join(TASK_FILE_NAME);
     let lock_path = wg_root.join("TASK.md.lock");
     // Per-PID tmp suffix eliminates the tmp-collision race during stale-lock
     // recovery (HIGH-2).

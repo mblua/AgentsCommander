@@ -1,4 +1,5 @@
 use super::apply_clean;
+use super::initialization::TASK_FILE_NAME;
 use super::parse_task;
 use super::render;
 use super::status::read_latest_status_locked;
@@ -89,7 +90,7 @@ fn validate_journal(j: &CleanJournal) -> Result<(), TaskOpError> {
     let names = backup_names(&j.stamp, j.suffix);
     let any = j.task.existed || j.status.existed;
     for (side, target, backup) in [
-        (&j.task, "TASK.md", names.0),
+        (&j.task, TASK_FILE_NAME, names.0),
         (&j.status, STATUS_NAME, names.1),
     ] {
         if side.stage != format!("{target}.tmp.{}", j.tx_id)
@@ -161,7 +162,10 @@ fn finish_clean_locked(
     journal_bytes: &[u8],
 ) -> Result<(), TaskOpError> {
     // Validate the entire pair before replacing either target.
-    for (side, target) in [(&journal.task, "TASK.md"), (&journal.status, STATUS_NAME)] {
+    for (side, target) in [
+        (&journal.task, TASK_FILE_NAME),
+        (&journal.status, STATUS_NAME),
+    ] {
         let current = task_source_state(&root.join(target)).map_err(clean_pending)?;
         if current.hash.as_deref() != Some(&side.target_hash) && current.hash != side.original_hash
         {
@@ -192,7 +196,7 @@ fn finish_clean_locked(
         }
     }
     for (side, target, boundary) in [
-        (&journal.task, "TASK.md", "task_rename"),
+        (&journal.task, TASK_FILE_NAME, "task_rename"),
         (&journal.status, STATUS_NAME, "status_rename"),
     ] {
         let path = root.join(target);
@@ -228,7 +232,7 @@ fn finish_clean_locked(
     // Keep the first failure while still attempting the other target.
     let mut sync_error = None;
     for (side, target, boundary) in [
-        (&journal.task, "TASK.md", "task_target_sync"),
+        (&journal.task, TASK_FILE_NAME, "task_target_sync"),
         (&journal.status, STATUS_NAME, "status_target_sync"),
     ] {
         let path = root.join(target);
@@ -253,7 +257,10 @@ fn finish_clean_locked(
     if let Some(e) = sync_error {
         return Err(clean_pending(e));
     }
-    for (side, target) in [(&journal.task, "TASK.md"), (&journal.status, STATUS_NAME)] {
+    for (side, target) in [
+        (&journal.task, TASK_FILE_NAME),
+        (&journal.status, STATUS_NAME),
+    ] {
         if task_source_state(&root.join(target))
             .map_err(clean_pending)?
             .hash
@@ -303,7 +310,7 @@ pub(super) fn clean_pair_locked(
             }
         }
     }
-    let task_path = root.join("TASK.md");
+    let task_path = root.join(TASK_FILE_NAME);
     let status_path = root.join(STATUS_NAME);
     let original_task = task_source_state(&task_path).map_err(write_failed)?;
     let original_status = task_source_state(&status_path).map_err(write_failed)?;

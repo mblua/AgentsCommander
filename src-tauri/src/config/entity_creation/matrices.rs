@@ -55,7 +55,7 @@ pub(crate) fn create_agent_replica_layout(
 pub(crate) fn default_agent_matrix_config() -> serde_json::Value {
     serde_json::json!({
         "tooling": {},
-        "context": ["$AGENTSCOMMANDER_CONTEXT", "Role.md"],
+        "context": ["$AGENTSCOMMANDER_CONTEXT", super::roles::ROLE_FILE_NAME],
     })
 }
 

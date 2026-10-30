@@ -3,8 +3,10 @@ use crate::filesystem::projects::entities::publication;
 use std::io;
 use std::path::Path;
 
+pub(crate) const TASK_FILE_NAME: &str = "TASK.md";
+
 pub(crate) fn initialize_new_room(root: &Path, prepared_content: &str) -> io::Result<()> {
-    publication::write_initial_room_task(&root.join("TASK.md"), prepared_content)
+    publication::write_initial_room_task(&root.join(TASK_FILE_NAME), prepared_content)
 }
 
 /// TASK.md content for a brand-new workgroup.
