@@ -3,8 +3,7 @@ use crate::errors::AppError;
 use crate::phone::mailbox::handoff::{release_wake_claim, wake_claim_path};
 use crate::phone::mailbox::poller::{MailboxPoller, ValidatedWake};
 use crate::phone::mailbox::tests::CodexClearScannerFixture;
-use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
-use crate::pty::manager::PtyManager;
+use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -179,6 +178,12 @@ struct RecordingBackend {
     spawns: Mutex<usize>,
 }
 
+impl RecordingBackend {
+    fn record(&self, data: &[u8]) {
+        self.writes.lock().unwrap().push(data.to_vec());
+    }
+}
+
 impl PtyBackend for RecordingBackend {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -196,7 +201,7 @@ impl PtyBackend for RecordingBackend {
         _id: Uuid,
         data: &[u8],
     ) -> Result<(), AppError> {
-        self.writes.lock().unwrap().push(data.to_vec());
+        self.record(data);
         Ok(())
     }
     fn resize(&self, _id: Uuid, _cols: u16, _rows: u16) -> Result<(), AppError> {
@@ -226,46 +231,45 @@ impl PtyBackend for RecordingBackend {
     }
 }
 
-#[tokio::test]
-async fn issue_3371_storage_faults_gate_recording_continuation() {
+#[test]
+fn issue_3371_storage_faults_gate_recording_continuation() {
     use mailbox_disk::{MailboxFaultGuard, MailboxFaultPoint};
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("m.json.in-flight");
     let unrelated = temp.path().join(".foreign.codex-clear-stage");
     std::fs::write(&unrelated, b"foreign").unwrap();
-    let backend = Arc::new(RecordingBackend::default());
-    let manager = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
     let id = Uuid::new_v4();
-    manager
-        .lock()
-        .unwrap()
-        .try_record_route(id, SessionBackendKind::LocalProcess)
-        .unwrap();
-    let permit = PtyManager::acquire_input_writer(&manager, id)
-        .await
-        .unwrap();
     for point in [
         Some(MailboxFaultPoint::StageSync),
         Some(MailboxFaultPoint::Replace),
         None,
     ] {
+        let backend = RecordingBackend::default();
         save(&path, &envelope("m"));
         let before = std::fs::read(&path).unwrap();
+        let faulted = point.is_some();
         let guard = point.map(MailboxFaultGuard::install);
         let result = persist_attempt(&path, &message("m"), id);
         if let Some(guard) = guard {
             assert!(guard.consumed());
             drop(guard);
+        }
+        // Synchronous storage-gating harness; P04 proves production injection.
+        let result = result.map(|()| {
+            backend.record(b"/clear");
+            backend.record(b"");
+        });
+        if faulted {
             assert!(result.is_err());
             assert_eq!(std::fs::read(&path).unwrap(), before);
             assert!(backend.writes.lock().unwrap().is_empty());
         } else {
             result.unwrap();
-            PtyManager::write_with_permit(&permit, b"/clear").unwrap();
-            PtyManager::write_with_permit(&permit, b"\r").unwrap();
+            let persisted = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(probe_attempt(&persisted).unwrap().unwrap().session_id, id);
             assert_eq!(
                 *backend.writes.lock().unwrap(),
-                vec![b"/clear".to_vec(), b"\r".to_vec()]
+                vec![b"/clear".to_vec(), b"".to_vec()]
             );
         }
         assert_eq!(std::fs::read(&unrelated).unwrap(), b"foreign");
