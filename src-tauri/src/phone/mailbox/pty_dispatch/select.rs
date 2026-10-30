@@ -41,8 +41,6 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
     ) -> Result<SelectedPtyTarget, bool> {
         let app = self.app;
 
-        use crate::phone::types::PtyInputReasonCode as C;
-
         let mut prepared_replacement = None;
         loop {
             let verified_route = self.dispatch_selection_route(context, &mut guards).await?;
@@ -96,31 +94,9 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 finish_owned_pty_work(app, guards.owned_work, observed).await;
                 return Err(false);
             } else if saw_live_inconsistent {
-                if context.claimed.attempt < 5 {
-                    let observed = finish_pty_input_before_boundary(
-                        context.store,
-                        guards.heartbeat,
-                        context.injection_id,
-                        context.lease_owner,
-                        C::SessionRace,
-                    )
-                    .await;
-                    drop(guards.target_guard.take());
-                    drop(guards.target_stripe.take());
-                    finish_owned_pty_work(app, guards.owned_work, observed).await;
-                } else {
-                    let observed = reject_pty_input_before_boundary(
-                        context.store,
-                        guards.heartbeat,
-                        context.injection_id,
-                        C::InconsistentSession,
-                    )
-                    .await;
-                    drop(guards.target_guard.take());
-                    drop(guards.target_stripe.take());
-                    finish_owned_pty_work(app, guards.owned_work, observed).await;
-                }
-                return Err(false);
+                return Err(self
+                    .dispatch_selection_inconsistent(context, &mut guards)
+                    .await);
             } else if saw_live_unsupported {
                 let observed = reject_pty_input_before_boundary(
                     context.store,
@@ -729,12 +705,9 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             idle_detector,
             authority_id,
             authority_backend,
-            authority_container_backend,
             authority_route,
-            expected_api_binding,
             ..
         } = authority;
-        use crate::phone::types::{PtyInputPublicStatus as S, PtyInputReasonCode as C};
         let boundary_settings = app.state::<SettingsState>().inner().clone();
         let owned_route = guards.owned_work.as_ref().and_then(|_| {
             PtyManager::snapshot_route_proof(selection.pty_manager, selection.selected_id).ok()
@@ -803,45 +776,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                             settings,
                         )
                 },
-                || {
-                    if context.expires <= chrono::Utc::now()
-                        || app
-                            .try_state::<Arc<crate::RestoreInProgress>>()
-                            .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
-                        || app
-                            .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
-                            .is_some_and(|guard| guard.blocks_agent(&context.claimed.target_fqn))
-                    {
-                        return false;
-                    }
-                    match (&context.source_plane, expected_api_binding.as_ref()) {
-                        (crate::phone::types::PtyInputSourcePlane::HostCli, None) => true,
-                        (
-                            crate::phone::types::PtyInputSourcePlane::ContainerApi,
-                            Some((
-                                client_id,
-                                generation,
-                                bound_session_id,
-                                root_object,
-                                token_hash,
-                            )),
-                        ) => {
-                            let binding =
-                                authority_container_backend.credential_binding(*authority_id);
-                            binding.is_some_and(|binding| {
-                                binding.client_id == *client_id
-                                    && binding.credential_generation == *generation
-                                    && binding.bound_session_id == *bound_session_id
-                                    && binding.bound_root_object_id == *root_object
-                                    && crate::api::auth::constant_time_eq(
-                                        &binding.credential_token_hash,
-                                        token_hash,
-                                    )
-                            })
-                        }
-                        _ => false,
-                    }
-                },
+                || self.dispatch_boundary_source_current(context, authority),
             )
             .await
         {
@@ -976,6 +911,81 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 };
                 (S::Injected, reason)
             }
+        }
+    }
+    async fn dispatch_selection_inconsistent(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+    ) -> bool {
+        let app = self.app;
+        if context.claimed.attempt < 5 {
+            let observed = finish_pty_input_before_boundary(
+                context.store,
+                guards.heartbeat,
+                context.injection_id,
+                context.lease_owner,
+                C::SessionRace,
+            )
+            .await;
+            drop(guards.target_guard.take());
+            drop(guards.target_stripe.take());
+            finish_owned_pty_work(app, guards.owned_work, observed).await;
+        } else {
+            let observed = reject_pty_input_before_boundary(
+                context.store,
+                guards.heartbeat,
+                context.injection_id,
+                C::InconsistentSession,
+            )
+            .await;
+            drop(guards.target_guard.take());
+            drop(guards.target_stripe.take());
+            finish_owned_pty_work(app, guards.owned_work, observed).await;
+        }
+        false
+    }
+    fn dispatch_boundary_source_current(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        authority: &BoundaryAuthority,
+    ) -> bool {
+        let app = self.app;
+        let BoundaryAuthority {
+            expected_api_binding,
+            authority_container_backend,
+            authority_id,
+            ..
+        } = authority;
+        if context.expires <= chrono::Utc::now()
+            || app
+                .try_state::<Arc<crate::RestoreInProgress>>()
+                .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
+            || app
+                .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+                .is_some_and(|guard| guard.blocks_agent(&context.claimed.target_fqn))
+        {
+            return false;
+        }
+        match (&context.source_plane, expected_api_binding.as_ref()) {
+            (crate::phone::types::PtyInputSourcePlane::HostCli, None) => true,
+            (
+                crate::phone::types::PtyInputSourcePlane::ContainerApi,
+                Some((client_id, generation, bound_session_id, root_object, token_hash)),
+            ) => {
+                let binding = authority_container_backend.credential_binding(*authority_id);
+                binding.is_some_and(|binding| {
+                    binding.client_id == *client_id
+                        && binding.credential_generation == *generation
+                        && binding.bound_session_id == *bound_session_id
+                        && binding.bound_root_object_id == *root_object
+                        && crate::api::auth::constant_time_eq(
+                            &binding.credential_token_hash,
+                            token_hash,
+                        )
+                })
+            }
+            _ => false,
         }
     }
 }
