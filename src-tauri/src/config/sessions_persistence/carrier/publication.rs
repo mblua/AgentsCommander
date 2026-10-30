@@ -76,15 +76,81 @@ pub(in super::super) struct PublicationState {
 
 pub(in super::super) type PublicationSlot = std::sync::Arc<Mutex<PublicationState>>;
 
-pub(in super::super) fn publication_slots() -> &'static Mutex<HashMap<PathBuf, PublicationSlot>> {
-    static SLOTS: std::sync::OnceLock<Mutex<HashMap<PathBuf, PublicationSlot>>> =
-        std::sync::OnceLock::new();
-    SLOTS.get_or_init(Default::default)
+#[derive(Default)]
+struct PublicationRegistry {
+    slots: Mutex<HashMap<PathBuf, PublicationSlot>>,
+}
+
+impl PublicationRegistry {
+    fn publication_slot(&self, dir: &Path) -> Option<PublicationSlot> {
+        let mut slots = self.slots.lock().ok()?;
+        Some(slots.entry(dir.to_path_buf()).or_default().clone())
+    }
+
+    fn existing_publication_slot(&self, dir: &Path) -> Option<PublicationSlot> {
+        self.slots.lock().ok()?.get(dir).cloned()
+    }
+
+    fn publication_slot_values(&self) -> Option<Vec<PublicationSlot>> {
+        Some(self.slots.lock().ok()?.values().cloned().collect())
+    }
+
+    fn publication_slot_entries(&self) -> Option<Vec<(PathBuf, PublicationSlot)>> {
+        Some(
+            self.slots
+                .lock()
+                .ok()?
+                .iter()
+                .map(|(directory, slot)| (directory.clone(), slot.clone()))
+                .collect(),
+        )
+    }
+
+    fn resolve_known_publication_slot(
+        &self,
+        dir: &Path,
+        canonical: PathBuf,
+    ) -> Option<PublicationSlot> {
+        let mut slots = self.slots.lock().ok()?;
+        let mut matching: Option<PublicationSlot> = None;
+        for slot in slots.values() {
+            let state = slot.lock().ok()?;
+            if state.canonical_directory.as_ref() == Some(&canonical) {
+                if matching
+                    .as_ref()
+                    .is_some_and(|previous| !std::sync::Arc::ptr_eq(previous, slot))
+                {
+                    return None;
+                }
+                matching = Some(slot.clone());
+            }
+        }
+        let slot = matching.unwrap_or_else(|| slots.entry(dir.to_path_buf()).or_default().clone());
+        slot.lock().ok()?.canonical_directory = Some(canonical);
+        slots.insert(dir.to_path_buf(), slot.clone());
+        Some(slot)
+    }
+}
+
+fn publication_registry() -> &'static PublicationRegistry {
+    static REGISTRY: std::sync::OnceLock<PublicationRegistry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(Default::default)
 }
 
 pub(in super::super) fn publication_slot(dir: &Path) -> Option<PublicationSlot> {
-    let mut slots = publication_slots().lock().ok()?;
-    Some(slots.entry(dir.to_path_buf()).or_default().clone())
+    publication_registry().publication_slot(dir)
+}
+
+pub(in super::super) fn existing_publication_slot(dir: &Path) -> Option<PublicationSlot> {
+    publication_registry().existing_publication_slot(dir)
+}
+
+pub(in super::super) fn publication_slot_values() -> Option<Vec<PublicationSlot>> {
+    publication_registry().publication_slot_values()
+}
+
+pub(in super::super) fn publication_slot_entries() -> Option<Vec<(PathBuf, PublicationSlot)>> {
+    publication_registry().publication_slot_entries()
 }
 
 pub(in super::super) enum PublicationDirectoryIdentity {
@@ -131,24 +197,7 @@ pub(in super::super) fn resolve_publication_slot(
         PublicationDirectoryIdentity::Known(path) => path,
         PublicationDirectoryIdentity::Unknown => return None,
     };
-    let mut slots = publication_slots().lock().ok()?;
-    let mut matching: Option<PublicationSlot> = None;
-    for slot in slots.values() {
-        let state = slot.lock().ok()?;
-        if state.canonical_directory.as_ref() == Some(&canonical) {
-            if matching
-                .as_ref()
-                .is_some_and(|previous| !std::sync::Arc::ptr_eq(previous, slot))
-            {
-                return None;
-            }
-            matching = Some(slot.clone());
-        }
-    }
-    let slot = matching.unwrap_or_else(|| slots.entry(dir.to_path_buf()).or_default().clone());
-    slot.lock().ok()?.canonical_directory = Some(canonical);
-    slots.insert(dir.to_path_buf(), slot.clone());
-    Some(slot)
+    publication_registry().resolve_known_publication_slot(dir, canonical)
 }
 
 /// Owned upper binding. The caller supplies the authenticated canonical target
@@ -459,12 +508,7 @@ pub(in super::super) fn published_initial_carrier(
 }
 
 pub(in super::super) fn all_carrier_protections() -> Option<Vec<CarrierProtection>> {
-    let slots = publication_slots()
-        .lock()
-        .ok()?
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
+    let slots = publication_slot_values()?;
     let mut protections = Vec::new();
     let mut seen = HashSet::new();
     for slot in slots {
