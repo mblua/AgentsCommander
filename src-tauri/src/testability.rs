@@ -1,4 +1,4 @@
-pub mod mutex_holders;
+mod mutex_holders;
 pub(crate) mod reset;
 pub mod ui_automation;
 pub(crate) mod window_info;
