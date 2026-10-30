@@ -450,13 +450,15 @@ pub(crate) async fn prepare_instructions<'a: 'b, 'b, R: tauri::Runtime>(
         };
         let context_result = run_context_work(
             ctx,
-            target_filename,
-            &managed_filenames,
-            &container_repos,
-            skip_auto_resume,
-            is_coordinator,
-            auto_self_clear,
-            context_effect,
+            ContextWorkInput {
+                target_filename,
+                managed_filenames: &managed_filenames,
+                container_repos: &container_repos,
+                skip_auto_resume,
+                is_coordinator,
+                auto_self_clear,
+                context_effect,
+            },
         )
         .await;
         let context_result = match context_result {
@@ -641,17 +643,29 @@ fn inject_other_provider_resume_args(
     effective_continuation
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_context_work<R: tauri::Runtime>(
-    ctx: &CreateBodyContext<'_, R>,
-    target_filename: &str,
-    managed_filenames: &[String],
-    container_repos: &Option<crate::pty::container_repos::RepoMountResolution>,
+struct ContextWorkInput<'a> {
+    target_filename: &'a str,
+    managed_filenames: &'a [String],
+    container_repos: &'a Option<crate::pty::container_repos::RepoMountResolution>,
     skip_auto_resume: bool,
     is_coordinator: bool,
     auto_self_clear: bool,
     context_effect: Option<crate::session::selection::LifecycleEffectGuard>,
+}
+
+async fn run_context_work<R: tauri::Runtime>(
+    ctx: &CreateBodyContext<'_, R>,
+    input: ContextWorkInput<'_>,
 ) -> Result<Result<Option<String>, String>, impl std::fmt::Display> {
+    let ContextWorkInput {
+        target_filename,
+        managed_filenames,
+        container_repos,
+        skip_auto_resume,
+        is_coordinator,
+        auto_self_clear,
+        context_effect,
+    } = input;
     let &CreateBodyContext {
         cwd, coordinator, ..
     } = ctx;
@@ -735,17 +749,29 @@ async fn run_context_work<R: tauri::Runtime>(
     context_result
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) struct BindTargetInput<'a> {
+    pub target: &'a Option<crate::path_identity::VerifiedPathIdentity>,
+    pub selection_intent: CreateSelectionIntent,
+    pub mgr: &'a SessionManager,
+    pub resource_monitor: &'a Arc<ResourceMonitorState>,
+    pub resource_permit: &'a mut Option<crate::resource_monitor::AgentLaunchPermit>,
+    pub prepared_binding: crate::session::manager::PendingCreateBinding,
+    pub carrier_u0: crate::session::manager::CarrierMutationPermit,
+}
+
 pub(crate) async fn bind_and_check_target<R: tauri::Runtime>(
     ctx: &CreateBodyContext<'_, R>,
-    target: &Option<crate::path_identity::VerifiedPathIdentity>,
-    selection_intent: CreateSelectionIntent,
-    mgr: &SessionManager,
-    resource_monitor: &Arc<ResourceMonitorState>,
-    resource_permit: &mut Option<crate::resource_monitor::AgentLaunchPermit>,
-    prepared_binding: crate::session::manager::PendingCreateBinding,
-    carrier_u0: crate::session::manager::CarrierMutationPermit,
+    input: BindTargetInput<'_>,
 ) -> Result<Option<crate::session::manager::CarrierMutationPermit>, String> {
+    let BindTargetInput {
+        target,
+        selection_intent,
+        mgr,
+        resource_monitor,
+        resource_permit,
+        prepared_binding,
+        carrier_u0,
+    } = input;
     let &CreateBodyContext {
         pty_mgr,
         inline_transaction,

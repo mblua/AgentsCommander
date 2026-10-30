@@ -588,13 +588,15 @@ pub(crate) async fn create_pending<R: tauri::Runtime>(
     };
     let carrier_u0 = match context::bind_and_check_target(
         ctx,
-        &create_target_replica_identity,
-        selection_intent,
-        &mgr,
-        &resource_monitor,
-        &mut resource_permit,
-        prepared_binding,
-        carrier_u0,
+        context::BindTargetInput {
+            target: &create_target_replica_identity,
+            selection_intent,
+            mgr: &mgr,
+            resource_monitor: &resource_monitor,
+            resource_permit: &mut resource_permit,
+            prepared_binding,
+            carrier_u0,
+        },
     )
     .await?
     {

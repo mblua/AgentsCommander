@@ -112,17 +112,18 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
         logical_resource_slot,
     } = prepare_environment(
         ctx,
-        &session,
-        &agent_id,
-        &agent_label,
-        is_root_agent,
-        injected_claude_config_dir.as_deref(),
-        container_path_context.as_ref(),
-        &resource_monitor,
-        &mut resource_permit,
-        &mut session_env_warnings,
+        SpawnEnvironmentInput {
+            session: &session,
+            agent_id: &agent_id,
+            agent_label: &agent_label,
+            is_root_agent,
+            injected_claude_config_dir: injected_claude_config_dir.as_deref(),
+            container_path_context: container_path_context.as_ref(),
+            resource_monitor: &resource_monitor,
+            resource_permit: &mut resource_permit,
+            session_env_warnings: &mut session_env_warnings,
+        },
     );
-
     // #598 - seed the config folder before the PTY starts so the agent sees the
     // templated config. Best-effort: never aborts the spawn. This is the single
     // execution chokepoint every real spawn funnels through (create / replica /
@@ -581,19 +582,34 @@ struct SpawnEnvironment {
     resource_registration: Option<ResourceLaunchRegistration>,
     logical_resource_slot: Option<ResourceLogicalAgentSlot>,
 }
-#[allow(clippy::too_many_arguments)]
+struct SpawnEnvironmentInput<'a> {
+    session: &'a crate::session::session::Session,
+    agent_id: &'a Option<String>,
+    agent_label: &'a Option<String>,
+    is_root_agent: bool,
+    injected_claude_config_dir: Option<&'a str>,
+    container_path_context:
+        Option<&'a crate::commands::session::resume_probe::ContainerPathContext>,
+    resource_monitor: &'a std::sync::Arc<crate::resource_monitor::ResourceMonitorState>,
+    resource_permit: &'a mut Option<crate::resource_monitor::AgentLaunchPermit>,
+    session_env_warnings: &'a mut Vec<crate::pty::container_paths::ContainerEnvWarning>,
+}
+
 fn prepare_environment<R: tauri::Runtime>(
     ctx: &CreateBodyContext<'_, R>,
-    session: &crate::session::session::Session,
-    agent_id: &Option<String>,
-    agent_label: &Option<String>,
-    is_root_agent: bool,
-    injected_claude_config_dir: Option<&str>,
-    container_path_context: Option<&crate::commands::session::resume_probe::ContainerPathContext>,
-    resource_monitor: &std::sync::Arc<crate::resource_monitor::ResourceMonitorState>,
-    resource_permit: &mut Option<crate::resource_monitor::AgentLaunchPermit>,
-    session_env_warnings: &mut Vec<crate::pty::container_paths::ContainerEnvWarning>,
+    input: SpawnEnvironmentInput<'_>,
 ) -> SpawnEnvironment {
+    let SpawnEnvironmentInput {
+        session,
+        agent_id,
+        agent_label,
+        is_root_agent,
+        injected_claude_config_dir,
+        container_path_context,
+        resource_monitor,
+        resource_permit,
+        session_env_warnings,
+    } = input;
     let &CreateBodyContext {
         cwd,
         resolved_spawn,
