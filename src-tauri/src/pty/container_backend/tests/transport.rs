@@ -868,7 +868,12 @@ async fn off_runtime_full_and_closed_queues_remove_then_reconcile_without_waitin
             Ok(())
         }));
         let receiver = attach(&backend, id, root, &ticket);
-        let receiver = if full { Some(receiver) } else { None };
+        let receiver = if full {
+            Some(receiver)
+        } else {
+            drop(receiver);
+            None
+        };
         let backend = Arc::new(backend);
         let caller_backend = Arc::clone(&backend);
         let (returned_tx, returned_rx) = std::sync::mpsc::channel();
