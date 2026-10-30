@@ -332,53 +332,8 @@ impl MailboxPoller {
             let snapshot = settings.read().await.clone();
             snapshot
         };
-        // #1632: mirror the restart transaction's Root substitution so the pre-flight cannot
-        // resolve a different profile cell or placeholder root than the spawn it is predicting.
-        // Read-only: `root_agent_dir()` returns exactly the string `ensure_root_agent_dir()`
-        // returns, without provisioning anything. On Err, fall back to the raw cwd rather than
-        // deny: `is_root_agent_path` itself returns false on that same error, so the only route
-        // to the fallback is `session.is_root_agent` alone, and in that case the transaction's own
-        // `ensure_root_agent_dir()?` fails pre-teardown on the identical root cause. Denying
-        // instead would convert a recoverable pre-teardown failure into a synchronous exit 1 for
-        // the Root Agent.
-        let is_root_agent = session.is_root_agent
-            || crate::config::root_agent::is_root_agent_path(&session.working_directory);
-        let preflight_cwd = if is_root_agent {
-            crate::config::root_agent::root_agent_dir()
-                .unwrap_or_else(|_| session.working_directory.clone())
-        } else {
-            session.working_directory.clone()
-        };
-        match crate::commands::session::build_configured_agent_spawn_for_cwd(
-            &settings_snapshot,
-            &recipe.agent,
-            &preflight_cwd,
-            recipe.profile.as_deref(),
-        ) {
-            // `Ok(Some(_))` is launchable. `Ok(None)` means the pinned agent id is no longer in
-            // `settings.agents`, so the respawn falls back to the session's stored shell and args,
-            // byte-identically to what the UI Restart button does today for the same session:
-            // proceed, do NOT reject.
-            Ok(_) => {}
-            // The pinned recipe does not build a launchable command: a profile letter that no
-            // longer resolves, or a base command that no longer tokenizes. Reject synchronously so
-            // the agent is told, rather than warning 30s later after the CLI already returned 0.
-            Err(e) => {
-                return self
-                    .reject_message(
-                        path,
-                        msg,
-                        &format!(
-                            "self-handoff-and-restart: coding agent '{}' profile '{}' is not \
-                            launchable from '{}': {}",
-                            recipe.agent,
-                            recipe.profile.as_deref().unwrap_or("<inherited>"),
-                            preflight_cwd,
-                            e,
-                        ),
-                    )
-                    .await;
-            }
+        if let Err(reason) = validate_self_restart_spawn(&settings_snapshot, &session, &recipe) {
+            return self.reject_message(path, msg, &reason).await;
         }
 
         // 7. Idempotency - atomic check-and-set. The set is SHARED with clear and switch, so the
@@ -948,4 +903,54 @@ impl MailboxPoller {
             format!("The agent could not be notified: {reason}"),
         );
     }
+}
+
+fn validate_self_restart_spawn(
+    settings_snapshot: &crate::config::settings::AppSettings,
+    session: &crate::session::session::SessionInfo,
+    recipe: &super::handoff::SelfRestartRecipe,
+) -> Result<(), String> {
+    // #1632: mirror the restart transaction's Root substitution so the pre-flight cannot
+    // resolve a different profile cell or placeholder root than the spawn it is predicting.
+    // Read-only: `root_agent_dir()` returns exactly the string `ensure_root_agent_dir()`
+    // returns, without provisioning anything. On Err, fall back to the raw cwd rather than
+    // deny: `is_root_agent_path` itself returns false on that same error, so the only route
+    // to the fallback is `session.is_root_agent` alone, and in that case the transaction's own
+    // `ensure_root_agent_dir()?` fails pre-teardown on the identical root cause. Denying
+    // instead would convert a recoverable pre-teardown failure into a synchronous exit 1 for
+    // the Root Agent.
+    let is_root_agent = session.is_root_agent
+        || crate::config::root_agent::is_root_agent_path(&session.working_directory);
+    let preflight_cwd = if is_root_agent {
+        crate::config::root_agent::root_agent_dir()
+            .unwrap_or_else(|_| session.working_directory.clone())
+    } else {
+        session.working_directory.clone()
+    };
+    match crate::commands::session::build_configured_agent_spawn_for_cwd(
+        settings_snapshot,
+        &recipe.agent,
+        &preflight_cwd,
+        recipe.profile.as_deref(),
+    ) {
+        // `Ok(Some(_))` is launchable. `Ok(None)` means the pinned agent id is no longer in
+        // `settings.agents`, so the respawn falls back to the session's stored shell and args,
+        // byte-identically to what the UI Restart button does today for the same session:
+        // proceed, do NOT reject.
+        Ok(_) => {}
+        // The pinned recipe does not build a launchable command: a profile letter that no
+        // longer resolves, or a base command that no longer tokenizes. Reject synchronously so
+        // the agent is told, rather than warning 30s later after the CLI already returned 0.
+        Err(e) => {
+            return Err(format!(
+                "self-handoff-and-restart: coding agent '{}' profile '{}' is not \
+                launchable from '{}': {}",
+                recipe.agent,
+                recipe.profile.as_deref().unwrap_or("<inherited>"),
+                preflight_cwd,
+                e,
+            ));
+        }
+    }
+    Ok(())
 }
