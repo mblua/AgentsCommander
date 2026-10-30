@@ -114,33 +114,18 @@ impl MailboxPoller {
         // display attribution; it is never parked for the detached worker pool,
         // whose shared `deliver_wake` tail carries no attribution and must keep
         // its exact behaviour for every other origin.
-        if origin == OutboxOrigin::CoManaged {
-            return self
-                .deliver_bound_outbox_tail(app, path, &validated, true)
-                .await;
+        let comanaged = origin == OutboxOrigin::CoManaged;
+        if !comanaged {
+            if let Some(slot) = deferred_tail {
+                *slot = Some(validated);
+                return Ok(());
+            }
         }
-        if let Some(slot) = deferred_tail {
-            *slot = Some(validated);
-            return Ok(());
-        }
-        // #1635-2 D4: write the annotated message so the `Delivered:` CLI
-        // receipt can report the effective agent/profile. No-flag messages are
-        // still byte-identical to today.
-        self.deliver_bound_outbox_tail(app, path, &validated, false)
-            .await
-    }
-
-    async fn deliver_bound_outbox_tail<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        path: &Path,
-        validated: &ValidatedWake,
-        comanaged: bool,
-    ) -> Result<(), String> {
+        // Both inline origins bind their actual JSON without changing scanner ownership.
         let mut delivery = self.delivery_poller();
         delivery.codex_clear_source = Some(path.to_path_buf());
         match delivery
-            .deliver_validated_wake(app, validated, comanaged)
+            .deliver_validated_wake(app, &validated, comanaged)
             .await
         {
             Ok(annotated) => self.move_to_delivered(app, path, &annotated).await,
