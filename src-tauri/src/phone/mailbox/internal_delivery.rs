@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 enum InternalLiveDelivery {
     Delivered,
-    Exited(Option<SessionInfo>),
+    Exited(Option<Box<SessionInfo>>),
 }
 
 impl MailboxPoller {
@@ -370,7 +370,7 @@ impl MailboxPoller {
             }
         }
 
-        Ok(InternalLiveDelivery::Exited(exited))
+        Ok(InternalLiveDelivery::Exited(exited.map(Box::new)))
     }
 
     async fn resolve_internal_spawn_profile(

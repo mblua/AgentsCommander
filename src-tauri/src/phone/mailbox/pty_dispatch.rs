@@ -15,9 +15,17 @@ use context::{
     BoundaryAuthority, DispatchSelection, InitialDispatchContext, PtyDispatchContext,
     PtyDispatchGuards, SelectedPtyTarget, SelectionCandidates, SpawnAttempt,
 };
+use select::BoundaryWriteGuards;
 use std::sync::Arc;
 use tauri::Manager;
 use uuid::Uuid;
+
+/// Payload and authority validated together before the first write.
+#[derive(Clone, Copy)]
+struct FinalDispatchInput<'a> {
+    final_authority: &'a crate::config::teams::VerifiedPtyInputRoute,
+    payload: &'a [u8],
+}
 
 struct PtyDispatcher<'a, A> {
     poller: &'a MailboxPoller,
@@ -207,17 +215,16 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             }
         };
         let mut heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
-            Arc::clone(&store),
+            Arc::clone(store),
             injection_id.to_string(),
             lease_owner.clone(),
             expires,
         );
         if expires <= chrono::Utc::now() {
-            reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, C::Expired)
-                .await;
+            reject_pty_input_before_boundary(store, &mut heartbeat, injection_id, C::Expired).await;
             return false;
         }
-        match refresh_pty_claim_for_resume(&store, &initial, &claimed).await {
+        match refresh_pty_claim_for_resume(store, initial, &claimed).await {
             Ok(PtyClaimRefresh::Current) => {}
             Ok(PtyClaimRefresh::Terminal) => {
                 heartbeat.finish().await;
@@ -225,7 +232,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             }
             Err(code) => {
                 finish_pty_input_before_boundary(
-                    &store,
+                    store,
                     &mut heartbeat,
                     injection_id,
                     &lease_owner,
@@ -238,17 +245,17 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
 
         let mut owned_work: Option<OwnedPtyWorkTransfer> = None;
         let context = PtyDispatchContext {
-            store: &store,
-            initial: &initial,
+            store,
+            initial,
             claimed: &claimed,
             injection_id,
             lease_owner: &lease_owner,
             source_plane,
             api_client_store,
-            target_gate: &target_gate,
-            target: &target,
+            target_gate,
+            target,
             expires,
-            shutdown: &shutdown,
+            shutdown,
         };
         let mut guards = PtyDispatchGuards {
             target_guard,
@@ -323,10 +330,14 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 &context,
                 &mut guards,
                 &selection,
-                &mut permit,
-                &mut final_api_guard,
-                &final_authority,
-                &payload,
+                BoundaryWriteGuards {
+                    permit: &mut permit,
+                    final_api_guard: &mut final_api_guard,
+                },
+                FinalDispatchInput {
+                    final_authority: &final_authority,
+                    payload: &payload,
+                },
             )
             .await
         {
@@ -336,10 +347,14 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             &context,
             &mut guards,
             &selection,
-            &mut permit,
-            &mut final_api_guard,
-            &final_authority,
-            &payload,
+            BoundaryWriteGuards {
+                permit: &mut permit,
+                final_api_guard: &mut final_api_guard,
+            },
+            FinalDispatchInput {
+                final_authority: &final_authority,
+                payload: &payload,
+            },
         )
         .await
     }
@@ -380,8 +395,8 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         };
         let guard = match await_pty_input_before_deadline(
             initial_expires,
-            &shutdown,
-            target_gate.acquire_exact(&target),
+            shutdown,
+            target_gate.acquire_exact(target),
         )
         .await
         {
@@ -860,11 +875,17 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         context: &PtyDispatchContext<'_>,
         guards: &mut PtyDispatchGuards<'_>,
         selection: &DispatchSelection<'_>,
-        permit: &mut Option<crate::pty::manager::PtyInputPermit>,
-        final_api_guard: &mut Option<crate::api::auth::ApiClientFreshGuard>,
-        final_authority: &crate::config::teams::VerifiedPtyInputRoute,
-        payload: &[u8],
+        write_guards: BoundaryWriteGuards<'_>,
+        input: FinalDispatchInput<'_>,
     ) -> Result<(), bool> {
+        let BoundaryWriteGuards {
+            permit,
+            final_api_guard,
+        } = write_guards;
+        let FinalDispatchInput {
+            final_authority,
+            payload,
+        } = input;
         let app = self.app;
 
         use crate::phone::types::{PtyInputPublicStatus as S, PtyInputReasonCode as C};
@@ -931,11 +952,13 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         context: &PtyDispatchContext<'_>,
         guards: &mut PtyDispatchGuards<'_>,
         selection: &DispatchSelection<'_>,
-        permit: &mut Option<crate::pty::manager::PtyInputPermit>,
-        final_api_guard: &mut Option<crate::api::auth::ApiClientFreshGuard>,
-        final_authority: &crate::config::teams::VerifiedPtyInputRoute,
-        payload: &[u8],
+        write_guards: BoundaryWriteGuards<'_>,
+        input: FinalDispatchInput<'_>,
     ) -> bool {
+        let BoundaryWriteGuards {
+            permit,
+            final_api_guard,
+        } = write_guards;
         let authority = match self
             .dispatch_boundary_authority(context, guards, selection, permit, final_api_guard)
             .await
@@ -948,10 +971,11 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 context,
                 guards,
                 selection,
-                permit,
-                final_api_guard,
-                final_authority,
-                payload,
+                BoundaryWriteGuards {
+                    permit,
+                    final_api_guard,
+                },
+                input,
                 &authority,
             )
             .await
@@ -963,9 +987,11 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             context,
             guards,
             selection,
-            permit,
-            final_api_guard,
-            payload,
+            BoundaryWriteGuards {
+                permit,
+                final_api_guard,
+            },
+            input.payload,
             boundary_write,
         )
         .await

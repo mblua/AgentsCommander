@@ -1,6 +1,6 @@
 use super::{
-    BoundaryAuthority, DispatchSelection, PtyDispatchContext, PtyDispatchGuards, PtyDispatcher,
-    SelectedPtyTarget, SelectionCandidates, SpawnAttempt,
+    BoundaryAuthority, DispatchSelection, FinalDispatchInput, PtyDispatchContext,
+    PtyDispatchGuards, PtyDispatcher, SelectedPtyTarget, SelectionCandidates, SpawnAttempt,
 };
 use crate::config::settings::SettingsState;
 use crate::config::teams::VerifiedPtyInputIdentity;
@@ -26,6 +26,12 @@ use std::{
 };
 use tauri::Manager;
 use uuid::Uuid;
+
+/// Mutable guards retained through the final validation and write boundary.
+pub(super) struct BoundaryWriteGuards<'a> {
+    pub(super) permit: &'a mut Option<crate::pty::manager::PtyInputPermit>,
+    pub(super) final_api_guard: &'a mut Option<crate::api::auth::ApiClientFreshGuard>,
+}
 
 impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
     pub(super) async fn select_pty_dispatch_session(
@@ -365,9 +371,9 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 self.spawn_pty_input_target(
                     app,
                     context.claimed,
-                    &matching,
-                    &verified_sender,
-                    &verified_target,
+                    matching,
+                    verified_sender,
+                    verified_target,
                     context.source_plane,
                     context.api_client_store,
                     &target_ownership,
@@ -514,7 +520,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                     (context.store, context.initial, context.claimed),
                     (
                         context.target_gate,
-                        &verified_target,
+                        verified_target,
                         PtyReacquireGoal::Spawn,
                     ),
                     (context.expires, context.shutdown),
@@ -699,12 +705,18 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         context: &PtyDispatchContext<'_>,
         guards: &mut PtyDispatchGuards<'_>,
         selection: &DispatchSelection<'_>,
-        permit: &mut Option<crate::pty::manager::PtyInputPermit>,
-        final_api_guard: &mut Option<crate::api::auth::ApiClientFreshGuard>,
-        final_authority: &crate::config::teams::VerifiedPtyInputRoute,
-        payload: &[u8],
+        write_guards: BoundaryWriteGuards<'_>,
+        input: FinalDispatchInput<'_>,
         authority: &BoundaryAuthority,
     ) -> Result<Result<bool, bool>, bool> {
+        let BoundaryWriteGuards {
+            permit,
+            final_api_guard,
+        } = write_guards;
+        let FinalDispatchInput {
+            final_authority,
+            payload,
+        } = input;
         let app = self.app;
 
         let BoundaryAuthority {
@@ -770,9 +782,9 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 *authority_id,
                 &final_authority.sender,
                 *authority_backend,
-                &authority_route,
+                authority_route,
                 permit.as_ref().expect("dispatch input permit"),
-                &idle_detector,
+                idle_detector,
                 &boundary_settings,
                 |session, settings| {
                     owned_token.is_none_or(|token| session.token == token)
@@ -862,11 +874,14 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         context: &PtyDispatchContext<'_>,
         guards: &mut PtyDispatchGuards<'_>,
         selection: &DispatchSelection<'_>,
-        permit: &mut Option<crate::pty::manager::PtyInputPermit>,
-        final_api_guard: &mut Option<crate::api::auth::ApiClientFreshGuard>,
+        write_guards: BoundaryWriteGuards<'_>,
         payload: &[u8],
         boundary_write: Result<bool, bool>,
     ) -> bool {
+        let BoundaryWriteGuards {
+            permit,
+            final_api_guard,
+        } = write_guards;
         let app = self.app;
 
         let text_write_succeeded = match boundary_write {

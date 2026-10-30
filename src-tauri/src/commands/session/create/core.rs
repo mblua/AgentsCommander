@@ -913,7 +913,7 @@ pub(crate) async fn prepare_metadata<R: tauri::Runtime>(
         resource_permit,
         resource_monitor,
     };
-    context::prepare(&ctx, input).await
+    context::prepare(ctx, input).await
 }
 
 use creation::CreateInput;
