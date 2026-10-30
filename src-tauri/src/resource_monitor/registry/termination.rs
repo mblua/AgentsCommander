@@ -7,6 +7,7 @@ use crate::resource_monitor::registry::unverifiable_process_error;
 use crate::resource_monitor::registry::QuarantineRetryOutcome;
 use crate::resource_monitor::registry::QuarantineRetrySkip;
 use crate::resource_monitor::registry::ResourceMonitorState;
+use crate::resource_monitor::types::ObservedProcess;
 use crate::resource_monitor::types::ProcessIdentity;
 use crate::resource_monitor::types::ResourceGroupState;
 use crate::resource_monitor::types::ResourceKillReason;
@@ -224,52 +225,14 @@ impl ResourceMonitorState {
         let mut current_cleanup_identities = BTreeSet::new();
         let mut pending_identity_errors = Vec::new();
         let mut errors = Vec::new();
-        let observe_started = Instant::now();
-        let observed_tree = self.backend.observe_tree(root_identity);
-        let observe_ms = observe_started.elapsed().as_millis();
-        match observed_tree {
-            Ok(tree) => {
-                let current_processes = tree.processes.clone();
-                current_cleanup_identities
-                    .extend(current_processes.iter().map(|process| process.identity));
-                let mut ignored_root_errors = Vec::new();
-                for error in &tree.errors {
-                    if is_missing_root_cleanup_error(error, root_identity) {
-                        ignored_root_errors.push(error.clone());
-                        continue;
-                    }
-                    if let Some(pid) = identity_unavailable_pid(error) {
-                        let matching_identity = current_processes
-                            .iter()
-                            .find(|process| process.identity.pid == pid)
-                            .or_else(|| targets.iter().find(|process| process.identity.pid == pid))
-                            .map(|process| process.identity);
-                        if let Some(identity) = matching_identity {
-                            push_pending_identity_error(
-                                &mut pending_identity_errors,
-                                identity,
-                                error.clone(),
-                            );
-                            continue;
-                        }
-                    }
-                    errors.push(error.clone());
-                }
-                if !tree.errors.is_empty() && errors.is_empty() && !ignored_root_errors.is_empty() {
-                    log::debug!(
-                        "[resource-monitor] cleanup sample for session \
-                            {} had ignored root-missing error: {}",
-                        session_id,
-                        ignored_root_errors.join("; ")
-                    );
-                }
-                targets.extend(current_processes);
-                let _ = self.merge_tree(session_id, tree);
-            }
-            Err(err) => {
-                errors.push(err.to_string());
-            }
-        }
+        let observe_ms = self.observe_cleanup_targets(
+            session_id,
+            root_identity,
+            &mut targets,
+            &mut current_cleanup_identities,
+            &mut pending_identity_errors,
+            &mut errors,
+        );
 
         let mut unique = BTreeMap::new();
         for process in targets {
@@ -283,90 +246,63 @@ impl ResourceMonitorState {
         });
         let target_count = targets.len();
 
-        let mut killed = Vec::new();
-        for process in targets.iter() {
-            if !process.kill_allowed {
-                if current_cleanup_identities.contains(&process.identity) {
-                    push_pending_identity_error(
-                        &mut pending_identity_errors,
-                        process.identity,
-                        unverifiable_process_error(process.identity.pid),
-                    );
-                    continue;
-                }
-                match self.backend.observe_identity(process.identity.pid) {
-                    Ok(None) => {}
-                    Ok(Some(identity))
-                        if !is_placeholder_identity(process.identity)
-                            && identity != process.identity => {}
-                    Ok(Some(_)) => push_pending_identity_error(
-                        &mut pending_identity_errors,
-                        process.identity,
-                        unverifiable_process_error(process.identity.pid),
-                    ),
-                    Err(err) => push_pending_identity_error(
-                        &mut pending_identity_errors,
-                        process.identity,
-                        format!("pid {}: {err}", process.identity.pid),
-                    ),
-                }
-                continue;
-            }
-            match self.backend.terminate_verified(process) {
-                Ok(TerminateOutcome::Terminated) => {
-                    killed.push(process.identity);
-                    log::info!(
-                        "[resource-monitor] killed pid={} session={} reason={}",
-                        process.identity.pid,
-                        session_id,
-                        reason.as_log_reason()
-                    );
-                }
-                Ok(TerminateOutcome::AlreadyGone) => {}
-                Err(err) => push_pending_identity_error(
-                    &mut pending_identity_errors,
-                    process.identity,
-                    format!("pid {}: {err}", process.identity.pid),
-                ),
-            }
-        }
+        let killed = self.terminate_cleanup_targets(
+            session_id,
+            reason,
+            &targets,
+            &current_cleanup_identities,
+            &mut pending_identity_errors,
+        );
 
-        for (identity, error) in pending_identity_errors {
-            match self.backend.observe_identity(identity.pid) {
-                Ok(None) => {
-                    log::debug!(
-                        "[resource-monitor] ignored cleanup identity error \
-                            for gone pid={} session={}",
-                        identity.pid,
-                        session_id
-                    );
-                }
-                Ok(Some(current)) if !is_placeholder_identity(identity) && current != identity => {
-                    log::debug!(
-                        "[resource-monitor] ignored cleanup identity error \
-                            for reused pid={} session={}",
-                        identity.pid,
-                        session_id
-                    );
-                }
-                Ok(Some(_)) | Err(_) => {
-                    // #647 D: per-PID diagnostic so future AV-block repros are
-                    // conclusive from the log (the error already begins with `pid <n>:`).
-                    log::warn!(
-                        "[resource-monitor] kill-failed session={} reason={} error={}",
-                        session_id,
-                        reason.as_log_reason(),
-                        error
-                    );
-                    errors.push(error);
-                }
-            }
-        }
+        self.verify_cleanup_identity_errors(
+            session_id,
+            reason,
+            pending_identity_errors,
+            &mut errors,
+        );
 
+        let quarantined = !errors.is_empty();
+        let (state, message, blocked_by_security) =
+            self.record_cleanup_result(session_id, root_identity, reason, &targets, &errors)?;
+
+        log::info!(
+            "[resource-monitor] kill_group session={} reason={} \
+                observe_tree_ms={} total_ms={} targets={} killed={} \
+                quarantined={}",
+            session_id,
+            reason.as_log_reason(),
+            observe_ms,
+            kill_started.elapsed().as_millis(),
+            target_count,
+            killed.len(),
+            quarantined
+        );
+
+        Ok(ResourceKillResult {
+            session_id: session_id.to_string(),
+            state,
+            killed_processes: killed,
+            quarantined,
+            message,
+            blocked_by_security,
+            // #647: kill_group only accounts/verifies; the command finalizes the
+            // session (PTY teardown + Exited tile), so this is always false here.
+            finalized: false,
+        })
+    }
+
+    fn record_cleanup_result(
+        &self,
+        session_id: Uuid,
+        root_identity: ProcessIdentity,
+        reason: ResourceKillReason,
+        targets: &[ObservedProcess],
+        errors: &[String],
+    ) -> Result<(ResourceGroupState, String, bool), String> {
         let quarantined = !errors.is_empty();
         // #647 D: flag an AV/EDR ACCESS_DENIED (exact `win32 error 5`) so the UI can
         // add the exclusion guidance; the per-PID detail stays in `message`.
-        let blocked_by_security = quarantined && has_access_denied_signature(&errors);
+        let blocked_by_security = quarantined && has_access_denied_signature(errors);
         // #1438 - a quarantined session-destroy is the evidence trail for the separate
         // locked-directory defect: dump the full deduped target list once, so a follow-up
         // ticket can name the holder instead of guessing. Gated to SessionDestroy because
@@ -423,30 +359,165 @@ impl ResourceMonitorState {
             }
         }
 
-        log::info!(
-            "[resource-monitor] kill_group session={} reason={} \
-                observe_tree_ms={} total_ms={} targets={} killed={} \
-                quarantined={}",
-            session_id,
-            reason.as_log_reason(),
-            observe_ms,
-            kill_started.elapsed().as_millis(),
-            target_count,
-            killed.len(),
-            quarantined
-        );
+        Ok((state, message, blocked_by_security))
+    }
 
-        Ok(ResourceKillResult {
-            session_id: session_id.to_string(),
-            state,
-            killed_processes: killed,
-            quarantined,
-            message,
-            blocked_by_security,
-            // #647: kill_group only accounts/verifies; the command finalizes the
-            // session (PTY teardown + Exited tile), so this is always false here.
-            finalized: false,
-        })
+    fn observe_cleanup_targets(
+        &self,
+        session_id: Uuid,
+        root_identity: ProcessIdentity,
+        targets: &mut Vec<ObservedProcess>,
+        current_cleanup_identities: &mut BTreeSet<ProcessIdentity>,
+        pending_identity_errors: &mut Vec<(ProcessIdentity, String)>,
+        errors: &mut Vec<String>,
+    ) -> u128 {
+        let observe_started = Instant::now();
+        let observed_tree = self.backend.observe_tree(root_identity);
+        let observe_ms = observe_started.elapsed().as_millis();
+        match observed_tree {
+            Ok(tree) => {
+                let current_processes = tree.processes.clone();
+                current_cleanup_identities
+                    .extend(current_processes.iter().map(|process| process.identity));
+                let mut ignored_root_errors = Vec::new();
+                for error in &tree.errors {
+                    if is_missing_root_cleanup_error(error, root_identity) {
+                        ignored_root_errors.push(error.clone());
+                        continue;
+                    }
+                    if let Some(pid) = identity_unavailable_pid(error) {
+                        let matching_identity = current_processes
+                            .iter()
+                            .find(|process| process.identity.pid == pid)
+                            .or_else(|| targets.iter().find(|process| process.identity.pid == pid))
+                            .map(|process| process.identity);
+                        if let Some(identity) = matching_identity {
+                            push_pending_identity_error(
+                                pending_identity_errors,
+                                identity,
+                                error.clone(),
+                            );
+                            continue;
+                        }
+                    }
+                    errors.push(error.clone());
+                }
+                if !tree.errors.is_empty() && errors.is_empty() && !ignored_root_errors.is_empty() {
+                    log::debug!(
+                        "[resource-monitor] cleanup sample for session \
+                            {} had ignored root-missing error: {}",
+                        session_id,
+                        ignored_root_errors.join("; ")
+                    );
+                }
+                targets.extend(current_processes);
+                let _ = self.merge_tree(session_id, tree);
+            }
+            Err(err) => {
+                errors.push(err.to_string());
+            }
+        }
+
+        observe_ms
+    }
+
+    fn terminate_cleanup_targets(
+        &self,
+        session_id: Uuid,
+        reason: ResourceKillReason,
+        targets: &[ObservedProcess],
+        current_cleanup_identities: &BTreeSet<ProcessIdentity>,
+        pending_identity_errors: &mut Vec<(ProcessIdentity, String)>,
+    ) -> Vec<ProcessIdentity> {
+        let mut killed = Vec::new();
+        for process in targets.iter() {
+            if !process.kill_allowed {
+                if current_cleanup_identities.contains(&process.identity) {
+                    push_pending_identity_error(
+                        pending_identity_errors,
+                        process.identity,
+                        unverifiable_process_error(process.identity.pid),
+                    );
+                    continue;
+                }
+                match self.backend.observe_identity(process.identity.pid) {
+                    Ok(None) => {}
+                    Ok(Some(identity))
+                        if !is_placeholder_identity(process.identity)
+                            && identity != process.identity => {}
+                    Ok(Some(_)) => push_pending_identity_error(
+                        pending_identity_errors,
+                        process.identity,
+                        unverifiable_process_error(process.identity.pid),
+                    ),
+                    Err(err) => push_pending_identity_error(
+                        pending_identity_errors,
+                        process.identity,
+                        format!("pid {}: {err}", process.identity.pid),
+                    ),
+                }
+                continue;
+            }
+            match self.backend.terminate_verified(process) {
+                Ok(TerminateOutcome::Terminated) => {
+                    killed.push(process.identity);
+                    log::info!(
+                        "[resource-monitor] killed pid={} session={} reason={}",
+                        process.identity.pid,
+                        session_id,
+                        reason.as_log_reason()
+                    );
+                }
+                Ok(TerminateOutcome::AlreadyGone) => {}
+                Err(err) => push_pending_identity_error(
+                    pending_identity_errors,
+                    process.identity,
+                    format!("pid {}: {err}", process.identity.pid),
+                ),
+            }
+        }
+
+        killed
+    }
+
+    fn verify_cleanup_identity_errors(
+        &self,
+        session_id: Uuid,
+        reason: ResourceKillReason,
+        pending_identity_errors: Vec<(ProcessIdentity, String)>,
+        errors: &mut Vec<String>,
+    ) {
+        for (identity, error) in pending_identity_errors {
+            match self.backend.observe_identity(identity.pid) {
+                Ok(None) => {
+                    log::debug!(
+                        "[resource-monitor] ignored cleanup identity error \
+                            for gone pid={} session={}",
+                        identity.pid,
+                        session_id
+                    );
+                }
+                Ok(Some(current)) if !is_placeholder_identity(identity) && current != identity => {
+                    log::debug!(
+                        "[resource-monitor] ignored cleanup identity error \
+                            for reused pid={} session={}",
+                        identity.pid,
+                        session_id
+                    );
+                }
+                Ok(Some(_)) | Err(_) => {
+                    // #647 D: per-PID diagnostic so future AV-block repros are
+                    // conclusive from the log (the error already begins with `pid <n>:`).
+                    log::warn!(
+                        "[resource-monitor] kill-failed session={} reason={} error={}",
+                        session_id,
+                        reason.as_log_reason(),
+                        error
+                    );
+                    errors.push(error);
+                }
+            }
+        }
     }
 
     /// #632 - app-shutdown bulk cleanup. Uses fresh-tree-only targets
