@@ -294,4 +294,21 @@ fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
 }
 
 #[cfg(test)]
+#[derive(Default)]
+pub(crate) struct RecordingEvents(
+    pub(crate) std::sync::Mutex<Vec<(String, String, Option<String>)>>,
+);
+
+#[cfg(test)]
+impl TelegramEvents for RecordingEvents {
+    fn bridge_error(&self, session_id: &str, error: &str, kind: Option<&str>) {
+        self.0.lock().unwrap().push((
+            session_id.to_owned(),
+            error.to_owned(),
+            kind.map(str::to_owned),
+        ));
+    }
+}
+
+#[cfg(test)]
 mod tests;

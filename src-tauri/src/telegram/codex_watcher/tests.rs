@@ -1,19 +1,5 @@
 use super::*;
-
-#[derive(Default)]
-struct RecordingEvents {
-    errors: std::sync::Mutex<Vec<(String, String, Option<String>)>>,
-}
-
-impl TelegramEvents for RecordingEvents {
-    fn bridge_error(&self, session_id: &str, error: &str, kind: Option<&str>) {
-        self.errors.lock().unwrap().push((
-            session_id.to_owned(),
-            error.to_owned(),
-            kind.map(str::to_owned),
-        ));
-    }
-}
+use crate::telegram::output::RecordingEvents;
 
 // The extractor tests drive the kernel directly; production now reads
 // through `read_new_lines_with_starts` (`#2232` phase 1), so the wrapper
@@ -295,7 +281,7 @@ async fn forced_read_error_preserves_session_text_and_absent_kind() {
     let expected_error = read_new_lines_with_starts(&path, &mut 0, &mut String::new()).unwrap_err();
     let observed = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let errors = events.errors.lock().unwrap().clone();
+            let errors = events.0.lock().unwrap().clone();
             if !errors.is_empty() {
                 break errors;
             }

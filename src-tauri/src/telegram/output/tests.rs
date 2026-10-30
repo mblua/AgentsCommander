@@ -230,19 +230,6 @@ fn diaglogger_log_sent_redacts_gemini_key() {
     );
 }
 
-#[derive(Default)]
-struct RecordingEvents(std::sync::Mutex<Vec<(String, String, Option<String>)>>);
-
-impl TelegramEvents for RecordingEvents {
-    fn bridge_error(&self, session_id: &str, error: &str, kind: Option<&str>) {
-        self.0.lock().unwrap().push((
-            session_id.to_owned(),
-            error.to_owned(),
-            kind.map(str::to_owned),
-        ));
-    }
-}
-
 #[test]
 fn report_send_error_preserves_redacted_classified_error_once() {
     let events = RecordingEvents::default();

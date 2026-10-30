@@ -1,19 +1,5 @@
 use super::*;
-
-#[derive(Default)]
-struct RecordingEvents {
-    errors: std::sync::Mutex<Vec<(String, String, Option<String>)>>,
-}
-
-impl TelegramEvents for RecordingEvents {
-    fn bridge_error(&self, session_id: &str, error: &str, kind: Option<&str>) {
-        self.errors.lock().unwrap().push((
-            session_id.to_owned(),
-            error.to_owned(),
-            kind.map(str::to_owned),
-        ));
-    }
-}
+use crate::telegram::output::RecordingEvents;
 
 use std::io::Write;
 
@@ -972,7 +958,7 @@ async fn forced_read_error_preserves_session_text_and_absent_kind() {
         read_new_lines_with_starts(&fixture.path, &mut 0, &mut String::new()).unwrap_err();
     let observed = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let errors = events.errors.lock().unwrap().clone();
+            let errors = events.0.lock().unwrap().clone();
             if !errors.is_empty() {
                 break errors;
             }
