@@ -274,6 +274,43 @@ struct WatcherSessionState {
     count: u64,
 }
 
+impl WatcherSessionState {
+    fn update_saturation(
+        &mut self,
+        id: Uuid,
+        watcher: &ResolvedWatcher,
+        now: std::time::Instant,
+        capped: bool,
+    ) {
+        if capped {
+            self.degraded = true;
+            if !self.degraded_logged {
+                log::warn!(
+                    "[watchers] watcher '{}' on session {id} is over its per-tick cap; \
+                 matches beyond it are counted and dropped",
+                    watcher.id
+                );
+                self.degraded_logged = true;
+            }
+            self.degraded_ticks += 1;
+            if self.degraded_ticks >= DEGRADED_TICKS_BEFORE_SUSPENSION {
+                self.suspended_until = Some(now + SUSPENSION);
+                log::warn!(
+                    "[watchers] watcher '{}' on session {id} has been saturated for {} ticks; \
+                 suspending it for {}s, then retrying",
+                    watcher.id,
+                    self.degraded_ticks,
+                    SUSPENSION.as_secs()
+                );
+            }
+        } else {
+            self.degraded = false;
+            self.degraded_ticks = 0;
+            self.degraded_logged = false;
+        }
+    }
+}
+
 /// One session the engine is sampling.
 struct RegisteredSession {
     /// `None` for a session sampled only by an internal activity consumer (#2879).
@@ -862,32 +899,7 @@ impl WatcherEngine {
                 });
             }
 
-            if capped {
-                state.degraded = true;
-                if !state.degraded_logged {
-                    log::warn!(
-                        "[watchers] watcher '{}' on session {id} is over its per-tick cap; \
-                         matches beyond it are counted and dropped",
-                        watcher.id
-                    );
-                    state.degraded_logged = true;
-                }
-                state.degraded_ticks += 1;
-                if state.degraded_ticks >= DEGRADED_TICKS_BEFORE_SUSPENSION {
-                    state.suspended_until = Some(now + SUSPENSION);
-                    log::warn!(
-                        "[watchers] watcher '{}' on session {id} has been saturated for {} ticks; \
-                         suspending it for {}s, then retrying",
-                        watcher.id,
-                        state.degraded_ticks,
-                        SUSPENSION.as_secs()
-                    );
-                }
-            } else {
-                state.degraded = false;
-                state.degraded_ticks = 0;
-                state.degraded_logged = false;
-            }
+            state.update_saturation(id, watcher, now, capped);
         }
 
         session.seq = next_seq;
