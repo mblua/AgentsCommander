@@ -1,3 +1,5 @@
+mod purge;
+
 #[cfg(not(test))]
 use super::handoff::SELF_CLEAR_MAX_DEFER;
 #[cfg(not(test))]
@@ -6,8 +8,8 @@ use super::handoff::SELF_CLEAR_POLL;
 use super::handoff::SELF_CLEAR_SETTLE;
 use super::handoff::{ARCHIVE_TIMESTAMP_FORMAT, PURGE_WG_ACTION, SELF_HANDOFF_ROOT_NAME};
 use super::notice::derive_project_from_outbox_path;
-use super::poller::{evaluate_gate, MailboxPoller, PurgeGatePeer, PurgeGateSession};
-use super::settle::{archive_root_md, capture_self_forget_summary, filter_sessions_by_fqn};
+use super::poller::{evaluate_gate, MailboxPoller, PurgeGatePeer};
+use super::settle::{archive_root_md, capture_self_forget_summary};
 use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::SettingsState;
 use crate::filesystem::phone_mailbox as mailbox_disk;
@@ -117,27 +119,7 @@ impl MailboxPoller {
                     .await;
             }
         };
-        let mut peer_fqns: Vec<String> = Vec::new();
-        if let Ok(entries) = mailbox_disk::mailbox_directory_paths(wg_dir) {
-            for path in entries.flatten() {
-                let name = match path.file_name().and_then(|name| name.to_str()) {
-                    Some(n) => n.to_string(),
-                    None => continue,
-                };
-                let agent = match name.strip_prefix("__agent_") {
-                    Some(a) => a.to_string(),
-                    None => continue,
-                };
-                if agent == wg.agent_name {
-                    continue;
-                }
-                if !mailbox_disk::mailbox_path_is_dir(&path) {
-                    continue;
-                }
-                peer_fqns.push(format!("{}:{}/{}", wg.project, wg.wg_name, agent));
-            }
-        }
-        peer_fqns.sort();
+        let peer_fqns = purge::peer_fqns(wg_dir, &wg.agent_name, &wg.project, &wg.wg_name);
 
         // 5. Take the mirror snapshot ONCE (F-4). One list_sessions(), one
         //    PTY-liveness pass. Per-peer filtering reuses the pure predicate.
@@ -176,61 +158,21 @@ impl MailboxPoller {
         // 7. Liveness and Guard B (F-3: !Exited && has_pty; F-12: root guard).
         //    Collect live session info; the readiness snapshot (step 8) is
         //    correlated into gate_peers after.
-        struct PeerLiveInfo {
-            fqn: String,
-            all_session_ids: Vec<String>,
-            live_sessions: Vec<(Uuid, bool)>, // (session_id, mirror_idle)
-        }
-        let mut peer_infos: Vec<PeerLiveInfo> = Vec::with_capacity(peer_fqns.len());
-        let mut all_live_session_ids: Vec<Uuid> = Vec::new();
-
-        for fqn in &peer_fqns {
-            let matched: Vec<&SessionInfo> = filter_sessions_by_fqn(&sessions, fqn);
-            let all_session_ids: Vec<String> = matched.iter().map(|s| s.id.clone()).collect();
-
-            let mut live_sessions: Vec<(Uuid, bool)> = Vec::new();
-            for s in &matched {
-                // Guard B (root): corrupted-state assertion (F-12).
-                if s.is_root_agent
-                    || crate::config::root_agent::root_agent_path_requires_protection(
-                        &s.working_directory,
-                    )
-                {
-                    let response = serde_json::json!({
-                        "action": PURGE_WG_ACTION,
-                        "workgroup": format!("{}:{}", wg.project, wg.wg_name),
-                        "status": "failed_root_guard",
-                        "requested_by": msg.from,
-                        "offending_session_id": s.id,
-                        "offending_working_directory": s.working_directory,
-                        "peers": [],
-                    });
-                    return self
-                        .write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
-                        .await;
-                }
-
-                let sid = match Uuid::parse_str(&s.id) {
-                    Ok(id) => id,
-                    Err(_) => continue,
-                };
-                let is_live =
-                    !matches!(s.status, SessionStatus::Exited(_)) && pty_live.contains(&sid);
-                if is_live {
-                    let mirror_idle =
-                        !matches!(s.status, SessionStatus::Active | SessionStatus::Running)
-                            || s.waiting_for_input;
-                    live_sessions.push((sid, mirror_idle));
-                    all_live_session_ids.push(sid);
-                }
+        let (peer_infos, all_live_session_ids) = match purge::peer_live_info(
+            &peer_fqns,
+            &sessions,
+            &pty_live,
+            &wg.project,
+            &wg.wg_name,
+            msg,
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(response) => {
+                return self
+                    .write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
+                    .await
             }
-
-            peer_infos.push(PeerLiveInfo {
-                fqn: fqn.clone(),
-                all_session_ids,
-                live_sessions,
-            });
-        }
+        };
 
         // 8. Readiness snapshot and the four-leg gate (§2.3.3, F-1).
         let quiet = std::time::Duration::from_millis(
@@ -248,69 +190,13 @@ impl MailboxPoller {
             let readiness = idle.purge_readiness(&all_live_session_ids);
             readiness.into_iter().map(|r| (r.session_id, r)).collect()
         };
-        // Correlate into gate_peers.
-        let gate_peers: Vec<PurgeGatePeer> = peer_infos
-            .iter()
-            .map(|info| PurgeGatePeer {
-                fqn: info.fqn.clone(),
-                all_session_ids: info.all_session_ids.clone(),
-                live: info
-                    .live_sessions
-                    .iter()
-                    .map(|(sid, mirror_idle)| PurgeGateSession {
-                        session_id: *sid,
-                        readiness: readiness_map.get(sid).copied().unwrap_or(
-                            crate::pty::idle_detector::PurgeReadiness {
-                                session_id: *sid,
-                                activity_age: None,
-                                watcher_idle: false,
-                                last_resize_age: None,
-                                resize_grace: crate::session::profile::IdleTuning::DEFAULT
-                                    .resize_grace,
-                                idle_threshold: crate::session::profile::IdleTuning::DEFAULT
-                                    .idle_threshold,
-                                silence_age: None,
-                            },
-                        ),
-                        mirror_idle: *mirror_idle,
-                    })
-                    .collect(),
-            })
-            .collect();
+        let gate_peers = purge::gate_peers(&peer_infos, &readiness_map);
 
         let decision = evaluate_gate(&gate_peers, quiet);
 
         // 9. Dry-run exit, BEFORE the gate rejection (F-9).
         if msg.dry_run == Some(true) {
-            let status = if decision.passed {
-                "dry_run_ready"
-            } else {
-                "dry_run_blocked"
-            };
-            // (N-3) The dry-run path reports `purgeable` and the diagnostic
-            // fields, NOT `outcome` (which is the gate's internal "busy"/
-            // "skipped"/"untracked" vocabulary and contradicts `would_purge:
-            // true` when every peer is "skipped" because it has no live
-            // session). An operator reads `purgeable: true`, not "skipped".
-            let response = serde_json::json!({
-                "action": PURGE_WG_ACTION,
-                "workgroup": format!("{}:{}", wg.project, wg.wg_name),
-                "status": status,
-                "requested_by": msg.from,
-                "quiet_period_ms": quiet.as_millis() as u64,
-                "dry_run": true,
-                "would_purge": decision.passed,
-                "peers": decision.peers.iter().map(|p| serde_json::json!({
-                    "name": p.fqn,
-                    "purgeable": p.purgeable,
-                    "idle_ms": p.idle_ms,
-                    "silence_ms": p.silence_ms,
-                    "watcher_idle": p.watcher_idle,
-                    "mirror_idle": p.mirror_idle,
-                    "resize_settled": p.resize_settled,
-                    "session_ids": p.session_ids,
-                })).collect::<Vec<_>>(),
-            });
+            let response = purge::dry_run_response(&wg.project, &wg.wg_name, msg, quiet, &decision);
             return self
                 .write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
                 .await;
@@ -318,40 +204,37 @@ impl MailboxPoller {
 
         // 10. The gate. If any peer is not purgeable: reject, destroy nothing.
         if !decision.passed {
-            let response = serde_json::json!({
-                "action": PURGE_WG_ACTION,
-                "workgroup": format!("{}:{}", wg.project, wg.wg_name),
-                "status": "rejected_busy",
-                "requested_by": msg.from,
-                "quiet_period_ms": quiet.as_millis() as u64,
-                "peers": decision.peers.iter().map(|p| serde_json::json!({
-                    "name": p.fqn,
-                    "outcome": p.outcome,
-                    "purgeable": p.purgeable,
-                    "idle_ms": p.idle_ms,
-                    "silence_ms": p.silence_ms,
-                    "watcher_idle": p.watcher_idle,
-                    "mirror_idle": p.mirror_idle,
-                    "resize_settled": p.resize_settled,
-                    "session_ids": p.session_ids,
-                })).collect::<Vec<_>>(),
-            });
+            let response = purge::busy_response(&wg.project, &wg.wg_name, msg, quiet, &decision);
             return self
                 .write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
                 .await;
         }
 
+        let snapshot = self.execute_room_purge(app, msg, &gate_peers).await?;
+        let response =
+            purge::completion_response(&wg.project, &wg.wg_name, msg, quiet, &decision, &snapshot);
+
+        self.write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
+            .await
+    }
+
+    async fn execute_room_purge<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        gate_peers: &[PurgeGatePeer],
+    ) -> Result<super::teardown::PurgeSnapshot, String> {
         // 11. Acquire the lease (F-14: clone Arc into a named local first).
         let mut target_sids: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
         let mut target_fqns: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for peer in &gate_peers {
+        for peer in gate_peers {
             for session in &peer.live {
                 target_sids.insert(session.session_id);
             }
             target_fqns.insert(peer.fqn.clone());
         }
         // Also include non-live session IDs (Exited records) for destruction.
-        for peer in &gate_peers {
+        for peer in gate_peers {
             for sid_str in &peer.all_session_ids {
                 if let Ok(sid) = Uuid::parse_str(sid_str) {
                     target_sids.insert(sid);
@@ -368,7 +251,7 @@ impl MailboxPoller {
             .ok_or_else(|| "purge observation budget overflow".to_string())?;
         let mut ids = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for peer in &gate_peers {
+        for peer in gate_peers {
             for id in &peer.all_session_ids {
                 if let Ok(sid) = Uuid::parse_str(id) {
                     if seen.insert(sid) {
@@ -406,93 +289,7 @@ impl MailboxPoller {
                 }
             },
         ));
-        let snapshot = super::teardown::observe_purge(progress, worker).await?;
-        let mut closed_ids = Vec::new();
-        let mut already_closed_ids = Vec::new();
-        let mut failed_ids = Vec::new();
-        let mut reasons = Vec::new();
-        for (sid, outcome) in &snapshot.results {
-            match outcome {
-                super::teardown::TeardownOutcome::Closed => closed_ids.push(sid.to_string()),
-                super::teardown::TeardownOutcome::AlreadyGone => {
-                    already_closed_ids.push(sid.to_string());
-                }
-                _ => {
-                    failed_ids.push(sid.to_string());
-                    reasons
-                        .push(serde_json::json!({"session_id": sid, "reason": outcome.reason()}));
-                }
-            }
-        }
-        let current_id = match snapshot.phase {
-            super::teardown::PurgePhase::Started(sid)
-                if !snapshot.results.iter().any(|(id, _)| *id == sid) =>
-            {
-                Some(sid)
-            }
-            _ => None,
-        };
-        let unattempted_ids: Vec<String> = snapshot
-            .ids
-            .iter()
-            .filter(|sid| {
-                Some(**sid) != current_id && !snapshot.results.iter().any(|(done, _)| done == *sid)
-            })
-            .map(Uuid::to_string)
-            .collect();
-        let uncertain =
-            snapshot.phase != super::teardown::PurgePhase::Stopped || snapshot.reason.is_some();
-        let status = if uncertain || !failed_ids.is_empty() {
-            "partial_failure"
-        } else {
-            "purged"
-        };
-        let response = serde_json::json!({
-            "action": PURGE_WG_ACTION,
-            "workgroup": format!("{}:{}", wg.project, wg.wg_name),
-            "status": status,
-            "requested_by": msg.from,
-            "quiet_period_ms": quiet.as_millis() as u64,
-            "dry_run": false,
-            "purged": closed_ids.len(),
-            "already_closed": already_closed_ids.len(),
-            "failed": failed_ids.len(),
-            "session_ids": closed_ids,
-            "already_closed_ids": already_closed_ids,
-            "failed_ids": failed_ids,
-            "current_uncertain_id": current_id,
-            "unattempted_ids": unattempted_ids,
-            "reason": snapshot.reason,
-            "failure_reasons": reasons,
-            "outcome_unknown": uncertain,
-            "may_complete_later": uncertain && snapshot.started
-                && snapshot.phase != super::teardown::PurgePhase::Stopped,
-            "peers": decision.peers.iter().map(|p| {
-                let current = current_id.is_some_and(|id| p.session_ids.contains(&id.to_string()));
-                let outcome = if current {
-                    "uncertain"
-                } else if failed_ids.iter().any(|f| p.session_ids.contains(f)) {
-                    "failed"
-                } else if already_closed_ids.iter().any(|c| p.session_ids.contains(c))
-                    && !closed_ids.iter().any(|c| p.session_ids.contains(c))
-                {
-                    "already_closed"
-                } else if closed_ids.iter().any(|c| p.session_ids.contains(c)) {
-                    "closed"
-                } else {
-                    "no_match"
-                };
-                serde_json::json!({
-                    "name": p.fqn,
-                    "outcome": outcome,
-                    "session_ids": p.session_ids,
-                    "purgeable": p.purgeable,
-                })
-            }).collect::<Vec<_>>(),
-        });
-
-        self.write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
-            .await
+        super::teardown::observe_purge(progress, worker).await
     }
 
     /// Returns fast: the 30s sustained-idle wait runs in a detached task so the
@@ -645,61 +442,7 @@ impl MailboxPoller {
         //    decision policy is covered separately by the pure `self_clear_gate_advance` tests.
         //    Durations are passed in so a future integration test can drive it fast.
         if newly_inserted {
-            // #626 - archive SELF-FORGET.md so the next cycle starts fresh. Best-effort: a failure
-            // must not block the clear/handoff. The agent already wrote SELF-HANDOFF.md
-            // (existence-gated above), so SELF-FORGET.md is present iff the agent kept one. FOLD-3:
-            // runs in ALL cfgs (NOT inside the cfg(not(test)) spawn) so the harness archive
-            // assertion can pass. Decoupled from clear success (queue-time): an abandoned cycle
-            // leaves SELF-FORGET archived but uncleared; content is preserved in
-            // self-clear/<ts>_SELF-FORGET.md, re-issue continues normally.
-            let root = std::path::Path::new(&session.working_directory);
-            let forgotten_summary = capture_self_forget_summary(root);
-            let ts = chrono::Local::now()
-                .format(ARCHIVE_TIMESTAMP_FORMAT)
-                .to_string();
-            match archive_root_md(root, "SELF-FORGET", &ts) {
-                Ok(Some(p)) => log::info!(
-                    "[mailbox] self-handoff-and-clear: archived SELF-FORGET.md -> {}",
-                    p.display()
-                ),
-                Ok(None) => {} // no SELF-FORGET.md; nothing to archive
-                Err(e) => log::warn!(
-                    "[mailbox] self-handoff-and-clear: SELF-FORGET.md archive failed for session \
-                    {} (non-fatal): {}",
-                    session_id,
-                    e
-                ),
-            }
-
-            #[cfg(not(test))]
-            {
-                let app_clone = app.clone();
-                // #749 - the root travels with the task (same queue-time snapshot the
-                // SELF-FORGET archive above used) so Phase 2 can archive the handoff
-                // without a mid-flight session-manager lookup. A session's working
-                // directory never changes while its id stays alive.
-                let root = root.to_path_buf();
-                Self::launch_self_clear_driver(async move {
-                    Self::run_self_clear_after_sustained_idle(
-                        &app_clone,
-                        session_id,
-                        clear_text,
-                        root,
-                        forgotten_summary,
-                        SELF_CLEAR_SETTLE,
-                        SELF_CLEAR_POLL,
-                        SELF_CLEAR_MAX_DEFER,
-                    )
-                    .await;
-                });
-            }
-            #[cfg(test)]
-            let _ = (clear_text, &forgotten_summary);
-            log::info!(
-                "[mailbox] self-handoff-and-clear queued for session {} (from '{}')",
-                session_id,
-                msg.from
-            );
+            self.queue_legacy_self_clear(app, msg, &session, session_id, clear_text);
         } else {
             log::info!(
                 "[mailbox] self-handoff-and-clear already pending for session {} (from '{}')",
@@ -711,6 +454,73 @@ impl MailboxPoller {
         // 5. Write the queue-ack response, then move the message to delivered/.
         self.write_self_clear_response(app, path, msg, session_id, status, is_app_outbox)
             .await
+    }
+
+    fn queue_legacy_self_clear<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        session: &SessionInfo,
+        session_id: Uuid,
+        clear_text: &'static str,
+    ) {
+        // #626 - archive SELF-FORGET.md so the next cycle starts fresh. Best-effort: a failure
+        // must not block the clear/handoff. The agent already wrote SELF-HANDOFF.md
+        // (existence-gated above), so SELF-FORGET.md is present iff the agent kept one. FOLD-3:
+        // runs in ALL cfgs (NOT inside the cfg(not(test)) spawn) so the harness archive
+        // assertion can pass. Decoupled from clear success (queue-time): an abandoned cycle
+        // leaves SELF-FORGET archived but uncleared; content is preserved in
+        // self-clear/<ts>_SELF-FORGET.md, re-issue continues normally.
+        let root = std::path::Path::new(&session.working_directory);
+        let forgotten_summary = capture_self_forget_summary(root);
+        let ts = chrono::Local::now()
+            .format(ARCHIVE_TIMESTAMP_FORMAT)
+            .to_string();
+        match archive_root_md(root, "SELF-FORGET", &ts) {
+            Ok(Some(p)) => log::info!(
+                "[mailbox] self-handoff-and-clear: archived SELF-FORGET.md -> {}",
+                p.display()
+            ),
+            Ok(None) => {} // no SELF-FORGET.md; nothing to archive
+            Err(e) => log::warn!(
+                "[mailbox] self-handoff-and-clear: SELF-FORGET.md archive failed for session \
+                    {} (non-fatal): {}",
+                session_id,
+                e
+            ),
+        }
+
+        #[cfg(not(test))]
+        {
+            let app_clone = app.clone();
+            // #749 - the root travels with the task (same queue-time snapshot the
+            // SELF-FORGET archive above used) so Phase 2 can archive the handoff
+            // without a mid-flight session-manager lookup. A session's working
+            // directory never changes while its id stays alive.
+            let root = root.to_path_buf();
+            Self::launch_self_clear_driver(async move {
+                Self::run_self_clear_after_sustained_idle(
+                    &app_clone,
+                    session_id,
+                    clear_text,
+                    root,
+                    forgotten_summary,
+                    SELF_CLEAR_SETTLE,
+                    SELF_CLEAR_POLL,
+                    SELF_CLEAR_MAX_DEFER,
+                )
+                .await;
+            });
+        }
+        #[cfg(test)]
+        let _ = (clear_text, &forgotten_summary);
+        log::info!(
+            "[mailbox] self-handoff-and-clear queued for session {} (from '{}')",
+            session_id,
+            msg.from
+        );
+        #[cfg(test)]
+        let _ = app;
     }
 
     fn session_has_visible_raise_hand_slot(session: &SessionInfo) -> bool {
