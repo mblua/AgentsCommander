@@ -1655,6 +1655,45 @@ export function onResourceMonitorAttach(
   return transport.listen<unknown>("resource_monitor_attach", () => callback());
 }
 
+// #3367 — embedded web browser over the central pane. Bounds are physical
+// pixels relative to the main window client area.
+export interface WebBrowserBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface WebBrowserSnapshot {
+  url: string;
+  title: string;
+  loading: boolean;
+  visible: boolean;
+}
+
+export const WebBrowserAPI = {
+  show: (bounds: WebBrowserBounds) =>
+    transport.invoke<WebBrowserSnapshot>("web_browser_show", { bounds }),
+  hide: () => transport.invoke<WebBrowserSnapshot>("web_browser_hide"),
+  navigate: (url: string) =>
+    transport.invoke<WebBrowserSnapshot>("web_browser_navigate", { url }),
+  go: (delta: -1 | 1) => transport.invoke<void>("web_browser_go", { delta }),
+  reload: () => transport.invoke<WebBrowserSnapshot>("web_browser_reload"),
+  snapshot: () => transport.invoke<WebBrowserSnapshot>("web_browser_snapshot"),
+};
+
+export function onWebBrowserState(
+  callback: (snapshot: WebBrowserSnapshot) => void
+): Promise<UnlistenFn> {
+  return transport.listen<WebBrowserSnapshot>("web_browser_state", callback);
+}
+
+export function onWebBrowserOpenRequested(
+  callback: (snapshot: WebBrowserSnapshot) => void
+): Promise<UnlistenFn> {
+  return transport.listen<WebBrowserSnapshot>("web_browser_open_requested", callback);
+}
+
 export function emitOpenSettings(section?: string): Promise<void> {
   return transport.emit<{ section?: string }>(
     "open_settings",

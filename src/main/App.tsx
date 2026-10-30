@@ -35,6 +35,8 @@ import TerminalApp from "../terminal/App";
 import ResourceMonitorApp from "../resource-monitor/App";
 import { centralViewStore } from "./stores/centralView";
 import { wireCentralViewListeners } from "./listeners-central-view";
+import { wireWebBrowserListeners } from "./listeners-web-browser";
+import WebBrowserView from "./components/WebBrowserView";
 import Titlebar from "../sidebar/components/Titlebar";
 import QuitConfirmModal from "./components/QuitConfirmModal";
 import ErrorModal from "./components/ErrorModal";
@@ -1508,6 +1510,8 @@ const MainApp: Component = () => {
 
     unlisteners.push(...(await wireCentralViewListeners()));
 
+    if (isTauri) unlisteners.push(...(await wireWebBrowserListeners()));
+
     window.addEventListener("resize", onWindowResize);
     window.addEventListener("main-sidebar-width-change", onSidebarWidthChange);
     window.addEventListener("main-sidebar-side-change", onSidebarSideChange);
@@ -1627,6 +1631,15 @@ const MainApp: Component = () => {
               data-ac-role="surface"
             >
               <ResourceMonitorApp embedded />
+            </div>
+          </Show>
+          <Show when={centralViewStore.isBrowser}>
+            <div
+              class="main-rm-pane main-web-browser-pane"
+              data-ac-testid="main.webBrowserPane"
+              data-ac-role="surface"
+            >
+              <WebBrowserView />
             </div>
           </Show>
         </div>
