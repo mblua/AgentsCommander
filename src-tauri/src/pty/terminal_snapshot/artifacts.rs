@@ -1,7 +1,8 @@
 #[cfg(all(test, unix))]
 use super::TerminalSnapshotUnixCleanupControl;
 use super::{
-    decrement_counter, TerminalSnapshotState, SNAPSHOT_ARTIFACT_DIRECTORY_CAP,
+    decrement_counter, TerminalSnapshotArtifactCleanupTaskScope, TerminalSnapshotState,
+    SNAPSHOT_ARTIFACT_DIRECTORY_CAP,
     SNAPSHOT_ARTIFACT_FILE_CAP, SNAPSHOT_ARTIFACT_TTL,
 };
 use std::collections::HashMap;
@@ -11,9 +12,12 @@ use std::time::{Duration, Instant};
 use terminal_snapshot_renderer::TerminalSnapshotReasonCode;
 
 impl TerminalSnapshotState {
-    pub(crate) fn start_artifact_cleanup(self: &Arc<Self>) {
+    pub(crate) fn start_artifact_cleanup(
+        self: &Arc<Self>,
+        task_scope: &impl TerminalSnapshotArtifactCleanupTaskScope,
+    ) {
         let state = Arc::clone(self);
-        tauri::async_runtime::spawn(async move {
+        task_scope.spawn_owned(Box::pin(async move {
             loop {
                 tokio::select! {
                     biased;
@@ -32,7 +36,7 @@ impl TerminalSnapshotState {
                     }
                 }
             }
-        });
+        }));
     }
 
     pub(crate) fn reserve_artifact(

@@ -795,6 +795,12 @@ impl resource_monitor::watchdog::ResourceWatchdogTaskScope for ShutdownSignal {
     }
 }
 
+impl pty::terminal_snapshot::TerminalSnapshotArtifactCleanupTaskScope for ShutdownSignal {
+    fn spawn_owned(&self, future: futures::future::BoxFuture<'static, ()>) {
+        tauri::async_runtime::spawn(future);
+    }
+}
+
 impl TauriQuitHost {
     pub fn new(app: tauri::AppHandle) -> Self {
         use tauri::Manager;

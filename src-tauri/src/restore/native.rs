@@ -848,7 +848,7 @@ pub(crate) fn start_native_restore_startup(
                 .start_container_pending_reaper(shutdown.clone());
 
             app.state::<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>()
-                .start_artifact_cleanup();
+                .start_artifact_cleanup(&shutdown);
             let mailbox_poller = phone::mailbox::MailboxPoller::new(messages);
             mailbox_poller.start(app.app_handle().clone(), shutdown.clone());
             loop_scheduler

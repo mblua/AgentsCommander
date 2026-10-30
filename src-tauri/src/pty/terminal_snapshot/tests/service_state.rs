@@ -364,3 +364,124 @@ fn limiter_records_requester_before_target_promotion() {
     drop(permit);
     assert!(state.admit_requester("requester".to_string()).is_ok());
 }
+
+#[derive(Default)]
+struct ArtifactCleanupTaskScope {
+    tasks: Mutex<Vec<futures::future::BoxFuture<'static, ()>>>,
+}
+
+impl super::super::TerminalSnapshotArtifactCleanupTaskScope for ArtifactCleanupTaskScope {
+    fn spawn_owned(&self, future: futures::future::BoxFuture<'static, ()>) {
+        self.tasks.lock().unwrap().push(future);
+    }
+}
+
+impl ArtifactCleanupTaskScope {
+    fn take(&self) -> futures::future::BoxFuture<'static, ()> {
+        let mut tasks = self.tasks.lock().unwrap();
+        assert_eq!(tasks.len(), 1);
+        tasks.pop().unwrap()
+    }
+}
+
+fn tracked_cleanup_artifact(
+    state: &TerminalSnapshotState,
+    directory: &std::path::Path,
+    expired: bool,
+) -> std::path::PathBuf {
+    let directory_identity = crate::path_identity::verify_directory(directory).unwrap();
+    let reservation = state.reserve_artifact(directory, &directory_identity).unwrap();
+    let path = directory.join(format!("{}.json", Uuid::new_v4()));
+    std::fs::write(&path, b"tracked response").unwrap();
+    let identity = crate::path_identity::verify_regular_file(&path).unwrap();
+    reservation.commit(path.clone(), identity.clone()).unwrap();
+    if expired {
+        state
+            .artifacts
+            .lock()
+            .unwrap()
+            .files
+            .get_mut(&identity.object_id)
+            .unwrap()
+            .expires_at = Instant::now();
+    }
+    path
+}
+
+#[tokio::test]
+async fn artifact_cleanup_submits_owned_task_and_finishes_shutdown() {
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    let state = TerminalSnapshotState::new(shutdown.clone());
+    let directory = tempfile::TempDir::new().unwrap();
+    let path = tracked_cleanup_artifact(&state, directory.path(), false);
+    let scope = ArtifactCleanupTaskScope::default();
+    state.start_artifact_cleanup(&scope);
+    let future = scope.take();
+    let weak = Arc::downgrade(&state);
+    drop(state);
+    drop(scope);
+    assert!(path.exists());
+    assert!(weak.upgrade().is_some());
+    shutdown.trigger();
+    tokio::time::timeout(Duration::from_secs(15), tokio::spawn(future))
+        .await
+        .expect("owned cleanup deadline")
+        .expect("owned cleanup task");
+    assert!(!path.exists());
+    assert!(weak.upgrade().is_none());
+}
+
+#[tokio::test]
+async fn artifact_cleanup_periodic_sweep_preserves_live_artifact() {
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    let state = TerminalSnapshotState::new(shutdown.clone());
+    let directory = tempfile::TempDir::new().unwrap();
+    let expired = tracked_cleanup_artifact(&state, directory.path(), true);
+    let live = tracked_cleanup_artifact(&state, directory.path(), false);
+    let scope = ArtifactCleanupTaskScope::default();
+    state.start_artifact_cleanup(&scope);
+    let task = tokio::spawn(scope.take());
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let retained_before_timer = expired.exists() && live.exists();
+    let observed = tokio::time::timeout(Duration::from_secs(15), async {
+        while expired.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let retained_after_sweep = live.exists();
+    shutdown.trigger();
+    let completed = tokio::time::timeout(Duration::from_secs(15), task).await;
+    assert!(retained_before_timer);
+    assert!(observed.is_ok(), "periodic sweep deadline");
+    assert!(retained_after_sweep);
+    completed.expect("shutdown deadline").expect("cleanup task");
+    assert!(!live.exists());
+}
+
+#[test]
+fn artifact_cleanup_shutdown_awaits_blocking_sweep() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    let state = TerminalSnapshotState::new(shutdown.clone());
+    let directory = tempfile::TempDir::new().unwrap();
+    let path = tracked_cleanup_artifact(&state, directory.path(), false);
+    let scope = ArtifactCleanupTaskScope::default();
+    state.start_artifact_cleanup(&scope);
+    let mut future = scope.take();
+    let registry = state.artifacts.lock().unwrap();
+    shutdown.trigger();
+    let pending = runtime.block_on(std::future::poll_fn(|context| {
+        std::task::Poll::Ready(future.as_mut().poll(context).is_pending())
+    }));
+    drop(registry);
+    let completed = runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(15), future).await
+    });
+    assert!(pending, "cleanup must await the registry-blocked worker");
+    completed.expect("blocking sweep deadline");
+    assert!(!path.exists());
+}
