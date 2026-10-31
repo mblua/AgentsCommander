@@ -32,3 +32,51 @@ fn ninth_distinct_target_is_refused_until_a_release() {
     drop(held);
     assert_eq!(lanes.len(), 0);
 }
+
+#[test]
+fn issue_3371_observations_keep_targets_and_release_active_capacity() {
+    let lanes = Arc::new(WakeLanes::default());
+    let held: Vec<_> = (0..WAKE_WORKER_LIMIT)
+        .map(|slot| Arc::new(lanes.try_reserve(&format!("old-{slot}")).unwrap()))
+        .collect();
+    assert!(lanes.try_reserve("ninth").is_none());
+    for reservation in &held {
+        reservation.begin_observation();
+        reservation.begin_observation();
+    }
+    assert_eq!(lanes.observing_count(), 8);
+    let active: Vec<_> = (0..WAKE_WORKER_LIMIT)
+        .map(|slot| lanes.try_reserve(&format!("new-{slot}")).unwrap())
+        .collect();
+    assert_eq!(lanes.len(), 16);
+    assert!(lanes.try_reserve("old-0").is_none());
+    assert!(lanes.try_reserve("another").is_none());
+    let duplicate = held[0].clone();
+    drop(held);
+    assert_eq!(lanes.observing_count(), 1);
+    assert!(lanes.try_reserve("old-0").is_none());
+    drop(active);
+    assert_eq!(lanes.len(), 1);
+    drop(duplicate);
+    assert_eq!(lanes.len(), 0);
+    assert_eq!(lanes.observing_count(), 0);
+}
+
+#[test]
+fn issue_3371_observation_panic_and_drop_orders_balance() {
+    for demote in [false, true] {
+        let lanes = Arc::new(WakeLanes::default());
+        let owner = lanes.clone();
+        assert!(std::panic::catch_unwind(move || {
+            let reservation = owner.try_reserve("panic").unwrap();
+            if demote {
+                reservation.begin_observation();
+            }
+            panic!("fixture unwind");
+        })
+        .is_err());
+        assert_eq!(lanes.len(), 0);
+        assert_eq!(lanes.observing_count(), 0);
+        assert!(lanes.try_reserve("panic").is_some());
+    }
+}

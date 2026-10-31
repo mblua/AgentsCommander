@@ -20,6 +20,37 @@ use std::sync::Arc;
 use tauri::Manager;
 
 impl MailboxPoller {
+    /// Settlement only: marker presence never enters execution validation or a wake lane.
+    async fn reject_prior_clear_attempt(&self, path: &Path, content: &str) -> Result<(), String> {
+        if wake_claim_has_settled_receipt(path)? {
+            mailbox_disk::remove_mailbox_artifact(path).map_err(|error| error.to_string())?;
+            self.settle_response_source(path, false);
+            return Ok(());
+        }
+        let parent = path.parent().ok_or("No source parent")?;
+        let id = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".json"))
+            .ok_or("No source id")?;
+        // Derive only from the scanner's basename; reject_message owns payload-id safeguards.
+        let reason_path = parent.join("rejected").join(format!("{id}.reason.txt"));
+        let reason = match mailbox_disk::mailbox_path_symlink_metadata(&reason_path) {
+            Ok(_) => {
+                let (bytes, _) = crate::path_identity::read_bounded_regular(&reason_path, 4096)?;
+                String::from_utf8(bytes).map_err(|error| error.to_string())?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                super::clear_attempt::REPLAY_REASON.to_string()
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        match serde_json::from_str::<OutboxMessage>(content) {
+            Ok(message) => self.reject_message(path, &message, &reason).await,
+            Err(_) => Self::reject_raw_file(path, &reason),
+        }
+    }
+
     /// (#1399) A delivery-only poller for a detached worker. `deliver_wake` and
     /// its whole `&self` callee chain read `app.state::<...>()` (see the
     /// #791 note at the top of `deliver_wake`), so a fresh instance sharing
@@ -31,6 +62,7 @@ impl MailboxPoller {
         #[cfg(test)]
         let poller = Self {
             test_hooks: self.test_hooks.clone(),
+            clear_observation_probe: self.clear_observation_probe.clone(),
             ..poller
         };
         poller
@@ -241,10 +273,13 @@ impl MailboxPoller {
             Some(Ok(reservation)) => Some(reservation),
         };
         // A queued or requeued outcome can outlive both its worker and lane.
-        // Cap `live_claims` separately so pending reports cannot exceed the
-        // same global limit.
-        if self.wake_workers.len() >= crate::phone::wake_lanes::WAKE_WORKER_LIMIT
-            || self.live_claims.len() >= crate::phone::wake_lanes::WAKE_WORKER_LIMIT
+        // Cap both ledgers excluding live post-T2 observers. Completed observers
+        // count again until their report drains, retaining settlement backpressure.
+        let observing_count = self.wake_lanes.observing_count();
+        if self.wake_workers.len().saturating_sub(observing_count)
+            >= crate::phone::wake_lanes::WAKE_WORKER_LIMIT
+            || self.live_claims.len().saturating_sub(observing_count)
+                >= crate::phone::wake_lanes::WAKE_WORKER_LIMIT
         {
             return WakeHandoff::LaneBusy;
         }
@@ -271,7 +306,10 @@ impl MailboxPoller {
         let worker_app = app.clone();
         let outcomes = self.wake_outcomes_tx.clone();
         let origin = path.to_path_buf();
-        let delivery = self.delivery_poller();
+        let reservation = Arc::new(reservation);
+        let mut delivery = self.delivery_poller();
+        delivery.codex_clear_source = Some(claim.clone());
+        delivery.clear_reservation = Some(Arc::clone(&reservation));
         let worker_claim = claim.clone();
         self.wake_workers.spawn(async move {
             let _reservation = reservation;
@@ -716,6 +754,25 @@ impl MailboxPoller {
                     }
                     OutboxClassification::Standard(content) => content,
                 };
+                if !matches!(
+                    super::clear_attempt::probe_attempt(&standard_content),
+                    Ok(None)
+                ) {
+                    match self
+                        .reject_prior_clear_attempt(&path, &standard_content)
+                        .await
+                    {
+                        Ok(()) => {
+                            self.retry_tracker.remove(&path);
+                        }
+                        Err(error) => log::warn!(
+                            "[mailbox] prior clear attempt settlement pending {:?}: {}",
+                            path,
+                            error
+                        ),
+                    }
+                    continue;
+                }
                 let mut deferred: Option<ValidatedWake> = None;
                 let outcome = self
                     .process_message_content(

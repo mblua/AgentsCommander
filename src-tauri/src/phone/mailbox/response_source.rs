@@ -838,6 +838,8 @@ impl MailboxPoller {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
             response_sources: Arc::new(Mutex::new(HashMap::new())),
+            codex_clear_source: None,
+            clear_reservation: None,
             snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner::default(),
             live_claims: std::collections::HashSet::new(),
             wake_lanes: Arc::new(crate::phone::wake_lanes::WakeLanes::default()),
@@ -846,6 +848,8 @@ impl MailboxPoller {
             wake_outcomes_rx,
             #[cfg(test)]
             test_hooks: None,
+            #[cfg(test)]
+            clear_observation_probe: None,
         }
     }
 
@@ -859,6 +863,8 @@ impl MailboxPoller {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
             response_sources: Arc::new(Mutex::new(HashMap::new())),
+            codex_clear_source: None,
+            clear_reservation: None,
             snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner::default(),
             live_claims: std::collections::HashSet::new(),
             wake_lanes: Arc::new(crate::phone::wake_lanes::WakeLanes::default()),
@@ -866,6 +872,7 @@ impl MailboxPoller {
             wake_outcomes_tx,
             wake_outcomes_rx,
             test_hooks: Some(test_hooks),
+            clear_observation_probe: None,
         }
     }
 
@@ -885,6 +892,8 @@ impl MailboxPoller {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
             response_sources: Arc::new(Mutex::new(HashMap::new())),
+            codex_clear_source: None,
+            clear_reservation: None,
             snapshot_scanner:
                 crate::phone::terminal_snapshot::SnapshotMailboxScanner::delivery_only(),
             live_claims: std::collections::HashSet::new(),
@@ -894,6 +903,8 @@ impl MailboxPoller {
             wake_outcomes_rx,
             #[cfg(test)]
             test_hooks: None,
+            #[cfg(test)]
+            clear_observation_probe: None,
         }
     }
     #[cfg(test)]

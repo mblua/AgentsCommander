@@ -1,4 +1,5 @@
 mod claim_and;
+mod clear_watch;
 mod deliver_wake;
 mod handle_self;
 mod handle_self_2;
@@ -938,3 +939,5 @@ impl std::task::Wake for Issue3189Wake {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
+
+pub(crate) use support_core::{ClearObservationProbe, CodexClearScannerFixture};

@@ -114,21 +114,34 @@ impl MailboxPoller {
         // display attribution; it is never parked for the detached worker pool,
         // whose shared `deliver_wake` tail carries no attribution and must keep
         // its exact behaviour for every other origin.
-        if origin == OutboxOrigin::CoManaged {
-            let annotated = self.deliver_validated_wake(app, &validated, true).await?;
-            return self.move_to_delivered(app, path, &annotated).await;
+        let comanaged = origin == OutboxOrigin::CoManaged;
+        if !comanaged {
+            if let Some(slot) = deferred_tail {
+                *slot = Some(validated);
+                return Ok(());
+            }
         }
-        if let Some(slot) = deferred_tail {
-            *slot = Some(validated);
-            return Ok(());
+        // Both inline origins bind their actual JSON without changing scanner ownership.
+        let mut delivery = self.delivery_poller();
+        delivery.codex_clear_source = Some(path.to_path_buf());
+        match delivery
+            .deliver_validated_wake(app, &validated, comanaged)
+            .await
+        {
+            Ok(annotated) => self.move_to_delivered(app, path, &annotated).await,
+            Err(error) => {
+                if delivery.is_terminal_clear_error(&validated.message, &error) {
+                    if let Err(publication) =
+                        self.reject_message(path, &validated.message, &error).await
+                    {
+                        log::warn!(
+                            "[mailbox] terminal clear reason {error}; rejection: {publication}"
+                        );
+                    }
+                }
+                Err(error)
+            }
         }
-        // #1635-2 D4: write the annotated message so the `Delivered:` CLI
-        // receipt can report the effective agent/profile. No-flag messages are
-        // still byte-identical to today.
-        let annotated = self.deliver_validated_wake(app, &validated, false).await?;
-
-        // Move to delivered/ with token stripped
-        self.move_to_delivered(app, path, &annotated).await
     }
 
     /// Deliver mode: wake — inject into the recipient's PTY for any non-Exited
@@ -735,6 +748,10 @@ impl MailboxPoller {
         let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
         let app = app.clone();
         let delivery = self.delivery_poller();
+        #[cfg(test)]
+        if let Some(probe) = &self.clear_observation_probe {
+            probe.record_owned_child(&delivery);
+        }
         // Relocates the one existing create core around its owned work tail.
         // Common create borrows this lexical proof and never spawns another core.
         let result = crate::config::sessions_persistence::run_owned_persist_core(async move {
