@@ -964,7 +964,10 @@ impl IdleDetector {
                 // it is the one failure here a user would actually feel.
                 if let Some(working_session_ids) = heartbeat {
                     crate::config::activity_log::append(
-                        crate::config::activity_log::build_app_alive(working_session_ids),
+                        crate::config::activity_log::build_app_alive(
+                            working_session_ids,
+                            &detector.activity_log_owner,
+                        ),
                         &detector.activity_log_owner,
                     );
                 }
