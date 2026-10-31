@@ -1,4 +1,3 @@
-use tauri::Emitter;
 use tokio::time::Duration;
 
 use crate::config::instance_artifacts::{
@@ -11,6 +10,21 @@ use crate::filesystem::telegram_logs::{
 };
 use crate::network::OutboundNetwork;
 use crate::telegram::api;
+
+pub(crate) trait TelegramEvents: Send + Sync {
+    fn bridge_error(&self, session_id: &str, error: &str, kind: Option<&str>);
+    fn incoming(&self, _session_id: &str, _text: &str, _from: &str) {}
+    fn last_prompt(&self, _session_id: &str, _text: &str) {}
+}
+
+fn report_send_error(
+    event_port: &dyn TelegramEvents,
+    session_id: &str,
+    msg: &str,
+    kind: TelegramErrKind,
+) {
+    event_port.bridge_error(session_id, msg, Some(kind.as_str()));
+}
 
 // ── #280 §3.2 — error classification + throttling ─────────────
 
@@ -181,13 +195,13 @@ impl DiagLogger {
 // Threads through the full bridge state on each flush; collapsing into a
 // struct would only move the fields, not reduce them.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn flush_buffer<R: tauri::Runtime>(
+pub(crate) async fn flush_buffer(
     buffer: &mut String,
     network: &OutboundNetwork,
     token: &str,
     chat_id: i64,
     session_id: &str,
-    app: &tauri::AppHandle<R>,
+    event_port: &dyn TelegramEvents,
     logger: &mut BridgeLogger,
     diag: &mut DiagLogger,
     skip_dedup: bool,
@@ -245,14 +259,7 @@ pub(crate) async fn flush_buffer<R: tauri::Runtime>(
                 token_prefix,
                 msg
             );
-            let _ = app.emit(
-                "telegram_bridge_error",
-                serde_json::json!({
-                    "sessionId": session_id,
-                    "error": msg,
-                    "kind": kind.as_str(),
-                }),
-            );
+            report_send_error(event_port, session_id, &msg, kind);
         }
         // Rate limit: 35ms between sends
         tokio::time::sleep(Duration::from_millis(35)).await;
@@ -284,6 +291,23 @@ fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
         start = actual_end;
     }
     chunks
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct RecordingEvents(
+    pub(crate) std::sync::Mutex<Vec<(String, String, Option<String>)>>,
+);
+
+#[cfg(test)]
+impl TelegramEvents for RecordingEvents {
+    fn bridge_error(&self, session_id: &str, error: &str, kind: Option<&str>) {
+        self.0.lock().unwrap().push((
+            session_id.to_owned(),
+            error.to_owned(),
+            kind.map(str::to_owned),
+        ));
+    }
 }
 
 #[cfg(test)]

@@ -1,10 +1,11 @@
 //! (#1399) Per-target lane reservation for detached wake delivery: per-target
-//! exclusivity and a global in-flight cap, with RAII release.
+//! exclusivity and a global active-operation cap, with RAII release.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// 8 concurrent deliveries; the cold-spawn portion is further serialised
+/// 8 concurrent active injection/spawn deliveries, excluding post-T2 observation.
+/// The cold-spawn portion is further serialised
 /// downstream by the per-target create gate.
 ///
 /// Rule that picks the value: it matches `api::dispatcher::PTY_WORKER_LIMIT`,
@@ -20,13 +21,18 @@ use std::sync::{Arc, Mutex};
 /// per-target create gate's `acquire_target_lock` / `acquire_exact` and
 /// `SelectionCoordinator::reserve_create` (all in `commands/session.rs`) - all
 /// per-target keys, acquired in a uniform order, so this cap adds no lock
-/// cycle. What 8 bounds is the number of deliveries in flight, not the number
-/// of processes starting.
+/// cycle. Post-T2 observations keep target exclusivity without active capacity.
 pub(crate) const WAKE_WORKER_LIMIT: usize = 8;
 
 #[derive(Default)]
 pub(crate) struct WakeLanes {
-    active: Mutex<HashSet<String>>,
+    active: Mutex<HashMap<String, WakeLaneState>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WakeLaneState {
+    Active,
+    Observing,
 }
 
 pub(crate) struct WakeLaneReservation {
@@ -35,8 +41,8 @@ pub(crate) struct WakeLaneReservation {
 }
 
 impl WakeLanes {
-    /// One call gives both invariants: per-target uniqueness (the `insert`
-    /// test) and the global cap. Release is RAII via the reservation's `Drop`.
+    /// One call gives per-target uniqueness and the active cap.
+    /// Release is RAII via the reservation's `Drop`.
     /// Lock poisoning is absorbed so a panic holding the lock cannot wedge the
     /// set.
     pub(crate) fn try_reserve(self: &Arc<Self>, target: &str) -> Option<WakeLaneReservation> {
@@ -44,13 +50,29 @@ impl WakeLanes {
             .active
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if active.len() >= WAKE_WORKER_LIMIT || !active.insert(target.to_string()) {
+        if active.contains_key(target)
+            || active
+                .values()
+                .filter(|state| **state == WakeLaneState::Active)
+                .count()
+                >= WAKE_WORKER_LIMIT
+        {
             return None;
         }
+        active.insert(target.to_string(), WakeLaneState::Active);
         Some(WakeLaneReservation {
             owner: Arc::clone(self),
             target: target.to_string(),
         })
+    }
+
+    pub(crate) fn observing_count(&self) -> usize {
+        self.active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .filter(|state| **state == WakeLaneState::Observing)
+            .count()
     }
 
     #[cfg(test)]
@@ -59,6 +81,19 @@ impl WakeLanes {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .len()
+    }
+}
+
+impl WakeLaneReservation {
+    pub(crate) fn begin_observation(&self) {
+        let mut active = self
+            .owner
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(state) = active.get_mut(&self.target) {
+            *state = WakeLaneState::Observing;
+        }
     }
 }
 

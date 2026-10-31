@@ -107,7 +107,10 @@ enum Reason {
     DesktopOpener,
 }
 
-use Reason::*;
+use Reason::{
+    ContainerInternal, CoveredBy2589, CoveredByP1, DesktopOpener, Owner, PosixBaseUtility,
+    TestOnly, WindowsOnly,
+};
 
 const REASON_VOCABULARY: &str = "owner, covered-by-2589, covered-by-p1, container-internal, \
 windows-only, test-only, posix-base-utility, desktop-opener (precedence in that order, \
@@ -118,6 +121,19 @@ test-only first)";
 type Row = (&'static str, usize, usize, &'static [(Reason, usize)]);
 
 const INVENTORY: &[Row] = &[
+    ("src-tauri/src/events/pty/tests.rs", 1, 0, &[(TestOnly, 1)]),
+    (
+        "src-tauri/src/pty/menu_guard/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/phone/mailbox/tests/clear_watch.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
     (
         "src-tauri/src/commands/web/tests.rs",
         1,

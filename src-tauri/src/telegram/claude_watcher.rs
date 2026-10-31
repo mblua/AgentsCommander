@@ -11,7 +11,6 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use tauri::Emitter;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -25,6 +24,7 @@ use crate::telegram::jsonl_kernel::{
     PINNED_ATTACH_WAIT_SECS, POLL_INTERVAL_MS, PREAMBLE_MAX_BYTES, RACE_GRACE_SECS,
     ROTATION_STALE_SECS,
 };
+use crate::telegram::output::TelegramEvents;
 use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger};
 
 const FLUSH_DELAY_MS: u64 = 500;
@@ -45,14 +45,14 @@ const FLUSH_DELAY_MS: u64 = 500;
 /// reader: no logger is built, nothing is sent, and the records still reach
 /// `sink`.
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_watch_task<R: tauri::Runtime>(
+pub fn spawn_watch_task(
     project_dir: PathBuf,
     transcript_id: Option<String>,
     network: OutboundNetwork,
     dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
     session_id: String,
     cancel: CancellationToken,
-    app: tauri::AppHandle<R>,
+    event_port: Arc<dyn TelegramEvents>,
     sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -63,7 +63,7 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
             dest,
             session_id.clone(),
             cancel,
-            app.clone(),
+            event_port.clone(),
             sink,
         )
         .await;
@@ -449,11 +449,11 @@ fn apply_destination_change(
 
 /// The mutable state of one Claude reader, and the poll-tick blocks of
 /// [`watch_loop`] as methods over it.
-struct ClaudeReader<R: tauri::Runtime> {
+struct ClaudeReader {
     project_dir: PathBuf,
     network: OutboundNetwork,
     session_id: String,
-    app: tauri::AppHandle<R>,
+    event_port: Arc<dyn TelegramEvents>,
     current_dest: Option<BotTarget>,
     logger: Option<BridgeLogger>,
     diag: Option<DiagLogger>,
@@ -476,14 +476,14 @@ struct ClaudeReader<R: tauri::Runtime> {
     wait_deadline: Option<Instant>,
 }
 
-impl<R: tauri::Runtime> ClaudeReader<R> {
+impl ClaudeReader {
     fn new(
         project_dir: PathBuf,
         transcript_id: Option<String>,
         network: OutboundNetwork,
         current_dest: Option<BotTarget>,
         session_id: String,
-        app: tauri::AppHandle<R>,
+        event_port: Arc<dyn TelegramEvents>,
         sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
     ) -> Self {
         // #2232 phase 4 section 8: with no bot demand no diagnostic is built, so
@@ -499,7 +499,7 @@ impl<R: tauri::Runtime> ClaudeReader<R> {
             project_dir,
             network,
             session_id,
-            app,
+            event_port,
             current_dest,
             logger,
             diag,
@@ -833,12 +833,10 @@ impl<R: tauri::Runtime> ClaudeReader<R> {
                     self.session_id,
                     e
                 );
-                let _ = self.app.emit(
-                    "telegram_bridge_error",
-                    serde_json::json!({
-                        "sessionId": self.session_id,
-                        "error": format!("JSONL read error: {}", e),
-                    }),
+                self.event_port.bridge_error(
+                    &self.session_id,
+                    &format!("JSONL read error: {}", e),
+                    None,
                 );
             }
         }
@@ -862,7 +860,7 @@ impl<R: tauri::Runtime> ClaudeReader<R> {
                     &target.token,
                     target.chat_id,
                     &self.session_id,
-                    &self.app,
+                    self.event_port.as_ref(),
                     bridge_logger,
                     diag_logger,
                     true, // skip_dedup: JSONL text is clean, repeated lines are legitimate
@@ -920,7 +918,7 @@ impl<R: tauri::Runtime> ClaudeReader<R> {
                     &target.token,
                     target.chat_id,
                     &self.session_id,
-                    &self.app,
+                    self.event_port.as_ref(),
                     bridge_logger,
                     diag_logger,
                     true,
@@ -932,14 +930,14 @@ impl<R: tauri::Runtime> ClaudeReader<R> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn watch_loop<R: tauri::Runtime>(
+async fn watch_loop(
     project_dir: PathBuf,
     transcript_id: Option<String>,
     network: OutboundNetwork,
     dest: tokio::sync::watch::Receiver<Option<BotTarget>>,
     session_id: String,
     cancel: CancellationToken,
-    app: tauri::AppHandle<R>,
+    event_port: Arc<dyn TelegramEvents>,
     sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) {
     let mut dest_rx = dest;
@@ -950,7 +948,7 @@ async fn watch_loop<R: tauri::Runtime>(
         network,
         current_dest,
         session_id,
-        app,
+        event_port,
         sink,
     );
 

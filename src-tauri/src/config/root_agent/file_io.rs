@@ -1,13 +1,15 @@
 use super::{
     is_link_or_reparse, ROOT_AGENT_DEFAULT_CONTEXT, ROOT_AGENT_OLD_DEFAULT_CONTEXT,
-    ROOT_AGENT_PRE_979_DEFAULT_CONTEXT, ROOT_ROLE_TEMP_COUNTER, SKILL_MD_FILENAME,
+    ROOT_AGENT_PRE_979_DEFAULT_CONTEXT, SKILL_MD_FILENAME,
 };
 #[cfg(test)]
 use super::{FAIL_ROOT_ROLE_WRITE_MARKER, FAIL_ROOT_ROLE_WRITE_ONCE};
 use crate::filesystem::agent_files;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static ROOT_ROLE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn write_role_file(
     file: &mut agent_files::RootAgentStage,

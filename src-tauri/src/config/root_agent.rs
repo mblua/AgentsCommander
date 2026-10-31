@@ -58,7 +58,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 use std::sync::{LazyLock, Mutex, OnceLock};
 
 pub(crate) const CONTEXT_TOKEN_GLOBAL: &str = "$AGENTSCOMMANDER_CONTEXT";
@@ -79,7 +78,6 @@ const SKILL_MD_FILENAME: &str = "SKILL.md";
 /// #909: slack added to the cap in `max_migratable_len`, covering the leading and trailing
 /// whitespace that `normalize_role_text` trims away.
 const MAX_DEFAULT_SKILL_TRIM_SLACK_BYTES: u64 = 4096;
-static ROOT_ROLE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static FAIL_ROOT_ROLE_WRITE_ONCE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);

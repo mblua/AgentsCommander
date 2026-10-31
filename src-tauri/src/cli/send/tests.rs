@@ -1,5 +1,6 @@
 use super::*;
 
+mod clear_watch;
 mod enqueue;
 
 #[test]

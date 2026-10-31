@@ -45,6 +45,8 @@ pub(crate) fn write_mailbox_response(path: &Path, bytes: &[u8]) -> io::Result<()
 }
 
 pub(crate) fn rename_mailbox_document(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    mailbox_fault(MailboxFaultPoint::Replace, None)?;
     std::fs::rename(from, to)
 }
 
@@ -76,7 +78,93 @@ pub(crate) fn open_pty_metadata_stage(path: &Path) -> io::Result<File> {
 pub(crate) fn write_pty_metadata_stage(file: &mut File, bytes: &[u8]) -> io::Result<()> {
     file.write_all(bytes)?;
     file.flush()?;
+    #[cfg(test)]
+    mailbox_fault(MailboxFaultPoint::StageSync, None)?;
     file.sync_all()
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MailboxFaultPoint {
+    StageSync,
+    Replace,
+    DocumentWrite,
+}
+
+#[cfg(test)]
+struct MailboxFault {
+    point: MailboxFaultPoint,
+    path: Option<PathBuf>,
+    consumed: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+#[cfg(test)]
+fn with_mailbox_fault_slot<T>(
+    action: impl FnOnce(&std::cell::RefCell<Option<MailboxFault>>) -> T,
+) -> T {
+    thread_local! {
+        static MAILBOX_FAULT: std::cell::RefCell<Option<MailboxFault>> = const {
+            std::cell::RefCell::new(None)
+        };
+    }
+    MAILBOX_FAULT.with(action)
+}
+
+/// Current-thread-only fault; document-write tests may retain across a local await.
+#[cfg(test)]
+pub(crate) struct MailboxFaultGuard {
+    consumed: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+#[cfg(test)]
+impl MailboxFaultGuard {
+    pub(crate) fn install(point: MailboxFaultPoint) -> Self {
+        Self::install_target(point, None)
+    }
+
+    pub(crate) fn install_document_write(path: &Path) -> Self {
+        Self::install_target(MailboxFaultPoint::DocumentWrite, Some(path.to_path_buf()))
+    }
+
+    fn install_target(point: MailboxFaultPoint, path: Option<PathBuf>) -> Self {
+        let consumed = std::rc::Rc::new(std::cell::Cell::new(false));
+        with_mailbox_fault_slot(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(slot.is_none(), "nested mailbox fault installation");
+            *slot = Some(MailboxFault {
+                point,
+                path,
+                consumed: consumed.clone(),
+            });
+        });
+        Self { consumed }
+    }
+
+    pub(crate) fn consumed(&self) -> bool {
+        self.consumed.get()
+    }
+}
+
+#[cfg(test)]
+impl Drop for MailboxFaultGuard {
+    fn drop(&mut self) {
+        with_mailbox_fault_slot(|slot| *slot.borrow_mut() = None);
+    }
+}
+
+#[cfg(test)]
+fn mailbox_fault(point: MailboxFaultPoint, path: Option<&Path>) -> io::Result<()> {
+    with_mailbox_fault_slot(|slot| {
+        if let Some(fault) = slot.borrow().as_ref() {
+            if fault.point == point
+                && fault.path.as_deref() == path
+                && !fault.consumed.replace(true)
+            {
+                return Err(io::Error::other("issue_3371 mailbox fault"));
+            }
+        }
+        Ok(())
+    })
 }
 
 pub(crate) fn sync_pty_metadata_parent(path: &Path) -> Option<io::Result<()>> {
@@ -97,6 +185,8 @@ pub(crate) fn read_self_forget_summary(
 }
 
 pub(crate) fn write_mailbox_document(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
+    #[cfg(test)]
+    mailbox_fault(MailboxFaultPoint::DocumentWrite, Some(path))?;
     std::fs::write(path, bytes)
 }
 

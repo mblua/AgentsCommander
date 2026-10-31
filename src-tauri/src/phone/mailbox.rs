@@ -1,5 +1,6 @@
 #[macro_use]
 mod diagnostics;
+mod clear_attempt;
 mod handoff;
 mod internal_delivery;
 mod notice;
@@ -54,8 +55,6 @@ use crate::config::injected_messages::TOKEN_THRESHOLDS;
 use crate::config::injected_messages::TOKEN_WORKGROUP;
 #[cfg(test)]
 use crate::config::instance_artifacts::SESSION_REQUESTS_DIR_NAME;
-#[cfg(test)]
-use crate::config::settings::AgentConfig;
 #[cfg(test)]
 use crate::config::settings::SettingsState;
 #[cfg(test)]

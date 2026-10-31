@@ -779,6 +779,14 @@ fn start_remote_alerts(
     tauri::async_runtime::spawn(session::remote_alerts::run(ports, transitions, shutdown))
 }
 
+impl pty::container_backend::ContainerBackgroundTasks
+    for pty::container_backend::ContainerTransportBackend
+{
+    fn spawn_background(future: futures::future::BoxFuture<'static, ()>) {
+        drop(tauri::async_runtime::spawn(future));
+    }
+}
+
 impl restore::RestoreStartupTask for tauri::async_runtime::JoinHandle<()> {
     type Error = tauri::Error;
     fn spawn_owned(future: futures::future::BoxFuture<'static, ()>) -> Self {
@@ -790,6 +798,12 @@ impl resource_monitor::watchdog::ResourceWatchdogTaskScope for ShutdownSignal {
     fn token(&self) -> &tokio_util::sync::CancellationToken {
         ShutdownSignal::token(self)
     }
+    fn spawn_owned(&self, future: futures::future::BoxFuture<'static, ()>) {
+        tauri::async_runtime::spawn(future);
+    }
+}
+
+impl pty::terminal_snapshot::TerminalSnapshotArtifactCleanupTaskScope for ShutdownSignal {
     fn spawn_owned(&self, future: futures::future::BoxFuture<'static, ()>) {
         tauri::async_runtime::spawn(future);
     }

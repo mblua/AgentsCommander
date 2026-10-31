@@ -392,7 +392,7 @@ pub fn repair_wg_replica_config_value(
         })
         .unwrap_or_default();
     let role_exists =
-        config_locations::replica_role_exists(&identity.matrix_dir.join(ROLE_MD_FILENAME));
+        crate::filesystem::projects::entities::roles::role_present(&identity.matrix_dir);
     config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
         &existing_context,
         required_context_prefix,
