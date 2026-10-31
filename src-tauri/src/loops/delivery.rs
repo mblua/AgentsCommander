@@ -168,54 +168,19 @@ pub async fn deliver_loop_prompt<H: LoopDeliveryHost + ?Sized>(
         }
     };
 
-    let session_id = if session_start == LoopSessionStart::Fresh && had_live_session {
-        // Fresh + live: the stale check and the busy gate run before any
-        // teardown, then at most one restart, an explicit wait, and the
-        // post-restart outcome. This replaces the busy block below on this path.
-        match restart_delivery_session(
-            app,
-            &loop_storage_dir,
-            config,
-            &target_fqn,
-            session_id,
-            &policy,
-        )
-        .await
-        {
-            Ok(id) => id,
-            Err(report) => return *report,
-        }
-    } else {
-        match final_busy_check(app, session_id).await {
-            Ok(true) => {}
-            Ok(false) => match policy {
-                BusyCoordinatorPolicy::ForceInject => {}
-                BusyCoordinatorPolicy::WaitUntilIdle => {
-                    return LoopDeliveryReport {
-                        kind: LoopAuditKind::PendingBusy,
-                        message: "Orchestrator is busy; delivery will run when idle".to_string(),
-                        target: Some(target_fqn),
-                        session_id: Some(session_id),
-                        error: None,
-                        prompt_snapshot: None,
-                        completed_at: None,
-                    };
-                }
-                BusyCoordinatorPolicy::Skip => {
-                    return LoopDeliveryReport {
-                        kind: LoopAuditKind::SkippedBusy,
-                        message: "Orchestrator is busy; delivery skipped".to_string(),
-                        target: Some(target_fqn),
-                        session_id: Some(session_id),
-                        error: None,
-                        prompt_snapshot: None,
-                        completed_at: Some(Utc::now()),
-                    };
-                }
-            },
-            Err(e) => return failed_report(Some(target_fqn), Some(session_id), e),
-        }
-        session_id
+    let session_id = match prepare_delivery_session(
+        app,
+        &loop_storage_dir,
+        config,
+        &target_fqn,
+        session_id,
+        &policy,
+        had_live_session,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(report) => return *report,
     };
 
     match app
@@ -231,6 +196,73 @@ pub async fn deliver_loop_prompt<H: LoopDeliveryHost + ?Sized>(
         Ok(()) => delivered_report(app, target_fqn, session_id, prompt).await,
         Err(e) => failed_report(Some(target_fqn), Some(session_id), e),
     }
+}
+
+async fn prepare_delivery_session<H: LoopDeliveryHost + ?Sized>(
+    app: &H,
+    loop_storage_dir: &Path,
+    config: &LoopConfigToml,
+    target_fqn: &str,
+    session_id: Uuid,
+    policy: &BusyCoordinatorPolicy,
+    had_live_session: bool,
+) -> Result<Uuid, Box<LoopDeliveryReport>> {
+    let session_id = if config.policy.session_start == LoopSessionStart::Fresh && had_live_session {
+        // Fresh + live: the stale check and the busy gate run before any
+        // teardown, then at most one restart, an explicit wait, and the
+        // post-restart outcome. This replaces the busy block below on this path.
+        match restart_delivery_session(
+            app,
+            loop_storage_dir,
+            config,
+            target_fqn,
+            session_id,
+            policy,
+        )
+        .await
+        {
+            Ok(id) => id,
+            Err(report) => return Err(report),
+        }
+    } else {
+        match final_busy_check(app, session_id).await {
+            Ok(true) => {}
+            Ok(false) => match policy {
+                BusyCoordinatorPolicy::ForceInject => {}
+                BusyCoordinatorPolicy::WaitUntilIdle => {
+                    return Err(Box::new(LoopDeliveryReport {
+                        kind: LoopAuditKind::PendingBusy,
+                        message: "Orchestrator is busy; delivery will run when idle".to_string(),
+                        target: Some(target_fqn.to_string()),
+                        session_id: Some(session_id),
+                        error: None,
+                        prompt_snapshot: None,
+                        completed_at: None,
+                    }));
+                }
+                BusyCoordinatorPolicy::Skip => {
+                    return Err(Box::new(LoopDeliveryReport {
+                        kind: LoopAuditKind::SkippedBusy,
+                        message: "Orchestrator is busy; delivery skipped".to_string(),
+                        target: Some(target_fqn.to_string()),
+                        session_id: Some(session_id),
+                        error: None,
+                        prompt_snapshot: None,
+                        completed_at: Some(Utc::now()),
+                    }));
+                }
+            },
+            Err(e) => {
+                return Err(Box::new(failed_report(
+                    Some(target_fqn.to_string()),
+                    Some(session_id),
+                    e,
+                )));
+            }
+        }
+        session_id
+    };
+    Ok(session_id)
 }
 
 async fn delivered_report<H: LoopDeliveryHost + ?Sized>(
