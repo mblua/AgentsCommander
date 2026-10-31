@@ -58,7 +58,8 @@ pub(crate) fn project_skills_for_session(
 
 /// Rejection is exclusive to the skill consumer; global discovery stays unchanged.
 pub(crate) fn accept_skill_team(root: &Path) -> bool {
-    use crate::config::entity_creation::teams::{inspect_team_skill_source, TeamSkillSourceInspection};
+    use crate::config::entity_creation::teams::inspect_team_skill_source;
+    use crate::config::entity_creation::teams::TeamSkillSourceInspection;
 
     match inspect_team_skill_source(root) {
         TeamSkillSourceInspection::NotTeam => false,
