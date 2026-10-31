@@ -88,12 +88,10 @@ pub fn execute(args: RaiseHandArgs) -> i32 {
         pty_input: None,
     };
 
-    let outbox_dir = if is_root {
-        crate::filesystem::app_outbox_pointer::get(crate::config::config_dir().as_deref())
-            .unwrap_or_else(|| ac_dir.join("outbox"))
-    } else {
-        ac_dir.join("outbox")
-    };
+    let outbox_dir = crate::filesystem::app_outbox_pointer::directory(
+        is_root.then(crate::config::config_dir).flatten().as_deref(),
+        &ac_dir,
+    );
     if let Err(e) = directories::ensure_cli_outbox(&outbox_dir) {
         eprintln!("Error: failed to create outbox directory: {}", e);
         return 1;

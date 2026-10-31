@@ -76,3 +76,31 @@ fn rereads_pointer_after_replacement() {
     std::fs::write(&pointer, second.path().to_str().unwrap()).unwrap();
     assert_eq!(get(Some(config.path())), Some(second.path().to_owned()));
 }
+
+#[test]
+fn absent_config_selects_fallback_without_creating_it() {
+    let agent = tempfile::tempdir().unwrap();
+    let fallback = agent.path().join("outbox");
+    assert_eq!(directory(None, agent.path()), fallback);
+    assert!(!fallback.exists());
+}
+
+#[test]
+fn valid_pointer_selects_destination_instead_of_fallback() {
+    let config = tempfile::tempdir().unwrap();
+    let agent = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    std::fs::write(config.path().join(BASENAME), destination.path().to_str().unwrap()).unwrap();
+    let selected = directory(Some(config.path()), agent.path());
+    assert_eq!(selected, destination.path());
+    assert_ne!(selected, agent.path().join("outbox"));
+}
+
+#[test]
+fn absent_pointer_selects_fallback_without_creating_it() {
+    let config = tempfile::tempdir().unwrap();
+    let agent = tempfile::tempdir().unwrap();
+    let fallback = agent.path().join("outbox");
+    assert_eq!(directory(Some(config.path()), agent.path()), fallback);
+    assert!(!fallback.exists());
+}

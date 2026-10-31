@@ -120,12 +120,10 @@ fn outbox_message(
 }
 
 fn outbox_dir(ac_dir: &Path, is_root: bool) -> PathBuf {
-    if is_root {
-        crate::filesystem::app_outbox_pointer::get(crate::config::config_dir().as_deref())
-            .unwrap_or_else(|| ac_dir.join("outbox"))
-    } else {
-        ac_dir.join("outbox")
-    }
+    crate::filesystem::app_outbox_pointer::directory(
+        is_root.then(crate::config::config_dir).flatten().as_deref(),
+        ac_dir,
+    )
 }
 
 fn request(session: SessionArgs, action: &str, body: String) -> Result<String, (i32, String)> {

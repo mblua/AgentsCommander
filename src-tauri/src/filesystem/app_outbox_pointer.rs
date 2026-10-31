@@ -15,5 +15,9 @@ pub(crate) fn get(config_dir: Option<&Path>) -> Option<PathBuf> {
     }
 }
 
+pub(crate) fn directory(config_dir: Option<&Path>, agent_dir: &Path) -> PathBuf {
+    get(config_dir).unwrap_or_else(|| agent_dir.join("outbox"))
+}
+
 #[cfg(test)]
 mod tests;
