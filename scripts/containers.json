@@ -96,8 +96,8 @@
       "owner": "src-tauri/src/screenshot/native/confirm.rs",
       "externalLiteralBaseline": 0,
       "writerInventory": {
-        "files": 1,
-        "sites": 1
+        "files": 0,
+        "sites": 0
       }
     }
   ]
