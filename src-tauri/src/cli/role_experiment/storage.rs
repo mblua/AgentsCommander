@@ -14,6 +14,7 @@ use super::RunWorkgroupArtifact;
 use super::VariantMetadata;
 use crate::cli::workgroup;
 use crate::commands::entity_creation::sanitize_name;
+use crate::filesystem::projects::entities::roles;
 use crate::filesystem::{directories, documents};
 use serde::Deserialize;
 use serde::Serialize;
@@ -442,9 +443,9 @@ pub(super) fn create_run_workgroup_dirs(
                 )]
             })?;
         }
-        let role_path =
-            variant_matrix_path(ac_root, &variant.source_agent, &variant.name).join("Role.md");
-        let role_text = documents::read_experiment_document(&role_path).map_err(|e| {
+        let matrix = variant_matrix_path(ac_root, &variant.source_agent, &variant.name);
+        let role_path = roles::role_path(&matrix);
+        let role_text = roles::read_role(&matrix).map_err(|e| {
             vec![err_at_path(
                 "variant_role_missing",
                 format!("Failed to read {}: {}", role_path.display(), e),

@@ -1,5 +1,6 @@
 //! Physical Matrix copy, ownership and resource sessions.
 use super::deletion::{metadata_is_link_or_reparse, metadata_parts_are_link_or_reparse};
+use super::roles;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
@@ -325,13 +326,17 @@ impl OwnedCopyArtifacts {
         hooks: &MatrixCopyHooks<'_>,
     ) -> Result<bool, String> {
         let required = match name {
-            "Role.md" => Some(MatrixCopyKind::File),
+            _ if roles::is_copy_role_entry(name) => Some(MatrixCopyKind::File),
             "skills" => Some(MatrixCopyKind::Directory),
             _ if name.contains("default") => None,
             _ => return Ok(false),
         };
         let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
         let kind = Self::source_kind(&metadata, hooks)?;
+        if roles::is_copy_role_entry(name) {
+            roles::validate_copy_role_kind(kind == MatrixCopyKind::File)?;
+            return Ok(true);
+        }
         if let Some(expected) = required {
             if kind != expected {
                 return Err(format!("Unexpected generic asset type: {name}"));
@@ -374,7 +379,7 @@ impl OwnedCopyArtifacts {
             for child in children {
                 if root {
                     let name = child.to_str().ok_or("Non-UTF-8 Matrix root entry")?;
-                    role |= name == "Role.md";
+                    role |= roles::is_copy_role_entry(name);
                     if !Self::selected_root_entry(&path.join(&child), name, hooks)? {
                         continue;
                     }
@@ -387,8 +392,8 @@ impl OwnedCopyArtifacts {
                     hooks,
                 )?;
             }
-            if root && !role {
-                return Err("Missing required Role.md".into());
+            if root {
+                roles::require_copy_role(role)?;
             }
             let after = Self::open_existing(&path, kind)?;
             if Self::identity_of_file(&after)? != identity {
