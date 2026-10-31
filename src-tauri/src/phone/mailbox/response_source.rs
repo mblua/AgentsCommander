@@ -4,11 +4,13 @@ use super::poller::{MailboxPoller, PreparedResponseRequest};
 #[cfg(test)]
 use super::pty_claim::MailboxTestHooks;
 use super::pty_claim::{response_diag_debug_only, with_verified_response_pair, ResponseWakeWork};
+use super::pty_claim::{ResponseCandidateAttempt, ResponseRequestCandidate};
 use super::pty_observation::PtyAuthorityState;
 use super::response_observation::{ResponseAdmissionState, ResponseCompletionState};
 use crate::config::teams;
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
+use crate::pty::manager::{ResponseRouteIdentity, ReturnObservationContext};
 use crate::session::session::Session;
 use crate::session::session::SessionStatus;
 use crate::HashMap;
@@ -133,53 +135,14 @@ impl MailboxPoller {
         let coordinator_id = coordinator.id;
         manager
             .with_response_close_facts(|current| {
-                let member = response_diag_option_local!(
-                    current.rows.iter().find(|row| {
-                        row.id == session_id
-                            && row.token == member.token
-                            && !current.pending_ids.contains(&row.id)
-                    }),
-                    "prepare",
-                    "current_member_absent_or_pending",
-                    Uuid::parse_str(&msg.id).ok()
-                )?;
-                let coordinator = response_diag_option_local!(
-                    current.rows.iter().find(|row| {
-                        row.id == coordinator_id
-                            && row.token == token
-                            && !current.pending_ids.contains(&row.id)
-                    }),
-                    "prepare",
-                    "current_coordinator_absent_or_pending",
-                    Uuid::parse_str(&msg.id).ok()
-                )?;
-                let route = |row: &Session, target: &str| {
-                    Some(crate::pty::manager::ResponseRouteIdentity {
-                        target: target.to_owned(),
-                        session_id: row.id,
-                        token: row.token,
-                        generation: response_diag_option_local!(
-                            work.state.generation(row.id),
-                            "prepare",
-                            "route_generation_absent",
-                            Uuid::parse_str(&msg.id).ok()
-                        )?,
-                        carrier_version: *response_diag_option_local!(
-                            current.versions.get(&row.id),
-                            "prepare",
-                            "carrier_version_absent",
-                            Uuid::parse_str(&msg.id).ok()
-                        )?,
-                        backend: row.backend_kind,
-                    })
-                };
-                let prepared = PreparedResponseRequest {
-                    member: route(member, &msg.to)?,
-                    coordinator: route(coordinator, &msg.from)?,
+                prepare_current_response(
+                    current,
+                    msg,
+                    work,
+                    (session_id, member.token),
+                    (coordinator_id, token),
                     roots,
-                };
-                response_diag_local!("prepare", "prepared", Uuid::parse_str(&msg.id).ok());
-                Some(prepared)
+                )
             })
             .await
     }
@@ -188,46 +151,7 @@ impl MailboxPoller {
         app: &S,
         work: &ResponseWakeWork,
     ) {
-        let attempt = {
-            match work.attempt.lock() {
-                Ok(attempt) => attempt.clone(),
-                Err(_) => {
-                    response_diag_local!(
-                        "complete_request",
-                        "attempt_lock_error",
-                        work.diagnostic_message_id
-                    );
-                    None
-                }
-            }
-        };
-        let Some(attempt) = attempt else {
-            response_diag_local!(
-                "complete_request",
-                "attempt_missing",
-                work.diagnostic_message_id
-            );
-            return;
-        };
-        let candidate = {
-            match attempt.candidate.lock() {
-                Ok(candidate) => candidate.clone(),
-                Err(_) => {
-                    response_diag_local!(
-                        "complete_request",
-                        "candidate_lock_error",
-                        work.diagnostic_message_id
-                    );
-                    None
-                }
-            }
-        };
-        let Some(candidate) = candidate else {
-            response_diag_local!(
-                "complete_request",
-                "candidate_missing",
-                work.diagnostic_message_id
-            );
+        let Some((attempt, candidate)) = response_request_candidate(work) else {
             return;
         };
         let Some(dir) = crate::config::config_dir() else {
@@ -252,37 +176,9 @@ impl MailboxPoller {
             return;
         };
         let manager = app.pty_sessions().read().await.clone();
-        let initial = if let Some(coordinator) = app.response_selection() {
-            let Some(exclusion) = coordinator.restore_mint_exclusion() else {
-                response_diag_local!(
-                    "complete_request",
-                    "restore_exclusion_missing",
-                    work.diagnostic_message_id
-                );
-                return;
-            };
-            candidate.initial.clone().with_restore_exclusion(exclusion)
-        } else {
-            candidate.initial.clone()
-        };
-        let published = crate::config::sessions_persistence::persist_initial_carrier(
-            &manager, dir, roots, initial,
-        )
-        .await;
-        response_diag_debug_only(|| {
-            let outcome = match &published {
-                Err(_) => "persist_initial_carrier_error",
-                Ok(None) => "persist_initial_carrier_none",
-                Ok(Some(_)) => "persist_initial_carrier_confirmed",
-            };
-            response_diag_local!("complete_request", outcome, work.diagnostic_message_id);
-        });
-        let Ok(Some(published)) = published else {
-            response_diag_local!(
-                "complete_request",
-                "published_not_confirmed",
-                work.diagnostic_message_id
-            );
+        let Some(published) =
+            publish_response_carrier(app, work, &candidate, &manager, dir, roots).await
+        else {
             return;
         };
         let settings = app.pty_settings();
@@ -344,89 +240,9 @@ impl MailboxPoller {
                             crate::session::session::is_working(coordinator),
                             now,
                         );
-                        let mut diagnostic_callback_reached = false;
-                        let registered =
-                            crate::config::sessions_persistence::register_published_carrier(
-                                &permit,
-                                &published,
-                                current,
-                                |_| {
-                                    response_diag_debug_only(|| {
-                                        diagnostic_callback_reached = true;
-                                    });
-                                    response_diag_local!(
-                                        "complete_request",
-                                        "register_published_carrier_callback_reached",
-                                        work.diagnostic_message_id
-                                    );
-                                    response_diag_result_local!(
-                                        work.state.register_request(
-                                            crate::pty::manager::ResponseDeliveryProof {
-                                                context: candidate.context.clone(),
-                                                member: candidate.member.clone(),
-                                                coordinator: candidate.coordinator.clone(),
-                                                published_carrier_version: published.version,
-                                            },
-                                            now,
-                                        ),
-                                        "register_request",
-                                        work.diagnostic_message_id
-                                    )
-                                    .ok()
-                                },
-                            );
-                        response_diag_local!(
-                            "complete_request",
-                            if registered.is_some() {
-                                "published_registration_some"
-                            } else {
-                                "published_registration_none"
-                            },
-                            work.diagnostic_message_id
+                        register_response_carrier(
+                            work, &attempt, &candidate, &permit, &published, current, now,
                         );
-                        response_diag_local!(
-                            "complete_request",
-                            if diagnostic_callback_reached {
-                                "register_published_callback_reached"
-                            } else {
-                                "register_published_callback_not_reached"
-                            },
-                            work.diagnostic_message_id
-                        );
-                        if registered.is_some() {
-                            let remembered =
-                                crate::session::selection::remember_response_close_registration(
-                                    crate::session::selection::ResponseCloseRegistration {
-                                        diagnostic_last_poll_outcome: Arc::new(
-                                            std::sync::atomic::AtomicU64::new(0),
-                                        ),
-                                        tracker: work.state.clone(),
-                                        member: candidate.member.clone(),
-                                        coordinator: candidate.coordinator.clone(),
-                                        carrier: published.clone(),
-                                    },
-                                );
-                            response_diag_local!(
-                                "complete_request",
-                                if remembered {
-                                    "remember_true"
-                                } else {
-                                    "remember_false"
-                                },
-                                work.diagnostic_message_id
-                            );
-                            if !remembered {
-                                work.state.fail_closed();
-                            }
-                            response_diag_local!(
-                                "complete_request",
-                                "disarm",
-                                work.diagnostic_message_id
-                            );
-                            attempt
-                                .armed
-                                .store(false, std::sync::atomic::Ordering::Release);
-                        }
                     },
                 );
                 response_diag_local!(
@@ -595,61 +411,7 @@ impl MailboxPoller {
             return Some(previous);
         }
         let key = format!("fs:{}:{}", path.to_string_lossy(), msg.id);
-        let mut admission = match response_diag_result_local!(
-            state.reserve_work(&msg.to, &key),
-            "reserve_work",
-            Uuid::parse_str(&msg.id).ok()
-        ) {
-            Ok(admission) => admission,
-            Err(_) => {
-                state.fail_closed();
-                response_diag_local!(
-                    "admit_source",
-                    "reserve_work_error",
-                    Uuid::parse_str(&msg.id).ok()
-                );
-                return None;
-            }
-        };
-        if response_diag_result_local!(
-            admission.accept_durable(&digest),
-            "accept_durable",
-            Uuid::parse_str(&msg.id).ok()
-        )
-        .is_err()
-        {
-            state.fail_closed();
-            response_diag_local!(
-                "admit_source",
-                "accept_durable_error",
-                Uuid::parse_str(&msg.id).ok()
-            );
-            return None;
-        }
-        drop(admission);
-        response_diag_local!(
-            "admit_source",
-            "response_work_created",
-            Uuid::parse_str(&msg.id).ok()
-        );
-        let mut work = ResponseWakeWork {
-            diagnostic_message_id: if log::log_enabled!(
-                target: "agentscommander_lib::response_close_diag",
-                log::Level::Debug
-            ) {
-                Uuid::parse_str(&msg.id).ok()
-            } else {
-                None
-            },
-            state: state.clone(),
-            target: msg.to.clone(),
-            key,
-            digest,
-            attempt: Arc::default(),
-            return_context: None,
-            return_routes: None,
-            delivery_context: None,
-        };
+        let mut work = reserve_response_work(&state, msg, key, digest)?;
         response_diag_local!(
             "admit_source",
             if authenticated {
@@ -660,159 +422,7 @@ impl MailboxPoller {
             Uuid::parse_str(&msg.id).ok()
         );
         if authenticated {
-            let settings = app.pty_settings();
-            let settings = settings.read().await;
-            state.apply_settings(
-                settings.response_close_enabled,
-                settings.response_close_idle_seconds,
-                std::time::Instant::now(),
-            );
-            let coordinator =
-                teams::verified_wg_coordinator_target(&msg.to, &settings.project_paths);
-            drop(settings);
-            let same_room = msg.from.rsplit_once('/').map(|(room, _)| room)
-                == msg.to.rsplit_once('/').map(|(room, _)| room);
-            response_diag_debug_only(|| {
-                if coordinator.is_none() {
-                    response_diag_local!(
-                        "admit_source",
-                        "configured_coordinator_absent",
-                        Uuid::parse_str(&msg.id).ok()
-                    );
-                }
-                if !same_room {
-                    response_diag_local!(
-                        "admit_source",
-                        "cross_room",
-                        Uuid::parse_str(&msg.id).ok()
-                    );
-                }
-            });
-            if coordinator.is_some() && same_room {
-                let managers = app.pty_sessions();
-                let manager = managers.read().await.clone();
-                let token = msg
-                    .token
-                    .as_deref()
-                    .and_then(|token| Uuid::parse_str(token).ok());
-                let observed = manager
-                    .with_response_close_facts(|snapshot| {
-                        let route = |target: &str| {
-                            let mut matches = snapshot.rows.iter().filter(|row| {
-                                !snapshot.pending_ids.contains(&row.id)
-                                    && sender_name_for_session_cwd_with_root_flag(
-                                        &row.working_directory,
-                                        row.is_root_agent,
-                                    ) == target
-                                    && !matches!(row.status, SessionStatus::Exited(_))
-                            });
-                            let row = response_diag_option_local!(
-                                matches.next(),
-                                "admit_source",
-                                "route_missing",
-                                Uuid::parse_str(&msg.id).ok()
-                            )?;
-                            if matches.next().is_some() {
-                                response_diag_local!(
-                                    "admit_source",
-                                    "route_ambiguous",
-                                    Uuid::parse_str(&msg.id).ok()
-                                );
-                                return None;
-                            }
-                            Some((
-                                crate::pty::manager::ResponseRouteIdentity {
-                                    target: target.to_string(),
-                                    session_id: row.id,
-                                    token: row.token,
-                                    generation: response_diag_option_local!(
-                                        state.generation(row.id),
-                                        "admit_source",
-                                        "generation_unavailable",
-                                        Uuid::parse_str(&msg.id).ok()
-                                    )?,
-                                    carrier_version: *response_diag_option_local!(
-                                        snapshot.versions.get(&row.id),
-                                        "admit_source",
-                                        "version_unavailable",
-                                        Uuid::parse_str(&msg.id).ok()
-                                    )?,
-                                    backend: row.backend_kind,
-                                },
-                                row,
-                            ))
-                        };
-                        let (member, member_row) = route(&msg.from)?;
-                        let (coordinator, coordinator_row) = route(&msg.to)?;
-                        if member.backend != SessionBackendKind::LocalProcess
-                            || member_row.is_coordinator
-                            || member_row.is_root_agent
-                            || member_row.agent_kind.is_none()
-                            || token != Some(member.token)
-                            || !coordinator_row.is_coordinator
-                            || coordinator_row.is_root_agent
-                        {
-                            response_diag_local!(
-                                "admit_source",
-                                "role_or_token_or_backend",
-                                Uuid::parse_str(&msg.id).ok()
-                            );
-                            return None;
-                        }
-                        let pty = app.pty_routes().clone();
-                        let diagnostic_pair = with_verified_response_pair(
-                            snapshot,
-                            &pty,
-                            &state,
-                            &member,
-                            &coordinator,
-                            |member_row, coordinator_row| {
-                                let now = std::time::Instant::now();
-                                state.publish_manager_facts(
-                                    member.clone(),
-                                    true,
-                                    crate::session::session::is_working(member_row),
-                                    now,
-                                );
-                                state.publish_manager_facts(
-                                    coordinator.clone(),
-                                    false,
-                                    crate::session::session::is_working(coordinator_row),
-                                    now,
-                                );
-                                response_diag_result_local!(
-                                    state.admit_return(
-                                        &member,
-                                        &coordinator,
-                                        work.key.clone(),
-                                        work.digest.clone(),
-                                        now,
-                                    ),
-                                    "admit_return",
-                                    Uuid::parse_str(&msg.id).ok()
-                                )
-                                .ok()
-                            },
-                        );
-                        response_diag_local!(
-                            "admit_source",
-                            if diagnostic_pair.is_some() {
-                                "verified_pair_callback_reached"
-                            } else {
-                                "verified_pair_rejected"
-                            },
-                            Uuid::parse_str(&msg.id).ok()
-                        );
-                        diagnostic_pair
-                            .flatten()
-                            .map(|context| (context, member, coordinator))
-                    })
-                    .await;
-                if let Some((context, member, coordinator)) = observed {
-                    work.return_context = Some(context);
-                    work.return_routes = Some((member, coordinator));
-                }
-            }
+            admit_authenticated_return(app, msg, &state, &mut work).await;
         }
         response_diag_local!(
             "admit_source",
@@ -913,6 +523,477 @@ impl MailboxPoller {
             crate::config::injected_messages::MessageWarnings::new(),
         ))
     }
+}
+
+fn prepare_current_response(
+    current: &crate::session::manager::CarrierSnapshot,
+    msg: &OutboxMessage,
+    work: &ResponseWakeWork,
+    member_identity: (Uuid, Uuid),
+    coordinator_identity: (Uuid, Uuid),
+    roots: Vec<String>,
+) -> Option<PreparedResponseRequest> {
+    let member = response_diag_option_local!(
+        current.rows.iter().find(|row| {
+            row.id == member_identity.0
+                && row.token == member_identity.1
+                && !current.pending_ids.contains(&row.id)
+        }),
+        "prepare",
+        "current_member_absent_or_pending",
+        Uuid::parse_str(&msg.id).ok()
+    )?;
+    let coordinator = response_diag_option_local!(
+        current.rows.iter().find(|row| {
+            row.id == coordinator_identity.0
+                && row.token == coordinator_identity.1
+                && !current.pending_ids.contains(&row.id)
+        }),
+        "prepare",
+        "current_coordinator_absent_or_pending",
+        Uuid::parse_str(&msg.id).ok()
+    )?;
+    let route = |row: &Session, target: &str| {
+        Some(ResponseRouteIdentity {
+            target: target.to_owned(),
+            session_id: row.id,
+            token: row.token,
+            generation: response_diag_option_local!(
+                work.state.generation(row.id),
+                "prepare",
+                "route_generation_absent",
+                Uuid::parse_str(&msg.id).ok()
+            )?,
+            carrier_version: *response_diag_option_local!(
+                current.versions.get(&row.id),
+                "prepare",
+                "carrier_version_absent",
+                Uuid::parse_str(&msg.id).ok()
+            )?,
+            backend: row.backend_kind,
+        })
+    };
+    let prepared = PreparedResponseRequest {
+        member: route(member, &msg.to)?,
+        coordinator: route(coordinator, &msg.from)?,
+        roots,
+    };
+    response_diag_local!("prepare", "prepared", Uuid::parse_str(&msg.id).ok());
+    Some(prepared)
+}
+
+fn response_request_candidate(
+    work: &ResponseWakeWork,
+) -> Option<(Arc<ResponseCandidateAttempt>, ResponseRequestCandidate)> {
+    let attempt = {
+        match work.attempt.lock() {
+            Ok(attempt) => attempt.clone(),
+            Err(_) => {
+                response_diag_local!(
+                    "complete_request",
+                    "attempt_lock_error",
+                    work.diagnostic_message_id
+                );
+                None
+            }
+        }
+    };
+    let Some(attempt) = attempt else {
+        response_diag_local!(
+            "complete_request",
+            "attempt_missing",
+            work.diagnostic_message_id
+        );
+        return None;
+    };
+    let candidate = {
+        match attempt.candidate.lock() {
+            Ok(candidate) => candidate.clone(),
+            Err(_) => {
+                response_diag_local!(
+                    "complete_request",
+                    "candidate_lock_error",
+                    work.diagnostic_message_id
+                );
+                None
+            }
+        }
+    };
+    let Some(candidate) = candidate else {
+        response_diag_local!(
+            "complete_request",
+            "candidate_missing",
+            work.diagnostic_message_id
+        );
+        return None;
+    };
+    Some((attempt, candidate))
+}
+
+fn register_response_carrier(
+    work: &ResponseWakeWork,
+    attempt: &ResponseCandidateAttempt,
+    candidate: &ResponseRequestCandidate,
+    permit: &crate::session::manager::CarrierMutationPermit,
+    published: &crate::config::sessions_persistence::PublishedCarrier,
+    current: &crate::session::manager::CarrierSnapshot,
+    now: std::time::Instant,
+) {
+    let mut diagnostic_callback_reached = false;
+    let registered = crate::config::sessions_persistence::register_published_carrier(
+        permit,
+        published,
+        current,
+        |_| {
+            response_diag_debug_only(|| {
+                diagnostic_callback_reached = true;
+            });
+            response_diag_local!(
+                "complete_request",
+                "register_published_carrier_callback_reached",
+                work.diagnostic_message_id
+            );
+            response_diag_result_local!(
+                work.state.register_request(
+                    crate::pty::manager::ResponseDeliveryProof {
+                        context: candidate.context.clone(),
+                        member: candidate.member.clone(),
+                        coordinator: candidate.coordinator.clone(),
+                        published_carrier_version: published.version,
+                    },
+                    now,
+                ),
+                "register_request",
+                work.diagnostic_message_id
+            )
+            .ok()
+        },
+    );
+    response_diag_local!(
+        "complete_request",
+        if registered.is_some() {
+            "published_registration_some"
+        } else {
+            "published_registration_none"
+        },
+        work.diagnostic_message_id
+    );
+    response_diag_local!(
+        "complete_request",
+        if diagnostic_callback_reached {
+            "register_published_callback_reached"
+        } else {
+            "register_published_callback_not_reached"
+        },
+        work.diagnostic_message_id
+    );
+    if registered.is_some() {
+        let remembered = crate::session::selection::remember_response_close_registration(
+            crate::session::selection::ResponseCloseRegistration {
+                diagnostic_last_poll_outcome: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tracker: work.state.clone(),
+                member: candidate.member.clone(),
+                coordinator: candidate.coordinator.clone(),
+                carrier: published.clone(),
+            },
+        );
+        response_diag_local!(
+            "complete_request",
+            if remembered {
+                "remember_true"
+            } else {
+                "remember_false"
+            },
+            work.diagnostic_message_id
+        );
+        if !remembered {
+            work.state.fail_closed();
+        }
+        response_diag_local!("complete_request", "disarm", work.diagnostic_message_id);
+        attempt
+            .armed
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+fn reserve_response_work(
+    state: &crate::pty::manager::ResponseCloseState,
+    msg: &OutboxMessage,
+    key: String,
+    digest: String,
+) -> Option<ResponseWakeWork> {
+    let mut admission = match response_diag_result_local!(
+        state.reserve_work(&msg.to, &key),
+        "reserve_work",
+        Uuid::parse_str(&msg.id).ok()
+    ) {
+        Ok(admission) => admission,
+        Err(_) => {
+            state.fail_closed();
+            response_diag_local!(
+                "admit_source",
+                "reserve_work_error",
+                Uuid::parse_str(&msg.id).ok()
+            );
+            return None;
+        }
+    };
+    if response_diag_result_local!(
+        admission.accept_durable(&digest),
+        "accept_durable",
+        Uuid::parse_str(&msg.id).ok()
+    )
+    .is_err()
+    {
+        state.fail_closed();
+        response_diag_local!(
+            "admit_source",
+            "accept_durable_error",
+            Uuid::parse_str(&msg.id).ok()
+        );
+        return None;
+    }
+    drop(admission);
+    response_diag_local!(
+        "admit_source",
+        "response_work_created",
+        Uuid::parse_str(&msg.id).ok()
+    );
+    let work = ResponseWakeWork {
+        diagnostic_message_id: if log::log_enabled!(
+            target: "agentscommander_lib::response_close_diag",
+            log::Level::Debug
+        ) {
+            Uuid::parse_str(&msg.id).ok()
+        } else {
+            None
+        },
+        state: state.clone(),
+        target: msg.to.clone(),
+        key,
+        digest,
+        attempt: Arc::default(),
+        return_context: None,
+        return_routes: None,
+        delivery_context: None,
+    };
+    Some(work)
+}
+
+type ObservedResponseReturn = (
+    ReturnObservationContext,
+    ResponseRouteIdentity,
+    ResponseRouteIdentity,
+);
+
+async fn admit_authenticated_return<S: ResponseAdmissionState + ?Sized>(
+    app: &S,
+    msg: &OutboxMessage,
+    state: &crate::pty::manager::ResponseCloseState,
+    work: &mut ResponseWakeWork,
+) {
+    let settings = app.pty_settings();
+    let settings = settings.read().await;
+    state.apply_settings(
+        settings.response_close_enabled,
+        settings.response_close_idle_seconds,
+        std::time::Instant::now(),
+    );
+    let coordinator = teams::verified_wg_coordinator_target(&msg.to, &settings.project_paths);
+    drop(settings);
+    let same_room = msg.from.rsplit_once('/').map(|(room, _)| room)
+        == msg.to.rsplit_once('/').map(|(room, _)| room);
+    response_diag_debug_only(|| {
+        if coordinator.is_none() {
+            response_diag_local!(
+                "admit_source",
+                "configured_coordinator_absent",
+                Uuid::parse_str(&msg.id).ok()
+            );
+        }
+        if !same_room {
+            response_diag_local!("admit_source", "cross_room", Uuid::parse_str(&msg.id).ok());
+        }
+    });
+    if coordinator.is_some() && same_room {
+        let managers = app.pty_sessions();
+        let manager = managers.read().await.clone();
+        let token = msg
+            .token
+            .as_deref()
+            .and_then(|token| Uuid::parse_str(token).ok());
+        let observed = manager
+            .with_response_close_facts(|snapshot| {
+                observe_response_return(app, msg, state, work, snapshot, token)
+            })
+            .await;
+        if let Some((context, member, coordinator)) = observed {
+            work.return_context = Some(context);
+            work.return_routes = Some((member, coordinator));
+        }
+    }
+}
+
+fn observe_response_return<S: ResponseAdmissionState + ?Sized>(
+    app: &S,
+    msg: &OutboxMessage,
+    state: &crate::pty::manager::ResponseCloseState,
+    work: &ResponseWakeWork,
+    snapshot: &crate::session::manager::CarrierSnapshot,
+    token: Option<Uuid>,
+) -> Option<ObservedResponseReturn> {
+    let route = |target: &str| {
+        let mut matches = snapshot.rows.iter().filter(|row| {
+            !snapshot.pending_ids.contains(&row.id)
+                && sender_name_for_session_cwd_with_root_flag(
+                    &row.working_directory,
+                    row.is_root_agent,
+                ) == target
+                && !matches!(row.status, SessionStatus::Exited(_))
+        });
+        let row = response_diag_option_local!(
+            matches.next(),
+            "admit_source",
+            "route_missing",
+            Uuid::parse_str(&msg.id).ok()
+        )?;
+        if matches.next().is_some() {
+            response_diag_local!(
+                "admit_source",
+                "route_ambiguous",
+                Uuid::parse_str(&msg.id).ok()
+            );
+            return None;
+        }
+        Some((
+            ResponseRouteIdentity {
+                target: target.to_string(),
+                session_id: row.id,
+                token: row.token,
+                generation: response_diag_option_local!(
+                    state.generation(row.id),
+                    "admit_source",
+                    "generation_unavailable",
+                    Uuid::parse_str(&msg.id).ok()
+                )?,
+                carrier_version: *response_diag_option_local!(
+                    snapshot.versions.get(&row.id),
+                    "admit_source",
+                    "version_unavailable",
+                    Uuid::parse_str(&msg.id).ok()
+                )?,
+                backend: row.backend_kind,
+            },
+            row,
+        ))
+    };
+    let (member, member_row) = route(&msg.from)?;
+    let (coordinator, coordinator_row) = route(&msg.to)?;
+    if member.backend != SessionBackendKind::LocalProcess
+        || member_row.is_coordinator
+        || member_row.is_root_agent
+        || member_row.agent_kind.is_none()
+        || token != Some(member.token)
+        || !coordinator_row.is_coordinator
+        || coordinator_row.is_root_agent
+    {
+        response_diag_local!(
+            "admit_source",
+            "role_or_token_or_backend",
+            Uuid::parse_str(&msg.id).ok()
+        );
+        return None;
+    }
+    let pty = app.pty_routes().clone();
+    let diagnostic_pair = with_verified_response_pair(
+        snapshot,
+        &pty,
+        state,
+        &member,
+        &coordinator,
+        |member_row, coordinator_row| {
+            let now = std::time::Instant::now();
+            state.publish_manager_facts(
+                member.clone(),
+                true,
+                crate::session::session::is_working(member_row),
+                now,
+            );
+            state.publish_manager_facts(
+                coordinator.clone(),
+                false,
+                crate::session::session::is_working(coordinator_row),
+                now,
+            );
+            response_diag_result_local!(
+                state.admit_return(
+                    &member,
+                    &coordinator,
+                    work.key.clone(),
+                    work.digest.clone(),
+                    now,
+                ),
+                "admit_return",
+                Uuid::parse_str(&msg.id).ok()
+            )
+            .ok()
+        },
+    );
+    response_diag_local!(
+        "admit_source",
+        if diagnostic_pair.is_some() {
+            "verified_pair_callback_reached"
+        } else {
+            "verified_pair_rejected"
+        },
+        Uuid::parse_str(&msg.id).ok()
+    );
+    diagnostic_pair
+        .flatten()
+        .map(|context| (context, member, coordinator))
+}
+
+async fn publish_response_carrier<S: ResponseCompletionState + ?Sized>(
+    app: &S,
+    work: &ResponseWakeWork,
+    candidate: &ResponseRequestCandidate,
+    manager: &crate::session::manager::SessionManager,
+    dir: std::path::PathBuf,
+    roots: Vec<String>,
+) -> Option<crate::config::sessions_persistence::PublishedCarrier> {
+    let initial = if let Some(coordinator) = app.response_selection() {
+        let Some(exclusion) = coordinator.restore_mint_exclusion() else {
+            response_diag_local!(
+                "complete_request",
+                "restore_exclusion_missing",
+                work.diagnostic_message_id
+            );
+            return None;
+        };
+        candidate.initial.clone().with_restore_exclusion(exclusion)
+    } else {
+        candidate.initial.clone()
+    };
+    let published =
+        crate::config::sessions_persistence::persist_initial_carrier(manager, dir, roots, initial)
+            .await;
+    response_diag_debug_only(|| {
+        let outcome = match &published {
+            Err(_) => "persist_initial_carrier_error",
+            Ok(None) => "persist_initial_carrier_none",
+            Ok(Some(_)) => "persist_initial_carrier_confirmed",
+        };
+        response_diag_local!("complete_request", outcome, work.diagnostic_message_id);
+    });
+    let Ok(Some(published)) = published else {
+        response_diag_local!(
+            "complete_request",
+            "published_not_confirmed",
+            work.diagnostic_message_id
+        );
+        return None;
+    };
+    Some(published)
 }
 
 #[cfg(test)]
