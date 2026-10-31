@@ -383,9 +383,10 @@ pub(super) fn replica_role_overrides(ac_root: &Path, variant_agent_name: &str) -
             return std::ops::ControlFlow::Continue(());
         };
         if crate::config::entity_prefix::has_entity_prefix(name) && !name.contains("-role-exp-") {
-            if let Some(role) =
-                crate::filesystem::experiment_replica_role::existing_in_room(&path, variant_agent_name)
-            {
+            if let Some(role) = crate::filesystem::experiment_replica_role::existing_in_room(
+                &path,
+                variant_agent_name,
+            ) {
                 out.push(role);
             }
         }

@@ -5,7 +5,10 @@ fn write_publishes_exact_bytes_and_replaces_existing_role() {
     let fixture = tempfile::tempdir().unwrap();
     let replica = fixture.path().join("__agent_variant");
     let expected = replica.join("Role.md");
-    for bytes in [b"first\r\nrole".as_slice(), b"replacement\n\0role".as_slice()] {
+    for bytes in [
+        b"first\r\nrole".as_slice(),
+        b"replacement\n\0role".as_slice(),
+    ] {
         write(&replica, bytes).unwrap();
         assert_eq!(std::fs::read(&expected).unwrap(), bytes);
     }
@@ -43,7 +46,10 @@ fn recognition_preserves_component_windows_and_platform_separators() {
         (".ac/x-fixture/__agent_variant/Other.md", false),
         (".ac/z-fixture/__agent_variant/Role.md", false),
         ("x-fixture/__agent_variant/Role.md", false),
-        (".ac/z-no/__agent_a/Role.md/.ac/y-yes/__agent_b/Role.md", true),
+        (
+            ".ac/z-no/__agent_a/Role.md/.ac/y-yes/__agent_b/Role.md",
+            true,
+        ),
         (r".ac\x-fixture\__agent_variant\Role.md", cfg!(windows)),
         (r".ac/x-fixture\__agent_variant/Role.md", cfg!(windows)),
     ];
