@@ -75,22 +75,23 @@ pub(crate) fn wake_claim_has_settled_receipt(origin: &Path) -> Result<bool, Stri
     let Some(id) = origin.file_stem().and_then(|stem| stem.to_str()) else {
         return Ok(false);
     };
+    let is_regular_receipt =
+        |path: &Path, side: &str| match mailbox_disk::mailbox_path_symlink_metadata(path) {
+            Ok(metadata) => {
+                Ok(metadata.is_file() && !crate::path_identity::is_link_or_reparse(&metadata))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(format!(
+                "could not inspect {} payload receipt {:?}: {}",
+                side, path, error
+            )),
+        };
     let delivered = outbox_dir.join("delivered").join(format!("{}.json", id));
-    if delivered.try_exists().map_err(|error| {
-        format!(
-            "could not inspect delivered payload receipt {:?}: {}",
-            delivered, error
-        )
-    })? {
+    if is_regular_receipt(&delivered, "delivered")? {
         return Ok(true);
     }
     let rejected = outbox_dir.join("rejected").join(format!("{}.json", id));
-    rejected.try_exists().map_err(|error| {
-        format!(
-            "could not inspect rejected payload receipt {:?}: {}",
-            rejected, error
-        )
-    })
+    is_regular_receipt(&rejected, "rejected")
 }
 
 /// (#1399) A failed restore leaves the durable claim in place. An owning drain
