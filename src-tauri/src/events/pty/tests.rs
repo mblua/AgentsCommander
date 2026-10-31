@@ -199,7 +199,7 @@ async fn menu_edge_resolves_current_settings_and_tolerates_missing_state() {
     const CHILD: &str = "AC_3469_MENU_EDGE_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let temp = tempfile::tempdir().unwrap();
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
+        let status = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 concat!(
@@ -212,6 +212,7 @@ async fn menu_edge_resolves_current_settings_and_tolerates_missing_state() {
             .env("AGENTSCOMMANDER_CONFIG_DIR", temp.path())
             .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", temp.path())
             .status()
+            .await
             .unwrap();
         assert!(status.success(), "isolated edge test: {status}");
         return;

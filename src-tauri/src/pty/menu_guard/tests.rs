@@ -791,7 +791,7 @@ async fn scan_transitions_preserve_frames_publication_and_disabled_cleanup() {
     const CHILD: &str = "AC_3469_MENU_SCAN_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let temp = tempfile::tempdir().unwrap();
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
+        let status = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 concat!(
@@ -804,6 +804,7 @@ async fn scan_transitions_preserve_frames_publication_and_disabled_cleanup() {
             .env("AGENTSCOMMANDER_CONFIG_DIR", temp.path())
             .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", temp.path())
             .status()
+            .await
             .unwrap();
         assert!(status.success(), "isolated scan test: {status}");
         return;
