@@ -205,6 +205,103 @@ impl ContainerTransportBackend {
         Ok(())
     }
 
+    fn copy_spawn_credentials(
+        &self,
+        id: Uuid,
+        plan: Option<&crate::pty::container_credentials::ContainerCredentialPlan>,
+    ) {
+        if let Some(plan) = plan {
+            match crate::pty::container_credentials::copy_in(plan) {
+                // #930 - a copied token is only USED if the agent skips its
+                // interactive first-run wizard: Claude gates that on
+                // .claude.json flags, not on the credential file. Same gate as
+                // the copy, same best-effort contract.
+                Ok(CopyOutcome::Copied) => {
+                    crate::pty::container_credentials::ensure_first_run_state(
+                        plan,
+                        DEFAULT_CONTAINER_WORKDIR,
+                    )
+                }
+                // grinch Finding 1 - an F2 skip is NOT a copy: the dest dir or
+                // leaf is a symlink/junction, so no token was written. Stamping
+                // here would suppress the login wizard on a container with no
+                // credential. With no token, that wizard is the correct UX.
+                Ok(CopyOutcome::SkippedReparse) => log::warn!(
+                    "[container-cred] copy-in skipped for session {}; not stamping first-run state",
+                    id
+                ),
+                // Best-effort, mirror config-seed: never abort the spawn.
+                Err(e) => log::warn!("[container-cred] copy-in failed for session {}: {}", id, e),
+            }
+            // F1 - if a concurrent teardown removed the session while we were
+            // copying, its remove_copied ran before the file existed (no-op). The
+            // shared std::Mutex serializes this check against teardown, so all
+            // interleavings converge on a deleted file. Extracted into a method
+            // so the race branch is unit-testable (see tests).
+            self.remove_credential_if_orphaned(id, plan);
+        }
+    }
+
+    async fn mint_and_install_spawn_binding(
+        &self,
+        id: Uuid,
+        cwd: &str,
+        token_manager: &crate::pty::container_tokens::ContainerApiTokenManager,
+        shutdown_producer: Option<&ContainerShutdownProducer>,
+    ) -> Result<crate::pty::container_tokens::ContainerApiToken, AppError> {
+        let token = match token_manager.mint_for_session(id, cwd) {
+            Ok(token) => token,
+            Err(err) => {
+                if let Some(resources) = self.remove_session_state(id) {
+                    self.cleanup_removed_resources_offloaded_owned(
+                        resources,
+                        "mint-failure",
+                        shutdown_producer,
+                    )
+                    .await;
+                }
+                return Err(err);
+            }
+        };
+        let root_identity = match crate::path_identity::verify_directory(Path::new(cwd)) {
+            Ok(identity) => identity,
+            Err(_) => {
+                token_manager.revoke(&token.client_id);
+                if let Some(resources) = self.remove_session_state(id) {
+                    self.cleanup_removed_resources_offloaded_owned(
+                        resources,
+                        "install-binding-failure",
+                        shutdown_producer,
+                    )
+                    .await;
+                }
+                return Err(AppError::Other(
+                    "container credential binding root is unsafe".to_string(),
+                ));
+            }
+        };
+        let binding = ContainerCredentialBinding {
+            client_id: token.client_id.clone(),
+            credential_generation: token.credential_generation.clone(),
+            bound_session_id: token.bound_session_id.clone(),
+            bound_root_object_id: root_identity.object_id,
+            credential_token_hash: token.token_hash.clone(),
+        };
+        if let Err(err) = self.install_credential_binding(id, binding) {
+            token_manager.revoke(&token.client_id);
+            if let Some(resources) = self.remove_session_state(id) {
+                self.cleanup_removed_resources_offloaded_owned(
+                    resources,
+                    "install-binding-failure",
+                    shutdown_producer,
+                )
+                .await;
+            }
+            return Err(err);
+        }
+        Ok(token)
+    }
+
     pub(super) async fn spawn_runtime_backed(
         &self,
         spec: BackendSpawnSpec,
@@ -268,87 +365,16 @@ impl ContainerTransportBackend {
             armed: true,
         };
 
-        if let Some(plan) = container_credential.as_ref() {
-            match crate::pty::container_credentials::copy_in(plan) {
-                // #930 - a copied token is only USED if the agent skips its
-                // interactive first-run wizard: Claude gates that on
-                // .claude.json flags, not on the credential file. Same gate as
-                // the copy, same best-effort contract.
-                Ok(CopyOutcome::Copied) => {
-                    crate::pty::container_credentials::ensure_first_run_state(
-                        plan,
-                        DEFAULT_CONTAINER_WORKDIR,
-                    )
-                }
-                // grinch Finding 1 - an F2 skip is NOT a copy: the dest dir or
-                // leaf is a symlink/junction, so no token was written. Stamping
-                // here would suppress the login wizard on a container with no
-                // credential. With no token, that wizard is the correct UX.
-                Ok(CopyOutcome::SkippedReparse) => log::warn!(
-                    "[container-cred] copy-in skipped for session {}; not stamping first-run state",
-                    id
-                ),
-                // Best-effort, mirror config-seed: never abort the spawn.
-                Err(e) => log::warn!("[container-cred] copy-in failed for session {}: {}", id, e),
-            }
-            // F1 - if a concurrent teardown removed the session while we were
-            // copying, its remove_copied ran before the file existed (no-op). The
-            // shared std::Mutex serializes this check against teardown, so all
-            // interleavings converge on a deleted file. Extracted into a method
-            // so the race branch is unit-testable (see tests).
-            self.remove_credential_if_orphaned(id, plan);
-        }
+        self.copy_spawn_credentials(id, container_credential.as_ref());
 
-        let token = match token_manager.mint_for_session(id, &cwd) {
-            Ok(token) => token,
-            Err(err) => {
-                if let Some(resources) = self.remove_session_state(id) {
-                    self.cleanup_removed_resources_offloaded_owned(
-                        resources,
-                        "mint-failure",
-                        cancellation_guard.shutdown_producer.as_ref(),
-                    )
-                    .await;
-                }
-                return Err(err);
-            }
-        };
-        let root_identity = match crate::path_identity::verify_directory(Path::new(&cwd)) {
-            Ok(identity) => identity,
-            Err(_) => {
-                token_manager.revoke(&token.client_id);
-                if let Some(resources) = self.remove_session_state(id) {
-                    self.cleanup_removed_resources_offloaded_owned(
-                        resources,
-                        "install-binding-failure",
-                        cancellation_guard.shutdown_producer.as_ref(),
-                    )
-                    .await;
-                }
-                return Err(AppError::Other(
-                    "container credential binding root is unsafe".to_string(),
-                ));
-            }
-        };
-        let binding = ContainerCredentialBinding {
-            client_id: token.client_id.clone(),
-            credential_generation: token.credential_generation.clone(),
-            bound_session_id: token.bound_session_id.clone(),
-            bound_root_object_id: root_identity.object_id,
-            credential_token_hash: token.token_hash.clone(),
-        };
-        if let Err(err) = self.install_credential_binding(id, binding) {
-            token_manager.revoke(&token.client_id);
-            if let Some(resources) = self.remove_session_state(id) {
-                self.cleanup_removed_resources_offloaded_owned(
-                    resources,
-                    "install-binding-failure",
-                    cancellation_guard.shutdown_producer.as_ref(),
-                )
-                .await;
-            }
-            return Err(err);
-        }
+        let token = self
+            .mint_and_install_spawn_binding(
+                id,
+                &cwd,
+                &token_manager,
+                cancellation_guard.shutdown_producer.as_ref(),
+            )
+            .await?;
 
         let request = match build_start_request(
             id,
@@ -495,6 +521,25 @@ impl ContainerTransportBackend {
                 )));
             }
         };
+        self.install_spawn_runtime_handle(
+            id,
+            handle,
+            token,
+            cancellation_guard.shutdown_producer.as_ref(),
+        )
+        .await?;
+
+        self.wait_for_runtime_attach(id, attach_notify, cancellation_guard)
+            .await
+    }
+
+    async fn install_spawn_runtime_handle(
+        &self,
+        id: Uuid,
+        handle: ContainerRuntimeHandle,
+        token: crate::pty::container_tokens::ContainerApiToken,
+        shutdown_producer: Option<&ContainerShutdownProducer>,
+    ) -> Result<(), AppError> {
         if let Err(err) = self.install_runtime_handle(id, handle.clone()) {
             let resources = RemovedSessionResources {
                 session_id: id,
@@ -509,12 +554,20 @@ impl ContainerTransportBackend {
             self.cleanup_removed_resources_offloaded_owned(
                 resources,
                 "install-runtime-failure",
-                cancellation_guard.shutdown_producer.as_ref(),
+                shutdown_producer,
             )
             .await;
             return Err(err);
         }
+        Ok(())
+    }
 
+    async fn wait_for_runtime_attach(
+        &self,
+        id: Uuid,
+        attach_notify: Arc<Notify>,
+        cancellation_guard: &mut ContainerSpawnCancellationGuard<'_>,
+    ) -> Result<(), AppError> {
         if self.has_session(id) {
             cancellation_guard.disarm();
             return Ok(());
