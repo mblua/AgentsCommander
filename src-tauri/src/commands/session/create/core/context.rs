@@ -48,28 +48,8 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
         resolved_spawn,
         ..
     } = ctx;
-    let PendingLaunch {
-        resource_monitor,
-        mut resource_permit,
-        mgr,
-        spawn_mark,
-        session,
-        agent_id,
-        agent_label,
-        agent_kind,
-        is_coordinator,
-        is_root_agent,
-        fresh_forced_by_mirror,
-        skip_auto_resume,
-        pending_binding,
-        shell_args,
-        container_path_context,
-        container_repos,
-        context_target,
-        full_cmd,
-        configured_identity,
-    } = input;
-    let id = session.id;
+    let mut pending = input;
+    let id = pending.session.id;
     let effective_continuation = false;
     // #930 - resolve the host-credential copy-in plan for container coding agents
     // BEFORE the resume probe and the container env translation, so both consumers
@@ -78,19 +58,25 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
     // non-container, an unrecognized agent, or the host file is absent. The plan is
     // pure (env read + file-exists check); the actual copy runs later in the
     // container backend spawn (spawn_runtime_backed), preserving copy-after-seed.
-    let spawn_cwd = container_path_context
+    let spawn_cwd = pending
+        .container_path_context
         .as_ref()
         .map(|context| context.host_root.clone())
         .unwrap_or_else(|| cwd.to_owned());
-    let container_credential = if session.backend_kind == SessionBackendKind::ContainerTransport {
+    let container_credential = if pending.session.backend_kind
+        == SessionBackendKind::ContainerTransport
+    {
         let settings_state = app.state::<SettingsState>();
         let copy_enabled = {
             let cfg = match settings_state.current_read().await {
                 Ok(cfg) => cfg,
                 Err(error) => {
                     let error = error.to_string();
-                    release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-                    drop(mgr);
+                    release_resource_launch_permit(
+                        &pending.resource_monitor,
+                        &mut pending.resource_permit,
+                    );
+                    drop(pending.mgr);
                     rollback_pre_created_session(app, session_mgr, pty_mgr, id, &error).await;
                     return Err(error);
                 }
@@ -98,7 +84,8 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
             cfg.container_credentials_from_host
         };
         if copy_enabled {
-            agent_kind
+            pending
+                .agent_kind
                 .and_then(|k| k.profile().container_credential)
                 .and_then(|src| crate::pty::container_credentials::resolve_plan(&src, &spawn_cwd))
         } else {
@@ -129,27 +116,6 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
     );
 
     let session_env_warnings = Vec::new();
-    let pending = PendingLaunch {
-        agent_id,
-        agent_label,
-        agent_kind,
-        is_coordinator,
-        is_root_agent,
-        fresh_forced_by_mirror,
-        skip_auto_resume,
-        pending_binding,
-        shell_args,
-        container_path_context,
-        container_repos,
-        context_target,
-        full_cmd,
-        configured_identity,
-        session,
-        spawn_mark,
-        mgr,
-        resource_permit,
-        resource_monitor,
-    };
     let input = ContextReady {
         effective_continuation,
         spawn_cwd,
@@ -262,40 +228,12 @@ pub(crate) async fn prepare_resume<'a: 'b, 'b, R: tauri::Runtime>(
         claude_project_exists,
         will_inject_continue,
     );
-    if will_inject_continue {
-        input.effective_continuation |= inject_claude_continue_args(
-            shell,
-            input.pending.agent_id.as_deref(),
-            &mut input.pending.shell_args,
-        );
-    }
-
-    // (#756) Rider: on Claude spawns where AC suppresses resume, mint the fresh
-    // session's identity at spawn. Uuid::new_v4() satisfies the "unused UUID"
-    // requirement (Claude errors on a colliding --session-id; v4 collision is
-    // negligible and a fresh one is minted per spawn). Mutually exclusive with
-    // the --continue block above by construction (will_inject_continue requires
-    // skip_auto_resume=false). `full_cmd` predates both blocks' mutations, so
-    // the veto scan sees user-configured identity flags, never AC's own.
-    if should_inject_fresh_session_id(
-        is_claude,
-        input.pending.skip_auto_resume,
-        &input.pending.full_cmd,
-    ) {
-        inject_claude_fresh_args(
-            shell,
-            input.pending.agent_id.as_deref(),
-            &mut input.pending.shell_args,
-        );
-    }
-
-    input.effective_continuation |= inject_other_provider_resume_args(
-        input.pending.agent_kind,
-        resolved_spawn,
-        input.pending.skip_auto_resume,
+    apply_resume_args(
         shell,
-        input.pending.agent_id.as_deref(),
-        &mut input.pending.shell_args,
+        resolved_spawn,
+        &mut input,
+        is_claude,
+        will_inject_continue,
     );
 
     prepare_instructions(ctx, input).await
@@ -892,4 +830,48 @@ fn log_resume_decision(
             pending.skip_auto_resume
         );
     }
+}
+
+fn apply_resume_args(
+    shell: &str,
+    resolved_spawn: Option<&crate::config::agent_command::AgentSpawnCommand>,
+    input: &mut ContextReady,
+    is_claude: bool,
+    will_inject_continue: bool,
+) {
+    if will_inject_continue {
+        input.effective_continuation |= inject_claude_continue_args(
+            shell,
+            input.pending.agent_id.as_deref(),
+            &mut input.pending.shell_args,
+        );
+    }
+
+    // (#756) Rider: on Claude spawns where AC suppresses resume, mint the fresh
+    // session's identity at spawn. Uuid::new_v4() satisfies the "unused UUID"
+    // requirement (Claude errors on a colliding --session-id; v4 collision is
+    // negligible and a fresh one is minted per spawn). Mutually exclusive with
+    // the --continue block above by construction (will_inject_continue requires
+    // skip_auto_resume=false). `full_cmd` predates both blocks' mutations, so
+    // the veto scan sees user-configured identity flags, never AC's own.
+    if should_inject_fresh_session_id(
+        is_claude,
+        input.pending.skip_auto_resume,
+        &input.pending.full_cmd,
+    ) {
+        inject_claude_fresh_args(
+            shell,
+            input.pending.agent_id.as_deref(),
+            &mut input.pending.shell_args,
+        );
+    }
+
+    input.effective_continuation |= inject_other_provider_resume_args(
+        input.pending.agent_kind,
+        resolved_spawn,
+        input.pending.skip_auto_resume,
+        shell,
+        input.pending.agent_id.as_deref(),
+        &mut input.pending.shell_args,
+    );
 }

@@ -47,66 +47,46 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
         container_credential,
         injected_claude_config_dir,
         mut session_env_warnings,
-        pending,
+        mut pending,
     } = input;
-    let PendingLaunch {
-        resource_monitor,
-        mut resource_permit,
-        mgr,
-        spawn_mark,
-        mut session,
-        agent_id,
-        agent_label,
-        agent_kind,
-        is_coordinator,
-        is_root_agent,
-        fresh_forced_by_mirror,
-        skip_auto_resume,
-        pending_binding,
-        shell_args,
-        container_path_context,
-        container_repos,
-        configured_identity,
-        ..
-    } = pending;
-    let id = session.id;
-    // Capture the effective arg vector BEFORE spawn so SessionInfo::from(&session)
+    let id = pending.session.id;
+    // Capture the effective arg vector BEFORE spawn so SessionInfo::from(&pending.session)
     // (emitted at line ~439 as "session_created") carries provider resume flags.
     // Bind once, broadcast to two consumers: the store write is for later
-    // `mgr.get_session` callers; the local-clone write is for the imminent emit.
+    // `pending.mgr.get_session` callers; the local-clone write is for the imminent emit.
     //
     // DO NOT REMOVE OR GATE THIS CAPTURE. Issue #65 regression guard: removing
     // or wrapping in a condition reintroduces the exact bug this plan fixes.
     // See _plans/bug-statusbar-dynamic-launch-args.md §10 and §15 for rationale.
-    let effective = shell_args.clone();
+    let effective = pending.shell_args.clone();
     record_effective_args(
         ctx,
-        &mgr,
-        &resource_monitor,
-        &mut resource_permit,
-        pending_binding,
+        &pending.mgr,
+        &pending.resource_monitor,
+        &mut pending.resource_permit,
+        pending.pending_binding,
         effective.clone(),
     )
     .await?;
     if let Some(continuation) = owned_replacement {
         if !continuation.validate_source().await {
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            release_resource_launch_permit(&pending.resource_monitor, &mut pending.resource_permit);
             return Ok(CreateCompletion::Retained);
         }
     }
-    session.effective_shell_args = Some(effective);
+    pending.session.effective_shell_args = Some(effective);
 
     let environment = prepare_environment(
         ctx,
         SpawnEnvironmentInput {
-            session: &session,
-            agent_id: &agent_id,
-            agent_label: &agent_label,
-            is_root_agent,
+            session: &pending.session,
+            agent_id: &pending.agent_id,
+            agent_label: &pending.agent_label,
+            is_root_agent: pending.is_root_agent,
             injected_claude_config_dir: injected_claude_config_dir.as_deref(),
-            container_path_context: container_path_context.as_ref(),
-            resource_monitor: &resource_monitor,
-            resource_permit: &mut resource_permit,
+            container_path_context: pending.container_path_context.as_ref(),
+            resource_monitor: &pending.resource_monitor,
+            resource_permit: &mut pending.resource_permit,
             session_env_warnings: &mut session_env_warnings,
         },
     );
@@ -116,12 +96,12 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
     // other variants, delivery / mailbox / web wakes); prevalidation never hits
     // it because it discards the spawn. Per Q2 this runs on EVERY spawn,
     // including loop/scheduler resume-wakes (overwrite every spawn).
-    match prepare_config_seed_stage(ctx, &mut resource_permit, &resource_monitor, &mgr, id).await? {
+    match prepare_config_seed_stage(ctx, &mut pending).await? {
         None => return Ok(CreateCompletion::Retained),
         Some(Ok(())) => {}
         Some(Err(error)) => {
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-            drop(mgr);
+            release_resource_launch_permit(&pending.resource_monitor, &mut pending.resource_permit);
+            drop(pending.mgr);
             rollback_pre_created_session(app, session_mgr, pty_mgr, id, &error).await;
             return Err(error);
         }
@@ -133,11 +113,14 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
     // no lock is held across that I/O.
     let launch_idle_tuning = {
         let settings_state = app.state::<SettingsState>();
-        match load_launch_idle_tuning(settings_state.inner(), &agent_id, agent_kind).await {
+        match load_launch_idle_tuning(settings_state.inner(), &pending).await {
             Ok(tuning) => tuning,
             Err(error) => {
-                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-                drop(mgr);
+                release_resource_launch_permit(
+                    &pending.resource_monitor,
+                    &mut pending.resource_permit,
+                );
+                drop(pending.mgr);
                 rollback_pre_created_session(app, session_mgr, pty_mgr, id, &error).await;
                 return Err(error);
             }
@@ -148,34 +131,19 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
         ctx,
         SpawnSpecification {
             id,
-            agent_id: &agent_id,
-            agent_kind,
-            shell_args: &shell_args,
+            agent_id: &pending.agent_id,
+            agent_kind: pending.agent_kind,
+            shell_args: &pending.shell_args,
             spawn_cwd: &spawn_cwd,
-            container_repos: &container_repos,
+            container_repos: &pending.container_repos,
             container_credential,
             environment,
             launch_idle_tuning,
             launch_witness: &launch_witness,
         },
     );
-    let input = PublicationInput {
-        agent_id,
-        agent_label,
-        agent_kind,
-        is_coordinator,
-        is_root_agent,
-        fresh_forced_by_mirror,
-        skip_auto_resume,
-        configured_identity,
-        effective_continuation,
-        pending_binding,
-        session_env_warnings,
-        session,
-        mgr,
-        resource_permit,
-        resource_monitor,
-    };
+    let (input, spawn_mark) =
+        publication_input(pending, effective_continuation, session_env_warnings);
     spawn_backend(ctx, input, spawn_spec, launch_witness, spawn_mark).await
 }
 
@@ -405,14 +373,14 @@ async fn run_config_seed_work(
 
 async fn load_launch_idle_tuning(
     settings: &crate::config::settings::SettingsState,
-    agent_id: &Option<String>,
-    agent_kind: Option<crate::session::profile::CodingAgentKind>,
+    pending: &PendingLaunch,
 ) -> Result<crate::session::profile::IdleTuning, String> {
+    let agent_kind = pending.agent_kind;
     let snapshot = settings
         .current_snapshot()
         .await
         .map_err(|error| error.to_string())?;
-    let requested_agent_id = agent_id.clone();
+    let requested_agent_id = pending.agent_id.clone();
     match tokio::task::spawn_blocking(move || {
         let catalog = crate::config::coding_agents_catalog::load_catalog_for_settings(&snapshot)
             .unwrap_or_default();
@@ -435,11 +403,12 @@ async fn load_launch_idle_tuning(
 
 async fn prepare_config_seed_stage<'a: 'b, 'b, R: tauri::Runtime>(
     ctx: &'b CreateBodyContext<'a, R>,
-    resource_permit: &mut Option<crate::resource_monitor::AgentLaunchPermit>,
-    resource_monitor: &std::sync::Arc<crate::resource_monitor::ResourceMonitorState>,
-    mgr: &crate::session::manager::SessionManager,
-    id: uuid::Uuid,
+    pending: &mut PendingLaunch,
 ) -> Result<Option<Result<(), String>>, String> {
+    let resource_permit = &mut pending.resource_permit;
+    let resource_monitor = &pending.resource_monitor;
+    let mgr = &pending.mgr;
+    let id = pending.session.id;
     if let Some(seed) = ctx.resolved_spawn.and_then(|s| s.seed.as_ref()) {
         // grinch HIGH-1: serialize the seed swap for ALL dests (not just
         // `.claude`). Two same-replica spawns can run concurrently (e.g. a
@@ -767,4 +736,29 @@ fn build_spawn_spec<R: tauri::Runtime>(
             .unwrap_or_default(),
         launch_witness: launch_witness.clone(),
     }
+}
+
+fn publication_input(
+    pending: PendingLaunch,
+    effective_continuation: bool,
+    session_env_warnings: Vec<crate::pty::container_paths::ContainerEnvWarning>,
+) -> (PublicationInput, crate::pty::manager::SpawnMark) {
+    let input = PublicationInput {
+        agent_id: pending.agent_id,
+        agent_label: pending.agent_label,
+        agent_kind: pending.agent_kind,
+        is_coordinator: pending.is_coordinator,
+        is_root_agent: pending.is_root_agent,
+        fresh_forced_by_mirror: pending.fresh_forced_by_mirror,
+        skip_auto_resume: pending.skip_auto_resume,
+        configured_identity: pending.configured_identity,
+        effective_continuation,
+        pending_binding: pending.pending_binding,
+        session_env_warnings,
+        session: pending.session,
+        mgr: pending.mgr,
+        resource_permit: pending.resource_permit,
+        resource_monitor: pending.resource_monitor,
+    };
+    (input, pending.spawn_mark)
 }

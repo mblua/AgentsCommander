@@ -61,10 +61,6 @@ pub(crate) struct MetadataInput {
     pub(crate) agent_id: Option<String>,
     pub(crate) agent_label: Option<String>,
     pub(crate) skip_auto_resume: bool,
-    pub(crate) pending_communication: Option<SessionCommunication>,
-    pub(crate) enforcement: crate::config::sessions_persistence::CreationGateEnforcement,
-    pub(crate) selection_intent: CreateSelectionIntent,
-    pub(crate) create_target_replica_identity: Option<crate::path_identity::VerifiedPathIdentity>,
 }
 
 // #260: single detector (session/profile.rs). Replaces the old
@@ -256,10 +252,6 @@ pub(crate) fn metadata_input(input: CreateInput) -> MetadataInput {
         agent_id,
         agent_label,
         skip_auto_resume,
-        pending_communication,
-        enforcement,
-        selection_intent,
-        create_target_replica_identity,
         ..
     } = input;
     MetadataInput {
@@ -269,10 +261,6 @@ pub(crate) fn metadata_input(input: CreateInput) -> MetadataInput {
         agent_id,
         agent_label,
         skip_auto_resume,
-        pending_communication,
-        enforcement,
-        selection_intent,
-        create_target_replica_identity,
     }
 }
 
@@ -326,4 +314,111 @@ pub(crate) fn create_binding(
             create_manager.reserve_carrier_create_binding(),
         ),
     })
+}
+
+pub(crate) fn create_owner(
+    preheld_target: bool,
+    owned_replacement: Option<&crate::session::selection::OwnedReplacementContinuation>,
+    pty_mgr: &Arc<Mutex<crate::pty::manager::PtyManager>>,
+    create_target_key: Option<String>,
+    cwd: &str,
+    create_manager: &SessionManager,
+    owned_target: Option<crate::commands::session::create::admission::OwnedCreateTargetLease>,
+) -> Option<Arc<Mutex<crate::commands::session::create::admission::OwnedCreateAdmission>>> {
+    let (create_nonce, create_binding) = create_binding(create_manager, owned_replacement)?;
+    Some(Arc::new(Mutex::new(
+        crate::commands::session::create::admission::OwnedCreateAdmission {
+            preheld_target,
+            owned_replacement: owned_replacement.cloned(),
+            replacement_pty: owned_replacement.map(|_| pty_mgr.clone()),
+            tracker: pty_mgr
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .response_close_state(),
+            target: create_target_key.unwrap_or_else(|| format!("create-cwd:{}", cwd)),
+            cwd: std::path::PathBuf::from(cwd),
+            nonce: create_nonce,
+            binding: create_binding,
+            reservation: None,
+            failed_foreign: false,
+            owned_target,
+            capacity: None,
+            resource: None,
+            blocked_bound: false,
+            capacity_error: None,
+        },
+    )))
+}
+
+// Resolve mounts before creating a pending session so inadmissible entries
+// cannot leave a session record, token, or container behind.
+pub(crate) fn container_repos(
+    context: Option<&crate::commands::session::resume_probe::ContainerPathContext>,
+) -> Result<Option<crate::pty::container_repos::RepoMountResolution>, String> {
+    context
+        .map(|context| {
+            crate::pty::container_repos::resolve_repo_mounts(std::path::Path::new(
+                &context.host_root,
+            ))
+        })
+        .transpose()
+}
+
+pub(crate) fn pending_state(
+    state: LaunchState,
+    session: crate::session::session::Session,
+    pending_binding: crate::session::manager::PendingCreateBinding,
+    spawn_mark: crate::pty::manager::SpawnMark,
+) -> PendingState {
+    PendingState {
+        is_coordinator: state.is_coordinator,
+        is_root_agent: state.is_root_agent,
+        fresh_forced_by_mirror: state.fresh_forced_by_mirror,
+        agent_kind: state.agent_kind,
+        resource_monitor: state.resource_monitor,
+        resource_permit: state.resource_permit,
+        mgr: state.mgr,
+        container_path_context: state.container_path_context,
+        container_repos: state.container_repos,
+        session,
+        pending_binding,
+        spawn_mark,
+    }
+}
+
+pub(crate) fn pending_launch(
+    input: MetadataInput,
+    state: PendingState,
+    context_target: Option<crate::config::session_context::ManagedContextTarget>,
+    full_cmd: String,
+    configured_identity: bool,
+) -> crate::commands::session::create::contracts::PendingLaunch {
+    crate::commands::session::create::contracts::PendingLaunch {
+        agent_id: input.agent_id,
+        agent_label: input.agent_label,
+        agent_kind: state.agent_kind,
+        is_coordinator: state.is_coordinator,
+        is_root_agent: state.is_root_agent,
+        fresh_forced_by_mirror: state.fresh_forced_by_mirror,
+        skip_auto_resume: input.skip_auto_resume,
+        pending_binding: state.pending_binding,
+        shell_args: input.shell_args,
+        container_path_context: state.container_path_context,
+        container_repos: state.container_repos,
+        context_target,
+        full_cmd,
+        configured_identity,
+        session: state.session,
+        spawn_mark: state.spawn_mark,
+        mgr: state.mgr,
+        resource_permit: state.resource_permit,
+        resource_monitor: state.resource_monitor,
+    }
+}
+
+pub(crate) fn take_marker_ticket<T>(ticket: &Mutex<Option<T>>) -> Option<T> {
+    ticket
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take()
 }
