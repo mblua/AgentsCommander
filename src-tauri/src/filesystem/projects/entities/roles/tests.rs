@@ -63,7 +63,10 @@ fn writes_opaque_bytes_and_overwrites_existing_role() {
 
     assert_eq!(write_created_role(matrix.path(), bytes).unwrap(), expected);
     assert_eq!(std::fs::read(&expected).unwrap(), bytes);
-    assert_eq!(write_created_role(matrix.path(), b"short").unwrap(), expected);
+    assert_eq!(
+        write_created_role(matrix.path(), b"short").unwrap(),
+        expected
+    );
     assert_eq!(std::fs::read(expected).unwrap(), b"short");
 }
 
