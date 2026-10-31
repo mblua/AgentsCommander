@@ -116,82 +116,7 @@ pub(super) fn load_sessions_from_path_with_settings(
                 }
                 let mut deduped = deduplicate(filtered);
 
-                // Legacy-schema upgrade: run AFTER deduplicate() so each row's legacy
-                // payload travels with its own entry. `.take()` clears the Options and
-                // `skip_serializing_if` in PersistedSession elides them on next save.
-                for ps in deduped.iter_mut() {
-                    if !ps.git_repos.is_empty() {
-                        // Already new-schema; drop any ghost legacy values.
-                        ps.git_branch_source = None;
-                        ps.git_branch_prefix = None;
-                        continue;
-                    }
-                    match (ps.git_branch_source.take(), ps.git_branch_prefix.take()) {
-                        (Some(source), Some(prefix)) if prefix != "multi-repo" => {
-                            log::info!(
-                                "[sessions] Upgrading legacy single-repo session '{}' → \
-                                 git_repos[1]={{label:{}, source:{}}}",
-                                ps.name,
-                                prefix,
-                                source
-                            );
-                            ps.git_repos.push(crate::session::session::SessionRepo {
-                                label: prefix,
-                                source_path: source,
-                                branch: None,
-                                dirty: None,
-                            });
-                        }
-                        (Some(source), None) => {
-                            // Shouldn't happen in data this codebase produces, but serde(default)
-                            // + hand-edited files can land here. Synthesize label from dir name.
-                            let dir = source
-                                .replace('\\', "/")
-                                .split('/')
-                                .next_back()
-                                .unwrap_or("")
-                                .to_string();
-                            let label =
-                                dir.strip_prefix("repo-").map(str::to_string).unwrap_or(dir);
-                            log::warn!(
-                                "[sessions] Upgrading legacy session '{}' with source but no \
-                                 prefix; synthesized label '{}'",
-                                ps.name,
-                                label
-                            );
-                            ps.git_repos.push(crate::session::session::SessionRepo {
-                                label,
-                                source_path: source,
-                                branch: None,
-                                dirty: None,
-                            });
-                        }
-                        (None, Some(prefix)) if prefix == "multi-repo" => {
-                            log::info!(
-                                "[sessions] Legacy multi-repo session '{}' → git_repos left empty; \
-                                 DiscoveryBranchWatcher will backfill",
-                                ps.name
-                            );
-                        }
-                        (None, Some(other)) => {
-                            log::warn!(
-                                "[sessions] Legacy session '{}' has unknown prefix '{}' without \
-                                 source; dropping",
-                                ps.name,
-                                other
-                            );
-                        }
-                        (None, None) => {}
-                        (Some(_), Some(_)) => {
-                            // prefix == "multi-repo" with a source — ambiguous legacy shape.
-                            log::warn!(
-                                "[sessions] Legacy session '{}' had source + multi-repo prefix; \
-                                 leaving git_repos empty for discovery backfill",
-                                ps.name
-                            );
-                        }
-                    }
-                }
+                upgrade_legacy_session_repos(&mut deduped);
 
                 for ps in deduped.iter_mut() {
                     normalize_persisted_session_paths(ps);
@@ -212,6 +137,84 @@ pub(super) fn load_sessions_from_path_with_settings(
         Err(e) => {
             log::error!("Failed to read sessions file: {}", e);
             vec![]
+        }
+    }
+}
+
+fn upgrade_legacy_session_repos(sessions: &mut [PersistedSession]) {
+    // Legacy-schema upgrade: run AFTER deduplicate() so each row's legacy
+    // payload travels with its own entry. `.take()` clears the Options and
+    // `skip_serializing_if` in PersistedSession elides them on next save.
+    for ps in sessions.iter_mut() {
+        if !ps.git_repos.is_empty() {
+            // Already new-schema; drop any ghost legacy values.
+            ps.git_branch_source = None;
+            ps.git_branch_prefix = None;
+            continue;
+        }
+        match (ps.git_branch_source.take(), ps.git_branch_prefix.take()) {
+            (Some(source), Some(prefix)) if prefix != "multi-repo" => {
+                log::info!(
+                    "[sessions] Upgrading legacy single-repo session '{}' → \
+                     git_repos[1]={{label:{}, source:{}}}",
+                    ps.name,
+                    prefix,
+                    source
+                );
+                ps.git_repos.push(crate::session::session::SessionRepo {
+                    label: prefix,
+                    source_path: source,
+                    branch: None,
+                    dirty: None,
+                });
+            }
+            (Some(source), None) => {
+                // Shouldn't happen in data this codebase produces, but serde(default)
+                // + hand-edited files can land here. Synthesize label from dir name.
+                let dir = source
+                    .replace('\\', "/")
+                    .split('/')
+                    .next_back()
+                    .unwrap_or("")
+                    .to_string();
+                let label = dir.strip_prefix("repo-").map(str::to_string).unwrap_or(dir);
+                log::warn!(
+                    "[sessions] Upgrading legacy session '{}' with source but no \
+                     prefix; synthesized label '{}'",
+                    ps.name,
+                    label
+                );
+                ps.git_repos.push(crate::session::session::SessionRepo {
+                    label,
+                    source_path: source,
+                    branch: None,
+                    dirty: None,
+                });
+            }
+            (None, Some(prefix)) if prefix == "multi-repo" => {
+                log::info!(
+                    "[sessions] Legacy multi-repo session '{}' → git_repos left empty; \
+                     DiscoveryBranchWatcher will backfill",
+                    ps.name
+                );
+            }
+            (None, Some(other)) => {
+                log::warn!(
+                    "[sessions] Legacy session '{}' has unknown prefix '{}' without \
+                     source; dropping",
+                    ps.name,
+                    other
+                );
+            }
+            (None, None) => {}
+            (Some(_), Some(_)) => {
+                // prefix == "multi-repo" with a source — ambiguous legacy shape.
+                log::warn!(
+                    "[sessions] Legacy session '{}' had source + multi-repo prefix; \
+                     leaving git_repos empty for discovery backfill",
+                    ps.name
+                );
+            }
         }
     }
 }
