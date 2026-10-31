@@ -182,7 +182,7 @@ fn pty_effective_project_paths(root: &str) -> Result<Vec<String>, String> {
 pub(super) fn execute_pty_input(args: SendArgs, root: String, text: String) -> i32 {
     use crate::phone::types::{
         canonical_pty_timestamp, pty_input_confirmation_tag, sha256_hex, PtyInputEnterMode,
-        PtyInputPublicStatus, PtyInputWirePayload, PTY_INPUT_TTL_SECS, PTY_INPUT_VERSION,
+        PtyInputWirePayload, PTY_INPUT_TTL_SECS, PTY_INPUT_VERSION,
     };
 
     if args.mode != "wake" || args.get_output || args.outbox.is_some() {
@@ -262,34 +262,11 @@ pub(super) fn execute_pty_input(args: SendArgs, root: String, text: String) -> i
         return 1;
     }
 
-    let message = OutboxMessage {
-        id: injection_id.clone(),
-        token: Some(token),
-        from: route.sender.canonical_fqn.clone(),
-        to: route.target.canonical_fqn.clone(),
-        body: String::new(),
-        mode: "wake".to_string(),
-        get_output: false,
-        request_id: None,
-        sender_agent: None,
-        preferred_agent: String::new(),
-        requested_profile: None,
-        effective_agent_id: None,
-        effective_profile: None,
-        profile_fallback_applied: false,
-        dispatch_not_applied: None,
-        priority: "normal".to_string(),
-        timestamp: issued_at.clone(),
-        command: None,
-        action: Some("pty-input".to_string()),
-        target: None,
-        force: None,
-        timeout_secs: None,
-        switch_coding_agent: None,
-        switch_profile: None,
-        dry_run: None,
-        quiet_period_ms: None,
-        pty_input: Some(PtyInputWirePayload {
+    let message = pty_request_message(
+        token,
+        route.sender.canonical_fqn.clone(),
+        route.target.canonical_fqn.clone(),
+        PtyInputWirePayload {
             version: PTY_INPUT_VERSION,
             text,
             enter: PtyInputEnterMode::AgentSubmit,
@@ -299,8 +276,8 @@ pub(super) fn execute_pty_input(args: SendArgs, root: String, text: String) -> i
             expires_at: expires_at.clone(),
             nonce,
             agent_id: requested_agent,
-        }),
-    };
+        },
+    );
 
     let expected = ExpectedPtyArtifact {
         injection_id: &injection_id,
@@ -343,11 +320,58 @@ pub(super) fn execute_pty_input(args: SendArgs, root: String, text: String) -> i
     crate::cli_println!(
         "Queued: {injection_id} (queued is not injected; waiting for terminal status)"
     );
-    match wait_for_pty_input_confirmation(
+    let confirmation = wait_for_pty_input_confirmation(
         &outbox,
         &expected,
         std::time::Duration::from_secs(args.confirm_timeout),
-    ) {
+    );
+    report_pty_input_confirmation(&injection_id, confirmation)
+}
+
+fn pty_request_message(
+    token: String,
+    sender: String,
+    target: String,
+    payload: crate::phone::types::PtyInputWirePayload,
+) -> OutboxMessage {
+    OutboxMessage {
+        id: payload.injection_id.clone(),
+        token: Some(token),
+        from: sender,
+        to: target,
+        body: String::new(),
+        mode: "wake".to_string(),
+        get_output: false,
+        request_id: None,
+        sender_agent: None,
+        preferred_agent: String::new(),
+        requested_profile: None,
+        effective_agent_id: None,
+        effective_profile: None,
+        profile_fallback_applied: false,
+        dispatch_not_applied: None,
+        priority: "normal".to_string(),
+        timestamp: payload.issued_at.clone(),
+        command: None,
+        action: Some("pty-input".to_string()),
+        target: None,
+        force: None,
+        timeout_secs: None,
+        switch_coding_agent: None,
+        switch_profile: None,
+        dry_run: None,
+        quiet_period_ms: None,
+        pty_input: Some(payload),
+    }
+}
+
+fn report_pty_input_confirmation(
+    injection_id: &str,
+    confirmation: Result<crate::phone::types::PtyInputResult, &'static str>,
+) -> i32 {
+    use crate::phone::types::PtyInputPublicStatus;
+
+    match confirmation {
         Ok(result) => match result.status {
             PtyInputPublicStatus::Injected => {
                 crate::cli_println!("Injected: {injection_id}");

@@ -120,10 +120,18 @@ test-only first)";
 /// Sum of `covered` plus every reason count MUST equal `total`.
 type Row = (&'static str, usize, usize, &'static [(Reason, usize)]);
 
+// Batch #3464: recertified by the workspace source walk after merging main.
+// Extracted helpers add no constructor sites; all 99 classified rows still match.
 const INVENTORY: &[Row] = &[
     ("src-tauri/src/events/pty/tests.rs", 1, 0, &[(TestOnly, 1)]),
     (
         "src-tauri/src/pty/menu_guard/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/phone/mailbox/tests/clear_watch.rs",
         1,
         0,
         &[(TestOnly, 1)],

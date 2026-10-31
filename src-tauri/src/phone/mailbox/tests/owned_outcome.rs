@@ -707,3 +707,141 @@ async fn owned_outcome_drain_settles_or_requeues_every_disk_state() {
         ));
     }
 }
+
+#[test]
+fn issue_3475_delivered_directory() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let origin = temp.path().join("message.json");
+    let claim = wake_claim_path(&origin);
+    std::fs::write(&origin, b"origin").unwrap();
+    std::fs::write(&claim, b"claim").unwrap();
+    let delivered = temp.path().join("delivered/message.json");
+    std::fs::create_dir_all(&delivered).unwrap();
+    let settled = wake_claim_has_settled_receipt(&origin).unwrap();
+    assert_eq!(std::fs::read(&origin).unwrap(), b"origin");
+    assert_eq!(std::fs::read(&claim).unwrap(), b"claim");
+    assert!(delivered.is_dir());
+    assert!(!settled, "actual {settled}, expected false");
+}
+
+#[test]
+fn issue_3475_rejected_directory() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let origin = temp.path().join("message.json");
+    let claim = wake_claim_path(&origin);
+    std::fs::write(&origin, b"origin").unwrap();
+    std::fs::write(&claim, b"claim").unwrap();
+    let rejected = temp.path().join("rejected/message.json");
+    std::fs::create_dir_all(&rejected).unwrap();
+    let settled = wake_claim_has_settled_receipt(&origin).unwrap();
+    assert_eq!(std::fs::read(&origin).unwrap(), b"origin");
+    assert_eq!(std::fs::read(&claim).unwrap(), b"claim");
+    assert!(rejected.is_dir());
+    assert!(!settled, "actual {settled}, expected false");
+}
+
+#[test]
+fn issue_3475_both_directories() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let origin = temp.path().join("message.json");
+    let claim = wake_claim_path(&origin);
+    std::fs::write(&origin, b"origin").unwrap();
+    std::fs::write(&claim, b"claim").unwrap();
+    let delivered = temp.path().join("delivered/message.json");
+    std::fs::create_dir_all(&delivered).unwrap();
+    let rejected = temp.path().join("rejected/message.json");
+    std::fs::create_dir_all(&rejected).unwrap();
+    let settled = wake_claim_has_settled_receipt(&origin).unwrap();
+    assert_eq!(std::fs::read(&origin).unwrap(), b"origin");
+    assert_eq!(std::fs::read(&claim).unwrap(), b"claim");
+    assert!(delivered.is_dir());
+    assert!(rejected.is_dir());
+    assert!(!settled, "actual {settled}, expected false");
+}
+
+#[test]
+fn issue_3475_absent_receipts_preserve_pending_files() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let origin = temp.path().join("message.json");
+    let claim = wake_claim_path(&origin);
+    std::fs::write(&origin, b"origin").unwrap();
+    std::fs::write(&claim, b"claim").unwrap();
+    assert!(!wake_claim_has_settled_receipt(&origin).unwrap());
+    assert_eq!(std::fs::read(&origin).unwrap(), b"origin");
+    assert_eq!(std::fs::read(&claim).unwrap(), b"claim");
+}
+
+#[test]
+fn issue_3475_regular_receipt_matrix() {
+    for (delivered, rejected) in [
+        (Some(true), None),
+        (None, Some(true)),
+        (Some(true), Some(false)),
+        (Some(false), Some(true)),
+    ] {
+        let temp = tempfile::TempDir::new().unwrap();
+        let origin = temp.path().join("message.json");
+        for (side, regular) in [("delivered", delivered), ("rejected", rejected)] {
+            let Some(regular) = regular else { continue };
+            let directory = temp.path().join(side);
+            std::fs::create_dir(&directory).unwrap();
+            let receipt = directory.join("message.json");
+            if regular {
+                std::fs::write(&receipt, b"").unwrap();
+            } else {
+                std::fs::create_dir(&receipt).unwrap();
+            }
+        }
+        let expected = delivered == Some(true) || rejected == Some(true);
+        assert_eq!(
+            wake_claim_has_settled_receipt(&origin).unwrap(),
+            expected,
+            "delivered={delivered:?}, rejected={rejected:?}"
+        );
+    }
+}
+
+#[test]
+fn issue_3475_invalid_json_is_still_regular() {
+    for side in ["delivered", "rejected"] {
+        let temp = tempfile::TempDir::new().unwrap();
+        let directory = temp.path().join(side);
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("message.json"), b"not JSON").unwrap();
+        assert!(wake_claim_has_settled_receipt(&temp.path().join("message.json")).unwrap());
+    }
+}
+
+#[test]
+fn issue_3475_delivered_observation_error() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let origin = temp.path().join("invalid\0directory").join("message.json");
+    let error = wake_claim_has_settled_receipt(&origin).unwrap_err();
+    assert!(error.starts_with("could not inspect delivered payload receipt "));
+    assert!(error.contains("delivered"));
+}
+
+#[test]
+fn issue_3475_rejected_parent_file_observation() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let origin = temp.path().join("message.json");
+    std::fs::write(temp.path().join("rejected"), b"not a directory").unwrap();
+    let result = wake_claim_has_settled_receipt(&origin);
+    #[cfg(unix)]
+    assert!(result
+        .unwrap_err()
+        .starts_with("could not inspect rejected payload receipt "));
+    #[cfg(windows)]
+    assert!(!result.unwrap());
+}
+
+#[test]
+fn issue_3475_delivered_regular_short_circuits_rejected() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let origin = temp.path().join("message.json");
+    let delivered = temp.path().join("delivered");
+    std::fs::create_dir(&delivered).unwrap();
+    std::fs::write(delivered.join("message.json"), b"").unwrap();
+    std::fs::write(temp.path().join("rejected"), b"not a directory").unwrap();
+    assert!(wake_claim_has_settled_receipt(&origin).unwrap());
+}

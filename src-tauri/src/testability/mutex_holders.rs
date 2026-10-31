@@ -120,51 +120,17 @@ fn without_scan(mutex_name: String, status: &'static str, message: String) -> Ho
 }
 
 #[cfg(target_os = "windows")]
-pub fn find_holders(probe: &super::ProfileMutexGuard) -> HolderLookup {
-    use std::collections::HashMap;
+fn handle_snapshot() -> Result<(Vec<u64>, u32), String> {
     use windows_sys::Wdk::System::SystemInformation::{
         NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS,
     };
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, CompareObjectHandles, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE,
-        STATUS_INFO_LENGTH_MISMATCH, STATUS_SUCCESS,
-    };
-    use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
+    use windows_sys::Win32::Foundation::{STATUS_INFO_LENGTH_MISMATCH, STATUS_SUCCESS};
 
     /// Not exported by windows-sys 0.59; stable since Windows Vista. Mirrors the
     /// inline constants in `main.rs` and `config/profile.rs`.
     const SYSTEM_EXTENDED_HANDLE_INFORMATION: SYSTEM_INFORMATION_CLASS = 64;
     const INITIAL_BUFFER_BYTES: usize = 1 << 20;
     const MAX_BUFFER_BYTES: usize = 1 << 29;
-
-    /// `SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX`. Fields that are read have plain names;
-    /// the rest keep their layout under a leading underscore.
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct HandleEntry {
-        _object: *mut core::ffi::c_void,
-        unique_process_id: usize,
-        handle_value: usize,
-        _granted_access: u32,
-        _creator_back_trace_index: u16,
-        object_type_index: u16,
-        _handle_attributes: u32,
-        _reserved: u32,
-    }
-
-    /// `SYSTEM_HANDLE_INFORMATION_EX` header; entries follow immediately.
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct HandleTableHeader {
-        number_of_handles: usize,
-        _reserved: usize,
-    }
-
-    let mutex_name = display_mutex_name();
-    let own_pid = std::process::id() as usize;
-    let own_handle = probe.0 as usize;
 
     // 1. Snapshot the system handle table, growing on STATUS_INFO_LENGTH_MISMATCH.
     let mut buffer: Vec<u64> = vec![0; INITIAL_BUFFER_BYTES / 8];
@@ -186,25 +152,65 @@ pub fn find_holders(probe: &super::ProfileMutexGuard) -> HolderLookup {
         }
         if status == STATUS_INFO_LENGTH_MISMATCH {
             if bytes >= MAX_BUFFER_BYTES {
-                return without_scan(
-                    mutex_name,
-                    STATUS_FAILED,
-                    "handle table exceeds 512 MiB".to_string(),
-                );
+                return Err("handle table exceeds 512 MiB".to_string());
             }
             buffer = vec![0; bytes * 2 / 8];
             continue;
         }
-        return without_scan(
-            mutex_name,
-            STATUS_FAILED,
-            format!(
-                "NtQuerySystemInformation(SystemExtendedHandleInformation) returned NTSTATUS \
+        return Err(format!(
+            "NtQuerySystemInformation(SystemExtendedHandleInformation) returned NTSTATUS \
                  0x{:08X}",
-                status as u32
-            ),
-        );
+            status as u32
+        ));
     }
+
+    Ok((buffer, returned))
+}
+
+#[cfg(target_os = "windows")]
+/// `SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX`. Fields that are read have plain names;
+/// the rest keep their layout under a leading underscore.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct HandleEntry {
+    _object: *mut core::ffi::c_void,
+    unique_process_id: usize,
+    handle_value: usize,
+    _granted_access: u32,
+    _creator_back_trace_index: u16,
+    object_type_index: u16,
+    _handle_attributes: u32,
+    _reserved: u32,
+}
+
+#[cfg(target_os = "windows")]
+/// `SYSTEM_HANDLE_INFORMATION_EX` header; entries follow immediately.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct HandleTableHeader {
+    number_of_handles: usize,
+    _reserved: usize,
+}
+
+#[cfg(target_os = "windows")]
+pub fn find_holders(probe: &super::ProfileMutexGuard) -> HolderLookup {
+    use std::collections::HashMap;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, CompareObjectHandles, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let mutex_name = display_mutex_name();
+    let own_pid = std::process::id() as usize;
+    let own_handle = probe.0 as usize;
+
+    // 1. Snapshot the system handle table, growing on STATUS_INFO_LENGTH_MISMATCH.
+    let (buffer, returned) = match handle_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(message) => return without_scan(mutex_name, STATUS_FAILED, message),
+    };
 
     // 2. Parse with unaligned reads; never trust the count beyond the returned length.
     let header_len = std::mem::size_of::<HandleTableHeader>();

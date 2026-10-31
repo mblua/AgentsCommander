@@ -120,31 +120,13 @@ where
     // C1 moves no key, so the list is carried for the cleanup policy of C2.
     let _ = state_keys;
 
-    for path in [decisions, state] {
-        let parent = path
-            .parent()
-            .ok_or_else(|| format!("Local config {} has no parent directory", path.display()))?;
-        local_config::ensure_local_config_parent(parent)
-            .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
-    }
-    if let Some(path) = reservation {
-        validate_pair_paths(decisions, state, path).map_err(|e| e.to_string())?;
-    }
+    prepare_pair_paths(decisions, state, reservation)?;
     let _decisions_lock = acquire_config_file_write_lock(decisions, CONFIG_LOCK_TIMEOUT)?;
     // Every reservation publisher takes decisions first. Keep this lease while
     // classifying presence, so a packet cannot appear during ignore preflight.
     // Protect state/reservation artifacts before creating their sidecars, even
     // when a later read fails. Pending or unreadable packets never preflight.
-    if let Some(path) = reservation {
-        if read_pair_reservation(path)
-            .map_err(|e| e.to_string())?
-            .is_none()
-        {
-            if let Some(preflight) = nonpending_preflight {
-                preflight()?;
-            }
-        }
-    }
+    run_nonpending_preflight(reservation, nonpending_preflight)?;
     let _state_lock = acquire_config_file_write_lock(state, CONFIG_LOCK_TIMEOUT)?;
 
     let _reservation_lock = reservation
@@ -264,4 +246,39 @@ where
         ["after_caller_state_publish", "after_caller_decisions_write"],
         publish,
     )
+}
+
+fn prepare_pair_paths(
+    decisions: &Path,
+    state: &Path,
+    reservation: Option<&Path>,
+) -> Result<(), String> {
+    for path in [decisions, state] {
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("Local config {} has no parent directory", path.display()))?;
+        local_config::ensure_local_config_parent(parent)
+            .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+    }
+    if let Some(path) = reservation {
+        validate_pair_paths(decisions, state, path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn run_nonpending_preflight(
+    reservation: Option<&Path>,
+    nonpending_preflight: Option<&dyn Fn() -> Result<(), String>>,
+) -> Result<(), String> {
+    if let Some(path) = reservation {
+        if read_pair_reservation(path)
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
+            if let Some(preflight) = nonpending_preflight {
+                preflight()?;
+            }
+        }
+    }
+    Ok(())
 }

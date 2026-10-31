@@ -1,3 +1,5 @@
+mod packets;
+
 use crate::config::settings::AppSettings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,9 +219,9 @@ pub(super) fn commit_source_candidate_internal(
     use crate::config::settings::{
         prepare_source_candidate_with_original_links, read_own_source_journal,
         read_source_snapshot, source_original_mappings, source_transition_digest,
-        update_own_source_journal_with_validation, IdentityReferenceError, IdentityWriteLease,
-        LegacyCompatibilityOrigin, OriginInputs, SourceCoordinationError, SourceInventoryProof,
-        SourceLocalProgress, SourceWriteContext,
+        update_own_source_journal_with_validation, IdentityWriteLease, LegacyCompatibilityOrigin,
+        OriginInputs, SourceCoordinationError, SourceInventoryProof, SourceLocalProgress,
+        SourceWriteContext,
     };
     let identity = IdentityWriteLease::acquire(context, std::time::Duration::ZERO)?;
     let lease = SourceWriteContext::acquire(context, source, &identity)?;
@@ -266,25 +268,7 @@ pub(super) fn commit_source_candidate_internal(
         Some(capture.original_links()),
     )?;
     let mappings = source_original_mappings(&snapshot, &prepared)?;
-    let mut classifications = Vec::new();
-    for evidence in capture.original_targets() {
-        let target = &evidence.target;
-        let original = crate::config::coding_agent_profiles::SourceSelectionTarget {
-            root: target.root.clone(),
-            decisions: target.decisions.clone(),
-            state: target.state.clone(),
-            reservation: target.reservation.clone(),
-            physical_revision: target
-                .original_physical
-                .clone()
-                .ok_or(SourceCoordinationError::Invalid)?,
-        };
-        let affected = crate::config::coding_agent_profiles::source_target_is_affected(
-            &original, source, &mappings,
-        )?;
-        classifications.push((target.decisions.clone(), affected));
-    }
-    capture.classify(classifications)?;
+    classify_source_inventory(&mut capture, source, &mappings)?;
     prepared.revalidate_before_write(context)?;
     let operation_id = new_source_transition_id(
         #[cfg(test)]
@@ -306,23 +290,7 @@ pub(super) fn commit_source_candidate_internal(
     )?;
     let (witness, targets) = source_discovery_evidence(settings)?;
     authority.verify_complete_discovery(&witness, &targets)?;
-    authority.verify_original_classification(&|target| {
-        let original = crate::config::coding_agent_profiles::SourceSelectionTarget {
-            root: target.root.clone(),
-            decisions: target.decisions.clone(),
-            state: target.state.clone(),
-            reservation: target.reservation.clone(),
-            physical_revision: target
-                .original_physical
-                .clone()
-                .ok_or(IdentityReferenceError::Conflict)?,
-        };
-        crate::config::coding_agent_profiles::source_target_is_affected(
-            &original,
-            source,
-            &authority.inventory().mappings,
-        )
-    })?;
+    verify_source_classification(&authority, source)?;
     let rediscover = || -> Result<(), SourceTransitionError> {
         let (witness, targets) = source_discovery_evidence(settings)?;
         authority.verify_complete_discovery(&witness, &targets)?;
@@ -367,6 +335,31 @@ pub(super) fn commit_source_candidate_internal(
             Err(uncertain) => Err(uncertain.into()),
         };
     }
+    continue_candidate_intent(
+        (&identity, &lease, context),
+        operation_id,
+        &authority,
+        &rediscover,
+        reload,
+        #[cfg(test)]
+        controls,
+    )
+}
+
+fn continue_candidate_intent(
+    coordination: (
+        &crate::config::settings::IdentityWriteLease,
+        &crate::config::settings::SourceWriteContext,
+        &crate::config::settings::SourceReadContext,
+    ),
+    operation_id: String,
+    authority: &crate::config::settings::SourceInventoryProof,
+    rediscover: &dyn Fn() -> Result<(), SourceTransitionError>,
+    reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+    #[cfg(test)] controls: &IdentityTransitionTestControls,
+) -> Result<IdentityTransitionRead, SourceTransitionError> {
+    let (identity, lease, context) = coordination;
+    let validate = || authority.validate(identity, lease, context);
     let continuation = (|| -> Result<IdentityTransitionRead, SourceTransitionError> {
         source_durable_boundary(
             "intentInventory",
@@ -382,12 +375,12 @@ pub(super) fn commit_source_candidate_internal(
         validate()?;
         authority.verify_affected_before_fence()?;
         drive_identity_transition(
-            &identity,
-            &lease,
+            identity,
+            lease,
             context,
             &operation_id,
-            &authority,
-            &rediscover,
+            authority,
+            rediscover,
             #[cfg(not(test))]
             reload,
             #[cfg(test)]
@@ -440,8 +433,8 @@ pub(super) fn resume_identity_transition_internal(
     #[cfg(test)] controls: &IdentityTransitionTestControls,
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
     use crate::config::settings::{
-        read_own_source_journal, IdentityReferenceError, IdentityWriteLease,
-        SourceCoordinationError, SourceInventoryInputs, SourceInventoryProof, SourceWriteContext,
+        read_own_source_journal, IdentityWriteLease, SourceCoordinationError,
+        SourceInventoryInputs, SourceInventoryProof, SourceWriteContext,
     };
     let identity = IdentityWriteLease::acquire(context, std::time::Duration::ZERO)?;
     let lease = SourceWriteContext::acquire(context, source, &identity)?;
@@ -463,23 +456,7 @@ pub(super) fn resume_identity_transition_internal(
         &journal,
         &source_original_inventory_slots,
     )?;
-    authority.verify_original_classification(&|target| {
-        let original = crate::config::coding_agent_profiles::SourceSelectionTarget {
-            root: target.root.clone(),
-            decisions: target.decisions.clone(),
-            state: target.state.clone(),
-            reservation: target.reservation.clone(),
-            physical_revision: target
-                .original_physical
-                .clone()
-                .ok_or(IdentityReferenceError::Conflict)?,
-        };
-        crate::config::coding_agent_profiles::source_target_is_affected(
-            &original,
-            source,
-            &authority.inventory().mappings,
-        )
-    })?;
+    verify_source_classification(&authority, source)?;
     let rediscover = || -> Result<(), SourceTransitionError> {
         let (witness, targets) = source_discovery_evidence(settings)?;
         authority.verify_complete_discovery(&witness, &targets)?;
@@ -564,16 +541,9 @@ pub(super) fn drive_identity_transition(
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
     #[cfg(test)]
     let (reload, controls) = reload_and_controls;
-    use crate::config::coding_agent_profiles::{
-        apply_identity_reference_patch, prepare_identity_reference_patch,
-    };
     use crate::config::settings::{
         publish_source_intent_with_validation, read_own_source_journal,
-        recover_source_target_packet, release_identity_reference_pair_guarded,
-        source_complete_proof, source_transition_digest, source_transition_digest_bytes,
-        update_own_source_journal_with_validation, verify_completed_source_target,
-        IdentityReferenceError, IdentityReferenceRequest, SourceCoordinationError,
-        SourceLocalProgress, SourcePacketRecord, SourceReceipt, SourceRevision,
+        source_transition_digest_bytes, SourceCoordinationError, SourceLocalProgress,
     };
     let validate = || authority.validate(identity, lease, context);
     rediscover()?;
@@ -603,147 +573,27 @@ pub(super) fn drive_identity_transition(
         .clone();
     let persist =
         |next: SourceLocalProgress| -> Result<SourceLocalProgress, SourceTransitionError> {
-            let (revision, original) = read_own_source_journal(context)?;
-            let prior = original
-                .progress
-                .get(operation_id)
-                .ok_or(SourceCoordinationError::Invalid)?
-                .clone();
-            update_own_source_journal_with_validation(
-                identity,
-                lease,
-                context,
-                &revision,
-                |journal| {
-                    if journal.progress.get(operation_id) != Some(&prior) {
-                        return Err(SourceCoordinationError::Stale);
-                    }
-                    journal.progress.insert(operation_id.into(), next.clone());
-                    Ok(())
-                },
-                &validate,
-            )?;
-            let (_, current) = read_own_source_journal(context)?;
-            let confirmed = current
-                .progress
-                .get(operation_id)
-                .ok_or(SourceCoordinationError::Invalid)?;
-            if confirmed != &next {
-                return Err(SourceCoordinationError::Stale.into());
-            }
-            Ok(confirmed.clone())
+            persist_source_progress(identity, lease, context, operation_id, next, &validate)
         };
     if progress.source_published && lease.source_revision()? != after {
         return Err(SourceCoordinationError::Stale.into());
     }
-    if !progress.packets_prepared {
-        source_before_fence_boundary(
-            #[cfg(test)]
-            controls,
-        )?;
-        authority.verify_affected_before_fence()?;
-        let mappings_digest = source_transition_digest(&inventory.mappings)?;
-        for target in &inventory.targets {
-            rediscover()?;
-            validate()?;
-            let indexed = progress
-                .packets
-                .iter()
-                .find(|row| row.target == target.decisions);
-            let packet = match recover_source_target_packet(
-                target,
-                operation_id,
-                lease.physical_source_key(),
-                &mappings_digest,
-                &validate,
-            )? {
-                Some(packet) => packet,
-                None if indexed.is_some() => return Err(IdentityReferenceError::Conflict.into()),
-                None => prepare_identity_reference_patch(
-                    &target.decisions,
-                    &IdentityReferenceRequest {
-                        operation_id: operation_id.into(),
-                        source_physical_key: lease.physical_source_key().into(),
-                        mappings_digest: mappings_digest.clone(),
-                        before_protected: target.before_protected.clone(),
-                    },
-                    &inventory.source,
-                    &inventory.mappings,
-                    &validate,
-                )?,
-            };
-            source_durable_boundary(
-                "packet",
-                #[cfg(test)]
-                controls,
-            )?;
-            let hashes = packet.protected_revision_digests()?;
-            let record = SourcePacketRecord {
-                target: target.decisions.clone(),
-                target_id: packet.physical_target_identity.clone(),
-                before_protected_revision: SourceRevision::Bytes {
-                    sha256: hashes[0].clone(),
-                },
-                after_protected_revision: SourceRevision::Bytes {
-                    sha256: hashes[1].clone(),
-                },
-                plan_digest: packet.plan_digest.clone(),
-            };
-            if let Some(indexed) = indexed {
-                if indexed != &record {
-                    return Err(IdentityReferenceError::Conflict.into());
-                }
-            } else {
-                progress.packets.push(record);
-                progress = persist(progress)?;
-            }
-        }
-        source_durable_boundary(
-            "allPackets",
-            #[cfg(test)]
-            controls,
-        )?;
-        progress.packets_prepared = true;
-        progress = persist(progress)?;
-    }
+    let packets = packets::TransitionPackets {
+        lease,
+        operation_id,
+        authority,
+        rediscover,
+        validate: &validate,
+        #[cfg(test)]
+        controls,
+    };
+    progress = packets.prepare(progress, &persist)?;
     source_durable_boundary(
         "prepared",
         #[cfg(test)]
         controls,
     )?;
-    // Verify every ORIGINAL packet before recognizing/publishing source.
-    if progress.receipt.is_none() {
-        let mappings_digest = source_transition_digest(&inventory.mappings)?;
-        for row in &progress.packets {
-            let target = inventory
-                .targets
-                .iter()
-                .find(|t| t.decisions == row.target)
-                .ok_or(SourceCoordinationError::Invalid)?;
-            let packet = recover_source_target_packet(
-                target,
-                operation_id,
-                lease.physical_source_key(),
-                &mappings_digest,
-                &validate,
-            )?
-            .ok_or(IdentityReferenceError::Conflict)?;
-            let hashes = packet.protected_revision_digests()?;
-            if packet.plan_digest != row.plan_digest
-                || packet.physical_target_identity != row.target_id
-                || row.before_protected_revision
-                    != (SourceRevision::Bytes {
-                        sha256: hashes[0].clone(),
-                    })
-                || row.after_protected_revision
-                    != (SourceRevision::Bytes {
-                        sha256: hashes[1].clone(),
-                    })
-            {
-                return Err(IdentityReferenceError::Conflict.into());
-            }
-        }
-    }
+    packets.verify_original(&progress)?;
     if !progress.source_published {
         rediscover()?;
         let publication =
@@ -774,6 +624,32 @@ pub(super) fn drive_identity_transition(
         #[cfg(test)]
         controls,
     )?;
+    complete_identity_transition(&packets, context, progress, after, &persist, reload)
+}
+
+fn complete_identity_transition(
+    packets: &packets::TransitionPackets<'_>,
+    context: &crate::config::settings::SourceReadContext,
+    mut progress: crate::config::settings::SourceLocalProgress,
+    after: crate::config::settings::SourceRevision,
+    persist: &dyn Fn(
+        crate::config::settings::SourceLocalProgress,
+    )
+        -> Result<crate::config::settings::SourceLocalProgress, SourceTransitionError>,
+    reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+) -> Result<IdentityTransitionRead, SourceTransitionError> {
+    use crate::config::coding_agent_profiles::apply_identity_reference_patch;
+    use crate::config::settings::{
+        release_identity_reference_pair_guarded, source_complete_proof,
+        verify_completed_source_target, SourceCoordinationError, SourceReceipt,
+    };
+    let lease = packets.lease;
+    let operation_id = packets.operation_id;
+    let inventory = packets.authority.inventory();
+    let rediscover = packets.rediscover;
+    let validate = packets.validate;
+    #[cfg(test)]
+    let controls = packets.controls;
     rediscover()?;
     for row in &progress.packets {
         let target = inventory
@@ -782,7 +658,7 @@ pub(super) fn drive_identity_transition(
             .find(|t| t.decisions == row.target)
             .ok_or(SourceCoordinationError::Invalid)?;
         if progress.receipt.is_some() {
-            verify_completed_source_target(target, row, &validate)?;
+            verify_completed_source_target(target, row, validate)?;
         } else {
             apply_identity_reference_patch(
                 &target.decisions,
@@ -790,7 +666,7 @@ pub(super) fn drive_identity_transition(
                 &target.reservation,
                 operation_id,
                 &row.plan_digest,
-                &validate,
+                validate,
             )?;
         }
         source_durable_boundary(
@@ -826,14 +702,7 @@ pub(super) fn drive_identity_transition(
     }
     if progress.receipt.is_none() {
         // Final target verification precedes the sole complete receipt.
-        for row in &progress.packets {
-            let target = inventory
-                .targets
-                .iter()
-                .find(|t| t.decisions == row.target)
-                .ok_or(SourceCoordinationError::Invalid)?;
-            verify_completed_source_target(target, row, &validate)?;
-        }
+        packets.verify_completed(&progress)?;
         progress.receipt = Some(SourceReceipt {
             operation_id: operation_id.into(),
             source_revision: after,
@@ -852,14 +721,14 @@ pub(super) fn drive_identity_transition(
             .iter()
             .find(|t| t.decisions == row.target)
             .ok_or(SourceCoordinationError::Invalid)?;
-        verify_completed_source_target(target, row, &validate)?;
-        let proof = source_complete_proof(lease, context, operation_id, &row.target_id, &validate)?;
+        verify_completed_source_target(target, row, validate)?;
+        let proof = source_complete_proof(lease, context, operation_id, &row.target_id, validate)?;
         release_identity_reference_pair_guarded(
             &target.decisions,
             &target.state,
             &target.reservation,
             &proof,
-            &validate,
+            validate,
         )?;
         source_durable_boundary(
             "release",
@@ -941,4 +810,99 @@ pub(super) fn capture_source_inventory(
         }
     }
     Err(crate::config::settings::SourcePreparationError::StaleRevision.into())
+}
+
+fn classify_source_inventory(
+    capture: &mut crate::config::settings::SourceInventoryCapture,
+    source: &crate::config::settings::SourceRef,
+    mappings: &[crate::config::settings::SourceIdentityMapping],
+) -> Result<(), SourceTransitionError> {
+    use crate::config::settings::SourceCoordinationError;
+    let mut classifications = Vec::new();
+    for evidence in capture.original_targets() {
+        let target = &evidence.target;
+        let original = crate::config::coding_agent_profiles::SourceSelectionTarget {
+            root: target.root.clone(),
+            decisions: target.decisions.clone(),
+            state: target.state.clone(),
+            reservation: target.reservation.clone(),
+            physical_revision: target
+                .original_physical
+                .clone()
+                .ok_or(SourceCoordinationError::Invalid)?,
+        };
+        let affected = crate::config::coding_agent_profiles::source_target_is_affected(
+            &original, source, mappings,
+        )?;
+        classifications.push((target.decisions.clone(), affected));
+    }
+    capture.classify(classifications)?;
+    Ok(())
+}
+
+fn verify_source_classification(
+    authority: &crate::config::settings::SourceInventoryProof,
+    source: &crate::config::settings::SourceRef,
+) -> Result<(), SourceTransitionError> {
+    use crate::config::settings::IdentityReferenceError;
+    authority.verify_original_classification(&|target| {
+        let original = crate::config::coding_agent_profiles::SourceSelectionTarget {
+            root: target.root.clone(),
+            decisions: target.decisions.clone(),
+            state: target.state.clone(),
+            reservation: target.reservation.clone(),
+            physical_revision: target
+                .original_physical
+                .clone()
+                .ok_or(IdentityReferenceError::Conflict)?,
+        };
+        crate::config::coding_agent_profiles::source_target_is_affected(
+            &original,
+            source,
+            &authority.inventory().mappings,
+        )
+    })?;
+    Ok(())
+}
+
+fn persist_source_progress(
+    identity: &crate::config::settings::IdentityWriteLease,
+    lease: &crate::config::settings::SourceWriteContext,
+    context: &crate::config::settings::SourceReadContext,
+    operation_id: &str,
+    next: crate::config::settings::SourceLocalProgress,
+    validate: &dyn Fn() -> Result<(), crate::config::settings::IdentityReferenceError>,
+) -> Result<crate::config::settings::SourceLocalProgress, SourceTransitionError> {
+    use crate::config::settings::{
+        read_own_source_journal, update_own_source_journal_with_validation, SourceCoordinationError,
+    };
+    let (revision, original) = read_own_source_journal(context)?;
+    let prior = original
+        .progress
+        .get(operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?
+        .clone();
+    update_own_source_journal_with_validation(
+        identity,
+        lease,
+        context,
+        &revision,
+        |journal| {
+            if journal.progress.get(operation_id) != Some(&prior) {
+                return Err(SourceCoordinationError::Stale);
+            }
+            journal.progress.insert(operation_id.into(), next.clone());
+            Ok(())
+        },
+        validate,
+    )?;
+    let (_, current) = read_own_source_journal(context)?;
+    let confirmed = current
+        .progress
+        .get(operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?;
+    if confirmed != &next {
+        return Err(SourceCoordinationError::Stale.into());
+    }
+    Ok(confirmed.clone())
 }

@@ -433,8 +433,7 @@ impl DockerCommandOwnership {
     }
 }
 
-pub(super) static PROCESS_RETAINED_DOCKER_COMMANDS: OnceLock<Mutex<Vec<DockerCommandOwner>>> =
-    OnceLock::new();
+static PROCESS_RETAINED_DOCKER_COMMANDS: OnceLock<Mutex<Vec<DockerCommandOwner>>> = OnceLock::new();
 
 impl Drop for DockerCommandOwnership {
     fn drop(&mut self) {

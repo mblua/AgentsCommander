@@ -84,6 +84,52 @@ pub struct PtyInputPermit {
     _response_writer: WriterAdmission,
 }
 
+/// A generation proof with no writer, lifecycle or response-close reservation.
+pub(crate) struct PtyInputObservation {
+    session_id: Uuid,
+    route_generation: u64,
+    route_kind: SessionBackendKind,
+    route_registry: Arc<Mutex<RegistryState>>,
+}
+
+impl PtyInputPermit {
+    pub(crate) fn observation(&self) -> Result<PtyInputObservation, AppError> {
+        let registry = self
+            .route_registry
+            .lock()
+            .map_err(|_| AppError::PtyError("route_registry_poisoned".into()))?;
+        let route = registry
+            .routes
+            .get(&self.session_id)
+            .filter(|route| route.generation == self.route_generation)
+            .ok_or_else(|| AppError::PtyError("stale_pty_route".into()))?;
+        Ok(PtyInputObservation {
+            session_id: self.session_id,
+            route_generation: self.route_generation,
+            route_kind: route.kind,
+            route_registry: Arc::clone(&self.route_registry),
+        })
+    }
+}
+
+impl PtyInputObservation {
+    pub(crate) fn session_id(&self) -> Uuid {
+        self.session_id
+    }
+
+    pub(crate) fn backend_kind(&self) -> SessionBackendKind {
+        self.route_kind
+    }
+
+    pub(crate) fn is_current(&self) -> bool {
+        self.route_registry.lock().is_ok_and(|registry| {
+            registry.routes.get(&self.session_id).is_some_and(|route| {
+                route.generation == self.route_generation && route.kind == self.route_kind
+            })
+        })
+    }
+}
+
 /// Generation and lifecycle ownership for final sender-route authorization.
 /// It carries no backend or credential and cannot write PTY bytes.
 pub(crate) struct PtyAuthorityRouteProof {

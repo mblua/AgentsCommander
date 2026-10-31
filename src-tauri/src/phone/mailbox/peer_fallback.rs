@@ -20,6 +20,116 @@ use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+async fn prepare_replacement_context(
+    execution: &OwnedPeerWakeExecution,
+    continuation: &crate::session::selection::OwnedReplacementContinuation,
+    manager: &SessionManager,
+    pty: &Arc<Mutex<PtyManager>>,
+) -> Result<bool, String> {
+    use crate::session::selection::LifecycleEffectSlot;
+    if let Some(spawn) = execution.request.resolved_spawn.as_ref() {
+        if !continuation.validate_pre_effect_region(manager, pty).await {
+            return Ok(false);
+        }
+        let Some(effect) = continuation.start_effect(LifecycleEffectSlot::ContextPreparation)
+        else {
+            return Ok(false);
+        };
+        let prepared = crate::config::agent_command::prepare_agent_spawn_command(spawn);
+        effect.complete(prepared.as_ref().map(|_| None).map_err(Clone::clone));
+        if let Err(error) = prepared {
+            continuation
+                .rollback_failed_create(manager, pty, &error)
+                .await;
+            return Err(error);
+        }
+        if !continuation.preserve_context_prerequisite() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn replacement_delivery(execution: &OwnedPeerWakeExecution) -> OutboxMessage {
+    let mut delivered = execution.message.clone();
+    if execution.flags_present {
+        if let Some(spawn) = execution.request.resolved_spawn.as_ref() {
+            delivered.effective_agent_id = Some(spawn.trusted_agent_id.clone());
+            delivered.effective_profile = Some(spawn.profile_resolution.effective_profile.clone());
+            delivered.profile_fallback_applied = spawn.profile_resolution.fallback_applied;
+        } else {
+            delivered.effective_agent_id = execution.resolved_command.agent_id.clone();
+        }
+    }
+    delivered
+}
+
+fn replacement_target_ownership(
+    execution: &OwnedPeerWakeExecution,
+) -> Result<crate::api::message_store::PtyInputTargetOwnership<'_>, String> {
+    execution
+        .gate
+        .target_ownership(
+            &execution.message.to,
+            execution.stripe.as_ref().ok_or("missingTargetStripe")?,
+            execution.exact.as_ref().ok_or("missingTargetOwnership")?,
+        )
+        .map_err(|_| "invalidTargetCreateOwnership".to_string())
+}
+
+#[cfg(test)]
+enum PeerReplacementFixture {
+    NotUsed,
+    Retained,
+    Created(Box<Result<crate::commands::session::OwnedReplacementCreateStep, String>>),
+}
+
+#[cfg(test)]
+async fn execute_peer_replacement_fixture<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    execution: &mut OwnedPeerWakeExecution,
+    continuation: &crate::session::selection::OwnedReplacementContinuation,
+    fixture: Option<Arc<crate::session::selection::ReplacementFixtureControl>>,
+) -> PeerReplacementFixture {
+    let Some(control) = fixture else {
+        return PeerReplacementFixture::NotUsed;
+    };
+    let (Some(exact), Some(stripe)) = (execution.exact.take(), execution.stripe.take()) else {
+        return PeerReplacementFixture::Retained;
+    };
+    let Some(coordinator) = app.try_state::<crate::session::selection::SelectionCoordinator>()
+    else {
+        return PeerReplacementFixture::Retained;
+    };
+    let input = crate::commands::session::FixtureReplacementInput {
+        request: execution.request.clone(),
+        continuation: continuation.clone().with_fixture_control(control.clone()),
+        lease: crate::commands::session::FixtureReplacementLease::OrdinaryMoved(
+            crate::commands::session::FixturePtyCutLease {
+                gate: execution.gate.clone(),
+                target: execution.message.to.clone(),
+                exact,
+                stripe,
+            },
+        ),
+    };
+    let Some(result) = coordinator
+        .submit_inline_replacement_fixture(input, control)
+        .await
+    else {
+        return PeerReplacementFixture::Retained;
+    };
+    let Some(lease) = result.ordinary_lease else {
+        return PeerReplacementFixture::Retained;
+    };
+    if !Arc::ptr_eq(&lease.gate, &execution.gate) || lease.target != execution.message.to {
+        return PeerReplacementFixture::Retained;
+    }
+    execution.exact = Some(lease.exact);
+    execution.stripe = Some(lease.stripe);
+    PeerReplacementFixture::Created(Box::new(result.outcome))
+}
+
 impl MailboxPoller {
     pub(crate) async fn execute_owned_peer_replacement<R: tauri::Runtime>(
         &self,
@@ -60,28 +170,8 @@ impl MailboxPoller {
         if !continuation.validate_source().await {
             return Ok(OwnedPeerWakeStep::Retained);
         }
-        if let Some(spawn) = execution.request.resolved_spawn.as_ref() {
-            if !continuation
-                .validate_pre_effect_region(&manager, &pty)
-                .await
-            {
-                return Ok(OwnedPeerWakeStep::Retained);
-            }
-            let Some(effect) = continuation.start_effect(LifecycleEffectSlot::ContextPreparation)
-            else {
-                return Ok(OwnedPeerWakeStep::Retained);
-            };
-            let prepared = crate::config::agent_command::prepare_agent_spawn_command(spawn);
-            effect.complete(prepared.as_ref().map(|_| None).map_err(Clone::clone));
-            if let Err(error) = prepared {
-                continuation
-                    .rollback_failed_create(&manager, &pty, &error)
-                    .await;
-                return Err(error);
-            }
-            if !continuation.preserve_context_prerequisite() {
-                return Ok(OwnedPeerWakeStep::Retained);
-            }
+        if !prepare_replacement_context(execution, continuation, &manager, &pty).await? {
+            return Ok(OwnedPeerWakeStep::Retained);
         }
         #[cfg(test)]
         let fixture = fixture_control.filter(|control| {
@@ -90,58 +180,17 @@ impl MailboxPoller {
                 .load(std::sync::atomic::Ordering::Acquire)
         });
         #[cfg(test)]
-        let fixture_created = if let Some(control) = fixture {
-            let (Some(exact), Some(stripe)) = (execution.exact.take(), execution.stripe.take())
-            else {
-                return Ok(OwnedPeerWakeStep::Retained);
+        let fixture_created =
+            match execute_peer_replacement_fixture(app, execution, continuation, fixture).await {
+                PeerReplacementFixture::Retained => return Ok(OwnedPeerWakeStep::Retained),
+                PeerReplacementFixture::Created(created) => Some(*created),
+                PeerReplacementFixture::NotUsed => None,
             };
-            let Some(coordinator) =
-                app.try_state::<crate::session::selection::SelectionCoordinator>()
-            else {
-                return Ok(OwnedPeerWakeStep::Retained);
-            };
-            let input = crate::commands::session::FixtureReplacementInput {
-                request: execution.request.clone(),
-                continuation: continuation.clone().with_fixture_control(control.clone()),
-                lease: crate::commands::session::FixtureReplacementLease::OrdinaryMoved(
-                    crate::commands::session::FixturePtyCutLease {
-                        gate: execution.gate.clone(),
-                        target: execution.message.to.clone(),
-                        exact,
-                        stripe,
-                    },
-                ),
-            };
-            let Some(result) = coordinator
-                .submit_inline_replacement_fixture(input, control)
-                .await
-            else {
-                return Ok(OwnedPeerWakeStep::Retained);
-            };
-            let Some(lease) = result.ordinary_lease else {
-                return Ok(OwnedPeerWakeStep::Retained);
-            };
-            if !Arc::ptr_eq(&lease.gate, &execution.gate) || lease.target != execution.message.to {
-                return Ok(OwnedPeerWakeStep::Retained);
-            }
-            execution.exact = Some(lease.exact);
-            execution.stripe = Some(lease.stripe);
-            Some(result.outcome)
-        } else {
-            None
-        };
         #[cfg(test)]
         let created = match fixture_created {
             Some(created) => created,
             None => {
-                let proof = execution
-                    .gate
-                    .target_ownership(
-                        &execution.message.to,
-                        execution.stripe.as_ref().ok_or("missingTargetStripe")?,
-                        execution.exact.as_ref().ok_or("missingTargetOwnership")?,
-                    )
-                    .map_err(|_| "invalidTargetCreateOwnership".to_string())?;
+                let proof = replacement_target_ownership(execution)?;
                 crate::commands::session::create_owned_response_replacement(
                     app,
                     execution.request.clone(),
@@ -153,14 +202,7 @@ impl MailboxPoller {
         };
         #[cfg(not(test))]
         let created = {
-            let proof = execution
-                .gate
-                .target_ownership(
-                    &execution.message.to,
-                    execution.stripe.as_ref().ok_or("missingTargetStripe")?,
-                    execution.exact.as_ref().ok_or("missingTargetOwnership")?,
-                )
-                .map_err(|_| "invalidTargetCreateOwnership".to_string())?;
+            let proof = replacement_target_ownership(execution)?;
             crate::commands::session::create_owned_response_replacement(
                 app,
                 execution.request.clone(),
@@ -230,18 +272,9 @@ impl MailboxPoller {
         continuation
             .finish_observed_work_transfer(&manager, &pty, effect, true)
             .await;
-        let mut delivered = execution.message.clone();
-        if execution.flags_present {
-            if let Some(spawn) = execution.request.resolved_spawn.as_ref() {
-                delivered.effective_agent_id = Some(spawn.trusted_agent_id.clone());
-                delivered.effective_profile =
-                    Some(spawn.profile_resolution.effective_profile.clone());
-                delivered.profile_fallback_applied = spawn.profile_resolution.fallback_applied;
-            } else {
-                delivered.effective_agent_id = execution.resolved_command.agent_id.clone();
-            }
-        }
-        Ok(OwnedPeerWakeStep::Delivered(delivered))
+        Ok(OwnedPeerWakeStep::Delivered(replacement_delivery(
+            execution,
+        )))
     }
 
     async fn try_inject_peer_candidate<R: tauri::Runtime>(

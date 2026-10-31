@@ -1,3 +1,5 @@
+mod clear_watch;
+
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
@@ -340,16 +342,22 @@ fn observe_submit_seam(
     instant: &str,
     settle: SettleReadiness,
     written_payload: &str,
-) {
-    let rows = match pty_manager.lock() {
-        Ok(pty) => pty.screen_rows_snapshot(session_id),
-        Err(_) => None,
+    watch: &mut Option<clear_watch::ClearWatch>,
+) -> Result<(), String> {
+    let rows = if let Some(watch) = watch {
+        watch.seam_sample(instant)?
+    } else {
+        match pty_manager.lock() {
+            Ok(pty) => pty.screen_rows_snapshot(session_id),
+            Err(_) => None,
+        }
     };
     let observation =
         format_submit_seam_observation(instant, settle, rows.as_deref(), written_payload);
     log::info!("{} session={}", observation, session_id);
     #[cfg(test)]
     tests::record_seam_observation(session_id, observation);
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -455,9 +463,15 @@ where
     R: tauri::Runtime,
     F: FnOnce(&Session) -> Result<(), String>,
 {
-    inject_peer_wake_with_current_facts(app, session_id, text, message_id, settle, |session, _| {
-        pre_write_check(session)
-    })
+    inject_peer_wake_with_current_facts(
+        app,
+        session_id,
+        text,
+        message_id,
+        settle,
+        None,
+        |session, _| pre_write_check(session),
+    )
     .await
 }
 
@@ -469,21 +483,33 @@ pub(crate) async fn inject_peer_wake_with_current_facts<R, F>(
     text: &str,
     message_id: &str,
     settle: SettleReadiness,
+    codex_clear_observation: Option<Box<dyn FnOnce() + Send>>,
     pre_write_check: F,
 ) -> Result<(), String>
 where
     R: tauri::Runtime,
     F: FnOnce(&Session, &crate::session::manager::CarrierSnapshot) -> Result<(), String>,
 {
+    let observe_codex_clear = codex_clear_observation.is_some();
     let result = inject_text_into_session_impl(
         app,
         session_id,
         text,
         HoldPolicy::PeerWake(message_id),
         settle,
+        codex_clear_observation,
         |session, current| {
             let session = session.ok_or_else(|| format!("Session not found: {}", session_id))?;
             let current = current.expect("peer boundary supplies current facts");
+            if observe_codex_clear
+                && (!shell_file_stem(&session.shell).starts_with("codex")
+                    || resolve_logical_command_text(&session.shell, LogicalPtyCommand::Clear)
+                        != Some(text))
+            {
+                return Err(clear_watch::ClearWatchOutcome::ExecutionError
+                    .reason()
+                    .into());
+            }
             pre_write_check(session, current)
         },
     )
@@ -512,6 +538,7 @@ where
         text,
         HoldPolicy::Exempt,
         SettleReadiness::Unknown,
+        None,
         move |session, _| {
             session.ok_or_else(|| format!("Session not found: {}", session_id))?;
             pre_write_check()
@@ -564,6 +591,7 @@ where
         text,
         HoldPolicy::Exempt,
         SettleReadiness::Unknown,
+        None,
         move |session, _| {
             let session = session.ok_or_else(|| {
                 format!(
@@ -624,6 +652,7 @@ where
         text,
         HoldPolicy::InternalNotice,
         SettleReadiness::Unknown,
+        None,
         move |session, _| {
             let session = session.ok_or_else(|| {
                 format!(
@@ -730,6 +759,7 @@ async fn inject_text_into_session_impl<R, F>(
     text: &str,
     hold_policy: HoldPolicy<'_>,
     settle: SettleReadiness,
+    on_observation: Option<Box<dyn FnOnce() + Send>>,
     pre_write_check: F,
 ) -> Result<(), String>
 where
@@ -795,6 +825,30 @@ where
         _ => text,
     };
 
+    let mut watch = if on_observation.is_some() {
+        let observation = permit.observation().map_err(|_| {
+            clear_watch::ClearWatchOutcome::ExecutionError
+                .reason()
+                .to_string()
+        })?;
+        let backend = pty_manager
+            .lock()
+            .map_err(|_| {
+                clear_watch::ClearWatchOutcome::ExecutionError
+                    .reason()
+                    .to_string()
+            })?
+            .backend_for_kind(observation.backend_kind());
+        Some(clear_watch::ClearWatch::new(backend, observation))
+    } else {
+        None
+    };
+
+    #[cfg(test)]
+    if let Some(watch) = &mut watch {
+        tests::configure_clear_watch(watch);
+    }
+
     // Write the text block through the held permit.
     let written = write_injected_text_checked(
         &manager,
@@ -826,7 +880,7 @@ where
     // Supported interactive agent CLIs receive two staggered Enters. The
     // second is nonfatal because the first may already have submitted the text.
     if send_enter {
-        submit_injected_enters(&permit, &pty_manager, session_id, settle, text).await?;
+        submit_injected_enters(&permit, &pty_manager, session_id, settle, text, &mut watch).await?;
     }
 
     // #1682 - an injected text block is a message to the agent, submitted on
@@ -848,6 +902,12 @@ where
         crate::commands::pty::clear_control_write_mark(app, session_id);
     }
 
+    drop(permit);
+    if let Some(mut watch) = watch {
+        watch.on_observation(on_observation);
+        watch.finish().await.into_result()?;
+    }
+
     Ok(())
 }
 
@@ -857,15 +917,19 @@ async fn submit_injected_enters(
     session_id: Uuid,
     settle: SettleReadiness,
     text: &str,
+    watch: &mut Option<clear_watch::ClearWatch>,
 ) -> Result<(), String> {
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-    observe_submit_seam(pty_manager, session_id, "T0", settle, text);
+    observe_submit_seam(pty_manager, session_id, "T0", settle, text, watch)?;
     log::info!("[inject] sending Enter (1/2) for session {}", session_id);
     PtyManager::write_with_permit(permit, b"\r")
         .map_err(|error| format!("PTY Enter (1/2) write failed: {}", error))?;
 
+    if let Some(watch) = watch {
+        watch.submitted();
+    }
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    observe_submit_seam(pty_manager, session_id, "T1", settle, text);
+    observe_submit_seam(pty_manager, session_id, "T1", settle, text, watch)?;
     log::info!("[inject] sending Enter (2/2) for session {}", session_id);
     if let Err(error) = PtyManager::write_with_permit(permit, b"\r") {
         log::warn!(
@@ -877,9 +941,37 @@ async fn submit_injected_enters(
 
     // #2586 D2 - T2: one added wait after the second Enter, observation only.
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-    observe_submit_seam(pty_manager, session_id, "T2", settle, text);
+    observe_submit_seam(pty_manager, session_id, "T2", settle, text, watch)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+async fn test_input_write(
+    manager: &Arc<Mutex<PtyManager>>,
+    session_id: Uuid,
+    bytes: &[u8],
+) -> Result<(), crate::errors::AppError> {
+    let permit = PtyManager::acquire_input_writer(manager, session_id).await?;
+    PtyManager::write_with_permit(&permit, bytes)
+}
+
+#[cfg(test)]
+async fn test_capture(
+    manager: &Arc<Mutex<PtyManager>>,
+    id: Uuid,
+    backend: &dyn crate::pty::backend::PtyBackend,
+    hold_lifecycle: bool,
+) -> Option<Vec<String>> {
+    let permit = PtyManager::acquire_input_writer(manager, id).await.ok()?;
+    let observation = permit.observation().ok()?;
+    if hold_lifecycle {
+        let _guard = PtyManager::lock_route_for_write(&permit).ok()?;
+        clear_watch::capture_rows(&observation, backend)
+    } else {
+        drop(permit);
+        clear_watch::capture_rows(&observation, backend)
+    }
 }
 
 #[cfg(test)]

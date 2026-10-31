@@ -338,6 +338,10 @@ impl TerminalSnapshotDisclosure {
     }
 }
 
+pub(crate) trait TerminalSnapshotArtifactCleanupTaskScope {
+    fn spawn_owned(&self, future: futures::future::BoxFuture<'static, ()>);
+}
+
 pub(crate) struct TerminalSnapshotState {
     ingress: Arc<Semaphore>,
     limiter: Arc<Mutex<RollingState>>,

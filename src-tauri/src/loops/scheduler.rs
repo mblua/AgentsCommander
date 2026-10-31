@@ -380,6 +380,37 @@ impl LoopScheduler {
         Ok(())
     }
 
+    fn replayable_delivery(
+        &self,
+        dir: &Path,
+        config: &LoopConfigToml,
+        s0_generation: u64,
+        s0_raw: Option<&[u8]>,
+    ) -> Option<UnrecordedDelivery> {
+        // A clone: the record stays in the map until the replay writes it, so
+        // a scan cancelled inside the replay cannot lose it.
+        let record = self.peek_unrecorded_delivery(dir)?;
+        if !config.loop_def.enabled {
+            self.take_unrecorded_delivery(dir);
+            log::warn!(
+                "[loops] Dropping unrecorded delivery for {}: the Loop is disabled",
+                dir.display()
+            );
+        } else if record.generation != s0_generation
+            || (s0_raw != record.state_before.as_deref() && s0_raw != Some(&record.state_after[..]))
+            || !loop_delivery_config_matches(config, &record.config)
+        {
+            self.take_unrecorded_delivery(dir);
+            log::warn!(
+                "[loops] Dropping unrecorded delivery for {}: the Loop or its state changed",
+                dir.display()
+            );
+        } else {
+            return Some(record);
+        }
+        None
+    }
+
     async fn scan_loop(
         &self,
         context: &SchedulerContext,
@@ -402,37 +433,10 @@ impl LoopScheduler {
             (config, state, raw, self.loop_generation(dir))
         };
         let s0_raw = s0_raw.as_deref();
-        // A clone: the record stays in the map until the replay writes it, so
-        // a scan cancelled inside the replay cannot lose it.
-        if let Some(record) = self.peek_unrecorded_delivery(dir) {
-            if !config.loop_def.enabled {
-                self.take_unrecorded_delivery(dir);
-                log::warn!(
-                    "[loops] Dropping unrecorded delivery for {}: the Loop is disabled",
-                    dir.display()
-                );
-            } else if record.generation != s0_generation
-                || (s0_raw != record.state_before.as_deref()
-                    && s0_raw != Some(&record.state_after[..]))
-                || !loop_delivery_config_matches(&config, &record.config)
-            {
-                self.take_unrecorded_delivery(dir);
-                log::warn!(
-                    "[loops] Dropping unrecorded delivery for {}: the Loop or its state changed",
-                    dir.display()
-                );
-            } else {
-                return self
-                    .retry_unrecorded_delivery(
-                        context,
-                        project_dir,
-                        dir,
-                        record,
-                        s0_generation,
-                        s0_raw,
-                    )
-                    .await;
-            }
+        if let Some(record) = self.replayable_delivery(dir, &config, s0_generation, s0_raw) {
+            return self
+                .retry_unrecorded_delivery(context, project_dir, dir, record, s0_generation, s0_raw)
+                .await;
         }
         if !config.loop_def.enabled {
             return Ok(());

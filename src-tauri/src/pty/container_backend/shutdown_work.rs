@@ -672,9 +672,8 @@ impl ContainerShutdownWorkRegistry {
     }
 }
 
-pub(super) static PROCESS_RETAINED_CONTAINER_WORKERS: OnceLock<
-    Mutex<Vec<std::thread::JoinHandle<()>>>,
-> = OnceLock::new();
+static PROCESS_RETAINED_CONTAINER_WORKERS: OnceLock<Mutex<Vec<std::thread::JoinHandle<()>>>> =
+    OnceLock::new();
 
 impl ContainerShutdownWorkRegistry {
     pub(super) fn join_idle_workers_until(

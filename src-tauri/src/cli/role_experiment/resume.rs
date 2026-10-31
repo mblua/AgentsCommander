@@ -48,24 +48,10 @@ pub(super) fn load_and_validate_resume_artifacts(
     let report_path = run_dir.join("report.json");
     let markdown_path = run_dir.join("report.md");
     let state_dir = run_dir.join("attempt-state");
-    for path in [&run_path, &attempts_path, &report_path, &markdown_path] {
-        reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
-        if !directories::experiment_path_is_file(path) {
-            return Err(vec![err_at_path(
-                "run_artifact_missing",
-                format!("Run artifact not found: {}", path.display()),
-                path,
-            )]);
-        }
-    }
-    reject_link_or_reparse(&state_dir, "run_artifact_link_or_reparse", None)?;
-    if !directories::experiment_path_is_dir(&state_dir) {
-        return Err(vec![err_at_path(
-            "run_artifact_missing",
-            format!("Run artifact directory not found: {}", state_dir.display()),
-            &state_dir,
-        )]);
-    }
+    validate_resume_artifact_presence(
+        [&run_path, &attempts_path, &report_path, &markdown_path],
+        &state_dir,
+    )?;
 
     let run_artifact: RunArtifact = read_json(&run_path)
         .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &run_path)])?;
@@ -138,6 +124,59 @@ pub(super) fn load_and_validate_resume_artifacts(
             ));
         }
     }
+    validate_resume_attempt_and_report_identity(
+        &attempts,
+        &expected_attempts,
+        &report_artifact,
+        &expected_variants,
+        suite,
+        &mut errors,
+    );
+
+    let Some(workgroup) = run_artifact.workgroup.clone() else {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Run artifact is missing room metadata",
+            None,
+        ));
+        return Err(errors);
+    };
+    if workgroup.run_id != run_id
+        || workgroup.experiment != loaded.experiment.name
+        || !workgroup.retained
+        || workgroup.cleanup_supported
+    {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Run room metadata does not match resume arguments",
+            None,
+        ));
+    }
+    if let Err(mut workgroup_errors) = validate_workgroup_under_ac_root(&loaded.ac_root, &workgroup)
+    {
+        errors.append(&mut workgroup_errors);
+    }
+    if let Err(mut state_errors) =
+        validate_attempt_state_contract(&state_dir, &attempts, &workgroup)
+    {
+        errors.append(&mut state_errors);
+    }
+
+    if errors.is_empty() {
+        Ok((run_artifact, attempts, report_artifact, workgroup))
+    } else {
+        Err(errors)
+    }
+}
+
+fn validate_resume_attempt_and_report_identity(
+    attempts: &[AttemptArtifact],
+    expected_attempts: &[AttemptArtifact],
+    report_artifact: &ReportArtifact,
+    expected_variants: &[RunVariantArtifact],
+    suite: &ParsedPromptSuite,
+    errors: &mut Vec<CliError>,
+) {
     if attempts.len() != expected_attempts.len() {
         errors.push(err(
             "run_artifact_mismatch",
@@ -199,41 +238,31 @@ pub(super) fn load_and_validate_resume_artifacts(
             ));
         }
     }
+}
 
-    let Some(workgroup) = run_artifact.workgroup.clone() else {
-        errors.push(err(
-            "run_artifact_mismatch",
-            "Run artifact is missing room metadata",
-            None,
-        ));
-        return Err(errors);
-    };
-    if workgroup.run_id != run_id
-        || workgroup.experiment != loaded.experiment.name
-        || !workgroup.retained
-        || workgroup.cleanup_supported
-    {
-        errors.push(err(
-            "run_artifact_mismatch",
-            "Run room metadata does not match resume arguments",
-            None,
-        ));
+fn validate_resume_artifact_presence(
+    paths: [&Path; 4],
+    state_dir: &Path,
+) -> Result<(), Vec<CliError>> {
+    for path in paths {
+        reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
+        if !directories::experiment_path_is_file(path) {
+            return Err(vec![err_at_path(
+                "run_artifact_missing",
+                format!("Run artifact not found: {}", path.display()),
+                path,
+            )]);
+        }
     }
-    if let Err(mut workgroup_errors) = validate_workgroup_under_ac_root(&loaded.ac_root, &workgroup)
-    {
-        errors.append(&mut workgroup_errors);
+    reject_link_or_reparse(state_dir, "run_artifact_link_or_reparse", None)?;
+    if !directories::experiment_path_is_dir(state_dir) {
+        return Err(vec![err_at_path(
+            "run_artifact_missing",
+            format!("Run artifact directory not found: {}", state_dir.display()),
+            state_dir,
+        )]);
     }
-    if let Err(mut state_errors) =
-        validate_attempt_state_contract(&state_dir, &attempts, &workgroup)
-    {
-        errors.append(&mut state_errors);
-    }
-
-    if errors.is_empty() {
-        Ok((run_artifact, attempts, report_artifact, workgroup))
-    } else {
-        Err(errors)
-    }
+    Ok(())
 }
 
 fn validate_attempt_state_contract(

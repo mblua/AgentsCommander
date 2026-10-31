@@ -340,24 +340,7 @@ impl SelectionCoordinator {
         let transaction = SelectionTransaction::new(app.clone(), Weak::new())
             .with_lifecycle_executor(Arc::clone(&executor));
         if matches!(&owner.descriptor, OwnedReplacementDescriptor::EntryRoot(_)) {
-            let effect = {
-                owner.state.lock().ok().and_then(|mut state| {
-                    if state.executor_nonce != executor_nonce
-                        || state.stage != ReplacementStage::EntryWaiting
-                    {
-                        return None;
-                    }
-                    let attempt = Uuid::new_v4();
-                    state.effects[LifecycleEffectSlot::RootDirectory as usize] =
-                        OwnedEffectState::Running(attempt);
-                    Some(LifecycleEffectGuard {
-                        owner: owner.clone(),
-                        slot: LifecycleEffectSlot::RootDirectory,
-                        attempt,
-                        completed: false,
-                    })
-                })
-            };
+            let effect = Self::initial_root_directory_effect(&owner, executor_nonce);
             let Some(effect) = effect else {
                 return std::future::pending().await;
             };
@@ -490,6 +473,28 @@ impl SelectionCoordinator {
                 std::future::pending().await
             }
         }
+    }
+
+    fn initial_root_directory_effect(
+        owner: &Arc<ReplacementOwner>,
+        executor_nonce: Uuid,
+    ) -> Option<LifecycleEffectGuard> {
+        owner.state.lock().ok().and_then(|mut state| {
+            if state.executor_nonce != executor_nonce
+                || state.stage != ReplacementStage::EntryWaiting
+            {
+                return None;
+            }
+            let attempt = Uuid::new_v4();
+            state.effects[LifecycleEffectSlot::RootDirectory as usize] =
+                OwnedEffectState::Running(attempt);
+            Some(LifecycleEffectGuard {
+                owner: owner.clone(),
+                slot: LifecycleEffectSlot::RootDirectory,
+                attempt,
+                completed: false,
+            })
+        })
     }
 }
 

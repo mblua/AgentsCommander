@@ -144,6 +144,151 @@ pub(crate) async fn execute_external_root_transaction<R: tauri::Runtime>(
     }
 }
 
+struct RootAgentLaunch {
+    shell: String,
+    shell_args: Vec<String>,
+    agent_id: Option<String>,
+    agent_label: Option<String>,
+    resolved_spawn: Option<crate::config::agent_command::AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
+}
+
+async fn resolve_root_agent_launch(
+    settings: &SettingsState,
+    root_agent_path: &str,
+    request: &RootJobRequest,
+) -> Result<RootAgentLaunch, String> {
+    let last_coding_agent = crate::config::root_agent::read_last_coding_agent(root_agent_path);
+    let (shell, shell_args, agent_id, agent_label) = {
+        let settings = settings
+            .current_read()
+            .await
+            .map_err(|error| error.to_string())?;
+        resolve_root_agent_command(
+            &settings,
+            request.requested_agent_id.as_deref(),
+            last_coding_agent.as_deref(),
+        )?
+    };
+    let (resolved_spawn, resolved_agent_host_shell) = if let Some(agent_id) = agent_id.as_deref() {
+        // #1271 - build the spawn and copy the configured default host shell
+        // from the SAME single guard, before any await, so the pair can never
+        // mix across a configuration change (Phase 1 items 1-2; mirrors the
+        // restart pattern).
+        let settings = settings
+            .current_read()
+            .await
+            .map_err(|error| error.to_string())?;
+        let spawn = build_configured_agent_spawn_for_cwd(
+            &settings,
+            agent_id,
+            root_agent_path,
+            request.requested_profile.as_deref(),
+        )?;
+        let host_shell = Some(ResolvedAgentHostShell {
+            program: settings.default_shell.clone(),
+            args: settings.default_shell_args.clone(),
+        });
+        (spawn, host_shell)
+    } else {
+        (None, None)
+    };
+    let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
+        (
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            Some(spawn.trusted_agent_label.clone()),
+        )
+    } else {
+        (shell, shell_args, agent_label)
+    };
+    Ok(RootAgentLaunch {
+        shell,
+        shell_args,
+        agent_id,
+        agent_label,
+        resolved_spawn,
+        resolved_agent_host_shell,
+    })
+}
+
+async fn reuse_live_root_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    session_id: Uuid,
+    select_after: bool,
+) -> Result<SessionInfo, String> {
+    // Reuse has no new binding/backend or replacement effects. Track
+    // its actual selection/persistence/publication and final lookup.
+    let publication = transaction
+        .start_lifecycle_effect(crate::session::selection::LifecycleEffectSlot::Publication);
+    if transaction.has_lifecycle_entry() && publication.is_none() {
+        return std::future::pending().await;
+    }
+    let result = async {
+        if select_after {
+            let decision = transaction
+                .live_decision(session_id)
+                .ok_or_else(|| "Root session has no displayable PTY".to_string())?;
+            let committed = transaction
+                .commit(
+                    decision,
+                    SelectionCause::UserSwitch,
+                    LifecycleMutations::default(),
+                )
+                .await?;
+            if let Some(selection) = committed.selection.as_ref() {
+                transaction
+                    .persist(SelectionSource::UserSwitch, Some(session_id))
+                    .await;
+                transaction.publish_selection(selection);
+            }
+        }
+        session_mgr
+            .read()
+            .await
+            .get_session(session_id)
+            .await
+            .map(|session| SessionInfo::from(&session))
+            .ok_or_else(|| "Root session disappeared during reuse".to_string())
+    }
+    .await;
+    if let Some(publication) = publication {
+        publication.complete(
+            result
+                .as_ref()
+                .map(|info| Some(info.id.clone()))
+                .map_err(Clone::clone),
+        );
+        transaction.observe_reuse_live_result(&result);
+    }
+    result
+}
+
+async fn select_created_root_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+    intent: TrustedCreateIntent,
+) -> Result<(), String> {
+    let decision = transaction
+        .live_decision(session_id)
+        .ok_or_else(|| "new Root session has no displayable PTY".to_string())?;
+    let committed = transaction
+        .commit(
+            decision,
+            SelectionCause::SessionCreated(intent),
+            LifecycleMutations::default(),
+        )
+        .await?;
+    if let Some(selection) = committed.selection.as_ref() {
+        transaction
+            .persist(SelectionSource::SessionCreated, Some(session_id))
+            .await;
+        transaction.publish_selection(selection);
+    }
+    Ok(())
+}
+
 pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     request: RootJobRequest,
@@ -186,52 +331,13 @@ pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
             .has_session(session_id);
         match classify_existing_root(&existing.status, has_pty) {
             ExistingRootAction::ReuseLive => {
-                // Reuse has no new binding/backend or replacement effects. Track
-                // its actual selection/persistence/publication and final lookup.
-                let publication = transaction.start_lifecycle_effect(
-                    crate::session::selection::LifecycleEffectSlot::Publication,
-                );
-                if transaction.has_lifecycle_entry() && publication.is_none() {
-                    return std::future::pending().await;
-                }
-                let result = async {
-                    if request.select_after {
-                        let decision = transaction
-                            .live_decision(session_id)
-                            .ok_or_else(|| "Root session has no displayable PTY".to_string())?;
-                        let committed = transaction
-                            .commit(
-                                decision,
-                                SelectionCause::UserSwitch,
-                                LifecycleMutations::default(),
-                            )
-                            .await?;
-                        if let Some(selection) = committed.selection.as_ref() {
-                            transaction
-                                .persist(SelectionSource::UserSwitch, Some(session_id))
-                                .await;
-                            transaction.publish_selection(selection);
-                        }
-                    }
-                    session_mgr
-                        .read()
-                        .await
-                        .get_session(session_id)
-                        .await
-                        .map(|session| SessionInfo::from(&session))
-                        .ok_or_else(|| "Root session disappeared during reuse".to_string())
-                }
+                return reuse_live_root_transaction(
+                    transaction,
+                    &session_mgr,
+                    session_id,
+                    request.select_after,
+                )
                 .await;
-                if let Some(publication) = publication {
-                    publication.complete(
-                        result
-                            .as_ref()
-                            .map(|info| Some(info.id.clone()))
-                            .map_err(Clone::clone),
-                    );
-                    transaction.observe_reuse_live_result(&result);
-                }
-                return result;
             }
             ExistingRootAction::WakeDormant | ExistingRootAction::DiscardMissingPty => {
                 let wake_dormant = matches!(
@@ -267,50 +373,14 @@ pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
         }
     }
 
-    let last_coding_agent = crate::config::root_agent::read_last_coding_agent(&root_agent_path);
-    let (shell, shell_args, agent_id, agent_label) = {
-        let settings = settings
-            .current_read()
-            .await
-            .map_err(|error| error.to_string())?;
-        resolve_root_agent_command(
-            &settings,
-            request.requested_agent_id.as_deref(),
-            last_coding_agent.as_deref(),
-        )?
-    };
-    let (resolved_spawn, resolved_agent_host_shell) = if let Some(agent_id) = agent_id.as_deref() {
-        // #1271 - build the spawn and copy the configured default host shell
-        // from the SAME single guard, before any await, so the pair can never
-        // mix across a configuration change (Phase 1 items 1-2; mirrors the
-        // restart pattern).
-        let settings = settings
-            .current_read()
-            .await
-            .map_err(|error| error.to_string())?;
-        let spawn = build_configured_agent_spawn_for_cwd(
-            &settings,
-            agent_id,
-            &root_agent_path,
-            request.requested_profile.as_deref(),
-        )?;
-        let host_shell = Some(ResolvedAgentHostShell {
-            program: settings.default_shell.clone(),
-            args: settings.default_shell_args.clone(),
-        });
-        (spawn, host_shell)
-    } else {
-        (None, None)
-    };
-    let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
-        (
-            spawn.shell.clone(),
-            spawn.shell_args.clone(),
-            Some(spawn.trusted_agent_label.clone()),
-        )
-    } else {
-        (shell, shell_args, agent_label)
-    };
+    let RootAgentLaunch {
+        shell,
+        shell_args,
+        agent_id,
+        agent_label,
+        resolved_spawn,
+        resolved_agent_host_shell,
+    } = resolve_root_agent_launch(&settings, &root_agent_path, &request).await?;
     let target_ownership = context
         .authority()
         .map(|authority| authority.target_ownership())
@@ -350,22 +420,7 @@ pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
     .await?;
     let session_id = Uuid::parse_str(&info.id).map_err(|error| error.to_string())?;
     if request.select_after {
-        let decision = transaction
-            .live_decision(session_id)
-            .ok_or_else(|| "new Root session has no displayable PTY".to_string())?;
-        let committed = transaction
-            .commit(
-                decision,
-                SelectionCause::SessionCreated(request.intent),
-                LifecycleMutations::default(),
-            )
-            .await?;
-        if let Some(selection) = committed.selection.as_ref() {
-            transaction
-                .persist(SelectionSource::SessionCreated, Some(session_id))
-                .await;
-            transaction.publish_selection(selection);
-        }
+        select_created_root_transaction(transaction, session_id, request.intent).await?;
     }
     attach_local_config_telegram_if_any(app, session_id, &root_agent_path).await;
     Ok(info)

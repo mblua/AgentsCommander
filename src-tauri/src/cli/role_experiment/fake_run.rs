@@ -148,29 +148,7 @@ pub(super) fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<Cli
         render_report_markdown(&report_artifact).as_bytes(),
     )?;
 
-    warnings.extend([
-        warn(
-            "run_workgroup_retained",
-            "Run room was retained for inspection; cleanup is not implemented in Phase 3A.",
-            None,
-        ),
-        warn(
-            "transcript_capture_best_effort",
-            "Provider-native transcript paths may be unavailable; \
-             use run metadata and retained room for inspection.",
-            None,
-        ),
-        warn(
-            "no_scoring",
-            "Phase 3A does not score attempts or select winners.",
-            None,
-        ),
-        warn(
-            "real_execution_deferred",
-            "Real PTY execution is deferred until an app or daemon runtime bridge is available.",
-            None,
-        ),
-    ]);
+    warnings.extend(fake_execution_warnings());
 
     Ok(CommandOutput {
         data: serde_json::json!({
@@ -202,6 +180,32 @@ pub(super) fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<Cli
         warnings,
         errors: Vec::new(),
     })
+}
+
+fn fake_execution_warnings() -> [CliWarning; 4] {
+    [
+        warn(
+            "run_workgroup_retained",
+            "Run room was retained for inspection; cleanup is not implemented in Phase 3A.",
+            None,
+        ),
+        warn(
+            "transcript_capture_best_effort",
+            "Provider-native transcript paths may be unavailable; \
+             use run metadata and retained room for inspection.",
+            None,
+        ),
+        warn(
+            "no_scoring",
+            "Phase 3A does not score attempts or select winners.",
+            None,
+        ),
+        warn(
+            "real_execution_deferred",
+            "Real PTY execution is deferred until an app or daemon runtime bridge is available.",
+            None,
+        ),
+    ]
 }
 
 fn prepare_execution_plan(

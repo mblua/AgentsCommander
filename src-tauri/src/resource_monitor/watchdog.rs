@@ -73,6 +73,12 @@ impl QuarantineRetryReport {
             message: None,
         }
     }
+
+    fn error(session_id: Uuid, root_pid: u32, message: String) -> Self {
+        let mut report = Self::new(session_id, root_pid, QuarantineRetryPath::Error);
+        report.message = Some(message);
+        report
+    }
 }
 
 /// #1151 - only an explicit `NoPublicSession` may fall through to the registry-only
@@ -226,13 +232,7 @@ pub(crate) async fn retry_quarantined_group(
             // Acting on the registry then is out of policy and buys nothing: the next
             // tick retries.
             log::warn!("[resource-watchdog] coordinator kill failed session={session_id}: {error}");
-            let mut report = QuarantineRetryReport::new(
-                session_id,
-                root_identity.pid,
-                QuarantineRetryPath::Error,
-            );
-            report.message = Some(error);
-            return report;
+            return QuarantineRetryReport::error(session_id, root_identity.pid, error);
         }
     };
 
@@ -291,23 +291,11 @@ pub(crate) async fn retry_quarantined_group(
             log::warn!(
                 "[resource-watchdog] orphan retry failed session={session_id}: {join_error}"
             );
-            let mut report = QuarantineRetryReport::new(
-                session_id,
-                root_identity.pid,
-                QuarantineRetryPath::Error,
-            );
-            report.message = Some(join_error.to_string());
-            report
+            QuarantineRetryReport::error(session_id, root_identity.pid, join_error.to_string())
         }
         Ok(Err(message)) => {
             log::warn!("[resource-watchdog] orphan retry failed session={session_id}: {message}");
-            let mut report = QuarantineRetryReport::new(
-                session_id,
-                root_identity.pid,
-                QuarantineRetryPath::Error,
-            );
-            report.message = Some(message);
-            report
+            QuarantineRetryReport::error(session_id, root_identity.pid, message)
         }
         Ok(Ok(QuarantineRetryOutcome::Skipped(reason))) => {
             log::debug!(
