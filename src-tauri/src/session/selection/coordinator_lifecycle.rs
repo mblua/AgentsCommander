@@ -284,19 +284,18 @@ impl SelectionCoordinator {
         }
     }
 
-    /// Bootstrap from current retired Confirmed A and a real healthy reservation.
-    pub(crate) fn admit_owned_replacement(
-        &self,
+    fn replacement_admission_candidate(
         permit: &crate::session::manager::CarrierMutationPermit,
         current: &crate::session::manager::CarrierSnapshot,
         tracker: &crate::pty::manager::ResponseCloseState,
         pty: &Arc<Mutex<PtyManager>>,
-        prepared: PreparedOwnedReplacement,
-    ) -> Result<ReplacementAdmissionStep, String> {
-        use crate::pty::manager::{CreateAdmission, CreateClassification, ResponseRouteIdentity};
-        let OwnedReplacementDescriptor::Replacement(descriptor) = &prepared.owner.descriptor else {
-            return Err(SelectionCoordinatorError::Unavailable.to_string());
-        };
+        descriptor: &ResolvedReplacement,
+    ) -> Option<(
+        crate::config::sessions_persistence::PublishedCarrier,
+        crate::session::session::Session,
+        crate::pty::manager::CreateClassification,
+    )> {
+        use crate::pty::manager::{CreateClassification, ResponseRouteIdentity};
         let carrier = crate::config::sessions_persistence::retained_carrier_for_replacement(
             permit,
             &descriptor.directory,
@@ -304,36 +303,29 @@ impl SelectionCoordinator {
             descriptor.previous.id,
             current,
         );
-        let Some(carrier) = carrier.filter(|carrier| {
+        let carrier = carrier.filter(|carrier| {
             carrier.nonce == descriptor.carrier.nonce && carrier.token == descriptor.previous.token
-        }) else {
-            return Ok(ReplacementAdmissionStep::Waiting(prepared));
-        };
+        })?;
         if descriptor.backend != crate::pty::backend::SessionBackendKind::LocalProcess
             || !descriptor
                 .replica_identity
                 .as_ref()
                 .is_some_and(|physical| carrier.retired_local_replica_matches(physical))
         {
-            return Ok(ReplacementAdmissionStep::Waiting(prepared));
+            return None;
         }
-        let Some(generation) = carrier.retired_local_generation() else {
-            return Ok(ReplacementAdmissionStep::Waiting(prepared));
-        };
-        let Some(previous) = current
+        let generation = carrier.retired_local_generation()?;
+        let previous = current
             .rows
             .iter()
             .find(|row| row.id == carrier.session_id)
-            .cloned()
-        else {
-            return Ok(ReplacementAdmissionStep::Waiting(prepared));
-        };
+            .cloned()?;
         let absent = pty.try_lock().ok().is_some_and(|pty| {
             pty.backend_kind(carrier.session_id).is_none()
                 && tracker.generation(carrier.session_id).is_none()
         });
         if !absent {
-            return Ok(ReplacementAdmissionStep::Waiting(prepared));
+            return None;
         }
         let epoch = match crate::config::sessions_persistence::classify_create_carrier_scope(
             permit,
@@ -345,7 +337,7 @@ impl SelectionCoordinator {
                 preparing_owner: None,
                 ..
             } => epoch,
-            _ => return Ok(ReplacementAdmissionStep::Waiting(prepared)),
+            _ => return None,
         };
         let classification = CreateClassification::Protected {
             identity: ResponseRouteIdentity {
@@ -357,6 +349,27 @@ impl SelectionCoordinator {
                 carrier_version: carrier.version,
             },
             publication_epoch: epoch,
+        };
+        Some((carrier, previous, classification))
+    }
+
+    /// Bootstrap from current retired Confirmed A and a real healthy reservation.
+    pub(crate) fn admit_owned_replacement(
+        &self,
+        permit: &crate::session::manager::CarrierMutationPermit,
+        current: &crate::session::manager::CarrierSnapshot,
+        tracker: &crate::pty::manager::ResponseCloseState,
+        pty: &Arc<Mutex<PtyManager>>,
+        prepared: PreparedOwnedReplacement,
+    ) -> Result<ReplacementAdmissionStep, String> {
+        use crate::pty::manager::CreateAdmission;
+        let OwnedReplacementDescriptor::Replacement(descriptor) = &prepared.owner.descriptor else {
+            return Err(SelectionCoordinatorError::Unavailable.to_string());
+        };
+        let Some((carrier, previous, classification)) =
+            Self::replacement_admission_candidate(permit, current, tracker, pty, descriptor)
+        else {
+            return Ok(ReplacementAdmissionStep::Waiting(prepared));
         };
         let reservation = match tracker.reserve_create_owner(
             &descriptor.target,
@@ -545,6 +558,35 @@ impl SelectionCoordinator {
         self.insert_lifecycle_entry(&owner)
     }
 
+    fn lifecycle_results_match(
+        recorded: &Result<SessionInfo, String>,
+        actual: &Result<SessionInfo, String>,
+    ) -> bool {
+        match (recorded, actual) {
+            (Ok(recorded), Ok(actual)) => serde_json::to_value(recorded)
+                .ok()
+                .zip(serde_json::to_value(actual).ok())
+                .is_some_and(|(recorded, actual)| recorded == actual),
+            (Err(recorded), Err(actual)) => recorded == actual,
+            _ => false,
+        }
+    }
+
+    fn lifecycle_binding_released(
+        current: &crate::session::manager::CarrierSnapshot,
+        binding: PendingCreateBinding,
+        stage: EntryCreateStage,
+    ) -> bool {
+        let id = binding.session_id();
+        match stage {
+            EntryCreateStage::Reserved | EntryCreateStage::RolledBack => {
+                !current.pending_ids.contains(&id) && !current.rows.iter().any(|row| row.id == id)
+            }
+            EntryCreateStage::Finalized => !current.pending_ids.contains(&id),
+            _ => false,
+        }
+    }
+
     pub(super) async fn finish_lifecycle_entry(
         &self,
         owner: &Arc<ReplacementOwner>,
@@ -574,15 +616,7 @@ impl SelectionCoordinator {
             (Some((binding, stage)), Some(permit)) => {
                 manager
                     .with_current_carrier_snapshot(permit, |current| {
-                        let id = binding.session_id();
-                        match stage {
-                            EntryCreateStage::Reserved | EntryCreateStage::RolledBack => {
-                                !current.pending_ids.contains(&id)
-                                    && !current.rows.iter().any(|row| row.id == id)
-                            }
-                            EntryCreateStage::Finalized => !current.pending_ids.contains(&id),
-                            _ => false,
-                        }
+                        Self::lifecycle_binding_released(current, binding, stage)
                     })
                     .await
             }
@@ -600,14 +634,7 @@ impl SelectionCoordinator {
                 state.publication_observed = true;
                 let reuse_live_returned =
                     state.reuse_live_result.as_ref().is_some_and(|recorded| {
-                        match (recorded, &terminal_result) {
-                            (Ok(recorded), Ok(actual)) => serde_json::to_value(recorded)
-                                .ok()
-                                .zip(serde_json::to_value(actual).ok())
-                                .is_some_and(|(recorded, actual)| recorded == actual),
-                            (Err(recorded), Err(actual)) => recorded == actual,
-                            _ => false,
-                        }
+                        Self::lifecycle_results_match(recorded, &terminal_result)
                     });
                 let body_terminal = state.entry_body_terminal(&terminal_result);
                 let worker_released = state.stage == ReplacementStage::Returned
