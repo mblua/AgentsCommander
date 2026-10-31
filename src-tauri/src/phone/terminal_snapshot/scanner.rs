@@ -322,50 +322,21 @@ impl SnapshotMailboxScanner {
             if self.shutdown_owner.is_sealed() {
                 break;
             }
-            let source_key = format!(
-                "host:{:016x}:{:016x}",
-                request_directory_identity.object_id.volume,
-                request_directory_identity.object_id.file
-            );
-            let Ok(ingress) = snapshot_state.try_admit_ingress(source_key) else {
-                break;
-            };
-            let request_id = protocol_request_name(&name).unwrap_or_default().to_string();
-            let request_path = request_directory.join(&name);
-            let processing = request_directory.join(format!(
-                ".{}.{}.terminal-snapshot-processing",
+            let ClaimedRequest {
+                ingress,
                 request_id,
-                Uuid::new_v4()
-            ));
-            if !private_regular_file_mode(&request_path) {
-                continue;
-            }
-            let Ok(original) = crate::path_identity::verify_regular_file(&request_path) else {
-                continue;
-            };
-            let Ok(reservation) = snapshot_state.reserve_existing_artifact(
+                processing,
+                claimed,
+            } = match claim_request(
+                snapshot_state.inner(),
                 &request_directory,
                 &request_directory_identity,
-                original.object_id,
-            ) else {
-                break;
+                &name,
+            ) {
+                Ok(claimed) => claimed,
+                Err(ClaimFailure::Skip) => continue,
+                Err(ClaimFailure::Stop) => break,
             };
-            if crate::path_identity::publish_new_file_atomic(&request_path, &processing).is_err() {
-                continue;
-            }
-            let Ok(claimed) = crate::path_identity::verify_regular_file(&processing) else {
-                continue;
-            };
-            if !crate::path_identity::same_object(&original, &claimed) {
-                continue;
-            }
-            if reservation
-                .commit(processing.clone(), claimed.clone())
-                .is_err()
-            {
-                safe_remove(&processing, &claimed);
-                continue;
-            }
             let snapshot_state = snapshot_state.inner().clone();
             let cleanup_state = Arc::clone(&snapshot_state);
             let cleanup_processing = processing.clone();
@@ -429,6 +400,75 @@ impl SnapshotMailboxScanner {
             }
         }
     }
+}
+
+struct ClaimedRequest {
+    ingress: tokio::sync::OwnedSemaphorePermit,
+    request_id: String,
+    processing: PathBuf,
+    claimed: crate::path_identity::VerifiedPathIdentity,
+}
+
+enum ClaimFailure {
+    Skip,
+    Stop,
+}
+
+fn claim_request(
+    snapshot_state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
+    request_directory: &Path,
+    request_directory_identity: &crate::path_identity::VerifiedPathIdentity,
+    name: &str,
+) -> Result<ClaimedRequest, ClaimFailure> {
+    let source_key = format!(
+        "host:{:016x}:{:016x}",
+        request_directory_identity.object_id.volume, request_directory_identity.object_id.file
+    );
+    let Ok(ingress) = snapshot_state.try_admit_ingress(source_key) else {
+        return Err(ClaimFailure::Stop);
+    };
+    let request_id = protocol_request_name(name).unwrap_or_default().to_string();
+    let request_path = request_directory.join(name);
+    let processing = request_directory.join(format!(
+        ".{}.{}.terminal-snapshot-processing",
+        request_id,
+        Uuid::new_v4()
+    ));
+    if !private_regular_file_mode(&request_path) {
+        return Err(ClaimFailure::Skip);
+    }
+    let Ok(original) = crate::path_identity::verify_regular_file(&request_path) else {
+        return Err(ClaimFailure::Skip);
+    };
+    let Ok(reservation) = snapshot_state.reserve_existing_artifact(
+        request_directory,
+        request_directory_identity,
+        original.object_id,
+    ) else {
+        return Err(ClaimFailure::Stop);
+    };
+    if crate::path_identity::publish_new_file_atomic(&request_path, &processing).is_err() {
+        return Err(ClaimFailure::Skip);
+    }
+    let Ok(claimed) = crate::path_identity::verify_regular_file(&processing) else {
+        return Err(ClaimFailure::Skip);
+    };
+    if !crate::path_identity::same_object(&original, &claimed) {
+        return Err(ClaimFailure::Skip);
+    }
+    if reservation
+        .commit(processing.clone(), claimed.clone())
+        .is_err()
+    {
+        safe_remove(&processing, &claimed);
+        return Err(ClaimFailure::Skip);
+    }
+    Ok(ClaimedRequest {
+        ingress,
+        request_id,
+        processing,
+        claimed,
+    })
 }
 
 fn private_directory_mode(path: &Path) -> bool {
