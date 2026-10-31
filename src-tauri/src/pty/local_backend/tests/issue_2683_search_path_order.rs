@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 // Split so this file never contains a needle whole; see the no-self-match rule.
 const N_APPLY: &str = concat!("apply_search_path", "_to_pty_command(&mut command)");
-const N_REMOVE: &str = concat!("for key in ", "&env_remove", "_keys");
-const N_CONFIGURED: &str = concat!("for (key, value) in ", "&configured", "_env");
+const N_REMOVE: &str = concat!("for key in ", "env_remove", "_keys");
+const N_CONFIGURED: &str = concat!("for (key, value) in ", "configured", "_env");
 
 fn only_offset(source: &str, needle: &str) -> usize {
     let hits: Vec<usize> = source.match_indices(needle).map(|(at, _)| at).collect();

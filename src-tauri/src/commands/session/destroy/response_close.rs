@@ -661,12 +661,7 @@ async fn settle_response_close_result<R: tauri::Runtime>(
     use crate::config::settings::try_with_agents_layer_publication_state;
     use crate::path_identity::{same_object, verify_directory};
     use crate::pty::context_scrape::ContextSessionLiveness;
-    use crate::pty::manager::{
-        ResponseCloseCurrentSettlement, ResponseCloseSettlementEvidence,
-        ResponseCloseSettlementOutcome,
-    };
     use crate::session::manager::CarrierPhysicalIdentity;
-    use crate::session::session::is_working;
     let mut rejection = SettlementRejection::MemberRowUnavailable;
     let settled = manager
         .with_current_carrier_snapshot(&permit, |current| {
@@ -745,52 +740,14 @@ async fn settle_response_close_result<R: tauri::Runtime>(
                 rejection = SettlementRejection::ConfirmedCarrierRejected;
                 with_confirmed_carrier(&permit, carrier, current, transition, |stamp| {
                     rejection = SettlementRejection::TrackerFinishRejected;
-                    let mut identity = binding.member.clone();
-                    identity.carrier_version = stamp.version;
-                    tracker.publish_manager_facts(
-                        identity,
-                        !dormant,
-                        is_working(row),
-                        std::time::Instant::now(),
-                    );
-                    let outcome = if dormant {
-                        ResponseCloseSettlementOutcome::Dormant {
-                            exact_backend_absent: true,
-                            all_effects_completed: true,
-                            retained_exited_confirmed: true,
-                            selection_settled: true,
-                        }
-                    } else {
-                        ResponseCloseSettlementOutcome::ReopenAfterKillFailure {
-                            terminal_kill_failure: true,
-                            all_effects_terminal: true,
-                            original_backend_alive: true,
-                            original_manager_identity_intact: true,
-                        }
-                    };
-                    let current_settlement = ResponseCloseCurrentSettlement {
-                        current_carrier_version: stamp.version,
-                        confirmed_carrier_version: stamp.version,
-                        checkpoint_nonce: stamp.nonce,
-                        current_checkpoint_nonce: stamp.nonce,
-                        publication_epoch: stamp.epoch,
-                        current_publication_epoch: stamp.epoch,
-                    };
-                    tracker
-                        .finish_response_close(
-                            owner.ticket(),
-                            ResponseCloseSettlementEvidence {
-                                committed_binding: binding.clone(),
-                                current_settlement,
-                                outcome,
-                            },
-                        )
-                        .ok()?;
-                    Some(if dormant {
-                        ResponseCloseDisposition::Dormant
-                    } else {
-                        ResponseCloseDisposition::Reopened
-                    })
+                    finish_response_close_tracker(
+                        &tracker,
+                        owner,
+                        &binding,
+                        row,
+                        dormant,
+                        (stamp.version, stamp.nonce, stamp.epoch),
+                    )
                 })
             })
             .ok()
@@ -818,6 +775,68 @@ async fn settle_response_close_result<R: tauri::Runtime>(
         return Ok(disposition);
     }
     Err(rejection)
+}
+
+fn finish_response_close_tracker(
+    tracker: &crate::pty::manager::ResponseCloseState,
+    owner: &ResponseEffectOwner,
+    binding: &crate::pty::response_close::ResponseCloseCommittedBinding,
+    row: &crate::session::session::Session,
+    dormant: bool,
+    checkpoint: (u64, Uuid, u64),
+) -> Option<ResponseCloseDisposition> {
+    use crate::pty::manager::{
+        ResponseCloseCurrentSettlement, ResponseCloseSettlementEvidence,
+        ResponseCloseSettlementOutcome,
+    };
+    use crate::session::session::is_working;
+    let (version, nonce, epoch) = checkpoint;
+    let mut identity = binding.member.clone();
+    identity.carrier_version = version;
+    tracker.publish_manager_facts(
+        identity,
+        !dormant,
+        is_working(row),
+        std::time::Instant::now(),
+    );
+    let outcome = if dormant {
+        ResponseCloseSettlementOutcome::Dormant {
+            exact_backend_absent: true,
+            all_effects_completed: true,
+            retained_exited_confirmed: true,
+            selection_settled: true,
+        }
+    } else {
+        ResponseCloseSettlementOutcome::ReopenAfterKillFailure {
+            terminal_kill_failure: true,
+            all_effects_terminal: true,
+            original_backend_alive: true,
+            original_manager_identity_intact: true,
+        }
+    };
+    let current_settlement = ResponseCloseCurrentSettlement {
+        current_carrier_version: version,
+        confirmed_carrier_version: version,
+        checkpoint_nonce: nonce,
+        current_checkpoint_nonce: nonce,
+        publication_epoch: epoch,
+        current_publication_epoch: epoch,
+    };
+    tracker
+        .finish_response_close(
+            owner.ticket(),
+            ResponseCloseSettlementEvidence {
+                committed_binding: binding.clone(),
+                current_settlement,
+                outcome,
+            },
+        )
+        .ok()?;
+    Some(if dormant {
+        ResponseCloseDisposition::Dormant
+    } else {
+        ResponseCloseDisposition::Reopened
+    })
 }
 
 pub(crate) async fn reconcile_response_closes<R: tauri::Runtime>(app: &AppHandle<R>) {

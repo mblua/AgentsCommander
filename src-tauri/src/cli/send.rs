@@ -514,6 +514,59 @@ pub fn execute(args: SendArgs) -> i32 {
         return 1;
     }
 
+    let (resolved_to, effective_project_paths) =
+        match resolve_send_target(&args, &root, &sender, root_is_root_agent, is_root) {
+            Ok(target) => target,
+            Err(code) => return code,
+        };
+
+    // --send + --command mutually exclusive (P0-3)
+    if args.send.is_some() && args.command.is_some() {
+        eprintln!("Error: --send and --command are mutually exclusive");
+        return 1;
+    }
+
+    let message_body = match send_message_body(
+        args.send.as_deref(),
+        &root,
+        root_is_root_agent,
+        &sender,
+        &resolved_to,
+        &effective_project_paths,
+    ) {
+        Ok(body) => body,
+        Err(code) => return code,
+    };
+
+    // Require at least --send or --command
+    if message_body.is_empty() && args.command.is_none() {
+        eprintln!("Error: --send or --command is required");
+        return 1;
+    }
+
+    // Validate --command if present
+    const ALLOWED_COMMANDS: &[&str] = &["clear", "compact"];
+    if let Some(ref cmd) = args.command {
+        if !ALLOWED_COMMANDS.contains(&cmd.as_str()) {
+            eprintln!(
+                "Error: unsupported command '{}'. Allowed: {}",
+                cmd,
+                ALLOWED_COMMANDS.join(", ")
+            );
+            return 1;
+        }
+    }
+
+    enqueue_delivery(args, sender, resolved_to, message_body, is_root, &ac_dir)
+}
+
+fn resolve_send_target(
+    args: &SendArgs,
+    root: &str,
+    sender: &str,
+    root_is_root_agent: bool,
+    is_root: bool,
+) -> Result<(String, Vec<String>), i32> {
     // ── Resolve --to against known projects (Decision 2 / §AR2-shared) ─────
     //
     // Qualified FQN → validated shape + existence. Unqualified WG-local →
@@ -527,7 +580,7 @@ pub fn execute(args: SendArgs) -> i32 {
         Ok(settings) => settings,
         Err(error) => {
             eprintln!("Error: {}", error);
-            return 1;
+            return Err(1);
         }
     };
     // Build an in-memory project-path slice that includes the project
@@ -536,11 +589,11 @@ pub fn execute(args: SendArgs) -> i32 {
     // reachable do not fail send with `not found in any known project`.
     // settings.json is NOT modified. See #228 / plan _plans/228-cli-daemon-laterals.md.
     let mut effective_project_paths = settings.project_paths.clone();
-    let root_project = match derive_root_project_dir(&root) {
+    let root_project = match derive_root_project_dir(root) {
         Ok(root_project) => root_project,
         Err(e) => {
             eprintln!("Error: {}", e);
-            return 1;
+            return Err(1);
         }
     };
     if let Some(root_project) = root_project {
@@ -576,7 +629,7 @@ pub fn execute(args: SendArgs) -> i32 {
             Ok(fqn) => fqn,
             Err(e) => {
                 eprintln!("Error: {}", e);
-                return 1;
+                return Err(1);
             }
         };
 
@@ -590,7 +643,7 @@ pub fn execute(args: SendArgs) -> i32 {
                     values.",
                 resolved_to
             );
-            return 1;
+            return Err(1);
         }
     } else if crate::config::root_agent::is_root_agent_target(&resolved_to) {
         // #293 — coordinator → root. Only identity-verified WG coordinators
@@ -598,7 +651,7 @@ pub fn execute(args: SendArgs) -> i32 {
         // through this gate intentionally: the URI is meaningful only when
         // paired with a real coordinator identity, and the verified check is
         // cheap.
-        if !coordinator_to_root_target_allowed(&sender, &effective_project_paths) {
+        if !coordinator_to_root_target_allowed(sender, &effective_project_paths) {
             eprintln!(
                 "Error: routing rejected — '{}' is not a verified Room orchestrator replica and \
                     cannot message '{}'. Replies to the Root Agent are reserved for verified Room \
@@ -606,41 +659,45 @@ pub fn execute(args: SendArgs) -> i32 {
                 sender,
                 crate::config::root_agent::ROOT_AGENT_SENDER
             );
-            return 1;
+            return Err(1);
         }
     } else if !is_root {
         // Use the unaugmented captured registrations for team authorization BEFORE
         // writing to outbox. Fail immediately with a clear error if not.
         let discovered = teams::discover_teams_from_project_paths(&settings.project_paths);
-        if !teams::can_communicate(&sender, &resolved_to, &discovered) {
+        if !teams::can_communicate(sender, &resolved_to, &discovered) {
             eprintln!(
                 "Error: routing rejected — '{}' cannot reach '{}'. \
                  Check team membership and orchestrator rules.",
                 sender, resolved_to
             );
-            return 1;
+            return Err(1);
         }
     }
 
-    // --send + --command mutually exclusive (P0-3)
-    if args.send.is_some() && args.command.is_some() {
-        eprintln!("Error: --send and --command are mutually exclusive");
-        return 1;
-    }
+    Ok((resolved_to, effective_project_paths))
+}
 
-    // Resolve message body from --send (file-based messaging per plan §4.1 [r2])
-    let message_body = if let Some(ref filename) = args.send {
+fn send_message_body(
+    filename: Option<&str>,
+    root: &str,
+    root_is_root_agent: bool,
+    sender: &str,
+    resolved_to: &str,
+    effective_project_paths: &[String],
+) -> Result<String, i32> {
+    let message_body = if let Some(filename) = filename {
         if let Err(e) = validate_send_filename(filename, root_is_root_agent) {
             eprintln!("Error: {}", e);
-            return 1;
+            return Err(1);
         }
-        let agent_root_path = std::path::Path::new(&root);
+        let agent_root_path = std::path::Path::new(root);
         let msg_dir = if root_is_root_agent {
             match crate::phone::messaging::root_messaging_dir(agent_root_path) {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!("Error: failed to resolve root messaging dir: {}", e);
-                    return 1;
+                    return Err(1);
                 }
             }
         } else {
@@ -652,20 +709,20 @@ pub fn execute(args: SendArgs) -> i32 {
                             directory unless --root is the canonical Root Agent directory; {}",
                         e
                     );
-                    return 1;
+                    return Err(1);
                 }
             };
             if let Err(e) =
                 crate::phone::messaging::ensure_workgroup_root_is_authoritative(&wg_root)
             {
                 eprintln!("Error: {}", e);
-                return 1;
+                return Err(1);
             }
             match crate::phone::messaging::messaging_dir(&wg_root) {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!("Error: failed to resolve messaging dir: {}", e);
-                    return 1;
+                    return Err(1);
                 }
             }
         };
@@ -673,7 +730,7 @@ pub fn execute(args: SendArgs) -> i32 {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Error: {}", e);
-                return 1;
+                return Err(1);
             }
         };
 
@@ -706,14 +763,14 @@ pub fn execute(args: SendArgs) -> i32 {
                 overhead,
                 crate::phone::messaging::PTY_SAFE_MAX
             );
-            return 1;
+            return Err(1);
         }
 
         if let Err(error) = archive_send_file(
-            Path::new(&root),
+            Path::new(root),
             root_is_root_agent,
-            &resolved_to,
-            &effective_project_paths,
+            resolved_to,
+            effective_project_paths,
             &abs,
             filename,
         ) {
@@ -729,25 +786,17 @@ pub fn execute(args: SendArgs) -> i32 {
         String::new()
     };
 
-    // Require at least --send or --command
-    if message_body.is_empty() && args.command.is_none() {
-        eprintln!("Error: --send or --command is required");
-        return 1;
-    }
+    Ok(message_body)
+}
 
-    // Validate --command if present
-    const ALLOWED_COMMANDS: &[&str] = &["clear", "compact"];
-    if let Some(ref cmd) = args.command {
-        if !ALLOWED_COMMANDS.contains(&cmd.as_str()) {
-            eprintln!(
-                "Error: unsupported command '{}'. Allowed: {}",
-                cmd,
-                ALLOWED_COMMANDS.join(", ")
-            );
-            return 1;
-        }
-    }
-
+fn enqueue_delivery(
+    args: SendArgs,
+    sender: String,
+    resolved_to: String,
+    message_body: String,
+    is_root: bool,
+    ac_dir: &Path,
+) -> i32 {
     let msg_id = Uuid::new_v4().to_string();
     let request_id = if args.get_output {
         Some(Uuid::new_v4().to_string())
@@ -755,10 +804,9 @@ pub fn execute(args: SendArgs) -> i32 {
         None
     };
 
-    let mode_for_ack = args.mode.clone();
     let to_for_ack = resolved_to.clone();
     // #1638: clone the agent id for the enqueue receipt before the message
-    // literal moves `args.agent` (precedent: `mode_for_ack` above).
+    // literal moves `args.agent`.
     let agent_for_ack = args.agent.clone();
     // Resolve before `args` fields move into OutboxMessage below; the whole-struct
     // borrow would be rejected after the partial moves.
@@ -808,9 +856,37 @@ pub fn execute(args: SendArgs) -> i32 {
         pty_input: None,
     };
 
+    let outbox_dir = match publish_outbox_message(&message, args.outbox.as_deref(), is_root, ac_dir)
+    {
+        Ok(outbox_dir) => outbox_dir,
+        Err(code) => return code,
+    };
+    // #1596: enqueue receipt on stdout — the only observable signal when the
+    // caller cannot see the GUI-subsystem binary's exit code (PowerShell
+    // direct capture). A missing `Queued:` line means NOT enqueued.
+    crate::cli_println!(
+        "{}",
+        queued_receipt_line(&msg_id, &agent_for_ack, &requested_profile_for_ack)
+    );
+    log::info!(
+        "[send] queued message {} to '{}' in {}",
+        msg_id,
+        to_for_ack,
+        outbox_dir.display()
+    );
+
+    finish_delivery(&message, &outbox_dir, ac_dir, confirm_timeout, args.timeout)
+}
+
+fn publish_outbox_message(
+    message: &OutboxMessage,
+    outbox: Option<&str>,
+    is_root: bool,
+    ac_dir: &Path,
+) -> Result<PathBuf, i32> {
     // Write to --outbox if specified, app outbox if root/master token, otherwise
     // <root>/<local_dir>/outbox/
-    let outbox_dir = if let Some(ref outbox_path) = args.outbox {
+    let outbox_dir = if let Some(outbox_path) = outbox {
         PathBuf::from(outbox_path)
     } else if is_root {
         // Root/master token: use the app outbox so the MailboxPoller always finds it
@@ -827,19 +903,19 @@ pub fn execute(args: SendArgs) -> i32 {
     };
     if let Err(reason) = reject_comanaged_queue_outbox(&outbox_dir) {
         eprintln!("Error: {}", reason);
-        return 1;
+        return Err(1);
     }
     if let Err(e) = crate::filesystem::directories::ensure_cli_outbox(&outbox_dir) {
         eprintln!("Error: failed to create outbox directory: {}", e);
-        return 1;
+        return Err(1);
     }
 
-    let outbox_path = outbox_dir.join(format!("{}.json", msg_id));
-    let json = match serde_json::to_string_pretty(&message) {
+    let outbox_path = outbox_dir.join(format!("{}.json", message.id));
+    let json = match serde_json::to_string_pretty(message) {
         Ok(j) => j,
         Err(e) => {
             eprintln!("Error: failed to serialize message: {}", e);
-            return 1;
+            return Err(1);
         }
     };
 
@@ -847,30 +923,26 @@ pub fn execute(args: SendArgs) -> i32 {
         crate::filesystem::documents::write_cli_outbox_message(&outbox_path, json.as_bytes())
     {
         eprintln!("Error: failed to write outbox file: {}", e);
-        return 1;
+        return Err(1);
     }
-    // #1596: enqueue receipt on stdout — the only observable signal when the
-    // caller cannot see the GUI-subsystem binary's exit code (PowerShell
-    // direct capture). A missing `Queued:` line means NOT enqueued.
-    crate::cli_println!(
-        "{}",
-        queued_receipt_line(&msg_id, &agent_for_ack, &requested_profile_for_ack)
-    );
-    log::info!(
-        "[send] queued message {} to '{}' in {}",
-        msg_id,
-        to_for_ack,
-        outbox_dir.display()
-    );
+    Ok(outbox_dir)
+}
 
+fn finish_delivery(
+    message: &OutboxMessage,
+    outbox_dir: &Path,
+    ac_dir: &Path,
+    confirm_timeout: std::time::Duration,
+    timeout_secs: u64,
+) -> i32 {
     // ── Poll for delivery confirmation ────────────────────────────────────
     // The MailboxPoller will pick up the file and move it to delivered/ or
     // rejected/. Wait until we know the outcome.
     if let Err(e) = wait_for_delivery_confirmation(
-        &outbox_dir,
-        &msg_id,
-        &mode_for_ack,
-        &to_for_ack,
+        outbox_dir,
+        &message.id,
+        &message.mode,
+        &message.to,
         confirm_timeout,
         std::time::Duration::from_millis(250),
     ) {
@@ -880,13 +952,13 @@ pub fn execute(args: SendArgs) -> i32 {
     }
 
     // ── If --get-output, wait for response after confirmed delivery ───────
-    if let Some(rid) = request_id {
+    if let Some(rid) = &message.request_id {
         let responses_dir = ac_dir.join("responses");
         let response_path = responses_dir.join(format!("{}.json", rid));
-        let timeout = std::time::Duration::from_secs(args.timeout);
+        let timeout = std::time::Duration::from_secs(timeout_secs);
         let poll_interval = std::time::Duration::from_secs(2);
 
-        crate::cli_println!("Waiting for response (timeout: {}s)...", args.timeout);
+        crate::cli_println!("Waiting for response (timeout: {}s)...", timeout_secs);
 
         match wait_for_response(&response_path, timeout, poll_interval) {
             Ok(content) => {

@@ -177,6 +177,58 @@ fn print_coding_agent_discovery() {
     crate::cli_println!("{}", render_coding_agent_discovery(&settings));
 }
 
+fn wait_for_switch_response(ac_dir: &std::path::Path, request_id: &str, timeout: u64) -> i32 {
+    let responses_dir = ac_dir.join("responses");
+    let response_path = responses_dir.join(format!("{}.json", request_id));
+    let resp_timeout = std::time::Duration::from_secs(timeout);
+    let resp_poll = std::time::Duration::from_millis(250);
+    let resp_start = std::time::Instant::now();
+    loop {
+        if directories::cli_outbox_artifact_exists(&response_path) {
+            match documents::read_cli_outbox_text(&response_path) {
+                Ok(content) => {
+                    crate::cli_println!("{}", content);
+                    match serde_json::from_str::<serde_json::Value>(&content)
+                        .ok()
+                        .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(String::from))
+                        .as_deref()
+                    {
+                        Some("queued") => crate::cli_println!(
+                            "self-handoff-and-switch requested. Phase 1 respawns only after this \
+                            session is continuously idle for {0}s; Phase 2 then waits a fresh \
+                            {0}s of idle in the new session, archives SELF-HANDOFF.md into \
+                            self-clear/ and injects a prompt naming the exact archived file to \
+                            resume from. If SELF-FORGET.md was present at queue time, that prompt \
+                            includes a compact closed-background forgotten summary. Best-effort \
+                            and not guaranteed.",
+                            crate::phone::mailbox::SELF_CLEAR_SETTLE_SECS
+                        ),
+                        Some("already_queued") => crate::cli_println!(
+                            "A self context operation is already pending for this session. The \
+                            first queued request owns any forgotten summary; this request does \
+                            not refresh it. Best-effort; re-issue later if needed."
+                        ),
+                        _ => {}
+                    }
+                    return interpret_self_switch_response_exit_code(&content);
+                }
+                Err(e) => {
+                    eprintln!("Error: failed to read response: {}", e);
+                    return 1;
+                }
+            }
+        }
+        if resp_start.elapsed() >= resp_timeout {
+            eprintln!(
+                "Error: self-handoff-and-switch delivered but no queue ack within {}s (request {})",
+                timeout, request_id
+            );
+            return 2;
+        }
+        std::thread::sleep(resp_poll);
+    }
+}
+
 pub fn execute(args: SelfSwitchArgs) -> i32 {
     if args.list_coding_agents {
         print_coding_agent_discovery();
@@ -303,55 +355,7 @@ pub fn execute(args: SelfSwitchArgs) -> i32 {
         std::thread::sleep(confirm_poll);
     }
 
-    let responses_dir = ac_dir.join("responses");
-    let response_path = responses_dir.join(format!("{}.json", request_id));
-    let resp_timeout = std::time::Duration::from_secs(args.timeout);
-    let resp_poll = std::time::Duration::from_millis(250);
-    let resp_start = std::time::Instant::now();
-    loop {
-        if directories::cli_outbox_artifact_exists(&response_path) {
-            match documents::read_cli_outbox_text(&response_path) {
-                Ok(content) => {
-                    crate::cli_println!("{}", content);
-                    match serde_json::from_str::<serde_json::Value>(&content)
-                        .ok()
-                        .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(String::from))
-                        .as_deref()
-                    {
-                        Some("queued") => crate::cli_println!(
-                            "self-handoff-and-switch requested. Phase 1 respawns only after this \
-                            session is continuously idle for {0}s; Phase 2 then waits a fresh \
-                            {0}s of idle in the new session, archives SELF-HANDOFF.md into \
-                            self-clear/ and injects a prompt naming the exact archived file to \
-                            resume from. If SELF-FORGET.md was present at queue time, that prompt \
-                            includes a compact closed-background forgotten summary. Best-effort \
-                            and not guaranteed.",
-                            crate::phone::mailbox::SELF_CLEAR_SETTLE_SECS
-                        ),
-                        Some("already_queued") => crate::cli_println!(
-                            "A self context operation is already pending for this session. The \
-                            first queued request owns any forgotten summary; this request does \
-                            not refresh it. Best-effort; re-issue later if needed."
-                        ),
-                        _ => {}
-                    }
-                    return interpret_self_switch_response_exit_code(&content);
-                }
-                Err(e) => {
-                    eprintln!("Error: failed to read response: {}", e);
-                    return 1;
-                }
-            }
-        }
-        if resp_start.elapsed() >= resp_timeout {
-            eprintln!(
-                "Error: self-handoff-and-switch delivered but no queue ack within {}s (request {})",
-                args.timeout, request_id
-            );
-            return 2;
-        }
-        std::thread::sleep(resp_poll);
-    }
+    wait_for_switch_response(&ac_dir, &request_id, args.timeout)
 }
 
 #[cfg(test)]

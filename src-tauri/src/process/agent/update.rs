@@ -342,6 +342,21 @@ impl TargetProcessOwner {
             }
         }
 
+        self.settle_native_proof(&mut attempt).await;
+        #[cfg(windows)]
+        drop(self.job.take());
+        TargetSettlement {
+            stdout,
+            stderr,
+            defects: self.defects.clone(),
+        }
+    }
+
+    async fn settle_native_proof(
+        &mut self,
+        attempt: &mut crate::process::host::job::SettlementAttempt,
+    ) {
+        let defects = &mut self.defects;
         #[cfg(windows)]
         if let Some(job) = self.job.as_ref() {
             let mut query_defect_recorded = false;
@@ -463,13 +478,6 @@ impl TargetProcessOwner {
                 }
                 tokio::time::sleep(PROCESS_SETTLEMENT_POLL.min(attempt.remaining())).await;
             }
-        }
-        #[cfg(windows)]
-        drop(self.job.take());
-        TargetSettlement {
-            stdout,
-            stderr,
-            defects: defects.clone(),
         }
     }
 

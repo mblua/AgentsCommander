@@ -124,51 +124,7 @@ impl ContainerTransportBackend {
     ) -> ContainerShutdownReport {
         let deadline = Instant::now() + budget;
         let mut retained_residue = Vec::new();
-        let session_ids = loop {
-            match self.sessions.try_lock() {
-                Ok(sessions) => break sessions.keys().copied().collect::<Vec<_>>(),
-                Err(TryLockError::Poisoned(_)) => {
-                    retained_residue.push(
-                        RetainedContainerOwnerContext {
-                            owner: "installedContainerRegistry",
-                            session_id: None,
-                            reason: "global-shutdown".to_string(),
-                            program: None,
-                            runtime_handle: None,
-                            state: "installed",
-                            in_flight: false,
-                            last_error: Some(
-                                "container session registry lock poisoned".to_string(),
-                            ),
-                        }
-                        .diagnostic(),
-                    );
-                    break Vec::new();
-                }
-                Err(TryLockError::WouldBlock) => {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        retained_residue.push(
-                            RetainedContainerOwnerContext {
-                                owner: "installedContainerRegistry",
-                                session_id: None,
-                                reason: "global-shutdown".to_string(),
-                                program: None,
-                                runtime_handle: None,
-                                state: "installed",
-                                in_flight: true,
-                                last_error: Some(
-                                    "container session registry deadline reached".to_string(),
-                                ),
-                            }
-                            .diagnostic(),
-                        );
-                        break Vec::new();
-                    }
-                    std::thread::sleep(CONTAINER_SHUTDOWN_POLL.min(remaining));
-                }
-            }
-        };
+        let session_ids = self.installed_session_ids_for_shutdown(deadline, &mut retained_residue);
         let route_remover = if session_ids.is_empty() {
             Ok(None)
         } else {
@@ -230,6 +186,165 @@ impl ContainerTransportBackend {
             );
         }
 
+        let work_report = self.drain_global_container_sweep(deadline, &control);
+        let mut retained = retained_residue;
+        retained.extend(work_report.retained.into_iter().map(|context| {
+            if context.starts_with("owner=") {
+                context
+            } else {
+                format!("owner=containerShutdownWork {context}")
+            }
+        }));
+        self.append_installed_shutdown_contexts(&mut retained);
+        retained.extend(
+            self.cleanup_ownership
+                .contexts()
+                .into_iter()
+                .map(|context| context.diagnostic()),
+        );
+        if let Some(runtime) = self.runtime.as_ref() {
+            retained.extend(
+                runtime
+                    .retained_cleanup_contexts()
+                    .into_iter()
+                    .map(|context| context.diagnostic()),
+            );
+        }
+        retained.sort();
+        retained.dedup();
+        let terminal = work_report.terminal && retained.is_empty();
+        if !terminal {
+            log::error!(
+                "[container-transport] global shutdown cleanup retained unresolved ownership \
+                    count={}",
+                retained.len()
+            );
+        }
+        ContainerShutdownReport { terminal, retained }
+    }
+
+    fn append_installed_shutdown_contexts(&self, retained: &mut Vec<String>) {
+        match self.sessions.try_lock() {
+            Ok(sessions) => retained.extend(sessions.iter().map(|(id, state)| {
+                RetainedContainerOwnerContext {
+                    owner: "installedContainer",
+                    session_id: Some(*id),
+                    reason: "global-shutdown".to_string(),
+                    program: None,
+                    runtime_handle: Some(match state {
+                        ContainerSessionState::Pending(pending) => pending.runtime_handle.is_some(),
+                        ContainerSessionState::Attaching(attaching) => {
+                            attaching.runtime_handle.is_some()
+                        }
+                        ContainerSessionState::Active(active) => active.runtime_handle.is_some(),
+                    }),
+                    state: "installed",
+                    in_flight: false,
+                    last_error: None,
+                }
+                .diagnostic()
+            })),
+            Err(TryLockError::Poisoned(error)) => {
+                let sessions = error.into_inner();
+                retained.extend(sessions.iter().map(|(id, state)| {
+                    RetainedContainerOwnerContext {
+                        owner: "installedContainer",
+                        session_id: Some(*id),
+                        reason: "global-shutdown".to_string(),
+                        program: None,
+                        runtime_handle: Some(match state {
+                            ContainerSessionState::Pending(pending) => {
+                                pending.runtime_handle.is_some()
+                            }
+                            ContainerSessionState::Attaching(attaching) => {
+                                attaching.runtime_handle.is_some()
+                            }
+                            ContainerSessionState::Active(active) => {
+                                active.runtime_handle.is_some()
+                            }
+                        }),
+                        state: "installed",
+                        in_flight: false,
+                        last_error: Some("container session registry lock poisoned".to_string()),
+                    }
+                    .diagnostic()
+                }));
+            }
+            Err(TryLockError::WouldBlock) => retained.push(
+                RetainedContainerOwnerContext {
+                    owner: "installedContainerRegistry",
+                    session_id: None,
+                    reason: "global-shutdown".to_string(),
+                    program: None,
+                    runtime_handle: None,
+                    state: "installed",
+                    in_flight: true,
+                    last_error: Some(
+                        "container session registry diagnostic lock unavailable".to_string(),
+                    ),
+                }
+                .diagnostic(),
+            ),
+        }
+    }
+
+    fn installed_session_ids_for_shutdown(
+        &self,
+        deadline: Instant,
+        retained_residue: &mut Vec<String>,
+    ) -> Vec<uuid::Uuid> {
+        loop {
+            match self.sessions.try_lock() {
+                Ok(sessions) => break sessions.keys().copied().collect::<Vec<_>>(),
+                Err(TryLockError::Poisoned(_)) => {
+                    retained_residue.push(
+                        RetainedContainerOwnerContext {
+                            owner: "installedContainerRegistry",
+                            session_id: None,
+                            reason: "global-shutdown".to_string(),
+                            program: None,
+                            runtime_handle: None,
+                            state: "installed",
+                            in_flight: false,
+                            last_error: Some(
+                                "container session registry lock poisoned".to_string(),
+                            ),
+                        }
+                        .diagnostic(),
+                    );
+                    break Vec::new();
+                }
+                Err(TryLockError::WouldBlock) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        retained_residue.push(
+                            RetainedContainerOwnerContext {
+                                owner: "installedContainerRegistry",
+                                session_id: None,
+                                reason: "global-shutdown".to_string(),
+                                program: None,
+                                runtime_handle: None,
+                                state: "installed",
+                                in_flight: true,
+                                last_error: Some(
+                                    "container session registry deadline reached".to_string(),
+                                ),
+                            }
+                            .diagnostic(),
+                        );
+                        break Vec::new();
+                    }
+                    std::thread::sleep(CONTAINER_SHUTDOWN_POLL.min(remaining));
+                }
+            }
+        }
+    }
+
+    fn drain_global_container_sweep(
+        &self,
+        deadline: Instant,
+        control: &ContainerRuntimeControl,
+    ) -> ContainerShutdownReport {
         let mut work_report = ContainerShutdownReport {
             terminal: true,
             retained: Vec::new(),
@@ -327,100 +442,6 @@ impl ContainerTransportBackend {
             }
             std::thread::sleep(CONTAINER_GLOBAL_SWEEP_RETRY_BACKOFF.min(remaining));
         }
-        let mut retained = retained_residue;
-        retained.extend(work_report.retained.into_iter().map(|context| {
-            if context.starts_with("owner=") {
-                context
-            } else {
-                format!("owner=containerShutdownWork {context}")
-            }
-        }));
-        match self.sessions.try_lock() {
-            Ok(sessions) => retained.extend(sessions.iter().map(|(id, state)| {
-                RetainedContainerOwnerContext {
-                    owner: "installedContainer",
-                    session_id: Some(*id),
-                    reason: "global-shutdown".to_string(),
-                    program: None,
-                    runtime_handle: Some(match state {
-                        ContainerSessionState::Pending(pending) => pending.runtime_handle.is_some(),
-                        ContainerSessionState::Attaching(attaching) => {
-                            attaching.runtime_handle.is_some()
-                        }
-                        ContainerSessionState::Active(active) => active.runtime_handle.is_some(),
-                    }),
-                    state: "installed",
-                    in_flight: false,
-                    last_error: None,
-                }
-                .diagnostic()
-            })),
-            Err(TryLockError::Poisoned(error)) => {
-                let sessions = error.into_inner();
-                retained.extend(sessions.iter().map(|(id, state)| {
-                    RetainedContainerOwnerContext {
-                        owner: "installedContainer",
-                        session_id: Some(*id),
-                        reason: "global-shutdown".to_string(),
-                        program: None,
-                        runtime_handle: Some(match state {
-                            ContainerSessionState::Pending(pending) => {
-                                pending.runtime_handle.is_some()
-                            }
-                            ContainerSessionState::Attaching(attaching) => {
-                                attaching.runtime_handle.is_some()
-                            }
-                            ContainerSessionState::Active(active) => {
-                                active.runtime_handle.is_some()
-                            }
-                        }),
-                        state: "installed",
-                        in_flight: false,
-                        last_error: Some("container session registry lock poisoned".to_string()),
-                    }
-                    .diagnostic()
-                }));
-            }
-            Err(TryLockError::WouldBlock) => retained.push(
-                RetainedContainerOwnerContext {
-                    owner: "installedContainerRegistry",
-                    session_id: None,
-                    reason: "global-shutdown".to_string(),
-                    program: None,
-                    runtime_handle: None,
-                    state: "installed",
-                    in_flight: true,
-                    last_error: Some(
-                        "container session registry diagnostic lock unavailable".to_string(),
-                    ),
-                }
-                .diagnostic(),
-            ),
-        }
-        retained.extend(
-            self.cleanup_ownership
-                .contexts()
-                .into_iter()
-                .map(|context| context.diagnostic()),
-        );
-        if let Some(runtime) = self.runtime.as_ref() {
-            retained.extend(
-                runtime
-                    .retained_cleanup_contexts()
-                    .into_iter()
-                    .map(|context| context.diagnostic()),
-            );
-        }
-        retained.sort();
-        retained.dedup();
-        let terminal = work_report.terminal && retained.is_empty();
-        if !terminal {
-            log::error!(
-                "[container-transport] global shutdown cleanup retained unresolved ownership \
-                    count={}",
-                retained.len()
-            );
-        }
-        ContainerShutdownReport { terminal, retained }
+        work_report
     }
 }

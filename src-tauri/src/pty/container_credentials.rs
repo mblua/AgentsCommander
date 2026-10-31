@@ -215,36 +215,8 @@ pub fn ensure_first_run_state(plan: &ContainerCredentialPlan, container_workdir:
         return;
     }
 
-    let mut root = match documents::read_container_first_run_state(&path) {
-        // An empty file carries no user data, so treat it like a missing one.
-        Ok(text) if text.trim().is_empty() => serde_json::Map::new(),
-        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(serde_json::Value::Object(map)) => map,
-            Ok(_) => {
-                log::warn!(
-                    "[container-cred] {} is not a JSON object; skipping first-run state",
-                    path.display()
-                );
-                return;
-            }
-            Err(e) => {
-                log::warn!(
-                    "[container-cred] {} is not valid JSON ({}); skipping first-run state",
-                    path.display(),
-                    e
-                );
-                return;
-            }
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
-        Err(e) => {
-            log::warn!(
-                "[container-cred] failed to read {}: {}; skipping first-run state",
-                path.display(),
-                e
-            );
-            return;
-        }
+    let Some(mut root) = read_first_run_state(&path) else {
+        return;
     };
 
     let mut changed = set_true(&mut root, state.onboarding_flag);
@@ -331,6 +303,41 @@ pub fn ensure_first_run_state(plan: &ContainerCredentialPlan, container_workdir:
         state.onboarding_flag,
         container_workdir
     );
+}
+
+fn read_first_run_state(path: &Path) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let root = match documents::read_container_first_run_state(path) {
+        // An empty file carries no user data, so treat it like a missing one.
+        Ok(text) if text.trim().is_empty() => serde_json::Map::new(),
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(serde_json::Value::Object(map)) => map,
+            Ok(_) => {
+                log::warn!(
+                    "[container-cred] {} is not a JSON object; skipping first-run state",
+                    path.display()
+                );
+                return None;
+            }
+            Err(e) => {
+                log::warn!(
+                    "[container-cred] {} is not valid JSON ({}); skipping first-run state",
+                    path.display(),
+                    e
+                );
+                return None;
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(e) => {
+            log::warn!(
+                "[container-cred] failed to read {}: {}; skipping first-run state",
+                path.display(),
+                e
+            );
+            return None;
+        }
+    };
+    Some(root)
 }
 
 #[cfg(test)]

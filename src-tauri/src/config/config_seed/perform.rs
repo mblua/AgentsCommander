@@ -10,7 +10,7 @@ use super::copy::{
     is_readable_dir, remove_seed_scratch, SeedFileCollector,
 };
 use super::{
-    os_marker, ConfigSeedFailure, ConfigSeedPublication, ConfigSeedReport,
+    os_marker, ConfigSeedCandidate, ConfigSeedFailure, ConfigSeedPublication, ConfigSeedReport,
     ConfigSeedRollbackFailure, ConfigSeedSkipReason, ConfigSeedTier, ResolvedConfigSeed,
 };
 
@@ -181,73 +181,9 @@ pub(super) fn perform_config_seed_with_clock_and_hooks(
         });
     }
 
-    // 1. Pick the winning tier by source-folder presence (highest precedence first).
-    //    The four legacy tiers are unchanged (readable dir wins and overwrites).
-    //    The #769 P2 CatalogDefault tier is gated ABSENT-ONLY + NON-EMPTY here, so
-    //    it never overwrites an existing replica config and an empty/absent master
-    //    reads as "not present".
-    let mut selected = seed
-        .candidates
-        .iter()
-        .find(|c| c.tier != ConfigSeedTier::CatalogDefault && is_readable_dir(&c.path));
-    if selected.is_none() {
-        if let Some(candidate) = seed
-            .candidates
-            .iter()
-            .find(|c| c.tier == ConfigSeedTier::CatalogDefault && is_nonempty_seed_dir(&c.path))
-        {
-            match destination_absent_no_follow(&seed.dest) {
-                Ok(true) => selected = Some(candidate),
-                Ok(false) => {}
-                Err(error) => {
-                    log::warn!(
-                        "[config-seed] cannot inspect catalog-default destination {} without \
-                        following links: {}; skipping",
-                        seed.dest.display(),
-                        error
-                    );
-                    return ConfigSeedReport::Skipped(ConfigSeedSkipReason::DestinationInUse {
-                        dest: seed.dest.clone(),
-                        error,
-                    });
-                }
-            }
-        }
-    }
-    let Some(candidate) = selected else {
-        // #598: seeding is active but no template exists at any tier. This is a
-        // benign no-op (nothing to copy), but a SILENT one confused users who
-        // enabled the feature, created no template, and saw nothing happen. Log
-        // it at info with the exact candidate paths so they know WHERE to create
-        // a template. Only fires here, at the real spawn chokepoint (callers gate
-        // on a resolved seed), never during prevalidation/delivery builds.
-        let replica_label = seed
-            .context
-            .replica_root
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("?");
-        let looked_in = seed
-            .candidates
-            .iter()
-            .map(|c| {
-                format!(
-                    "{:?}{}={}",
-                    c.tier,
-                    os_marker(c.os_specific),
-                    c.path.display()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        log::info!(
-            "[config-seed] active for replica '{}' dest '{}' but no source template found at any \
-            tier; skipped (looked for: {})",
-            replica_label,
-            seed.dest.display(),
-            looked_in
-        );
-        return ConfigSeedReport::Skipped(ConfigSeedSkipReason::NoSource);
+    let candidate = match select_seed_candidate(seed) {
+        Ok(candidate) => candidate,
+        Err(report) => return report,
     };
 
     let (Some(parent), Some(dest_name)) = (
@@ -296,89 +232,9 @@ pub(super) fn perform_config_seed_with_clock_and_hooks(
     }
     let files = collector.finish();
 
-    // 4. Move the existing dest aside (atomic). If it is locked by a live
-    //    process, keep the existing config and SKIP (dest stays fully intact).
-    let previous_scope_staged = match pin_seed_destination_if_present(&seed.dest) {
-        Ok(None) => None,
-        Ok(Some(pinned)) => {
-            if let Err(e) = seed_disk::rename_seed_tree(&seed.dest, &trash) {
-                log::warn!(
-                    "[config-seed] dest {} is in use ({}); keeping existing config, skipping this \
-                    seed",
-                    seed.dest.display(),
-                    e
-                );
-                remove_seed_scratch(&temp, "destination-in-use cleanup", unique_sfx);
-                return ConfigSeedReport::Skipped(ConfigSeedSkipReason::DestinationInUse {
-                    dest: seed.dest.clone(),
-                    error: e.to_string(),
-                });
-            }
-            Some(pinned)
-        }
-        Err(error) => {
-            log::warn!(
-                "[config-seed] cannot inspect destination {} without following links: {}; keeping \
-                existing config, skipping this seed",
-                seed.dest.display(),
-                error
-            );
-            remove_seed_scratch(&temp, "destination-inspection cleanup", unique_sfx);
-            return ConfigSeedReport::Skipped(ConfigSeedSkipReason::DestinationInUse {
-                dest: seed.dest.clone(),
-                error,
-            });
-        }
-    };
-
-    // 5. Install the freshly staged temp (atomic).
-    if let Err(e) = hooks.install(&temp, &seed.dest) {
-        let install_error = e.to_string();
-        log::warn!(
-            "[config-seed] failed to install seed at {}: {}",
-            seed.dest.display(),
-            e
-        );
-        // A successful dest-to-trash rename is operation-owned proof that the
-        // previous logical scope was removed. Always attempt its inverse after
-        // an install failure. A later destination appearance or metadata error
-        // must not collapse an un-restored old tree into ordinary `Failed`.
-        if let Some(staged) = previous_scope_staged.as_ref() {
-            hooks.before_restore(&seed.dest);
-            if let Err(re) = hooks.restore(&trash, &seed.dest) {
-                let staged_diagnostic = hooks.staged_diagnostic(staged, &trash);
-                let restore_error = re.to_string();
-                log::warn!(
-                    "[config-seed] failed to restore previous config at {}: {}; {}",
-                    seed.dest.display(),
-                    restore_error,
-                    staged_diagnostic
-                );
-                remove_seed_scratch(&temp, "failed install cleanup", unique_sfx);
-                return ConfigSeedReport::FailedAfterLogicalRemoval(
-                    ConfigSeedRollbackFailure::PreviousScopeStillStaged {
-                        scope: config_scope_for_seed(seed).unwrap_or_else(|reason| {
-                            log::warn!(
-                                "[config-seed] failed to derive config scope for rollback at {}: \
-                                {}",
-                                seed.dest.display(),
-                                reason
-                            );
-                            format!("config:{}", dest_name)
-                        }),
-                        trash_path: trash,
-                        install_error,
-                        restore_error: format!("{restore_error}; {staged_diagnostic}"),
-                    },
-                );
-            }
-        }
-        remove_seed_scratch(&temp, "failed install cleanup", unique_sfx);
-        return ConfigSeedReport::Failed(ConfigSeedFailure::Install {
-            staging_path: temp,
-            dest: seed.dest.clone(),
-            error: install_error,
-        });
+    if let Err(report) = install_seed_or_restore(seed, unique_sfx, dest_name, &temp, &trash, hooks)
+    {
+        return report;
     }
 
     // The successful directory-install syscall is the publication boundary.
@@ -417,6 +273,183 @@ pub(super) fn perform_config_seed_with_clock_and_hooks(
         files,
         published_at,
     })
+}
+
+fn install_seed_or_restore(
+    seed: &ResolvedConfigSeed,
+    unique_sfx: &str,
+    dest_name: &str,
+    temp: &Path,
+    trash: &Path,
+    hooks: &ConfigSeedTestHooks,
+) -> Result<(), ConfigSeedReport> {
+    // 4. Move the existing dest aside (atomic). If it is locked by a live
+    //    process, keep the existing config and SKIP (dest stays fully intact).
+    let previous_scope_staged = match pin_seed_destination_if_present(&seed.dest) {
+        Ok(None) => None,
+        Ok(Some(pinned)) => {
+            if let Err(e) = seed_disk::rename_seed_tree(&seed.dest, trash) {
+                log::warn!(
+                    "[config-seed] dest {} is in use ({}); keeping existing config, skipping this \
+                    seed",
+                    seed.dest.display(),
+                    e
+                );
+                remove_seed_scratch(temp, "destination-in-use cleanup", unique_sfx);
+                return Err(ConfigSeedReport::Skipped(
+                    ConfigSeedSkipReason::DestinationInUse {
+                        dest: seed.dest.clone(),
+                        error: e.to_string(),
+                    },
+                ));
+            }
+            Some(pinned)
+        }
+        Err(error) => {
+            log::warn!(
+                "[config-seed] cannot inspect destination {} without following links: {}; keeping \
+                existing config, skipping this seed",
+                seed.dest.display(),
+                error
+            );
+            remove_seed_scratch(temp, "destination-inspection cleanup", unique_sfx);
+            return Err(ConfigSeedReport::Skipped(
+                ConfigSeedSkipReason::DestinationInUse {
+                    dest: seed.dest.clone(),
+                    error,
+                },
+            ));
+        }
+    };
+
+    // 5. Install the freshly staged temp (atomic).
+    if let Err(e) = hooks.install(temp, &seed.dest) {
+        let install_error = e.to_string();
+        log::warn!(
+            "[config-seed] failed to install seed at {}: {}",
+            seed.dest.display(),
+            e
+        );
+        // A successful dest-to-trash rename is operation-owned proof that the
+        // previous logical scope was removed. Always attempt its inverse after
+        // an install failure. A later destination appearance or metadata error
+        // must not collapse an un-restored old tree into ordinary `Failed`.
+        if let Some(staged) = previous_scope_staged.as_ref() {
+            hooks.before_restore(&seed.dest);
+            if let Err(re) = hooks.restore(trash, &seed.dest) {
+                let staged_diagnostic = hooks.staged_diagnostic(staged, trash);
+                let restore_error = re.to_string();
+                log::warn!(
+                    "[config-seed] failed to restore previous config at {}: {}; {}",
+                    seed.dest.display(),
+                    restore_error,
+                    staged_diagnostic
+                );
+                remove_seed_scratch(temp, "failed install cleanup", unique_sfx);
+                return Err(ConfigSeedReport::FailedAfterLogicalRemoval(
+                    ConfigSeedRollbackFailure::PreviousScopeStillStaged {
+                        scope: config_scope_for_seed(seed).unwrap_or_else(|reason| {
+                            log::warn!(
+                                "[config-seed] failed to derive config scope for rollback at {}: \
+                                {}",
+                                seed.dest.display(),
+                                reason
+                            );
+                            format!("config:{}", dest_name)
+                        }),
+                        trash_path: trash.to_path_buf(),
+                        install_error,
+                        restore_error: format!("{restore_error}; {staged_diagnostic}"),
+                    },
+                ));
+            }
+        }
+        remove_seed_scratch(temp, "failed install cleanup", unique_sfx);
+        return Err(ConfigSeedReport::Failed(ConfigSeedFailure::Install {
+            staging_path: temp.to_path_buf(),
+            dest: seed.dest.clone(),
+            error: install_error,
+        }));
+    }
+
+    Ok(())
+}
+
+fn select_seed_candidate(
+    seed: &ResolvedConfigSeed,
+) -> Result<&ConfigSeedCandidate, ConfigSeedReport> {
+    // 1. Pick the winning tier by source-folder presence (highest precedence first).
+    //    The four legacy tiers are unchanged (readable dir wins and overwrites).
+    //    The #769 P2 CatalogDefault tier is gated ABSENT-ONLY + NON-EMPTY here, so
+    //    it never overwrites an existing replica config and an empty/absent master
+    //    reads as "not present".
+    let mut selected = seed
+        .candidates
+        .iter()
+        .find(|c| c.tier != ConfigSeedTier::CatalogDefault && is_readable_dir(&c.path));
+    if selected.is_none() {
+        if let Some(candidate) = seed
+            .candidates
+            .iter()
+            .find(|c| c.tier == ConfigSeedTier::CatalogDefault && is_nonempty_seed_dir(&c.path))
+        {
+            match destination_absent_no_follow(&seed.dest) {
+                Ok(true) => selected = Some(candidate),
+                Ok(false) => {}
+                Err(error) => {
+                    log::warn!(
+                        "[config-seed] cannot inspect catalog-default destination {} without \
+                        following links: {}; skipping",
+                        seed.dest.display(),
+                        error
+                    );
+                    return Err(ConfigSeedReport::Skipped(
+                        ConfigSeedSkipReason::DestinationInUse {
+                            dest: seed.dest.clone(),
+                            error,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    let Some(candidate) = selected else {
+        // #598: seeding is active but no template exists at any tier. This is a
+        // benign no-op (nothing to copy), but a SILENT one confused users who
+        // enabled the feature, created no template, and saw nothing happen. Log
+        // it at info with the exact candidate paths so they know WHERE to create
+        // a template. Only fires here, at the real spawn chokepoint (callers gate
+        // on a resolved seed), never during prevalidation/delivery builds.
+        let replica_label = seed
+            .context
+            .replica_root
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("?");
+        let looked_in = seed
+            .candidates
+            .iter()
+            .map(|c| {
+                format!(
+                    "{:?}{}={}",
+                    c.tier,
+                    os_marker(c.os_specific),
+                    c.path.display()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        log::info!(
+            "[config-seed] active for replica '{}' dest '{}' but no source template found at any \
+            tier; skipped (looked for: {})",
+            replica_label,
+            seed.dest.display(),
+            looked_in
+        );
+        return Err(ConfigSeedReport::Skipped(ConfigSeedSkipReason::NoSource));
+    };
+
+    Ok(candidate)
 }
 
 pub(super) fn destination_absent_no_follow(path: &Path) -> Result<bool, String> {

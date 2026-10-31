@@ -133,15 +133,7 @@ impl ResponseCloseState {
                     >= std::time::Duration::from_secs(u64::from(inner.seconds))
             }),
         ];
-        let mut false_mask = 0_u64;
-        let mut unknown_mask = 0_u64;
-        for (bit, predicate) in predicates.iter().enumerate() {
-            match predicate {
-                Some(false) => false_mask |= 1 << bit,
-                None => unknown_mask |= 1 << bit,
-                Some(true) => {}
-            }
-        }
+        let (false_mask, unknown_mask) = diagnostic_predicate_masks(&predicates);
         let old = route.diagnostic_select;
         let modulo = old.map_or(0, |(_, _, modulo)| modulo);
         let emit = old.is_none_or(|(old_false, old_unknown, _)| {
@@ -280,4 +272,17 @@ impl ResponseCloseState {
             age.map(|age| required.saturating_sub(age).as_millis())
         );
     }
+}
+
+fn diagnostic_predicate_masks(predicates: &[Option<bool>]) -> (u64, u64) {
+    let mut false_mask = 0_u64;
+    let mut unknown_mask = 0_u64;
+    for (bit, predicate) in predicates.iter().enumerate() {
+        match predicate {
+            Some(false) => false_mask |= 1 << bit,
+            None => unknown_mask |= 1 << bit,
+            Some(true) => {}
+        }
+    }
+    (false_mask, unknown_mask)
 }
