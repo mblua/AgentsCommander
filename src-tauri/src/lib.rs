@@ -621,7 +621,9 @@ mod tests;
 
 impl testability::ui_automation::UiAutomationHost for tauri::AppHandle {
     fn available_windows(&self) -> Vec<String> {
-        testability::ui_automation::liveness::available_window_labels(self)
+        let mut labels: Vec<String> = self.webview_windows().keys().cloned().collect();
+        labels.sort();
+        labels
     }
     fn spawn_background(&self, future: futures::future::BoxFuture<'static, ()>) {
         tauri::async_runtime::spawn(future);
