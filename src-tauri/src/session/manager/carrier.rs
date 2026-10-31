@@ -245,8 +245,8 @@ pub(super) fn stable_carrier_equal(a: &Session, b: &Session) -> bool {
         }
 }
 
-impl Drop for CarrierStateWrite<'_> {
-    fn drop(&mut self) {
+impl CarrierStateWrite<'_> {
+    fn invalidate_prompt_domains(&mut self) {
         let incompatible: Vec<_> = self
             .state
             .prompt_keys
@@ -311,6 +311,12 @@ impl Drop for CarrierStateWrite<'_> {
                 row.last_prompt = None;
             }
         }
+    }
+}
+
+impl Drop for CarrierStateWrite<'_> {
+    fn drop(&mut self) {
+        self.invalidate_prompt_domains();
         let now = std::time::Instant::now();
         let removed: Vec<Uuid> = self
             .before

@@ -1,4 +1,6 @@
-use super::session::{Session, SessionCommunicationKind, SessionInfo, SessionStatus};
+#[cfg(test)]
+use super::session::SessionCommunicationKind;
+use super::session::{Session, SessionInfo, SessionStatus};
 use crate::pty::backend_kind::SessionBackendKind;
 use crate::session::selection::authority::CommitCapability;
 use crate::session::selection::payload::{
@@ -19,7 +21,7 @@ mod metadata;
 mod prompt;
 mod turn;
 
-use binding::{clear_failed_recipe_for_runtime_binding, retire_coding_agent_binding};
+use binding::retire_coding_agent_binding;
 pub(crate) use carrier::{
     acquire_carrier_mutation_permit, process_carrier_publication_gate, CarrierDisposition,
     CarrierMutationPermit, CarrierPhysicalIdentity, CarrierSnapshot, RaiseCarrierOutcome,
@@ -389,66 +391,13 @@ impl SessionManager {
                 .try_current_read_owned()
                 .map_err(|_| Failure::RouteUnavailable)?;
             let mut state = self.carrier_state_write(carrier_permit).await;
-            if state.pending_create.contains_key(&id)
-                || state.pending_create.contains_key(&authority_id)
-            {
-                return Err(Failure::RouteUnavailable);
-            }
-            let authority = state
-                .sessions
-                .get(&authority_id)
-                .ok_or(Failure::RouteUnavailable)?;
-            if matches!(authority.status, SessionStatus::Exited(_))
-                || authority.backend_kind != authority_backend
-            {
-                return Err(Failure::RouteUnavailable);
-            }
-            if authority_backend == SessionBackendKind::LocalProcess {
-                let live_token_matches = state
-                    .sessions
-                    .values()
-                    .filter(|candidate| !state.pending_create.contains_key(&candidate.id))
-                    .filter(|candidate| candidate.token == authority.token)
-                    .filter(|candidate| !matches!(candidate.status, SessionStatus::Exited(_)))
-                    .count();
-                if live_token_matches != 1 {
-                    return Err(Failure::RouteUnavailable);
-                }
-            }
-            let authority_cwd = crate::path_identity::verify_directory(std::path::Path::new(
-                &authority.working_directory,
-            ))
-            .map_err(|_| Failure::RouteUnavailable)?;
-            let expected_authority_replica = if expected_sender.canonical_fqn
-                == crate::config::root_agent::ROOT_AGENT_SENDER
-            {
-                let root = crate::config::root_agent::verify_live_root_agent_path(
-                    std::path::Path::new(&authority.working_directory),
-                )
-                .map_err(|_| Failure::RouteUnavailable)?;
-                if !authority.is_root_agent
-                    || !crate::path_identity::same_object(&root, &expected_sender.replica_identity)
-                {
-                    return Err(Failure::RouteUnavailable);
-                }
-                None
-            } else {
-                let sender = crate::config::teams::verify_pty_input_replica_cwd(
-                    std::path::Path::new(&authority.working_directory),
-                )
-                .map_err(|_| Failure::RouteUnavailable)?;
-                if authority.is_root_agent
-                    || sender.canonical_fqn != expected_sender.canonical_fqn
-                    || sender.authority_fingerprint != expected_sender.authority_fingerprint
-                    || !crate::path_identity::same_object(
-                        &sender.replica_identity,
-                        &expected_sender.replica_identity,
-                    )
-                {
-                    return Err(Failure::RouteUnavailable);
-                }
-                Some(sender.replica_identity)
-            };
+            let (authority_cwd, expected_authority_replica) = verify_input_authority(
+                &state,
+                id,
+                authority_id,
+                authority_backend,
+                expected_sender,
+            )?;
             let authority_route_guard = authority_route
                 .lock_verified(
                     authority_backend,
@@ -467,23 +416,7 @@ impl SessionManager {
             {
                 return Err(Failure::Busy);
             }
-            let cwd_identity = crate::path_identity::verify_directory(std::path::Path::new(
-                &session.working_directory,
-            ))
-            .map_err(|_| Failure::RouteUnavailable)?;
-            let current_target = crate::config::teams::verify_pty_input_replica_cwd(
-                std::path::Path::new(&session.working_directory),
-            )
-            .map_err(|_| Failure::RouteUnavailable)?;
-            if current_target.canonical_fqn != expected_target.canonical_fqn
-                || current_target.authority_fingerprint != expected_target.authority_fingerprint
-                || !crate::path_identity::same_object(
-                    &current_target.replica_identity,
-                    &expected_target.replica_identity,
-                )
-            {
-                return Err(Failure::RouteUnavailable);
-            }
+            let cwd_identity = verify_input_target(session, expected_target)?;
             let prepared = idle_detector.prepare_pty_input_boundary(id, || {
                 let route = crate::pty::input_route::lock_route_for_verified_write(
                     permit,
@@ -589,91 +522,16 @@ impl SessionManager {
             state.revision
         };
 
-        // Every fallible check runs before either row receives transferred text.
-        if !matches!(
-            (target_mode, target_id, target_status.as_ref()),
-            (SelectionMode::None, None, _)
-                | (SelectionMode::Live, Some(_), _)
-                | (
-                    SelectionMode::Dormant,
-                    Some(_),
-                    Some(SessionStatus::Exited(_))
-                )
-        ) {
-            return Err("invalid canonical selection target".to_string());
-        }
+        commit::validate_canonical_selection_target(
+            target_mode,
+            target_id,
+            target_status.as_ref(),
+        )?;
         apply_commit_prompt_domains(&mut state, &mutations, cause);
         let mut result = CommitResult::default();
         let mut changed_ids = HashSet::new();
-        // #1149 - ids only. The record itself is built after every fallible exit
-        // below, so a later `?` can never strand a record for a session this
-        // commit did not actually finalize.
-        let mut finalized_live_ids: Vec<Uuid> = Vec::new();
-        for mutation in mutations.finalizations {
-            match mutation {
-                FinalizeMutation::Live(binding, _) => {
-                    state.pending_create.remove(&binding.session_id);
-                    clear_failed_recipe_for_runtime_binding(&mut state, binding.session_id);
-                    if let Some(record) = state.sessions.get_mut(&binding.session_id) {
-                        record.status = SessionStatus::Running;
-                        finalized_live_ids.push(binding.session_id);
-                        result.finalized_rows.push(SessionInfo::from(&*record));
-                    }
-                }
-                FinalizeMutation::Dormant(binding, _, exit_code) => {
-                    state.pending_create.remove(&binding.session_id);
-                    clear_failed_recipe_for_runtime_binding(&mut state, binding.session_id);
-                    if let Some(record) = state.sessions.get_mut(&binding.session_id) {
-                        record.status = SessionStatus::Exited(exit_code);
-                        result.finalized_rows.push(SessionInfo::from(&*record));
-                    }
-                }
-            }
-        }
-
-        for (id, exit_code) in mutations.mark_exited {
-            let Some(record) = state.sessions.get_mut(&id) else {
-                result.missing_ids.push(id);
-                continue;
-            };
-            if matches!(record.status, SessionStatus::Exited(_)) {
-                continue;
-            }
-            let cleared_raise_hand = record.communication.as_ref().is_some_and(|communication| {
-                communication.kind == SessionCommunicationKind::RaiseHand && communication.visible
-            });
-            if cleared_raise_hand {
-                record.communication = None;
-                result.cleared_raise_hand_ids.push(id);
-            }
-            record.status = SessionStatus::Exited(exit_code);
-            changed_ids.insert(id);
-        }
-
-        for (id, detached) in mutations.detached_intent {
-            let Some(record) = state.sessions.get_mut(&id) else {
-                result.missing_ids.push(id);
-                continue;
-            };
-            if record.was_detached != detached {
-                record.was_detached = detached;
-                changed_ids.insert(id);
-            }
-        }
-
-        for id in mutations.removals {
-            if let Some(record) = state.sessions.remove(&id) {
-                state.order.retain(|candidate| *candidate != id);
-                state.prompt_keys.remove(&id);
-                state.prompt_seed_blocked.remove(&id);
-                state.pending_prompts.remove(&id);
-                state.pending_create.remove(&id);
-                retire_coding_agent_binding(&mut state, id);
-                result.removed_rows.push(SessionInfo::from(&record));
-            } else {
-                result.missing_ids.push(id);
-            }
-        }
+        let finalized_live_ids =
+            commit::apply_lifecycle_mutations(&mut state, mutations, &mut result, &mut changed_ids);
 
         if selection_changed {
             if let Some(previous_id) = old_id {
@@ -841,6 +699,106 @@ impl SessionManager {
         }
         removed
     }
+}
+
+fn verify_input_authority(
+    state: &SessionManagerState,
+    id: Uuid,
+    authority_id: Uuid,
+    authority_backend: SessionBackendKind,
+    expected_sender: &crate::config::teams::VerifiedPtyInputIdentity,
+) -> Result<
+    (
+        crate::path_identity::VerifiedPathIdentity,
+        Option<crate::path_identity::VerifiedPathIdentity>,
+    ),
+    crate::pty::idle_detector::PtyInputBoundaryFailure,
+> {
+    use crate::pty::idle_detector::PtyInputBoundaryFailure as Failure;
+    if state.pending_create.contains_key(&id) || state.pending_create.contains_key(&authority_id) {
+        return Err(Failure::RouteUnavailable);
+    }
+    let authority = state
+        .sessions
+        .get(&authority_id)
+        .ok_or(Failure::RouteUnavailable)?;
+    if matches!(authority.status, SessionStatus::Exited(_))
+        || authority.backend_kind != authority_backend
+    {
+        return Err(Failure::RouteUnavailable);
+    }
+    if authority_backend == SessionBackendKind::LocalProcess {
+        let live_token_matches = state
+            .sessions
+            .values()
+            .filter(|candidate| !state.pending_create.contains_key(&candidate.id))
+            .filter(|candidate| candidate.token == authority.token)
+            .filter(|candidate| !matches!(candidate.status, SessionStatus::Exited(_)))
+            .count();
+        if live_token_matches != 1 {
+            return Err(Failure::RouteUnavailable);
+        }
+    }
+    let authority_cwd =
+        crate::path_identity::verify_directory(std::path::Path::new(&authority.working_directory))
+            .map_err(|_| Failure::RouteUnavailable)?;
+    let expected_authority_replica =
+        if expected_sender.canonical_fqn == crate::config::root_agent::ROOT_AGENT_SENDER {
+            let root = crate::config::root_agent::verify_live_root_agent_path(
+                std::path::Path::new(&authority.working_directory),
+            )
+            .map_err(|_| Failure::RouteUnavailable)?;
+            if !authority.is_root_agent
+                || !crate::path_identity::same_object(&root, &expected_sender.replica_identity)
+            {
+                return Err(Failure::RouteUnavailable);
+            }
+            None
+        } else {
+            let sender = crate::config::teams::verify_pty_input_replica_cwd(std::path::Path::new(
+                &authority.working_directory,
+            ))
+            .map_err(|_| Failure::RouteUnavailable)?;
+            if authority.is_root_agent
+                || sender.canonical_fqn != expected_sender.canonical_fqn
+                || sender.authority_fingerprint != expected_sender.authority_fingerprint
+                || !crate::path_identity::same_object(
+                    &sender.replica_identity,
+                    &expected_sender.replica_identity,
+                )
+            {
+                return Err(Failure::RouteUnavailable);
+            }
+            Some(sender.replica_identity)
+        };
+    Ok((authority_cwd, expected_authority_replica))
+}
+
+fn verify_input_target(
+    session: &Session,
+    expected_target: &crate::config::teams::VerifiedPtyInputIdentity,
+) -> Result<
+    crate::path_identity::VerifiedPathIdentity,
+    crate::pty::idle_detector::PtyInputBoundaryFailure,
+> {
+    use crate::pty::idle_detector::PtyInputBoundaryFailure as Failure;
+    let cwd_identity =
+        crate::path_identity::verify_directory(std::path::Path::new(&session.working_directory))
+            .map_err(|_| Failure::RouteUnavailable)?;
+    let current_target = crate::config::teams::verify_pty_input_replica_cwd(std::path::Path::new(
+        &session.working_directory,
+    ))
+    .map_err(|_| Failure::RouteUnavailable)?;
+    if current_target.canonical_fqn != expected_target.canonical_fqn
+        || current_target.authority_fingerprint != expected_target.authority_fingerprint
+        || !crate::path_identity::same_object(
+            &current_target.replica_identity,
+            &expected_target.replica_identity,
+        )
+    {
+        return Err(Failure::RouteUnavailable);
+    }
+    Ok(cwd_identity)
 }
 
 #[cfg(test)]

@@ -21,7 +21,8 @@ fn function_name(line: &str) -> Option<String> {
 }
 
 /// #1149 - the only functions allowed to write `Session::status` in
-/// production. Each one either records the working-state edge it causes or is
+/// production, alongside the lifecycle helper in manager/commit.rs. Each one
+/// either records the working-state edge it causes or is
 /// covered by the heartbeat backstop; an assignment anywhere else silently
 /// reintroduces an unrecorded edge.
 const STATUS_WRITER_OWNERS: [&str; 5] = [
@@ -56,7 +57,9 @@ fn ownership_violations(files: &[(String, String)]) -> Vec<String> {
             for variant in ["Active", "Running", "Idle", "Exited"] {
                 if line.contains(&format!("= SessionStatus::{variant}"))
                     && !(path.ends_with("session/manager.rs")
-                        && STATUS_WRITER_OWNERS.contains(&function.as_str()))
+                        && STATUS_WRITER_OWNERS.contains(&function.as_str())
+                        || path.ends_with("session/manager/commit.rs")
+                            && function == "apply_lifecycle_mutations")
                 {
                     violations.push(format!(
                         "{path}:{} {variant} assignment in {function}",
@@ -218,7 +221,11 @@ fn source_ownership_sentinel_rejects_each_one_line_mutation() {
 fn the_status_writer_guard_rejects_a_rogue_running_assignment() {
     for variant in ["Active", "Running", "Idle", "Exited(0)"] {
         let rogue = format!("fn rogue() {{ row.status = SessionStatus::{variant}; }}");
-        for path in ["src/commands/session.rs", "src/session/manager.rs"] {
+        for path in [
+            "src/commands/session.rs",
+            "src/session/manager.rs",
+            "src/session/manager/commit.rs",
+        ] {
             let files = vec![(path.to_string(), rogue.clone())];
             assert!(
                 !ownership_violations(&files).is_empty(),
@@ -252,6 +259,23 @@ fn commit_selection_transition_with_carrier_permit() {
     // the tolerated `==` comparison the substring check also matches.
     let elsewhere = vec![("src/commands/session.rs".to_string(), owned.to_string())];
     assert_eq!(ownership_violations(&elsewhere).len(), 8);
+}
+
+#[test]
+fn the_lifecycle_mutation_helper_owns_status_only_in_its_commit_module() {
+    let source = "fn apply_lifecycle_mutations() {
+    record.status = SessionStatus::Running;
+    record.status = SessionStatus::Exited(exit_code);
+}";
+    let owner = vec![(
+        "src/session/manager/commit.rs".to_string(),
+        source.to_string(),
+    )];
+    assert!(ownership_violations(&owner).is_empty());
+    for path in ["src/commands/session.rs", "src/session/manager.rs"] {
+        let elsewhere = vec![(path.to_string(), source.to_string())];
+        assert_eq!(ownership_violations(&elsewhere).len(), 2);
+    }
 }
 
 #[test]
