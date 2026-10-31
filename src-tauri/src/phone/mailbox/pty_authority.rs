@@ -9,10 +9,13 @@ use super::settle::{
     observe_pty_spawn_scope, select_persistent_exited_pty_candidate,
     session_has_current_pty_submission_provenance, PtySpawnStep,
 };
+use crate::commands::session::background_destroy_session_inner;
 use crate::config::settings::SettingsState;
+use crate::phone::types::parse_canonical_uuid_v4;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
+use crate::session::selection::publish_session_communication;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
 use std::path::Path;
@@ -473,6 +476,44 @@ impl MailboxPoller {
         Some((continuation, fixture_created))
     }
 
+    fn require_resumable_pty_claim(
+        refresh: Result<PtyClaimRefresh, crate::phone::types::PtyInputReasonCode>,
+    ) -> Result<(), crate::session::selection::OwnedSourceStop> {
+        use crate::phone::types::PtyInputReasonCode as C;
+        use crate::session::selection::OwnedSourceStop as Stop;
+        match refresh {
+            Ok(PtyClaimRefresh::Current) => Ok(()),
+            Ok(PtyClaimRefresh::Terminal) => Err(Stop::Terminal),
+            Err(C::AuthorityChanged) => Err(Stop::AuthorityChanged),
+            Err(C::Expired) => Err(Stop::Expired),
+            Err(C::LeaseLost) => Err(Stop::LeaseLost),
+            Err(_) => Err(Stop::StoreTransient),
+        }
+    }
+
+    fn require_owned_pty_source_authority(
+        current: Result<bool, crate::api::auth::FreshRegistryError>,
+    ) -> Result<(), crate::session::selection::OwnedSourceStop> {
+        use crate::session::selection::OwnedSourceStop as Stop;
+        match current {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(Stop::AuthorityChanged),
+            Err(_) => Err(Stop::StoreTransient),
+        }
+    }
+
+    async fn pty_removal_session_survived(
+        sessions: &Arc<tokio::sync::RwLock<SessionManager>>,
+        exited: &SessionInfo,
+        target: &crate::config::teams::VerifiedPtyInputIdentity,
+    ) -> bool {
+        let remaining = {
+            let guard = sessions.read().await;
+            guard.list_sessions().await
+        };
+        Self::pty_removal_survivor(&remaining, exited, target)
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "Keep the actual PTY source, proof, executor and fixture borrow contract together"
@@ -493,7 +534,6 @@ impl MailboxPoller {
         source_executor: &mut crate::session::selection::SourceExecutorGuard,
         #[cfg(test)] fixture_lease: Option<&Arc<crate::commands::session::FixturePtyCutLease>>,
     ) -> Result<PtySpawnStep, crate::phone::types::PtyInputReasonCode> {
-        use crate::phone::types::PtyInputReasonCode as C;
         let (claimed, initial, sender, api_client_store) = source;
         let (target, previous_id) = target;
         let Some(coordinator) = app.try_state::<crate::session::selection::SelectionCoordinator>()
@@ -548,15 +588,9 @@ impl MailboxPoller {
                     .try_state::<crate::api::message_store::MessageStoreState>()
                     .and_then(|state| state.store.as_ref().ok().cloned())
                     .ok_or(Stop::StoreTransient)?;
-                match refresh_pty_claim_for_resume(&store, &initial, &claimed).await {
-                    Ok(PtyClaimRefresh::Current) => {}
-                    Ok(PtyClaimRefresh::Terminal) => return Err(Stop::Terminal),
-                    Err(C::AuthorityChanged) => return Err(Stop::AuthorityChanged),
-                    Err(C::Expired) => return Err(Stop::Expired),
-                    Err(C::LeaseLost) => return Err(Stop::LeaseLost),
-                    Err(_) => return Err(Stop::StoreTransient),
-                }
-                match delivery
+                let refresh = refresh_pty_claim_for_resume(&store, &initial, &claimed).await;
+                Self::require_resumable_pty_claim(refresh)?;
+                let current = delivery
                     .pty_spawn_authority_is_current(
                         &app,
                         &claimed,
@@ -565,17 +599,12 @@ impl MailboxPoller {
                         claimed.source_plane,
                         api.as_ref(),
                     )
-                    .await
-                {
-                    Ok(true) => {
-                        if delivery.owned_pty_recipe_is_current(&app, &request).await {
-                            Ok(())
-                        } else {
-                            Err(Stop::AuthorityChanged)
-                        }
-                    }
-                    Ok(false) => Err(Stop::AuthorityChanged),
-                    Err(_) => Err(Stop::StoreTransient),
+                    .await;
+                Self::require_owned_pty_source_authority(current)?;
+                if delivery.owned_pty_recipe_is_current(&app, &request).await {
+                    Ok(())
+                } else {
+                    Err(Stop::AuthorityChanged)
                 }
             })
         }));
@@ -610,14 +639,33 @@ impl MailboxPoller {
         Self::owned_pty_spawn_outcome(created, continuation)
     }
 
+    fn pty_removal_route_survived(
+        manager: &Mutex<PtyManager>,
+        exited_id: Uuid,
+        target: &crate::config::teams::VerifiedPtyInputIdentity,
+    ) -> bool {
+        let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
+        manager.backend_kind(exited_id).is_some()
+            || manager.has_pending_spawn_for_replica(&target.replica_identity)
+    }
+
+    async fn restore_pty_communication(
+        sessions: &Arc<tokio::sync::RwLock<SessionManager>>,
+        id: Uuid,
+        communication: &crate::session::session::SessionCommunication,
+    ) -> bool {
+        let guard = sessions.read().await;
+        guard.restore_communication(id, communication.clone()).await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn_pty_input_target<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         claimed: &crate::api::message_store::ClaimedPtyInputOperation,
         matching: &[SessionInfo],
-        verified_sender: &crate::config::teams::VerifiedPtyInputIdentity,
-        verified_target: &crate::config::teams::VerifiedPtyInputIdentity,
+        sender: &crate::config::teams::VerifiedPtyInputIdentity,
+        target: &crate::config::teams::VerifiedPtyInputIdentity,
         source_plane: crate::phone::types::PtyInputSourcePlane,
         api_client_store: Option<&Arc<crate::api::auth::ApiClientStore>>,
         target_ownership: &crate::api::message_store::PtyInputTargetOwnership<'_>,
@@ -627,21 +675,14 @@ impl MailboxPoller {
         #[cfg(test)] fixture_lease: Option<&Arc<crate::commands::session::FixturePtyCutLease>>,
     ) -> Result<PtySpawnStep, crate::phone::types::PtyInputReasonCode> {
         use crate::phone::types::PtyInputReasonCode as C;
-
-        let target_root_text = Self::pty_target_root(claimed, verified_target, target_ownership)?;
+        let root = Self::pty_target_root(claimed, target, target_ownership)?;
         let settings_state = app.state::<SettingsState>();
         let settings = settings_state.read().await.clone();
-        let resolved = Self::resolve_pty_spawn_input(
-            &target_root_text,
-            &settings,
-            claimed,
-            matching,
-            verified_target,
-        )?;
+        let input = Self::resolve_pty_spawn_input(&root, &settings, claimed, matching, target)?;
         let authority = PtySpawnAuthority {
             claimed,
-            sender: verified_sender,
-            target: verified_target,
+            sender,
+            target,
             source_plane,
             api_client_store,
         };
@@ -649,19 +690,18 @@ impl MailboxPoller {
         // No destroy/create/native preparation has started. Return ownership
         // to dispatch rather than waiting under its borrowed target guards.
         use crate::config::sessions_persistence::CreateCarrierScope;
-        let (scope, retained) = observe_pty_spawn_scope(app, verified_target).await;
+        let (scope, retained) = observe_pty_spawn_scope(app, target).await;
         if !matches!(scope, CreateCarrierScope::Foreign { .. }) {
             let Some(retained_id) = retained else {
                 return Ok(PtySpawnStep::NeedReacquire(prepared_replacement));
             };
-            let exited_id =
-                Self::retained_pty_target_id(resolved.backend, resolved.exited, retained_id)?;
+            let exited_id = Self::retained_pty_target_id(input.backend, input.exited, retained_id)?;
             return self
                 .spawn_owned_pty_replacement(
                     app,
-                    Self::resolved_pty_replacement_request(resolved, &target_root_text, claimed),
-                    (claimed, initial, verified_sender, api_client_store),
-                    (verified_target, exited_id),
+                    Self::resolved_pty_replacement_request(input, &root, claimed),
+                    (claimed, initial, sender, api_client_store),
+                    (target, exited_id),
                     prepared_replacement,
                     target_ownership,
                     source_executor,
@@ -671,89 +711,69 @@ impl MailboxPoller {
                 .await;
         }
         drop(prepared_replacement);
-        if let Some(exited) = resolved.exited {
-            let exited_id = crate::phone::types::parse_canonical_uuid_v4(&exited.id)
-                .map_err(|_| C::InconsistentSession)?;
-            let destroy_result =
-                crate::commands::session::background_destroy_session_inner(app, exited_id).await;
-            let session_manager = app
+        if let Some(exited) = input.exited {
+            let exited_id =
+                parse_canonical_uuid_v4(&exited.id).map_err(|_| C::InconsistentSession)?;
+            let destroy_result = background_destroy_session_inner(app, exited_id).await;
+            let sessions = app
                 .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
                 .inner()
                 .clone();
-            let remaining = {
-                let guard = session_manager.read().await;
-                guard.list_sessions().await
-            };
-            let survived = Self::pty_removal_survivor(&remaining, exited, verified_target);
+            let survived = Self::pty_removal_session_survived(&sessions, exited, target).await;
             let route_or_spawn_survived = {
                 let manager = app.state::<Arc<Mutex<PtyManager>>>();
-                let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
-                manager.backend_kind(exited_id).is_some()
-                    || manager.has_pending_spawn_for_replica(&verified_target.replica_identity)
+                Self::pty_removal_route_survived(&manager, exited_id, target)
             };
             Self::verify_pty_removal(survived || route_or_spawn_survived, destroy_result, claimed)?;
         }
         self.require_current_pty_spawn(app, &authority).await?;
-        let session_manager = app
+        let sessions = app
             .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
             .inner()
             .clone();
-        let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
         let (_, local_name) = crate::config::teams::split_project_prefix(&claimed.target_fqn);
         let created = crate::commands::session::create_session_inner_with_pty_target_ownership(
             app,
-            &session_manager,
-            &pty_manager,
-            resolved.spawn.shell.clone(),
-            resolved.spawn.shell_args.clone(),
-            target_root_text,
+            &sessions,
+            &pty,
+            input.spawn.shell.clone(),
+            input.spawn.shell_args.clone(),
+            root,
             Some(local_name.to_string()),
-            Some(resolved.agent_id),
-            Some(resolved.spawn.trusted_agent_label.clone()),
+            Some(input.agent_id),
+            Some(input.spawn.trusted_agent_label.clone()),
             false,
             Vec::new(),
-            resolved.exited.is_none(),
-            Some(resolved.spawn),
-            resolved.host_shell,
+            input.exited.is_none(),
+            Some(input.spawn),
+            input.host_shell,
             None,
             crate::commands::session::CreateSelectionIntent::Background,
             target_ownership,
         )
         .await;
-        let Some((info, created_id)) = Self::resolve_created_pty_target(
+        let Some((info, id)) = Self::resolve_created_pty_target(
             created,
-            &session_manager,
-            &pty_manager,
-            verified_target,
-            resolved.backend,
+            &sessions,
+            &pty,
+            target,
+            input.backend,
             &settings,
         )
         .await?
         else {
             return Ok(PtySpawnStep::RetainedUnowned);
         };
-        if let Some((telegram_bot_id, communication)) = resolved.carried {
-            if telegram_bot_id.is_some() {
-                self.attach_persisted_telegram_for_wake(
-                    app,
-                    created_id,
-                    telegram_bot_id.as_deref(),
-                )
-                .await;
+        if let Some((bot_id, communication)) = input.carried {
+            if bot_id.is_some() {
+                self.attach_persisted_telegram_for_wake(app, id, bot_id.as_deref())
+                    .await;
             }
             if let Some(communication) = communication {
-                let restored = {
-                    let guard = session_manager.read().await;
-                    guard
-                        .restore_communication(created_id, communication.clone())
-                        .await
-                };
+                let restored = Self::restore_pty_communication(&sessions, id, &communication).await;
                 if restored {
-                    crate::session::selection::publish_session_communication(
-                        app,
-                        created_id,
-                        Some(&communication),
-                    );
+                    publish_session_communication(app, id, Some(&communication));
                 }
             }
         }
