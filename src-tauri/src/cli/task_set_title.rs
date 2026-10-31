@@ -9,7 +9,6 @@
 //! for all CLI verbs simultaneously.
 
 use clap::Args;
-use std::path::Path;
 
 use super::send::agent_name_from_root;
 use super::task_ops::{self, EditOutcome, TaskOp};
@@ -75,40 +74,14 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
         return 1;
     }
 
-    // Coordinator gate (skipped for root/master token; mirrors close_session.rs:89-101).
-    let is_master = is_root || {
-        if let Some(ref token_str) = args.token {
-            crate::filesystem::master_token::matches(
-                crate::config::config_dir().as_deref(),
-                token_str,
-            )
-        } else {
-            false
-        }
-    };
-
-    if !is_master {
-        let teams = crate::config::teams::discover_teams_for_cli();
-        if teams.is_empty() || !crate::config::teams::is_any_coordinator(&sender, &teams) {
-            eprintln!(
-                "Error: authorization denied — '{}' is not an orchestrator of any team. \
-                 Only orchestrators can edit TASK.md.",
-                sender
-            );
-            return 1;
-        }
-    }
-
-    // Locate workgroup root.
-    let wg_root = match crate::phone::messaging::workgroup_root(Path::new(&root)) {
-        Ok(p) => p,
-        Err(_) => {
-            eprintln!(
-                "Error: --root is not under a `room-*` or legacy `wg-*` Room directory; \
-                 cannot locate the room TASK.md."
-            );
-            return 1;
-        }
+    let wg_root = match super::task_append_body::task_edit_room(
+        is_root,
+        args.token.as_deref(),
+        &sender,
+        &root,
+    ) {
+        Ok(room) => room,
+        Err(code) => return code,
     };
 
     // Hand off to task_ops::perform.
