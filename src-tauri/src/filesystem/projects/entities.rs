@@ -13,3 +13,4 @@ pub(crate) mod team_lock;
 
 pub(crate) mod copies;
 pub(crate) mod publication;
+pub(crate) mod roles;

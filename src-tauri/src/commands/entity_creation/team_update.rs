@@ -9,10 +9,10 @@ use super::team_config::{
 use super::{RepoAssignment, SyncError, SyncResult, TeamConfigResult};
 use crate::commands::ac_discovery::DiscoveryBranchWatcher;
 use crate::config::entity_creation::directories::{
-    replica_candidates, replica_role_present, team_directory_present, team_room_candidates,
+    replica_candidates, team_directory_present, team_room_candidates,
 };
 use crate::config::replica_identity::{
-    normalize_wg_replica_context_entries, repair_wg_replica_config_value, ROLE_MD_FILENAME,
+    normalize_wg_replica_context_entries, repair_wg_replica_config_value,
     WG_REPLICA_REQUIRED_CONTEXT,
 };
 use crate::pty::git_watcher::{CoordinatorChangedPayload, GitWatcher};
@@ -179,7 +179,7 @@ pub(super) fn apply_wg_replica_repos(
             &existing_context,
             &["$AGENTSCOMMANDER_CONTEXT"],
             &identity.identity,
-            replica_role_present(&identity.matrix_dir.join(ROLE_MD_FILENAME)),
+            crate::filesystem::projects::entities::roles::role_present(&identity.matrix_dir),
         ));
 
         let final_obj = config.as_object_mut().ok_or_else(|| {

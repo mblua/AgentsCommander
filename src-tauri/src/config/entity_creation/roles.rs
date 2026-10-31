@@ -1,8 +1,8 @@
 //! App-created Role.md bytes and rendering; excludes template resolution.
-use crate::filesystem::projects::entities::publication;
+use crate::filesystem::projects::entities::roles;
 use std::path::{Path, PathBuf};
 
-pub(crate) const ROLE_FILE_NAME: &str = "Role.md";
+pub(crate) const ROLE_FILE_NAME: &str = roles::ROLE_FILE_NAME;
 
 pub(crate) struct RoleProfileRef<'a> {
     pub id: &'a str,
@@ -10,10 +10,7 @@ pub(crate) struct RoleProfileRef<'a> {
 }
 
 pub(crate) fn write_created_role(root: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
-    let path = root.join(ROLE_FILE_NAME);
-    publication::write_created_role(&path, bytes)
-        .map_err(|e| format!("Failed to write Role.md: {}", e))?;
-    Ok(path)
+    roles::write_created_role(root, bytes)
 }
 
 /// Build the Role.md body written by `create_agent_matrix`. Kept as a separate
