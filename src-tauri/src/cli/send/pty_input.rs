@@ -291,7 +291,17 @@ pub(super) fn execute_pty_input(args: SendArgs, root: String, text: String) -> i
         confirmation_tag: &confirmation_tag,
     };
 
-    let local_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
+    publish_and_confirm_pty_input(&root, &expected, &message, args.confirm_timeout)
+}
+
+fn publish_and_confirm_pty_input(
+    root: &str,
+    expected: &ExpectedPtyArtifact<'_>,
+    message: &OutboxMessage,
+    confirm_timeout: u64,
+) -> i32 {
+    let injection_id = expected.injection_id;
+    let local_dir = PathBuf::from(root).join(crate::config::agent_local_dir_name());
     if crate::path_identity::verify_directory(&local_dir).is_err() {
         eprintln!("Error: unsafe_path operation={injection_id}");
         return 1;
@@ -303,11 +313,11 @@ pub(super) fn execute_pty_input(args: SendArgs, root: String, text: String) -> i
         eprintln!("Error: publish_failed operation={injection_id}");
         return 1;
     }
-    if let Err(code) = publish_pty_request(&outbox, &injection_id, &message) {
+    if let Err(code) = publish_pty_request(&outbox, injection_id, message) {
         let final_exists =
             crate::path_identity::verify_regular_file(&outbox.join(format!("{injection_id}.json")))
                 .is_ok();
-        let correlated_artifact = find_pty_input_terminal_artifact(&outbox, &expected)
+        let correlated_artifact = find_pty_input_terminal_artifact(&outbox, expected)
             .ok()
             .flatten()
             .is_some();
@@ -322,10 +332,10 @@ pub(super) fn execute_pty_input(args: SendArgs, root: String, text: String) -> i
     );
     let confirmation = wait_for_pty_input_confirmation(
         &outbox,
-        &expected,
-        std::time::Duration::from_secs(args.confirm_timeout),
+        expected,
+        std::time::Duration::from_secs(confirm_timeout),
     );
-    report_pty_input_confirmation(&injection_id, confirmation)
+    report_pty_input_confirmation(injection_id, confirmation)
 }
 
 fn pty_request_message(
