@@ -631,6 +631,68 @@ impl MailboxPoller {
         });
     }
 
+    fn parse_pty_candidate_json(&self, path: &Path, bytes: &[u8]) -> Option<serde_json::Value> {
+        if bytes.starts_with(&[0xef, 0xbb, 0xbf]) || std::str::from_utf8(bytes).is_err() {
+            self.reject_malformed_pty_candidate(path);
+            return None;
+        }
+        match crate::path_identity::parse_json_no_duplicates(bytes) {
+            Ok(value) => Some(value),
+            Err(_) => {
+                self.reject_malformed_pty_candidate(path);
+                None
+            }
+        }
+    }
+
+    async fn enqueue_host_pty_candidate<S: PtyAuthorityState + ?Sized>(
+        &self,
+        app: &S,
+        path: &Path,
+        is_app_outbox: bool,
+        source_identity: &crate::path_identity::VerifiedPathIdentity,
+        store: &crate::api::message_store::MessageStore,
+        envelope: &crate::phone::types::PtyInputHostEnvelope,
+    ) -> Option<String> {
+        let validation = self
+            .validate_and_enqueue_host_pty_input(
+                app,
+                path,
+                is_app_outbox,
+                source_identity,
+                store,
+                envelope,
+            )
+            .await;
+        match validation {
+            Ok(injection_id) => Some(injection_id),
+            Err(code) => {
+                if code == crate::phone::types::PtyInputReasonCode::StoreTransient {
+                    log::debug!(
+                        "[pty-input] host ingress deferred code={}",
+                        reason_code_name(code)
+                    );
+                    return None;
+                }
+                Self::record_host_pty_ingress_rejection(code);
+                if !self
+                    .reject_correlated_host_pty_candidate(
+                        app,
+                        path,
+                        source_identity,
+                        store,
+                        envelope,
+                        code,
+                    )
+                    .await
+                {
+                    self.reject_malformed_pty_candidate(path);
+                }
+                None
+            }
+        }
+    }
+
     pub(crate) async fn process_pty_input_file<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -639,16 +701,8 @@ impl MailboxPoller {
         bytes: &[u8],
         source_identity: &crate::path_identity::VerifiedPathIdentity,
     ) {
-        if bytes.starts_with(&[0xef, 0xbb, 0xbf]) || std::str::from_utf8(bytes).is_err() {
-            self.reject_malformed_pty_candidate(path);
+        let Some(value) = self.parse_pty_candidate_json(path, bytes) else {
             return;
-        }
-        let value = match crate::path_identity::parse_json_no_duplicates(bytes) {
-            Ok(value) => value,
-            Err(_) => {
-                self.reject_malformed_pty_candidate(path);
-                return;
-            }
         };
         let state = app.try_state::<crate::api::message_store::MessageStoreState>();
 
@@ -722,8 +776,8 @@ impl MailboxPoller {
                 return;
             }
         };
-        let validation = self
-            .validate_and_enqueue_host_pty_input(
+        let Some(injection_id) = self
+            .enqueue_host_pty_candidate(
                 app,
                 path,
                 is_app_outbox,
@@ -731,33 +785,9 @@ impl MailboxPoller {
                 &store,
                 &envelope,
             )
-            .await;
-        let injection_id = match validation {
-            Ok(injection_id) => injection_id,
-            Err(code) => {
-                if code == crate::phone::types::PtyInputReasonCode::StoreTransient {
-                    log::debug!(
-                        "[pty-input] host ingress deferred code={}",
-                        reason_code_name(code)
-                    );
-                    return;
-                }
-                Self::record_host_pty_ingress_rejection(code);
-                if !self
-                    .reject_correlated_host_pty_candidate(
-                        app,
-                        path,
-                        source_identity,
-                        &store,
-                        &envelope,
-                        code,
-                    )
-                    .await
-                {
-                    self.reject_malformed_pty_candidate(path);
-                }
-                return;
-            }
+            .await
+        else {
+            return;
         };
         self.dispatch_pty_input_operation(
             app,
