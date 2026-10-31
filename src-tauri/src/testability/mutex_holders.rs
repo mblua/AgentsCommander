@@ -195,11 +195,9 @@ struct HandleTableHeader {
 #[cfg(target_os = "windows")]
 pub fn find_holders(probe: &super::ProfileMutexGuard) -> HolderLookup {
     use std::collections::HashMap;
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, CompareObjectHandles, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE,
-    };
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION,
+        OpenProcess, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
     let mutex_name = display_mutex_name();
@@ -272,43 +270,13 @@ pub fn find_holders(probe: &super::ProfileMutexGuard) -> HolderLookup {
             skipped_handles += 1;
             continue;
         }
-        let mut duplicate: HANDLE = std::ptr::null_mut();
-        // SAFETY: `process` is an open handle with PROCESS_DUP_HANDLE; `duplicate` is
-        // a valid out-pointer; the source handle value came from the kernel's table.
-        let duplicated = unsafe {
-            DuplicateHandle(
-                process,
-                e.handle_value as HANDLE,
-                GetCurrentProcess(),
-                &mut duplicate,
-                0,
-                0,
-                DUPLICATE_SAME_ACCESS,
-            )
-        };
-        if duplicated == 0 || duplicate.is_null() {
+        let Some(same) = compare_probe_handle(process, e.handle_value, probe) else {
             // Not compared. The summary counts this; it does not guess why.
             skipped_handles += 1;
             continue;
-        }
-        // SAFETY: both handles are open and owned by this process.
-        let same = unsafe { CompareObjectHandles(probe.0, duplicate) } != 0;
-        // SAFETY: `duplicate` was created by DuplicateHandle above and is closed once.
-        unsafe {
-            let _ = CloseHandle(duplicate);
-        }
+        };
         if same {
-            let image_path = image_path(process);
-            let image_name = image_path
-                .as_deref()
-                .and_then(|p| std::path::Path::new(p).file_name())
-                .map(|n| n.to_string_lossy().into_owned());
-            holders.push(MutexHolder {
-                pid: e.unique_process_id as u32,
-                image_name,
-                image_path,
-                handle: format!("0x{:X}", e.handle_value),
-            });
+            holders.push(mutex_holder(process, e));
         }
     }
 
@@ -338,6 +306,61 @@ pub fn find_holders(probe: &super::ProfileMutexGuard) -> HolderLookup {
             skipped_handles,
             message,
         },
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn compare_probe_handle(
+    process: windows_sys::Win32::Foundation::HANDLE,
+    source_handle: usize,
+    probe: &super::ProfileMutexGuard,
+) -> Option<bool> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, CompareObjectHandles, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let mut duplicate: HANDLE = std::ptr::null_mut();
+    // SAFETY: `process` is an open handle with PROCESS_DUP_HANDLE; `duplicate` is
+    // a valid out-pointer; the source handle value came from the kernel's table.
+    let duplicated = unsafe {
+        DuplicateHandle(
+            process,
+            source_handle as HANDLE,
+            GetCurrentProcess(),
+            &mut duplicate,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        )
+    };
+    if duplicated == 0 || duplicate.is_null() {
+        return None;
+    }
+    // SAFETY: both handles are open and owned by this process.
+    let same = unsafe { CompareObjectHandles(probe.0, duplicate) } != 0;
+    // SAFETY: `duplicate` was created by DuplicateHandle above and is closed once.
+    unsafe {
+        let _ = CloseHandle(duplicate);
+    }
+    Some(same)
+}
+
+#[cfg(target_os = "windows")]
+fn mutex_holder(
+    process: windows_sys::Win32::Foundation::HANDLE,
+    entry: HandleEntry,
+) -> MutexHolder {
+    let image_path = image_path(process);
+    let image_name = image_path
+        .as_deref()
+        .and_then(|p| std::path::Path::new(p).file_name())
+        .map(|n| n.to_string_lossy().into_owned());
+    MutexHolder {
+        pid: entry.unique_process_id as u32,
+        image_name,
+        image_path,
+        handle: format!("0x{:X}", entry.handle_value),
     }
 }
 
