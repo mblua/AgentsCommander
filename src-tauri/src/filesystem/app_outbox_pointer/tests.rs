@@ -90,7 +90,11 @@ fn valid_pointer_selects_destination_instead_of_fallback() {
     let config = tempfile::tempdir().unwrap();
     let agent = tempfile::tempdir().unwrap();
     let destination = tempfile::tempdir().unwrap();
-    std::fs::write(config.path().join(BASENAME), destination.path().to_str().unwrap()).unwrap();
+    std::fs::write(
+        config.path().join(BASENAME),
+        destination.path().to_str().unwrap(),
+    )
+    .unwrap();
     let selected = directory(Some(config.path()), agent.path());
     assert_eq!(selected, destination.path());
     assert_ne!(selected, agent.path().join("outbox"));
