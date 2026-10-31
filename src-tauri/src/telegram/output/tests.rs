@@ -229,3 +229,26 @@ fn diaglogger_log_sent_redacts_gemini_key() {
         "key leaked to diag-sent: {content}"
     );
 }
+
+#[test]
+fn report_send_error_preserves_redacted_classified_error_once() {
+    let events = RecordingEvents::default();
+    let raw = format!(
+        "ñ: error sending request for url (https://api.telegram.org/bot{FAKE_TG_TOKEN}/sendMessage)"
+    );
+    let msg = crate::telegram::redact::redact(&raw);
+    let kind = TelegramErrKind::classify(&msg);
+    report_send_error(&events, "sesión-ñ", &msg, kind);
+
+    let calls = events.0.lock().unwrap();
+    assert_eq!(
+        *calls,
+        vec![(
+            "sesión-ñ".to_owned(),
+            "ñ: error sending request for url (https://api.telegram.org/bot***/sendMessage)"
+                .to_owned(),
+            Some("network".to_owned()),
+        )]
+    );
+    assert!(!calls[0].1.contains(FAKE_TG_TOKEN));
+}

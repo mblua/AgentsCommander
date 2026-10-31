@@ -202,12 +202,7 @@ pub async fn open_web_remote(ws_handle: State<'_, WebServerHandle>) -> Result<()
     let settings = load_settings();
     let authorized = ensure_web_remote_open_allowed(&settings, &ws_handle)?;
 
-    let token_path = crate::config::config_dir()
-        .ok_or("No config dir")?
-        .join("web-token.txt");
-
-    let token = std::fs::read_to_string(&token_path)
-        .map_err(|e| format!("Cannot read web token: {}", e))?;
+    let token = crate::web::auth::read_persisted_web_token(crate::config::config_dir().as_deref())?;
 
     let (bind, port) = authorized
         .endpoint

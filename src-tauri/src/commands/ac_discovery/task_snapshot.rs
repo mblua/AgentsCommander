@@ -1,4 +1,5 @@
 use super::replica_read::extract_task_first_line;
+pub(crate) use crate::cli::task_ops::{task_sentinels, TaskSentinels};
 use crate::config::settings::SettingsState;
 use crate::filesystem::projects as project_fs;
 use crate::session::manager::SessionManager;
@@ -6,7 +7,7 @@ use crate::session::session::SessionRepo;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use tauri::State;
 use uuid::Uuid;
 
@@ -70,19 +71,6 @@ pub(crate) struct DiscoveryBranchPayload {
 pub(crate) struct SessionGitReposPayload {
     pub(crate) session_id: String,
     pub(crate) repos: Vec<SessionRepo>,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct StatSentinel {
-    pub(crate) len: u64,
-    pub(crate) mtime: Option<SystemTime>,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct TaskSentinels {
-    pub(crate) task: Option<StatSentinel>,
-    pub(crate) status: Option<StatSentinel>,
-    pub(crate) journal: bool,
 }
 
 #[derive(Clone)]
@@ -192,22 +180,6 @@ pub async fn task_get_snapshot_at(
     workgroup_root: String,
 ) -> Result<serde_json::Value, String> {
     task_snapshot_inner(&session_mgr, &settings, None, Some(&workgroup_root)).await
-}
-
-pub(crate) fn task_sentinels(root: &Path) -> Result<TaskSentinels, String> {
-    let stat = |name| match project_fs::project_path_metadata(&root.join(name)) {
-        Ok(metadata) => Ok(Some(StatSentinel {
-            len: metadata.len(),
-            mtime: metadata.modified().ok(),
-        })),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("snapshot sentinel read failed: {error}")),
-    };
-    Ok(TaskSentinels {
-        task: stat("TASK.md")?,
-        status: stat("TASK-status.jsonl")?,
-        journal: stat("TASK-clean.pending.json")?.is_some(),
-    })
 }
 
 pub(crate) fn poll_task_snapshot(

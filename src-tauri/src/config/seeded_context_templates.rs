@@ -48,7 +48,6 @@ use state::{SeededContextTemplateEntry, SeededContextTemplateState};
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 #[cfg(test)]
 use sync::{
     auto_update_generated_template, auto_update_generated_template_with,
@@ -63,7 +62,6 @@ pub const SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME: &str =
     crate::config::instance_artifacts::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME;
 
 const STATE_SCHEMA_VERSION: u32 = 1;
-static STATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const CONTEXT_TEMPLATE_CHANGED: &str =
     "Context template changed on disk; reload the project before overwriting.";
 const CONTEXT_TEMPLATE_DEFAULT_CHANGED: &str =

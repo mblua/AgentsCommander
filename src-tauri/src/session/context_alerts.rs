@@ -14,13 +14,10 @@ use crate::pty::context_scrape::ContextSample;
 #[cfg(test)]
 use crate::commands::entity_creation::parse_team_from_workgroup_name;
 #[cfg(test)]
-use crate::pty::context_scrape::ContextScraper;
-#[cfg(test)]
 use crate::session::manager::SessionManager;
+use crate::session::session::Session;
 #[cfg(test)]
-use crate::session::session::{Session, SessionStatus};
-#[cfg(test)]
-use std::collections::HashSet;
+use crate::session::session::SessionStatus;
 
 mod actor;
 mod runtime;
@@ -126,6 +123,24 @@ enum AttemptPreparation {
     RetryableFailure(String),
 }
 
+pub(crate) trait ContextAlertServices: Send + Sync {
+    fn public_session(&self, id: Uuid) -> BoxFuture<'static, Option<Session>>;
+    fn registered(&self, id: Uuid) -> bool;
+    fn retire_sample_registration(&self, id: Uuid);
+    fn validate_delivery_state(
+        &self,
+        id: Uuid,
+        target: &InternalSystemTarget,
+    ) -> Result<(), String>;
+    fn deliver(
+        &self,
+        target: InternalSystemTarget,
+        notice: InternalSystemNotice,
+        cancellation: CancellationToken,
+        guard: InternalNoticeGuard,
+    ) -> BoxFuture<'static, Result<(), String>>;
+}
+
 trait ContextAlertRuntime: Send + Sync {
     fn resolve_member_policy(&self, session_id: Uuid)
         -> BoxFuture<'static, MemberPolicyResolution>;
@@ -162,30 +177,46 @@ impl AlertClock for ProductionAlertClock {
 pub(crate) struct ContextAlertMonitor {
     sender: mpsc::Sender<ContextSample>,
     cancellation: CancellationToken,
-    join: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    join: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl ContextAlertMonitor {
-    pub(crate) fn start(
-        app: tauri::AppHandle,
+    pub(crate) fn start_with_services(
+        services: Arc<dyn ContextAlertServices>,
         cancellation: CancellationToken,
-        messages: Arc<crate::config::injected_messages::MessageWarnings>,
+        handle: tokio::runtime::Handle,
     ) -> Arc<Self> {
-        Self::start_with_runtime(
-            Arc::new(ProductionContextAlertRuntime { app, messages }),
+        Self::start_with_runtime_on(
+            Arc::new(ProductionContextAlertRuntime { services }),
             Arc::new(ProductionAlertClock),
             cancellation,
+            handle,
         )
     }
 
+    #[cfg(test)]
     fn start_with_runtime(
         runtime: Arc<dyn ContextAlertRuntime>,
         clock: Arc<dyn AlertClock>,
         cancellation: CancellationToken,
     ) -> Arc<Self> {
+        Self::start_with_runtime_on(
+            runtime,
+            clock,
+            cancellation,
+            tokio::runtime::Handle::current(),
+        )
+    }
+
+    fn start_with_runtime_on(
+        runtime: Arc<dyn ContextAlertRuntime>,
+        clock: Arc<dyn AlertClock>,
+        cancellation: CancellationToken,
+        handle: tokio::runtime::Handle,
+    ) -> Arc<Self> {
         let (sender, receiver) = mpsc::channel(CONTEXT_SAMPLE_QUEUE_CAPACITY);
         let actor_cancellation = cancellation.clone();
-        let join = tauri::async_runtime::spawn(async move {
+        let join = handle.spawn(async move {
             run_context_alert_actor(runtime, clock, receiver, actor_cancellation).await;
         });
         Arc::new(Self {
@@ -335,7 +366,7 @@ impl ActorState {
 struct InFlightSlot {
     generation: u64,
     cancellation: CancellationToken,
-    join: tauri::async_runtime::JoinHandle<()>,
+    join: tokio::task::JoinHandle<()>,
 }
 
 struct DeliveryCompletion {

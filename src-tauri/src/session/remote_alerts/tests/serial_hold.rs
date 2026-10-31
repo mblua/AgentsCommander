@@ -303,7 +303,7 @@ async fn production_constructor_uses_the_supplied_shutdown_token_during_hold() {
     let ports = held_ports(&fixture);
     let (tx, rx) = mpsc::channel(2);
     let shutdown = CancellationToken::new();
-    let task = start_with_ports(ports.clone(), rx, shutdown.clone());
+    let task = tokio::spawn(run(ports.clone(), rx, shutdown.clone()));
     tx.send(transition(TransitionKind::CiStarted, &fixture.room, "A"))
         .await
         .unwrap();

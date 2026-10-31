@@ -70,6 +70,10 @@ impl std::fmt::Display for RouteRemovalError {
     }
 }
 
+pub(crate) trait ContainerBackgroundTasks {
+    fn spawn_background(future: BoxFuture<'static, ()>);
+}
+
 type RouteRemover = Arc<dyn Fn(Uuid, Instant) -> Result<(), RouteRemovalError> + Send + Sync>;
 
 fn lock_mutex_until<'a, T>(mutex: &'a Mutex<T>, deadline: Instant) -> Option<MutexGuard<'a, T>> {
@@ -412,7 +416,7 @@ impl ContainerTransportBackend {
             }
         };
         let lifecycle_sender = self.lifecycle_sender.clone();
-        tauri::async_runtime::spawn(async move {
+        <Self as ContainerBackgroundTasks>::spawn_background(Box::pin(async move {
             if let Some(remove) = remover {
                 let deadline = Instant::now() + CLEANUP_TASK_TIMEOUT;
                 match catch_unwind(AssertUnwindSafe(|| remove(session_id, deadline))) {
@@ -439,12 +443,12 @@ impl ContainerTransportBackend {
                     );
                 }
             }
-        });
+        }));
     }
 
     pub fn start_pending_reaper(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
         let backend = Arc::clone(self);
-        tauri::async_runtime::spawn(async move {
+        <Self as ContainerBackgroundTasks>::spawn_background(Box::pin(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
@@ -462,7 +466,7 @@ impl ContainerTransportBackend {
                     }
                 }
             }
-        });
+        }));
     }
 }
 

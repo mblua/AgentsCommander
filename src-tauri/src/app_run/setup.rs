@@ -191,7 +191,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     // notifier stops when the app does. It injects only into a room orchestrator, and only when
     // both its feature dial and its notify dial are on. The JoinHandle is dropped on purpose: the
     // monitor's lifecycle is its shutdown token and the sweeper's channel, not a join at exit.
-    drop(crate::session::remote_alerts::start(
+    drop(crate::start_remote_alerts(
         app.handle().clone(),
         remote_transitions,
         shutdown_for_setup.token().child_token(),

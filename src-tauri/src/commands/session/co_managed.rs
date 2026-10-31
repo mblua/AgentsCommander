@@ -1,8 +1,10 @@
 #[cfg(test)]
 use crate::commands::session::room_raise_seam;
+use crate::config::co_managed::CoManagedState;
 use crate::config::settings::SettingsState;
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
+use std::future::Future;
 use std::sync::Arc;
 use tauri::AppHandle;
 use tauri::Manager;
@@ -219,5 +221,65 @@ pub(crate) fn co_managed_same_directory(left: &std::path::Path, right: &std::pat
     ) {
         (Ok(left), Ok(right)) => crate::path_identity::paths_equivalent(&left, &right),
         _ => crate::path_identity::paths_equivalent(left, right),
+    }
+}
+
+impl<R: Runtime> crate::reader_demand::ReaderDemandHost for AppHandle<R> {
+    fn reader_settings(&self) -> Option<&SettingsState> {
+        self.try_state::<SettingsState>().map(|state| state.inner())
+    }
+
+    fn reader_sessions(&self) -> Option<&Arc<tokio::sync::RwLock<SessionManager>>> {
+        self.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .map(|state| state.inner())
+    }
+
+    fn reader_sessions_required(&self) -> &Arc<tokio::sync::RwLock<SessionManager>> {
+        self.state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .inner()
+    }
+
+    fn reader_registry(&self) -> Option<&Arc<crate::capture::registry::CaptureRegistry>> {
+        self.try_state::<Arc<crate::capture::registry::CaptureRegistry>>()
+            .map(|state| state.inner())
+    }
+
+    fn holds_room_reader_demand<'a>(
+        &'a self,
+        session_id: Uuid,
+    ) -> impl std::future::Future<Output = bool> + Send + 'a {
+        crate::commands::telegram::holds_room_reader_demand(self, session_id)
+    }
+
+    fn raise_room_reader_demand<'a>(
+        &'a self,
+        session_id: Uuid,
+    ) -> impl std::future::Future<Output = bool> + Send + 'a {
+        crate::commands::session::raise_room_reader_demand(self, session_id)
+    }
+
+    fn release_room_reader_demand<'a>(
+        &'a self,
+        session_id: Uuid,
+    ) -> impl std::future::Future<Output = ()> + Send + 'a {
+        crate::commands::session::co_managed::release_room_reader_demand(self, session_id)
+    }
+
+    fn co_managed_capturable_for_session<'a>(
+        &'a self,
+        room_root: &'a std::path::Path,
+        session_id: &'a str,
+    ) -> impl std::future::Future<Output = Result<bool, String>> + Send + 'a {
+        crate::commands::session::co_managed_capturable_for_session(self, room_root, session_id)
+    }
+
+    fn co_managed_effective_state_for_session<'a>(
+        &'a self,
+        room_root: &'a std::path::Path,
+        session_id: &'a str,
+    ) -> impl Future<Output = Result<CoManagedState, String>> + Send + 'a {
+        crate::commands::session::co_managed::co_managed_effective_state_for_session(
+            self, room_root, session_id,
+        )
     }
 }

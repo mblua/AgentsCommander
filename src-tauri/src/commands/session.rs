@@ -81,6 +81,7 @@ use create::compute_profile_outdated;
 pub(crate) use create::create_owned_response_replacement;
 #[cfg(test)]
 use create::create_owned_response_replacement_in_context;
+pub(crate) use create::create_persisted_root_for_restore;
 pub use create::create_session_inner;
 pub(crate) use create::create_session_inner_for_restore;
 use create::create_session_inner_impl;
