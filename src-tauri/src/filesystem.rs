@@ -42,6 +42,7 @@ pub(crate) mod projects;
 pub(crate) mod remote_activity;
 pub(crate) mod repositories;
 pub(crate) mod room_diagnostics;
+pub(crate) mod screenshot_files;
 pub(crate) mod seed_manifest;
 pub(crate) mod self_clear_files;
 pub(crate) mod session_context;

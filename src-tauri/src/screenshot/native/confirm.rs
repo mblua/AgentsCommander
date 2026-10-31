@@ -5,12 +5,16 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
+use crate::filesystem::screenshot_files::{
+    create_png_file, ensure_screenshots_directory, remove_partial_screenshot,
+    validate_saved_screenshot,
+};
 use crate::screenshot::ScreenshotHost;
 
 use super::{
-    destroy_overlays_for_capture, is_link_or_reparse, revalidate_replica_target,
-    ActiveScreenshotCapture, ScreenshotCaptureEvent, ScreenshotCaptureLifecycle,
-    ScreenshotCaptureResult, ScreenshotCaptureState, ScreenshotSelection, MAX_COLLISION_SUFFIX,
+    destroy_overlays_for_capture, revalidate_replica_target, ActiveScreenshotCapture,
+    ScreenshotCaptureEvent, ScreenshotCaptureLifecycle, ScreenshotCaptureResult,
+    ScreenshotCaptureState, ScreenshotSelection,
 };
 
 // ── Confirm ────────────────────────────────────────────────────────────────
@@ -71,7 +75,7 @@ pub(crate) async fn complete_confirmation<H: ScreenshotHost>(
         }
         Err((partial, msg)) => {
             if let Some(path) = partial {
-                let _ = std::fs::remove_file(&path);
+                let _ = remove_partial_screenshot(&path);
             }
             destroy_overlays_for_capture(app, capture_id);
             app.capture_failed(ScreenshotCaptureEvent {
@@ -144,48 +148,8 @@ pub(super) async fn save_selection(
             // Recheck root identity and the real child after writing. These path-based
             // guards retain the existing non-atomic replacement limitation.
             revalidate_replica_target(&target).map_err(|e| (Some(path.clone()), e))?;
-            let meta = std::fs::symlink_metadata(&screenshots).map_err(|e| {
-                (
-                    Some(path.clone()),
-                    format!("Cannot read screenshots directory: {e}"),
-                )
-            })?;
-            if !meta.is_dir() || is_link_or_reparse(&meta) {
-                return Err((
-                    Some(path),
-                    "Screenshots path is not a real directory".to_string(),
-                ));
-            }
-            let canonical_child = std::fs::canonicalize(&screenshots).map_err(|e| {
-                (
-                    Some(path.clone()),
-                    format!("Cannot canonicalize screenshots directory: {e}"),
-                )
-            })?;
-            if canonical_child != screenshots || canonical_child.parent() != Some(target.as_path())
-            {
-                return Err((
-                    Some(path),
-                    "Screenshots directory changed during save".to_string(),
-                ));
-            }
-            let canonical = std::fs::canonicalize(&path).map_err(|e| {
-                (
-                    Some(path.clone()),
-                    format!("canonicalize saved file failed: {e}"),
-                )
-            })?;
-            let parent_ok = canonical
-                .parent()
-                .map(|p| p == canonical_child)
-                .unwrap_or(false);
-            if !parent_ok {
-                return Err((
-                    Some(path),
-                    "saved file escaped the screenshots directory".to_string(),
-                ));
-            }
-            Ok(canonical)
+            validate_saved_screenshot(&target, &screenshots, &path)
+                .map_err(|e| (Some(path.clone()), e))
         })
         .await
         .map_err(|e| (None, format!("save task panicked: {e}")))??;
@@ -211,22 +175,7 @@ pub(super) async fn save_selection(
 /// Lazily create only the direct child of the already validated canonical root.
 pub(super) fn prepare_screenshots_directory(root: &Path) -> Result<PathBuf, String> {
     let child = root.join("screenshots");
-    match std::fs::create_dir(&child) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(format!("Cannot create screenshots directory: {e}")),
-    }
-    let meta = std::fs::symlink_metadata(&child)
-        .map_err(|e| format!("Cannot read screenshots directory: {e}"))?;
-    if !meta.is_dir() || is_link_or_reparse(&meta) {
-        return Err("Screenshots path is not a real directory".to_string());
-    }
-    let canonical = std::fs::canonicalize(&child)
-        .map_err(|e| format!("Cannot canonicalize screenshots directory: {e}"))?;
-    if canonical != child || canonical.parent() != Some(root) {
-        return Err("Screenshots directory is not directly inside the replica root".to_string());
-    }
-    Ok(canonical)
+    ensure_screenshots_directory(root, &child)
 }
 
 pub(super) fn validate_selection(
@@ -250,35 +199,4 @@ pub(super) fn build_filename(session_id: Uuid) -> String {
     // Local time: the filename is user-facing, so it should match the user's clock.
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     format!("agentscommander-screenshot-{stamp}-{short}.png")
-}
-
-/// Collision loop mirroring `phone::messaging::create_message_file`: never
-/// overwrite an existing file; retry with `-<n>.png` up to the bound.
-pub(super) fn create_png_file(
-    dir: &Path,
-    base_filename: &str,
-) -> Result<(PathBuf, std::fs::File), String> {
-    let stem = base_filename
-        .strip_suffix(".png")
-        .ok_or_else(|| format!("filename '{base_filename}' must end in .png"))?;
-    for n in 0..=MAX_COLLISION_SUFFIX {
-        let filename = if n == 0 {
-            base_filename.to_string()
-        } else {
-            format!("{stem}-{n}.png")
-        };
-        let path = dir.join(&filename);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(file) => return Ok((path, file)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(format!("failed to create {}: {e}", path.display())),
-        }
-    }
-    Err(format!(
-        "exhausted {MAX_COLLISION_SUFFIX} filename collisions for '{base_filename}'"
-    ))
 }

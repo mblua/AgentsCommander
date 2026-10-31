@@ -31,6 +31,8 @@ use super::{
     ScreenshotSelection,
 };
 #[cfg(test)]
+use crate::filesystem::screenshot_files::create_png_file;
+#[cfg(test)]
 use crate::screenshot::{MonitorGeometry, PlacementFrame};
 
 mod confirm;
@@ -46,8 +48,8 @@ pub(crate) use confirm::complete_confirmation;
 pub use confirm::confirm_selection;
 #[cfg(test)]
 use confirm::{
-    build_filename, create_png_file, finish_capture_to_idle, prepare_screenshots_directory,
-    save_selection, validate_selection,
+    build_filename, finish_capture_to_idle, prepare_screenshots_directory, save_selection,
+    validate_selection,
 };
 #[cfg(target_os = "linux")]
 pub use linux_display::{
@@ -63,17 +65,13 @@ use overlay::{
 use overlay::{build_placements, destroy_overlays_for_capture, open_overlay_windows};
 #[cfg(test)]
 use replica_root::find_replica_root;
-use replica_root::{is_link_or_reparse, resolve_session_replica_root, revalidate_replica_target};
+use replica_root::{resolve_session_replica_root, revalidate_replica_target};
 #[cfg(target_os = "windows")]
 pub(crate) use window_capture::{
     capture_window_png, parse_window_id, WindowScreenshotCaptureError,
 };
 #[cfg(all(test, target_os = "windows"))]
 use window_capture::{capture_window_worker, BoundedPngWriter, TargetWindowCaptureOps};
-
-/// Upper bound on the `-<n>.png` collision suffix, mirroring
-/// `phone::messaging::MAX_COLLISION_SUFFIX`.
-const MAX_COLLISION_SUFFIX: u32 = 9999;
 
 // ── Lifecycle + runtime state ──────────────────────────────────────────────
 
