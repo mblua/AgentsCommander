@@ -126,18 +126,7 @@ pub(super) fn init_for_project_path(
         return Err(preflight_errors);
     }
 
-    let role_bytes = map_err(
-        documents::read_experiment_role(&source_role),
-        "source_role_read_failed",
-        None,
-    )?;
-    if std::str::from_utf8(&role_bytes).is_err() {
-        return Err(vec![err(
-            "source_role_not_utf8",
-            "Source Role.md must be valid UTF-8",
-            None,
-        )]);
-    }
+    let role_bytes = read_init_source_role(&source_role)?;
     let role_sha = sha256_hex(&role_bytes);
     let now = chrono::Utc::now().to_rfc3339();
     map_err(
@@ -231,6 +220,22 @@ pub(super) fn init_for_project_path(
         warnings,
         errors: Vec::new(),
     })
+}
+
+fn read_init_source_role(source_role: &Path) -> Result<Vec<u8>, Vec<CliError>> {
+    let role_bytes = map_err(
+        documents::read_experiment_role(source_role),
+        "source_role_read_failed",
+        None,
+    )?;
+    if std::str::from_utf8(&role_bytes).is_err() {
+        return Err(vec![err(
+            "source_role_not_utf8",
+            "Source Role.md must be valid UTF-8",
+            None,
+        )]);
+    }
+    Ok(role_bytes)
 }
 
 fn collect_init_variants_preflight(
