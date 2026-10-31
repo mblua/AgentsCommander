@@ -63,24 +63,13 @@ pub(crate) fn discover_source_inventory(
     discover_source_inventory_with_cut(settings, |_| Ok(()))
 }
 
-pub(crate) fn discover_source_inventory_with_cut(
+fn discover_source_candidates(
     settings: &AppSettings,
-    mut cut: impl FnMut(&'static str) -> std::io::Result<()>,
-) -> Result<
-    (
-        crate::config::settings::SourceDiscoveryWitness,
-        Vec<SourceSelectionTarget>,
-    ),
-    crate::config::settings::IdentityReferenceError,
-> {
-    use crate::config::settings::{IdentityReferenceError, SourceDiscoveryWitness};
+    witness: &mut crate::config::settings::SourceDiscoveryWitness,
+    cut: &mut impl FnMut(&'static str) -> std::io::Result<()>,
+) -> Result<Vec<PathBuf>, crate::config::settings::IdentityReferenceError> {
+    use crate::config::settings::IdentityReferenceError;
     let fail = |error: std::io::Error| IdentityReferenceError::Preparation(error.to_string());
-    let mut witness = SourceDiscoveryWitness {
-        registry: settings.project_paths.clone(),
-        parents: Vec::new(),
-        slots: Vec::new(),
-        membership: Vec::new(),
-    };
     let mut candidates = Vec::new();
     for project in &settings.project_paths {
         let base = PathBuf::from(project);
@@ -102,7 +91,7 @@ pub(crate) fn discover_source_inventory_with_cut(
         let mut children = Vec::new();
         crate::filesystem::projects::visit_source_inventory_children(
             &base,
-            &mut cut,
+            &mut *cut,
             |path, kind| {
                 if kind.is_dir() {
                     witness.parents.push(path.clone());
@@ -117,6 +106,28 @@ pub(crate) fn discover_source_inventory_with_cut(
     }
     candidates.sort();
     candidates.dedup();
+    Ok(candidates)
+}
+
+pub(crate) fn discover_source_inventory_with_cut(
+    settings: &AppSettings,
+    mut cut: impl FnMut(&'static str) -> std::io::Result<()>,
+) -> Result<
+    (
+        crate::config::settings::SourceDiscoveryWitness,
+        Vec<SourceSelectionTarget>,
+    ),
+    crate::config::settings::IdentityReferenceError,
+> {
+    use crate::config::settings::{IdentityReferenceError, SourceDiscoveryWitness};
+    let fail = |error: std::io::Error| IdentityReferenceError::Preparation(error.to_string());
+    let mut witness = SourceDiscoveryWitness {
+        registry: settings.project_paths.clone(),
+        parents: Vec::new(),
+        slots: Vec::new(),
+        membership: Vec::new(),
+    };
+    let candidates = discover_source_candidates(settings, &mut witness, &mut cut)?;
     let mut ac_roots: Vec<PathBuf> = Vec::new();
     for candidate in candidates {
         match profile_path_symlink_metadata(&candidate) {
