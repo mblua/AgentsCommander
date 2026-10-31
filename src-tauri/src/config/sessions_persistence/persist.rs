@@ -351,12 +351,7 @@ pub(super) async fn persist_current_state_to_dir_for_project_paths_result_core(
             },
         };
         // Slow path identity probes are performed with neither U nor M held.
-        let relations = prep
-            .kept
-            .iter()
-            .chain(prep.drops.iter().map(|drop| &drop.session))
-            .map(|row| PreparedCarrierRelation::capture(row, &captured.3))
-            .collect::<Vec<_>>();
+        let relations = prepare_carrier_relations(&prep, &captured.3);
         let drop_keys = prep.drops.iter().map(orphan_effect_key).collect::<Vec<_>>();
         let manager_relations = captured
             .0
@@ -385,19 +380,7 @@ pub(super) async fn persist_current_state_to_dir_for_project_paths_result_core(
             })
             .await;
         let valid_protections = protections.as_ref().is_some_and(|current| {
-            same_protection_set(current, &captured.3)
-                && relations
-                    .iter()
-                    .all(|relation| relation.classify(current) != CarrierDisposition::Unknown)
-                && prep.drops.iter().all(|drop| {
-                    !current.iter().any(|protection| {
-                        drop.session
-                            .id
-                            .as_deref()
-                            .and_then(|id| Uuid::parse_str(id).ok())
-                            == Some(protection.session_id)
-                    })
-                })
+            current_protections_match(current, &captured.3, &relations, &prep.drops)
         });
         let keys_survive = publication_slot(dir)
             .is_some_and(|slot| protected_keys_survive(&slot, &prep.kept, &captured.0));
@@ -413,10 +396,7 @@ pub(super) async fn persist_current_state_to_dir_for_project_paths_result_core(
             .zip(drop_keys)
             .filter_map(|(drop, key)| foreign_done.insert(key).then_some(drop))
             .collect::<Vec<_>>();
-        let dispositions = manager_relations
-            .iter()
-            .map(|(id, relation)| (*id, relation.classify(&captured.3)))
-            .collect::<HashMap<_, _>>();
+        let dispositions = classify_manager_relations(&manager_relations, &captured.3);
         handle_orphan_drops(
             Some(mgr),
             dir,
@@ -475,6 +455,48 @@ pub(super) async fn persist_current_state_to_dir_for_project_paths_result_core(
             }
         }
     }
+}
+
+fn classify_manager_relations(
+    relations: &HashMap<Uuid, PreparedCarrierRelation>,
+    protections: &[CarrierProtection],
+) -> HashMap<Uuid, CarrierDisposition> {
+    relations
+        .iter()
+        .map(|(id, relation)| (*id, relation.classify(protections)))
+        .collect()
+}
+
+fn prepare_carrier_relations(
+    prep: &PersistPreparation,
+    protections: &[CarrierProtection],
+) -> Vec<PreparedCarrierRelation> {
+    prep.kept
+        .iter()
+        .chain(prep.drops.iter().map(|drop| &drop.session))
+        .map(|row| PreparedCarrierRelation::capture(row, protections))
+        .collect()
+}
+
+fn current_protections_match(
+    current: &[CarrierProtection],
+    captured: &[CarrierProtection],
+    relations: &[PreparedCarrierRelation],
+    drops: &[OrphanDrop],
+) -> bool {
+    same_protection_set(current, captured)
+        && relations
+            .iter()
+            .all(|relation| relation.classify(current) != CarrierDisposition::Unknown)
+        && drops.iter().all(|drop| {
+            !current.iter().any(|protection| {
+                drop.session
+                    .id
+                    .as_deref()
+                    .and_then(|id| Uuid::parse_str(id).ok())
+                    == Some(protection.session_id)
+            })
+        })
 }
 
 /// A post-rename readback loss is Pending, not a save failure or a new write.

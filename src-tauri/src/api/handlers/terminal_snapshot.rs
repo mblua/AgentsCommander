@@ -112,25 +112,7 @@ async fn post_inner(
         .await
         .map_err(map_bound_authority_error)?;
 
-    let settings = state
-        .resources
-        .try_settings()
-        .ok_or(TerminalSnapshotReasonCode::ServiceUnavailable)?;
-    let restore = state
-        .resources
-        .restore_flag()
-        .ok_or(TerminalSnapshotReasonCode::ServiceUnavailable)?;
-    let purge = state
-        .resources
-        .purge_guard()
-        .ok_or(TerminalSnapshotReasonCode::ServiceUnavailable)?;
-    let context = TerminalSnapshotServiceContext {
-        session_manager: Arc::clone(&state.session_mgr),
-        pty_manager: Arc::clone(&state.pty_mgr),
-        settings,
-        restore,
-        purge,
-    };
+    let context = service_context(&state)?;
     let admission = snapshot_state
         .pre_admit_requester(
             &context,
@@ -143,24 +125,7 @@ async fn post_inner(
     let deadline = admission.deadline();
     drop(ingress);
 
-    let claimed_length = parse_content_length(&parts.headers)?;
-    let bytes = collect_request_body(body, deadline).await?;
-    if claimed_length.is_some_and(|length| length != bytes.len()) {
-        return Err(TerminalSnapshotReasonCode::InvalidRequest);
-    }
-    let request: TerminalSnapshotApiRequest = decode_bounded(&bytes, MAX_REQUEST_BYTES)
-        .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?;
-    request
-        .validate()
-        .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?;
-    let service_request = TerminalSnapshotServiceRequest {
-        request_id: terminal_snapshot_renderer::validate_uuid(&request.request_id, Some(4))
-            .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?,
-        target: request.to,
-        format: request.format,
-        source_plane: TerminalSnapshotSourcePlane::ContainerApi,
-        host_authorization_deadline: None,
-    };
+    let service_request = decode_service_request(&parts.headers, body, deadline).await?;
     let prepared = snapshot_state
         .prepare_with_admission(admission, service_request)
         .await?;
@@ -225,6 +190,55 @@ async fn post_inner(
         disclosure.finalize_failure(TerminalSnapshotReasonCode::AuthorityChanged);
     }
     Ok(response)
+}
+
+fn service_context(
+    state: &ApiState,
+) -> Result<TerminalSnapshotServiceContext, TerminalSnapshotReasonCode> {
+    let settings = state
+        .resources
+        .try_settings()
+        .ok_or(TerminalSnapshotReasonCode::ServiceUnavailable)?;
+    let restore = state
+        .resources
+        .restore_flag()
+        .ok_or(TerminalSnapshotReasonCode::ServiceUnavailable)?;
+    let purge = state
+        .resources
+        .purge_guard()
+        .ok_or(TerminalSnapshotReasonCode::ServiceUnavailable)?;
+    Ok(TerminalSnapshotServiceContext {
+        session_manager: Arc::clone(&state.session_mgr),
+        pty_manager: Arc::clone(&state.pty_mgr),
+        settings,
+        restore,
+        purge,
+    })
+}
+
+async fn decode_service_request(
+    headers: &HeaderMap,
+    body: Body,
+    deadline: std::time::Instant,
+) -> Result<TerminalSnapshotServiceRequest, TerminalSnapshotReasonCode> {
+    let claimed_length = parse_content_length(headers)?;
+    let bytes = collect_request_body(body, deadline).await?;
+    if claimed_length.is_some_and(|length| length != bytes.len()) {
+        return Err(TerminalSnapshotReasonCode::InvalidRequest);
+    }
+    let request: TerminalSnapshotApiRequest = decode_bounded(&bytes, MAX_REQUEST_BYTES)
+        .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?;
+    request
+        .validate()
+        .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?;
+    Ok(TerminalSnapshotServiceRequest {
+        request_id: terminal_snapshot_renderer::validate_uuid(&request.request_id, Some(4))
+            .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?,
+        target: request.to,
+        format: request.format,
+        source_plane: TerminalSnapshotSourcePlane::ContainerApi,
+        host_authorization_deadline: None,
+    })
 }
 
 async fn collect_request_body(

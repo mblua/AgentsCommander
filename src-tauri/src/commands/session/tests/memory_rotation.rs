@@ -260,15 +260,12 @@ fn create_session_inner_marks_spawning_until_spawn_returns() {
         source_archive(&sources),
         "two archive gates bracket mark and pending creation"
     );
-    let normalized = sources
-        .get("session/create/core.rs")
-        .expect("creation core from the same source map")
-        .split_whitespace()
-        .collect::<String>();
+    let normalized = super::support::expanded_creation(&sources)
+        .expect("expanded creation path from the same source map");
     let first_gate = normalized
         .find(concat!(
-            "enforce_owned_unarchived_for_spawn(app,&cwd,&session_label,&create_owner,",
-            "&create_manager,lifecycle_domain,inline_transaction,).await?;"
+            "enforce_owned_unarchived_for_spawn(app,cwd,&session_label,create_owner,",
+            "create_manager,lifecycle_domain,inline_transaction,).await?;"
         ))
         .expect("first archive gate");
     let mark = normalized
@@ -453,19 +450,11 @@ async fn create_session_inner_retires_the_spawn_mark_on_spawn_failure() {
 fn restart_session_inner_probes_archive_before_destroying_session() {
     let sources = super::support::session_sources();
     assert!(super::support::source_map_complete(&sources));
-    let source = sources
-        .get("session/restart/execution.rs")
-        .or_else(|| sources.get("session.rs"))
-        .expect("restart execution source");
-    let probe = source
-        .find("crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;")
-        .expect("restart probe call");
-    let replacement_spawn = source
-        .find("// 3. Release the old runtime slot")
-        .expect("restart teardown marker");
-
     assert!(
-        probe < replacement_spawn,
-        "restart must probe archive refusal before spawning or destroying a session"
+        super::support::source_restart(&sources),
+        concat!(
+            "restart must await preparation (archive probe then creation gate) ",
+            "before retirement protection and teardown of the old session"
+        )
     );
 }

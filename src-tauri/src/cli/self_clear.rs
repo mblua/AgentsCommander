@@ -215,11 +215,19 @@ pub fn execute(args: SelfClearArgs) -> i32 {
         std::thread::sleep(confirm_poll);
     }
 
+    wait_for_self_clear_response(&ac_dir, &request_id, args.timeout)
+}
+
+fn wait_for_self_clear_response(
+    ac_dir: &std::path::Path,
+    request_id: &str,
+    timeout_secs: u64,
+) -> i32 {
     // Poll response (queue ack). The daemon writes it immediately after queuing,
     // NOT after the clear runs - so this is fast.
     let responses_dir = ac_dir.join("responses");
     let response_path = responses_dir.join(format!("{}.json", request_id));
-    let resp_timeout = std::time::Duration::from_secs(args.timeout);
+    let resp_timeout = std::time::Duration::from_secs(timeout_secs);
     let resp_poll = std::time::Duration::from_millis(250);
     let resp_start = std::time::Instant::now();
     loop {
@@ -261,7 +269,7 @@ pub fn execute(args: SelfClearArgs) -> i32 {
         if resp_start.elapsed() >= resp_timeout {
             eprintln!(
                 "Error: self-clear delivered but no queue ack within {}s (request {})",
-                args.timeout, request_id
+                timeout_secs, request_id
             );
             return 2;
         }

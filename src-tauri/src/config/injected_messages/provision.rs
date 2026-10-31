@@ -237,35 +237,22 @@ fn save_state(path: &Path, state: &InjectedMessagesState) {
     }
 }
 
-/// One read, one publish. Every block rewrite and every append is applied to a
-/// single in-memory string, which removes mixed-operation interleaving and
-/// shrinks the cross-process window to one publish.
-fn reconcile(
+struct ReconcilePlan<'a> {
+    state_changed: bool,
+    refresh: BTreeMap<String, &'a MessageSpec>,
+    append: Vec<&'a MessageSpec>,
+}
+
+/// Plan entry changes and advisory state updates before publishing any edits.
+fn reconcile_entries<'a>(
     path: &Path,
-    state_path: &Path,
-    source: &str,
-    specs: &[MessageSpec],
+    model: &ReadModel,
+    specs: &'a [MessageSpec],
     forced: Option<&BTreeSet<String>>,
+    state: &mut InjectedMessagesState,
     report: &mut ProvisionReport,
     warnings: &crate::config::injected_messages::MessageWarnings,
-) -> Result<(), String> {
-    let model = analyze_source(source);
-    if let Some(reason) = model
-        .strict_invalid
-        .as_ref()
-        .or(model.writer_blocked.as_ref())
-    {
-        report.writer_disabled = Some(reason.clone());
-        log::warn!(
-            "[injected-messages] {} is preserved untouched and the writer is disabled for this \
-             run: {}",
-            display_path(path),
-            reason
-        );
-        return Ok(());
-    }
-
-    let mut state = load_state(state_path);
+) -> ReconcilePlan<'a> {
     let mut state_changed = false;
     let mut refresh: BTreeMap<String, &MessageSpec> = BTreeMap::new();
     let mut append: Vec<&MessageSpec> = Vec::new();
@@ -371,6 +358,48 @@ fn reconcile(
             }
         }
     }
+
+    ReconcilePlan {
+        state_changed,
+        refresh,
+        append,
+    }
+}
+
+/// One read, one publish. Every block rewrite and every append is applied to a
+/// single in-memory string, which removes mixed-operation interleaving and
+/// shrinks the cross-process window to one publish.
+fn reconcile(
+    path: &Path,
+    state_path: &Path,
+    source: &str,
+    specs: &[MessageSpec],
+    forced: Option<&BTreeSet<String>>,
+    report: &mut ProvisionReport,
+    warnings: &crate::config::injected_messages::MessageWarnings,
+) -> Result<(), String> {
+    let model = analyze_source(source);
+    if let Some(reason) = model
+        .strict_invalid
+        .as_ref()
+        .or(model.writer_blocked.as_ref())
+    {
+        report.writer_disabled = Some(reason.clone());
+        log::warn!(
+            "[injected-messages] {} is preserved untouched and the writer is disabled for this \
+             run: {}",
+            display_path(path),
+            reason
+        );
+        return Ok(());
+    }
+
+    let mut state = load_state(state_path);
+    let ReconcilePlan {
+        mut state_changed,
+        refresh,
+        append,
+    } = reconcile_entries(path, &model, specs, forced, &mut state, report, warnings);
 
     if !refresh.is_empty() || !append.is_empty() {
         if let Err(reason) =

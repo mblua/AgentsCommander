@@ -285,114 +285,164 @@ pub(crate) fn sync_one_template(
         );
     }
 
+    let context = ExistingTemplateSync {
+        project_dir,
+        ac_root,
+        path,
+        spec,
+        loaded,
+        snapshot,
+        current_default_sha256,
+        carried_publication,
+    };
     if spec.distribution_owned {
-        if !repair {
-            // D2: no reporting channel on this path, so the repair is deferred to
-            // the scan rather than replacing operator bytes with no notification.
-            let target_outcome = carried_publication
-                .map(TemplatePublication::Published)
-                .unwrap_or(TemplatePublication::Skipped(
-                    ContextTemplateSkipReason::DistributionRepairDeferred,
-                ));
-            return ContextTemplateExecution::from_parts(
-                Ok(TemplateSyncOutcome {
-                    pending_update: None,
-                    replacement: None,
-                    target_outcome,
-                }),
-                carried_publication,
-            );
-        }
+        return repair_distribution_template(context, current_default, repair, clock);
+    }
+    sync_customized_template(context, return_pending, clock)
+}
 
-        // Unreachable today: `repair` is true only on the scan, which always has a
-        // project path. It must stay an error rather than a silent `None`.
-        let project_dir = match project_dir {
-            Some(project_dir) => project_dir,
-            None => {
-                return ContextTemplateExecution::from_parts(
-                    Err(format!(
-                        "Cannot create context template update for {} without a project path",
-                        path.display()
-                    )),
-                    carried_publication,
-                )
-            }
-        };
+struct ExistingTemplateSync<'a> {
+    project_dir: Option<&'a Path>,
+    ac_root: &'a Path,
+    path: PathBuf,
+    spec: SeededContextTemplateSpec,
+    loaded: &'a mut LoadedState,
+    snapshot: super::state::FileSnapshot,
+    current_default_sha256: String,
+    carried_publication: Option<ContextPublication>,
+}
 
-        // D6: silent only when the bytes about to be replaced are exactly the ones
-        // we last wrote. Computed before any write.
-        let notify = loaded
-            .trusted_entry(spec)
-            .and_then(|entry| entry.last_seeded_sha256.as_deref())
-            != Some(snapshot.sha256.as_str());
-
-        let backup_path = match create_backup(&path, &snapshot.bytes) {
-            Ok(backup_path) => backup_path,
-            Err(error) => {
-                return ContextTemplateExecution::from_parts(Err(error), carried_publication)
-            }
-        };
-        let after_backup = match read_validated_snapshot(&path, "Context template") {
-            Ok(after_backup) => after_backup,
-            Err(error) => {
-                return ContextTemplateExecution::from_parts(Err(error), carried_publication)
-            }
-        };
-        if !after_backup
-            .as_ref()
-            .is_some_and(|after_backup| after_backup.sha256 == snapshot.sha256)
-        {
-            log::warn!(
-                "[context-templates] {} changed before the distribution repair; the bytes read \
-                    first are kept in {}",
-                path.display(),
-                backup_path.display()
-            );
-            return ContextTemplateExecution::from_parts(
-                Ok(TemplateSyncOutcome {
-                    pending_update: None,
-                    replacement: None,
-                    target_outcome: TemplatePublication::ChangedUnderUs,
-                }),
-                carried_publication,
-            );
-        }
-
-        let published_at = match atomically_replace_context_template(&path, current_default, clock)
-        {
-            Ok(published_at) => published_at,
-            Err(error) => {
-                log::warn!(
-                    "[context-templates] replacement failed after backup {} was created: {}",
-                    backup_path.display(),
-                    error
-                );
-                return ContextTemplateExecution::from_parts(Err(error), carried_publication);
-            }
-        };
-        loaded.mark_seeded(spec, &current_default_sha256);
-        let replacement = notify.then(|| ContextTemplateReplacement {
-            project_path: display_path(project_dir),
-            workspace_path: display_path(ac_root),
-            file_path: display_path(&path),
-            filename: spec.filename.to_string(),
-            label: spec.label.to_string(),
-            backup_path: display_path(&backup_path),
-            local_override_path: display_path(
-                &ac_root.join(local_override_filename(spec.filename)),
-            ),
-        });
-        let publication = ContextPublication { published_at };
-        return ContextTemplateExecution::with_publication(
+fn repair_distribution_template(
+    context: ExistingTemplateSync<'_>,
+    current_default: &str,
+    repair: bool,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+) -> ContextTemplateExecution<TemplateSyncOutcome> {
+    let ExistingTemplateSync {
+        project_dir,
+        ac_root,
+        path,
+        spec,
+        loaded,
+        snapshot,
+        current_default_sha256,
+        carried_publication,
+    } = context;
+    if !repair {
+        // D2: no reporting channel on this path, so the repair is deferred to
+        // the scan rather than replacing operator bytes with no notification.
+        let target_outcome = carried_publication
+            .map(TemplatePublication::Published)
+            .unwrap_or(TemplatePublication::Skipped(
+                ContextTemplateSkipReason::DistributionRepairDeferred,
+            ));
+        return ContextTemplateExecution::from_parts(
             Ok(TemplateSyncOutcome {
                 pending_update: None,
-                replacement,
-                target_outcome: TemplatePublication::Published(publication),
+                replacement: None,
+                target_outcome,
             }),
-            publication,
+            carried_publication,
         );
     }
 
+    // Unreachable today: `repair` is true only on the scan, which always has a
+    // project path. It must stay an error rather than a silent `None`.
+    let project_dir = match project_dir {
+        Some(project_dir) => project_dir,
+        None => {
+            return ContextTemplateExecution::from_parts(
+                Err(format!(
+                    "Cannot create context template update for {} without a project path",
+                    path.display()
+                )),
+                carried_publication,
+            )
+        }
+    };
+
+    // D6: silent only when the bytes about to be replaced are exactly the ones
+    // we last wrote. Computed before any write.
+    let notify = loaded
+        .trusted_entry(spec)
+        .and_then(|entry| entry.last_seeded_sha256.as_deref())
+        != Some(snapshot.sha256.as_str());
+
+    let backup_path = match create_backup(&path, &snapshot.bytes) {
+        Ok(backup_path) => backup_path,
+        Err(error) => return ContextTemplateExecution::from_parts(Err(error), carried_publication),
+    };
+    let after_backup = match read_validated_snapshot(&path, "Context template") {
+        Ok(after_backup) => after_backup,
+        Err(error) => return ContextTemplateExecution::from_parts(Err(error), carried_publication),
+    };
+    if !after_backup
+        .as_ref()
+        .is_some_and(|after_backup| after_backup.sha256 == snapshot.sha256)
+    {
+        log::warn!(
+            "[context-templates] {} changed before the distribution repair; the bytes read \
+                first are kept in {}",
+            path.display(),
+            backup_path.display()
+        );
+        return ContextTemplateExecution::from_parts(
+            Ok(TemplateSyncOutcome {
+                pending_update: None,
+                replacement: None,
+                target_outcome: TemplatePublication::ChangedUnderUs,
+            }),
+            carried_publication,
+        );
+    }
+
+    let published_at = match atomically_replace_context_template(&path, current_default, clock) {
+        Ok(published_at) => published_at,
+        Err(error) => {
+            log::warn!(
+                "[context-templates] replacement failed after backup {} was created: {}",
+                backup_path.display(),
+                error
+            );
+            return ContextTemplateExecution::from_parts(Err(error), carried_publication);
+        }
+    };
+    loaded.mark_seeded(spec, &current_default_sha256);
+    let replacement = notify.then(|| ContextTemplateReplacement {
+        project_path: display_path(project_dir),
+        workspace_path: display_path(ac_root),
+        file_path: display_path(&path),
+        filename: spec.filename.to_string(),
+        label: spec.label.to_string(),
+        backup_path: display_path(&backup_path),
+        local_override_path: display_path(&ac_root.join(local_override_filename(spec.filename))),
+    });
+    let publication = ContextPublication { published_at };
+    ContextTemplateExecution::with_publication(
+        Ok(TemplateSyncOutcome {
+            pending_update: None,
+            replacement,
+            target_outcome: TemplatePublication::Published(publication),
+        }),
+        publication,
+    )
+}
+
+fn sync_customized_template(
+    context: ExistingTemplateSync<'_>,
+    return_pending: bool,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+) -> ContextTemplateExecution<TemplateSyncOutcome> {
+    let ExistingTemplateSync {
+        project_dir,
+        ac_root,
+        path,
+        spec,
+        loaded,
+        snapshot,
+        current_default_sha256,
+        carried_publication,
+    } = context;
     // Root migration authority comes only from exact shipped bytes, independently
     // of absent, stale, or forged persisted state.
     if spec.id == "rootAgent"

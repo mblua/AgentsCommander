@@ -20,55 +20,7 @@ impl MessageStore {
         &self,
         req: PtyInputEnqueueRequest,
     ) -> Result<PtyInputEnqueueResult, MessageStoreError> {
-        use crate::phone::types::{
-            parse_canonical_pty_timestamp, parse_canonical_uuid_v4, PtyInputSourcePlane,
-        };
-        parse_canonical_uuid_v4(&req.injection_id).map_err(|_| MessageStoreError::StoreCorrupt)?;
-        parse_canonical_uuid_v4(&req.op_id).map_err(|_| MessageStoreError::StoreCorrupt)?;
-        let issued_at = parse_canonical_pty_timestamp(&req.issued_at)
-            .map_err(|_| MessageStoreError::StoreCorrupt)?;
-        let expires_at = parse_canonical_pty_timestamp(&req.expires_at)
-            .map_err(|_| MessageStoreError::StoreCorrupt)?;
-        if expires_at - issued_at != chrono::Duration::minutes(10) {
-            return Err(MessageStoreError::StoreCorrupt);
-        }
-        let text =
-            std::str::from_utf8(&req.payload).map_err(|_| MessageStoreError::StoreCorrupt)?;
-        crate::pty::inject::validate_pty_input_text(text)
-            .map_err(|_| MessageStoreError::StoreCorrupt)?;
-        let source_plane = match req.source_plane {
-            PtyInputSourcePlane::HostCli => "host_cli",
-            PtyInputSourcePlane::ContainerApi => "container_api",
-        };
-        if !is_lower_hex_64(&req.nonce_sha256)
-            || !is_lower_hex_64(&req.request_fingerprint)
-            || !is_lower_hex_64(&req.sender_incarnation_fingerprint)
-            || !is_lower_hex_64(&req.sender_identity_fingerprint)
-            || !is_lower_hex_64(&req.target_identity_fingerprint)
-            || crate::phone::types::parse_canonical_uuid_v4(&req.authority_session_id).is_err()
-        {
-            return Err(MessageStoreError::StoreCorrupt);
-        }
-        match req.source_plane {
-            PtyInputSourcePlane::HostCli
-                if req.confirmation_tag.as_deref().is_some_and(is_lower_hex_64)
-                    && req.authority_client_id.is_none()
-                    && req.authority_client_generation.is_none()
-                    && req.injection_id == req.op_id => {}
-            PtyInputSourcePlane::ContainerApi
-                if req.confirmation_tag.is_none()
-                    && req
-                        .authority_client_id
-                        .as_deref()
-                        .is_some_and(|id| !id.is_empty())
-                    && req
-                        .authority_client_generation
-                        .as_deref()
-                        .is_some_and(|generation| {
-                            crate::phone::types::parse_canonical_uuid_v4(generation).is_ok()
-                        }) => {}
-            _ => return Err(MessageStoreError::StoreCorrupt),
-        }
+        let (issued_at, source_plane) = validate_pty_enqueue_request(&req)?;
         let payload_sha256 = sha256_hex(&req.payload);
         let payload_bytes =
             i64::try_from(req.payload.len()).map_err(|_| MessageStoreError::StoreCorrupt)?;
@@ -507,4 +459,58 @@ impl MessageStore {
         )?;
         Ok(changed == 1)
     }
+}
+
+fn validate_pty_enqueue_request(
+    req: &PtyInputEnqueueRequest,
+) -> Result<(DateTime<Utc>, &'static str), MessageStoreError> {
+    use crate::phone::types::{
+        parse_canonical_pty_timestamp, parse_canonical_uuid_v4, PtyInputSourcePlane,
+    };
+    parse_canonical_uuid_v4(&req.injection_id).map_err(|_| MessageStoreError::StoreCorrupt)?;
+    parse_canonical_uuid_v4(&req.op_id).map_err(|_| MessageStoreError::StoreCorrupt)?;
+    let issued_at = parse_canonical_pty_timestamp(&req.issued_at)
+        .map_err(|_| MessageStoreError::StoreCorrupt)?;
+    let expires_at = parse_canonical_pty_timestamp(&req.expires_at)
+        .map_err(|_| MessageStoreError::StoreCorrupt)?;
+    if expires_at - issued_at != chrono::Duration::minutes(10) {
+        return Err(MessageStoreError::StoreCorrupt);
+    }
+    let text = std::str::from_utf8(&req.payload).map_err(|_| MessageStoreError::StoreCorrupt)?;
+    crate::pty::inject::validate_pty_input_text(text)
+        .map_err(|_| MessageStoreError::StoreCorrupt)?;
+    let source_plane = match req.source_plane {
+        PtyInputSourcePlane::HostCli => "host_cli",
+        PtyInputSourcePlane::ContainerApi => "container_api",
+    };
+    if !is_lower_hex_64(&req.nonce_sha256)
+        || !is_lower_hex_64(&req.request_fingerprint)
+        || !is_lower_hex_64(&req.sender_incarnation_fingerprint)
+        || !is_lower_hex_64(&req.sender_identity_fingerprint)
+        || !is_lower_hex_64(&req.target_identity_fingerprint)
+        || crate::phone::types::parse_canonical_uuid_v4(&req.authority_session_id).is_err()
+    {
+        return Err(MessageStoreError::StoreCorrupt);
+    }
+    match req.source_plane {
+        PtyInputSourcePlane::HostCli
+            if req.confirmation_tag.as_deref().is_some_and(is_lower_hex_64)
+                && req.authority_client_id.is_none()
+                && req.authority_client_generation.is_none()
+                && req.injection_id == req.op_id => {}
+        PtyInputSourcePlane::ContainerApi
+            if req.confirmation_tag.is_none()
+                && req
+                    .authority_client_id
+                    .as_deref()
+                    .is_some_and(|id| !id.is_empty())
+                && req
+                    .authority_client_generation
+                    .as_deref()
+                    .is_some_and(|generation| {
+                        crate::phone::types::parse_canonical_uuid_v4(generation).is_ok()
+                    }) => {}
+        _ => return Err(MessageStoreError::StoreCorrupt),
+    }
+    Ok((issued_at, source_plane))
 }

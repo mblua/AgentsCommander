@@ -1,7 +1,8 @@
+mod phase;
+
 use super::handoff::{
-    display_profile_for_log, ForgottenSummary, SelfHandoffFlavor, SelfRestartRecipe,
-    SelfSwitchTargets, RAISE_HAND_ACTION, SELF_CLEAR_ACTION, SELF_CLEAR_SETTLE_SECS,
-    SELF_RESTART_ACTION, SELF_SWITCH_ACTION,
+    ForgottenSummary, SelfHandoffFlavor, SelfRestartRecipe, SelfSwitchTargets, RAISE_HAND_ACTION,
+    SELF_CLEAR_ACTION, SELF_CLEAR_SETTLE_SECS, SELF_RESTART_ACTION, SELF_SWITCH_ACTION,
 };
 use super::notice::{
     resolve_wake_agent_command_from_sources, retain_unarchived_session_dirs,
@@ -12,8 +13,8 @@ use super::poller::MailboxPoller;
 use super::pty_claim::MailboxTestEvent;
 use super::self_handoff::failure::{SelfHandoffFailure, SelfHandoffOutcome, CONTINUATION_FAILURE};
 use super::settle::{
-    inject_handoff_prompt_with_archive, resolve_wg_path_from_session_dirs, self_clear_gate_advance,
-    SelfClearBoundary, SelfClearGateAction, SelfClearGateState,
+    resolve_wg_path_from_session_dirs, self_clear_gate_advance, SelfClearBoundary,
+    SelfClearGateAction, SelfClearGateState,
 };
 use crate::config::settings::SettingsState;
 use crate::config::teams;
@@ -26,6 +27,61 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::Manager;
 use uuid::Uuid;
+
+fn missing_switch_reservation(
+    original_session_id: Uuid,
+    cwd: PathBuf,
+    flavor: &SelfHandoffFlavor,
+    forgotten: bool,
+) -> SelfHandoffOutcome {
+    log::warn!(
+        "[mailbox] switch driver missing legacy reservation for {}",
+        original_session_id
+    );
+    SelfHandoffOutcome::Failed(SelfHandoffFailure {
+        action: flavor.action,
+        attempt: Uuid::new_v4(),
+        original: original_session_id,
+        current: Some(original_session_id),
+        root: cwd,
+        continuation: false,
+        reason: format!("switch driver missing legacy reservation for {original_session_id}"),
+        forgotten,
+    })
+}
+
+fn resolve_restarted_session(
+    restarted: Result<String, String>,
+    flavor: &SelfHandoffFlavor,
+    original_session_id: Uuid,
+    current: &mut Option<Uuid>,
+) -> Result<Uuid, String> {
+    match restarted {
+        Ok(id) => match Uuid::parse_str(&id) {
+            Ok(uuid) => Ok(uuid),
+            Err(e) => {
+                log::warn!(
+                    "[mailbox] {}: restarted session id '{}' could not be parsed: \
+                    {}",
+                    flavor.action,
+                    id,
+                    e
+                );
+                *current = None;
+                Err(e.to_string())
+            }
+        },
+        Err(e) => {
+            log::warn!(
+                "[mailbox] {}: restart failed for session {}: {}",
+                flavor.action,
+                original_session_id,
+                e
+            );
+            Err(e)
+        }
+    }
+}
 
 impl MailboxPoller {
     /// #1632 - despite the name, this drives BOTH self-handoff flavors: pass
@@ -77,22 +133,12 @@ impl MailboxPoller {
         NoteFut: std::future::Future<Output = ()> + Send,
     {
         let Some(lease) = pending.legacy_lease(original_session_id) else {
-            log::warn!(
-                "[mailbox] switch driver missing legacy reservation for {}",
-                original_session_id
+            return missing_switch_reservation(
+                original_session_id,
+                cwd,
+                &flavor,
+                forgotten_summary.is_some(),
             );
-            return SelfHandoffOutcome::Failed(SelfHandoffFailure {
-                action: flavor.action,
-                attempt: Uuid::new_v4(),
-                original: original_session_id,
-                current: Some(original_session_id),
-                root: cwd,
-                continuation: false,
-                reason: format!(
-                    "switch driver missing legacy reservation for {original_session_id}"
-                ),
-                forgotten: forgotten_summary.is_some(),
-            });
         };
         let attempt = Uuid::new_v4();
         let mut continuation = false;
@@ -116,72 +162,32 @@ impl MailboxPoller {
             match action {
                 SelfClearGateAction::Wait => continue,
                 SelfClearGateAction::InjectClear => {
-                    log::info!(
-                        "[mailbox] {}: session {} idle >={}s; {} with coding agent '{}' profile \
-                        '{}' (phase 1)",
-                        flavor.action,
+                    // #1940: keep the turn through persist, restart and alias bookkeeping,
+                    // releasing it before phase-2 settling and handoff injection.
+                    let _turn = match phase::begin_switch(
                         session_id,
-                        settle.as_secs(),
-                        flavor.phase1_verb,
-                        target_agent,
-                        display_profile_for_log(&target_profile)
-                    );
-                    // #1940 - acquire the shared selection operation turn only here:
-                    // the sustained-idle wait above stays outside it. The guard is
-                    // held across the persist, the adjacent restart await and the
-                    // pending-alias bookkeeping, and is released when this arm ends,
-                    // before the phase-2 settling and handoff injection.
-                    let _turn =
-                        match crate::session::selection::acquire_selection_operation_turn().await {
-                            Ok(turn) => turn,
-                            Err(error) => {
-                                log::warn!(
-                                "[mailbox] {}: selection operation turn unavailable for session \
-                                {}: {}",
-                                flavor.action,
-                                session_id,
-                                error
-                            );
-                                break Some(error.to_string());
-                            }
-                        };
-                    if let Err(e) =
-                        persist(cwd.clone(), target_agent.clone(), target_profile.clone()).await
+                        settle,
+                        &flavor,
+                        &target_agent,
+                        &target_profile,
+                    )
+                    .await
                     {
-                        log::warn!(
-                            "[mailbox] {}: persist failed for session {}: {}",
-                            flavor.action,
-                            original_session_id,
-                            e
-                        );
-                        break Some(e);
-                    }
-                    let restarted =
-                        restart(session_id, target_agent.clone(), target_profile.clone()).await;
-                    let new_id = match restarted {
-                        Ok(id) => match Uuid::parse_str(&id) {
-                            Ok(uuid) => uuid,
-                            Err(e) => {
-                                log::warn!(
-                                    "[mailbox] {}: restarted session id '{}' could not be parsed: \
-                                    {}",
-                                    flavor.action,
-                                    id,
-                                    e
-                                );
-                                current = None;
-                                break Some(e.to_string());
-                            }
-                        },
-                        Err(e) => {
-                            log::warn!(
-                                "[mailbox] {}: restart failed for session {}: {}",
-                                flavor.action,
-                                original_session_id,
-                                e
-                            );
-                            break Some(e);
-                        }
+                        Ok(turn) => turn,
+                        Err(error) => break Some(error),
+                    };
+                    let new_id = match phase::persist_and_restart(
+                        (&cwd, &target_agent, &target_profile),
+                        &flavor,
+                        (original_session_id, session_id),
+                        &mut current,
+                        &mut persist,
+                        &mut restart,
+                    )
+                    .await
+                    {
+                        Ok(id) => id,
+                        Err(error) => break Some(error),
                     };
                     if let Err(error) = pending.alias(&lease, new_id) {
                         log::warn!(
@@ -197,32 +203,14 @@ impl MailboxPoller {
                     continue;
                 }
                 SelfClearGateAction::InjectHandoff => {
-                    log::info!(
-                        "[mailbox] {}: session {} idle >={}s {}; injecting handoff prompt (phase \
-                        2)",
-                        flavor.action,
-                        session_id,
-                        settle.as_secs(),
-                        flavor.phase2_verb
-                    );
-                    // #749 - archive-first contract; see inject_handoff_prompt_with_archive.
-                    // (#756) NOTE: the switch phase 1 fires NO Cleared event; it is a
-                    // restart through restart_session_inner_with_activation (skip
-                    // Some(true)), which stamps record + mirror itself via C3. The
-                    // handoff lands on the CURRENT session_id (the post-switch id).
-                    let injected = inject_handoff_prompt_with_archive(
-                        &cwd,
-                        session_id,
-                        flavor.action,
-                        flavor.build_prompt,
+                    let injected = phase::inject_handoff(
+                        (&cwd, session_id, settle),
+                        &flavor,
                         forgotten_summary.as_ref(),
                         &mut inject,
+                        &mut note_boundary,
                     )
                     .await;
-                    if injected {
-                        // (#756) switch handoff prompt is post-boundary content.
-                        note_boundary(session_id, SelfClearBoundary::ContentInjected).await;
-                    }
                     break (!injected).then(|| CONTINUATION_FAILURE.to_string());
                 }
                 SelfClearGateAction::Abandon(reason) => {

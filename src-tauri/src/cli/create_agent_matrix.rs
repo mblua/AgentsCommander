@@ -146,30 +146,11 @@ pub(crate) fn execute_matrix_project_create(
     let agent_path = created.agent_dir.to_string_lossy().to_string();
     let role_path = created.role_path.to_string_lossy().to_string();
 
-    let project_path_for_refresh =
-        crate::filesystem::projects::canonical_refresh_project(&resolved_project.path)
-            .unwrap_or_else(|_| resolved_project.path.clone())
-            .to_string_lossy()
-            .to_string();
-    let agent_path_for_refresh =
-        crate::filesystem::directories::canonical_created_agent(&created.agent_dir)
-            .unwrap_or_else(|_| created.agent_dir.clone())
-            .to_string_lossy()
-            .to_string();
-    let refresh_request = ProjectRefreshRequest {
-        id: uuid::Uuid::new_v4().to_string(),
-        project_path: project_path_for_refresh,
-        changed_path: Some(agent_path_for_refresh),
-        changed_name: Some(created.display_name.clone()),
-        reason: "createAgentMatrix".to_string(),
-        timestamp: chrono::Utc::now().to_rfc3339(),
-    };
-    if let Err(e) = write_project_refresh_request(&refresh_request) {
-        eprintln!(
-            "Warning: agent matrix created but failed to request sidebar refresh: {}",
-            e
-        );
-    }
+    request_matrix_project_refresh(
+        &resolved_project.path,
+        &created.agent_dir,
+        &created.display_name,
+    );
 
     let mut launched = false;
     let mut launch_status = LaunchStatus::Skipped;
@@ -267,6 +248,36 @@ pub(crate) fn execute_matrix_project_create(
     }
 
     0
+}
+
+fn request_matrix_project_refresh(
+    project_path: &std::path::Path,
+    agent_dir: &std::path::Path,
+    display_name: &str,
+) {
+    let project_path_for_refresh =
+        crate::filesystem::projects::canonical_refresh_project(project_path)
+            .unwrap_or_else(|_| project_path.to_path_buf())
+            .to_string_lossy()
+            .to_string();
+    let agent_path_for_refresh = crate::filesystem::directories::canonical_created_agent(agent_dir)
+        .unwrap_or_else(|_| agent_dir.to_path_buf())
+        .to_string_lossy()
+        .to_string();
+    let refresh_request = ProjectRefreshRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        project_path: project_path_for_refresh,
+        changed_path: Some(agent_path_for_refresh),
+        changed_name: Some(display_name.to_string()),
+        reason: "createAgentMatrix".to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    if let Err(e) = write_project_refresh_request(&refresh_request) {
+        eprintln!(
+            "Warning: agent matrix created but failed to request sidebar refresh: {}",
+            e
+        );
+    }
 }
 
 pub(crate) fn write_project_refresh_request(request: &ProjectRefreshRequest) -> Result<(), String> {

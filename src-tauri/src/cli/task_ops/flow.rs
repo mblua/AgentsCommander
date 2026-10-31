@@ -114,40 +114,7 @@ where
     let new_content = render(&new_parsed);
 
     // ── 6. Backup with collision-suffix loop (only if file existed) ───────
-    let backup_path: Option<PathBuf> = if file_existed {
-        // NOTE: backup filenames sort by wall-clock; an NTP backward correction
-        // can break chronological ordering. Acceptable per spec; see plan #137 LOW-2.
-        let ts = now().format("%Y%m%d-%H%M%S").to_string();
-        let mut chosen: Option<PathBuf> = None;
-        for n in 0..=99u32 {
-            let candidate = if n == 0 {
-                wg_root.join(format!("TASK.{}.bak.md", ts))
-            } else {
-                wg_root.join(format!("TASK.{}.{}.bak.md", ts, n))
-            };
-            match reserve_task_backup(&candidate) {
-                Ok(()) => {
-                    chosen = Some(candidate);
-                    break;
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(TaskOpError::BackupFailed(candidate, e)),
-            }
-        }
-        let bp = chosen.ok_or_else(|| {
-            TaskOpError::BackupExhausted(wg_root.join(format!("TASK.{}.bak.md", ts)))
-        })?;
-        match copy_description_backup(&task_path, &bp) {
-            Ok(_) => Some(bp),
-            Err(copy_err) => {
-                // §C.1: fs::copy makes NO guarantee of partial-file cleanup.
-                let _ = remove_task_artifact(&bp);
-                return Err(TaskOpError::BackupFailed(bp, copy_err));
-            }
-        }
-    } else {
-        None
-    };
+    let backup_path = description_backup(wg_root, &task_path, file_existed, now)?;
 
     // ── 7. Atomic write: tmp + sentinel-check + rename ────────────────────
     if let Err(e) = write_description_stage(&tmp_path, new_content.as_bytes()) {
@@ -205,4 +172,50 @@ where
         #[cfg(test)]
         content: new_content,
     })
+}
+
+fn description_backup<F>(
+    wg_root: &Path,
+    task_path: &Path,
+    file_existed: bool,
+    now: F,
+) -> Result<Option<PathBuf>, TaskOpError>
+where
+    F: FnOnce() -> DateTime<Utc>,
+{
+    let backup_path = if file_existed {
+        // NOTE: backup filenames sort by wall-clock; an NTP backward correction
+        // can break chronological ordering. Acceptable per spec; see plan #137 LOW-2.
+        let ts = now().format("%Y%m%d-%H%M%S").to_string();
+        let mut chosen: Option<PathBuf> = None;
+        for n in 0..=99u32 {
+            let candidate = if n == 0 {
+                wg_root.join(format!("TASK.{}.bak.md", ts))
+            } else {
+                wg_root.join(format!("TASK.{}.{}.bak.md", ts, n))
+            };
+            match reserve_task_backup(&candidate) {
+                Ok(()) => {
+                    chosen = Some(candidate);
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(TaskOpError::BackupFailed(candidate, e)),
+            }
+        }
+        let bp = chosen.ok_or_else(|| {
+            TaskOpError::BackupExhausted(wg_root.join(format!("TASK.{}.bak.md", ts)))
+        })?;
+        match copy_description_backup(task_path, &bp) {
+            Ok(_) => Some(bp),
+            Err(copy_err) => {
+                // §C.1: fs::copy makes NO guarantee of partial-file cleanup.
+                let _ = remove_task_artifact(&bp);
+                return Err(TaskOpError::BackupFailed(bp, copy_err));
+            }
+        }
+    } else {
+        None
+    };
+    Ok(backup_path)
 }

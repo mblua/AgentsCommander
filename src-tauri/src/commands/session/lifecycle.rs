@@ -177,7 +177,7 @@ pub(crate) fn capture_lifecycle_claim(
     use crate::config::sessions_persistence::{
         classify_lifecycle_carrier_scope, CreateCarrierScope,
     };
-    use crate::pty::manager::{CreateAdmission, CreateClassification, ResponseRouteIdentity};
+    use crate::pty::manager::{CreateClassification, ResponseRouteIdentity};
     let destination_scope =
         classify_lifecycle_carrier_scope(permit, destination_key, &destination.canonical_path);
     let source_scope = source.map(|source| {
@@ -286,15 +286,34 @@ pub(crate) fn capture_lifecycle_claim(
         }
         _ => return None,
     };
+    reserve_lifecycle_claim(
+        tracker,
+        &target,
+        operation,
+        classification,
+        discard,
+        coordinator,
+    )
+}
+
+fn reserve_lifecycle_claim(
+    tracker: &crate::pty::manager::ResponseCloseState,
+    target: &str,
+    operation: Uuid,
+    classification: crate::pty::manager::CreateClassification,
+    discard: Option<crate::config::sessions_persistence::PublishedCarrier>,
+    coordinator: Option<&crate::session::selection::SelectionCoordinator>,
+) -> Option<LifecycleClaim> {
+    use crate::pty::manager::{CreateAdmission, CreateClassification};
     let foreign = matches!(&classification, CreateClassification::Foreign { .. });
-    match tracker.reserve_create_owner(&target, operation, classification) {
+    match tracker.reserve_create_owner(target, operation, classification) {
         Ok(CreateAdmission::Reserved(reservation)) => Some(LifecycleClaim {
             reservation: Some(reservation),
             discard,
         }),
         Err(crate::pty::manager::ResponseCloseError::Unavailable)
             if foreign
-                && !tracker.target_is_closing(&target)
+                && !tracker.target_is_closing(target)
                 && coordinator.is_some_and(|coordinator| {
                     coordinator.retains_lifecycle_operation(operation)
                 }) =>
@@ -310,6 +329,123 @@ pub(crate) fn capture_lifecycle_claim(
     }
 }
 
+async fn lifecycle_source_id(
+    manager: &SessionManager,
+    root_request: bool,
+    requested_source: Option<Uuid>,
+) -> Result<Option<Uuid>, String> {
+    if !root_request {
+        return Ok(requested_source);
+    }
+    manager
+        .list_sessions()
+        .await
+        .into_iter()
+        .find(|row| {
+            row.is_root_agent
+                || crate::config::root_agent::is_root_agent_path(&row.working_directory)
+        })
+        .map(|row| Uuid::parse_str(&row.id))
+        .transpose()
+        .map_err(|error| error.to_string())
+}
+
+fn lifecycle_destination_cwd<'a>(
+    root_request: bool,
+    source_row: Option<&'a crate::session::session::Session>,
+    root_directory: Option<&'a str>,
+) -> Option<&'a str> {
+    let needs_root = root_request
+        || source_row.is_some_and(|row| {
+            row.is_root_agent
+                || crate::config::root_agent::is_root_agent_path(&row.working_directory)
+        });
+    if needs_root && root_directory.is_none() {
+        return None;
+    }
+    Some(if needs_root {
+        root_directory.unwrap_or_default()
+    } else {
+        source_row
+            .map(|row| row.working_directory.as_str())
+            .unwrap_or_default()
+    })
+}
+
+fn lifecycle_source_identity(
+    row: &crate::session::session::Session,
+    snapshot: &crate::session::manager::CarrierSnapshot,
+) -> Option<LifecycleSourceIdentity> {
+    let version = snapshot.versions.get(&row.id).copied()?;
+    let directory =
+        crate::path_identity::verify_directory(Path::new(&row.working_directory)).ok()?;
+    Some(LifecycleSourceIdentity {
+        id: row.id,
+        token: row.token,
+        version,
+        saved_cwd: row.working_directory.clone(),
+        directory,
+        replica: None,
+    })
+}
+
+fn capture_lifecycle_source_replica(source: &mut LifecycleSourceIdentity) -> bool {
+    source.replica =
+        match crate::config::teams::strict_wg_replica_anchor_from_cwd(Path::new(&source.saved_cwd))
+        {
+            Ok(Some(root)) => match crate::path_identity::verify_directory(&root) {
+                Ok(identity) => Some(identity),
+                Err(_) => return false,
+            },
+            Ok(None) => None,
+            Err(_) => return false,
+        };
+    true
+}
+
+fn missing_lifecycle_source_admission(
+    operation: Uuid,
+    requested_source: Option<Uuid>,
+    root_request: bool,
+    source_is_pending: bool,
+) -> LifecycleAuthorityAdmission {
+    // A pending exact UUID is present, not a missing-source validation case.
+    if source_is_pending {
+        return LifecycleAuthorityAdmission::Waiting;
+    }
+    let Some(requested) = requested_source else {
+        return LifecycleAuthorityAdmission::Waiting;
+    };
+    LifecycleAuthorityAdmission::Ready(LifecycleEntryAuthority {
+        lease: LifecycleTargetLease::MissingSource { requested },
+        source: None,
+        root_request,
+        operation,
+        reservation: Mutex::new(None),
+        interrupted: std::sync::atomic::AtomicBool::new(false),
+        discard: None,
+        tracker: None,
+    })
+}
+
+fn prepared_lifecycle_identity_matches(
+    lease: &LifecycleTargetLease,
+    source: Option<&LifecycleSourceIdentity>,
+) -> bool {
+    let physical_matches = |expected: &crate::path_identity::VerifiedPathIdentity| {
+        crate::path_identity::verify_directory(&expected.canonical_path).is_ok_and(|actual| {
+            actual.object_id == expected.object_id
+                && actual.canonical_path == expected.canonical_path
+        })
+    };
+    let destination_matches = match lease {
+        LifecycleTargetLease::Keyed { destination, .. }
+        | LifecycleTargetLease::VerifiedNoReplica { destination } => physical_matches(destination),
+        LifecycleTargetLease::MissingSource { .. } => false,
+    };
+    destination_matches && source.is_none_or(|source| physical_matches(&source.directory))
+}
+
 pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
     app: &AppHandle<R>,
     operation: Uuid,
@@ -322,21 +458,7 @@ pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
         .read()
         .await
         .clone();
-    let source_id = if root_request {
-        manager
-            .list_sessions()
-            .await
-            .into_iter()
-            .find(|row| {
-                row.is_root_agent
-                    || crate::config::root_agent::is_root_agent_path(&row.working_directory)
-            })
-            .map(|row| Uuid::parse_str(&row.id))
-            .transpose()
-            .map_err(|error| error.to_string())?
-    } else {
-        requested_source
-    };
+    let source_id = lifecycle_source_id(&manager, root_request, requested_source).await?;
     let snapshot = manager.with_response_close_facts(Clone::clone).await;
     let source_row = source_id.and_then(|id| {
         snapshot
@@ -345,40 +467,15 @@ pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
             .find(|row| row.id == id && !snapshot.pending_ids.contains(&row.id))
     });
     if !root_request && source_row.is_none() {
-        // A pending exact UUID is present, not a missing-source validation case.
-        if requested_source.is_some_and(|id| snapshot.rows.iter().any(|row| row.id == id)) {
-            return Ok(LifecycleAuthorityAdmission::Waiting);
-        }
-        let Some(requested) = requested_source else {
-            return Ok(LifecycleAuthorityAdmission::Waiting);
-        };
-        return Ok(LifecycleAuthorityAdmission::Ready(
-            LifecycleEntryAuthority {
-                lease: LifecycleTargetLease::MissingSource { requested },
-                source: None,
-                root_request,
-                operation,
-                reservation: Mutex::new(None),
-                interrupted: std::sync::atomic::AtomicBool::new(false),
-                discard: None,
-                tracker: None,
-            },
+        return Ok(missing_lifecycle_source_admission(
+            operation,
+            requested_source,
+            root_request,
+            requested_source.is_some_and(|id| snapshot.rows.iter().any(|row| row.id == id)),
         ));
     }
-    let needs_root = root_request
-        || source_row.is_some_and(|row| {
-            row.is_root_agent
-                || crate::config::root_agent::is_root_agent_path(&row.working_directory)
-        });
-    if needs_root && root_directory.is_none() {
+    let Some(cwd) = lifecycle_destination_cwd(root_request, source_row, root_directory) else {
         return Ok(LifecycleAuthorityAdmission::NeedsRootDirectory);
-    }
-    let cwd = if needs_root {
-        root_directory.unwrap_or_default()
-    } else {
-        source_row
-            .map(|row| row.working_directory.as_str())
-            .unwrap_or_default()
     };
     let Ok(destination) = crate::path_identity::verify_directory(Path::new(cwd)) else {
         return Ok(LifecycleAuthorityAdmission::Waiting);
@@ -386,22 +483,10 @@ pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
     let key = crate::config::teams::pty_input_create_gate_key_from_cwd(Path::new(cwd))
         .map_err(|_| "targetCreateGateUnavailable".to_string())?;
     let mut source = if let Some(row) = source_row {
-        let Some(version) = snapshot.versions.get(&row.id).copied() else {
+        let Some(source) = lifecycle_source_identity(row, &snapshot) else {
             return Ok(LifecycleAuthorityAdmission::Waiting);
         };
-        let Ok(directory) =
-            crate::path_identity::verify_directory(Path::new(&row.working_directory))
-        else {
-            return Ok(LifecycleAuthorityAdmission::Waiting);
-        };
-        Some(LifecycleSourceIdentity {
-            id: row.id,
-            token: row.token,
-            version,
-            saved_cwd: row.working_directory.clone(),
-            directory,
-            replica: None,
-        })
+        Some(source)
     } else {
         None
     };
@@ -414,17 +499,11 @@ pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
         .transpose()
         .map_err(|_| "targetCreateGateUnavailable".to_string())?
         .flatten();
-    if let Some(source) = source.as_mut() {
-        source.replica = match crate::config::teams::strict_wg_replica_anchor_from_cwd(Path::new(
-            &source.saved_cwd,
-        )) {
-            Ok(Some(root)) => match crate::path_identity::verify_directory(&root) {
-                Ok(identity) => Some(identity),
-                Err(_) => return Ok(LifecycleAuthorityAdmission::Waiting),
-            },
-            Ok(None) => None,
-            Err(_) => return Ok(LifecycleAuthorityAdmission::Waiting),
-        };
+    if source
+        .as_mut()
+        .is_some_and(|source| !capture_lifecycle_source_replica(source))
+    {
+        return Ok(LifecycleAuthorityAdmission::Waiting);
     }
     let lease = if let Some(key) = key {
         let gate = app
@@ -452,22 +531,7 @@ pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
     };
     // Gate acquisition may have suspended. Never admit an identity verified
     // only before those waits; cancellation drops exact then stripe normally.
-    let physical_matches = |expected: &crate::path_identity::VerifiedPathIdentity| {
-        crate::path_identity::verify_directory(&expected.canonical_path).is_ok_and(|actual| {
-            actual.object_id == expected.object_id
-                && actual.canonical_path == expected.canonical_path
-        })
-    };
-    let destination_matches = match &lease {
-        LifecycleTargetLease::Keyed { destination, .. }
-        | LifecycleTargetLease::VerifiedNoReplica { destination } => physical_matches(destination),
-        LifecycleTargetLease::MissingSource { .. } => false,
-    };
-    if !destination_matches
-        || !source
-            .as_ref()
-            .is_none_or(|source| physical_matches(&source.directory))
-    {
+    if !prepared_lifecycle_identity_matches(&lease, source.as_ref()) {
         drop(lease);
         return Ok(LifecycleAuthorityAdmission::Waiting);
     }

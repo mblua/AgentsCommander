@@ -266,3 +266,75 @@ impl PtyInstance {
         *size.lock().unwrap_or_else(|e| e.into_inner()) = (cols, rows);
     }
 }
+
+pub(super) struct SpawnedInstance {
+    pub(super) instance: PtyInstance,
+    pub(super) reader: Box<dyn std::io::Read + Send>,
+    pub(super) rendered: Arc<AtomicBool>,
+}
+
+pub(super) fn prepare_spawn_instance(
+    pair: portable_pty::PtyPair,
+    mut child: Box<dyn portable_pty::Child + Send + Sync>,
+    resource_registration: &mut Option<crate::resource_monitor::ResourceLaunchRegistration>,
+    cols: u16,
+    rows: u16,
+) -> Result<SpawnedInstance, AppError> {
+    let job = child
+        .process_id()
+        .and_then(crate::pty::job::JobObject::for_child);
+
+    if let Some(registration) = resource_registration.as_mut() {
+        let Some(pid) = child.process_id() else {
+            let _ = child.kill();
+            return Err(AppError::PtyError(
+                "Resource Monitor could not capture spawned child pid".to_string(),
+            ));
+        };
+        if let Err(err) = registration.register_root_pid(pid) {
+            let _ = child.kill();
+            return Err(AppError::PtyError(err));
+        }
+    }
+
+    drop(pair.slave);
+
+    let writer = match pair.master.take_writer() {
+        Ok(writer) => writer,
+        Err(e) => {
+            if let Some(registration) = resource_registration.as_ref() {
+                registration.rollback_registered();
+            }
+            return Err(AppError::PtyError(e.to_string()));
+        }
+    };
+
+    let reader = match pair.master.try_clone_reader() {
+        Ok(reader) => reader,
+        Err(e) => {
+            if let Some(registration) = resource_registration.as_ref() {
+                registration.rollback_registered();
+            }
+            return Err(AppError::PtyError(e.to_string()));
+        }
+    };
+
+    // #973 (B) - the child has rendered nothing yet, so the gate starts closed.
+    let rendered = Arc::new(AtomicBool::new(false));
+    let instance = PtyInstance {
+        master: Arc::new(Mutex::new(pair.master)),
+        writer: Arc::new(Mutex::new(writer)),
+        child: Some(child),
+        job,
+        // #973 - the size we actually opened the ConPTY at (see PtyViewport).
+        size: Mutex::new((cols, rows)),
+        startup_gate: Mutex::new(StartupGate::Holding(None)),
+        rendered: Arc::clone(&rendered),
+    };
+
+    Ok(SpawnedInstance {
+        instance,
+        reader,
+        rendered,
+    })
+}

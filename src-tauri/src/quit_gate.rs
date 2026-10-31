@@ -631,6 +631,36 @@ impl Drop for QuitRoundGuard {
     }
 }
 
+/// Supersedes only a live round and claims its exit once.
+fn force_quit_round(gate: &QuitGate, host: &dyn QuitGateHost, epoch: Option<u64>) -> QuitOutcome {
+    // Force must prove it targets the live, nonterminal round before any
+    // exit effect; an omitted or stale epoch cannot authorize exit.
+    let supplied = epoch.unwrap_or(0);
+    let claimed = {
+        let mut inner = gate.lock();
+        if inner.live_round(supplied).is_some() {
+            // Invalidate any stale work still referencing this epoch.
+            inner.next_epoch += 1;
+            // Terminal `Exiting` for the ORIGINAL epoch, written before the
+            // pending senders are dropped, so the superseded waiter returns
+            // `Exiting` with its own epoch and does not exit a second time.
+            inner
+                .finish(supplied, QuitOutcome::exiting(supplied))
+                .is_some()
+        } else {
+            false
+        }
+    };
+    if !claimed {
+        return QuitOutcome::stale(supplied);
+    }
+    gate.notify.notify_waiters();
+    if gate.try_claim_exit(supplied) {
+        exit_closing_detached(host);
+    }
+    QuitOutcome::exiting(supplied)
+}
+
 /// Runs a quit round to its terminal outcome. `force` takes the epoch to
 /// supersede; a non-force call allocates a fresh one.
 pub async fn quit_gate_run(
@@ -649,32 +679,7 @@ pub async fn quit_gate_run(
     }
 
     if force {
-        // Force must prove it targets the live, nonterminal round before any
-        // exit effect; an omitted or stale epoch cannot authorize exit.
-        let supplied = epoch.unwrap_or(0);
-        let claimed = {
-            let mut inner = gate.lock();
-            if inner.live_round(supplied).is_some() {
-                // Invalidate any stale work still referencing this epoch.
-                inner.next_epoch += 1;
-                // Terminal `Exiting` for the ORIGINAL epoch, written before the
-                // pending senders are dropped, so the superseded waiter returns
-                // `Exiting` with its own epoch and does not exit a second time.
-                inner
-                    .finish(supplied, QuitOutcome::exiting(supplied))
-                    .is_some()
-            } else {
-                false
-            }
-        };
-        if !claimed {
-            return Ok(QuitOutcome::stale(supplied));
-        }
-        gate.notify.notify_waiters();
-        if gate.try_claim_exit(supplied) {
-            exit_closing_detached(host.as_ref());
-        }
-        return Ok(QuitOutcome::exiting(supplied));
+        return Ok(force_quit_round(gate.as_ref(), host.as_ref(), epoch));
     }
 
     let attempt_id = attempt_id.unwrap_or_default();

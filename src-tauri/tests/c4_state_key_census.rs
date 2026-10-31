@@ -214,7 +214,7 @@ fn assert_frozen(id: &str, hits: &[Hit], pin: &Pin) {
 #[test]
 fn the_inventory_is_the_certified_file_set() {
     let sources = rust_sources();
-    assert_eq!(sources.len(), 1503, "inventory count");
+    assert_eq!(sources.len(), 1528, "inventory count");
     for (path, text) in &sources {
         assert!(path.starts_with("src-tauri/src/"), "path form: {path}");
         assert!(!path.contains('\\'), "path separator: {path}");
@@ -288,9 +288,9 @@ fn p3_is_frozen() {
     let pin = Pin {
         total: 2,
         distinct: 2,
-        sha256: "8CF76D6BB90599382571CCCC7B574466091176167017CFA9940EAD749ED9ABFA",
+        sha256: "A25DE98D0E4D1BCF2065E8712067456D42F801D4D93FC1DA7BBCC73AA7C19AAB",
         per_file: &[
-            ("phone/mailbox/pty_authority.rs", 1),
+            ("phone/mailbox/pty_authority/target.rs", 1),
             ("phone/mailbox/tests/notice_prefilter.rs", 1),
         ],
     };
@@ -302,14 +302,14 @@ fn p4_is_frozen() {
     let pin = Pin {
         total: 14,
         distinct: 12,
-        sha256: "33B59295390C3E478CA95851D86BF4B7E35EDDE9263D549EF82A35A5033154C7",
+        sha256: "0CD4A5FFA31876156CCADE44569C38CAD2B9AC0C0AAF3F92362CEC2D7E76DAAD",
         per_file: &[
             ("cli/list_peers/discovery.rs", 4),
             ("config/agent_config.rs", 1),
             ("config/agent_config/tests/loader.rs", 3),
             ("config/agent_config/tests/migration.rs", 1),
             ("phone/mailbox/internal_delivery.rs", 1),
-            ("phone/mailbox/pty_authority.rs", 1),
+            ("phone/mailbox/pty_authority/target.rs", 1),
             ("phone/mailbox/self_switch.rs", 1),
             ("phone/mailbox/tests/notice_prefilter.rs", 2),
         ],
@@ -322,7 +322,7 @@ fn p5_is_frozen() {
     let pin = Pin {
         total: 20,
         distinct: 18,
-        sha256: "351AA8CF66A0713C7338B3BB0F1D01D0D43256AC25BBC7ABD25D76311E9F32D1",
+        sha256: "75A5A08E39BBC59AA23F153857962965061ECD13F293A24A9BD7547A4E42CBD8",
         per_file: &[
             ("cli/list_peers/discovery.rs", 4),
             ("config/agent_config.rs", 2),
@@ -330,7 +330,7 @@ fn p5_is_frozen() {
             ("config/agent_config/tests/migration.rs", 1),
             ("loops/delivery.rs", 1),
             ("phone/mailbox/internal_delivery.rs", 1),
-            ("phone/mailbox/pty_authority.rs", 2),
+            ("phone/mailbox/pty_authority/target.rs", 2),
             ("phone/mailbox/self_switch.rs", 1),
             ("phone/mailbox/tests/notice_prefilter.rs", 3),
         ],

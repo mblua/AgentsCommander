@@ -21,71 +21,11 @@ impl MailboxPoller {
         envelope: &crate::phone::types::PtyInputHostEnvelope,
     ) -> Result<String, crate::phone::types::PtyInputReasonCode> {
         use crate::phone::types::{
-            parse_canonical_pty_timestamp, parse_canonical_uuid_v4, pty_input_confirmation_tag,
-            pty_input_host_request_fingerprint, sha256_hex, PtyInputHostFingerprint,
-            PtyInputReasonCode as C, PtyInputSourcePlane, PTY_INPUT_FUTURE_SKEW_SECS,
-            PTY_INPUT_TTL_SECS, PTY_INPUT_VERSION,
+            pty_input_confirmation_tag, pty_input_host_request_fingerprint, sha256_hex,
+            PtyInputHostFingerprint, PtyInputReasonCode as C, PtyInputSourcePlane,
         };
-        if is_app_outbox {
-            return Err(C::UnsafePath);
-        }
+        let token = validate_host_pty_input_envelope(path, is_app_outbox, envelope)?;
         let payload = &envelope.pty_input;
-        if envelope.action != "pty-input"
-            || !envelope.body.is_empty()
-            || envelope.mode != "wake"
-            || envelope.get_output
-            || !envelope.preferred_agent.is_empty()
-            || envelope.priority != "normal"
-        {
-            return Err(C::MixedPayload);
-        }
-        if payload.version != PTY_INPUT_VERSION {
-            return Err(C::UnsupportedVersion);
-        }
-        if payload.enter != crate::phone::types::PtyInputEnterMode::AgentSubmit {
-            return Err(C::InvalidEnterMode);
-        }
-        let injection = parse_canonical_uuid_v4(&payload.injection_id).map_err(|_| C::InvalidId)?;
-        parse_canonical_uuid_v4(&payload.op_id).map_err(|_| C::InvalidId)?;
-        let nonce = parse_canonical_uuid_v4(&payload.nonce).map_err(|_| C::InvalidNonce)?;
-        if envelope.id != payload.injection_id
-            || payload.op_id != payload.injection_id
-            || injection == nonce
-            || path.file_stem().and_then(|value| value.to_str())
-                != Some(payload.injection_id.as_str())
-        {
-            return Err(C::InvalidId);
-        }
-        let issued = parse_canonical_pty_timestamp(&payload.issued_at)?;
-        let expires = parse_canonical_pty_timestamp(&payload.expires_at)?;
-        if envelope.timestamp != payload.issued_at
-            || expires - issued != chrono::Duration::seconds(PTY_INPUT_TTL_SECS)
-        {
-            return Err(C::InvalidTimestamp);
-        }
-        let now = chrono::Utc::now();
-        if issued > now + chrono::Duration::seconds(PTY_INPUT_FUTURE_SKEW_SECS) {
-            return Err(C::InvalidTimestamp);
-        }
-        if expires <= now {
-            return Err(C::Expired);
-        }
-        crate::pty::inject::validate_pty_input_text(&payload.text).map_err(|error| {
-            if error.kind == crate::pty::inject::PtyInputTextErrorKind::TooLarge {
-                C::PayloadTooLarge
-            } else {
-                C::InvalidText
-            }
-        })?;
-        if let Some(agent_id) = payload.agent_id.as_deref() {
-            if agent_id == "auto"
-                || crate::config::coding_agent_mutations::validate_custom_agent_id(agent_id)
-                    .is_err()
-            {
-                return Err(C::UnsupportedProfile);
-            }
-        }
-        let token = parse_canonical_uuid_v4(&envelope.token).map_err(|_| C::InvalidSessionToken)?;
         let session_manager = app.pty_sessions();
         let session = {
             let manager = session_manager.read().await;
@@ -124,29 +64,7 @@ impl MailboxPoller {
                 .await
                 .map_err(|_| C::UnsafePath)?
                 .unwrap_or(in_memory_project_paths);
-        if let Some(replica) = Path::new(&session.working_directory)
-            .ancestors()
-            .find(|candidate| {
-                candidate
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|name| name.starts_with("__agent_"))
-            })
-        {
-            if let Some(project) = replica
-                .parent()
-                .and_then(Path::parent)
-                .and_then(Path::parent)
-            {
-                let project_s = project
-                    .to_str()
-                    .map(crate::path_utils::normalize_windows_verbatim_path)
-                    .ok_or(C::UnsafePath)?;
-                if !project_paths.contains(&project_s) {
-                    project_paths.push(project_s);
-                }
-            }
-        }
+        extend_host_pty_project_paths(&session.working_directory, &mut project_paths)?;
         let route = crate::config::teams::verify_pty_input_route(
             Path::new(&session.working_directory),
             session.is_root_agent,
@@ -469,4 +387,101 @@ impl MailboxPoller {
             operation.await;
         }
     }
+}
+
+fn validate_host_pty_input_envelope(
+    path: &Path,
+    is_app_outbox: bool,
+    envelope: &crate::phone::types::PtyInputHostEnvelope,
+) -> Result<Uuid, crate::phone::types::PtyInputReasonCode> {
+    use crate::phone::types::{
+        parse_canonical_pty_timestamp, parse_canonical_uuid_v4, PtyInputReasonCode as C,
+        PTY_INPUT_FUTURE_SKEW_SECS, PTY_INPUT_TTL_SECS, PTY_INPUT_VERSION,
+    };
+    if is_app_outbox {
+        return Err(C::UnsafePath);
+    }
+    let payload = &envelope.pty_input;
+    if envelope.action != "pty-input"
+        || !envelope.body.is_empty()
+        || envelope.mode != "wake"
+        || envelope.get_output
+        || !envelope.preferred_agent.is_empty()
+        || envelope.priority != "normal"
+    {
+        return Err(C::MixedPayload);
+    }
+    if payload.version != PTY_INPUT_VERSION {
+        return Err(C::UnsupportedVersion);
+    }
+    if payload.enter != crate::phone::types::PtyInputEnterMode::AgentSubmit {
+        return Err(C::InvalidEnterMode);
+    }
+    let injection = parse_canonical_uuid_v4(&payload.injection_id).map_err(|_| C::InvalidId)?;
+    parse_canonical_uuid_v4(&payload.op_id).map_err(|_| C::InvalidId)?;
+    let nonce = parse_canonical_uuid_v4(&payload.nonce).map_err(|_| C::InvalidNonce)?;
+    if envelope.id != payload.injection_id
+        || payload.op_id != payload.injection_id
+        || injection == nonce
+        || path.file_stem().and_then(|value| value.to_str()) != Some(payload.injection_id.as_str())
+    {
+        return Err(C::InvalidId);
+    }
+    let issued = parse_canonical_pty_timestamp(&payload.issued_at)?;
+    let expires = parse_canonical_pty_timestamp(&payload.expires_at)?;
+    if envelope.timestamp != payload.issued_at
+        || expires - issued != chrono::Duration::seconds(PTY_INPUT_TTL_SECS)
+    {
+        return Err(C::InvalidTimestamp);
+    }
+    let now = chrono::Utc::now();
+    if issued > now + chrono::Duration::seconds(PTY_INPUT_FUTURE_SKEW_SECS) {
+        return Err(C::InvalidTimestamp);
+    }
+    if expires <= now {
+        return Err(C::Expired);
+    }
+    crate::pty::inject::validate_pty_input_text(&payload.text).map_err(|error| {
+        if error.kind == crate::pty::inject::PtyInputTextErrorKind::TooLarge {
+            C::PayloadTooLarge
+        } else {
+            C::InvalidText
+        }
+    })?;
+    if let Some(agent_id) = payload.agent_id.as_deref() {
+        if agent_id == "auto"
+            || crate::config::coding_agent_mutations::validate_custom_agent_id(agent_id).is_err()
+        {
+            return Err(C::UnsupportedProfile);
+        }
+    }
+    let token = parse_canonical_uuid_v4(&envelope.token).map_err(|_| C::InvalidSessionToken)?;
+    Ok(token)
+}
+
+fn extend_host_pty_project_paths(
+    working_directory: &str,
+    project_paths: &mut Vec<String>,
+) -> Result<(), crate::phone::types::PtyInputReasonCode> {
+    if let Some(replica) = Path::new(working_directory).ancestors().find(|candidate| {
+        candidate
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| name.starts_with("__agent_"))
+    }) {
+        if let Some(project) = replica
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+        {
+            let project_s = project
+                .to_str()
+                .map(crate::path_utils::normalize_windows_verbatim_path)
+                .ok_or(crate::phone::types::PtyInputReasonCode::UnsafePath)?;
+            if !project_paths.contains(&project_s) {
+                project_paths.push(project_s);
+            }
+        }
+    }
+    Ok(())
 }

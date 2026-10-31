@@ -92,9 +92,7 @@ pub async fn deliver_loop_prompt<H: LoopDeliveryHost + ?Sized>(
 ) -> LoopDeliveryReport {
     let target = match resolve_loop_target(project_dir, config) {
         Ok(target) => target,
-        Err(e) => {
-            return target_unresolved_report(e);
-        }
+        Err(e) => return target_unresolved_report(e),
     };
     let target_fqn = target.target_fqn.clone();
 
@@ -174,88 +172,19 @@ pub async fn deliver_loop_prompt<H: LoopDeliveryHost + ?Sized>(
         // Fresh + live: the stale check and the busy gate run before any
         // teardown, then at most one restart, an explicit wait, and the
         // post-restart outcome. This replaces the busy block below on this path.
-        if let Some(report) =
-            stale_delivery_report_if_needed(&loop_storage_dir, config, &target_fqn, session_id)
+        match restart_delivery_session(
+            app,
+            &loop_storage_dir,
+            config,
+            &target_fqn,
+            session_id,
+            &policy,
+        )
+        .await
         {
-            return report;
-        }
-        let pre_restart_idle = match final_busy_check(app, session_id).await {
-            Ok(idle) => idle,
-            Err(e) => return failed_report(Some(target_fqn), Some(session_id), e),
-        };
-        match pre_restart_decision(pre_restart_idle, &policy) {
-            PreRestartDecision::Restart => {}
-            PreRestartDecision::Pending => {
-                return LoopDeliveryReport {
-                    kind: LoopAuditKind::PendingBusy,
-                    message: "Orchestrator is busy; delivery will run when idle".to_string(),
-                    target: Some(target_fqn),
-                    session_id: Some(session_id),
-                    error: None,
-                    prompt_snapshot: None,
-                    completed_at: None,
-                };
-            }
-            PreRestartDecision::Skip => {
-                return LoopDeliveryReport {
-                    kind: LoopAuditKind::SkippedBusy,
-                    message: "Orchestrator is busy; delivery skipped".to_string(),
-                    target: Some(target_fqn),
-                    session_id: Some(session_id),
-                    error: None,
-                    prompt_snapshot: None,
-                    completed_at: Some(Utc::now()),
-                };
-            }
-        }
-
-        let restarted = match app.restart_fresh(session_id).await {
-            Ok(info) => info,
-            Err(e) => return failed_report(Some(target_fqn), Some(session_id), e),
-        };
-
-        let post_restart_id = match Uuid::parse_str(&restarted.id) {
             Ok(id) => id,
-            Err(e) => {
-                return failed_report(
-                    Some(target_fqn),
-                    Some(session_id),
-                    format!("Failed to parse session id '{}': {}", restarted.id, e),
-                );
-            }
-        };
-
-        if let Err(e) = wait_for_session_idle(app, post_restart_id).await {
-            return failed_report(Some(target_fqn), Some(post_restart_id), e);
+            Err(report) => return *report,
         }
-
-        let post_restart_idle = match final_busy_check(app, post_restart_id).await {
-            Ok(idle) => idle,
-            Err(e) => return failed_report(Some(target_fqn), Some(post_restart_id), e),
-        };
-        match post_restart_decision(post_restart_idle, &policy) {
-            PostRestartDecision::Inject => {}
-            PostRestartDecision::Skip => {
-                return LoopDeliveryReport {
-                    kind: LoopAuditKind::SkippedBusy,
-                    message: "Orchestrator is busy; delivery skipped".to_string(),
-                    target: Some(target_fqn),
-                    session_id: Some(post_restart_id),
-                    error: None,
-                    prompt_snapshot: None,
-                    completed_at: Some(Utc::now()),
-                };
-            }
-            PostRestartDecision::Failed => {
-                return failed_report(
-                    Some(target_fqn),
-                    Some(post_restart_id),
-                    "coordinator did not become idle within 90s after the fresh restart"
-                        .to_string(),
-                );
-            }
-        }
-        post_restart_id
     } else {
         match final_busy_check(app, session_id).await {
             Ok(true) => {}
@@ -299,29 +228,150 @@ pub async fn deliver_loop_prompt<H: LoopDeliveryHost + ?Sized>(
         )
         .await
     {
-        Ok(()) => {
-            // (#756) loop prompt = AC-injected post-boundary content: drop any
-            // pending fresh intent (record + mirror).
-            app.note_post_boundary(session_id).await;
-            if let Err(e) = set_last_prompt(app, session_id, prompt.clone()).await {
-                log::warn!(
-                    "[loops] Failed to update last_prompt after Loop delivery to {}: {}",
-                    session_id,
-                    e
-                );
-            }
-            LoopDeliveryReport {
-                kind: LoopAuditKind::Delivered,
-                message: "Loop prompt delivered".to_string(),
+        Ok(()) => delivered_report(app, target_fqn, session_id, prompt).await,
+        Err(e) => failed_report(Some(target_fqn), Some(session_id), e),
+    }
+}
+
+async fn delivered_report<H: LoopDeliveryHost + ?Sized>(
+    app: &H,
+    target_fqn: String,
+    session_id: Uuid,
+    prompt: String,
+) -> LoopDeliveryReport {
+    // (#756) loop prompt = AC-injected post-boundary content: drop any
+    // pending fresh intent (record + mirror).
+    app.note_post_boundary(session_id).await;
+    if let Err(e) = set_last_prompt(app, session_id, prompt.clone()).await {
+        log::warn!(
+            "[loops] Failed to update last_prompt after Loop delivery to {}: {}",
+            session_id,
+            e
+        );
+    }
+    LoopDeliveryReport {
+        kind: LoopAuditKind::Delivered,
+        message: "Loop prompt delivered".to_string(),
+        target: Some(target_fqn),
+        session_id: Some(session_id),
+        error: None,
+        prompt_snapshot: Some(prompt),
+        completed_at: Some(Utc::now()),
+    }
+}
+
+async fn restart_delivery_session<H: LoopDeliveryHost + ?Sized>(
+    app: &H,
+    loop_storage_dir: &Path,
+    config: &LoopConfigToml,
+    target_fqn: &str,
+    session_id: Uuid,
+    policy: &BusyCoordinatorPolicy,
+) -> Result<Uuid, Box<LoopDeliveryReport>> {
+    let target_fqn = target_fqn.to_string();
+    if let Some(report) =
+        stale_delivery_report_if_needed(loop_storage_dir, config, &target_fqn, session_id)
+    {
+        return Err(Box::new(report));
+    }
+    let pre_restart_idle = match final_busy_check(app, session_id).await {
+        Ok(idle) => idle,
+        Err(e) => {
+            return Err(Box::new(failed_report(
+                Some(target_fqn),
+                Some(session_id),
+                e,
+            )))
+        }
+    };
+    match pre_restart_decision(pre_restart_idle, policy) {
+        PreRestartDecision::Restart => {}
+        PreRestartDecision::Pending => {
+            return Err(Box::new(LoopDeliveryReport {
+                kind: LoopAuditKind::PendingBusy,
+                message: "Orchestrator is busy; delivery will run when idle".to_string(),
                 target: Some(target_fqn),
                 session_id: Some(session_id),
                 error: None,
-                prompt_snapshot: Some(prompt),
-                completed_at: Some(Utc::now()),
-            }
+                prompt_snapshot: None,
+                completed_at: None,
+            }));
         }
-        Err(e) => failed_report(Some(target_fqn), Some(session_id), e),
+        PreRestartDecision::Skip => {
+            return Err(Box::new(LoopDeliveryReport {
+                kind: LoopAuditKind::SkippedBusy,
+                message: "Orchestrator is busy; delivery skipped".to_string(),
+                target: Some(target_fqn),
+                session_id: Some(session_id),
+                error: None,
+                prompt_snapshot: None,
+                completed_at: Some(Utc::now()),
+            }));
+        }
     }
+
+    let restarted = match app.restart_fresh(session_id).await {
+        Ok(info) => info,
+        Err(e) => {
+            return Err(Box::new(failed_report(
+                Some(target_fqn),
+                Some(session_id),
+                e,
+            )))
+        }
+    };
+
+    let post_restart_id = match Uuid::parse_str(&restarted.id) {
+        Ok(id) => id,
+        Err(e) => {
+            return Err(Box::new(failed_report(
+                Some(target_fqn),
+                Some(session_id),
+                format!("Failed to parse session id '{}': {}", restarted.id, e),
+            )));
+        }
+    };
+
+    if let Err(e) = wait_for_session_idle(app, post_restart_id).await {
+        return Err(Box::new(failed_report(
+            Some(target_fqn),
+            Some(post_restart_id),
+            e,
+        )));
+    }
+
+    let post_restart_idle = match final_busy_check(app, post_restart_id).await {
+        Ok(idle) => idle,
+        Err(e) => {
+            return Err(Box::new(failed_report(
+                Some(target_fqn),
+                Some(post_restart_id),
+                e,
+            )))
+        }
+    };
+    match post_restart_decision(post_restart_idle, policy) {
+        PostRestartDecision::Inject => {}
+        PostRestartDecision::Skip => {
+            return Err(Box::new(LoopDeliveryReport {
+                kind: LoopAuditKind::SkippedBusy,
+                message: "Orchestrator is busy; delivery skipped".to_string(),
+                target: Some(target_fqn),
+                session_id: Some(post_restart_id),
+                error: None,
+                prompt_snapshot: None,
+                completed_at: Some(Utc::now()),
+            }));
+        }
+        PostRestartDecision::Failed => {
+            return Err(Box::new(failed_report(
+                Some(target_fqn),
+                Some(post_restart_id),
+                "coordinator did not become idle within 90s after the fresh restart".to_string(),
+            )));
+        }
+    }
+    Ok(post_restart_id)
 }
 
 fn stale_delivery_error_if_needed(

@@ -42,6 +42,65 @@ pub(crate) fn verified_requester_root_from_discovered_path(path: &Path) -> Optio
         .map(|identity| identity.replica_root)
 }
 
+struct ScanDirectories {
+    root_identity: crate::path_identity::VerifiedPathIdentity,
+    request_directory: PathBuf,
+    response_directory: PathBuf,
+    request_directory_identity: crate::path_identity::VerifiedPathIdentity,
+    response_directory_identity: crate::path_identity::VerifiedPathIdentity,
+}
+
+fn verified_scan_directories(requester_root: &Path) -> Option<ScanDirectories> {
+    let Ok(root_identity) = crate::path_identity::verify_directory(requester_root) else {
+        return None;
+    };
+    let local = requester_root.join(crate::config::agent_local_dir_name());
+    let outbox = local.join("outbox");
+    let request_directory = outbox.join(REQUEST_DIRECTORY);
+    let response_directory = local.join(RESPONSE_DIRECTORY);
+    if !terminal_snapshots::snapshot_is_dir(&request_directory)
+        || !terminal_snapshots::snapshot_is_dir(&response_directory)
+    {
+        return None;
+    }
+    let (
+        Ok(local_identity),
+        Ok(outbox_identity),
+        Ok(request_directory_identity),
+        Ok(response_directory_identity),
+    ) = (
+        crate::path_identity::verify_directory(&local),
+        crate::path_identity::verify_directory(&outbox),
+        crate::path_identity::verify_directory(&request_directory),
+        crate::path_identity::verify_directory(&response_directory),
+    )
+    else {
+        return None;
+    };
+    if !private_directory_mode(&request_directory)
+        || !private_directory_mode(&response_directory)
+        || !crate::path_identity::is_verified_descendant(&local_identity, &root_identity)
+        || !crate::path_identity::is_verified_descendant(&outbox_identity, &local_identity)
+        || !crate::path_identity::is_verified_descendant(
+            &request_directory_identity,
+            &outbox_identity,
+        )
+        || !crate::path_identity::is_verified_descendant(
+            &response_directory_identity,
+            &local_identity,
+        )
+    {
+        return None;
+    }
+    Some(ScanDirectories {
+        root_identity,
+        request_directory,
+        response_directory,
+        request_directory_identity,
+        response_directory_identity,
+    })
+}
+
 impl SnapshotMailboxScanner {
     /// (#1399) For a delivery-only poller. Reuses whatever owner is currently
     /// registered, so no second owner is created, and falls back to a
@@ -172,79 +231,28 @@ impl SnapshotMailboxScanner {
         }
     }
 
-    pub(crate) fn scan_root<R: tauri::Runtime>(
+    fn select_requests(
         &mut self,
-        app: &tauri::AppHandle<R>,
-        requester_root: &Path,
-    ) {
-        let Ok(root_identity) = crate::path_identity::verify_directory(requester_root) else {
-            return;
-        };
-        let local = requester_root.join(crate::config::agent_local_dir_name());
-        let outbox = local.join("outbox");
-        let request_directory = outbox.join(REQUEST_DIRECTORY);
-        let response_directory = local.join(RESPONSE_DIRECTORY);
-        if !terminal_snapshots::snapshot_is_dir(&request_directory)
-            || !terminal_snapshots::snapshot_is_dir(&response_directory)
-        {
-            return;
-        }
-        let (
-            Ok(local_identity),
-            Ok(outbox_identity),
-            Ok(request_directory_identity),
-            Ok(response_directory_identity),
-        ) = (
-            crate::path_identity::verify_directory(&local),
-            crate::path_identity::verify_directory(&outbox),
-            crate::path_identity::verify_directory(&request_directory),
-            crate::path_identity::verify_directory(&response_directory),
-        )
-        else {
-            return;
-        };
-        if !private_directory_mode(&request_directory)
-            || !private_directory_mode(&response_directory)
-            || !crate::path_identity::is_verified_descendant(&local_identity, &root_identity)
-            || !crate::path_identity::is_verified_descendant(&outbox_identity, &local_identity)
-            || !crate::path_identity::is_verified_descendant(
-                &request_directory_identity,
-                &outbox_identity,
-            )
-            || !crate::path_identity::is_verified_descendant(
-                &response_directory_identity,
-                &local_identity,
-            )
-        {
-            return;
-        }
-        if self.cursors.len() >= CURSOR_CAP
-            && !self
-                .cursors
-                .contains_key(&request_directory_identity.object_id)
-        {
-            return;
-        }
-        self.observed.insert(request_directory_identity.object_id);
-        sweep_directory(&request_directory, &request_directory_identity, false);
-        sweep_directory(&response_directory, &response_directory_identity, true);
+        request_directory: &Path,
+        request_object: crate::path_identity::FileObjectId,
+    ) -> Option<Vec<String>> {
         let cursor = self
             .cursors
-            .get(&request_directory_identity.object_id)
+            .get(&request_object)
             .cloned()
             .unwrap_or_default();
         let mut next = std::collections::BTreeSet::new();
         let mut wrapped = std::collections::BTreeSet::new();
-        let Ok(entries) = terminal_snapshots::snapshot_entries(&request_directory) else {
-            return;
+        let Ok(entries) = terminal_snapshots::snapshot_entries(request_directory) else {
+            return None;
         };
         for (index, entry) in entries.enumerate() {
             if index >= MAX_DIRECTORY_ENTRIES {
                 log::warn!("[terminal-snapshot] stage=publish code=directory_capacity");
-                return;
+                return None;
             }
             let Ok((_, name)) = entry else {
-                return;
+                return None;
             };
             let Ok(name) = name.into_string() else {
                 continue;
@@ -268,9 +276,42 @@ impl SnapshotMailboxScanner {
             next.into_iter().collect()
         };
         if let Some(last) = selected.last() {
-            self.cursors
-                .insert(request_directory_identity.object_id, last.clone());
+            self.cursors.insert(request_object, last.clone());
         }
+
+        Some(selected)
+    }
+
+    pub(crate) fn scan_root<R: tauri::Runtime>(
+        &mut self,
+        app: &tauri::AppHandle<R>,
+        requester_root: &Path,
+    ) {
+        let Some(ScanDirectories {
+            root_identity,
+            request_directory,
+            response_directory,
+            request_directory_identity,
+            response_directory_identity,
+        }) = verified_scan_directories(requester_root)
+        else {
+            return;
+        };
+        if self.cursors.len() >= CURSOR_CAP
+            && !self
+                .cursors
+                .contains_key(&request_directory_identity.object_id)
+        {
+            return;
+        }
+        self.observed.insert(request_directory_identity.object_id);
+        sweep_directory(&request_directory, &request_directory_identity, false);
+        sweep_directory(&response_directory, &response_directory_identity, true);
+        let Some(selected) =
+            self.select_requests(&request_directory, request_directory_identity.object_id)
+        else {
+            return;
+        };
 
         let Some(snapshot_state) =
             app.try_state::<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>()
@@ -397,3 +438,6 @@ fn private_directory_mode(path: &Path) -> bool {
 fn private_regular_file_mode(path: &Path) -> bool {
     terminal_snapshots::private_snapshot_file_mode(path)
 }
+
+#[cfg(test)]
+mod tests;

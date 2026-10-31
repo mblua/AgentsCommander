@@ -56,22 +56,7 @@ pub(crate) async fn query_key(
         return outcome;
     }
 
-    let ci = match build_gh_command_spec(
-        gh,
-        GhQuery::Ci {
-            nwo: &key.nwo,
-            sha40: &key.sha40,
-        },
-    ) {
-        Ok(spec) => {
-            let branch = key.branch.clone();
-            run_query(spawner, spec, |body| {
-                parse_ci_response(body, &branch, &key.sha40)
-            })
-            .await
-        }
-        Err(_) => Err(FailureKind::Other),
-    };
+    let ci = query_ci(spawner, gh, key).await;
     let closing_ready = completion.closing_ready;
     let merge_error = ci.as_ref().ok().and_then(|answer| {
         merge_ci_observations(&mut completion, &answer.observations, true).err()
@@ -181,6 +166,29 @@ pub(crate) async fn query_key(
     outcome.ci = Some(ci_result);
 
     outcome
+}
+
+async fn query_ci(
+    spawner: &GhSpawner,
+    gh: &Path,
+    key: &QueryKey,
+) -> Result<super::ci_parse::CiAnswer, FailureKind> {
+    match build_gh_command_spec(
+        gh,
+        GhQuery::Ci {
+            nwo: &key.nwo,
+            sha40: &key.sha40,
+        },
+    ) {
+        Ok(spec) => {
+            let branch = key.branch.clone();
+            run_query(spawner, spec, |body| {
+                parse_ci_response(body, &branch, &key.sha40)
+            })
+            .await
+        }
+        Err(_) => Err(FailureKind::Other),
+    }
 }
 
 pub(crate) async fn run_query<T, P>(

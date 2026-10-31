@@ -30,6 +30,66 @@ pub(crate) enum InitScope {
     Instance,
 }
 
+/// Recover project migration sidecars before inspecting the persisted base.
+/// Returns false when a diagnostic prevents initialization from continuing.
+fn recover_project_catalog(
+    paths: &CatalogPaths,
+    legacy_catalog_dir: Option<&Path>,
+    outcome: &mut CatalogInitOutcome,
+) -> bool {
+    let journal_exists = match config_seed::inspect_seed_destination(&paths.journal) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            outcome.warnings.push(catalog_diagnostic(
+                REPORT_CODE_REFRESH_FAILED,
+                &paths.journal,
+                format!("the migration journal could not be inspected ({error})"),
+            ));
+            return false;
+        }
+    };
+    let backup_exists = match config_seed::inspect_seed_destination(&paths.backup) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            outcome.warnings.push(catalog_diagnostic(
+                REPORT_CODE_REFRESH_FAILED,
+                &paths.backup,
+                format!("the migration backup could not be inspected ({error})"),
+            ));
+            return false;
+        }
+    };
+
+    if journal_exists {
+        match recover_interrupted_migration(paths) {
+            Ok(published_at) => outcome.published_at = published_at,
+            Err(reason) => {
+                outcome.warnings.push(catalog_diagnostic(
+                    REPORT_CODE_MIGRATION_CONFLICT,
+                    &paths.journal,
+                    reason,
+                ));
+                return false;
+            }
+        }
+    } else if backup_exists {
+        match resume_backup_only_migration(paths, legacy_catalog_dir) {
+            Ok(published_at) => outcome.published_at = published_at,
+            Err(reason) => {
+                outcome.warnings.push(catalog_diagnostic(
+                    REPORT_CODE_MIGRATION_CONFLICT,
+                    &paths.backup,
+                    reason,
+                ));
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// One initialization pass UNDER THE HELD CATALOG LOCK: recover an interrupted
 /// transaction, then refresh, migrate or fresh-seed exactly one base. Order is
 /// fixed by the plan: recovery first, then the base state machine. `scope`
@@ -45,57 +105,10 @@ pub(crate) fn initialize_catalog_under_lock(
     // #2021: no production caller has ever run this initialization on the
     // config dir, so a journal or backup beside an instance catalog cannot be
     // ours. Leave any such sidecar untouched and never resume it.
-    if scope == InitScope::Project {
-        let journal_exists = match config_seed::inspect_seed_destination(&paths.journal) {
-            Ok(_) => true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => {
-                outcome.warnings.push(catalog_diagnostic(
-                    REPORT_CODE_REFRESH_FAILED,
-                    &paths.journal,
-                    format!("the migration journal could not be inspected ({error})"),
-                ));
-                return outcome;
-            }
-        };
-        let backup_exists = match config_seed::inspect_seed_destination(&paths.backup) {
-            Ok(_) => true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => {
-                outcome.warnings.push(catalog_diagnostic(
-                    REPORT_CODE_REFRESH_FAILED,
-                    &paths.backup,
-                    format!("the migration backup could not be inspected ({error})"),
-                ));
-                return outcome;
-            }
-        };
-
-        if journal_exists {
-            match recover_interrupted_migration(paths) {
-                Ok(published_at) => outcome.published_at = published_at,
-                Err(reason) => {
-                    outcome.warnings.push(catalog_diagnostic(
-                        REPORT_CODE_MIGRATION_CONFLICT,
-                        &paths.journal,
-                        reason,
-                    ));
-                    return outcome;
-                }
-            }
-        } else if backup_exists {
-            match resume_backup_only_migration(paths, legacy_catalog_dir) {
-                Ok(published_at) => outcome.published_at = published_at,
-                Err(reason) => {
-                    outcome.warnings.push(catalog_diagnostic(
-                        REPORT_CODE_MIGRATION_CONFLICT,
-                        &paths.backup,
-                        reason,
-                    ));
-                    return outcome;
-                }
-            }
-        }
+    if scope == InitScope::Project
+        && !recover_project_catalog(paths, legacy_catalog_dir, &mut outcome)
+    {
+        return outcome;
     }
 
     let base_bytes = match read_optional_regular_file(&paths.base, "persisted catalog") {

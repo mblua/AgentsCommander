@@ -1,3 +1,4 @@
+use crate::commands::session::agent_command::mirror_forces_fresh;
 use crate::commands::session::agent_command::prepare_last_coding_agent_write;
 use crate::commands::session::agent_command::save_last_coding_agent;
 use crate::commands::session::co_managed::raise_room_reader_demand;
@@ -9,13 +10,17 @@ use crate::commands::session::create::contracts::CreateCompletion;
 use crate::commands::session::create::contracts::DeferredCreateOutput;
 use crate::commands::session::create::contracts::PublicationInput;
 use crate::commands::session::create::publication::register_session_samplers;
+use crate::commands::session::lifecycle::LifecycleEntryAuthority;
 use crate::commands::session::resume_probe::build_title_prompt_appendage;
 use crate::config::settings::SettingsState;
 use crate::session::manager::SessionManager;
 use crate::session::selection::SelectionCause;
+use crate::session::selection::SelectionCoordinator;
+use crate::session::selection::SelectionTransaction;
 use crate::session::session::SessionInfo;
 use crate::session::warnings::SessionWarning;
 use std::sync::Arc;
+use tauri::AppHandle;
 use tauri::Manager;
 
 pub(crate) async fn complete<'a: 'b, 'b, R: tauri::Runtime>(
@@ -26,17 +31,13 @@ pub(crate) async fn complete<'a: 'b, 'b, R: tauri::Runtime>(
         app,
         pty_mgr,
         cwd,
-        skip_tooling_save,
         inline_transaction,
-        inline_cause,
         defer_inline_finalization,
         pending_start_fresh,
         initial_last_prompt,
         owned_replacement,
         lifecycle_domain,
         create_owner,
-        create_ticket,
-        inline_pending_for_body,
         ..
     } = ctx;
     let PublicationInput {
@@ -90,54 +91,7 @@ pub(crate) async fn complete<'a: 'b, 'b, R: tauri::Runtime>(
     // Under the unified-window model the main window is created up-front and stays
     // visible; session creation has no window-show responsibility.
 
-    // Save lastCodingAgent + codingAgents (skip for temp sessions)
-    if !skip_tooling_save {
-        if let Some(ref aid) = agent_id {
-            // Resolve label: use provided agent_label, or look up from settings by agent_id.
-            // Without this fallback, callers that pass agent_id but no label (session-requests,
-            // web remote) would write app: "Unknown" into the per-instance config.json.
-            // #2433 - computed under the settings read lock, written after it drops.
-            let write = {
-                let settings = app.state::<SettingsState>();
-                let write = match settings.current_read().await {
-                    Ok(cfg) => Some(prepare_last_coding_agent_write(
-                        aid,
-                        agent_label.as_deref(),
-                        &cfg,
-                    )),
-                    Err(error) => {
-                        log::debug!("[session] skipping lastCodingAgent publication: {error}");
-                        None
-                    }
-                };
-                write
-            };
-            if let Some(write) = write {
-                if let Err(e) = save_last_coding_agent(cwd, &id.to_string(), &write) {
-                    log::warn!("Failed to save lastCodingAgent: {}", e);
-                }
-            }
-            // #592 - persist the loaded profile content-hash so drift survives an
-            // AC restart. Best-effort; never aborts the spawn. No-op off-replica.
-            if let Some(hash) = session.profile_content_hash.as_deref() {
-                log::debug!(
-                    "[profile-hash] spawn-persist: session={} agent={} hash={} cwd={:?}",
-                    id,
-                    aid,
-                    hash,
-                    cwd,
-                );
-                if let Err(e) =
-                    crate::config::coding_agent_profiles::set_replica_profile_content_hash(
-                        std::path::Path::new(&cwd),
-                        hash,
-                    )
-                {
-                    log::warn!("Failed to persist profileContentHash: {}", e);
-                }
-            }
-        }
-    }
+    publish_tooling(ctx, &session, &agent_id, &agent_label).await;
 
     // A configured selector is never evidence of AC-attributed continuation,
     // even when an injector also happened to add a control of its own.
@@ -198,6 +152,36 @@ pub(crate) async fn complete<'a: 'b, 'b, R: tauri::Runtime>(
     .await?;
     drop(carrier_prompt);
 
+    finalize(
+        ctx,
+        &mgr,
+        pending_binding,
+        finalization_warnings,
+        effective_continuation,
+        id,
+    )
+    .await
+}
+
+async fn finalize<R: tauri::Runtime>(
+    ctx: &CreateBodyContext<'_, R>,
+    mgr: &SessionManager,
+    pending_binding: crate::session::manager::PendingCreateBinding,
+    finalization_warnings: Vec<SessionWarning>,
+    effective_continuation: bool,
+    id: uuid::Uuid,
+) -> Result<CreateCompletion, String> {
+    let &CreateBodyContext {
+        app,
+        inline_transaction,
+        inline_cause,
+        defer_inline_finalization,
+        owned_replacement,
+        create_owner,
+        create_ticket,
+        inline_pending_for_body,
+        ..
+    } = ctx;
     if defer_inline_finalization {
         if create_ticket
             .lock()
@@ -398,4 +382,143 @@ async fn wait_for_title_prompt_ready<R: tauri::Runtime>(
     }
 
     true
+}
+
+async fn publish_tooling<R: tauri::Runtime>(
+    ctx: &CreateBodyContext<'_, R>,
+    session: &crate::session::session::Session,
+    agent_id: &Option<String>,
+    agent_label: &Option<String>,
+) {
+    let &CreateBodyContext {
+        app,
+        cwd,
+        skip_tooling_save,
+        ..
+    } = ctx;
+    let id = session.id;
+    // Save lastCodingAgent + codingAgents (skip for temp sessions)
+    if !skip_tooling_save {
+        if let Some(ref aid) = agent_id {
+            // Resolve label: use provided agent_label, or look up from settings by agent_id.
+            // Without this fallback, callers that pass agent_id but no label (session-requests,
+            // web remote) would write app: "Unknown" into the per-instance config.json.
+            // #2433 - computed under the settings read lock, written after it drops.
+            let write = {
+                let settings = app.state::<SettingsState>();
+                let write = match settings.current_read().await {
+                    Ok(cfg) => Some(prepare_last_coding_agent_write(
+                        aid,
+                        agent_label.as_deref(),
+                        &cfg,
+                    )),
+                    Err(error) => {
+                        log::debug!("[session] skipping lastCodingAgent publication: {error}");
+                        None
+                    }
+                };
+                write
+            };
+            if let Some(write) = write {
+                if let Err(e) = save_last_coding_agent(cwd, &id.to_string(), &write) {
+                    log::warn!("Failed to save lastCodingAgent: {}", e);
+                }
+            }
+            // #592 - persist the loaded profile content-hash so drift survives an
+            // AC restart. Best-effort; never aborts the spawn. No-op off-replica.
+            if let Some(hash) = session.profile_content_hash.as_deref() {
+                log::debug!(
+                    "[profile-hash] spawn-persist: session={} agent={} hash={} cwd={:?}",
+                    id,
+                    aid,
+                    hash,
+                    cwd,
+                );
+                if let Err(e) =
+                    crate::config::coding_agent_profiles::set_replica_profile_content_hash(
+                        std::path::Path::new(&cwd),
+                        hash,
+                    )
+                {
+                    log::warn!("Failed to persist profileContentHash: {}", e);
+                }
+            }
+        }
+    }
+}
+
+pub(crate) async fn await_startup<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    inline_transaction: Option<&SelectionTransaction<R>>,
+    lifecycle_domain: Option<&LifecycleEntryAuthority>,
+) -> Result<(), String> {
+    {
+        let manager = session_mgr.read().await;
+        crate::config::sessions_persistence::initialize_prompt_retention(&manager).await;
+    }
+    // #1327 - startup coding-agent updates gate: no session may open (GUI,
+    // restore, restart, root agent, web, phone) before the startup update run
+    // finishes or times out. Absent in tests (mock app, nothing managed) and in
+    // non-GUI contexts -> no-op.
+    if let Some(gate) = app.try_state::<Arc<crate::agent_update::AgentUpdateGate>>() {
+        gate.wait_until_done().await;
+    }
+    if inline_transaction.is_some_and(|transaction| {
+        transaction.has_restore_context() && !transaction.has_active_restore_capability()
+    }) {
+        if let Some(domain) = lifecycle_domain {
+            domain
+                .interrupted
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    }
+    if !inline_transaction.is_some_and(|transaction| transaction.has_active_restore_capability()) {
+        if let Some(coordinator) = app.try_state::<SelectionCoordinator>() {
+            coordinator.wait_for_restore_release().await?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn mirror_fresh_intent<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    cwd: &str,
+    is_coordinator: bool,
+    mut skip_auto_resume: bool,
+) -> (bool, bool) {
+    // (#756) Durable fresh-intent mirror, consumed at the create path: the
+    // caller requested resume (#599 reopen passes skipAutoResume=false), but
+    // this cwd's coordinator carries a pending fresh boundary (restart or
+    // successful logical clear (/clear or Pi /new) whose record died with
+    // an auto/manual close). Force a fresh spawn BEFORE any provider resume
+    // injection below (Claude/Pi/Antigravity --continue, Codex resume --last);
+    // provider-agnostic by construction. The mirror is deliberately NOT cleared
+    // here: only post-boundary content (typed input or AC-injected content)
+    // drops it, so repeated close/reopen cycles with no content stay fresh.
+    let mut fresh_forced_by_mirror = false;
+    if is_coordinator && !skip_auto_resume {
+        if let Some(clocks) =
+            app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+        {
+            let fqn = crate::config::teams::agent_fqn_from_path(cwd);
+            let pending = {
+                let guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
+                guard.start_fresh_at(&fqn)
+            };
+            if mirror_forces_fresh(skip_auto_resume, is_coordinator, pending.is_some()) {
+                log::info!(
+                    "[session] fresh-intent mirror pending for '{}' (boundary {}): forcing \
+                 skip_auto_resume (#756)",
+                    fqn,
+                    pending.map(|d| d.to_rfc3339()).unwrap_or_default()
+                );
+                skip_auto_resume = true;
+                fresh_forced_by_mirror = true;
+            }
+        }
+    }
+
+    (skip_auto_resume, fresh_forced_by_mirror)
 }

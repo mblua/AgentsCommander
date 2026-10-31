@@ -232,10 +232,20 @@ fn every_production_pty_writer_is_in_the_explicit_permit_inventory() {
         "a public permitless PtyManager::write facade must not return"
     );
 
-    let mailbox = normalized(&source("src/phone/mailbox/pty_dispatch.rs"));
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mailbox = std::iter::once(manifest.join("src/phone/mailbox/pty_dispatch.rs"))
+        .chain(rust_sources(
+            &manifest.join("src/phone/mailbox/pty_dispatch"),
+        ))
+        .map(|path| {
+            occurrences(
+                &normalized(&source(&relative_of(&path))),
+                "write_exact_agent_input_first(",
+            )
+        })
+        .sum::<usize>();
     assert_eq!(
-        occurrences(&mailbox, "write_exact_agent_input_first("),
-        1,
+        mailbox, 1,
         "shared PTY actuation must use the single synchronous first-write boundary"
     );
     let inject = normalized(&source("src/pty/inject.rs"));

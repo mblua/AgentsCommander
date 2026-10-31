@@ -349,10 +349,7 @@ pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
     // (1) The detector runs before any write and before any network call.
     if let Some(detection) = capture::secrets::detect(&handle.capture.secret_rules, &text) {
         let reason = detection.reason();
-        let user_message = co_managed_user_message(
-            &format!("{reason}; no file was written and nothing was routed"),
-            None,
-        );
+        let user_message = co_managed_secret_message(&reason);
         return match commit_co_managed_with_retries(
             app,
             handle,
@@ -406,14 +403,7 @@ pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
         co_managed_project_paths(&guard.project_paths, room_root)
     };
     let route = resolve_co_managed_route(outcome, &catalog, &from_fqn, &project_paths, &text);
-    log::info!(
-        "[co-managed] route [{session_id}]: variant={} kind={:?}",
-        match &route {
-            CoManagedRoute::User { .. } => "User",
-            CoManagedRoute::Wake { .. } => "Wake",
-        },
-        route.kind()
-    );
+    log_co_managed_route(session_id, &route);
     let kind = route.kind();
 
     // (4) The bounded commit.
@@ -454,41 +444,78 @@ pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
                 // Budget exhaustion abstains from the automatic action and
                 // falls back to the budget-free text-to-user channel, so the
                 // user sees why nothing was routed and nothing is enqueued.
-                return match commit_co_managed_with_retries(
-                    app,
-                    handle,
-                    session_id,
-                    room_root,
-                    slot,
-                    expected_seq,
-                    &expected_key,
-                    capture::state::EffectKind::TextToUser,
+                return report_co_managed_budget_exhausted(
+                    (slot, expected_seq, &expected_key),
+                    candidate,
+                    &text,
+                    commit_co_managed_with_retries(
+                        app,
+                        handle,
+                        session_id,
+                        room_root,
+                        slot,
+                        expected_seq,
+                        &expected_key,
+                        capture::state::EffectKind::TextToUser,
+                    ),
+                    |message| surface_co_managed_user_message(app, session_id, message),
                 )
-                .await
-                {
-                    CoManagedCommit::Committed(_) => {
-                        // Consume this exact candidate; a newer offer stays
-                        // in the slot and re-triggers its own cycle.
-                        slot.try_consume(expected_seq, &expected_key, expected_key.epoch);
-                        let message = co_managed_user_message(
-                            &format!(
-                                "abstained: the automatic budget is exhausted ({} actions since \
-                                    the last recharge); the candidate was not routed",
-                                capture::state::BUDGET_CAP
-                            ),
-                            Some((&text, candidate.provider_final, None)),
-                        );
-                        surface_co_managed_user_message(app, session_id, message).await;
-                        CoManagedOutcome::Done("BudgetExhausted".to_string())
-                    }
-                    CoManagedCommit::Contention => CoManagedOutcome::Contention,
-                    CoManagedCommit::Rejected(second) => {
-                        CoManagedOutcome::Done(abstain_reason_label(&second))
-                    }
-                };
+                .await;
             }
             CoManagedOutcome::Done(abstain_reason_label(&reason))
         }
+    }
+}
+
+fn co_managed_secret_message(reason: &str) -> String {
+    co_managed_user_message(
+        &format!("{reason}; no file was written and nothing was routed"),
+        None,
+    )
+}
+
+fn log_co_managed_route(session_id: uuid::Uuid, route: &CoManagedRoute) {
+    log::info!(
+        "[co-managed] route [{session_id}]: variant={} kind={:?}",
+        match route {
+            CoManagedRoute::User { .. } => "User",
+            CoManagedRoute::Wake { .. } => "Wake",
+        },
+        route.kind()
+    );
+}
+
+/// Report budget exhaustion after the budget-free commit, then surface its message.
+async fn report_co_managed_budget_exhausted<F: std::future::Future<Output = ()>>(
+    pending: (
+        &capture::sink::CaptureSlot,
+        u64,
+        &capture::key::ConsumptionKey,
+    ),
+    candidate: &capture::record::CapturedRecord,
+    text: &str,
+    commit: impl std::future::Future<Output = CoManagedCommit>,
+    surface: impl FnOnce(String) -> F,
+) -> CoManagedOutcome {
+    let (slot, expected_seq, expected_key) = pending;
+    match commit.await {
+        CoManagedCommit::Committed(_) => {
+            // Consume this exact candidate; a newer offer stays
+            // in the slot and re-triggers its own cycle.
+            slot.try_consume(expected_seq, expected_key, expected_key.epoch);
+            let message = co_managed_user_message(
+                &format!(
+                    "abstained: the automatic budget is exhausted ({} actions since \
+                        the last recharge); the candidate was not routed",
+                    capture::state::BUDGET_CAP
+                ),
+                Some((text, candidate.provider_final, None)),
+            );
+            surface(message).await;
+            CoManagedOutcome::Done("BudgetExhausted".to_string())
+        }
+        CoManagedCommit::Contention => CoManagedOutcome::Contention,
+        CoManagedCommit::Rejected(second) => CoManagedOutcome::Done(abstain_reason_label(&second)),
     }
 }
 
@@ -695,13 +722,25 @@ pub(crate) async fn handle_co_managed_trigger<R: tauri::Runtime>(
         app, handle, session_id, &room_root, &slot, state.seq, &candidate,
     )
     .await;
+    finish_co_managed_cycle(handle, session_id, outcome, |armed, reason| {
+        emit_co_managed_state(app, session_id, armed, reason);
+    });
+}
+
+fn finish_co_managed_cycle(
+    handle: &CoManagedSupervisorHandle,
+    session_id: uuid::Uuid,
+    outcome: CoManagedOutcome,
+    emit: impl FnOnce(bool, Option<&str>),
+) {
+    let id = session_id.to_string();
     match outcome {
         CoManagedOutcome::Contention => {
             log::info!(
                 "[co-managed] cycle end [{id}]: Contention, reason contention; \
                  candidate stays pending"
             );
-            emit_co_managed_state(app, session_id, false, Some("contention"));
+            emit(false, Some("contention"));
             // The flag stays set while the unchanged candidate remains pending.
         }
         CoManagedOutcome::Done(reason) => {
@@ -711,7 +750,7 @@ pub(crate) async fn handle_co_managed_trigger<R: tauri::Runtime>(
                 "[co-managed] cycle end [{id}]: Done({}); flag disarmed",
                 capture::jev::safe_reason(&reason)
             );
-            emit_co_managed_state(app, session_id, false, Some(&reason));
+            emit(false, Some(&reason));
         }
     }
 }

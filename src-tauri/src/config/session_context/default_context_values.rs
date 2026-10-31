@@ -36,12 +36,6 @@ pub(crate) fn default_context_dynamic_values(
             replica directories."
             .to_string()
     };
-    enum MessagingContextMode {
-        None,
-        Workgroup(String),
-        Root(String),
-    }
-
     let matrix_section = match matrix_root {
         Some(matrix_root) => format!(
             "3. **Your origin Agent Matrix, but only for the canonical agent state listed \
@@ -55,11 +49,120 @@ pub(crate) fn default_context_dynamic_values(
         ),
         None => String::new(),
     };
+    let messaging_mode = messaging_context_mode(agent_root);
+    let workgroup_messaging_entry = workgroup_messaging_entry(&messaging_mode);
+    let (messaging_exception, messaging_allowed) = messaging_access_grants(&messaging_mode);
+    let has_messaging_exception = matches!(&messaging_mode, MessagingContextMode::Root(_));
+    let ac_root_phrase = if has_messaging_exception {
+        "the workspace root (other than the narrow messaging exception above)"
+    } else {
+        "the workspace root"
+    };
+    let forbidden_scope = if is_root_agent {
+        "the entries listed above; your write scope already covers every registered project folder \
+            in `projectPaths` in `project-paths.json`, so the only writes off-limits are the \
+            global `settings.json`, `project-paths.json`, the Agency template cache, and any other \
+            file anywhere under the app config directory outside your own Root Agent home \
+            (CLI-managed, even when the app config directory falls within a registered project \
+            folder), plus anything outside the registered set: files of projects not listed in \
+            `projectPaths` in `project-paths.json`, user home files unrelated to AgentsCommander, \
+            and arbitrary paths on disk"
+            .to_string()
+    } else if matrix_root.is_some() {
+        format!(
+            "the entries listed above — including other agents' replica directories, any other \
+                files inside the Agent Matrix, {ws}, parent project dirs, user home files, or \
+                arbitrary paths on disk",
+            ws = ac_root_phrase,
+        )
+    } else {
+        format!(
+            "the entries listed above — including other agents' replica directories, {ws}, parent \
+                project dirs, user home files, or arbitrary paths on disk",
+            ws = ac_root_phrase,
+        )
+    };
+    // Root and None retain fine-grained messaging grants outside the numbered entries.
+    // Workgroup messaging is its normal entry 4, so it has no exception carve-out.
+    let messaging_read_phrase = match &messaging_mode {
+        MessagingContextMode::None => " (other than the inbound message file grant above)",
+        MessagingContextMode::Root(_) => " (other than the narrow messaging exception above)",
+        MessagingContextMode::Workgroup(_) => "",
+    };
+    let forbidden_read_scope = forbidden_read_scope(is_root_agent, messaging_read_phrase);
+    let git_scope = if is_root_agent {
+        ROOT_GIT_SCOPE
+    } else if matrix_root.is_some() {
+        WORKGROUP_GIT_SCOPE
+    } else {
+        DIRECT_MATRIX_GIT_SCOPE
+    }
+    .to_string();
+    let peer_name_format = match &messaging_mode {
+        MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified Room orchestrator \
+            replicas only, shaped `<project>:<room>/<agent>`, e.g. \
+            `agentscommander:room-15-dev-team/tech-lead`. Origin orchestrators and \
+            non-orchestrator Room replicas are not valid Root Agent targets in #277."
+            .to_string(),
+        _ => "- **Room replicas** (the common case): `<project>:<room>/<agent>`, e.g. \
+            `agentscommander:room-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/\
+            <agent>`, e.g. `agentscommander/architect`."
+            .to_string(),
+    };
+    let agency_cache_guidance = root_agency_cache_guidance(agent_root);
+    let send_message_instructions = send_message_instructions(&messaging_mode);
+
+    let (root_scope_section, root_authority_section) = if is_root_agent {
+        (
+            ROOT_PROJECT_SCOPE_ENTRY.to_string(),
+            ROOT_AUTHORITY_SECTION.to_string(),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+
+    // #1795: both entries come from ONE resolution of the agent root, so they are
+    // empty together or populated together. No `debug_assert!` that entry 4 implies
+    // entries 5 and 6: under the strict resolver a nested non-replica renders entry 4
+    // and must NOT render entries 5 and 6, so that implication is false by design.
+    let (project_shared_entry, room_shared_entry) = match replica_shared_roots(agent_root) {
+        Some((ac_root, room_root)) => (
+            render_project_shared_entry(&ac_root),
+            render_room_shared_entry(&room_root),
+        ),
+        None => (String::new(), String::new()),
+    };
+    DefaultContextDynamicValues {
+        replica_usage,
+        matrix_section,
+        workgroup_messaging_entry,
+        project_shared_entry,
+        room_shared_entry,
+        messaging_exception,
+        messaging_allowed,
+        forbidden_scope,
+        forbidden_read_scope,
+        git_scope,
+        agency_cache_guidance,
+        peer_name_format,
+        send_message_instructions,
+        root_scope_section,
+        root_authority_section,
+    }
+}
+
+enum MessagingContextMode {
+    None,
+    Workgroup(String),
+    Root(String),
+}
+
+fn messaging_context_mode(agent_root: &str) -> MessagingContextMode {
     // Invariant: messaging stays name-gated (is_root_agent_dir_name) only because
     // the `send` / `list-peers` backends are independently path-gated
     // (is_root_agent_path at cli/send.rs:218, cli/list_peers.rs:1132). If
     // messaging ever trusts this prompt text alone, re-gate it on the path check.
-    let messaging_mode = if super::super::root_agent::is_root_agent_dir_name(agent_root) {
+    if super::super::root_agent::is_root_agent_dir_name(agent_root) {
         MessagingContextMode::Root(display_path(
             &std::path::Path::new(agent_root).join(crate::phone::messaging::MESSAGING_DIR_NAME),
         ))
@@ -70,8 +173,86 @@ pub(crate) fn default_context_dynamic_values(
             )),
             Err(_) => MessagingContextMode::None,
         }
+    }
+}
+
+fn messaging_access_grants(messaging_mode: &MessagingContextMode) -> (String, String) {
+    let messaging_exception = match messaging_mode {
+        MessagingContextMode::Workgroup(_) => String::new(),
+        MessagingContextMode::Root(path) => format!(
+            "**Narrow exception — Root Agent messaging directory:**\n\n\
+             You MAY create message files inside this directory:\n\n\
+             ```\n\
+             {path}\n\
+             ```\n\n\
+             Strictly limited to canonical Root Agent inter-agent message files whose name matches \
+             the pattern `YYYYMMDD-HHMMSS-root-to-<roomN>-<orchestrator>-<slug>.md` (the CLI \
+             rejects any other shape). Do NOT modify or delete any message file once written. Do \
+             NOT write any other kind of file here. You may also READ message files inside this \
+             directory.\n\n",
+            path = path,
+        ),
+        MessagingContextMode::None => String::new(),
     };
-    let workgroup_messaging_entry = match &messaging_mode {
+    let messaging_allowed = match messaging_mode {
+        // Workgroup messaging renders in the standard entry-4 block and Root
+        // messaging remains in its Narrow exception; neither uses this fine bullet.
+        MessagingContextMode::Workgroup(_) | MessagingContextMode::Root(_) => String::new(),
+        // #923 D3: this session has no messaging directory of its own (no `wg-<N>-*`
+        // ancestor, not the Root Agent), so `send --send` rejects it outright
+        // (cli/send.rs:406). It can still be a delivery target, and the Inter-Agent
+        // Messaging block tells it to read the notified path. Grant exactly that read,
+        // and nothing more, so the document never orders an operation it forbids.
+        MessagingContextMode::None => {
+            "- **Allowed (read-only)**: Read an inter-agent message file \
+            when AgentsCommander hands you its absolute path in an incoming `[Message from \
+            <peer>]` notification. This grant covers that file only; no other path outside the \
+            entries above becomes readable.
+"
+            .to_string()
+        }
+    };
+    (messaging_exception, messaging_allowed)
+}
+
+fn forbidden_read_scope(is_root_agent: bool, messaging_read_phrase: &str) -> String {
+    // #923: reads are now restricted to the same allowed entries as writes. The Root
+    // Agent already holds a project-wide read grant, so it gets a scope sentence rather
+    // than the peer-privacy clause that applies to every other agent. D2: that scope is
+    // defined by `project-paths.json`, which lives in the app config dir OUTSIDE every
+    // registered project in a normal install, so reading it must be granted explicitly
+    // or the grant becomes self-referentially unreadable.
+    if is_root_agent {
+        format!(
+            "the entries listed above{ms}, except for explicitly requested AgentsCommander CLI \
+                operations covered by the exception below. Your Root Agent scope already grants \
+                reads across every project folder registered in `projectPaths` in \
+                `project-paths.json`, including its `.ac` tree. You may ALWAYS read the app config \
+                `project-paths.json` to enumerate that set, the app config `settings.json` for \
+                unrelated settings, and the Agency template cache directory that `agency-templates \
+                status` and `agency-templates list` report on; these reads are grants, while \
+                direct writes to them stay CLI-managed. Reads stay off-limits beyond the \
+                registered set: files of projects not listed in `projectPaths` in \
+                `project-paths.json`, user home files unrelated to AgentsCommander, and arbitrary \
+                paths on disk.",
+            ms = messaging_read_phrase,
+        )
+    } else {
+        format!(
+            "the entries listed above{ms}, except for explicitly requested AgentsCommander CLI \
+                operations covered by the exception below. This includes other agents' replica \
+                directories, and any other agent's `memory*` directories (the live `memory/`, \
+                `memory-archive/` and legacy `memory_YYYYMMDD_hhmmss/`), `plans/`, `skills/`, or \
+                `Role.md`: another agent's memory is private whether it is live or rotated; do not \
+                read, list, search, or summarize it, even if asked. If you need information \
+                another agent holds, message that agent and ask.",
+            ms = messaging_read_phrase,
+        )
+    }
+}
+
+fn workgroup_messaging_entry(messaging_mode: &MessagingContextMode) -> Option<String> {
+    match messaging_mode {
         MessagingContextMode::Workgroup(path) => Some(format!(
             concat!(
                 r#"4. **Messaging access:**
@@ -113,133 +294,11 @@ You MAY also READ exactly one specifically identified canonical inter-agent mess
             path = path,
         )),
         MessagingContextMode::Root(_) | MessagingContextMode::None => None,
-    };
-    let messaging_exception = match &messaging_mode {
-        MessagingContextMode::Workgroup(_) => String::new(),
-        MessagingContextMode::Root(path) => format!(
-            "**Narrow exception — Root Agent messaging directory:**\n\n\
-             You MAY create message files inside this directory:\n\n\
-             ```\n\
-             {path}\n\
-             ```\n\n\
-             Strictly limited to canonical Root Agent inter-agent message files whose name matches \
-             the pattern `YYYYMMDD-HHMMSS-root-to-<roomN>-<orchestrator>-<slug>.md` (the CLI \
-             rejects any other shape). Do NOT modify or delete any message file once written. Do \
-             NOT write any other kind of file here. You may also READ message files inside this \
-             directory.\n\n",
-            path = path,
-        ),
-        MessagingContextMode::None => String::new(),
-    };
-    let messaging_allowed = match &messaging_mode {
-        // Workgroup messaging renders in the standard entry-4 block and Root
-        // messaging remains in its Narrow exception; neither uses this fine bullet.
-        MessagingContextMode::Workgroup(_) | MessagingContextMode::Root(_) => String::new(),
-        // #923 D3: this session has no messaging directory of its own (no `wg-<N>-*`
-        // ancestor, not the Root Agent), so `send --send` rejects it outright
-        // (cli/send.rs:406). It can still be a delivery target, and the Inter-Agent
-        // Messaging block tells it to read the notified path. Grant exactly that read,
-        // and nothing more, so the document never orders an operation it forbids.
-        MessagingContextMode::None => {
-            "- **Allowed (read-only)**: Read an inter-agent message file \
-            when AgentsCommander hands you its absolute path in an incoming `[Message from \
-            <peer>]` notification. This grant covers that file only; no other path outside the \
-            entries above becomes readable.
-"
-            .to_string()
-        }
-    };
-    let has_messaging_exception = matches!(&messaging_mode, MessagingContextMode::Root(_));
-    let ac_root_phrase = if has_messaging_exception {
-        "the workspace root (other than the narrow messaging exception above)"
-    } else {
-        "the workspace root"
-    };
-    let forbidden_scope = if is_root_agent {
-        "the entries listed above; your write scope already covers every registered project folder \
-            in `projectPaths` in `project-paths.json`, so the only writes off-limits are the \
-            global `settings.json`, `project-paths.json`, the Agency template cache, and any other \
-            file anywhere under the app config directory outside your own Root Agent home \
-            (CLI-managed, even when the app config directory falls within a registered project \
-            folder), plus anything outside the registered set: files of projects not listed in \
-            `projectPaths` in `project-paths.json`, user home files unrelated to AgentsCommander, \
-            and arbitrary paths on disk"
-            .to_string()
-    } else if matrix_root.is_some() {
-        format!(
-            "the entries listed above — including other agents' replica directories, any other \
-                files inside the Agent Matrix, {ws}, parent project dirs, user home files, or \
-                arbitrary paths on disk",
-            ws = ac_root_phrase,
-        )
-    } else {
-        format!(
-            "the entries listed above — including other agents' replica directories, {ws}, parent \
-                project dirs, user home files, or arbitrary paths on disk",
-            ws = ac_root_phrase,
-        )
-    };
-    // Root and None retain fine-grained messaging grants outside the numbered entries.
-    // Workgroup messaging is its normal entry 4, so it has no exception carve-out.
-    let messaging_read_phrase = match &messaging_mode {
-        MessagingContextMode::None => " (other than the inbound message file grant above)",
-        MessagingContextMode::Root(_) => " (other than the narrow messaging exception above)",
-        MessagingContextMode::Workgroup(_) => "",
-    };
-    // #923: reads are now restricted to the same allowed entries as writes. The Root
-    // Agent already holds a project-wide read grant, so it gets a scope sentence rather
-    // than the peer-privacy clause that applies to every other agent. D2: that scope is
-    // defined by `project-paths.json`, which lives in the app config dir OUTSIDE every
-    // registered project in a normal install, so reading it must be granted explicitly
-    // or the grant becomes self-referentially unreadable.
-    let forbidden_read_scope = if is_root_agent {
-        format!(
-            "the entries listed above{ms}, except for explicitly requested AgentsCommander CLI \
-                operations covered by the exception below. Your Root Agent scope already grants \
-                reads across every project folder registered in `projectPaths` in \
-                `project-paths.json`, including its `.ac` tree. You may ALWAYS read the app config \
-                `project-paths.json` to enumerate that set, the app config `settings.json` for \
-                unrelated settings, and the Agency template cache directory that `agency-templates \
-                status` and `agency-templates list` report on; these reads are grants, while \
-                direct writes to them stay CLI-managed. Reads stay off-limits beyond the \
-                registered set: files of projects not listed in `projectPaths` in \
-                `project-paths.json`, user home files unrelated to AgentsCommander, and arbitrary \
-                paths on disk.",
-            ms = messaging_read_phrase,
-        )
-    } else {
-        format!(
-            "the entries listed above{ms}, except for explicitly requested AgentsCommander CLI \
-                operations covered by the exception below. This includes other agents' replica \
-                directories, and any other agent's `memory*` directories (the live `memory/`, \
-                `memory-archive/` and legacy `memory_YYYYMMDD_hhmmss/`), `plans/`, `skills/`, or \
-                `Role.md`: another agent's memory is private whether it is live or rotated; do not \
-                read, list, search, or summarize it, even if asked. If you need information \
-                another agent holds, message that agent and ask.",
-            ms = messaging_read_phrase,
-        )
-    };
-    let git_scope = if is_root_agent {
-        ROOT_GIT_SCOPE
-    } else if matrix_root.is_some() {
-        WORKGROUP_GIT_SCOPE
-    } else {
-        DIRECT_MATRIX_GIT_SCOPE
     }
-    .to_string();
-    let peer_name_format = match &messaging_mode {
-        MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified Room orchestrator \
-            replicas only, shaped `<project>:<room>/<agent>`, e.g. \
-            `agentscommander:room-15-dev-team/tech-lead`. Origin orchestrators and \
-            non-orchestrator Room replicas are not valid Root Agent targets in #277."
-            .to_string(),
-        _ => "- **Room replicas** (the common case): `<project>:<room>/<agent>`, e.g. \
-            `agentscommander:room-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/\
-            <agent>`, e.g. `agentscommander/architect`."
-            .to_string(),
-    };
-    let agency_cache_guidance = root_agency_cache_guidance(agent_root);
-    let send_message_instructions = match &messaging_mode {
+}
+
+fn send_message_instructions(messaging_mode: &MessagingContextMode) -> String {
+    match messaging_mode {
         MessagingContextMode::Root(path) => format!(
             "Use only the JSON `name` values returned by `list-peers-lean`; Root sessions list \
                 verified Room orchestrator replicas only.\n\n\
@@ -282,44 +341,6 @@ You MAY also READ exactly one specifically identified canonical inter-agent mess
             `[Message from <peer>]` notification gives an absolute path, read that file, act, and \
             report here instead of using `send --send`.\n"
             .to_string(),
-    };
-
-    let (root_scope_section, root_authority_section) = if is_root_agent {
-        (
-            ROOT_PROJECT_SCOPE_ENTRY.to_string(),
-            ROOT_AUTHORITY_SECTION.to_string(),
-        )
-    } else {
-        (String::new(), String::new())
-    };
-
-    // #1795: both entries come from ONE resolution of the agent root, so they are
-    // empty together or populated together. No `debug_assert!` that entry 4 implies
-    // entries 5 and 6: under the strict resolver a nested non-replica renders entry 4
-    // and must NOT render entries 5 and 6, so that implication is false by design.
-    let (project_shared_entry, room_shared_entry) = match replica_shared_roots(agent_root) {
-        Some((ac_root, room_root)) => (
-            render_project_shared_entry(&ac_root),
-            render_room_shared_entry(&room_root),
-        ),
-        None => (String::new(), String::new()),
-    };
-    DefaultContextDynamicValues {
-        replica_usage,
-        matrix_section,
-        workgroup_messaging_entry,
-        project_shared_entry,
-        room_shared_entry,
-        messaging_exception,
-        messaging_allowed,
-        forbidden_scope,
-        forbidden_read_scope,
-        git_scope,
-        agency_cache_guidance,
-        peer_name_format,
-        send_message_instructions,
-        root_scope_section,
-        root_authority_section,
     }
 }
 
