@@ -323,9 +323,7 @@ async fn issue_3371_reason_survives_json_failure_scanner_and_restart_without_ret
     finish(&mut poller).await;
     let reason_path = temp.path().join("rejected/partial.reason.txt");
     assert_eq!(std::fs::read(&reason_path).unwrap(), reason.as_bytes());
-    assert!(probe_attempt(&std::fs::read_to_string(&source).unwrap())
-        .unwrap()
-        .is_some());
+    assert!(attempted(&source));
     let before = fixture.recorded_effect_counts();
     fixture.poll(&mut poller).await.unwrap();
     let mut restarted = fixture.poller();
@@ -497,6 +495,29 @@ async fn submitted(backend: &ClearBackend, fixture: &CodexClearScannerFixture) -
     .expect("actual second CR and T2 accounting")
 }
 
+fn attempted(source: &Path) -> bool {
+    probe_attempt(&std::fs::read_to_string(source).unwrap())
+        .unwrap()
+        .is_some()
+}
+
+fn assert_clear_once(backend: &ClearBackend, id: Uuid) {
+    assert_eq!(
+        backend.writes_for(id),
+        vec![b"/clear".to_vec(), vec![13], vec![13]]
+    );
+}
+
+fn assert_publication_pending(source: &Path, blocked: &Path, json_failure: bool) {
+    if json_failure {
+        assert!(source.exists() && !blocked.exists());
+        assert_eq!(
+            std::fs::read_to_string(blocked.with_extension("reason.txt")).unwrap(),
+            KNOWN
+        );
+    }
+}
+
 fn failure_rows(backend: &ClearBackend, id: Uuid) {
     backend
         .rows
@@ -527,11 +548,7 @@ async fn issue_3371_activated_known_failure_exact_reason_no_success_or_followup(
     let id = submitted(&backend, &fixture).await;
     assert_eq!(Some(id), session);
     assert_eq!(fixture.submission_state(id).await, (true, false, false));
-    assert!(
-        probe_attempt(&std::fs::read_to_string(wake_claim_path(&source)).unwrap())
-            .unwrap()
-            .is_some()
-    );
+    assert!(attempted(&wake_claim_path(&source)));
     assert_eq!(poller.wake_lanes.observing_count(), 1);
     assert_eq!(fixture.recorded_effect_counts()[4], 0);
     fixture.input_progress(id).await;
@@ -617,10 +634,7 @@ async fn issue_3371_fresh_and_resumed_real_watch_and_publication_only_recovery()
             fixture.poll(&mut poller).await.unwrap();
             fixture.poll(&mut fixture.poller()).await.unwrap();
             assert_eq!(fixture.recorded_effect_counts(), before);
-            assert_eq!(
-                backend.writes_for(id),
-                vec![b"/clear".to_vec(), vec![13], vec![13]]
-            );
+            assert_clear_once(&backend, id);
         }
     }
 }
@@ -653,29 +667,15 @@ async fn issue_3371_activated_reason_failure_then_restart_never_spawns_or_types_
             finish(&mut poller).await;
             assert!(fault.as_ref().is_none_or(|fault| fault.consumed()));
             drop(fault);
-            if json_failure {
-                assert!(source.exists() && !blocked.exists());
-                assert_eq!(
-                    std::fs::read_to_string(blocked.with_extension("reason.txt")).unwrap(),
-                    KNOWN
-                );
-            }
+            assert_publication_pending(&source, &blocked, json_failure);
             assert!(!wake_claim_path(&source).exists());
-            assert!(probe_attempt(&std::fs::read_to_string(&source).unwrap())
-                .unwrap()
-                .is_some());
+            assert!(attempted(&source));
             let before = fixture.recorded_effect_counts();
             let fault = json_failure.then(|| MailboxFaultGuard::install_document_write(&blocked));
             fixture.poll(&mut poller).await.unwrap();
             assert!(fault.as_ref().is_none_or(|fault| fault.consumed()));
             drop(fault);
-            if json_failure {
-                assert!(source.exists() && !blocked.exists());
-                assert_eq!(
-                    std::fs::read_to_string(blocked.with_extension("reason.txt")).unwrap(),
-                    KNOWN
-                );
-            }
+            assert_publication_pending(&source, &blocked, json_failure);
             let mut restart = fixture.poller();
             std::fs::rename(&source, wake_claim_path(&source)).unwrap();
             fixture.poll(&mut restart).await.unwrap();
@@ -686,22 +686,14 @@ async fn issue_3371_activated_reason_failure_then_restart_never_spawns_or_types_
             drop(fault);
             assert_eq!(fixture.recorded_effect_counts(), before);
             if json_failure {
-                assert!(source.exists() && !blocked.exists());
-                assert!(source.exists());
-                assert_eq!(
-                    std::fs::read_to_string(blocked.with_extension("reason.txt")).unwrap(),
-                    KNOWN
-                );
+                assert_publication_pending(&source, &blocked, json_failure);
             } else {
                 std::fs::remove_dir(&blocked).unwrap();
             }
             fixture.poll(&mut restart).await.unwrap();
             assert!(!source.exists());
             assert_eq!(fixture.recorded_effect_counts(), before);
-            assert_eq!(
-                backend.writes_for(id),
-                vec![b"/clear".to_vec(), vec![13], vec![13]]
-            );
+            assert_clear_once(&backend, id);
             if json_failure {
                 assert_terminal(temp.path(), "publication", KNOWN);
             } else {
@@ -887,10 +879,7 @@ async fn issue_3371_activated_receipt_before_remove_failure_replays_cleanup_only
         assert!(!source.exists());
         assert_eq!(std::fs::read(receipt).unwrap(), bytes);
         assert_eq!(fixture.recorded_effect_counts(), before);
-        assert_eq!(
-            backend.writes_for(id),
-            vec![b"/clear".to_vec(), vec![13], vec![13]]
-        );
+        assert_clear_once(&backend, id);
         if !healthy {
             assert_terminal(temp.path(), "remove-failure", KNOWN);
         }
@@ -930,9 +919,10 @@ async fn issue_3371_old_failure_baseline_and_reappearance_are_distinct() {
 }
 
 #[tokio::test]
-async fn issue_3371_healthy_watch_body_runs_once_after_verdict_and_delivered_failure_fences() {
+async fn issue_3371_real_deferral_retries_then_healthy_body_and_delivered_failure_fences() {
     for blocked in [false, true] {
-        let (temp, _, backend, fixture, _) = activated(Some(false)).await;
+        let (temp, _, backend, fixture, session) = activated(Some(false)).await;
+        let session = session.unwrap();
         let mut poller = fixture.poller();
         let mut msg = message("healthy-body");
         if !blocked {
@@ -943,12 +933,22 @@ async fn issue_3371_healthy_watch_body_runs_once_after_verdict_and_delivered_fai
         if blocked {
             std::fs::create_dir_all(&blocker).unwrap();
         }
+        if !blocked {
+            fixture.set_typing_hold(session, true);
+            fixture.claim(&mut poller, &source, msg.clone());
+            finish(&mut poller).await;
+            assert!(!attempted(&source));
+            assert!(!wake_claim_path(&source).exists());
+            assert!(backend.writes_for(session).is_empty());
+            assert!(!temp.path().join("rejected").exists());
+            fixture.set_typing_hold(session, false);
+        }
         let started = std::time::Instant::now();
         fixture.claim(&mut poller, &source, msg);
         let id = submitted(&backend, &fixture).await;
         eprintln!("native admission through T2: {:?}", started.elapsed());
         assert_eq!(fixture.recorded_effect_counts()[4], 0);
-        assert_eq!(backend.writes_for(id).len(), 3);
+        assert_clear_once(&backend, id);
         finish(&mut poller).await;
         assert_eq!(fixture.recorded_effect_counts()[4], 1);
         if blocked {
@@ -960,7 +960,7 @@ async fn issue_3371_healthy_watch_body_runs_once_after_verdict_and_delivered_fai
                 "healthy-body",
                 crate::phone::mailbox::clear_attempt::REPLAY_REASON,
             );
-            assert_eq!(backend.writes_for(id).len(), 3);
+            assert_clear_once(&backend, id);
         } else {
             assert!(blocker.is_file());
             assert!(fixture.submission_state(id).await.1);

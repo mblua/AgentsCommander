@@ -743,6 +743,18 @@ impl CodexClearScannerFixture {
         )
     }
 
+    pub(crate) fn set_typing_hold(&self, id: Uuid, active: bool) {
+        let state = self
+            .app
+            .state::<crate::pty::input_activity::TypingHoldState>();
+        let mut hold = state.lock().unwrap();
+        if active {
+            hold.note_qualifying_key(id);
+        } else {
+            hold.reset(id);
+        }
+    }
+
     pub(crate) async fn mark_ready(&self, id: Uuid) {
         let managers = self.app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         managers.read().await.mark_idle(id).await;
