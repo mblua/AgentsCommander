@@ -120,14 +120,11 @@ fn outbox_message(
 }
 
 fn outbox_dir(ac_dir: &Path, is_root: bool) -> PathBuf {
-    let app_outbox = is_root
-        .then(|| crate::config::config_dir().map(|d| d.join("app-outbox-path.txt")))
-        .flatten()
-        .and_then(|p| documents::read_cli_outbox_text(&p).ok())
-        .map(|s| PathBuf::from(s.trim()));
-    match app_outbox {
-        Some(p) if directories::cli_agent_root_is_dir(&p) => p,
-        _ => ac_dir.join("outbox"),
+    if is_root {
+        crate::filesystem::app_outbox_pointer::get(crate::config::config_dir().as_deref())
+            .unwrap_or_else(|| ac_dir.join("outbox"))
+    } else {
+        ac_dir.join("outbox")
     }
 }
 
