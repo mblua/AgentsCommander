@@ -41,7 +41,11 @@ fn comparison_is_exact_and_case_sensitive() {
 #[test]
 fn only_persisted_whitespace_is_trimmed() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join(FILE_NAME), " \t\r\n\u{2003}Token\u{2003}\r\n ").unwrap();
+    std::fs::write(
+        dir.path().join(FILE_NAME),
+        " \t\r\n\u{2003}Token\u{2003}\r\n ",
+    )
+    .unwrap();
     assert!(matches(Some(dir.path()), "Token"));
     assert!(!matches(Some(dir.path()), " Token"));
     assert!(!matches(Some(dir.path()), "Token\r\n"));
