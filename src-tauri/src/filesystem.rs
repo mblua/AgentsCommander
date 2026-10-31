@@ -32,6 +32,7 @@ pub(crate) mod injected_documents;
 pub(crate) mod instance_ignore;
 pub(crate) mod local_config;
 pub(crate) mod loop_files;
+pub(crate) mod master_token;
 pub(crate) mod message_store;
 pub(crate) mod naming_journal;
 pub(crate) mod phone_mailbox;
