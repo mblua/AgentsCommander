@@ -220,40 +220,20 @@ pub(super) fn commit_source_candidate_internal(
         prepare_source_candidate_with_original_links, read_own_source_journal,
         read_source_snapshot, source_original_mappings, source_transition_digest,
         update_own_source_journal_with_validation, IdentityWriteLease, LegacyCompatibilityOrigin,
-        OriginInputs, SourceCoordinationError, SourceInventoryProof, SourceLocalProgress,
-        SourceWriteContext,
+        OriginInputs, SourceInventoryProof, SourceLocalProgress, SourceWriteContext,
     };
     let identity = IdentityWriteLease::acquire(context, std::time::Duration::ZERO)?;
     let lease = SourceWriteContext::acquire(context, source, &identity)?;
     let payload_digest = source_transition_digest(&(source, expected, candidate))?;
-    let (local_revision, journal) = read_own_source_journal(context)?;
-    // Request lookup precedes UUID creation and every effect.
-    if let Some(original) = journal
-        .intents
-        .values()
-        .find(|intent| intent.request_id == request_id)
-    {
-        if original.source != *source || original.payload_digest != payload_digest {
-            return Err(SourceCoordinationError::Invalid.into());
-        }
-        return Ok(get_identity_transition(
-            context,
-            source,
-            &original.operation_id,
-        )?);
-    }
-    // One incomplete operation fences this physical source, including source drift.
-    if let Some((id, _)) = journal.inventories.iter().find(|(id, inventory)| {
-        inventory.physical_source_key == lease.physical_source_key()
-            && journal
-                .progress
-                .get(*id)
-                .is_none_or(|p| p.receipt.is_none())
-    }) {
-        return Err(SourceTransitionError::Interrupted {
-            operation_id: id.clone(),
-            cause: Box::new(SourceCoordinationError::Pending.into()),
-        });
+    let (local_revision, existing) = source_candidate_admission(
+        context,
+        source,
+        request_id,
+        &payload_digest,
+        lease.physical_source_key(),
+    )?;
+    if let Some(existing) = existing {
+        return Ok(existing);
     }
     let snapshot = read_source_snapshot(context, source)?;
     let origin_inputs = OriginInputs::capture(context)?;
@@ -321,19 +301,11 @@ pub(super) fn commit_source_candidate_internal(
         &validate,
     );
     if let Err(error) = journal_publication {
-        return match read_own_source_journal(context) {
-            Ok((_, observed))
-                if observed.intents.get(&operation_id) == Some(&intent)
-                    && observed.inventories.get(&operation_id) == Some(authority.inventory()) =>
-            {
-                Err(SourceTransitionError::Interrupted {
-                    operation_id,
-                    cause: Box::new(error.into()),
-                })
-            }
-            Ok(_) => Err(error.into()),
-            Err(uncertain) => Err(uncertain.into()),
-        };
+        let observed = read_own_source_journal(context).map(|(_, observed)| {
+            observed.intents.get(&operation_id) == Some(&intent)
+                && observed.inventories.get(&operation_id) == Some(authority.inventory())
+        });
+        return Err(source_publication_failure(operation_id, error, observed));
     }
     continue_candidate_intent(
         (&identity, &lease, context),
@@ -344,6 +316,70 @@ pub(super) fn commit_source_candidate_internal(
         #[cfg(test)]
         controls,
     )
+}
+
+fn source_candidate_admission(
+    context: &crate::config::settings::SourceReadContext,
+    source: &crate::config::settings::SourceRef,
+    request_id: &str,
+    payload_digest: &str,
+    physical_source_key: &str,
+) -> Result<
+    (
+        crate::config::settings::SourceRevision,
+        Option<IdentityTransitionRead>,
+    ),
+    SourceTransitionError,
+> {
+    use crate::config::settings::{read_own_source_journal, SourceCoordinationError};
+    let (local_revision, journal) = read_own_source_journal(context)?;
+    // Request lookup precedes UUID creation and every effect.
+    if let Some(original) = journal
+        .intents
+        .values()
+        .find(|intent| intent.request_id == request_id)
+    {
+        if original.source != *source || original.payload_digest != payload_digest {
+            return Err(SourceCoordinationError::Invalid.into());
+        }
+        return Ok((
+            local_revision,
+            Some(get_identity_transition(
+                context,
+                source,
+                &original.operation_id,
+            )?),
+        ));
+    }
+    // One incomplete operation fences this physical source, including source drift.
+    if let Some((id, _)) = journal.inventories.iter().find(|(id, inventory)| {
+        inventory.physical_source_key == physical_source_key
+            && journal
+                .progress
+                .get(*id)
+                .is_none_or(|p| p.receipt.is_none())
+    }) {
+        return Err(SourceTransitionError::Interrupted {
+            operation_id: id.clone(),
+            cause: Box::new(SourceCoordinationError::Pending.into()),
+        });
+    }
+    Ok((local_revision, None))
+}
+
+fn source_publication_failure(
+    operation_id: String,
+    error: crate::config::settings::SourceCoordinationError,
+    observed: Result<bool, crate::config::settings::SourceCoordinationError>,
+) -> SourceTransitionError {
+    match observed {
+        Ok(true) => SourceTransitionError::Interrupted {
+            operation_id,
+            cause: Box::new(error.into()),
+        },
+        Ok(false) => error.into(),
+        Err(uncertain) => uncertain.into(),
+    }
 }
 
 fn continue_candidate_intent(
