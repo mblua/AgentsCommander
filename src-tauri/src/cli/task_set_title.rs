@@ -9,6 +9,8 @@
 //! for all CLI verbs simultaneously.
 
 use clap::Args;
+#[cfg(test)]
+use std::path::Path;
 
 use super::send::agent_name_from_root;
 use super::task_ops::{self, EditOutcome, TaskOp};
