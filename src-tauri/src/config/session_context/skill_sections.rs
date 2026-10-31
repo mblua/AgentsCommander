@@ -58,46 +58,21 @@ pub(crate) fn project_skills_for_session(
 
 /// Rejection is exclusive to the skill consumer; global discovery stays unchanged.
 pub(crate) fn accept_skill_team(root: &Path) -> bool {
-    let Some(name) = root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .and_then(|n| n.strip_prefix("_team_"))
-    else {
-        return false;
-    };
-    let inspect = |path: &Path, directory: bool| -> Result<(), String> {
-        let metadata = crate::filesystem::context_skills::inspect_skill_source(path)
-            .map_err(|e| e.to_string())?;
-        let linked = metadata.file_type().is_symlink();
-        #[cfg(windows)]
-        let linked = {
-            use std::os::windows::fs::MetadataExt;
-            linked || metadata.file_attributes() & 0x400 != 0
-        };
-        if linked || (directory && !metadata.is_dir()) || (!directory && !metadata.is_file()) {
-            return Err("not an ordinary unlinked source".into());
+    use crate::config::entity_creation::teams::{inspect_team_skill_source, TeamSkillSourceInspection};
+
+    match inspect_team_skill_source(root) {
+        TeamSkillSourceInspection::NotTeam => false,
+        TeamSkillSourceInspection::Accepted => true,
+        TeamSkillSourceInspection::Rejected { name, reason } => {
+            log::warn!(
+                "[team-skills] rejected {} at {}: {}",
+                name,
+                root.display(),
+                reason
+            );
+            false
         }
-        Ok(())
-    };
-    let result = if name.is_empty()
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
-    {
-        Err("invalid team name".into())
-    } else {
-        inspect(root, true).and_then(|()| inspect(&root.join("config.json"), false))
-    };
-    if let Err(error) = result {
-        log::warn!(
-            "[team-skills] rejected {} at {}: {}",
-            name,
-            root.display(),
-            error
-        );
-        return false;
     }
-    true
 }
 
 pub(crate) fn replica_skill_team(agent_root: &str) -> Option<&str> {

@@ -13,6 +13,53 @@ use crate::filesystem::projects::entities::team_lock::{self, LockCause, LockFail
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TeamSkillSourceInspection {
+    NotTeam,
+    Accepted,
+    Rejected { name: String, reason: String },
+}
+
+pub(crate) fn inspect_team_skill_source(root: &Path) -> TeamSkillSourceInspection {
+    let Some(name) = root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix("_team_"))
+    else {
+        return TeamSkillSourceInspection::NotTeam;
+    };
+    let inspect = |path: &Path, directory: bool| -> Result<(), String> {
+        let metadata = crate::filesystem::context_skills::inspect_skill_source(path)
+            .map_err(|e| e.to_string())?;
+        let linked = metadata.file_type().is_symlink();
+        #[cfg(windows)]
+        let linked = {
+            use std::os::windows::fs::MetadataExt;
+            linked || metadata.file_attributes() & 0x400 != 0
+        };
+        if linked || (directory && !metadata.is_dir()) || (!directory && !metadata.is_file()) {
+            return Err("not an ordinary unlinked source".into());
+        }
+        Ok(())
+    };
+    let result = if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    {
+        Err("invalid team name".into())
+    } else {
+        inspect(root, true).and_then(|()| inspect(&root.join("config.json"), false))
+    };
+    match result {
+        Ok(()) => TeamSkillSourceInspection::Accepted,
+        Err(reason) => TeamSkillSourceInspection::Rejected {
+            name: name.to_string(),
+            reason,
+        },
+    }
+}
+
 pub(crate) const TEAM_CONFIG_MUTATION_LOCK_NAME: &str = ".team-config-write.lock";
 
 pub(crate) const TEAM_CONFIG_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
