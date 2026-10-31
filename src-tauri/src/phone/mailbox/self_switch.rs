@@ -83,6 +83,81 @@ fn resolve_restarted_session(
     }
 }
 
+fn record_repo_match(path_str: &str, out: &mut Vec<String>) {
+    if !out.iter().any(|m| m == path_str) {
+        out.push(path_str.to_string());
+    }
+}
+
+fn collect_replica_matches(
+    project_paths: &[String],
+    target_project: Option<&str>,
+    target_local: &str,
+    matches: &mut Vec<String>,
+) {
+    // Loop 4: WG replica fallback. Scan `<workspace>/<wg>/__agent_<short>` under
+    // project_paths (base + immediate non-dot children), honoring the target
+    // project filter. §DR2-4 composition: push + break within a single `rp`
+    // (an FQN matches at most one replica dir per project) but continue the
+    // outer loop so ambiguity across projects is detected.
+    if crate::config::entity_prefix::has_entity_prefix(target_local) {
+        if let Some((wg_name, agent_short)) = target_local.split_once('/') {
+            let replica_dir = format!("__agent_{}", agent_short);
+
+            let project_matches = |dir_name: &str| -> bool {
+                match target_project {
+                    Some(want) => dir_name == want,
+                    None => true,
+                }
+            };
+
+            for rp in project_paths {
+                let base = std::path::Path::new(rp);
+                if !crate::filesystem::projects::project_path_is_dir(base) {
+                    continue;
+                }
+                let base_name = base.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+                let mut dirs_to_check: Vec<std::path::PathBuf> = Vec::new();
+                if project_matches(base_name) {
+                    dirs_to_check.push(base.to_path_buf());
+                }
+                let _ = crate::filesystem::projects::visit_project_kind_children(base, |item| {
+                    let Ok(p) = item else {
+                        return std::ops::ControlFlow::Continue(());
+                    };
+                    if !crate::filesystem::projects::project_path_is_dir(&p) {
+                        return std::ops::ControlFlow::Continue(());
+                    }
+                    let dir_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if dir_name.starts_with('.') {
+                        return std::ops::ControlFlow::Continue(());
+                    }
+                    if !project_matches(dir_name) {
+                        return std::ops::ControlFlow::Continue(());
+                    }
+                    dirs_to_check.push(p);
+                    std::ops::ControlFlow::Continue(())
+                });
+
+                for dir in dirs_to_check {
+                    let Some(ac_root) = crate::config::ac_root::existing_ac_root(&dir) else {
+                        continue;
+                    };
+                    let candidate = ac_root.join(wg_name).join(&replica_dir);
+                    if mailbox_disk::mailbox_path_is_dir(&candidate) {
+                        record_repo_match(&candidate.to_string_lossy(), matches);
+                        // Within a single `rp`, first hit is the unique hit —
+                        // an FQN matches one replica dir per project. Continue
+                        // OUTER loop to detect cross-project ambiguity (§DR2-4).
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl MailboxPoller {
     /// #1632 - despite the name, this drives BOTH self-handoff flavors: pass
     /// `SELF_HANDOFF_FLAVOR_SWITCH` for self-handoff-and-switch and
@@ -164,39 +239,20 @@ impl MailboxPoller {
                 SelfClearGateAction::InjectClear => {
                     // #1940: keep the turn through persist, restart and alias bookkeeping,
                     // releasing it before phase-2 settling and handoff injection.
-                    let _turn = match phase::begin_switch(
-                        session_id,
-                        settle,
-                        &flavor,
-                        &target_agent,
-                        &target_profile,
-                    )
-                    .await
-                    {
-                        Ok(turn) => turn,
-                        Err(error) => break Some(error),
-                    };
-                    let new_id = match phase::persist_and_restart(
-                        (&cwd, &target_agent, &target_profile),
+                    let (_turn, new_id) = match phase::restart_with_alias(
+                        (&cwd, &target_agent, &target_profile, settle),
                         &flavor,
                         (original_session_id, session_id),
+                        (&pending, &lease),
                         &mut current,
                         &mut persist,
                         &mut restart,
                     )
                     .await
                     {
-                        Ok(id) => id,
+                        Ok(result) => result,
                         Err(error) => break Some(error),
                     };
-                    if let Err(error) = pending.alias(&lease, new_id) {
-                        log::warn!(
-                            "[mailbox] {}: new session {} alias refused: {:?}",
-                            flavor.action,
-                            new_id,
-                            error
-                        );
-                    }
                     session_id = new_id;
                     current = Some(new_id);
                     continuation = true;
@@ -214,33 +270,20 @@ impl MailboxPoller {
                     break (!injected).then(|| CONTINUATION_FAILURE.to_string());
                 }
                 SelfClearGateAction::Abandon(reason) => {
-                    log::warn!(
-                        "[mailbox] {} ABANDONED for original session {} current session {}: {} \
-                        (agent may re-issue)",
-                        flavor.action,
-                        original_session_id,
-                        session_id,
-                        reason
-                    );
-                    break Some(reason.to_string());
+                    break phase::abandon_reason(&flavor, original_session_id, session_id, reason);
                 }
             }
         };
 
         pending.release(&lease);
-        match reason {
-            None => SelfHandoffOutcome::Completed,
-            Some(reason) => SelfHandoffOutcome::Failed(SelfHandoffFailure {
-                action: flavor.action,
-                attempt,
-                original: original_session_id,
-                current,
-                root: cwd,
-                continuation,
-                reason,
-                forgotten: forgotten_summary.is_some(),
-            }),
-        }
+        phase::switch_outcome(
+            reason,
+            &flavor,
+            (attempt, original_session_id, current),
+            cwd,
+            continuation,
+            forgotten_summary.is_some(),
+        )
     }
 
     /// (#885) Write the purge response JSON and move the message to delivered/.
@@ -602,12 +645,6 @@ impl MailboxPoller {
         let is_qualified = target_project.is_some();
         let mut matches: Vec<String> = Vec::new();
 
-        let record_match = |path_str: &str, out: &mut Vec<String>| {
-            if !out.iter().any(|m| m == path_str) {
-                out.push(path_str.to_string());
-            }
-        };
-
         let hits_agent = |cwd: &str| -> bool {
             let path_fqn = crate::config::teams::agent_fqn_from_path(cwd);
             if is_qualified {
@@ -636,14 +673,14 @@ impl MailboxPoller {
         let dirs = retain_unarchived_session_dirs(dirs, &roots);
         for (_, cwd) in &dirs {
             if hits_agent(cwd) {
-                record_match(cwd, &mut matches);
+                record_repo_match(cwd, &mut matches);
             }
         }
 
         // Loop 2: settings project_paths
         for rp in &project_paths {
             if hits_agent(rp) {
-                record_match(rp, &mut matches);
+                record_repo_match(rp, &mut matches);
             }
         }
 
@@ -659,73 +696,12 @@ impl MailboxPoller {
             for agent_path in team.agent_paths.iter().flatten() {
                 let path_str = agent_path.to_string_lossy().to_string();
                 if hits_agent(&path_str) {
-                    record_match(&path_str, &mut matches);
+                    record_repo_match(&path_str, &mut matches);
                 }
             }
         }
 
-        // Loop 4: WG replica fallback. Scan `<workspace>/<wg>/__agent_<short>` under
-        // project_paths (base + immediate non-dot children), honoring the target
-        // project filter. §DR2-4 composition: push + break within a single `rp`
-        // (an FQN matches at most one replica dir per project) but continue the
-        // outer loop so ambiguity across projects is detected.
-        if crate::config::entity_prefix::has_entity_prefix(target_local) {
-            if let Some((wg_name, agent_short)) = target_local.split_once('/') {
-                let replica_dir = format!("__agent_{}", agent_short);
-
-                let project_matches = |dir_name: &str| -> bool {
-                    match target_project {
-                        Some(want) => dir_name == want,
-                        None => true,
-                    }
-                };
-
-                for rp in &project_paths {
-                    let base = std::path::Path::new(rp);
-                    if !crate::filesystem::projects::project_path_is_dir(base) {
-                        continue;
-                    }
-                    let base_name = base.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-                    let mut dirs_to_check: Vec<std::path::PathBuf> = Vec::new();
-                    if project_matches(base_name) {
-                        dirs_to_check.push(base.to_path_buf());
-                    }
-                    let _ =
-                        crate::filesystem::projects::visit_project_kind_children(base, |item| {
-                            let Ok(p) = item else {
-                                return std::ops::ControlFlow::Continue(());
-                            };
-                            if !crate::filesystem::projects::project_path_is_dir(&p) {
-                                return std::ops::ControlFlow::Continue(());
-                            }
-                            let dir_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            if dir_name.starts_with('.') {
-                                return std::ops::ControlFlow::Continue(());
-                            }
-                            if !project_matches(dir_name) {
-                                return std::ops::ControlFlow::Continue(());
-                            }
-                            dirs_to_check.push(p);
-                            std::ops::ControlFlow::Continue(())
-                        });
-
-                    for dir in dirs_to_check {
-                        let Some(ac_root) = crate::config::ac_root::existing_ac_root(&dir) else {
-                            continue;
-                        };
-                        let candidate = ac_root.join(wg_name).join(&replica_dir);
-                        if mailbox_disk::mailbox_path_is_dir(&candidate) {
-                            record_match(&candidate.to_string_lossy(), &mut matches);
-                            // Within a single `rp`, first hit is the unique hit —
-                            // an FQN matches one replica dir per project. Continue
-                            // OUTER loop to detect cross-project ambiguity (§DR2-4).
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        collect_replica_matches(&project_paths, target_project, target_local, &mut matches);
 
         match matches.len() {
             0 => None,
