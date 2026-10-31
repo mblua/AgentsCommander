@@ -119,37 +119,7 @@ impl OwnedReplacementContinuation {
         }
         let baseline = manager
             .with_current_carrier_snapshot(&permit, |current| {
-                if !Self::launch_is_current(&launch, current, &pty)
-                    || current.pending_ids.contains(&launch.binding.session_id())
-                {
-                    return false;
-                }
-                let Some(version) = current
-                    .versions
-                    .get(&launch.binding.session_id())
-                    .copied()
-                    .filter(|version| *version < u64::MAX)
-                else {
-                    return false;
-                };
-                let Ok(mut state) = self.owner.state.lock() else {
-                    return false;
-                };
-                let Some(progress) = state.replacement.as_mut() else {
-                    return false;
-                };
-                if progress.initial_b.is_some() {
-                    return false;
-                }
-                progress.initial_b = Some(InitialFinalizationReceipt {
-                    operation: self.owner.operation,
-                    preparing_nonce: progress.preparing_nonce,
-                    binding: launch.binding,
-                    token: launch.token,
-                    carrier_version: version,
-                    launch_generation: launch.generation,
-                });
-                true
+                self.record_initial_b(current, &launch, &pty)
             })
             .await;
         drop(permit);
@@ -184,6 +154,45 @@ impl OwnedReplacementContinuation {
             }
         }
         baseline.then_some(Ok(committed))
+    }
+
+    fn record_initial_b(
+        &self,
+        current: &crate::session::manager::CarrierSnapshot,
+        launch: &super::replacement::OwnedLaunchReceipt,
+        pty: &Arc<Mutex<PtyManager>>,
+    ) -> bool {
+        if !Self::launch_is_current(launch, current, pty)
+            || current.pending_ids.contains(&launch.binding.session_id())
+        {
+            return false;
+        }
+        let Some(version) = current
+            .versions
+            .get(&launch.binding.session_id())
+            .copied()
+            .filter(|version| *version < u64::MAX)
+        else {
+            return false;
+        };
+        let Ok(mut state) = self.owner.state.lock() else {
+            return false;
+        };
+        let Some(progress) = state.replacement.as_mut() else {
+            return false;
+        };
+        if progress.initial_b.is_some() {
+            return false;
+        }
+        progress.initial_b = Some(InitialFinalizationReceipt {
+            operation: self.owner.operation,
+            preparing_nonce: progress.preparing_nonce,
+            binding: launch.binding,
+            token: launch.token,
+            carrier_version: version,
+            launch_generation: launch.generation,
+        });
+        true
     }
 
     async fn retire_previous<R: Runtime>(
