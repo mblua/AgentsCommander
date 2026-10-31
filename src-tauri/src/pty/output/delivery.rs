@@ -23,53 +23,7 @@ impl SessionIoFanout {
             return;
         };
         let id = token.identity.session_id;
-        let n = data.len();
-
-        let text = String::from_utf8_lossy(&data);
-        if text.contains('\u{FFFD}') {
-            log::debug!(
-                "[PTY] session {} chunk had invalid UTF-8 at buffer boundary ({} bytes, {} \
-                    replacement chars)",
-                id,
-                n,
-                text.matches('\u{FFFD}').count()
-            );
-        }
-
-        // #2124 - the detector decides whether this chunk counts, resets the
-        // silence clock or is absorbed into a pending short burst. The trace
-        // order stays TouchSilence then PrintableActivity for the burst-off
-        // sessions the trace tests use.
-        let printable = output_has_printable_activity(&text);
-        #[cfg(test)]
-        self.trace(FanoutTraceEvent::TouchSilence);
-        #[cfg(test)]
-        if printable {
-            self.trace(FanoutTraceEvent::PrintableActivity);
-        }
-        self.idle_detector.record_output(id, n, printable);
-        if !printable {
-            log::trace!(
-                "[idle] SKIPPED activity for {} ({} bytes, escape-only output)",
-                &id.to_string()[..8],
-                n
-            );
-        }
-
-        #[cfg(test)]
-        self.trace(FanoutTraceEvent::ResponseMarkers);
-        scan_response_markers(id, &text, &self.response_watchers);
-
-        let output_sender = self
-            .output_senders
-            .lock()
-            .ok()
-            .and_then(|senders| senders.get(&id).cloned());
-        if let Some(sender) = output_sender {
-            #[cfg(test)]
-            self.trace(FanoutTraceEvent::OutputSender);
-            let _ = sender.try_send(data.clone());
-        }
+        self.notify_output_observers(id, &data);
 
         let (accumulated, registration) = {
             let Ok(mut parsers) = self.screen_parsers.lock() else {
@@ -161,6 +115,56 @@ impl SessionIoFanout {
         lease.complete();
     }
 
+    fn notify_output_observers(&self, id: Uuid, data: &[u8]) {
+        let n = data.len();
+
+        let text = String::from_utf8_lossy(data);
+        if text.contains('\u{FFFD}') {
+            log::debug!(
+                "[PTY] session {} chunk had invalid UTF-8 at buffer boundary ({} bytes, {} \
+                    replacement chars)",
+                id,
+                n,
+                text.matches('\u{FFFD}').count()
+            );
+        }
+
+        // #2124 - the detector decides whether this chunk counts, resets the
+        // silence clock or is absorbed into a pending short burst. The trace
+        // order stays TouchSilence then PrintableActivity for the burst-off
+        // sessions the trace tests use.
+        let printable = output_has_printable_activity(&text);
+        #[cfg(test)]
+        self.trace(FanoutTraceEvent::TouchSilence);
+        #[cfg(test)]
+        if printable {
+            self.trace(FanoutTraceEvent::PrintableActivity);
+        }
+        self.idle_detector.record_output(id, n, printable);
+        if !printable {
+            log::trace!(
+                "[idle] SKIPPED activity for {} ({} bytes, escape-only output)",
+                &id.to_string()[..8],
+                n
+            );
+        }
+
+        #[cfg(test)]
+        self.trace(FanoutTraceEvent::ResponseMarkers);
+        scan_response_markers(id, &text, &self.response_watchers);
+
+        let output_sender = self
+            .output_senders
+            .lock()
+            .ok()
+            .and_then(|senders| senders.get(&id).cloned());
+        if let Some(sender) = output_sender {
+            #[cfg(test)]
+            self.trace(FanoutTraceEvent::OutputSender);
+            let _ = sender.try_send(data.to_vec());
+        }
+    }
+
     /// Attaches `label`'s window to this session's output and returns the seed for it.
     ///
     /// The whole body runs inside one `screen_parsers` hold and does three things, in this
@@ -236,73 +240,7 @@ impl SessionIoFanout {
                 }
                 None
             } else {
-                let copied = {
-                    let uses_history = include_history && !state.history.is_empty();
-                    // `as_slices` keeps this a read: `make_contiguous` needs `&mut` and
-                    // rotates the buffer during what is otherwise a copy out.
-                    let replay = if uses_history {
-                        let (front, back) = state.history.as_slices();
-                        // #1458: the hot-path realignment is capped at 4 KiB and stays failed
-                        // for as long as the front sits in a newline-free region, so it can
-                        // leave the front inside an escape sequence. Attach is cold: pay the
-                        // full scan here rather than seed a literal sequence tail.
-                        if state.history_aligned {
-                            Some((front, back))
-                        } else {
-                            history_from_first_line(front, back)
-                        }
-                    } else {
-                        None
-                    };
-                    if uses_history && !state.history_aligned {
-                        history_unaligned = Some((
-                            state.history.len(),
-                            replay.map_or(0, |(front, back)| front.len() + back.len()),
-                        ));
-                    }
-                    crate::logging::catch_payload_unwind(|| {
-                        let screen = state.parser.screen();
-                        let (rows, cols) = screen.size();
-                        let cells = usize::from(rows).checked_mul(usize::from(cols)).ok_or(())?;
-                        if rows > MAX_ROWS || cols > MAX_COLUMNS || cells > MAX_CELLS {
-                            return Err(());
-                        }
-                        let data = match replay {
-                            Some((front, back)) => {
-                                let mut bytes = Vec::with_capacity(
-                                    UI_HISTORY_REPLAY_PROLOGUE.len() + front.len() + back.len(),
-                                );
-                                bytes.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
-                                bytes.extend_from_slice(front);
-                                bytes.extend_from_slice(back);
-                                bytes
-                            }
-                            // No line start with content behind it. The ring cannot be
-                            // replayed from any offset, and in the observed incident it holds
-                            // nothing but spinner frames anyway. The mirror is a consistent
-                            // full repaint on a grid the #1439 branch above already validated.
-                            None => screen.contents_formatted(),
-                        };
-                        Ok::<PtyScreenSnapshot, ()>(PtyScreenSnapshot {
-                            data,
-                            rows,
-                            cols,
-                            sequence: state.output_sequence,
-                        })
-                    })
-                };
-                match copied {
-                    Ok(Ok(snapshot)) => Some(snapshot),
-                    Ok(Err(())) => None,
-                    Err(_) => {
-                        log::warn!(
-                            "[terminal-snapshot] stage=render_panic reason=payload_panic \
-                            session={id} (#1452)"
-                        );
-                        state.parser_availability = ParserAvailability::Unavailable;
-                        None
-                    }
-                }
+                copy_attach_snapshot(state, id, include_history, &mut history_unaligned)
             }
         } else {
             None
@@ -383,5 +321,80 @@ impl SessionIoFanout {
     #[cfg(test)]
     pub(crate) fn pending_output_bytes_for_test(&self, id: Uuid) -> Option<usize> {
         self.attachments.pending_bytes_for_test(id)
+    }
+}
+
+fn copy_attach_snapshot(
+    state: &mut super::ScreenReplayState,
+    id: Uuid,
+    include_history: bool,
+    history_unaligned: &mut Option<(usize, usize)>,
+) -> Option<PtyScreenSnapshot> {
+    let copied = {
+        let uses_history = include_history && !state.history.is_empty();
+        // `as_slices` keeps this a read: `make_contiguous` needs `&mut` and
+        // rotates the buffer during what is otherwise a copy out.
+        let replay = if uses_history {
+            let (front, back) = state.history.as_slices();
+            // #1458: the hot-path realignment is capped at 4 KiB and stays failed
+            // for as long as the front sits in a newline-free region, so it can
+            // leave the front inside an escape sequence. Attach is cold: pay the
+            // full scan here rather than seed a literal sequence tail.
+            if state.history_aligned {
+                Some((front, back))
+            } else {
+                history_from_first_line(front, back)
+            }
+        } else {
+            None
+        };
+        if uses_history && !state.history_aligned {
+            *history_unaligned = Some((
+                state.history.len(),
+                replay.map_or(0, |(front, back)| front.len() + back.len()),
+            ));
+        }
+        crate::logging::catch_payload_unwind(|| {
+            let screen = state.parser.screen();
+            let (rows, cols) = screen.size();
+            let cells = usize::from(rows).checked_mul(usize::from(cols)).ok_or(())?;
+            if rows > MAX_ROWS || cols > MAX_COLUMNS || cells > MAX_CELLS {
+                return Err(());
+            }
+            let data = match replay {
+                Some((front, back)) => {
+                    let mut bytes = Vec::with_capacity(
+                        UI_HISTORY_REPLAY_PROLOGUE.len() + front.len() + back.len(),
+                    );
+                    bytes.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+                    bytes.extend_from_slice(front);
+                    bytes.extend_from_slice(back);
+                    bytes
+                }
+                // No line start with content behind it. The ring cannot be
+                // replayed from any offset, and in the observed incident it holds
+                // nothing but spinner frames anyway. The mirror is a consistent
+                // full repaint on a grid the #1439 branch above already validated.
+                None => screen.contents_formatted(),
+            };
+            Ok::<PtyScreenSnapshot, ()>(PtyScreenSnapshot {
+                data,
+                rows,
+                cols,
+                sequence: state.output_sequence,
+            })
+        })
+    };
+    match copied {
+        Ok(Ok(snapshot)) => Some(snapshot),
+        Ok(Err(())) => None,
+        Err(_) => {
+            log::warn!(
+                "[terminal-snapshot] stage=render_panic reason=payload_panic \
+                session={id} (#1452)"
+            );
+            state.parser_availability = ParserAvailability::Unavailable;
+            None
+        }
     }
 }
