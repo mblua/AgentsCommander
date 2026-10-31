@@ -511,15 +511,15 @@ impl TerminalSnapshotState {
         let TerminalSnapshotPreAdmission {
             state,
             context,
-            manager,
             requester,
             permit,
             audit,
             deadline,
-            host_wall_deadline,
             source_plane,
-        } = admission;
-        if !Arc::ptr_eq(self, &state) || source_plane != request.source_plane {
+            ..
+        } = &admission;
+        let deadline = *deadline;
+        if !Arc::ptr_eq(self, state) || *source_plane != request.source_plane {
             return Err(TerminalSnapshotReasonCode::Internal);
         }
         terminal_snapshot_renderer::validate_uuid(&request.request_id.to_string(), Some(4))
@@ -557,8 +557,8 @@ impl TerminalSnapshotState {
             self,
             TerminalSnapshotBlockingStage::RouteVerification,
             deadline,
-            &permit,
-            &audit,
+            permit,
+            audit,
             move || {
                 crate::config::teams::verify_terminal_snapshot_route(
                     std::path::Path::new(&sender_cwd),
@@ -576,6 +576,64 @@ impl TerminalSnapshotState {
         audit.accept_route(&route);
         permit.promote_target(authority_key(&route.target))?;
 
+        let (selected, model) = self.capture_admitted_target(&admission, &route).await?;
+        let payload = self
+            .build_admitted_payload(&admission, &route, &request, &model)
+            .await?;
+        let TerminalSnapshotPreAdmission {
+            state,
+            context,
+            manager,
+            requester,
+            permit,
+            audit,
+            deadline,
+            host_wall_deadline,
+            source_plane: _,
+        } = admission;
+        if host_wall_deadline.is_some_and(|wall_deadline| chrono::Utc::now() >= wall_deadline) {
+            return Err(TerminalSnapshotReasonCode::SnapshotTimeout);
+        }
+
+        Ok(TerminalSnapshotPrepared {
+            payload,
+            finalization: TerminalSnapshotFinalization {
+                state,
+                context,
+                manager,
+                requester,
+                route,
+                selected,
+                permit,
+                audit,
+                deadline,
+                host_wall_deadline,
+                #[cfg(test)]
+                host_finalizer_control: if request.source_plane
+                    == TerminalSnapshotSourcePlane::HostCli
+                {
+                    self.take_next_host_finalizer_control()
+                } else {
+                    None
+                },
+            },
+        })
+    }
+
+    async fn capture_admitted_target(
+        self: &Arc<Self>,
+        admission: &TerminalSnapshotPreAdmission,
+        route: &VerifiedTerminalSnapshotRoute,
+    ) -> Result<(SelectedSession, Arc<TerminalScreenModel>), TerminalSnapshotReasonCode> {
+        let TerminalSnapshotPreAdmission {
+            context,
+            manager,
+            permit,
+            audit,
+            deadline,
+            ..
+        } = admission;
+        let deadline = *deadline;
         if context.restore.0.load(Ordering::SeqCst)
             || context.purge.blocks_agent(&route.target.canonical_fqn)
         {
@@ -597,8 +655,8 @@ impl TerminalSnapshotState {
             self,
             TerminalSnapshotBlockingStage::RouteProofs,
             deadline,
-            &permit,
-            &audit,
+            permit,
+            audit,
             move || PtyManager::snapshot_route_proofs(&pty_manager, &ids),
         )
         .await??;
@@ -608,8 +666,8 @@ impl TerminalSnapshotState {
             self,
             TerminalSnapshotBlockingStage::SessionSelection,
             deadline,
-            &permit,
-            &audit,
+            permit,
+            audit,
             move || select_target_session(facts, proofs, &target_root, &target_identity),
         )
         .await??;
@@ -618,7 +676,7 @@ impl TerminalSnapshotState {
         }
         audit.accept_selected(&selected.fact);
         #[cfg(test)]
-        if source_plane == TerminalSnapshotSourcePlane::ContainerApi {
+        if admission.source_plane == TerminalSnapshotSourcePlane::ContainerApi {
             self.run_api_before_capture_hook().await;
         }
 
@@ -629,8 +687,8 @@ impl TerminalSnapshotState {
             self,
             TerminalSnapshotBlockingStage::Capture,
             deadline,
-            &permit,
-            &audit,
+            permit,
+            audit,
             move || {
                 let read =
                     selected
@@ -650,18 +708,34 @@ impl TerminalSnapshotState {
             }
         };
         audit.accept_model(&model);
+        Ok((selected, model))
+    }
 
+    async fn build_admitted_payload(
+        self: &Arc<Self>,
+        admission: &TerminalSnapshotPreAdmission,
+        route: &VerifiedTerminalSnapshotRoute,
+        request: &TerminalSnapshotServiceRequest,
+        model: &Arc<TerminalScreenModel>,
+    ) -> Result<PreparedSnapshotPayload, TerminalSnapshotReasonCode> {
+        let TerminalSnapshotPreAdmission {
+            permit,
+            audit,
+            deadline,
+            ..
+        } = admission;
+        let deadline = *deadline;
         let requester_fqn = route.sender.canonical_fqn.clone();
         let target_fqn = route.target.canonical_fqn.clone();
         let request_id = request.request_id.to_string();
         let format = request.format;
-        let model_for_build = Arc::clone(&model);
+        let model_for_build = Arc::clone(model);
         let payload_stage = match format {
             TerminalSnapshotFormat::Json => TerminalSnapshotBlockingStage::JsonPayload,
             TerminalSnapshotFormat::Png => TerminalSnapshotBlockingStage::PngPayload,
         };
         let (payload, payload_bytes) =
-            run_blocking_with_deadline(self, payload_stage, deadline, &permit, &audit, move || {
+            run_blocking_with_deadline(self, payload_stage, deadline, permit, audit, move || {
                 let payload = build_payload(
                     format,
                     request_id,
@@ -679,31 +753,7 @@ impl TerminalSnapshotState {
             })
             .await??;
         audit.accept_payload(payload_bytes);
-        if host_wall_deadline.is_some_and(|wall_deadline| chrono::Utc::now() >= wall_deadline) {
-            return Err(TerminalSnapshotReasonCode::SnapshotTimeout);
-        }
-
-        Ok(TerminalSnapshotPrepared {
-            payload,
-            finalization: TerminalSnapshotFinalization {
-                state,
-                context,
-                manager,
-                requester,
-                route,
-                selected,
-                permit,
-                audit,
-                deadline,
-                host_wall_deadline,
-                #[cfg(test)]
-                host_finalizer_control: if source_plane == TerminalSnapshotSourcePlane::HostCli {
-                    self.take_next_host_finalizer_control()
-                } else {
-                    None
-                },
-            },
-        })
+        Ok(payload)
     }
 }
 
