@@ -134,42 +134,7 @@ pub(crate) fn discover_teams_in_project_filtered(
         let raw = match ac_discovery::read_team_discovery_config(&config_path) {
             Ok(s) => s,
             Err(e) => {
-                // #280 §3.4: NotFound is an expected state for half-installed
-                // team dirs (`_team_foo/` created but no `config.json` yet).
-                // Logging WARN at every discovery sweep spams app.log, so both
-                // the one-shot per-(project, team_dir) visit record and the
-                // per-drop record below are DEBUG (#612 downgraded the prior
-                // one-shot INFO). Unexpected IO errors stay at WARN.
-                match e.kind() {
-                    std::io::ErrorKind::NotFound => {
-                        if note_missing_team_config(&project_folder, dir_name) {
-                            log::debug!(
-                                "[teams] team config missing (logged once per startup) — \
-                                 project='{}' team_dir='{}' path='{}'",
-                                project_folder,
-                                dir_name,
-                                config_path.display()
-                            );
-                        }
-                        log::debug!(
-                            "[teams] dropped team — project='{}' team_dir='{}' reason='not_found' \
-                             path='{}'",
-                            project_folder,
-                            dir_name,
-                            config_path.display()
-                        );
-                    }
-                    _ => {
-                        log::warn!(
-                            "[teams] dropped team — project='{}' team_dir='{}' \
-                             reason='read_failed' err='{}' path='{}'",
-                            project_folder,
-                            dir_name,
-                            e,
-                            config_path.display()
-                        );
-                    }
-                }
+                log_team_config_read_error(&project_folder, dir_name, &config_path, &e);
                 continue;
             }
         };
@@ -243,6 +208,50 @@ pub(crate) fn discover_teams_in_project_filtered(
                 .map(|p| p.display().to_string()),
             pushed.agent_names.len()
         );
+    }
+}
+
+fn log_team_config_read_error(
+    project_folder: &str,
+    dir_name: &str,
+    config_path: &Path,
+    e: &std::io::Error,
+) {
+    // #280 §3.4: NotFound is an expected state for half-installed
+    // team dirs (`_team_foo/` created but no `config.json` yet).
+    // Logging WARN at every discovery sweep spams app.log, so both
+    // the one-shot per-(project, team_dir) visit record and the
+    // per-drop record below are DEBUG (#612 downgraded the prior
+    // one-shot INFO). Unexpected IO errors stay at WARN.
+    match e.kind() {
+        std::io::ErrorKind::NotFound => {
+            if note_missing_team_config(project_folder, dir_name) {
+                log::debug!(
+                    "[teams] team config missing (logged once per startup) — \
+                     project='{}' team_dir='{}' path='{}'",
+                    project_folder,
+                    dir_name,
+                    config_path.display()
+                );
+            }
+            log::debug!(
+                "[teams] dropped team — project='{}' team_dir='{}' reason='not_found' \
+                 path='{}'",
+                project_folder,
+                dir_name,
+                config_path.display()
+            );
+        }
+        _ => {
+            log::warn!(
+                "[teams] dropped team — project='{}' team_dir='{}' \
+                 reason='read_failed' err='{}' path='{}'",
+                project_folder,
+                dir_name,
+                e,
+                config_path.display()
+            );
+        }
     }
 }
 
