@@ -1,4 +1,5 @@
 use super::*;
+use tauri::Manager;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn remote_menus_fixture() -> Vec<u8> {

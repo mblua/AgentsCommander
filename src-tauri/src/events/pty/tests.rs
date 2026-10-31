@@ -159,3 +159,105 @@ fn the_armed_timer_emits_with_no_explicit_flush() {
         })]
     );
 }
+
+#[test]
+fn menu_adapter_preserves_communication_event_payload() {
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let payloads = Arc::new(Mutex::new(Vec::new()));
+    let received = payloads.clone();
+    app.listen("session_communication_changed", move |event| {
+        received
+            .lock()
+            .unwrap()
+            .push(serde_json::from_str::<serde_json::Value>(event.payload()).unwrap());
+    });
+    let id = Uuid::new_v4();
+    let communication = SessionCommunication {
+        kind: crate::session::session::SessionCommunicationKind::BlockedMenu,
+        visible: true,
+        updated_at: "2026-10-30T22:00:00Z".into(),
+        message: Some("answer the menu".into()),
+    };
+    MenuGuardEvents::publish(app.handle(), id, Some(&communication));
+    MenuGuardEvents::publish(app.handle(), id, None);
+    assert_eq!(
+        *payloads.lock().unwrap(),
+        vec![
+            serde_json::json!({ "sessionId": id.to_string(), "communication": {
+                "kind": "blockedMenu", "visible": true,
+                "updatedAt": "2026-10-30T22:00:00Z", "message": "answer the menu",
+            }}),
+            serde_json::json!({ "sessionId": id.to_string(), "communication": null }),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn menu_edge_resolves_current_settings_and_tolerates_missing_state() {
+    const CHILD: &str = "AC_3469_MENU_EDGE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let status = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                concat!(
+                    "events::pty::tests::",
+                    "menu_edge_resolves_current_settings_and_tolerates_missing_state"
+                ),
+                "--nocapture",
+            ])
+            .env(CHILD, temp.path())
+            .env("AGENTSCOMMANDER_CONFIG_DIR", temp.path())
+            .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", temp.path())
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success(), "isolated edge test: {status}");
+        return;
+    }
+    let dir = std::path::PathBuf::from(std::env::var_os(CHILD).unwrap());
+    assert_eq!(crate::config::config_dir().unwrap(), dir);
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let guard = MenuGuard::new();
+    let id = Uuid::new_v4();
+    let rows = [crate::pty::watchers::frame::LogicalRow {
+        start: 0,
+        end: 0,
+        text: "Trust project folder?".into(),
+    }];
+    let entries = crate::config::settings::default_blocking_menus_for_command("pi");
+    assert!(guard.evaluate_logical_rows(id, &rows, &entries).is_blocked);
+    let events = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let received = events.clone();
+    app.listen("session_communication_changed", move |_| {
+        received.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    // Missing SettingsState; then missing SessionManager, even with disabled settings.
+    guard.scan_tick(app.handle()).await;
+    assert!(guard.is_blocked(id));
+    let settings =
+        crate::config::settings::new_settings_state(crate::config::settings::AppSettings {
+            menu_guard_enabled: false,
+            ..Default::default()
+        });
+    app.manage(settings.clone());
+    guard.scan_tick(app.handle()).await;
+    assert!(guard.is_blocked(id));
+    app.manage(Arc::new(tokio::sync::RwLock::new(SessionManager::new())));
+    // Enabled without PTY is a no-op. A later settings change is read on the next tick.
+    settings.write().await.menu_guard_enabled = true;
+    guard.scan_tick(app.handle()).await;
+    assert!(guard.is_blocked(id));
+    settings.write().await.menu_guard_enabled = false;
+    guard.scan_tick(app.handle()).await;
+    assert!(!guard.is_blocked(id), "disabled cleanup needs no PTY state");
+    assert!(guard.evaluate_logical_rows(id, &rows, &entries).is_blocked);
+    settings.mark_invalid("menu-edge-test");
+    guard.scan_tick(app.handle()).await;
+    assert!(guard.is_blocked(id), "unavailable settings skip cleanup");
+    assert_eq!(events.load(std::sync::atomic::Ordering::SeqCst), 0);
+}

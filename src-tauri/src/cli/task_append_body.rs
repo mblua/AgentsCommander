@@ -8,7 +8,7 @@
 //! issue is recommended to bind tokens to issued sessions, closing the hole
 //! for all CLI verbs simultaneously.
 
-use crate::filesystem::{directories, documents};
+use crate::filesystem::directories;
 use clap::Args;
 use std::path::Path;
 
@@ -40,6 +40,48 @@ pub struct TaskAppendBodyArgs {
     /// Body text to append. Multi-paragraph supported (preserves internal newlines)
     #[arg(long)]
     pub text: String,
+}
+
+pub(crate) fn task_edit_room(
+    is_root: bool,
+    token: Option<&str>,
+    sender: &str,
+    root: &str,
+) -> Result<std::path::PathBuf, i32> {
+    // Coordinator gate (skipped for root/master token).
+    let is_master = is_root || {
+        if let Some(token_str) = token {
+            crate::filesystem::master_token::matches(
+                crate::config::config_dir().as_deref(),
+                token_str,
+            )
+        } else {
+            false
+        }
+    };
+
+    if !is_master {
+        let teams = crate::config::teams::discover_teams_for_cli();
+        if teams.is_empty() || !crate::config::teams::is_any_coordinator(sender, &teams) {
+            eprintln!(
+                "Error: authorization denied — '{}' is not an orchestrator of any team. \
+                 Only orchestrators can edit TASK.md.",
+                sender
+            );
+            return Err(1);
+        }
+    }
+
+    match crate::phone::messaging::workgroup_root(Path::new(root)) {
+        Ok(p) => Ok(p),
+        Err(_) => {
+            eprintln!(
+                "Error: --root is not under a `room-*` or legacy `wg-*` Room directory; \
+                 cannot locate the room TASK.md."
+            );
+            Err(1)
+        }
+    }
 }
 
 pub fn execute(args: TaskAppendBodyArgs) -> i32 {
@@ -79,40 +121,9 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
         return 1;
     }
 
-    // Coordinator gate (skipped for root/master token).
-    let is_master = is_root || {
-        if let Some(ref token_str) = args.token {
-            crate::config::config_dir()
-                .map(|d| d.join("master-token.txt"))
-                .and_then(|p| documents::read_cli_outbox_text(&p).ok())
-                .map(|m| m.trim() == token_str)
-                .unwrap_or(false)
-        } else {
-            false
-        }
-    };
-
-    if !is_master {
-        let teams = crate::config::teams::discover_teams_for_cli();
-        if teams.is_empty() || !crate::config::teams::is_any_coordinator(&sender, &teams) {
-            eprintln!(
-                "Error: authorization denied — '{}' is not an orchestrator of any team. \
-                 Only orchestrators can edit TASK.md.",
-                sender
-            );
-            return 1;
-        }
-    }
-
-    let wg_root = match crate::phone::messaging::workgroup_root(Path::new(&root)) {
-        Ok(p) => p,
-        Err(_) => {
-            eprintln!(
-                "Error: --root is not under a `room-*` or legacy `wg-*` Room directory; \
-                 cannot locate the room TASK.md."
-            );
-            return 1;
-        }
+    let wg_root = match task_edit_room(is_root, args.token.as_deref(), &sender, &root) {
+        Ok(room) => room,
+        Err(code) => return code,
     };
 
     // NIT-2: include `pid={}` so an auditor can cross-reference the AC process
@@ -222,40 +233,9 @@ pub fn execute_set_body(args: TaskSetBodyArgs) -> i32 {
         return 1;
     }
 
-    // Coordinator gate (skipped for root/master token).
-    let is_master = is_root || {
-        if let Some(ref token_str) = args.token {
-            crate::config::config_dir()
-                .map(|d| d.join("master-token.txt"))
-                .and_then(|p| documents::read_cli_outbox_text(&p).ok())
-                .map(|m| m.trim() == token_str)
-                .unwrap_or(false)
-        } else {
-            false
-        }
-    };
-
-    if !is_master {
-        let teams = crate::config::teams::discover_teams_for_cli();
-        if teams.is_empty() || !crate::config::teams::is_any_coordinator(&sender, &teams) {
-            eprintln!(
-                "Error: authorization denied — '{}' is not an orchestrator of any team. \
-                 Only orchestrators can edit TASK.md.",
-                sender
-            );
-            return 1;
-        }
-    }
-
-    let wg_root = match crate::phone::messaging::workgroup_root(Path::new(&root)) {
-        Ok(p) => p,
-        Err(_) => {
-            eprintln!(
-                "Error: --root is not under a `room-*` or legacy `wg-*` Room directory; \
-                 cannot locate the room TASK.md."
-            );
-            return 1;
-        }
+    let wg_root = match task_edit_room(is_root, args.token.as_deref(), &sender, &root) {
+        Ok(room) => room,
+        Err(code) => return code,
     };
 
     // NIT-2: include `pid={}` so an auditor can cross-reference the AC process
