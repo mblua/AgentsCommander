@@ -28,6 +28,145 @@ impl WindowsPathState {
 }
 
 #[cfg(windows)]
+struct WindowsPublicationFailure<'a> {
+    operation: WindowsNamespaceOperation,
+    raw_error: u32,
+    canonical_path: &'a Path,
+    temp_path: std::path::PathBuf,
+    source_identity: FileIdentity,
+    destination_identity: Option<FileIdentity>,
+    source_witness: &'a OpenedRegularFile,
+    bytes: &'a [u8],
+    canonical_state: WindowsPathState,
+    temp_state: WindowsPathState,
+}
+
+#[cfg(windows)]
+impl WindowsPublicationFailure<'_> {
+    fn recover(self) -> Result<OpenedRegularFile, SeedManifestError> {
+        use windows_sys::Win32::Foundation::{
+            ERROR_UNABLE_TO_MOVE_REPLACEMENT, ERROR_UNABLE_TO_MOVE_REPLACEMENT_2,
+            ERROR_UNABLE_TO_REMOVE_REPLACED,
+        };
+
+        let Self {
+            operation,
+            raw_error,
+            canonical_path,
+            temp_path,
+            source_identity,
+            destination_identity,
+            source_witness,
+            bytes,
+            canonical_state,
+            temp_state,
+        } = self;
+        match operation {
+            WindowsNamespaceOperation::MoveFileEx => {
+                if matches!(canonical_state, WindowsPathState::NotFound)
+                    && temp_state.is_exact_same(source_identity, true)
+                {
+                    if let Err(cleanup_error) = cleanup_windows_temp_with_witness(
+                        source_witness,
+                        &temp_path,
+                        source_identity,
+                        Some(bytes),
+                    ) {
+                        log::warn!(
+                            "[seed_manifest] Windows current-owned temp cleanup failed \
+                                after MoveFileExW raw_error={} path={} cleanup_error={}",
+                            raw_error,
+                            temp_path.display(),
+                            cleanup_error
+                        );
+                    }
+                    Err(SeedManifestError::WindowsNamespaceFailure {
+                        operation,
+                        raw_error,
+                        canonical: canonical_path.to_path_buf(),
+                        temp: temp_path,
+                        canonical_state: Box::new(canonical_state),
+                        temp_state: Box::new(temp_state),
+                    })
+                } else {
+                    Err(SeedManifestError::WindowsMoveRecoveryRequired {
+                        raw_error,
+                        canonical: canonical_path.to_path_buf(),
+                        temp: temp_path,
+                        canonical_state: Box::new(canonical_state),
+                        temp_state: Box::new(temp_state),
+                    })
+                }
+            }
+            WindowsNamespaceOperation::ReplaceFile => {
+                if raw_error == ERROR_UNABLE_TO_MOVE_REPLACEMENT {
+                    return Err(SeedManifestError::WindowsReplacePartial {
+                        raw_error,
+                        partial: WindowsReplacePartial::CanonicalRemovedReplacementAtTemp,
+                        canonical: canonical_path.to_path_buf(),
+                        temp: temp_path,
+                        canonical_state: Box::new(canonical_state),
+                        temp_state: Box::new(temp_state),
+                    });
+                }
+                if raw_error == ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 {
+                    return Err(SeedManifestError::WindowsReplacePartial {
+                        raw_error,
+                        partial: WindowsReplacePartial::ReplacementEnrichedOldDestinationRenamed,
+                        canonical: canonical_path.to_path_buf(),
+                        temp: temp_path,
+                        canonical_state: Box::new(canonical_state),
+                        temp_state: Box::new(temp_state),
+                    });
+                }
+
+                let stable_destination = destination_identity
+                    .is_some_and(|identity| canonical_state.is_exact_same(identity, false));
+                let stable_source = temp_state.is_exact_same(source_identity, true);
+                if stable_destination && stable_source {
+                    if let Err(cleanup_error) = cleanup_windows_temp_with_witness(
+                        source_witness,
+                        &temp_path,
+                        source_identity,
+                        Some(bytes),
+                    ) {
+                        log::warn!(
+                            "[seed_manifest] Windows current-owned temp cleanup failed \
+                                after ReplaceFileW raw_error={} path={} cleanup_error={}",
+                            raw_error,
+                            temp_path.display(),
+                            cleanup_error
+                        );
+                    }
+                    Err(SeedManifestError::WindowsNamespaceFailure {
+                        operation,
+                        raw_error,
+                        canonical: canonical_path.to_path_buf(),
+                        temp: temp_path,
+                        canonical_state: Box::new(canonical_state),
+                        temp_state: Box::new(temp_state),
+                    })
+                } else {
+                    if raw_error == ERROR_UNABLE_TO_REMOVE_REPLACED {
+                        log::warn!(
+                            "[seed_manifest] ReplaceFileW error 1175 contradicted the \
+                                documented stable-name state; preserving all observed names"
+                        );
+                    }
+                    Err(SeedManifestError::WindowsReplaceRecoveryRequired {
+                        raw_error,
+                        canonical: canonical_path.to_path_buf(),
+                        temp: temp_path,
+                        canonical_state: Box::new(canonical_state),
+                        temp_state: Box::new(temp_state),
+                    })
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
 impl ProjectSeedManifestGuard {
     pub(crate) fn publish_windows_temp(
         &self,
@@ -35,45 +174,9 @@ impl ProjectSeedManifestGuard {
         canonical_path: &Path,
         bytes: &[u8],
     ) -> Result<OpenedRegularFile, SeedManifestError> {
-        use windows_sys::Win32::Foundation::{
-            ERROR_UNABLE_TO_MOVE_REPLACEMENT, ERROR_UNABLE_TO_MOVE_REPLACEMENT_2,
-            ERROR_UNABLE_TO_REMOVE_REPLACED,
-        };
-
-        if temp.identity.volume != self.ac_root.identity.volume
-            || temp.path.parent() != Some(self.ac_root.path.as_path())
-            || canonical_path.parent() != Some(self.ac_root.path.as_path())
-        {
-            self.cleanup_owned_temp(&temp, Some(bytes));
-            return Err(SeedManifestError::UnsafePath {
-                path: temp.path,
-                reason: "manifest temp and canonical must share the pinned .ac parent and volume"
-                    .to_string(),
-            });
-        }
-        verify_windows_temp_has_only_unnamed_stream(&temp.path)?;
-
         let source_identity = temp.identity;
-        let source_length = temp.length;
         let temp_path = temp.path.clone();
-        let source_witness = match reopen_windows_zero_access(&temp.file, &temp.path) {
-            Ok(witness) => witness,
-            Err(error) => {
-                self.cleanup_owned_temp(&temp, Some(bytes));
-                return Err(error);
-            }
-        };
-        if source_witness.identity != source_identity
-            || source_witness.length != source_length
-            || source_witness.links != 1
-        {
-            self.cleanup_owned_temp(&temp, Some(bytes));
-            return Err(SeedManifestError::UnsafePath {
-                path: temp.path,
-                reason: "zero-access ReOpenFile witness does not match the flushed temp"
-                    .to_string(),
-            });
-        }
+        let source_witness = self.windows_temp_witness(&temp, canonical_path, bytes)?;
 
         drop(temp);
 
@@ -119,76 +222,13 @@ impl ProjectSeedManifestGuard {
             &canonical_wide,
         );
         match namespace_result {
-            Ok(()) => {
-                let final_file =
-                    match open_validated_windows_final(canonical_path, source_identity, bytes) {
-                        Ok(file) => file,
-                        Err(final_state) => {
-                            return Err(SeedManifestError::WindowsPostPublishIdentityConflict {
-                                canonical: canonical_path.to_path_buf(),
-                                temp: temp_path,
-                                expected_source: source_identity,
-                                final_state: Box::new(final_state),
-                                old_destination_identity: Box::new(destination_identity),
-                            });
-                        }
-                    };
-
-                if let Some(expected_destination) = destination_identity {
-                    let destination_facts_result = match &self.snapshot {
-                        CanonicalSnapshot::Writable {
-                            canonical: Some(canonical),
-                            ..
-                        } => handle_facts(&canonical.file),
-                        _ => {
-                            return Err(SeedManifestError::WindowsPostPublishIdentityConflict {
-                                canonical: canonical_path.to_path_buf(),
-                                temp: temp_path,
-                                expected_source: source_identity,
-                                final_state: Box::new(WindowsPathState::Same {
-                                    identity: final_file.identity,
-                                    links: final_file.links,
-                                    length: final_file.length,
-                                    bytes_match: true,
-                                }),
-                                old_destination_identity: Box::new(Some(expected_destination)),
-                            })
-                        }
-                    };
-                    let destination_facts = destination_facts_result.map_err(|_| {
-                        SeedManifestError::WindowsPostPublishIdentityConflict {
-                            canonical: canonical_path.to_path_buf(),
-                            temp: temp_path.clone(),
-                            expected_source: source_identity,
-                            final_state: Box::new(WindowsPathState::Same {
-                                identity: final_file.identity,
-                                links: final_file.links,
-                                length: final_file.length,
-                                bytes_match: true,
-                            }),
-                            old_destination_identity: Box::new(Some(expected_destination)),
-                        }
-                    })?;
-                    if destination_facts.identity != expected_destination
-                        || !destination_facts.is_regular_file
-                        || destination_facts.is_reparse
-                    {
-                        return Err(SeedManifestError::WindowsPostPublishIdentityConflict {
-                            canonical: canonical_path.to_path_buf(),
-                            temp: temp_path,
-                            expected_source: source_identity,
-                            final_state: Box::new(WindowsPathState::Same {
-                                identity: final_file.identity,
-                                links: final_file.links,
-                                length: final_file.length,
-                                bytes_match: true,
-                            }),
-                            old_destination_identity: Box::new(Some(expected_destination)),
-                        });
-                    }
-                }
-                Ok(final_file)
-            }
+            Ok(()) => self.validate_windows_publication(
+                canonical_path,
+                temp_path,
+                source_identity,
+                bytes,
+                destination_identity,
+            ),
             Err(raw_error) => {
                 let canonical_state = match (destination_identity, destination_raw) {
                     (Some(identity), Some(raw)) => {
@@ -216,111 +256,140 @@ impl ProjectSeedManifestGuard {
                     temp_state
                 );
 
-                match operation {
-                    WindowsNamespaceOperation::MoveFileEx => {
-                        if matches!(canonical_state, WindowsPathState::NotFound)
-                            && temp_state.is_exact_same(source_identity, true)
-                        {
-                            if let Err(cleanup_error) = cleanup_windows_temp_with_witness(
-                                &source_witness,
-                                &temp_path,
-                                source_identity,
-                                Some(bytes),
-                            ) {
-                                log::warn!(
-                                    "[seed_manifest] Windows current-owned temp cleanup failed \
-                                        after MoveFileExW raw_error={} path={} cleanup_error={}",
-                                    raw_error,
-                                    temp_path.display(),
-                                    cleanup_error
-                                );
-                            }
-                            Err(SeedManifestError::WindowsNamespaceFailure {
-                                operation,
-                                raw_error,
-                                canonical: canonical_path.to_path_buf(),
-                                temp: temp_path,
-                                canonical_state: Box::new(canonical_state),
-                                temp_state: Box::new(temp_state),
-                            })
-                        } else {
-                            Err(SeedManifestError::WindowsMoveRecoveryRequired {
-                                raw_error,
-                                canonical: canonical_path.to_path_buf(),
-                                temp: temp_path,
-                                canonical_state: Box::new(canonical_state),
-                                temp_state: Box::new(temp_state),
-                            })
-                        }
-                    }
-                    WindowsNamespaceOperation::ReplaceFile => {
-                        if raw_error == ERROR_UNABLE_TO_MOVE_REPLACEMENT {
-                            return Err(SeedManifestError::WindowsReplacePartial {
-                                raw_error,
-                                partial: WindowsReplacePartial::CanonicalRemovedReplacementAtTemp,
-                                canonical: canonical_path.to_path_buf(),
-                                temp: temp_path,
-                                canonical_state: Box::new(canonical_state),
-                                temp_state: Box::new(temp_state),
-                            });
-                        }
-                        if raw_error == ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 {
-                            return Err(SeedManifestError::WindowsReplacePartial {
-                                raw_error,
-                                partial:
-                                    WindowsReplacePartial::ReplacementEnrichedOldDestinationRenamed,
-                                canonical: canonical_path.to_path_buf(),
-                                temp: temp_path,
-                                canonical_state: Box::new(canonical_state),
-                                temp_state: Box::new(temp_state),
-                            });
-                        }
-
-                        let stable_destination = destination_identity
-                            .is_some_and(|identity| canonical_state.is_exact_same(identity, false));
-                        let stable_source = temp_state.is_exact_same(source_identity, true);
-                        if stable_destination && stable_source {
-                            if let Err(cleanup_error) = cleanup_windows_temp_with_witness(
-                                &source_witness,
-                                &temp_path,
-                                source_identity,
-                                Some(bytes),
-                            ) {
-                                log::warn!(
-                                    "[seed_manifest] Windows current-owned temp cleanup failed \
-                                        after ReplaceFileW raw_error={} path={} cleanup_error={}",
-                                    raw_error,
-                                    temp_path.display(),
-                                    cleanup_error
-                                );
-                            }
-                            Err(SeedManifestError::WindowsNamespaceFailure {
-                                operation,
-                                raw_error,
-                                canonical: canonical_path.to_path_buf(),
-                                temp: temp_path,
-                                canonical_state: Box::new(canonical_state),
-                                temp_state: Box::new(temp_state),
-                            })
-                        } else {
-                            if raw_error == ERROR_UNABLE_TO_REMOVE_REPLACED {
-                                log::warn!(
-                                    "[seed_manifest] ReplaceFileW error 1175 contradicted the \
-                                        documented stable-name state; preserving all observed names"
-                                );
-                            }
-                            Err(SeedManifestError::WindowsReplaceRecoveryRequired {
-                                raw_error,
-                                canonical: canonical_path.to_path_buf(),
-                                temp: temp_path,
-                                canonical_state: Box::new(canonical_state),
-                                temp_state: Box::new(temp_state),
-                            })
-                        }
-                    }
+                WindowsPublicationFailure {
+                    operation,
+                    raw_error,
+                    canonical_path,
+                    temp_path,
+                    source_identity,
+                    destination_identity,
+                    source_witness: &source_witness,
+                    bytes,
+                    canonical_state,
+                    temp_state,
                 }
+                .recover()
             }
         }
+    }
+
+    fn windows_temp_witness(
+        &self,
+        temp: &OpenedRegularFile,
+        canonical_path: &Path,
+        bytes: &[u8],
+    ) -> Result<OpenedRegularFile, SeedManifestError> {
+        if temp.identity.volume != self.ac_root.identity.volume
+            || temp.path.parent() != Some(self.ac_root.path.as_path())
+            || canonical_path.parent() != Some(self.ac_root.path.as_path())
+        {
+            self.cleanup_owned_temp(temp, Some(bytes));
+            return Err(SeedManifestError::UnsafePath {
+                path: temp.path.clone(),
+                reason: "manifest temp and canonical must share the pinned .ac parent and volume"
+                    .to_string(),
+            });
+        }
+        verify_windows_temp_has_only_unnamed_stream(&temp.path)?;
+
+        let source_witness = match reopen_windows_zero_access(&temp.file, &temp.path) {
+            Ok(witness) => witness,
+            Err(error) => {
+                self.cleanup_owned_temp(temp, Some(bytes));
+                return Err(error);
+            }
+        };
+        if source_witness.identity != temp.identity
+            || source_witness.length != temp.length
+            || source_witness.links != 1
+        {
+            self.cleanup_owned_temp(temp, Some(bytes));
+            return Err(SeedManifestError::UnsafePath {
+                path: temp.path.clone(),
+                reason: "zero-access ReOpenFile witness does not match the flushed temp"
+                    .to_string(),
+            });
+        }
+
+        Ok(source_witness)
+    }
+
+    fn validate_windows_publication(
+        &self,
+        canonical_path: &Path,
+        temp_path: std::path::PathBuf,
+        source_identity: FileIdentity,
+        bytes: &[u8],
+        destination_identity: Option<FileIdentity>,
+    ) -> Result<OpenedRegularFile, SeedManifestError> {
+        let final_file = match open_validated_windows_final(canonical_path, source_identity, bytes)
+        {
+            Ok(file) => file,
+            Err(final_state) => {
+                return Err(SeedManifestError::WindowsPostPublishIdentityConflict {
+                    canonical: canonical_path.to_path_buf(),
+                    temp: temp_path,
+                    expected_source: source_identity,
+                    final_state: Box::new(final_state),
+                    old_destination_identity: Box::new(destination_identity),
+                });
+            }
+        };
+
+        if let Some(expected_destination) = destination_identity {
+            let destination_facts_result = match &self.snapshot {
+                CanonicalSnapshot::Writable {
+                    canonical: Some(canonical),
+                    ..
+                } => handle_facts(&canonical.file),
+                _ => {
+                    return Err(SeedManifestError::WindowsPostPublishIdentityConflict {
+                        canonical: canonical_path.to_path_buf(),
+                        temp: temp_path,
+                        expected_source: source_identity,
+                        final_state: Box::new(WindowsPathState::Same {
+                            identity: final_file.identity,
+                            links: final_file.links,
+                            length: final_file.length,
+                            bytes_match: true,
+                        }),
+                        old_destination_identity: Box::new(Some(expected_destination)),
+                    })
+                }
+            };
+            let destination_facts = destination_facts_result.map_err(|_| {
+                SeedManifestError::WindowsPostPublishIdentityConflict {
+                    canonical: canonical_path.to_path_buf(),
+                    temp: temp_path.clone(),
+                    expected_source: source_identity,
+                    final_state: Box::new(WindowsPathState::Same {
+                        identity: final_file.identity,
+                        links: final_file.links,
+                        length: final_file.length,
+                        bytes_match: true,
+                    }),
+                    old_destination_identity: Box::new(Some(expected_destination)),
+                }
+            })?;
+            if destination_facts.identity != expected_destination
+                || !destination_facts.is_regular_file
+                || destination_facts.is_reparse
+            {
+                return Err(SeedManifestError::WindowsPostPublishIdentityConflict {
+                    canonical: canonical_path.to_path_buf(),
+                    temp: temp_path,
+                    expected_source: source_identity,
+                    final_state: Box::new(WindowsPathState::Same {
+                        identity: final_file.identity,
+                        links: final_file.links,
+                        length: final_file.length,
+                        bytes_match: true,
+                    }),
+                    old_destination_identity: Box::new(Some(expected_destination)),
+                });
+            }
+        }
+        Ok(final_file)
     }
 
     pub(crate) fn call_windows_namespace(

@@ -108,10 +108,9 @@ pub(super) fn retained_entry_owns_binding(
     }
 }
 
-pub(super) async fn cleanup_pending_creates_after_join(
-    inner: &Arc<CoordinatorInner>,
-    deadline: Instant,
-) -> Vec<String> {
+fn pending_create_cleanup_pty(
+    inner: &CoordinatorInner,
+) -> Result<Arc<Mutex<PtyManager>>, Vec<String>> {
     let pty = match inner.cleanup_pty.try_lock() {
         Ok(pty) => pty.as_ref().and_then(Weak::upgrade),
         Err(error) => {
@@ -119,14 +118,25 @@ pub(super) async fn cleanup_pending_creates_after_join(
                 "[selection] pending-create PTY ownership lock unavailable: {}",
                 error
             );
-            return vec!["reason=pending-pty-owner state=retained".to_string()];
+            return Err(vec!["reason=pending-pty-owner state=retained".to_string()]);
         }
     };
     let Some(pty) = pty else {
         log::error!(
             "[selection] pending-create PTY owner unavailable after worker join state=retained"
         );
-        return vec!["reason=pending-pty-owner state=retained".to_string()];
+        return Err(vec!["reason=pending-pty-owner state=retained".to_string()]);
+    };
+    Ok(pty)
+}
+
+pub(super) async fn cleanup_pending_creates_after_join(
+    inner: &Arc<CoordinatorInner>,
+    deadline: Instant,
+) -> Vec<String> {
+    let pty = match pending_create_cleanup_pty(inner) {
+        Ok(pty) => pty,
+        Err(retained) => return retained,
     };
     let manager = Arc::clone(&inner.manager);
     let cleanup_inner = Arc::clone(inner);

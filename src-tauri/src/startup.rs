@@ -374,6 +374,14 @@ pub(crate) fn migrate_instance_families(dir: &Path) -> Result<Option<String>, St
     .flatten();
     drop(held);
 
+    Ok(Some(instance_families_summary(record)))
+}
+
+fn instance_families_summary(
+    record: Option<crate::config::naming_migration::ScopeRecord>,
+) -> String {
+    use crate::config::naming_migration as nm;
+    let scope = INSTANCE_FAMILIES_SCOPE;
     let steps = record.map(|record| record.steps).unwrap_or_default();
     let renamed = steps
         .iter()
@@ -387,7 +395,7 @@ pub(crate) fn migrate_instance_families(dir: &Path) -> Result<Option<String>, St
     if !set_aside.is_empty() {
         summary.push_str(&format!(", set aside: {}", set_aside.join(", ")));
     }
-    Ok(Some(summary))
+    summary
 }
 
 pub(crate) fn prepare_app_outbox(

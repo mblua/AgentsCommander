@@ -456,28 +456,38 @@ where
         if let Some(tx) = readiness_tx.take() {
             let _ = tx.send(Ok(addr));
         }
-        log::info!("[api-server] listening on http://{}", addr);
-        println!("[api-server] listening on http://{}", addr);
-
-        let service = router.into_make_service_with_connect_info::<SocketAddr>();
-        let server_shutdown = shutdown.clone();
-        if let Err(e) = axum::serve(listener, service)
-            .with_graceful_shutdown(async move {
-                server_shutdown.cancelled().await;
-                log::info!("[api-server] shutdown signal received, stopping");
-            })
-            .await
-        {
-            log::error!("[api-server] server error: {}", e);
-        }
-        shutdown.cancel();
-        wait_for_dispatcher(dispatcher_handle, "server-stop").await;
+        serve_api(listener, addr, router, shutdown, dispatcher_handle).await;
     }));
 
     ApiServerStart {
         join_handle,
         readiness,
     }
+}
+
+async fn serve_api<J: ApiJoinTask>(
+    listener: tokio::net::TcpListener,
+    addr: SocketAddr,
+    router: Router,
+    shutdown: CancellationToken,
+    dispatcher_handle: J,
+) {
+    log::info!("[api-server] listening on http://{}", addr);
+    println!("[api-server] listening on http://{}", addr);
+
+    let service = router.into_make_service_with_connect_info::<SocketAddr>();
+    let server_shutdown = shutdown.clone();
+    if let Err(e) = axum::serve(listener, service)
+        .with_graceful_shutdown(async move {
+            server_shutdown.cancelled().await;
+            log::info!("[api-server] shutdown signal received, stopping");
+        })
+        .await
+    {
+        log::error!("[api-server] server error: {}", e);
+    }
+    shutdown.cancel();
+    wait_for_dispatcher(dispatcher_handle, "server-stop").await;
 }
 
 /// Loud warning on any non-loopback bind (§0.5 DESIGN DECISION).

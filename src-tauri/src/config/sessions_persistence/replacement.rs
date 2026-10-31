@@ -144,6 +144,68 @@ pub(super) fn replacement_publication_authorized(
     })
 }
 
+struct ReplacementPublicationCapture {
+    captured: crate::session::manager::CarrierSnapshot,
+    aggregate: crate::session::manager::ManagerAggregateSnapshot,
+    expected_epoch: u64,
+    next: PublicationState,
+    protections: Vec<CarrierProtection>,
+}
+
+async fn capture_replacement_publication(
+    mgr: &SessionManager,
+    source: &PublishedCarrier,
+    owner_nonce: Uuid,
+    previous: Uuid,
+    replacement: Uuid,
+) -> Option<ReplacementPublicationCapture> {
+    let permit = acquire_carrier_mutation_permit().await;
+    let captured = mgr
+        .with_current_carrier_snapshot(&permit, Clone::clone)
+        .await;
+    if !replacement_publication_authorized(
+        &permit,
+        source,
+        owner_nonce,
+        previous,
+        replacement,
+        &captured,
+    ) {
+        return None;
+    }
+    let protections = all_carrier_protections()?;
+    let state = source.slot.lock().ok()?.clone();
+    let aggregate = mgr.aggregate_snapshot().await;
+    Some(ReplacementPublicationCapture {
+        captured,
+        aggregate,
+        expected_epoch: state.epoch,
+        next: state,
+        protections,
+    })
+}
+
+fn replacement_publication_row(
+    rows: &[super::record::PersistedSession],
+    previous: Uuid,
+    replacement: Uuid,
+) -> Option<super::record::PersistedSession> {
+    // A filtered/deduplicated B never authorizes a target write. Protected
+    // unrelated rows must also survive the ordinary preparation unchanged.
+    let mut matches = rows.iter().filter(|row| {
+        row.id.as_deref().and_then(|id| Uuid::parse_str(id).ok()) == Some(replacement)
+    });
+    let b_row = matches.next().cloned()?;
+    if matches.next().is_some()
+        || rows
+            .iter()
+            .any(|row| row.id.as_deref().and_then(|id| Uuid::parse_str(id).ok()) == Some(previous))
+    {
+        return None;
+    }
+    Some(b_row)
+}
+
 /// Capture under U, then release it for filtering, physical probes, serialization
 /// and temporary-file preparation. Only A is omitted before normal deduplication.
 pub(crate) async fn prepare_owned_replacement_publication<V, VF>(
@@ -159,31 +221,15 @@ where
     V: Fn() -> VF,
     VF: std::future::Future<Output = bool>,
 {
-    let (captured, aggregate, expected_epoch, mut next, protections) = {
-        let permit = acquire_carrier_mutation_permit().await;
-        let captured = mgr
-            .with_current_carrier_snapshot(&permit, Clone::clone)
-            .await;
-        if !replacement_publication_authorized(
-            &permit,
-            source,
-            owner_nonce,
-            previous,
-            replacement,
-            &captured,
-        ) {
-            return Ok(None);
-        }
-        let protections = match all_carrier_protections() {
-            Some(value) => value,
-            None => return Ok(None),
-        };
-        let state = match source.slot.lock() {
-            Ok(value) => value.clone(),
-            Err(_) => return Ok(None),
-        };
-        let aggregate = mgr.aggregate_snapshot().await;
-        (captured, aggregate, state.epoch, state, protections)
+    let Some(ReplacementPublicationCapture {
+        captured,
+        aggregate,
+        expected_epoch,
+        mut next,
+        protections,
+    }) = capture_replacement_publication(mgr, source, owner_nonce, previous, replacement).await
+    else {
+        return Ok(None);
     };
     let Some(b) = captured.rows.iter().find(|row| {
         row.id == replacement
@@ -199,22 +245,9 @@ where
     let omitted = HashSet::from([previous]);
     let rows = snapshot_aggregate(&aggregate, &omitted);
     let prep = prepare_persist_snapshot(rows, project_paths).await?;
-    // A filtered/deduplicated B never authorizes a target write. Protected
-    // unrelated rows must also survive the ordinary preparation unchanged.
-    let mut matches = prep.kept.iter().filter(|row| {
-        row.id.as_deref().and_then(|id| Uuid::parse_str(id).ok()) == Some(replacement)
-    });
-    let Some(b_row) = matches.next().cloned() else {
+    let Some(b_row) = replacement_publication_row(&prep.kept, previous, replacement) else {
         return Ok(None);
     };
-    if matches.next().is_some()
-        || prep
-            .kept
-            .iter()
-            .any(|row| row.id.as_deref().and_then(|id| Uuid::parse_str(id).ok()) == Some(previous))
-    {
-        return Ok(None);
-    }
     let Some(index) = next.protections.iter().position(|protection| {
         protection.session_id == source.session_id
             && protection.nonce == source.nonce

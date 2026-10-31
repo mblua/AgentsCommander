@@ -436,6 +436,11 @@ pub(crate) fn collect_skill_index(matrix_root: Option<&str>, directory: &str) ->
             .cmp(&(right_name.to_ascii_lowercase(), right_name.to_string()))
     });
 
+    append_skill_metadata(&mut index, candidates);
+    index
+}
+
+fn append_skill_metadata(index: &mut SkillIndex, candidates: Vec<(String, PathBuf)>) {
     let mut seen_skill_names: HashMap<String, String> = HashMap::new();
 
     for (folder_name, skill_dir) in candidates {
@@ -557,6 +562,4 @@ pub(crate) fn collect_skill_index(matrix_root: Option<&str>, directory: &str) ->
                 .collect(),
         });
     }
-
-    index
 }

@@ -1,185 +1,49 @@
-use super::super::poller::MailboxPoller;
+use super::{
+    BoundaryAuthority, DispatchSelection, FinalDispatchInput, PtyDispatchContext,
+    PtyDispatchGuards, PtyDispatcher, SelectedPtyTarget, SelectionCandidates, SpawnAttempt,
+};
+use crate::config::settings::SettingsState;
+use crate::config::teams::VerifiedPtyInputIdentity;
+use crate::phone::events::PtyInputEvents;
 #[cfg(test)]
-use super::super::pty_claim::MailboxTestHooks;
-use super::super::pty_claim::{
+use crate::phone::mailbox::pty_claim::MailboxTestHooks;
+use crate::phone::mailbox::pty_claim::{
     await_pty_input_before_deadline, finish_pty_input_before_boundary,
     reacquire_pty_dispatch_target, reject_pty_input_before_boundary, PtyInputPreBoundaryStop,
     PtyReacquireGoal,
 };
-use super::super::settle::{
-    finish_owned_pty_work, session_has_current_pty_submission_provenance, OwnedPtyWorkTransfer,
-    PtySpawnStep,
+use crate::phone::mailbox::settle::{
+    finish_owned_pty_work, session_has_current_pty_submission_provenance, PtySpawnStep,
 };
-use crate::api::message_store::{
-    ClaimedPtyInputOperation, MessageStore, PreparationHeartbeatGuard, PtyInputStripeGuard,
-    PtyInputTargetGate, PtyInputTargetGuard,
-};
-use crate::config::settings::SettingsState;
-use crate::config::teams::VerifiedPtyInputIdentity;
+use crate::phone::types::{PtyInputPublicStatus as S, PtyInputReasonCode as C};
+use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
-use crate::session::session::SessionStatus;
-use std::path::Path;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
 use tauri::Manager;
 use uuid::Uuid;
 
-/// Session chosen (or spawned) for a PTY input dispatch, with the verified
-/// target identity and the managers the boundary write needs.
-pub(in crate::phone::mailbox) type SelectedPtyTarget = (
-    SessionInfo,
-    bool,
-    VerifiedPtyInputIdentity,
-    Arc<tokio::sync::RwLock<SessionManager>>,
-    Arc<Mutex<PtyManager>>,
-);
-
-/// Claimed operation facts the session selection reads but never changes.
-pub(in crate::phone::mailbox) struct PtyDispatchContext<'a> {
-    pub(in crate::phone::mailbox) store: &'a Arc<MessageStore>,
-    pub(in crate::phone::mailbox) initial: &'a crate::phone::types::PtyInputResult,
-    pub(in crate::phone::mailbox) claimed: &'a ClaimedPtyInputOperation,
-    pub(in crate::phone::mailbox) injection_id: &'a str,
-    pub(in crate::phone::mailbox) lease_owner: &'a str,
-    pub(in crate::phone::mailbox) source_plane: crate::phone::types::PtyInputSourcePlane,
-    pub(in crate::phone::mailbox) api_client_store:
-        Option<&'a Arc<crate::api::auth::ApiClientStore>>,
-    pub(in crate::phone::mailbox) target_gate: &'a Arc<PtyInputTargetGate>,
-    pub(in crate::phone::mailbox) target: &'a String,
-    pub(in crate::phone::mailbox) expires: chrono::DateTime<chrono::Utc>,
-    pub(in crate::phone::mailbox) shutdown: &'a tokio_util::sync::CancellationToken,
+/// Owned fresh guard and input permit retained through validation and the write boundary.
+pub(super) struct BoundaryWriteGuards {
+    pub(super) final_api_guard: Option<crate::api::auth::ApiClientFreshGuard>,
+    pub(super) permit: crate::pty::manager::PtyInputPermit,
 }
 
-/// Dispatch guards the session selection may release, reacquire or fill.
-pub(in crate::phone::mailbox) struct PtyDispatchGuards<'a> {
-    pub(in crate::phone::mailbox) target_guard: &'a mut Option<PtyInputTargetGuard>,
-    pub(in crate::phone::mailbox) target_stripe: &'a mut Option<PtyInputStripeGuard>,
-    pub(in crate::phone::mailbox) heartbeat: &'a mut PreparationHeartbeatGuard,
-    pub(in crate::phone::mailbox) owned_work: &'a mut Option<OwnedPtyWorkTransfer>,
-    pub(in crate::phone::mailbox) source_executor:
-        &'a mut crate::session::selection::SourceExecutorGuard,
-}
-
-impl MailboxPoller {
-    /// Picks the live target session, or spawns one, for a claimed PTY input.
-    /// `Err(failed)` is the dispatch result when the operation stops here.
-    pub(in crate::phone::mailbox) async fn select_pty_dispatch_session<R: tauri::Runtime>(
+impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
+    pub(super) async fn select_pty_dispatch_session(
         &self,
-        app: &tauri::AppHandle<R>,
         context: &PtyDispatchContext<'_>,
-        guards: PtyDispatchGuards<'_>,
+        mut guards: PtyDispatchGuards<'_>,
     ) -> Result<SelectedPtyTarget, bool> {
-        use crate::phone::types::PtyInputReasonCode as C;
-        let PtyDispatchContext {
-            store,
-            initial,
-            claimed,
-            injection_id,
-            lease_owner,
-            source_plane,
-            api_client_store,
-            target_gate,
-            target,
-            expires,
-            shutdown,
-        } = *context;
-        let PtyDispatchGuards {
-            target_guard,
-            target_stripe,
-            heartbeat,
-            owned_work,
-            source_executor,
-        } = guards;
+        let app = self.app;
+
         let mut prepared_replacement = None;
         loop {
-            if app
-                .try_state::<Arc<crate::RestoreInProgress>>()
-                .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
-            {
-                let observed = finish_pty_input_before_boundary(
-                    store,
-                    heartbeat,
-                    injection_id,
-                    lease_owner,
-                    C::RestoreInProgress,
-                )
-                .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, owned_work, observed).await;
-                return Err(false);
-            }
-            if app
-                .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
-                .is_some_and(|guard| guard.blocks_agent(&claimed.target_fqn))
-            {
-                let observed = finish_pty_input_before_boundary(
-                    store,
-                    heartbeat,
-                    injection_id,
-                    lease_owner,
-                    C::PurgeInProgress,
-                )
-                .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, owned_work, observed).await;
-                return Err(false);
-            }
-
-            let verified_route =
-                if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
-                    self.validate_claimed_host_authority(app, claimed).await
-                } else {
-                    match self
-                        .validate_claimed_api_authority(app, claimed, api_client_store)
-                        .await
-                    {
-                        Ok(route) => route,
-                        Err(_) => {
-                            let observed = finish_pty_input_before_boundary(
-                                store,
-                                heartbeat,
-                                injection_id,
-                                lease_owner,
-                                C::StoreTransient,
-                            )
-                            .await;
-                            drop(target_guard.take());
-                            drop(target_stripe.take());
-                            finish_owned_pty_work(app, owned_work, observed).await;
-                            return Err(false);
-                        }
-                    }
-                };
-            let Some(verified_route) = verified_route else {
-                let code = if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
-                    C::AuthorityChanged
-                } else {
-                    C::ApiBindingMismatch
-                };
-                let observed =
-                    reject_pty_input_before_boundary(store, heartbeat, injection_id, code).await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, owned_work, observed).await;
-                return Err(false);
-            };
-            if verified_route.target.canonical_fqn != *target {
-                let observed = reject_pty_input_before_boundary(
-                    store,
-                    heartbeat,
-                    injection_id,
-                    C::AuthorityChanged,
-                )
-                .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, owned_work, observed).await;
-                return Err(false);
-            }
+            let verified_route = self.dispatch_selection_route(context, &mut guards).await?;
             let verified_sender = verified_route.sender;
             let verified_target = verified_route.target;
 
@@ -188,425 +52,120 @@ impl MailboxPoller {
                 .inner()
                 .clone();
             let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-            let sessions = {
-                let guard = session_manager.read().await;
-                guard.list_sessions().await
-            };
-            let mut matching: Vec<SessionInfo> = sessions
-                .into_iter()
-                .filter(|session| {
-                    crate::config::teams::agent_fqn_from_path(&session.working_directory)
-                        == claimed.target_fqn
-                })
-                .collect();
-            matching.sort_by(|left, right| {
-                fn rank(status: &SessionStatus) -> u8 {
-                    match status {
-                        SessionStatus::Active => 0,
-                        SessionStatus::Running => 1,
-                        SessionStatus::Idle => 2,
-                        SessionStatus::Exited(_) => 3,
-                    }
-                }
-                rank(&left.status)
-                    .cmp(&rank(&right.status))
-                    .then_with(|| right.created_at.cmp(&left.created_at))
-                    .then_with(|| left.id.cmp(&right.id))
-            });
-
-            let pty_profile_settings = app.state::<SettingsState>().read().await.clone();
-            let mut eligible = Vec::new();
-            let mut saw_supported_busy = false;
-            let mut saw_live_unsupported = false;
-            let mut saw_live_inconsistent = false;
-            let mut saw_live_temporary = false;
-            for session in &matching {
-                if matches!(session.status, SessionStatus::Exited(_)) {
-                    continue;
-                }
-                if session
-                    .name
-                    .starts_with(crate::session::session::TEMP_SESSION_PREFIX)
-                {
-                    saw_live_temporary = true;
-                    continue;
-                }
-                let Ok(id) = Uuid::parse_str(&session.id) else {
-                    saw_live_unsupported = true;
-                    continue;
-                };
-                let (live, route_backend, route_identities) = {
-                    let manager = pty_manager
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    (
-                        manager.has_session(id),
-                        manager.backend_kind(id),
-                        manager.route_identities(id),
-                    )
-                };
-                let path_matches =
-                    route_identities.is_some_and(|(cwd_identity, replica_anchor, _)| {
-                        let current_cwd = crate::path_identity::verify_directory(Path::new(
-                            &session.working_directory,
-                        ));
-                        let current_target = crate::config::teams::verify_pty_input_replica_cwd(
-                            Path::new(&session.working_directory),
-                        );
-                        matches!(
-                            (cwd_identity, current_cwd),
-                            (Some(saved), Ok(current))
-                                if crate::path_identity::same_object(&saved, &current)
-                        ) && matches!(
-                            (replica_anchor, current_target),
-                            (Some(saved), Ok(current))
-                                if current.canonical_fqn == verified_target.canonical_fqn
-                                    && current.authority_fingerprint
-                                        == verified_target.authority_fingerprint
-                                    && crate::path_identity::same_object(
-                                        &saved,
-                                        &verified_target.replica_identity,
-                                    )
-                        )
-                    });
-                if !live || route_backend != Some(session.backend_kind) || !path_matches {
-                    saw_live_inconsistent = true;
-                    continue;
-                }
-                if !session_has_current_pty_submission_provenance(session, &pty_profile_settings) {
-                    saw_live_unsupported = true;
-                    continue;
-                }
-                if session.waiting_for_input {
-                    eligible.push(session.clone());
-                } else {
-                    saw_supported_busy = true;
-                }
-            }
+            let SelectionCandidates {
+                matching,
+                eligible,
+                saw_supported_busy,
+                saw_live_unsupported,
+                saw_live_inconsistent,
+                saw_live_temporary,
+            } = super::context::dispatch_selection_candidates(
+                context.claimed,
+                &session_manager,
+                &pty_manager,
+                &verified_target,
+                || async { app.state::<SettingsState>().read().await.clone() },
+            )
+            .await;
             let (selected, spawned) = if let Some(selected) = eligible.into_iter().next() {
                 (selected, false)
             } else if saw_supported_busy {
-                let observed =
-                    reject_pty_input_before_boundary(store, heartbeat, injection_id, C::Busy).await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, owned_work, observed).await;
+                let observed = reject_pty_input_before_boundary(
+                    context.store,
+                    guards.heartbeat,
+                    context.injection_id,
+                    C::Busy,
+                )
+                .await;
+                drop(guards.target_guard.take());
+                drop(guards.target_stripe.take());
+                finish_owned_pty_work(app, guards.owned_work, observed).await;
                 return Err(false);
             } else if saw_live_temporary {
                 let observed = reject_pty_input_before_boundary(
-                    store,
-                    heartbeat,
-                    injection_id,
+                    context.store,
+                    guards.heartbeat,
+                    context.injection_id,
                     C::NonpersistentLiveSession,
                 )
                 .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, owned_work, observed).await;
+                drop(guards.target_guard.take());
+                drop(guards.target_stripe.take());
+                finish_owned_pty_work(app, guards.owned_work, observed).await;
                 return Err(false);
             } else if saw_live_inconsistent {
-                if claimed.attempt < 5 {
-                    let observed = finish_pty_input_before_boundary(
-                        store,
-                        heartbeat,
-                        injection_id,
-                        lease_owner,
-                        C::SessionRace,
-                    )
-                    .await;
-                    drop(target_guard.take());
-                    drop(target_stripe.take());
-                    finish_owned_pty_work(app, owned_work, observed).await;
-                } else {
-                    let observed = reject_pty_input_before_boundary(
-                        store,
-                        heartbeat,
-                        injection_id,
-                        C::InconsistentSession,
-                    )
-                    .await;
-                    drop(target_guard.take());
-                    drop(target_stripe.take());
-                    finish_owned_pty_work(app, owned_work, observed).await;
-                }
-                return Err(false);
+                return Err(self
+                    .dispatch_selection_inconsistent(context, &mut guards)
+                    .await);
             } else if saw_live_unsupported {
                 let observed = reject_pty_input_before_boundary(
-                    store,
-                    heartbeat,
-                    injection_id,
+                    context.store,
+                    guards.heartbeat,
+                    context.injection_id,
                     C::UnsupportedSession,
                 )
                 .await;
-                drop(target_guard.take());
-                drop(target_stripe.take());
-                finish_owned_pty_work(app, owned_work, observed).await;
+                drop(guards.target_guard.take());
+                drop(guards.target_stripe.take());
+                finish_owned_pty_work(app, guards.owned_work, observed).await;
                 return Err(false);
             } else {
-                #[cfg(test)]
-                let fixture_control = self
-                    .test_hooks
-                    .as_ref()
-                    .and_then(MailboxTestHooks::replacement_fixture_control)
-                    .filter(|control| {
-                        !control
-                            .ticket_only
-                            .load(std::sync::atomic::Ordering::Acquire)
-                    });
-                #[cfg(test)]
-                let fixture_lease = if fixture_control.is_some() {
-                    let (Some(exact), Some(stripe)) = (target_guard.take(), target_stripe.take())
-                    else {
-                        heartbeat.finish().await;
-                        return Err(false);
-                    };
-                    Some(Arc::new(crate::commands::session::FixturePtyCutLease {
-                        gate: target_gate.clone(),
-                        target: target.clone(),
-                        exact,
-                        stripe,
-                    }))
-                } else {
-                    None
-                };
-                let spawn = {
-                    #[cfg(test)]
-                    let (stripe, exact) = match fixture_lease.as_ref() {
-                        Some(lease) => (Some(&lease.stripe), Some(&lease.exact)),
-                        None => (target_stripe.as_ref(), target_guard.as_ref()),
-                    };
-                    #[cfg(not(test))]
-                    let (stripe, exact) = (target_stripe.as_ref(), target_guard.as_ref());
-                    let (Some(stripe), Some(exact)) = (stripe, exact) else {
-                        heartbeat.finish().await;
-                        return Err(false);
-                    };
-                    let target_ownership = match target_gate.target_ownership(target, stripe, exact)
-                    {
-                        Ok(proof) => proof,
-                        Err(_) => {
-                            heartbeat.finish().await;
-                            return Err(false);
-                        }
-                    };
-                    await_pty_input_before_deadline(
-                        expires,
-                        shutdown,
-                        self.spawn_pty_input_target(
-                            app,
-                            claimed,
-                            &matching,
-                            &verified_sender,
-                            &verified_target,
-                            source_plane,
-                            api_client_store,
-                            &target_ownership,
-                            initial,
-                            prepared_replacement.take(),
-                            source_executor,
-                            #[cfg(test)]
-                            fixture_lease.as_ref(),
-                        ),
+                let spawn = self
+                    .dispatch_selection_spawn(
+                        context,
+                        &mut guards,
+                        &matching,
+                        &verified_sender,
+                        &verified_target,
+                        &mut prepared_replacement,
                     )
-                    .await
-                };
-                #[cfg(test)]
-                if let Some(lease) = fixture_lease {
-                    let restored = Arc::try_unwrap(lease);
-                    let worker_still_holds_clone = restored.is_err();
-                    let receipt_missing = fixture_control.as_ref().is_some_and(|control| {
-                        control.submitted.load(std::sync::atomic::Ordering::Acquire)
-                            && !control.received.load(std::sync::atomic::Ordering::Acquire)
-                    });
-                    match restored {
-                        Ok(lease) if !receipt_missing => {
-                            *target_guard = Some(lease.exact);
-                            *target_stripe = Some(lease.stripe);
-                        }
-                        other => {
-                            drop(other);
-                            if let Some(control) = fixture_control.as_ref() {
-                                control.restoration_shared.store(
-                                    worker_still_holds_clone,
-                                    std::sync::atomic::Ordering::Release,
-                                );
-                                control
-                                    .restoration_failed
-                                    .store(true, std::sync::atomic::Ordering::Release);
-                            }
-                            // This cut precedes every Retained/timeout/error
-                            // handoff, even if the owner already has a stop or
-                            // rollback receipt. A submitted job without actual
-                            // receive has no source-side work authority.
-                            heartbeat.finish().await;
-                            return Err(false);
-                        }
-                    }
-                }
-                match spawn {
-                    Ok(Ok(PtySpawnStep::Created(session))) => (session, true),
-                    Ok(Ok(PtySpawnStep::OwnedCreated(session, continuation))) => {
-                        let Some(effect) = continuation.start_effect(
-                            crate::session::selection::LifecycleEffectSlot::WorkTransfer,
-                        ) else {
-                            drop(target_guard.take());
-                            drop(target_stripe.take());
-                            heartbeat.finish().await;
-                            return Err(false);
-                        };
-                        *owned_work = Some((continuation, effect));
-                        (session, true)
-                    }
-                    Ok(Ok(PtySpawnStep::Retained {
-                        continuation,
-                        failed,
-                    })) => {
-                        drop(target_guard.take());
-                        drop(target_stripe.take());
-                        let stop = continuation.source_stop();
-                        let rolled_back = continuation.precommit_rollback_completed();
-                        if stop.is_none() && !rolled_back {
-                            heartbeat.finish().await;
-                            return Err(failed);
-                        }
-                        let effect = continuation.start_effect(
-                            crate::session::selection::LifecycleEffectSlot::WorkTransfer,
-                        );
-                        use crate::session::selection::OwnedSourceStop as Stop;
-                        let observed = match stop {
-                            Some(Stop::Terminal) => {
-                                heartbeat.finish().await;
-                                true
-                            }
-                            reason => {
-                                let code = match reason {
-                                    Some(Stop::AuthorityChanged) => C::AuthorityChanged,
-                                    Some(Stop::StoreTransient) => C::StoreTransient,
-                                    Some(Stop::Expired) => C::Expired,
-                                    Some(Stop::LeaseLost) => C::LeaseLost,
-                                    Some(Stop::Terminal) => unreachable!(),
-                                    None => C::SpawnFailedSafe,
-                                };
-                                finish_pty_input_before_boundary(
-                                    store,
-                                    heartbeat,
-                                    injection_id,
-                                    lease_owner,
-                                    code,
-                                )
-                                .await
-                            }
-                        };
-                        if let Some(effect) = effect {
-                            let manager = app
-                                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-                                .read()
-                                .await
-                                .clone();
-                            let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-                            if rolled_back {
-                                continuation
-                                    .finish_rolled_back_work(&manager, &pty, effect, observed)
-                                    .await;
-                            } else {
-                                continuation
-                                    .finish_observed_work_transfer(&manager, &pty, effect, observed)
-                                    .await;
-                            }
-                        }
-                        return Err(failed);
-                    }
-                    Ok(Ok(PtySpawnStep::RetainedUnowned)) => {
-                        drop(target_guard.take());
-                        drop(target_stripe.take());
-                        heartbeat.finish().await;
-                        return Err(false);
-                    }
-                    Ok(Ok(PtySpawnStep::NeedReacquire(prepared))) => {
-                        prepared_replacement = prepared;
-                        // The spawn block ended the proof borrow above.
-                        drop(target_guard.take());
-                        drop(target_stripe.take());
-                        let Some((stripe, exact)) = reacquire_pty_dispatch_target(
-                            app,
-                            (store, initial, claimed),
-                            (target_gate, &verified_target, PtyReacquireGoal::Spawn),
-                            (expires, shutdown),
-                            heartbeat,
-                        )
-                        .await
-                        else {
-                            return Err(false);
-                        };
-                        *target_stripe = Some(stripe);
-                        *target_guard = Some(exact);
-                        continue;
-                    }
-                    Ok(Err(code)) => {
-                        let observed = finish_pty_input_before_boundary(
-                            store,
-                            heartbeat,
-                            injection_id,
-                            lease_owner,
-                            code,
-                        )
-                        .await;
-                        drop(target_guard.take());
-                        drop(target_stripe.take());
-                        finish_owned_pty_work(app, owned_work, observed).await;
-                        return Err(false);
-                    }
-                    Err(PtyInputPreBoundaryStop::Expired) => {
-                        let observed = reject_pty_input_before_boundary(
-                            store,
-                            heartbeat,
-                            injection_id,
-                            C::Expired,
-                        )
-                        .await;
-                        drop(target_guard.take());
-                        drop(target_stripe.take());
-                        finish_owned_pty_work(app, owned_work, observed).await;
-                        return Err(false);
-                    }
-                    Err(PtyInputPreBoundaryStop::Shutdown) => {
-                        heartbeat.finish().await;
-                        return Err(false);
-                    }
+                    .await?;
+                match self
+                    .dispatch_selection_spawn_result(
+                        context,
+                        &mut guards,
+                        spawn,
+                        &verified_target,
+                        &mut prepared_replacement,
+                    )
+                    .await?
+                {
+                    Some(selected) => selected,
+                    None => continue,
                 }
             };
             let selected_id = Uuid::parse_str(&selected.id).ok();
-            if owned_work.is_none()
+            if guards.owned_work.is_none()
                 && selected_id.is_some_and(|id| {
                     crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
-                        &claimed.target_fqn,
+                        &context.claimed.target_fqn,
                         id,
                     )
                 })
             {
-                drop(target_guard.take());
-                drop(target_stripe.take());
+                drop(guards.target_guard.take());
+                drop(guards.target_stripe.take());
                 let Some(id) = selected_id else {
-                    heartbeat.finish().await;
+                    guards.heartbeat.finish().await;
                     return Err(false);
                 };
                 let Some((stripe, exact)) = reacquire_pty_dispatch_target(
                     app,
-                    (store, initial, claimed),
+                    (context.store, context.initial, context.claimed),
                     (
-                        target_gate,
+                        context.target_gate,
                         &verified_target,
                         PtyReacquireGoal::Published(id),
                     ),
-                    (expires, shutdown),
-                    heartbeat,
+                    (context.expires, context.shutdown),
+                    guards.heartbeat,
                 )
                 .await
                 else {
                     return Err(false);
                 };
-                *target_stripe = Some(stripe);
-                *target_guard = Some(exact);
+                *guards.target_stripe = Some(stripe);
+                *guards.target_guard = Some(exact);
                 continue;
             }
             return Ok((
@@ -616,6 +175,817 @@ impl MailboxPoller {
                 session_manager,
                 pty_manager,
             ));
+        }
+    }
+    async fn dispatch_selection_route(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+    ) -> Result<crate::config::teams::VerifiedPtyInputRoute, bool> {
+        let app = self.app;
+
+        use crate::phone::types::PtyInputReasonCode as C;
+        if app
+            .try_state::<Arc<crate::RestoreInProgress>>()
+            .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            let observed = finish_pty_input_before_boundary(
+                context.store,
+                guards.heartbeat,
+                context.injection_id,
+                context.lease_owner,
+                C::RestoreInProgress,
+            )
+            .await;
+            drop(guards.target_guard.take());
+            drop(guards.target_stripe.take());
+            finish_owned_pty_work(app, guards.owned_work, observed).await;
+            return Err(false);
+        }
+        if app
+            .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+            .is_some_and(|guard| guard.blocks_agent(&context.claimed.target_fqn))
+        {
+            let observed = finish_pty_input_before_boundary(
+                context.store,
+                guards.heartbeat,
+                context.injection_id,
+                context.lease_owner,
+                C::PurgeInProgress,
+            )
+            .await;
+            drop(guards.target_guard.take());
+            drop(guards.target_stripe.take());
+            finish_owned_pty_work(app, guards.owned_work, observed).await;
+            return Err(false);
+        }
+
+        let verified_route =
+            if context.source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
+                self.validate_claimed_host_authority(app, context.claimed)
+                    .await
+            } else {
+                match self
+                    .validate_claimed_api_authority(app, context.claimed, context.api_client_store)
+                    .await
+                {
+                    Ok(route) => route,
+                    Err(_) => {
+                        let observed = finish_pty_input_before_boundary(
+                            context.store,
+                            guards.heartbeat,
+                            context.injection_id,
+                            context.lease_owner,
+                            C::StoreTransient,
+                        )
+                        .await;
+                        drop(guards.target_guard.take());
+                        drop(guards.target_stripe.take());
+                        finish_owned_pty_work(app, guards.owned_work, observed).await;
+                        return Err(false);
+                    }
+                }
+            };
+        let Some(verified_route) = verified_route else {
+            let code = if context.source_plane == crate::phone::types::PtyInputSourcePlane::HostCli
+            {
+                C::AuthorityChanged
+            } else {
+                C::ApiBindingMismatch
+            };
+            let observed = reject_pty_input_before_boundary(
+                context.store,
+                guards.heartbeat,
+                context.injection_id,
+                code,
+            )
+            .await;
+            drop(guards.target_guard.take());
+            drop(guards.target_stripe.take());
+            finish_owned_pty_work(app, guards.owned_work, observed).await;
+            return Err(false);
+        };
+        if verified_route.target.canonical_fqn != *context.target {
+            let observed = reject_pty_input_before_boundary(
+                context.store,
+                guards.heartbeat,
+                context.injection_id,
+                C::AuthorityChanged,
+            )
+            .await;
+            drop(guards.target_guard.take());
+            drop(guards.target_stripe.take());
+            finish_owned_pty_work(app, guards.owned_work, observed).await;
+            return Err(false);
+        }
+        Ok(verified_route)
+    }
+    async fn dispatch_selection_spawn(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+        matching: &[SessionInfo],
+        verified_sender: &VerifiedPtyInputIdentity,
+        verified_target: &VerifiedPtyInputIdentity,
+        prepared_replacement: &mut Option<crate::session::selection::PreparedOwnedReplacement>,
+    ) -> Result<SpawnAttempt, bool> {
+        let app = self.app;
+
+        #[cfg(test)]
+        let fixture_control = self
+            .test_hooks
+            .as_ref()
+            .and_then(MailboxTestHooks::replacement_fixture_control)
+            .filter(|control| {
+                !control
+                    .ticket_only
+                    .load(std::sync::atomic::Ordering::Acquire)
+            });
+        #[cfg(test)]
+        let fixture_lease = if fixture_control.is_some() {
+            let (Some(exact), Some(stripe)) =
+                (guards.target_guard.take(), guards.target_stripe.take())
+            else {
+                guards.heartbeat.finish().await;
+                return Err(false);
+            };
+            Some(Arc::new(crate::commands::session::FixturePtyCutLease {
+                gate: context.target_gate.clone(),
+                target: context.target.clone(),
+                exact,
+                stripe,
+            }))
+        } else {
+            None
+        };
+        let spawn = {
+            #[cfg(test)]
+            let (stripe, exact) = match fixture_lease.as_ref() {
+                Some(lease) => (Some(&lease.stripe), Some(&lease.exact)),
+                None => (guards.target_stripe.as_ref(), guards.target_guard.as_ref()),
+            };
+            #[cfg(not(test))]
+            let (stripe, exact) = (guards.target_stripe.as_ref(), guards.target_guard.as_ref());
+            let (Some(stripe), Some(exact)) = (stripe, exact) else {
+                guards.heartbeat.finish().await;
+                return Err(false);
+            };
+            let target_ownership =
+                match context
+                    .target_gate
+                    .target_ownership(context.target, stripe, exact)
+                {
+                    Ok(proof) => proof,
+                    Err(_) => {
+                        guards.heartbeat.finish().await;
+                        return Err(false);
+                    }
+                };
+            await_pty_input_before_deadline(
+                context.expires,
+                context.shutdown,
+                self.spawn_pty_input_target(
+                    app,
+                    context.claimed,
+                    matching,
+                    verified_sender,
+                    verified_target,
+                    context.source_plane,
+                    context.api_client_store,
+                    &target_ownership,
+                    context.initial,
+                    prepared_replacement.take(),
+                    guards.source_executor,
+                    #[cfg(test)]
+                    fixture_lease.as_ref(),
+                ),
+            )
+            .await
+        };
+        #[cfg(test)]
+        if let Some(lease) = fixture_lease {
+            let restored = Arc::try_unwrap(lease);
+            let worker_still_holds_clone = restored.is_err();
+            let receipt_missing = fixture_control.as_ref().is_some_and(|control| {
+                control.submitted.load(std::sync::atomic::Ordering::Acquire)
+                    && !control.received.load(std::sync::atomic::Ordering::Acquire)
+            });
+            match restored {
+                Ok(lease) if !receipt_missing => {
+                    *guards.target_guard = Some(lease.exact);
+                    *guards.target_stripe = Some(lease.stripe);
+                }
+                other => {
+                    drop(other);
+                    if let Some(control) = fixture_control.as_ref() {
+                        control.restoration_shared.store(
+                            worker_still_holds_clone,
+                            std::sync::atomic::Ordering::Release,
+                        );
+                        control
+                            .restoration_failed
+                            .store(true, std::sync::atomic::Ordering::Release);
+                    }
+                    // This cut precedes every Retained/timeout/error
+                    // handoff, even if the owner already has a stop or
+                    // rollback receipt. A submitted job without actual
+                    // receive has no source-side work authority.
+                    guards.heartbeat.finish().await;
+                    return Err(false);
+                }
+            }
+        }
+        Ok(spawn)
+    }
+    async fn dispatch_selection_spawn_result(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+        spawn: SpawnAttempt,
+        verified_target: &VerifiedPtyInputIdentity,
+        prepared_replacement: &mut Option<crate::session::selection::PreparedOwnedReplacement>,
+    ) -> Result<Option<(SessionInfo, bool)>, bool> {
+        let app = self.app;
+
+        use crate::phone::types::PtyInputReasonCode as C;
+        let selected = match spawn {
+            Ok(Ok(PtySpawnStep::Created(session))) => (session, true),
+            Ok(Ok(PtySpawnStep::OwnedCreated(session, continuation))) => {
+                let Some(effect) = continuation
+                    .start_effect(crate::session::selection::LifecycleEffectSlot::WorkTransfer)
+                else {
+                    drop(guards.target_guard.take());
+                    drop(guards.target_stripe.take());
+                    guards.heartbeat.finish().await;
+                    return Err(false);
+                };
+                *guards.owned_work = Some((continuation, effect));
+                (session, true)
+            }
+            Ok(Ok(PtySpawnStep::Retained {
+                continuation,
+                failed,
+            })) => {
+                drop(guards.target_guard.take());
+                drop(guards.target_stripe.take());
+                let stop = continuation.source_stop();
+                let rolled_back = continuation.precommit_rollback_completed();
+                if stop.is_none() && !rolled_back {
+                    guards.heartbeat.finish().await;
+                    return Err(failed);
+                }
+                let effect = continuation
+                    .start_effect(crate::session::selection::LifecycleEffectSlot::WorkTransfer);
+                use crate::session::selection::OwnedSourceStop as Stop;
+                let observed = match stop {
+                    Some(Stop::Terminal) => {
+                        guards.heartbeat.finish().await;
+                        true
+                    }
+                    reason => {
+                        let code = match reason {
+                            Some(Stop::AuthorityChanged) => C::AuthorityChanged,
+                            Some(Stop::StoreTransient) => C::StoreTransient,
+                            Some(Stop::Expired) => C::Expired,
+                            Some(Stop::LeaseLost) => C::LeaseLost,
+                            Some(Stop::Terminal) => unreachable!(),
+                            None => C::SpawnFailedSafe,
+                        };
+                        finish_pty_input_before_boundary(
+                            context.store,
+                            guards.heartbeat,
+                            context.injection_id,
+                            context.lease_owner,
+                            code,
+                        )
+                        .await
+                    }
+                };
+                if let Some(effect) = effect {
+                    let manager = app
+                        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                        .read()
+                        .await
+                        .clone();
+                    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+                    if rolled_back {
+                        continuation
+                            .finish_rolled_back_work(&manager, &pty, effect, observed)
+                            .await;
+                    } else {
+                        continuation
+                            .finish_observed_work_transfer(&manager, &pty, effect, observed)
+                            .await;
+                    }
+                }
+                return Err(failed);
+            }
+            Ok(Ok(PtySpawnStep::RetainedUnowned)) => {
+                drop(guards.target_guard.take());
+                drop(guards.target_stripe.take());
+                guards.heartbeat.finish().await;
+                return Err(false);
+            }
+            Ok(Ok(PtySpawnStep::NeedReacquire(prepared))) => {
+                *prepared_replacement = prepared;
+                // The spawn block ended the proof borrow above.
+                drop(guards.target_guard.take());
+                drop(guards.target_stripe.take());
+                let Some((stripe, exact)) = reacquire_pty_dispatch_target(
+                    app,
+                    (context.store, context.initial, context.claimed),
+                    (
+                        context.target_gate,
+                        verified_target,
+                        PtyReacquireGoal::Spawn,
+                    ),
+                    (context.expires, context.shutdown),
+                    guards.heartbeat,
+                )
+                .await
+                else {
+                    return Err(false);
+                };
+                *guards.target_stripe = Some(stripe);
+                *guards.target_guard = Some(exact);
+                return Ok(None);
+            }
+            Ok(Err(code)) => {
+                let observed = finish_pty_input_before_boundary(
+                    context.store,
+                    guards.heartbeat,
+                    context.injection_id,
+                    context.lease_owner,
+                    code,
+                )
+                .await;
+                drop(guards.target_guard.take());
+                drop(guards.target_stripe.take());
+                finish_owned_pty_work(app, guards.owned_work, observed).await;
+                return Err(false);
+            }
+            Err(PtyInputPreBoundaryStop::Expired) => {
+                let observed = reject_pty_input_before_boundary(
+                    context.store,
+                    guards.heartbeat,
+                    context.injection_id,
+                    C::Expired,
+                )
+                .await;
+                drop(guards.target_guard.take());
+                drop(guards.target_stripe.take());
+                finish_owned_pty_work(app, guards.owned_work, observed).await;
+                return Err(false);
+            }
+            Err(PtyInputPreBoundaryStop::Shutdown) => {
+                guards.heartbeat.finish().await;
+                return Err(false);
+            }
+        };
+        Ok(Some(selected))
+    }
+
+    pub(super) async fn dispatch_boundary_authority(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+        selection: &DispatchSelection<'_>,
+        write_guards: BoundaryWriteGuards,
+    ) -> Result<(BoundaryAuthority, BoundaryWriteGuards), bool> {
+        let BoundaryWriteGuards {
+            permit,
+            mut final_api_guard,
+        } = write_guards;
+        let app = self.app;
+
+        use crate::phone::types::{PtyInputPublicStatus as S, PtyInputReasonCode as C};
+        let manager = {
+            let guard = selection.session_manager.read().await;
+            guard.clone()
+        };
+        let idle_detector = app
+            .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+            .inner()
+            .clone();
+        let authority_id = match crate::phone::types::parse_canonical_uuid_v4(
+            &context.claimed.authority_session_id,
+        ) {
+            Ok(id) => id,
+            Err(_) => {
+                let terminal = context
+                    .store
+                    .terminalize_pty_input_offloaded(
+                        context.injection_id.to_string(),
+                        S::Indeterminate,
+                        Some(C::FinalRevalidationFailed),
+                        chrono::Utc::now(),
+                    )
+                    .await;
+                let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
+                drop(final_api_guard.take());
+                drop(guards.target_guard.take());
+                drop(guards.target_stripe.take());
+                drop(permit);
+                finish_owned_pty_work(app, guards.owned_work, observed).await;
+                if terminal.is_err() {
+                    log::error!(
+                        "[pty-input] boundary terminalization failed id={} \
+                        code=terminal_store_failed",
+                        context.injection_id
+                    );
+                }
+                return Err(false);
+            }
+        };
+        let authority_backend = match context.source_plane {
+            crate::phone::types::PtyInputSourcePlane::HostCli => SessionBackendKind::LocalProcess,
+            crate::phone::types::PtyInputSourcePlane::ContainerApi => {
+                SessionBackendKind::ContainerTransport
+            }
+        };
+        let authority_container_backend = selection
+            .pty_manager
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .container_backend();
+        let authority_route =
+            match PtyManager::authority_route_proof(selection.pty_manager, authority_id) {
+                Ok(proof) => proof,
+                Err(_) => {
+                    let terminal = context.store.terminalize_pty_input(
+                        context.injection_id,
+                        S::Indeterminate,
+                        Some(C::FinalRevalidationFailed),
+                        chrono::Utc::now(),
+                    );
+                    let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
+                    drop(final_api_guard.take());
+                    drop(guards.target_guard.take());
+                    drop(guards.target_stripe.take());
+                    drop(permit);
+                    finish_owned_pty_work(app, guards.owned_work, observed).await;
+                    if terminal.is_err() {
+                        log::error!(
+                            "[pty-input] boundary terminalization failed id={} \
+                        code=terminal_store_failed",
+                            context.injection_id
+                        );
+                    }
+                    return Err(false);
+                }
+            };
+        let expected_api_binding = final_api_guard.as_ref().and_then(|fresh| {
+            let root =
+                crate::path_identity::verify_directory(Path::new(&fresh.client.bound_root)).ok()?;
+            Some((
+                fresh.client.client_id.clone(),
+                fresh.client.credential_generation.clone()?,
+                fresh.client.bound_session_id.clone()?,
+                root.object_id,
+                fresh.presented_token_hash.clone(),
+            ))
+        });
+        if context.source_plane == crate::phone::types::PtyInputSourcePlane::ContainerApi
+            && expected_api_binding.is_none()
+        {
+            let terminal = context.store.terminalize_pty_input(
+                context.injection_id,
+                S::Indeterminate,
+                Some(C::FinalRevalidationFailed),
+                chrono::Utc::now(),
+            );
+            let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
+            drop(final_api_guard.take());
+            drop(guards.target_guard.take());
+            drop(guards.target_stripe.take());
+            drop(permit);
+            finish_owned_pty_work(app, guards.owned_work, observed).await;
+            if terminal.is_err() {
+                log::error!(
+                    "[pty-input] boundary terminalization failed id={} code=terminal_store_failed",
+                    context.injection_id
+                );
+            }
+            return Err(false);
+        }
+
+        Ok((
+            BoundaryAuthority {
+                manager,
+                idle_detector,
+                authority_id,
+                authority_backend,
+                authority_container_backend,
+                authority_route,
+                expected_api_binding,
+            },
+            BoundaryWriteGuards {
+                final_api_guard,
+                permit,
+            },
+        ))
+    }
+    pub(super) async fn dispatch_boundary_write(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+        selection: &DispatchSelection<'_>,
+        mut write_guards: BoundaryWriteGuards,
+        input: FinalDispatchInput<'_>,
+        authority: &BoundaryAuthority,
+    ) -> Result<(Result<bool, bool>, BoundaryWriteGuards), bool> {
+        let FinalDispatchInput {
+            final_authority,
+            payload,
+        } = input;
+        let app = self.app;
+
+        let BoundaryAuthority {
+            manager,
+            idle_detector,
+            authority_id,
+            authority_backend,
+            authority_route,
+            ..
+        } = authority;
+        let boundary_settings = app.state::<SettingsState>().inner().clone();
+        let owned_route = guards.owned_work.as_ref().and_then(|_| {
+            PtyManager::snapshot_route_proof(selection.pty_manager, selection.selected_id).ok()
+        });
+        let boundary_carrier = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let owned_token = guards
+            .owned_work
+            .as_ref()
+            .and_then(|(continuation, _)| continuation.launch_token());
+        let owned_current = match guards.owned_work.as_ref() {
+            Some((continuation, _)) => {
+                manager
+                    .with_current_carrier_snapshot(&boundary_carrier, |current| {
+                        owned_token.is_some()
+                            && continuation.current_completion_region(
+                                &boundary_carrier,
+                                current,
+                                selection.pty_manager,
+                            )
+                    })
+                    .await
+            }
+            None => true,
+        };
+        if !owned_current {
+            drop(boundary_carrier);
+            let observed = context
+                .store
+                .terminalize_pty_input_offloaded(
+                    context.injection_id.to_string(),
+                    S::Indeterminate,
+                    Some(C::FinalRevalidationFailed),
+                    chrono::Utc::now(),
+                )
+                .await
+                .is_ok_and(|result| result.terminal);
+            drop(write_guards.final_api_guard.take());
+            drop(guards.target_guard.take());
+            drop(guards.target_stripe.take());
+            drop(write_guards.permit);
+            finish_owned_pty_work(app, guards.owned_work, observed).await;
+            return Err(false);
+        }
+        let boundary_write = match manager
+            .prepare_pty_input_boundary_with_carrier_permit(
+                &boundary_carrier,
+                selection.selected_id,
+                selection.verified_target,
+                selection.selected.backend_kind,
+                *authority_id,
+                &final_authority.sender,
+                *authority_backend,
+                authority_route,
+                &write_guards.permit,
+                idle_detector,
+                &boundary_settings,
+                |session, settings| {
+                    owned_token.is_none_or(|token| session.token == token)
+                        && guards.owned_work.as_ref().is_none_or(|(continuation, _)| {
+                            owned_route.as_ref().is_some_and(|proof| {
+                                continuation.matches_captured_launch_route(proof)
+                            })
+                        })
+                        && session_has_current_pty_submission_provenance(
+                            &SessionInfo::from(session),
+                            settings,
+                        )
+                },
+                || self.dispatch_boundary_source_current(context, authority),
+            )
+            .await
+        {
+            Ok(guard) => {
+                drop(boundary_carrier);
+                Ok(crate::pty::inject::write_exact_agent_input_first(
+                    guard, payload,
+                ))
+            }
+            Err(_) => {
+                drop(boundary_carrier);
+                // The guard-bearing Result ends in this match. Only the
+                // observed terminal boolean survives to the work handoff await.
+                let terminal = context.store.terminalize_pty_input(
+                    context.injection_id,
+                    S::Indeterminate,
+                    Some(C::FinalRevalidationFailed),
+                    chrono::Utc::now(),
+                );
+                if terminal.is_err() {
+                    log::error!(
+                        "[pty-input] boundary terminalization failed id={} \
+                        code=terminal_store_failed",
+                        context.injection_id
+                    );
+                }
+                Err(terminal.as_ref().is_ok_and(|result| result.terminal))
+            }
+        };
+
+        Ok((boundary_write, write_guards))
+    }
+    pub(super) async fn dispatch_boundary_result(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+        selection: &DispatchSelection<'_>,
+        write_guards: BoundaryWriteGuards,
+        payload: &[u8],
+        boundary_write: Result<bool, bool>,
+    ) -> bool {
+        let BoundaryWriteGuards {
+            permit,
+            mut final_api_guard,
+        } = write_guards;
+        let app = self.app;
+
+        let text_write_succeeded = match boundary_write {
+            Ok(written) => written,
+            Err(observed) => {
+                drop(final_api_guard.take());
+                drop(guards.target_guard.take());
+                drop(guards.target_stripe.take());
+                drop(permit);
+                finish_owned_pty_work(app, guards.owned_work, observed).await;
+                return false;
+            }
+        };
+        // Keep the fresh registry lock through the synchronous first-write
+        // boundary so a concurrent revocation linearizes before or after it,
+        // never between the final authority check and the text write.
+        drop(final_api_guard.take());
+        let outcome =
+            crate::pty::inject::submit_exact_agent_input_with_permit(&permit, text_write_succeeded)
+                .await;
+        let (status, reason) = self
+            .pty_submit_terminal_status(payload, selection.selected_id, outcome)
+            .await;
+        let result = match context
+            .store
+            .terminalize_pty_input_offloaded(
+                context.injection_id.to_string(),
+                status,
+                reason,
+                chrono::Utc::now(),
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                log::error!(
+                    "[pty-input] terminal persistence failed id={} code=terminal_store_failed",
+                    context.injection_id
+                );
+                return false;
+            }
+        };
+        crate::api::audit::record_pty_input_result("terminal", &result);
+        drop(guards.target_guard.take());
+        drop(guards.target_stripe.take());
+        drop(permit);
+        finish_owned_pty_work(app, guards.owned_work, result.terminal).await;
+        if !app.pty_input_status(&result) {
+            log::warn!(
+                "[pty-input] status event failed id={} code=boundary_metadata_failed",
+                context.injection_id
+            );
+        }
+
+        false
+    }
+    pub(super) async fn pty_submit_terminal_status(
+        &self,
+        payload: &[u8],
+        selected_id: Uuid,
+        outcome: crate::pty::inject::AgentSubmitOutcome,
+    ) -> (S, Option<C>) {
+        let app = self.app;
+
+        match outcome {
+            crate::pty::inject::AgentSubmitOutcome::TextWriteFailed => {
+                (S::Indeterminate, Some(C::TextWriteFailed))
+            }
+            crate::pty::inject::AgentSubmitOutcome::RequiredEnterFailed => {
+                (S::Indeterminate, Some(C::RequiredEnterFailed))
+            }
+            crate::pty::inject::AgentSubmitOutcome::Submitted {
+                redundant_enter_failed,
+            } => {
+                let metadata = if payload == b"/clear" {
+                    crate::commands::pty::stamp_fresh_boundary_to_session(app, selected_id).await
+                } else if payload == b"/compact" {
+                    crate::commands::pty::BoundaryMetadataOutcome::Unchanged
+                } else {
+                    crate::commands::pty::note_post_boundary_content_to_session(app, selected_id)
+                        .await
+                };
+                let reason = if metadata == crate::commands::pty::BoundaryMetadataOutcome::Failed {
+                    Some(C::BoundaryMetadataFailed)
+                } else {
+                    redundant_enter_failed.then_some(C::RedundantEnterFailed)
+                };
+                (S::Injected, reason)
+            }
+        }
+    }
+    async fn dispatch_selection_inconsistent(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+    ) -> bool {
+        let app = self.app;
+        if context.claimed.attempt < 5 {
+            let observed = finish_pty_input_before_boundary(
+                context.store,
+                guards.heartbeat,
+                context.injection_id,
+                context.lease_owner,
+                C::SessionRace,
+            )
+            .await;
+            drop(guards.target_guard.take());
+            drop(guards.target_stripe.take());
+            finish_owned_pty_work(app, guards.owned_work, observed).await;
+        } else {
+            let observed = reject_pty_input_before_boundary(
+                context.store,
+                guards.heartbeat,
+                context.injection_id,
+                C::InconsistentSession,
+            )
+            .await;
+            drop(guards.target_guard.take());
+            drop(guards.target_stripe.take());
+            finish_owned_pty_work(app, guards.owned_work, observed).await;
+        }
+        false
+    }
+    fn dispatch_boundary_source_current(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        authority: &BoundaryAuthority,
+    ) -> bool {
+        let app = self.app;
+        let BoundaryAuthority {
+            expected_api_binding,
+            authority_container_backend,
+            authority_id,
+            ..
+        } = authority;
+        if context.expires <= chrono::Utc::now()
+            || app
+                .try_state::<Arc<crate::RestoreInProgress>>()
+                .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
+            || app
+                .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+                .is_some_and(|guard| guard.blocks_agent(&context.claimed.target_fqn))
+        {
+            return false;
+        }
+        match (&context.source_plane, expected_api_binding.as_ref()) {
+            (crate::phone::types::PtyInputSourcePlane::HostCli, None) => true,
+            (
+                crate::phone::types::PtyInputSourcePlane::ContainerApi,
+                Some((client_id, generation, bound_session_id, root_object, token_hash)),
+            ) => {
+                let binding = authority_container_backend.credential_binding(*authority_id);
+                binding.is_some_and(|binding| {
+                    binding.client_id == *client_id
+                        && binding.credential_generation == *generation
+                        && binding.bound_session_id == *bound_session_id
+                        && binding.bound_root_object_id == *root_object
+                        && crate::api::auth::constant_time_eq(
+                            &binding.credential_token_hash,
+                            token_hash,
+                        )
+                })
+            }
+            _ => false,
         }
     }
 }

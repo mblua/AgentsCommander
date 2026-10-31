@@ -210,6 +210,40 @@ pub(crate) struct CommitResult {
     pub activity: Vec<crate::config::activity_log::ActivityRecord>,
 }
 
+fn log_selection_commit(
+    state: &SessionManagerState,
+    old_selection: &SessionSelection,
+    cause: SelectionCause,
+    selection_changed: bool,
+) {
+    let old_id = old_selection.id();
+    let old_mode = old_selection.mode();
+    log::info!(
+        concat!(
+            "[selection] epoch={} revision={} oldId={:?} newId={:?} source={} ",
+            "userInitiated={} oldMode={} newMode={} oldStatus={:?} newStatus={:?} ",
+            "targetHasPty={} targetDetached={} result={}"
+        ),
+        state.epoch,
+        state.revision,
+        old_id,
+        state.selection.id(),
+        cause.source(),
+        cause.user_initiated(),
+        old_mode,
+        state.selection.mode(),
+        old_selection.status(),
+        state.selection.status(),
+        state.selection.has_pty(),
+        state.selection.detached(),
+        if selection_changed {
+            "committed"
+        } else {
+            "noop"
+        },
+    );
+}
+
 #[cfg(test)]
 impl Default for SessionManager {
     fn default() -> Self {
@@ -688,30 +722,7 @@ impl SessionManager {
             .filter_map(|id| state.sessions.get(id).map(SessionInfo::from))
             .collect();
 
-        log::info!(
-            concat!(
-                "[selection] epoch={} revision={} oldId={:?} newId={:?} source={} ",
-                "userInitiated={} oldMode={} newMode={} oldStatus={:?} newStatus={:?} ",
-                "targetHasPty={} targetDetached={} result={}"
-            ),
-            state.epoch,
-            state.revision,
-            old_id,
-            state.selection.id(),
-            cause.source(),
-            cause.user_initiated(),
-            old_mode,
-            state.selection.mode(),
-            old_selection.status(),
-            state.selection.status(),
-            state.selection.has_pty(),
-            state.selection.detached(),
-            if selection_changed {
-                "committed"
-            } else {
-                "noop"
-            },
-        );
+        log_selection_commit(&state, &old_selection, cause, selection_changed);
 
         // #1149 - the opening edge at session birth, deferred past every fallible
         // exit above so no record can survive a commit that returned `Err`. The

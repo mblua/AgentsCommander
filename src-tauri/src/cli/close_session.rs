@@ -302,6 +302,16 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         return 1;
     }
 
+    wait_for_close_response(&outbox_dir, &ac_dir, &request_id, &msg_id, args.timeout)
+}
+
+fn wait_for_close_response(
+    outbox_dir: &std::path::Path,
+    ac_dir: &std::path::Path,
+    request_id: &str,
+    msg_id: &str,
+    timeout_secs: u32,
+) -> i32 {
     // §1440: espera unica del veredicto terminal del daemon. El daemon escribe
     // rejected/<msg_id>.reason.txt al rechazar (antes de tocar sesiones),
     // responses/<request_id>.json al terminar, y mueve el mensaje a delivered/
@@ -319,7 +329,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
 
     let responses_dir = ac_dir.join("responses");
     let response_path = responses_dir.join(format!("{}.json", request_id));
-    let budget = response_wait_budget(args.timeout);
+    let budget = response_wait_budget(timeout_secs);
     let poll = std::time::Duration::from_millis(250);
     let start = std::time::Instant::now();
 
@@ -369,8 +379,8 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
             // consumers don't mistake it for the happy-path JSON.
             let m = format_no_response_error(
                 budget.as_secs(),
-                &request_id,
-                &msg_id,
+                request_id,
+                msg_id,
                 directories::cli_outbox_artifact_exists(&delivered_path),
             );
             log::error!("{}", m);

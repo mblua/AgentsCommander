@@ -110,19 +110,20 @@ fn issue_3371_real_writer_caller_paths_share_admission_and_route_guard() {
     let desktop = include_str!("../../../commands/pty.rs");
     let web = include_str!("../../../web/commands.rs");
     let privileged = include_str!("../../../phone/mailbox/pty_dispatch.rs");
+    let privileged_select = include_str!("../../../phone/mailbox/pty_dispatch/select.rs");
     let close = include_str!("../../../phone/mailbox/teardown.rs");
     for source in [desktop, web, close] {
         assert!(source.contains("PtyManager::acquire_input_writer"));
         assert!(source.contains("PtyManager::write_with_permit"));
     }
-    assert!(privileged.contains("write_exact_agent_input_first("));
+    assert!(privileged_select.contains("write_exact_agent_input_first("));
     let manager = include_str!("../../manager.rs");
     let routes = include_str!("../../input_route.rs");
     let forwarding = include_str!("../../manager/route_proof.rs");
     assert!(manager.contains("pub use route_proof::{acquire_input_writer"));
     assert!(forwarding.contains("crate::pty::input_route::write_with_permit"));
     assert!(privileged.contains("PtyManager::acquire_input_writer"));
-    assert!(privileged.contains("submit_exact_agent_input_with_permit"));
+    assert!(privileged_select.contains("submit_exact_agent_input_with_permit"));
     assert!(web.contains("PtyManager::write_with_permit"));
     assert!(routes.contains("lock_route_for_write(permit)?.write(bytes)"));
     assert!(routes.contains("reserve_writer(session_id, generation)"));

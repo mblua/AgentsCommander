@@ -142,6 +142,204 @@ fn on_window_destroyed<H, S, F, FF>(
     }
 }
 
+fn append_exit_activity(
+    session_mgr_for_exit: &Arc<tokio::sync::RwLock<SessionManager>>,
+    activity_for_exit: &crate::config::activity_log::ActivityCoalescer,
+) {
+    // #1149 - close every open activity interval here. `trigger()`
+    // below stops the IdleDetector before anything else, so this
+    // is the only position where the session map is still
+    // populated AND the detector is still alive. Without it a
+    // clean exit would drop every open interval, which is the
+    // defect this issue names first.
+    //
+    // Reaching the manager needs the outer lock, and `block_on`
+    // is forbidden on this path, so take it with `try_read`, clone
+    // the manager out (it is an `Arc` over its own state) and drop
+    // the guard before spinning.
+    let manager_for_activity = session_mgr_for_exit
+        .try_read()
+        .ok()
+        .map(|guard| guard.clone());
+    let working_snapshot = match manager_for_activity {
+        Some(manager) => {
+            // Bounded at 500 ms, and it holds no lock the writer
+            // needs while it sleeps, so it can never starve the
+            // writer it waits on. It can only fail to observe a
+            // gap, and that failure is already correct: the
+            // consumer closes every open interval at `app_stop`'s
+            // timestamp regardless of enumeration.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+            loop {
+                if let Some(rows) = manager.try_snapshot_working_sessions() {
+                    break Some(rows);
+                }
+                if std::time::Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+        // The outer lock has no production writer, so unreachable
+        // in practice; falls through to the degraded path.
+        None => None,
+    };
+    let activity_batch = match &working_snapshot {
+        Some(rows) => {
+            let mut batch: Vec<_> = rows
+                .iter()
+                .map(|row| {
+                    crate::config::activity_log::build_idle_from_snapshot(
+                        row,
+                        crate::config::activity_log::IdleReason::AppStop,
+                    )
+                })
+                .collect();
+            batch.push(crate::config::activity_log::build_app_stop(
+                true,
+                rows.len(),
+            ));
+            batch
+        }
+        // The degraded path is a designed outcome, not a fallback
+        // to optimise away: the spin may legitimately exhaust
+        // under teardown load, and the enumerated records are pure
+        // precision on top of a close that happens either way.
+        None => vec![crate::config::activity_log::build_app_stop(false, 0)],
+    };
+    // One open, write and close for all N+1 lines.
+    crate::config::activity_log::append_batch(&activity_batch, activity_for_exit);
+}
+
+fn cleanup_exit_pty(
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    cleanup_budget_secs: u64,
+) -> (
+    crate::pty::container_backend::ContainerShutdownReport,
+    usize,
+) {
+    let pty_lock_budget = std::time::Duration::from_secs(cleanup_budget_secs);
+    let container_backend = {
+        let deadline = std::time::Instant::now() + pty_lock_budget;
+        loop {
+            match pty_mgr.try_lock() {
+                Ok(guard) => break Some(guard.container_backend()),
+                Err(std::sync::TryLockError::Poisoned(error)) => {
+                    break Some(error.into_inner().container_backend());
+                }
+                Err(std::sync::TryLockError::WouldBlock)
+                    if std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => break None,
+            }
+        }
+    };
+    let mut container_shutdown = match container_backend {
+        Some(container_backend) => {
+            container_backend.stop_all_started_containers_blocking(pty_lock_budget)
+        }
+        None => {
+            log::error!(
+                "[shutdown] PTY owner lock reached the global cleanup deadline \
+                    before container ownership transfer"
+            );
+            crate::pty::container_backend::ContainerShutdownReport {
+                terminal: false,
+                retained: vec!["reason=global-pty-owner state=retained".to_string()],
+            }
+        }
+    };
+    let jobs = {
+        let deadline = std::time::Instant::now() + pty_lock_budget;
+        loop {
+            match pty_mgr.try_lock() {
+                Ok(guard) => break Some(guard.kill_all_jobs()),
+                Err(std::sync::TryLockError::Poisoned(error)) => {
+                    break Some(error.into_inner().kill_all_jobs());
+                }
+                Err(std::sync::TryLockError::WouldBlock)
+                    if std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => break None,
+            }
+        }
+    };
+    let (jobs_killed, jobless_sessions) = match jobs {
+        Some(counts) => counts,
+        None => {
+            log::error!(
+                "[shutdown] PTY owner lock reached the job cleanup deadline \
+                    state=retained"
+            );
+            container_shutdown.terminal = false;
+            container_shutdown
+                .retained
+                .push("reason=global-job-owner state=retained".to_string());
+            (0, 0)
+        }
+    };
+    log::info!(
+        "[shutdown] terminated {jobs_killed} agent job object(s); \
+            {jobless_sessions} session(s) had no job"
+    );
+    (container_shutdown, jobless_sessions)
+}
+
+fn cleanup_exit_resources(
+    resource_monitor_for_exit: &Arc<resource_monitor::ResourceMonitorState>,
+    cleanup_budget_secs: u64,
+    jobless_sessions: usize,
+) {
+    // #632 B2+B4 - run the identity reaper for accounting and as the
+    // backstop for job-less sessions, TIME-BOXED. Fresh-only targets
+    // (B2a) make it near-instant for jobbed sessions (their live tree is
+    // already dead). Abandoning it on timeout is safe for jobbed
+    // sessions; the job-less warning below covers the MED-2 residual.
+    let rm_for_cleanup = resource_monitor_for_exit.clone();
+    let cleanup = crate::shutdown::run_time_boxed(
+        std::time::Duration::from_secs(cleanup_budget_secs),
+        move || {
+            rm_for_cleanup.kill_all_owned_groups(resource_monitor::ResourceKillReason::AppShutdown)
+        },
+    );
+    match &cleanup {
+        Ok(results) => {
+            for result in results {
+                if result.quarantined {
+                    log::warn!(
+                        "[shutdown] resource group {} quarantined during \
+                            cleanup: {}",
+                        result.session_id,
+                        result.message
+                    );
+                }
+            }
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => log::warn!(
+            "[shutdown] resource cleanup exceeded \
+                {cleanup_budget_secs}s budget; proceeding to exit (job \
+                objects already terminated jobbed trees)"
+        ),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => log::error!(
+            "[shutdown] resource cleanup thread panicked before completing; \
+                jobbed trees were still terminated by the job kill"
+        ),
+    }
+    // #632 MED-2 - job-less sessions are reaper-only; if the reaper did
+    // not finish, their trees may be orphaned. Make it visible.
+    if cleanup.is_err() && jobless_sessions > 0 {
+        log::warn!(
+            "[shutdown] {jobless_sessions} session(s) had no Job Object and the \
+                reaper did not finish in budget; their process trees may be \
+                orphaned"
+        );
+    }
+}
+
 pub(crate) fn on_run_event<H, S, F, FF>(
     host: &H,
     event: RunExitEvent,
@@ -181,70 +379,7 @@ pub(crate) fn on_run_event<H, S, F, FF>(
                 shutdown.abort_now();
             }
 
-            // #1149 - close every open activity interval here. `trigger()`
-            // below stops the IdleDetector before anything else, so this
-            // is the only position where the session map is still
-            // populated AND the detector is still alive. Without it a
-            // clean exit would drop every open interval, which is the
-            // defect this issue names first.
-            //
-            // Reaching the manager needs the outer lock, and `block_on`
-            // is forbidden on this path, so take it with `try_read`, clone
-            // the manager out (it is an `Arc` over its own state) and drop
-            // the guard before spinning.
-            let manager_for_activity = session_mgr_for_exit
-                .try_read()
-                .ok()
-                .map(|guard| guard.clone());
-            let working_snapshot = match manager_for_activity {
-                Some(manager) => {
-                    // Bounded at 500 ms, and it holds no lock the writer
-                    // needs while it sleeps, so it can never starve the
-                    // writer it waits on. It can only fail to observe a
-                    // gap, and that failure is already correct: the
-                    // consumer closes every open interval at `app_stop`'s
-                    // timestamp regardless of enumeration.
-                    let deadline =
-                        std::time::Instant::now() + std::time::Duration::from_millis(500);
-                    loop {
-                        if let Some(rows) = manager.try_snapshot_working_sessions() {
-                            break Some(rows);
-                        }
-                        if std::time::Instant::now() >= deadline {
-                            break None;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(2));
-                    }
-                }
-                // The outer lock has no production writer, so unreachable
-                // in practice; falls through to the degraded path.
-                None => None,
-            };
-            let activity_batch = match &working_snapshot {
-                Some(rows) => {
-                    let mut batch: Vec<_> = rows
-                        .iter()
-                        .map(|row| {
-                            crate::config::activity_log::build_idle_from_snapshot(
-                                row,
-                                crate::config::activity_log::IdleReason::AppStop,
-                            )
-                        })
-                        .collect();
-                    batch.push(crate::config::activity_log::build_app_stop(
-                        true,
-                        rows.len(),
-                    ));
-                    batch
-                }
-                // The degraded path is a designed outcome, not a fallback
-                // to optimise away: the spin may legitimately exhaust
-                // under teardown load, and the enumerated records are pure
-                // precision on top of a close that happens either way.
-                None => vec![crate::config::activity_log::build_app_stop(false, 0)],
-            };
-            // One open, write and close for all N+1 lines.
-            crate::config::activity_log::append_batch(&activity_batch, activity_for_exit);
+            append_exit_activity(session_mgr_for_exit, activity_for_exit);
 
             // #632 B1 - trigger background-task shutdown FIRST so the resource
             // watchdog stops dispatching NEW ticks and the idle detectors stop.
@@ -296,120 +431,14 @@ pub(crate) fn on_run_event<H, S, F, FF>(
             // each jobbed session's whole descendant tree via the job handle.
             // This is the durable, orphan-free guarantee for jobbed sessions.
             let pty_mgr = host.required_pty();
-            let pty_lock_budget = std::time::Duration::from_secs(cleanup_budget_secs);
-            let container_backend = {
-                let deadline = std::time::Instant::now() + pty_lock_budget;
-                loop {
-                    match pty_mgr.try_lock() {
-                        Ok(guard) => break Some(guard.container_backend()),
-                        Err(std::sync::TryLockError::Poisoned(error)) => {
-                            break Some(error.into_inner().container_backend());
-                        }
-                        Err(std::sync::TryLockError::WouldBlock)
-                            if std::time::Instant::now() < deadline =>
-                        {
-                            std::thread::sleep(std::time::Duration::from_millis(2));
-                        }
-                        Err(std::sync::TryLockError::WouldBlock) => break None,
-                    }
-                }
-            };
-            let mut container_shutdown = match container_backend {
-                Some(container_backend) => {
-                    container_backend.stop_all_started_containers_blocking(pty_lock_budget)
-                }
-                None => {
-                    log::error!(
-                        "[shutdown] PTY owner lock reached the global cleanup deadline \
-                            before container ownership transfer"
-                    );
-                    crate::pty::container_backend::ContainerShutdownReport {
-                        terminal: false,
-                        retained: vec!["reason=global-pty-owner state=retained".to_string()],
-                    }
-                }
-            };
-            let jobs = {
-                let deadline = std::time::Instant::now() + pty_lock_budget;
-                loop {
-                    match pty_mgr.try_lock() {
-                        Ok(guard) => break Some(guard.kill_all_jobs()),
-                        Err(std::sync::TryLockError::Poisoned(error)) => {
-                            break Some(error.into_inner().kill_all_jobs());
-                        }
-                        Err(std::sync::TryLockError::WouldBlock)
-                            if std::time::Instant::now() < deadline =>
-                        {
-                            std::thread::sleep(std::time::Duration::from_millis(2));
-                        }
-                        Err(std::sync::TryLockError::WouldBlock) => break None,
-                    }
-                }
-            };
-            let (jobs_killed, jobless_sessions) = match jobs {
-                Some(counts) => counts,
-                None => {
-                    log::error!(
-                        "[shutdown] PTY owner lock reached the job cleanup deadline \
-                            state=retained"
-                    );
-                    container_shutdown.terminal = false;
-                    container_shutdown
-                        .retained
-                        .push("reason=global-job-owner state=retained".to_string());
-                    (0, 0)
-                }
-            };
-            log::info!(
-                "[shutdown] terminated {jobs_killed} agent job object(s); \
-                    {jobless_sessions} session(s) had no job"
-            );
+            let (container_shutdown, jobless_sessions) =
+                cleanup_exit_pty(&pty_mgr, cleanup_budget_secs);
 
-            // #632 B2+B4 - run the identity reaper for accounting and as the
-            // backstop for job-less sessions, TIME-BOXED. Fresh-only targets
-            // (B2a) make it near-instant for jobbed sessions (their live tree is
-            // already dead). Abandoning it on timeout is safe for jobbed
-            // sessions; the job-less warning below covers the MED-2 residual.
-            let rm_for_cleanup = resource_monitor_for_exit.clone();
-            let cleanup = crate::shutdown::run_time_boxed(
-                std::time::Duration::from_secs(cleanup_budget_secs),
-                move || {
-                    rm_for_cleanup
-                        .kill_all_owned_groups(resource_monitor::ResourceKillReason::AppShutdown)
-                },
+            cleanup_exit_resources(
+                resource_monitor_for_exit,
+                cleanup_budget_secs,
+                jobless_sessions,
             );
-            match &cleanup {
-                Ok(results) => {
-                    for result in results {
-                        if result.quarantined {
-                            log::warn!(
-                                "[shutdown] resource group {} quarantined during \
-                                    cleanup: {}",
-                                result.session_id,
-                                result.message
-                            );
-                        }
-                    }
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => log::warn!(
-                    "[shutdown] resource cleanup exceeded \
-                        {cleanup_budget_secs}s budget; proceeding to exit (job \
-                        objects already terminated jobbed trees)"
-                ),
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => log::error!(
-                    "[shutdown] resource cleanup thread panicked before completing; \
-                        jobbed trees were still terminated by the job kill"
-                ),
-            }
-            // #632 MED-2 - job-less sessions are reaper-only; if the reaper did
-            // not finish, their trees may be orphaned. Make it visible.
-            if cleanup.is_err() && jobless_sessions > 0 {
-                log::warn!(
-                    "[shutdown] {jobless_sessions} session(s) had no Job Object and the \
-                        reaper did not finish in budget; their process trees may be \
-                        orphaned"
-                );
-            }
 
             if (policy.persistence_allowed)(
                 selection_shutdown.persistence_safe,

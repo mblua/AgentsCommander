@@ -412,31 +412,9 @@ impl ProjectSeedManifestGuard {
         // c. Lenient pre-parse. The wire deserializers enforce the MAX_* bounds,
         // so a bound-violating v1 file fails here and stays preserved (the v2
         // strict parse would reject the same rows).
-        let text = match std::str::from_utf8(&raw) {
-            Ok(text) => text,
-            Err(error) => {
-                log::warn!(
-                    "[seed_manifest] v1->v2 upgrade skipped: manifest is not UTF-8 at byte offset \
-                        {} path={}; manifest stays preserved read-only",
-                    error.valid_up_to(),
-                    canonical_path.display()
-                );
-                restore(self, canonical);
-                return;
-            }
-        };
-        let wire = match toml::from_str::<SeedManifestWire>(text) {
-            Ok(wire) => wire,
-            Err(error) => {
-                log::warn!(
-                    "[seed_manifest] v1->v2 upgrade skipped path={} error={}; manifest stays \
-                        preserved read-only",
-                    canonical_path.display(),
-                    classify_toml_parse_error(error)
-                );
-                restore(self, canonical);
-                return;
-            }
+        let Some(wire) = parse_upgrade_wire(&raw, &canonical_path) else {
+            restore(self, canonical);
+            return;
         };
 
         // Exact v1 shape: schema 1, coverage 1, the exact two-item list in that
@@ -857,6 +835,34 @@ impl ProjectSeedManifestGuard {
                 temp.path.display(),
                 error
             );
+        }
+    }
+}
+
+/// Pre-parses upgrade bytes while preserving the read-only skip diagnostics.
+fn parse_upgrade_wire(raw: &[u8], canonical_path: &Path) -> Option<SeedManifestWire> {
+    let text = match std::str::from_utf8(raw) {
+        Ok(text) => text,
+        Err(error) => {
+            log::warn!(
+                "[seed_manifest] v1->v2 upgrade skipped: manifest is not UTF-8 at byte offset \
+                    {} path={}; manifest stays preserved read-only",
+                error.valid_up_to(),
+                canonical_path.display()
+            );
+            return None;
+        }
+    };
+    match toml::from_str::<SeedManifestWire>(text) {
+        Ok(wire) => Some(wire),
+        Err(error) => {
+            log::warn!(
+                "[seed_manifest] v1->v2 upgrade skipped path={} error={}; manifest stays \
+                    preserved read-only",
+                canonical_path.display(),
+                classify_toml_parse_error(error)
+            );
+            None
         }
     }
 }
