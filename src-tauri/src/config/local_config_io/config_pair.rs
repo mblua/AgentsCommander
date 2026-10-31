@@ -158,48 +158,13 @@ where
             let mut s = current[1].map().map_err(|e| e.to_string())?;
             mutate(&mut d, &mut s)?;
             let proposed = [
-                prepared_pair_image(
-                    &current[0],
-                    &current[0].map().map_err(|e| e.to_string())?,
-                    &d,
-                )
-                .map_err(|e| e.to_string())?,
-                prepared_pair_image(
-                    &current[1],
-                    &current[1].map().map_err(|e| e.to_string())?,
-                    &s,
-                )
-                .map_err(|e| e.to_string())?,
+                prepared_mutated_image(&current[0], &d)?,
+                prepared_mutated_image(&current[1], &s)?,
             ];
             if proposed == current {
                 return Ok(());
             }
-            // Structural changes, history, selection and unknown fields all
-            // remain frozen. Only the exact timestamp leaf may move forward.
-            if proposed[0] != current[0]
-                || protected_revision(&proposed[1], true).map_err(|e| e.to_string())?
-                    != protected_revision(&current[1], true).map_err(|e| e.to_string())?
-            {
-                // Absent state permits only its timestamp-only overlay.
-                if proposed[0] != current[0]
-                    || current[1] != PhysicalState::Absent
-                    || !timestamp_only_overlay(&proposed[1]).map_err(|e| e.to_string())?
-                {
-                    return Err("targetTransitionPending: PAIR is reserved".into());
-                }
-            }
-            let input = timestamp_value(&proposed[1])
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| {
-                    "targetTransitionPending: timestamp cannot be deleted".to_string()
-                })?;
-            if timestamp_value(&current[1])
-                .map_err(|e| e.to_string())?
-                .as_deref()
-                .is_some_and(|old| timestamp_cmp(&input, old).is_ok_and(|order| order.is_lt()))
-            {
-                return Err("targetTransitionPending: timestamp cannot decrease".into());
-            }
+            let input = reserved_timestamp_input(&current, &proposed)?;
             land_pair_activity(
                 decisions,
                 state,
@@ -281,4 +246,47 @@ fn run_nonpending_preflight(
         }
     }
     Ok(())
+}
+
+fn reserved_timestamp_input(
+    current: &[PhysicalState; 2],
+    proposed: &[PhysicalState; 2],
+) -> Result<String, String> {
+    // Structural changes, history, selection and unknown fields all
+    // remain frozen. Only the exact timestamp leaf may move forward.
+    if proposed[0] != current[0]
+        || protected_revision(&proposed[1], true).map_err(|e| e.to_string())?
+            != protected_revision(&current[1], true).map_err(|e| e.to_string())?
+    {
+        // Absent state permits only its timestamp-only overlay.
+        if proposed[0] != current[0]
+            || current[1] != PhysicalState::Absent
+            || !timestamp_only_overlay(&proposed[1]).map_err(|e| e.to_string())?
+        {
+            return Err("targetTransitionPending: PAIR is reserved".into());
+        }
+    }
+    let input = timestamp_value(&proposed[1])
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "targetTransitionPending: timestamp cannot be deleted".to_string())?;
+    if timestamp_value(&current[1])
+        .map_err(|e| e.to_string())?
+        .as_deref()
+        .is_some_and(|old| timestamp_cmp(&input, old).is_ok_and(|order| order.is_lt()))
+    {
+        return Err("targetTransitionPending: timestamp cannot decrease".into());
+    }
+    Ok(input)
+}
+
+fn prepared_mutated_image(
+    current: &PhysicalState,
+    proposed: &Map<String, Value>,
+) -> Result<PhysicalState, String> {
+    prepared_pair_image(
+        current,
+        &current.map().map_err(|e| e.to_string())?,
+        proposed,
+    )
+    .map_err(|e| e.to_string())
 }
