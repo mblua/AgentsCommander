@@ -383,10 +383,9 @@ pub(super) fn replica_role_overrides(ac_root: &Path, variant_agent_name: &str) -
             return std::ops::ControlFlow::Continue(());
         };
         if crate::config::entity_prefix::has_entity_prefix(name) && !name.contains("-role-exp-") {
-            let role = path
-                .join(format!("__agent_{}", variant_agent_name))
-                .join("Role.md");
-            if directories::experiment_path_exists(&role) {
+            if let Some(role) =
+                crate::filesystem::experiment_replica_role::existing_in_room(&path, variant_agent_name)
+            {
                 out.push(role);
             }
         }
@@ -396,16 +395,13 @@ pub(super) fn replica_role_overrides(ac_root: &Path, variant_agent_name: &str) -
 }
 
 pub(super) fn is_replica_role_file(path: &Path) -> bool {
-    let components: Vec<String> = path
-        .components()
-        .filter_map(|c| c.as_os_str().to_str().map(str::to_string))
-        .collect();
-    components.windows(4).any(|w| {
-        w[0] == ".ac"
-            && crate::config::entity_prefix::has_entity_prefix(&w[1])
-            && w[2].starts_with("__agent_")
-            && w[3] == "Role.md"
-    })
+    crate::filesystem::experiment_replica_role::is_replica_role_file(
+        path,
+        &[
+            crate::config::entity_prefix::ROOM_DIR_PREFIX,
+            crate::config::entity_prefix::LEGACY_WORKGROUP_DIR_PREFIX,
+        ],
+    )
 }
 
 pub(super) fn add_diff_warnings(

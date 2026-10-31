@@ -28,6 +28,7 @@ pub(crate) mod daemon_pid;
 pub(crate) mod debug_logs;
 pub(crate) mod directories;
 pub(crate) mod documents;
+pub(crate) mod experiment_replica_role;
 pub(crate) mod injected_documents;
 pub(crate) mod instance_ignore;
 pub(crate) mod local_config;
