@@ -14,7 +14,7 @@
 //! for all CLI verbs simultaneously.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 #[cfg(test)]
 use chrono::DateTime;
@@ -26,8 +26,8 @@ mod initialization;
 mod status;
 
 use crate::filesystem::tasks::{
-    io_boundary, open_status_append, open_task_sync, read_description_snapshot, TaskLock,
-    TaskLockError,
+    description_sentinel, io_boundary, open_status_append, open_task_sync, read_description_snapshot,
+    TaskLock, TaskLockError,
 };
 #[cfg(test)]
 use crate::filesystem::tasks::{IO_FAULT, IO_MUTATION};
@@ -45,10 +45,11 @@ pub use status::StatusRecord;
 pub use status::TaskSnapshot;
 use status::{
     read_latest_status_locked, repair_partial_locked, status_invalid, valid_author, valid_revision,
-    validate_status_text, write_failed, MAX_SEQUENCE, STATUS_LIMIT, STATUS_NAME, TASK_LIMIT,
+    validate_status_text, write_failed, JOURNAL_NAME, MAX_SEQUENCE, STATUS_LIMIT, STATUS_NAME,
+    TASK_LIMIT,
 };
 #[cfg(test)]
-use status::{validate_record, JOURNAL_NAME, STATUS_WINDOW};
+use status::{validate_record, STATUS_WINDOW};
 
 /// Timeout for the cooperative lock. Mirrors the issue acceptance criterion
 /// "concurrent writes from two coordinators don't corrupt the file" — first
@@ -57,6 +58,34 @@ const LOCK_TIMEOUT_5S: Duration = Duration::from_secs(5);
 
 /// Compatibility acquisition argument; age no longer controls ownership.
 const LOCK_STALE_AFTER_5M: Duration = Duration::from_secs(300);
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct StatSentinel {
+    pub(crate) len: u64,
+    pub(crate) mtime: Option<SystemTime>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct TaskSentinels {
+    pub(crate) task: Option<StatSentinel>,
+    pub(crate) status: Option<StatSentinel>,
+    pub(crate) journal: bool,
+}
+
+/// Observe task-owned metadata without locking or recovery.
+/// Callers retain authorization; mutation and recovery use their existing locks.
+pub(crate) fn task_sentinels(root: &Path) -> Result<TaskSentinels, String> {
+    let stat = |name| match description_sentinel(&root.join(name)) {
+        Ok((len, mtime)) => Ok(Some(StatSentinel { len, mtime })),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("snapshot sentinel read failed: {error}")),
+    };
+    Ok(TaskSentinels {
+        task: stat("TASK.md")?,
+        status: stat(STATUS_NAME)?,
+        journal: stat(JOURNAL_NAME)?.is_some(),
+    })
+}
 
 /// Read the title without acquiring a mutation lock or recovering task state.
 pub(crate) fn read_title(root: &Path) -> Result<Option<String>, String> {
