@@ -345,12 +345,8 @@ pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
     let expected_key =
         capture::state::consumption_key(room_root, candidate.as_ref(), &handle.capture);
     let text = candidate.text.clone();
-
-    // (1) The detector runs before any write and before any network call.
-    if let Some(detection) = capture::secrets::detect(&handle.capture.secret_rules, &text) {
-        let reason = detection.reason();
-        let user_message = co_managed_secret_message(&reason);
-        return match commit_co_managed_with_retries(
+    let commit = |kind| {
+        commit_co_managed_with_retries(
             app,
             handle,
             session_id,
@@ -358,22 +354,20 @@ pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
             slot,
             expected_seq,
             &expected_key,
-            capture::state::EffectKind::TextToUser,
+            kind,
         )
-        .await
-        {
-            CoManagedCommit::Committed(_) => {
-                // Consume this exact candidate; a newer offer stays in the
-                // slot and re-triggers its own cycle.
-                slot.try_consume(expected_seq, &expected_key, expected_key.epoch);
-                surface_co_managed_user_message(app, session_id, user_message).await;
-                CoManagedOutcome::Done(reason)
-            }
-            CoManagedCommit::Contention => CoManagedOutcome::Contention,
-            CoManagedCommit::Rejected(reason) => {
-                CoManagedOutcome::Done(abstain_reason_label(&reason))
-            }
-        };
+    };
+
+    // (1) The detector runs before any write and before any network call.
+    if let Some(detection) = capture::secrets::detect(&handle.capture.secret_rules, &text) {
+        let reason = detection.reason();
+        return report_co_managed_secret(
+            (slot, expected_seq, &expected_key),
+            reason,
+            commit(capture::state::EffectKind::TextToUser),
+            |message| surface_co_managed_user_message(app, session_id, message),
+        )
+        .await;
     }
 
     // (2) Classify through the phase-6 leaf call.
@@ -407,26 +401,9 @@ pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
     let kind = route.kind();
 
     // (4) The bounded commit.
-    match commit_co_managed_with_retries(
-        app,
-        handle,
-        session_id,
-        room_root,
-        slot,
-        expected_seq,
-        &expected_key,
-        kind,
-    )
-    .await
-    {
+    match commit(kind).await {
         CoManagedCommit::Committed(committed) => {
-            // Consume this exact candidate; a newer offer stays in the slot
-            // and re-triggers its own cycle.
-            slot.try_consume(expected_seq, &expected_key, expected_key.epoch);
-            // `routable` is false for a baseline consumed by an Automatic
-            // request (the plan's section 8 demotion). A TextToUser commit is
-            // equally not routable, but its effect is the user message below.
-            if committed.kind == capture::state::EffectKind::Automatic && !committed.routable {
+            if !consume_co_managed_route(slot, expected_seq, &expected_key, &committed) {
                 return CoManagedOutcome::Done(
                     "baseline record consumed; never routed".to_string(),
                 );
@@ -448,22 +425,53 @@ pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
                     (slot, expected_seq, &expected_key),
                     candidate,
                     &text,
-                    commit_co_managed_with_retries(
-                        app,
-                        handle,
-                        session_id,
-                        room_root,
-                        slot,
-                        expected_seq,
-                        &expected_key,
-                        capture::state::EffectKind::TextToUser,
-                    ),
+                    commit(capture::state::EffectKind::TextToUser),
                     |message| surface_co_managed_user_message(app, session_id, message),
                 )
                 .await;
             }
             CoManagedOutcome::Done(abstain_reason_label(&reason))
         }
+    }
+}
+
+/// Consume this candidate and decide whether its committed effect can be routed.
+fn consume_co_managed_route(
+    slot: &capture::sink::CaptureSlot,
+    expected_seq: u64,
+    expected_key: &capture::key::ConsumptionKey,
+    committed: &capture::state::CommittedEffect,
+) -> bool {
+    // A newer offer stays in the slot and re-triggers its own cycle.
+    slot.try_consume(expected_seq, expected_key, expected_key.epoch);
+    // Automatic baseline records are consumed without routing. TextToUser
+    // effects are also non-routable, but still surface their user message.
+    committed.kind != capture::state::EffectKind::Automatic || committed.routable
+}
+
+/// Surface a detected secret only after its budget-free effect is committed.
+async fn report_co_managed_secret<F: std::future::Future<Output = ()>>(
+    pending: (
+        &capture::sink::CaptureSlot,
+        u64,
+        &capture::key::ConsumptionKey,
+    ),
+    reason: String,
+    commit: impl std::future::Future<Output = CoManagedCommit>,
+    surface: impl FnOnce(String) -> F,
+) -> CoManagedOutcome {
+    let user_message = co_managed_secret_message(&reason);
+    let (slot, expected_seq, expected_key) = pending;
+    match commit.await {
+        CoManagedCommit::Committed(_) => {
+            // Consume this exact candidate; a newer offer stays in the
+            // slot and re-triggers its own cycle.
+            slot.try_consume(expected_seq, expected_key, expected_key.epoch);
+            surface(user_message).await;
+            CoManagedOutcome::Done(reason)
+        }
+        CoManagedCommit::Contention => CoManagedOutcome::Contention,
+        CoManagedCommit::Rejected(reason) => CoManagedOutcome::Done(abstain_reason_label(&reason)),
     }
 }
 
@@ -603,21 +611,8 @@ pub(crate) async fn handle_co_managed_trigger<R: tauri::Runtime>(
         log::info!("[co-managed] trigger dropped [{id}]: no capture registry in state");
         return;
     };
-    let Some(slot) = registry.slot(&id) else {
-        log::info!(
-            "[co-managed] trigger dropped [{id}]: no capture slot for the session; flag removed"
-        );
-        handle.armed.remove(&id);
-        return;
-    };
-    let state = slot.snapshot();
-    let Some(candidate) = state.value.record().cloned() else {
-        // Consumed, invalidated or cleared: the candidate this flag described
-        // is gone, so the flag goes with it.
-        log::info!(
-            "[co-managed] trigger dropped [{id}]: slot holds no candidate record; flag removed"
-        );
-        handle.armed.remove(&id);
+    let Some((slot, state, candidate)) = co_managed_trigger_candidate(&registry, handle, &id)
+    else {
         return;
     };
 
@@ -709,15 +704,7 @@ pub(crate) async fn handle_co_managed_trigger<R: tauri::Runtime>(
         emit_co_managed_state(app, session_id, true, None);
     }
 
-    log::info!(
-        "[co-managed] cycle start [{id}]: trigger={} seq={}",
-        match trigger {
-            CoManagedTrigger::IdleEdge(_) => "IdleEdge",
-            CoManagedTrigger::SlotChanged(_) => "SlotChanged",
-            CoManagedTrigger::Recovery(_) => "Recovery",
-        },
-        state.seq
-    );
+    log_co_managed_cycle_start(&id, &trigger, state.seq);
     let outcome = co_managed_cycle(
         app, handle, session_id, &room_root, &slot, state.seq, &candidate,
     )
@@ -725,6 +712,48 @@ pub(crate) async fn handle_co_managed_trigger<R: tauri::Runtime>(
     finish_co_managed_cycle(handle, session_id, outcome, |armed, reason| {
         emit_co_managed_state(app, session_id, armed, reason);
     });
+}
+
+fn log_co_managed_cycle_start(id: &str, trigger: &CoManagedTrigger, seq: u64) {
+    log::info!(
+        "[co-managed] cycle start [{id}]: trigger={} seq={}",
+        match trigger {
+            CoManagedTrigger::IdleEdge(_) => "IdleEdge",
+            CoManagedTrigger::SlotChanged(_) => "SlotChanged",
+            CoManagedTrigger::Recovery(_) => "Recovery",
+        },
+        seq
+    );
+}
+
+/// Resolve the pending capture and remove stale armed flags.
+fn co_managed_trigger_candidate(
+    registry: &capture::registry::CaptureRegistry,
+    handle: &CoManagedSupervisorHandle,
+    id: &str,
+) -> Option<(
+    capture::sink::CaptureSlot,
+    capture::sink::SlotState,
+    Arc<capture::record::CapturedRecord>,
+)> {
+    let Some(slot) = registry.slot(id) else {
+        log::info!(
+            "[co-managed] trigger dropped [{id}]: no capture slot for the session; flag removed"
+        );
+        handle.armed.remove(id);
+        return None;
+    };
+    let state = slot.snapshot();
+    let Some(candidate) = state.value.record().cloned() else {
+        // Consumed, invalidated or cleared: the candidate this flag described
+        // is gone, so the flag goes with it.
+        log::info!(
+            "[co-managed] trigger dropped [{id}]: slot holds no candidate record; flag removed"
+        );
+        handle.armed.remove(id);
+        return None;
+    };
+    Some((slot, state, candidate))
 }
 
 fn finish_co_managed_cycle(
