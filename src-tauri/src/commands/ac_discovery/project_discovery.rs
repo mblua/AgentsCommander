@@ -75,42 +75,7 @@ pub(crate) async fn discover_project_inner(
         &ac_root,
         &crate::config::agent_command::managed_instructions_filenames(&cfg),
     );
-    let context_scan = crate::config::seed_manifest::run_blocking_owned({
-        let base = base.to_path_buf();
-        let ac_root = ac_root.clone();
-        move || {
-            // #1065 Stage F: production records recognized context updates under the
-            // gate; a `#[cfg(test)]` lib build stays non-emitting.
-            #[cfg(not(test))]
-            let activation =
-                Some(crate::config::seed_manifest::ManifestActivationToken::production());
-            #[cfg(test)]
-            let activation: Option<
-                crate::config::seed_manifest::ManifestActivationToken,
-            > = None;
-            scan_project_context_templates_recorded(&base, &ac_root, activation.as_ref())
-        }
-    })
-    .await;
-    let mut context_template_updates = match context_scan {
-        Ok(Ok(updates)) => updates,
-        Ok(Err(e)) => {
-            log::warn!(
-                "[context-templates] scan failed for {}: {}",
-                ac_root.display(),
-                e
-            );
-            Vec::new()
-        }
-        Err(e) => {
-            log::warn!(
-                "[context-templates] blocking scan failed for {}: {}",
-                ac_root.display(),
-                e
-            );
-            Vec::new()
-        }
-    };
+    let mut context_template_updates = scan_project_context_updates(base, &ac_root).await;
 
     // Discovery-wide team snapshot — see discover_ac_agents for rationale.
     // Lock-safe: the settings snapshot is owned and the read guard was dropped
@@ -200,4 +165,46 @@ pub(crate) async fn discover_project_inner(
         loops,
         context_template_updates,
     })
+}
+
+async fn scan_project_context_updates(
+    base: &Path,
+    ac_root: &Path,
+) -> Vec<crate::config::seeded_context_templates::ContextTemplateUpdate> {
+    let context_scan = crate::config::seed_manifest::run_blocking_owned({
+        let base = base.to_path_buf();
+        let ac_root = ac_root.to_path_buf();
+        move || {
+            // #1065 Stage F: production records recognized context updates under the
+            // gate; a `#[cfg(test)]` lib build stays non-emitting.
+            #[cfg(not(test))]
+            let activation =
+                Some(crate::config::seed_manifest::ManifestActivationToken::production());
+            #[cfg(test)]
+            let activation: Option<
+                crate::config::seed_manifest::ManifestActivationToken,
+            > = None;
+            scan_project_context_templates_recorded(&base, &ac_root, activation.as_ref())
+        }
+    })
+    .await;
+    match context_scan {
+        Ok(Ok(updates)) => updates,
+        Ok(Err(e)) => {
+            log::warn!(
+                "[context-templates] scan failed for {}: {}",
+                ac_root.display(),
+                e
+            );
+            Vec::new()
+        }
+        Err(e) => {
+            log::warn!(
+                "[context-templates] blocking scan failed for {}: {}",
+                ac_root.display(),
+                e
+            );
+            Vec::new()
+        }
+    }
 }

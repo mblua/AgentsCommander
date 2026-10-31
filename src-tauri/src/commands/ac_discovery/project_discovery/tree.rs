@@ -183,26 +183,8 @@ async fn discover_workgroup(
                 }
                 let current_profile = profile_read.profile;
 
-                let repo_paths: Vec<String> = identity_read
-                    .config
-                    .as_ref()
-                    .and_then(|v| v.get("repos")?.as_array().cloned())
-                    .unwrap_or_default()
-                    .iter()
-                    .filter_map(|r| r.as_str())
-                    .filter_map(|rel| {
-                        let resolved = wg_path.join(rel);
-                        canonical_discovery_repo(&resolved)
-                            .ok()
-                            .map(|p| projected_path_string(&p))
-                    })
-                    .collect();
-
-                let repo_branch = if repo_paths.len() == 1 {
-                    detect_repo_branch(&repo_paths[0]).await
-                } else {
-                    None
-                };
+                let (repo_paths, repo_branch) =
+                    discover_replica_repositories(&wg_path, identity_read.config.as_ref()).await;
 
                 // §AR2-strict: `is_coordinator` short-circuits on
                 // unqualified names, so build the project-qualified FQN
@@ -330,4 +312,29 @@ pub(crate) fn associate_workgroups_with_teams(workgroups: &mut [AcWorkgroup], te
             }
         }
     }
+}
+
+async fn discover_replica_repositories(
+    wg_path: &Path,
+    config: Option<&serde_json::Value>,
+) -> (Vec<String>, Option<String>) {
+    let repo_paths: Vec<String> = config
+        .and_then(|v| v.get("repos")?.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| r.as_str())
+        .filter_map(|rel| {
+            let resolved = wg_path.join(rel);
+            canonical_discovery_repo(&resolved)
+                .ok()
+                .map(|p| projected_path_string(&p))
+        })
+        .collect();
+
+    let repo_branch = if repo_paths.len() == 1 {
+        detect_repo_branch(&repo_paths[0]).await
+    } else {
+        None
+    };
+    (repo_paths, repo_branch)
 }
