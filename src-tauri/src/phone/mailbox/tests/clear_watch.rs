@@ -654,7 +654,7 @@ async fn issue_3371_activated_reason_failure_then_restart_never_spawns_or_types_
             assert!(fault.as_ref().is_none_or(|fault| fault.consumed()));
             drop(fault);
             if json_failure {
-                assert!(!blocked.exists());
+                assert!(source.exists() && !blocked.exists());
                 assert_eq!(
                     std::fs::read_to_string(blocked.with_extension("reason.txt")).unwrap(),
                     KNOWN
@@ -670,7 +670,7 @@ async fn issue_3371_activated_reason_failure_then_restart_never_spawns_or_types_
             assert!(fault.as_ref().is_none_or(|fault| fault.consumed()));
             drop(fault);
             if json_failure {
-                assert!(!blocked.exists());
+                assert!(source.exists() && !blocked.exists());
                 assert_eq!(
                     std::fs::read_to_string(blocked.with_extension("reason.txt")).unwrap(),
                     KNOWN
@@ -686,7 +686,7 @@ async fn issue_3371_activated_reason_failure_then_restart_never_spawns_or_types_
             drop(fault);
             assert_eq!(fixture.recorded_effect_counts(), before);
             if json_failure {
-                assert!(!blocked.exists());
+                assert!(source.exists() && !blocked.exists());
                 assert!(source.exists());
                 assert_eq!(
                     std::fs::read_to_string(blocked.with_extension("reason.txt")).unwrap(),
