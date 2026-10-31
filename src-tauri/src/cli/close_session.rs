@@ -235,50 +235,19 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
     let msg_id = Uuid::new_v4().to_string();
     let request_id = Uuid::new_v4().to_string();
 
-    let message = OutboxMessage {
-        id: msg_id.clone(),
-        token: args.token,
-        from: sender.clone(),
-        to: resolved_target.clone(),
-        body: String::new(),
-        mode: String::new(),
-        get_output: false,
-        request_id: Some(request_id.clone()),
-        sender_agent: None,
-        preferred_agent: String::new(),
-        requested_profile: None,
-        effective_agent_id: None,
-        effective_profile: None,
-        profile_fallback_applied: false,
-        dispatch_not_applied: None,
-        priority: "normal".to_string(),
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        command: None,
-        action: Some("close-session".to_string()),
-        target: Some(resolved_target),
-        force: Some(args.force),
-        timeout_secs: Some(args.timeout),
-        switch_coding_agent: None,
-        switch_profile: None,
-        dry_run: None,
-        quiet_period_ms: None,
-        pty_input: None,
-    };
+    let message = close_session_message(
+        args.token,
+        sender,
+        resolved_target,
+        &request_id,
+        &msg_id,
+        args.force,
+        args.timeout,
+    );
 
     // Write to outbox — use app outbox for root/master token, else agent's outbox
     let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
-    let outbox_dir = if is_root {
-        let app_outbox = crate::config::config_dir()
-            .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| documents::read_cli_outbox_text(&p).ok())
-            .map(|s| PathBuf::from(s.trim()));
-        match app_outbox {
-            Some(p) if directories::cli_agent_root_is_dir(&p) => p,
-            _ => ac_dir.join("outbox"),
-        }
-    } else {
-        ac_dir.join("outbox")
-    };
+    let outbox_dir = close_session_outbox(&ac_dir, is_root);
 
     if let Err(e) = directories::ensure_cli_outbox(&outbox_dir) {
         log::error!("failed to create outbox directory: {}", e);
@@ -303,6 +272,61 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
     }
 
     wait_for_close_response(&outbox_dir, &ac_dir, &request_id, &msg_id, args.timeout)
+}
+
+fn close_session_outbox(ac_dir: &std::path::Path, is_root: bool) -> PathBuf {
+    if is_root {
+        let app_outbox = crate::config::config_dir()
+            .map(|d| d.join("app-outbox-path.txt"))
+            .and_then(|p| documents::read_cli_outbox_text(&p).ok())
+            .map(|s| PathBuf::from(s.trim()));
+        match app_outbox {
+            Some(p) if directories::cli_agent_root_is_dir(&p) => p,
+            _ => ac_dir.join("outbox"),
+        }
+    } else {
+        ac_dir.join("outbox")
+    }
+}
+
+fn close_session_message(
+    token: Option<String>,
+    sender: String,
+    resolved_target: String,
+    request_id: &str,
+    msg_id: &str,
+    force: bool,
+    timeout_secs: u32,
+) -> OutboxMessage {
+    OutboxMessage {
+        id: msg_id.to_string(),
+        token,
+        from: sender,
+        to: resolved_target.clone(),
+        body: String::new(),
+        mode: String::new(),
+        get_output: false,
+        request_id: Some(request_id.to_string()),
+        sender_agent: None,
+        preferred_agent: String::new(),
+        requested_profile: None,
+        effective_agent_id: None,
+        effective_profile: None,
+        profile_fallback_applied: false,
+        dispatch_not_applied: None,
+        priority: "normal".to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        command: None,
+        action: Some("close-session".to_string()),
+        target: Some(resolved_target),
+        force: Some(force),
+        timeout_secs: Some(timeout_secs),
+        switch_coding_agent: None,
+        switch_profile: None,
+        dry_run: None,
+        quiet_period_ms: None,
+        pty_input: None,
+    }
 }
 
 fn wait_for_close_response(
