@@ -276,7 +276,7 @@ fn canonical_real_directory(path: &Path, label: &str) -> Result<PathBuf, String>
         })
 }
 
-pub(super) fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
+fn canonical_lexical_member_replica(session: &Session) -> Result<PathBuf, String> {
     let lexical_cwd = Path::new(&session.working_directory);
     let Some(lexical_replica) = lexical_cwd.ancestors().find(|ancestor| {
         ancestor
@@ -284,19 +284,13 @@ pub(super) fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyR
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.starts_with("__agent_"))
     }) else {
-        return MemberPolicyResolution::PermanentIneligible(
-            "sampled CWD is not inside a lexical room member replica".to_string(),
-        );
+        return Err("sampled CWD is not inside a lexical room member replica".to_string());
     };
     let Some(lexical_workgroup) = lexical_replica.parent() else {
-        return MemberPolicyResolution::PermanentIneligible(
-            "sampled lexical replica has no room parent".to_string(),
-        );
+        return Err("sampled lexical replica has no room parent".to_string());
     };
     let Some(lexical_ac_root) = lexical_workgroup.parent() else {
-        return MemberPolicyResolution::PermanentIneligible(
-            "sampled lexical room has no Project AC Root parent".to_string(),
-        );
+        return Err("sampled lexical room has no Project AC Root parent".to_string());
     };
     for (path, label) in [
         (lexical_replica, "replica"),
@@ -306,7 +300,7 @@ pub(super) fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyR
         let metadata = match session_context::inspect_context_source(path) {
             Ok(metadata) => metadata,
             Err(error) => {
-                return MemberPolicyResolution::PermanentIneligible(format!(
+                return Err(format!(
                     "sampled lexical {} '{}' is not readable: {}",
                     label,
                     path.display(),
@@ -315,24 +309,29 @@ pub(super) fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyR
             }
         };
         if !metadata.is_dir() || metadata_is_link_or_reparse(&metadata) {
-            return MemberPolicyResolution::PermanentIneligible(format!(
+            return Err(format!(
                 "sampled lexical {} '{}' must be a real non-link directory",
                 label,
                 path.display()
             ));
         }
     }
-    let canonical_lexical_replica = match session_context::canonical_context_source(lexical_replica)
+    match session_context::canonical_context_source(lexical_replica)
         .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
     {
+        Ok(path) => Ok(path),
+        Err(error) => Err(format!(
+            "sampled lexical replica '{}' cannot be canonicalized: {}",
+            lexical_replica.display(),
+            error
+        )),
+    }
+}
+
+pub(super) fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
+    let canonical_lexical_replica = match canonical_lexical_member_replica(session) {
         Ok(path) => path,
-        Err(error) => {
-            return MemberPolicyResolution::PermanentIneligible(format!(
-                "sampled lexical replica '{}' cannot be canonicalized: {}",
-                lexical_replica.display(),
-                error
-            ))
-        }
+        Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
     };
 
     let canonical_cwd = match session_context::canonical_context_source(&session.working_directory)
@@ -442,7 +441,11 @@ pub(super) fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyR
         member: layout.agent_name,
     };
 
-    match read_team_config_classified(&ac_root, &team) {
+    resolve_team_member_policy(fingerprint)
+}
+
+fn resolve_team_member_policy(fingerprint: MemberIdentityFingerprint) -> MemberPolicyResolution {
+    match read_team_config_classified(&fingerprint.ac_root, &fingerprint.team) {
         Ok(config) => {
             let member_ref = format!("_agent_{}", fingerprint.member);
             if !config.agents.contains(&member_ref) {
