@@ -163,14 +163,8 @@ pub fn execute(args: SelfRestartArgs) -> i32 {
 
     // Outbox selection mirrors self_clear::execute (is_root -> app outbox else agent outbox).
     let outbox_dir = if is_root {
-        let app_outbox = crate::config::config_dir()
-            .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| documents::read_cli_outbox_text(&p).ok())
-            .map(|s| PathBuf::from(s.trim()));
-        match app_outbox {
-            Some(p) if directories::cli_agent_root_is_dir(&p) => p,
-            _ => ac_dir.join("outbox"),
-        }
+        crate::filesystem::app_outbox_pointer::get(crate::config::config_dir().as_deref())
+            .unwrap_or_else(|| ac_dir.join("outbox"))
     } else {
         ac_dir.join("outbox")
     };

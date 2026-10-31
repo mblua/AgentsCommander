@@ -12,6 +12,7 @@ pub(crate) mod agent_command;
 pub(crate) mod agent_files;
 pub(crate) mod agent_settings;
 pub(crate) mod api_registry;
+pub(crate) mod app_outbox_pointer;
 pub(crate) mod attachments;
 pub(crate) mod capture_state;
 pub(crate) mod catalog;
