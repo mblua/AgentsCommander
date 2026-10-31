@@ -116,6 +116,16 @@ where
     // ── 6. Backup with collision-suffix loop (only if file existed) ───────
     let backup_path = description_backup(wg_root, &task_path, file_existed, now)?;
 
+    description_publication(task_path, tmp_path, new_content, backup_path, pre_sentinel)
+}
+
+fn description_publication(
+    task_path: PathBuf,
+    tmp_path: PathBuf,
+    new_content: String,
+    backup_path: Option<PathBuf>,
+    pre_sentinel: Option<(u64, Option<SystemTime>)>,
+) -> Result<EditOutcome, TaskOpError> {
     // ── 7. Atomic write: tmp + sentinel-check + rename ────────────────────
     if let Err(e) = write_description_stage(&tmp_path, new_content.as_bytes()) {
         // MED-6 cleanup
