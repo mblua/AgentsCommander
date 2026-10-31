@@ -31,7 +31,10 @@ fn trims_whitespace_around_directory() {
     let destination = tempfile::tempdir().unwrap();
     let text = format!(" \t{}\r\n ", destination.path().display());
     std::fs::write(config.path().join(BASENAME), text).unwrap();
-    assert_eq!(get(Some(config.path())), Some(destination.path().to_owned()));
+    assert_eq!(
+        get(Some(config.path())),
+        Some(destination.path().to_owned())
+    );
 }
 
 #[test]
