@@ -719,9 +719,7 @@ pub(crate) fn build_direct_matrix_context(
         ));
     }
 
-    if roles::role_present(cwd_path)
-        && !resolved_paths_include_path(&resolved_paths, &role_path)
-    {
+    if roles::role_present(cwd_path) && !resolved_paths_include_path(&resolved_paths, &role_path) {
         resolved_paths.push((ROLE_MD_FILENAME.to_string(), role_path));
     }
 
