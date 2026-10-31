@@ -660,7 +660,6 @@ async fn settle_response_close_result<R: tauri::Runtime>(
     };
     use crate::config::settings::try_with_agents_layer_publication_state;
     use crate::path_identity::{same_object, verify_directory};
-    use crate::pty::context_scrape::ContextSessionLiveness;
     use crate::session::manager::CarrierPhysicalIdentity;
     let mut rejection = SettlementRejection::MemberRowUnavailable;
     let settled = manager
@@ -689,22 +688,8 @@ async fn settle_response_close_result<R: tauri::Runtime>(
             if tracker.generation(row.id) != Some(binding.member.generation) {
                 return None;
             }
-            let absent = !owner.backend().has_session(row.id);
-            let dormant = absent
-                && matches!(row.status, SessionStatus::Exited(0))
-                && !row.was_detached
-                && current.selection.id() != Some(row.id);
-            let live = !absent
-                && owner.kill_failed()
-                && !matches!(row.status, SessionStatus::Exited(_))
-                && current.versions.get(&row.id).is_some_and(|version| {
-                    *version >= binding.member.carrier_version && *version < u64::MAX
-                })
-                && owner.backend().context_session_liveness(row.id) == ContextSessionLiveness::Live;
             rejection = SettlementRejection::SettlementClassificationRejected;
-            if !dormant && !live {
-                return None;
-            }
+            let dormant = response_close_dormancy(current, row, owner, &binding)?;
             let detached = app.state::<DetachedSessionsState>();
             if dormant {
                 rejection = SettlementRejection::DetachedRegistryUnreadable;
@@ -755,26 +740,57 @@ async fn settle_response_close_result<R: tauri::Runtime>(
         })
         .await;
     drop(permit);
-    if let Some(disposition) = settled {
-        response_effect_owners(app)
-            .remove(binding.member.session_id)
-            .map_err(|_| {
-                log_postfinish_cleanup(owner, &disposition, "owner_remove_unreadable");
-                SettlementRejection::PostfinishCleanup
-            })?;
-        crate::session::selection::forget_response_close_registration(binding.member.session_id);
+    let disposition = settled.ok_or(rejection)?;
+    cleanup_settled_response_close(app, &pty, owner, &disposition)?;
+    Ok(disposition)
+}
 
-        if matches!(disposition, ResponseCloseDisposition::Dormant) {
-            pty.lock()
-                .map_err(|_| {
-                    log_postfinish_cleanup(owner, &disposition, "pty_route_lock_unreadable");
-                    SettlementRejection::PostfinishCleanup
-                })?
-                .remove_route_if_kind(binding.member.session_id, binding.member.backend);
-        }
-        return Ok(disposition);
+fn response_close_dormancy(
+    current: &crate::session::manager::CarrierSnapshot,
+    row: &crate::session::session::Session,
+    owner: &ResponseEffectOwner,
+    binding: &crate::pty::response_close::ResponseCloseCommittedBinding,
+) -> Option<bool> {
+    use crate::pty::context_scrape::ContextSessionLiveness;
+    let absent = !owner.backend().has_session(row.id);
+    let dormant = absent
+        && matches!(row.status, SessionStatus::Exited(0))
+        && !row.was_detached
+        && current.selection.id() != Some(row.id);
+    let live = !absent
+        && owner.kill_failed()
+        && !matches!(row.status, SessionStatus::Exited(_))
+        && current.versions.get(&row.id).is_some_and(|version| {
+            *version >= binding.member.carrier_version && *version < u64::MAX
+        })
+        && owner.backend().context_session_liveness(row.id) == ContextSessionLiveness::Live;
+    (dormant || live).then_some(dormant)
+}
+
+fn cleanup_settled_response_close<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    pty: &Arc<Mutex<PtyManager>>,
+    owner: &ResponseEffectOwner,
+    disposition: &ResponseCloseDisposition,
+) -> Result<(), SettlementRejection> {
+    let binding = owner.ticket().committed_binding();
+    response_effect_owners(app)
+        .remove(binding.member.session_id)
+        .map_err(|_| {
+            log_postfinish_cleanup(owner, disposition, "owner_remove_unreadable");
+            SettlementRejection::PostfinishCleanup
+        })?;
+    crate::session::selection::forget_response_close_registration(binding.member.session_id);
+
+    if matches!(disposition, ResponseCloseDisposition::Dormant) {
+        pty.lock()
+            .map_err(|_| {
+                log_postfinish_cleanup(owner, disposition, "pty_route_lock_unreadable");
+                SettlementRejection::PostfinishCleanup
+            })?
+            .remove_route_if_kind(binding.member.session_id, binding.member.backend);
     }
-    Err(rejection)
+    Ok(())
 }
 
 fn finish_response_close_tracker(
