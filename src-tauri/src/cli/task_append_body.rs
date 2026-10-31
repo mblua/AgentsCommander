@@ -8,7 +8,7 @@
 //! issue is recommended to bind tokens to issued sessions, closing the hole
 //! for all CLI verbs simultaneously.
 
-use crate::filesystem::{directories, documents};
+use crate::filesystem::directories;
 use clap::Args;
 use std::path::Path;
 
@@ -82,11 +82,10 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
     // Coordinator gate (skipped for root/master token).
     let is_master = is_root || {
         if let Some(ref token_str) = args.token {
-            crate::config::config_dir()
-                .map(|d| d.join("master-token.txt"))
-                .and_then(|p| documents::read_cli_outbox_text(&p).ok())
-                .map(|m| m.trim() == token_str)
-                .unwrap_or(false)
+            crate::filesystem::master_token::matches(
+                crate::config::config_dir().as_deref(),
+                token_str,
+            )
         } else {
             false
         }
@@ -225,11 +224,10 @@ pub fn execute_set_body(args: TaskSetBodyArgs) -> i32 {
     // Coordinator gate (skipped for root/master token).
     let is_master = is_root || {
         if let Some(ref token_str) = args.token {
-            crate::config::config_dir()
-                .map(|d| d.join("master-token.txt"))
-                .and_then(|p| documents::read_cli_outbox_text(&p).ok())
-                .map(|m| m.trim() == token_str)
-                .unwrap_or(false)
+            crate::filesystem::master_token::matches(
+                crate::config::config_dir().as_deref(),
+                token_str,
+            )
         } else {
             false
         }
