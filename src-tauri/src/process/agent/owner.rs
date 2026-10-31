@@ -630,6 +630,48 @@ impl ProbeProcessOwner {
         }
     }
 
+    async fn settle_child(
+        &mut self,
+        cleanup_required: bool,
+        attempt: &mut crate::process::host::job::SettlementAttempt,
+    ) {
+        let defects = &mut self.defects;
+        if cleanup_required {
+            if let Some(child) = self.child.as_mut() {
+                let mut wait_defect_recorded = false;
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) => break,
+                        Ok(None) => {}
+                        Err(error) => {
+                            if !wait_defect_recorded {
+                                defects.push(format!("direct child wait failed: {error}"));
+                                wait_defect_recorded = true;
+                            }
+                        }
+                    }
+                    if attempt.expired() {
+                        record_probe_attempt_expiry(defects, "direct-child settlement");
+                        #[cfg(windows)]
+                        if let Some(job) = self.job.as_ref() {
+                            let _ = job.terminate_checked();
+                        }
+                        #[cfg(unix)]
+                        if self.pgid > 0 {
+                            // SAFETY: this remains the retained group identity.
+                            unsafe {
+                                libc::kill(-self.pgid, libc::SIGKILL);
+                            }
+                        }
+                        let _ = child.start_kill();
+                        attempt.restart();
+                    }
+                    tokio::time::sleep(ACTIVE_SETTLEMENT_POLL.min(attempt.remaining())).await;
+                }
+            }
+        }
+    }
+
     async fn settle(&mut self, wait: &ProbeWait) -> ProbeSettlement {
         #[cfg(test)]
         let settlement_window = self
@@ -673,40 +715,7 @@ impl ProbeProcessOwner {
             }
         }
 
-        if cleanup_required {
-            if let Some(child) = self.child.as_mut() {
-                let mut wait_defect_recorded = false;
-                loop {
-                    match child.try_wait() {
-                        Ok(Some(_)) => break,
-                        Ok(None) => {}
-                        Err(error) => {
-                            if !wait_defect_recorded {
-                                defects.push(format!("direct child wait failed: {error}"));
-                                wait_defect_recorded = true;
-                            }
-                        }
-                    }
-                    if attempt.expired() {
-                        record_probe_attempt_expiry(defects, "direct-child settlement");
-                        #[cfg(windows)]
-                        if let Some(job) = self.job.as_ref() {
-                            let _ = job.terminate_checked();
-                        }
-                        #[cfg(unix)]
-                        if self.pgid > 0 {
-                            // SAFETY: this remains the retained group identity.
-                            unsafe {
-                                libc::kill(-self.pgid, libc::SIGKILL);
-                            }
-                        }
-                        let _ = child.start_kill();
-                        attempt.restart();
-                    }
-                    tokio::time::sleep(ACTIVE_SETTLEMENT_POLL.min(attempt.remaining())).await;
-                }
-            }
-        }
+        self.settle_child(cleanup_required, &mut attempt).await;
 
         // Release Tokio's direct process handle before the first native
         // emptiness query that is eligible to prove settlement.
@@ -726,6 +735,7 @@ impl ProbeProcessOwner {
             }
         }
 
+        let defects = &mut self.defects;
         let stdout = settle_probe_reader(&mut self.stdout, defects, &mut attempt).await;
         let stderr = settle_probe_reader(&mut self.stderr, defects, &mut attempt).await;
 
