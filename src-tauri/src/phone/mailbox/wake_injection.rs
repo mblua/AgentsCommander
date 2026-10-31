@@ -30,6 +30,99 @@ use std::sync::Mutex;
 use tauri::Manager;
 use uuid::Uuid;
 
+async fn logical_session_snapshot(
+    session_mgr: &tokio::sync::RwLock<SessionManager>,
+    session_id: Uuid,
+    command: &str,
+) -> Result<(String, bool), String> {
+    let mgr = session_mgr.read().await;
+    let sessions = mgr.list_sessions().await;
+    match sessions
+        .iter()
+        .find(|session| session.id == session_id.to_string())
+    {
+        Some(session) => Ok((session.shell.clone(), session.waiting_for_input)),
+        None => Err(format!(
+            "Session not found: {} - cannot execute logical remote command '{}'",
+            session_id, command
+        )),
+    }
+}
+
+fn standard_payload(
+    msg: &OutboxMessage,
+    body: &str,
+    use_markers: bool,
+    origin: WakeDeliveryOrigin,
+    comanaged: bool,
+) -> String {
+    match (use_markers, msg.request_id.as_ref()) {
+        (true, Some(rid)) if comanaged => {
+            let display_from =
+                crate::phone::messaging::compose_sender_for_comanaged_origin(&msg.from);
+            crate::phone::messaging::format_pty_wrap_with_markers(&display_from, body, rid)
+        }
+        (true, Some(rid)) => {
+            crate::phone::messaging::format_pty_wrap_with_markers(&msg.from, body, rid)
+        }
+        _ => format_wake_content(WakeContent::Peer {
+            from: &msg.from,
+            body,
+            origin,
+            comanaged,
+        }),
+    }
+}
+
+fn standard_prewrite_admission(
+    msg: &OutboxMessage,
+    session: &crate::session::session::Session,
+    current: &crate::session::manager::CarrierSnapshot,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    owned_replacement: Option<&crate::session::selection::OwnedReplacementContinuation>,
+) -> Result<(), String> {
+    response_diag_local!(
+        "prewrite",
+        "callback_reached",
+        Uuid::parse_str(&msg.id).ok()
+    );
+    if owned_replacement.is_none()
+        && crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
+            &msg.to, session.id,
+        )
+    {
+        response_diag_local!(
+            "prewrite",
+            "owned_replacement_wait",
+            Uuid::parse_str(&msg.id).ok()
+        );
+        return Err(crate::pty::inject::OWNED_WORK_SCOPE_WAIT.into());
+    }
+    if owned_replacement
+        .is_some_and(|continuation| !continuation.pre_write_work_matches(current, pty_mgr))
+    {
+        response_diag_local!(
+            "prewrite",
+            "owned_replacement_mismatch",
+            Uuid::parse_str(&msg.id).ok()
+        );
+        return Err("replacement work binding requires recapture".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn record_spawn_call(hooks: &super::pty_claim::MailboxTestHooks, call: MailboxSpawnCall) {
+    {
+        let mut calls = hooks.spawn_calls.lock().unwrap();
+        calls.push(call.clone());
+    }
+    {
+        let mut events = hooks.events.lock().unwrap();
+        events.push(MailboxTestEvent::Spawn(call));
+    }
+}
+
 impl MailboxPoller {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn_wake_session<R: tauri::Runtime>(
@@ -63,14 +156,7 @@ impl MailboxPoller {
                 skip_auto_resume,
                 skip_tooling_save,
             };
-            {
-                let mut calls = hooks.spawn_calls.lock().unwrap();
-                calls.push(call.clone());
-            }
-            {
-                let mut events = hooks.events.lock().unwrap();
-                events.push(MailboxTestEvent::Spawn(call));
-            }
+            record_spawn_call(hooks, call);
 
             let spawn_gate = hooks.internal_spawn_gate.lock().unwrap().take();
             if let Some(spawn_gate) = spawn_gate {
@@ -537,20 +623,7 @@ impl MailboxPoller {
         if let Some(ref command) = msg.command {
             let (shell, waiting_for_input) = {
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = session_mgr.read().await;
-                let sessions = mgr.list_sessions().await;
-                match sessions
-                    .iter()
-                    .find(|session| session.id == session_id.to_string())
-                {
-                    Some(session) => (session.shell.clone(), session.waiting_for_input),
-                    None => {
-                        return Err(format!(
-                            "Session not found: {} - cannot execute logical remote command '{}'",
-                            session_id, command
-                        ));
-                    }
-                }
+                logical_session_snapshot(session_mgr.inner().as_ref(), session_id, command).await?
             };
             let resolved = resolve_remote_pty_command(&shell, command)?;
             if !waiting_for_input {
@@ -727,22 +800,7 @@ impl MailboxPoller {
         // `format_pty_wrap` (single source with `PTY_WRAP_FIXED` used by the
         // CLI clamp). Only the `--get-output` + `request_id` case wraps the
         // payload with response markers.
-        let payload = match (use_markers, msg.request_id.as_ref()) {
-            (true, Some(rid)) if comanaged => {
-                let display_from =
-                    crate::phone::messaging::compose_sender_for_comanaged_origin(&msg.from);
-                crate::phone::messaging::format_pty_wrap_with_markers(&display_from, body, rid)
-            }
-            (true, Some(rid)) => {
-                crate::phone::messaging::format_pty_wrap_with_markers(&msg.from, body, rid)
-            }
-            _ => format_wake_content(WakeContent::Peer {
-                from: &msg.from,
-                body,
-                origin,
-                comanaged,
-            }),
-        };
+        let payload = standard_payload(msg, body, use_markers, origin, comanaged);
 
         // Register response watcher only for non-interactive sessions
         if use_markers {
@@ -806,33 +864,13 @@ impl MailboxPoller {
                 response_diag_debug_only(|| {
                     diagnostic_prewrite_reached = true;
                 });
-                response_diag_local!(
-                    "prewrite",
-                    "callback_reached",
-                    Uuid::parse_str(&msg.id).ok()
-                );
-                if owned_replacement.is_none()
-                    && crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
-                        &msg.to, session.id,
-                    )
-                {
-                    response_diag_local!(
-                        "prewrite",
-                        "owned_replacement_wait",
-                        Uuid::parse_str(&msg.id).ok()
-                    );
-                    return Err(crate::pty::inject::OWNED_WORK_SCOPE_WAIT.into());
-                }
-                if owned_replacement.is_some_and(|continuation| {
-                    !continuation.pre_write_work_matches(current, pty_mgr.inner())
-                }) {
-                    response_diag_local!(
-                        "prewrite",
-                        "owned_replacement_mismatch",
-                        Uuid::parse_str(&msg.id).ok()
-                    );
-                    return Err("replacement work binding requires recapture".into());
-                }
+                standard_prewrite_admission(
+                    msg,
+                    session,
+                    current,
+                    pty_mgr.inner(),
+                    owned_replacement,
+                )?;
                 if let (Some(prepared), Some(attempt), Some(work)) =
                     (prepared.as_ref(), attempt.as_ref(), response)
                 {
