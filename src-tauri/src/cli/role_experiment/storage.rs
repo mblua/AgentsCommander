@@ -452,7 +452,8 @@ pub(super) fn create_run_workgroup_dirs(
                 &role_path,
             )]
         })?;
-        atomic_write_bytes(&replica.join("Role.md"), role_text.as_bytes())?;
+        crate::filesystem::experiment_replica_role::write(&replica, role_text.as_bytes())
+            .map_err(map_artifact_failure)?;
     }
     Ok(RunWorkgroupArtifact {
         name,
