@@ -12,6 +12,7 @@ use crate::cli::session_safety::find_live_sessions_under;
 use crate::cli::session_safety::LiveSessionBlocker;
 use crate::commands::entity_creation::sanitize_name;
 use crate::commands::entity_creation::validate_existing_name;
+use crate::filesystem::projects::entities::roles;
 use crate::filesystem::{directories, documents};
 use std::path::Component;
 use std::path::Path;
@@ -33,7 +34,7 @@ fn validate_experiment_metadata_paths(loaded: &LoadedExperiment) -> Vec<CliError
         &mut errors,
         parent,
         &loaded.experiment.source_role_path,
-        &source_matrix_path(&loaded.ac_root, source).join("Role.md"),
+        &roles::role_path(&source_matrix_path(&loaded.ac_root, source)),
         "sourceRolePath",
         None,
     );
@@ -54,12 +55,13 @@ pub(super) fn validate_loaded_experiment_source_metadata(
     }
     errors.extend(validate_experiment_metadata_paths(loaded));
     let source_matrix = source_matrix_path(&loaded.ac_root, &loaded.experiment.source_agent);
-    let source_role = source_matrix.join("Role.md");
     if let Err(mut e) = reject_link_or_reparse(&source_matrix, "source_role_link_or_reparse", None)
     {
         errors.append(&mut e);
     }
-    if let Err(mut e) = reject_link_or_reparse(&source_role, "source_role_link_or_reparse", None) {
+    if let Err(mut e) = roles::inspect_role_path(&source_matrix)
+        .map_err(|failure| map_path_failure(failure, "source_role_link_or_reparse", None))
+    {
         errors.append(&mut e);
     }
     errors
@@ -109,7 +111,7 @@ pub(super) fn validate_variant_metadata_paths(
         &loaded.experiment.source_agent,
         requested_variant,
     );
-    let expected_role = expected_matrix.join("Role.md");
+    let expected_role = roles::role_path(&expected_matrix);
     if variant.source_agent != loaded.experiment.source_agent
         || variant.agent_name != expected_agent
     {
@@ -151,7 +153,7 @@ pub(super) fn validate_variant_files(
         &loaded.experiment.source_agent,
         &variant.name,
     );
-    let role = matrix.join("Role.md");
+    let role = roles::role_path(&matrix);
     if let Err(mut e) = reject_link_or_reparse(
         &matrix,
         "variant_role_link_or_reparse",
@@ -159,11 +161,13 @@ pub(super) fn validate_variant_files(
     ) {
         errors.append(&mut e);
     }
-    if let Err(mut e) = reject_link_or_reparse(
-        &role,
-        "variant_role_link_or_reparse",
-        Some(variant.name.as_str()),
-    ) {
+    if let Err(mut e) = roles::inspect_role_path(&matrix).map_err(|failure| {
+        map_path_failure(
+            failure,
+            "variant_role_link_or_reparse",
+            Some(variant.name.as_str()),
+        )
+    }) {
         errors.append(&mut e);
     }
     if !directories::experiment_path_is_dir(&matrix) {
@@ -184,7 +188,7 @@ pub(super) fn validate_variant_files(
             Some(variant.name.as_str()),
         ));
     }
-    if !directories::experiment_path_is_file(&role) {
+    if !roles::role_is_file(&matrix) {
         errors.push(err(
             "variant_role_missing",
             format!("Variant Role.md is missing: {}", role.display()),
@@ -412,23 +416,21 @@ pub(super) fn add_diff_warnings(
     let Some(control) = variants.iter().find(|v| v.name == "control") else {
         return;
     };
-    let control_role = variant_matrix_path(
+    let control_matrix = variant_matrix_path(
         &loaded.ac_root,
         &loaded.experiment.source_agent,
         &control.name,
-    )
-    .join("Role.md");
-    let Ok(control_text) = documents::read_experiment_document(&control_role) else {
+    );
+    let Ok(control_text) = roles::read_role(&control_matrix) else {
         return;
     };
     for variant in variants.iter().filter(|v| v.name != "control") {
-        let role = variant_matrix_path(
+        let matrix = variant_matrix_path(
             &loaded.ac_root,
             &loaded.experiment.source_agent,
             &variant.name,
-        )
-        .join("Role.md");
-        let Ok(text) = documents::read_experiment_document(&role) else {
+        );
+        let Ok(text) = roles::read_role(&matrix) else {
             continue;
         };
         let (_, stats) = line_diff("control", &variant.name, &control_text, &text);

@@ -82,3 +82,40 @@ fn write_fails_without_creating_missing_matrix() {
     );
     assert!(!matrix.exists());
 }
+
+#[test]
+fn copy_role_policy_preserves_exact_name_and_errors() {
+    assert!(is_copy_role_entry("Role.md"));
+    for name in ["role.md", "Role.MD", "other"] {
+        assert!(!is_copy_role_entry(name));
+    }
+    assert_eq!(validate_copy_role_kind(true), Ok(()));
+    assert_eq!(
+        validate_copy_role_kind(false).unwrap_err(),
+        "Unexpected generic asset type: Role.md"
+    );
+    assert_eq!(require_copy_role(true), Ok(()));
+    assert_eq!(
+        require_copy_role(false).unwrap_err(),
+        "Missing required Role.md"
+    );
+}
+
+#[test]
+fn file_presence_and_inspection_preserve_distinct_contracts() {
+    let matrix = tempfile::tempdir().unwrap();
+    assert!(!role_is_file(matrix.path()));
+    assert!(!role_present(matrix.path()));
+    assert!(inspect_role_path(matrix.path()).is_ok());
+
+    let path = role_path(matrix.path());
+    std::fs::write(&path, b"role").unwrap();
+    assert!(role_is_file(matrix.path()));
+    assert!(role_present(matrix.path()));
+    assert!(inspect_role_path(matrix.path()).is_ok());
+
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(!role_is_file(matrix.path()));
+    assert!(role_present(matrix.path()));
+}

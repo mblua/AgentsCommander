@@ -10,6 +10,7 @@ use super::{
     ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME, SKILL_INDEX_TOTAL_MAX_BYTES,
 };
 use crate::config::instance_artifacts::CONTEXT_CACHE_DIR_NAME;
+use crate::filesystem::projects::entities::roles;
 use crate::filesystem::{directories, documents};
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -149,7 +150,7 @@ pub(crate) fn build_replica_context_from_config(
 
     // Auto-inject Role.md from identity matrix if present and not already resolved.
     let auto_role_abs = repaired_identity
-        .map(|identity| identity.matrix_dir.join(ROLE_MD_FILENAME))
+        .map(|identity| roles::role_path(&identity.matrix_dir))
         .or_else(|| {
             config
                 .get("identity")
@@ -647,7 +648,7 @@ pub(crate) fn build_direct_matrix_context(
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> Result<String, String> {
     let cwd_path = Path::new(cwd);
-    let role_path = Path::new(cwd).join(ROLE_MD_FILENAME);
+    let role_path = roles::role_path(cwd_path);
     let config_path = cwd_path.join("config.json");
     let config = if crate::filesystem::session_context::context_source_exists(&config_path) {
         let config_content = crate::filesystem::session_context::read_context_source(&config_path)
@@ -718,7 +719,7 @@ pub(crate) fn build_direct_matrix_context(
         ));
     }
 
-    if crate::filesystem::session_context::context_source_exists(&role_path)
+    if roles::role_present(cwd_path)
         && !resolved_paths_include_path(&resolved_paths, &role_path)
     {
         resolved_paths.push((ROLE_MD_FILENAME.to_string(), role_path));
