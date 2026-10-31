@@ -190,45 +190,12 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
         &normalized_profile,
         request.restart_sessions,
     )?;
-    let resolved_decision =
-        resolve_assignment_conflict_decision(&snapshot, request.conflict_decision)?;
-    let target_fingerprint = assignment_expected_fingerprint(&snapshot, resolved_decision)?;
-    validate_profile_assignment_confirmation(
-        &request.scope,
-        request.assignment_mode,
-        request.confirmed_target_fingerprint.as_deref(),
-        &target_fingerprint,
-    )?;
-
-    let write_eligible_paths = assignment_write_paths(&snapshot, &request.scope, resolved_decision);
-    if request.restart_sessions {
-        let restart_targets: Vec<ProfileAssignmentTarget> = enumeration
-            .candidates
-            .iter()
-            .filter(|candidate| {
-                write_eligible_paths.contains(&canonical_compare_key(Path::new(
-                    &candidate.target.replica_path,
-                )))
-            })
-            .map(|candidate| candidate.target.clone())
-            .collect();
-        prevalidate_profile_assignment_restarts(
-            &settings_snapshot,
-            &request.coding_agent_id,
-            &normalized_profile,
-            &restart_targets,
-        )?;
-    }
-
-    let intent =
-        assignment_write_intent(&request.scope, request.assignment_mode, resolved_decision);
-    let mut writes = write_profile_assignment(
+    let (target_fingerprint, mut writes) = prepare_profile_assignment_writes(
         &settings_snapshot,
         &enumeration,
-        &write_eligible_paths,
+        &snapshot,
         &request,
         &normalized_profile,
-        intent,
     )?;
 
     let mut restarted_session_ids = Vec::new();
@@ -292,6 +259,57 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
         destroyed_but_not_recreated_session_ids,
         locked_after_apply_count,
     ))
+}
+
+fn prepare_profile_assignment_writes(
+    settings_snapshot: &crate::config::settings::AppSettings,
+    enumeration: &super::target::ProfileTargetEnumeration,
+    snapshot: &super::fingerprint::AssignmentSnapshot,
+    request: &ApplyCodingAgentProfileSelectionRequest,
+    normalized_profile: &str,
+) -> Result<(String, ProfileAssignmentWrites), String> {
+    let resolved_decision =
+        resolve_assignment_conflict_decision(snapshot, request.conflict_decision)?;
+    let target_fingerprint = assignment_expected_fingerprint(snapshot, resolved_decision)?;
+    validate_profile_assignment_confirmation(
+        &request.scope,
+        request.assignment_mode,
+        request.confirmed_target_fingerprint.as_deref(),
+        &target_fingerprint,
+    )?;
+
+    let write_eligible_paths = assignment_write_paths(snapshot, &request.scope, resolved_decision);
+    if request.restart_sessions {
+        let restart_targets: Vec<ProfileAssignmentTarget> = enumeration
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                write_eligible_paths.contains(&canonical_compare_key(Path::new(
+                    &candidate.target.replica_path,
+                )))
+            })
+            .map(|candidate| candidate.target.clone())
+            .collect();
+        prevalidate_profile_assignment_restarts(
+            settings_snapshot,
+            &request.coding_agent_id,
+            normalized_profile,
+            &restart_targets,
+        )?;
+    }
+
+    let intent =
+        assignment_write_intent(&request.scope, request.assignment_mode, resolved_decision);
+    let writes = write_profile_assignment(
+        settings_snapshot,
+        enumeration,
+        &write_eligible_paths,
+        request,
+        normalized_profile,
+        intent,
+    )?;
+
+    Ok((target_fingerprint, writes))
 }
 
 fn write_profile_assignment(
