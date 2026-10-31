@@ -192,12 +192,14 @@ fn append_exit_activity(
                     crate::config::activity_log::build_idle_from_snapshot(
                         row,
                         crate::config::activity_log::IdleReason::AppStop,
+                        activity_for_exit,
                     )
                 })
                 .collect();
             batch.push(crate::config::activity_log::build_app_stop(
                 true,
                 rows.len(),
+                activity_for_exit,
             ));
             batch
         }
@@ -205,7 +207,11 @@ fn append_exit_activity(
         // to optimise away: the spin may legitimately exhaust
         // under teardown load, and the enumerated records are pure
         // precision on top of a close that happens either way.
-        None => vec![crate::config::activity_log::build_app_stop(false, 0)],
+        None => vec![crate::config::activity_log::build_app_stop(
+            false,
+            0,
+            activity_for_exit,
+        )],
     };
     // One open, write and close for all N+1 lines.
     crate::config::activity_log::append_batch(&activity_batch, activity_for_exit);

@@ -82,7 +82,7 @@
 //! serialize is skipped while the rest of its batch continues, and a poisoned
 //! mutex is recovered with `into_inner()`. `append` and `append_batch` are inert
 //! no-ops until [`init_run`] stores a sink during application startup
-//! - so unit tests and every CLI subcommand write nothing, by construction.
+//! on that owner. CLI subcommands and tests with uninitialized owners write nothing.
 
 use std::collections::HashMap;
 use std::io::SeekFrom;
@@ -285,10 +285,6 @@ struct Sink {
     run_id: String,
 }
 
-/// Sink identity. Set once, only by [`init_run`]. While unset, every append is a
-/// no-op, which is what keeps unit tests and CLI subcommands out of a live log.
-static SINK: OnceLock<Sink> = OnceLock::new();
-
 /// When each session last went idle, in both clock domains.
 type LastIdleAt = HashMap<Uuid, (Instant, DateTime<Utc>)>;
 
@@ -298,6 +294,8 @@ type LastIdleAt = HashMap<Uuid, (Instant, DateTime<Utc>)>;
 /// busy time. Taken only while the manager's write guard is held, so at most one
 /// thread is ever inside it.
 pub struct ActivityCoalescer {
+    /// First enabled initialization fixes this owner's sink identity.
+    sink: OnceLock<Sink>,
     /// Serializes rotation and writes; always acquired innermost in append.
     writer: Mutex<()>,
     last_idle_at: OnceLock<Mutex<LastIdleAt>>,
@@ -307,6 +305,7 @@ pub struct ActivityCoalescer {
 impl ActivityCoalescer {
     pub fn new() -> Self {
         Self {
+            sink: OnceLock::new(),
             writer: Mutex::new(()),
             last_idle_at: OnceLock::new(),
         }
@@ -337,14 +336,16 @@ fn locked_coalescer(now: Instant, owner: &ActivityCoalescer) -> MutexGuard<'_, L
     guard
 }
 
-fn run_id() -> String {
-    SINK.get()
+fn run_id(owner: &ActivityCoalescer) -> String {
+    owner
+        .sink
+        .get()
         .map(|sink| sink.run_id.clone())
         .unwrap_or_default()
 }
 
-fn sink_path() -> Option<PathBuf> {
-    SINK.get().map(|sink| sink.path.clone())
+fn sink_path(owner: &ActivityCoalescer) -> Option<PathBuf> {
+    owner.sink.get().map(|sink| sink.path.clone())
 }
 
 /// The canonical `at` encoding. Byte-identical to
@@ -391,7 +392,7 @@ pub fn build_busy(
     ActivityRecord {
         v: SCHEMA_VERSION,
         at: stamp(now_utc),
-        run_id: run_id(),
+        run_id: run_id(owner),
         payload: ActivityPayload::Busy {
             session_id: id,
             name: session.name.clone(),
@@ -420,7 +421,7 @@ pub fn build_idle(
     ActivityRecord {
         v: SCHEMA_VERSION,
         at: stamp(now_utc),
-        run_id: run_id(),
+        run_id: run_id(owner),
         payload: ActivityPayload::Idle {
             session_id: id,
             name: session.name.clone(),
@@ -452,11 +453,12 @@ pub fn build_idle(
 pub fn build_idle_from_snapshot(
     snapshot: &WorkingSessionSnapshot,
     reason: IdleReason,
+    owner: &ActivityCoalescer,
 ) -> ActivityRecord {
     ActivityRecord {
         v: SCHEMA_VERSION,
         at: stamp(Utc::now()),
-        run_id: run_id(),
+        run_id: run_id(owner),
         payload: ActivityPayload::Idle {
             session_id: snapshot.id,
             name: snapshot.name.clone(),
@@ -469,11 +471,14 @@ pub fn build_idle_from_snapshot(
 }
 
 /// Build the heartbeat record from the detector's view of who is working.
-pub fn build_app_alive(working_session_ids: Vec<Uuid>) -> ActivityRecord {
+pub fn build_app_alive(
+    working_session_ids: Vec<Uuid>,
+    owner: &ActivityCoalescer,
+) -> ActivityRecord {
     ActivityRecord {
         v: SCHEMA_VERSION,
         at: stamp(Utc::now()),
-        run_id: run_id(),
+        run_id: run_id(owner),
         payload: ActivityPayload::AppAlive {
             working_session_ids,
         },
@@ -484,11 +489,15 @@ pub fn build_app_alive(working_session_ids: Vec<Uuid>) -> ActivityRecord {
 /// outcome, not a failure: the consumer's closing rule closes every open
 /// interval at this record's `at` regardless, so the enumerated `idle` records
 /// are pure precision.
-pub fn build_app_stop(open_sessions_enumerated: bool, open_session_count: usize) -> ActivityRecord {
+pub fn build_app_stop(
+    open_sessions_enumerated: bool,
+    open_session_count: usize,
+    owner: &ActivityCoalescer,
+) -> ActivityRecord {
     ActivityRecord {
         v: SCHEMA_VERSION,
         at: stamp(Utc::now()),
-        run_id: run_id(),
+        run_id: run_id(owner),
         payload: ActivityPayload::AppStop {
             open_sessions_enumerated,
             open_session_count,
@@ -515,7 +524,7 @@ fn metrics_record(run_id: String) -> ActivityRecord {
 pub fn append(record: ActivityRecord, owner: &ActivityCoalescer) {
     #[cfg(test)]
     capture::note(std::slice::from_ref(&record));
-    let Some(path) = sink_path() else { return };
+    let Some(path) = sink_path(owner) else { return };
     append_at(&path, std::slice::from_ref(&record), owner);
 }
 
@@ -528,17 +537,14 @@ pub fn append_batch(records: &[ActivityRecord], owner: &ActivityCoalescer) {
     if records.is_empty() {
         return;
     }
-    let Some(path) = sink_path() else { return };
+    let Some(path) = sink_path(owner) else { return };
     append_at(&path, records, owner);
 }
 
 /// Test-only, in-memory mirror of the emission calls.
 ///
-/// No sink is ever configured in a test process, which is the property that
-/// keeps unit tests out of a live log. The same property makes the record an
-/// emission site produced invisible to a test, because the mutation sites hold
-/// it in a local and hand it straight to [`append`]. Mirroring the call here is
-/// what lets `session/manager.rs` assert "exactly one record" without a file.
+/// Owners without an initialized sink write nothing. Mirroring emissions here
+/// lets session manager tests assert records without configuring a file sink.
 ///
 /// This is NOT a sink: nothing is written, nothing is read back by production
 /// code, and each `#[test]` owns its own thread-local buffer.
@@ -666,7 +672,7 @@ pub fn init_run(dir: &Path, run_id: &str, enabled: bool, owner: &ActivityCoalesc
     }
     // First-wins: a second call would be a programming error, and silently
     // keeping the first sink is the fail-soft direction.
-    let _ = SINK.set(Sink {
+    let _ = owner.sink.set(Sink {
         path: dir.join(FILE_NAME),
         run_id: run_id.to_string(),
     });

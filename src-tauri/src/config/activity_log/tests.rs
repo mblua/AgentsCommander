@@ -8,12 +8,10 @@ use tempfile::TempDir;
 mod reducer;
 mod writer;
 
-// ---------------------------------------------------------------------
 // Probes. `read_rotated_records` is the single place that opens the
 // rotated file, so a per-thread counter proves whether the scan touched
 // it. Each `#[test]` owns its thread, so the count needs no
 // synchronization and cannot be perturbed by a parallel test.
-// ---------------------------------------------------------------------
 
 thread_local! {
     static ROTATED_READS: Cell<usize> = const { Cell::new(0) };
@@ -87,9 +85,7 @@ fn ago_panics_instead_of_saturating_when_the_instant_cannot_exist() {
     assert!(panicked, "ago must panic rather than saturate to now");
 }
 
-// ---------------------------------------------------------------------
 // Fixtures
-// ---------------------------------------------------------------------
 
 fn sample_session(id: Uuid, agent_kind: Option<CodingAgentKind>) -> Session {
     Session {
@@ -199,9 +195,7 @@ fn at_offset(millis: i64) -> String {
     stamp(base_time() + chrono::Duration::milliseconds(millis))
 }
 
-// ---------------------------------------------------------------------
 // §10.1 - schema, sink, rotation
-// ---------------------------------------------------------------------
 
 #[test]
 fn append_at_writes_exactly_one_line_per_record() {
@@ -227,7 +221,7 @@ fn append_batch_writes_all_lines_in_one_open() {
     let batch = vec![
         build_idle(first.id, &first, IdleReason::AppStop, &c),
         build_idle(second.id, &second, IdleReason::AppStop, &c),
-        build_app_stop(true, 2),
+        build_app_stop(true, 2, &c),
     ];
     append_at(&path, &batch, &c);
     let events: Vec<String> = parsed_lines(&path)
@@ -248,8 +242,8 @@ fn every_written_line_parses_as_json_and_carries_v_at_run_id_event() {
         &[
             build_busy(s.id, &s, BusyReason::SessionStart, &c),
             build_idle(s.id, &s, IdleReason::MarkIdle, &c),
-            build_app_alive(vec![s.id]),
-            build_app_stop(false, 0),
+            build_app_alive(vec![s.id], &c),
+            build_app_stop(false, 0, &c),
         ],
         &c,
     );
@@ -288,7 +282,6 @@ fn rotation_shifts_suffixes_and_evicts_the_oldest() {
     }
 
     assert!(rotate_if_needed(&path), "a file at the cap must rotate");
-
     let generation =
         |index: u32| std::fs::read_to_string(dir.path().join(format!("{FILE_NAME}.{index}"))).ok();
     assert!(!path.exists(), "the live file moved into the .1 slot");
@@ -325,7 +318,6 @@ fn metrics_is_re_emitted_as_the_first_record_of_a_freshly_rotated_file() {
     write_file_at_cap(&path, "previous-run");
     let s = sample_session(Uuid::new_v4(), None);
     append_at(&path, &[build_busy(s.id, &s, BusyReason::MarkBusy, &c)], &c);
-
     let records = parsed_lines(&path);
     assert_eq!(
         records.len(),
@@ -341,9 +333,7 @@ fn metrics_is_re_emitted_as_the_first_record_of_a_freshly_rotated_file() {
     assert_eq!(records[1]["event"], "busy");
 }
 
-// ---------------------------------------------------------------------
 // §10.1 - the coalescing annotation
-// ---------------------------------------------------------------------
 
 #[test]
 fn first_busy_for_a_session_has_continues_block_false_and_no_gap_ms() {
@@ -432,10 +422,8 @@ fn coalescer_state_prunes_entries_older_than_the_window() {
         seed_coalescer(fresh, fresh_entry.0, fresh_entry.1, &c).is_some(),
         "seeded"
     );
-
     let other = sample_session(Uuid::new_v4(), None);
     let _ = build_idle(other.id, &other, IdleReason::MarkIdle, &c);
-
     assert!(
         coalescer_entry(stale, &c).is_none(),
         "an entry past the window is dropped on the next write"
@@ -454,12 +442,11 @@ fn build_idle_from_snapshot_does_not_read_or_write_the_coalescer() {
     let stamped = ago(3);
     let wall = Utc::now() - chrono::Duration::seconds(3);
     seed_coalescer(id, stamped, wall, &c);
-
     let record = json_of(&build_idle_from_snapshot(
         &sample_snapshot(id),
         IdleReason::AppStop,
+        &c,
     ));
-
     assert_eq!(
         coalescer_entry(id, &c),
         Some((stamped, wall)),
@@ -471,9 +458,11 @@ fn build_idle_from_snapshot_does_not_read_or_write_the_coalescer() {
 
 #[test]
 fn build_idle_from_snapshot_omits_idle_threshold_ms() {
+    let c = ActivityCoalescer::new();
     let record = json_of(&build_idle_from_snapshot(
         &sample_snapshot(Uuid::new_v4()),
         IdleReason::AppStop,
+        &c,
     ));
     assert_eq!(record["reason"], "app_stop");
     assert!(
@@ -482,19 +471,18 @@ fn build_idle_from_snapshot_omits_idle_threshold_ms() {
     );
 }
 
-// ---------------------------------------------------------------------
 // §10.1 - fail-soft behavior
-// ---------------------------------------------------------------------
 
 #[test]
 fn append_with_no_sink_configured_is_a_no_op() {
     let c = ActivityCoalescer::new();
-    // No test ever calls `init_run`, so the sink is never configured in a
-    // test process and this holds for every unit test in the crate.
+    assert!(c.sink.get().is_none());
+    assert!(run_id(&c).is_empty());
     let dir = TempDir::new().expect("temp dir");
     let s = sample_session(Uuid::new_v4(), None);
     append(build_busy(s.id, &s, BusyReason::MarkBusy, &c), &c);
     append_batch(&[build_idle(s.id, &s, IdleReason::MarkIdle, &c)], &c);
+    assert!(c.sink.get().is_none());
     assert!(
         !dir.path().join(FILE_NAME).exists(),
         "an unconfigured sink must write nothing"
@@ -507,11 +495,12 @@ fn init_run_disabled_stores_no_sink_and_writes_nothing() {
     let dir = TempDir::new().expect("temp dir");
     init_run(dir.path(), "run-disabled", false, &c);
     init_run(dir.path(), "run-disabled", false, &c);
-    assert!(sink_path().is_none());
-    assert!(run_id().is_empty());
+    assert!(c.sink.get().is_none());
+    assert!(sink_path(&c).is_none());
+    assert!(run_id(&c).is_empty());
     assert!(!dir.path().join(FILE_NAME).exists());
-    append(build_app_alive(vec![]), &c);
-    append_batch(&[build_app_stop(true, 0)], &c);
+    append(build_app_alive(vec![], &c), &c);
+    append_batch(&[build_app_stop(true, 0, &c)], &c);
     assert!(
         !dir.path().join(FILE_NAME).exists(),
         "a disabled run must never create the activity file"
@@ -542,7 +531,6 @@ fn a_poisoned_coalescer_mutex_does_not_panic_a_later_build() {
             .join()
     });
     assert!(handle.is_err(), "the helper thread must have panicked");
-
     let s = sample_session(Uuid::new_v4(), None);
     let idle = json_of(&build_idle(s.id, &s, IdleReason::MarkIdle, &c));
     assert_eq!(idle["event"], "idle");
@@ -550,9 +538,7 @@ fn a_poisoned_coalescer_mutex_does_not_panic_a_later_build() {
     assert_eq!(busy["continuesBlock"], json!(true));
 }
 
-// ---------------------------------------------------------------------
 // §10.1 - the startup scan
-// ---------------------------------------------------------------------
 
 fn record_line(run_id: &str, event: &str, millis: i64) -> String {
     format!(
@@ -704,7 +690,6 @@ fn scan_survives_a_multibyte_character_at_the_tail_boundary() {
     };
     assert!(content.len() > TAIL_READ_BYTES as usize);
     seed_live(&dir, &content);
-
     let previous = scan(&dir).previous_run.expect("a previous run");
     assert_eq!(previous.run_id, "run-a");
     assert!(previous.clean, "a split codepoint must not break the scan");
@@ -818,7 +803,6 @@ fn scan_on_two_empty_files_reports_empty_and_null_previous_run() {
     let report = scan(&dir);
     assert_eq!(report.scan, PreviousRunScan::Empty);
     assert_eq!(report.previous_run, None);
-
     seed_live(&dir, "");
     seed_rotated(&dir, "");
     let report = scan(&dir);
@@ -826,9 +810,7 @@ fn scan_on_two_empty_files_reports_empty_and_null_previous_run() {
     assert_eq!(report.previous_run, None);
 }
 
-// ---------------------------------------------------------------------
 // §10.1 - init_run_at
-// ---------------------------------------------------------------------
 
 fn app_start_of(dir: &TempDir) -> Value {
     parsed_lines(&dir.path().join(FILE_NAME))
@@ -843,7 +825,6 @@ fn init_run_at_on_a_file_smaller_than_the_tail_window() {
     let dir = TempDir::new().expect("temp dir");
     seed_live(&dir, &record_line("run-a", "app_stop", 0));
     init_run_at(dir.path(), "run-b", &c);
-
     let start = app_start_of(&dir);
     assert_eq!(start["runId"], "run-b");
     assert_eq!(start["previousRunScan"], "ok");
@@ -864,7 +845,6 @@ fn init_run_at_on_a_tail_split_mid_utf8_character() {
     }
     content.push_str(&record_line("run-a", "app_stop", 0));
     seed_live(&dir, &content);
-
     init_run_at(dir.path(), "run-b", &c);
     let start = app_start_of(&dir);
     assert_eq!(start["previousRun"]["runId"], "run-a");
@@ -876,9 +856,7 @@ fn init_run_at_rotates_when_the_live_file_is_exactly_at_the_cap() {
     let c = ActivityCoalescer::new();
     let dir = TempDir::new().expect("temp dir");
     write_file_at_cap(&dir.path().join(FILE_NAME), "run-a");
-
     init_run_at(dir.path(), "run-b", &c);
-
     assert!(dir.path().join(format!("{FILE_NAME}.1")).exists());
     let records = parsed_lines(&dir.path().join(FILE_NAME));
     assert_eq!(records.len(), 2);
@@ -899,7 +877,6 @@ fn init_run_at_on_a_read_only_directory_does_not_panic() {
     let dir = TempDir::new().expect("temp dir");
     init_run_at(&dir.path().join("absent"), "run-b", &c);
     assert!(!dir.path().join("absent").exists());
-
     std::fs::create_dir(dir.path().join(FILE_NAME)).expect("occupy the sink path");
     init_run_at(dir.path(), "run-c", &c);
     assert!(dir.path().join(FILE_NAME).is_dir());
@@ -916,7 +893,6 @@ fn init_run_at_reads_daemon_pid_from_its_argument_directory_not_the_live_config_
     std::fs::write(dir.path().join("daemon.pid"), "4").expect("seed daemon.pid");
     init_run_at(dir.path(), "run-b", &c);
     assert_eq!(app_start_of(&dir)["concurrentInstancePid"], json!(4));
-
     let own = TempDir::new().expect("temp dir");
     std::fs::write(
         own.path().join("daemon.pid"),
@@ -944,4 +920,80 @@ fn app_start_always_declares_interval_count_unsupported() {
         metrics["unsupported"],
         json!(["intervalCount", "blockCount"])
     );
+}
+
+#[test]
+fn owner_clones_share_sink_with_preinit_positive_control() {
+    let owner = std::sync::Arc::new(ActivityCoalescer::new());
+    let clone = std::sync::Arc::clone(&owner);
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join(FILE_NAME);
+    assert!(owner.sink.get().is_none());
+    assert!(sink_path(&clone).is_none());
+    assert!(run_id(&owner).is_empty());
+    let before = build_app_alive(vec![], &owner);
+    let before_json = json_of(&before);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker_owner = std::sync::Arc::clone(&clone);
+    let worker_record = before.clone();
+    let guard = owner.writer.try_lock().expect("writer available");
+    let worker = std::thread::spawn(move || {
+        append(worker_record.clone(), &worker_owner);
+        append_batch(&[worker_record], &worker_owner);
+        tx.send(()).expect("report pre-init completion");
+    });
+    let completed = rx.recv_timeout(Duration::from_secs(5));
+    drop(guard);
+    completed.expect("pre-init appends must not acquire writer");
+    worker.join().expect("pre-init worker");
+    assert!(owner.sink.get().is_none());
+    assert!(clone.sink.get().is_none());
+    assert!(!path.exists());
+    init_run(dir.path(), "first", true, &clone);
+    assert_eq!(sink_path(&owner), Some(path.clone()));
+    assert_eq!(sink_path(&clone), Some(path.clone()));
+    assert_eq!(run_id(&owner), "first");
+    assert_eq!(run_id(&clone), "first");
+    append(before, &clone);
+    let after = build_app_alive(vec![Uuid::new_v4()], &owner);
+    let after_json = json_of(&after);
+    append_batch(&[after], &clone);
+    let lines = parsed_lines(&path);
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0]["event"], "app_start");
+    assert_eq!(lines[0]["runId"], "first");
+    assert_eq!(lines[1], before_json);
+    assert_eq!(lines[1]["runId"], "");
+    assert_eq!(lines[2], after_json);
+    assert_eq!(lines[2]["runId"], "first");
+}
+
+#[test]
+fn repeated_init_preserves_first_sink_and_runs_startup_work() {
+    let owner = std::sync::Arc::new(ActivityCoalescer::new());
+    let clone = std::sync::Arc::clone(&owner);
+    let other = ActivityCoalescer::new();
+    let a = TempDir::new().expect("temp dir A");
+    let b = TempDir::new().expect("temp dir B");
+    init_run(a.path(), "first", true, &owner);
+    init_run(b.path(), "second", true, &clone);
+    init_run(b.path(), "disabled", false, &clone);
+    assert_eq!(sink_path(&clone), Some(a.path().join(FILE_NAME)));
+    assert_eq!(run_id(&owner), "first");
+    assert_eq!(run_id(&clone), "first");
+    assert!(sink_path(&other).is_none());
+    assert!(run_id(&other).is_empty());
+    let record = build_app_alive(vec![], &clone);
+    let expected = json_of(&record);
+    append(record, &clone);
+    let a_lines = parsed_lines(&a.path().join(FILE_NAME));
+    let b_lines = parsed_lines(&b.path().join(FILE_NAME));
+    assert_eq!(a_lines.len(), 2);
+    assert_eq!(a_lines[0]["event"], "app_start");
+    assert_eq!(a_lines[0]["runId"], "first");
+    assert_eq!(a_lines[1], expected);
+    assert_eq!(a_lines[1]["runId"], "first");
+    assert_eq!(b_lines.len(), 1);
+    assert_eq!(b_lines[0]["event"], "app_start");
+    assert_eq!(b_lines[0]["runId"], "second");
 }
