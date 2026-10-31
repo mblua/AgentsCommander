@@ -447,47 +447,14 @@ pub(super) fn publish_prepared_pair_image_with_source_parent(
         }
         if *before == PhysicalState::Absent {
             if let Some(source) = source {
-                let parent = source.parent;
-                guard.check()?;
-                validate_source_publication_children(parent, &tmp, path)?;
-                let staged = parent
-                    .verify_regular_file(&tmp)
-                    .map_err(PreparedPairError::Io)?;
-                if stage_identity
-                    .as_ref()
-                    .is_none_or(|owned| !crate::path_identity::same_object(owned, &staged))
-                {
-                    return Err(PreparedPairError::Conflict);
-                }
-                guard.check()?;
-                // Windows remains path-based after verification; post-move checks
-                // detect uncertainty rather than promising handle-based exclusion.
-                let publication = parent.publish_new_file_atomic(&tmp, path);
-                source.moved.set(publication.is_ok());
-                guard.check()?;
-                validate_source_publication_children(parent, &tmp, path)?;
-                if let Err(error) = publication {
-                    // Opaque native errors never identify AlreadyExists or ownership.
-                    return match read_config_pair_physical(path) {
-                        Ok(PhysicalState::Bytes { .. })
-                            if parent.verify_regular_file(path).is_ok_and(|foreign| {
-                                !crate::path_identity::same_object(&staged, &foreign)
-                            }) =>
-                        {
-                            Err(PreparedPairError::Conflict)
-                        }
-                        _ => Err(PreparedPairError::Io(error)),
-                    };
-                }
-                let landed = parent
-                    .verify_regular_file(path)
-                    .map_err(PreparedPairError::Io)?;
-                if !crate::path_identity::same_object(&staged, &landed)
-                    || read_config_pair_physical(path)? != *after
-                {
-                    return Err(PreparedPairError::Conflict);
-                }
-                *source.after_owned.borrow_mut() = Some(landed);
+                publish_absent_source_image(
+                    path,
+                    &tmp,
+                    after,
+                    guard,
+                    source,
+                    stage_identity.as_ref(),
+                )?;
             } else {
                 // Atomic create-if-absent; rename would clobber a racing Unix creator.
                 guard.check()?;
@@ -541,4 +508,53 @@ pub(super) fn publish_prepared_pair_image_with_source_parent(
         guard.check()?;
     }
     result
+}
+
+fn publish_absent_source_image(
+    path: &Path,
+    tmp: &Path,
+    after: &PhysicalState,
+    guard: &PairTargetGuard<'_>,
+    source: &SourceNativePublication<'_>,
+    stage_identity: Option<&crate::path_identity::VerifiedPathIdentity>,
+) -> Result<(), PreparedPairError> {
+    let parent = source.parent;
+    guard.check()?;
+    validate_source_publication_children(parent, tmp, path)?;
+    let staged = parent
+        .verify_regular_file(tmp)
+        .map_err(PreparedPairError::Io)?;
+    if stage_identity.is_none_or(|owned| !crate::path_identity::same_object(owned, &staged)) {
+        return Err(PreparedPairError::Conflict);
+    }
+    guard.check()?;
+    // Windows remains path-based after verification; post-move checks
+    // detect uncertainty rather than promising handle-based exclusion.
+    let publication = parent.publish_new_file_atomic(tmp, path);
+    source.moved.set(publication.is_ok());
+    guard.check()?;
+    validate_source_publication_children(parent, tmp, path)?;
+    if let Err(error) = publication {
+        // Opaque native errors never identify AlreadyExists or ownership.
+        return match read_config_pair_physical(path) {
+            Ok(PhysicalState::Bytes { .. })
+                if parent
+                    .verify_regular_file(path)
+                    .is_ok_and(|foreign| !crate::path_identity::same_object(&staged, &foreign)) =>
+            {
+                Err(PreparedPairError::Conflict)
+            }
+            _ => Err(PreparedPairError::Io(error)),
+        };
+    }
+    let landed = parent
+        .verify_regular_file(path)
+        .map_err(PreparedPairError::Io)?;
+    if !crate::path_identity::same_object(&staged, &landed)
+        || read_config_pair_physical(path)? != *after
+    {
+        return Err(PreparedPairError::Conflict);
+    }
+    *source.after_owned.borrow_mut() = Some(landed);
+    Ok(())
 }
