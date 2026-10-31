@@ -213,6 +213,9 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
     if let WebCommandRoute::BrowserProject(project_cmd) = route_web_command(cmd) {
         return dispatch_browser_project_command(state, project_cmd, args).await;
     }
+    if let Some(result) = dispatch_configuration_command(state, cmd, args).await {
+        return result;
+    }
 
     match cmd {
         "task_get_snapshot" => task_snapshot_command(state, args).await,
@@ -246,42 +249,6 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
 
         // pty_write is handled via binary frames, not JSON commands
         "pty_write" => pty_write_command(state, args).await,
-
-        // --- Settings ---
-        // #2133 - the server owns the config dir; a browser client is a remote view of it.
-
-        // #965 - the rail is live in the browser client (`src/browser/App.tsx`
-        // mounts `<SidebarApp embedded>`), so its collapse setter must be routed
-        // or every rail header click hits the `Unknown command` fallback at the
-        // bottom of this match. Same omission #859 had to fix for the profile
-        // commands below. Symptom if unrouted: SILENT non-persistence, not a
-        // console error - the frontend catch swallows the rejection.
-        "set_rail_collapse"
-        | "get_agent_help"
-        | "list_agent_file_sources"
-        | "read_agent_file_source"
-        | "save_agent_file_source"
-        | "remember_agent_file_source"
-        | "get_settings"
-        | "update_settings"
-        | "save_settings_draft"
-        | "set_terminal_snapshots_enabled" => {
-            settings_dispatch::dispatch_settings_command(state, cmd, args).await
-        }
-
-        "move_coding_agent"
-        | "reorder_coding_agent"
-        | "resolve_coding_agent_profile"
-        | "set_agent_default_profile"
-        | "set_instance_profile_override"
-        | "preview_coding_agent_profile_selection"
-        | "apply_coding_agent_profile_selection"
-        | "preview_selection_lock_removal"
-        | "apply_selection_lock_removal"
-        | "get_replica_selection_default"
-        | "set_replica_selection_default" => {
-            coding_agent_dispatch::dispatch_coding_agent_command(state, cmd, args).await
-        }
 
         // --- Role templates ---
         "list_role_templates" => list_role_templates_command(state).await,
@@ -346,6 +313,52 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         }
 
         _ => Err(format!("Unknown command: {}", cmd)),
+    }
+}
+
+async fn dispatch_configuration_command(
+    state: &WsState,
+    cmd: &str,
+    args: &Value,
+) -> Option<Result<Value, String>> {
+    match cmd {
+        // --- Settings ---
+        // #2133 - the server owns the config dir; a browser client is a remote view of it.
+
+        // #965 - the rail is live in the browser client (`src/browser/App.tsx`
+        // mounts `<SidebarApp embedded>`), so its collapse setter must be routed
+        // or every rail header click hits the `Unknown command` fallback at the
+        // bottom of this match. Same omission #859 had to fix for the profile
+        // commands below. Symptom if unrouted: SILENT non-persistence, not a
+        // console error - the frontend catch swallows the rejection.
+        "set_rail_collapse"
+        | "get_agent_help"
+        | "list_agent_file_sources"
+        | "read_agent_file_source"
+        | "save_agent_file_source"
+        | "remember_agent_file_source"
+        | "get_settings"
+        | "update_settings"
+        | "save_settings_draft"
+        | "set_terminal_snapshots_enabled" => {
+            Some(settings_dispatch::dispatch_settings_command(state, cmd, args).await)
+        }
+
+        "move_coding_agent"
+        | "reorder_coding_agent"
+        | "resolve_coding_agent_profile"
+        | "set_agent_default_profile"
+        | "set_instance_profile_override"
+        | "preview_coding_agent_profile_selection"
+        | "apply_coding_agent_profile_selection"
+        | "preview_selection_lock_removal"
+        | "apply_selection_lock_removal"
+        | "get_replica_selection_default"
+        | "set_replica_selection_default" => {
+            Some(coding_agent_dispatch::dispatch_coding_agent_command(state, cmd, args).await)
+        }
+
+        _ => None,
     }
 }
 
