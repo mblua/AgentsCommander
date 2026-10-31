@@ -27,11 +27,7 @@ pub(crate) fn confirm(outbox: &Path, id: &str) -> Result<(), ConfirmationError> 
     Ok(())
 }
 
-pub(crate) fn deliver(
-    outbox: &Path,
-    message: &OutboxMessage,
-    action: &str,
-) -> Result<(), String> {
+pub(crate) fn deliver(outbox: &Path, message: &OutboxMessage, action: &str) -> Result<(), String> {
     directories::ensure_cli_outbox(outbox)
         .map_err(|e| format!("failed to create outbox directory: {e}"))?;
     let file = outbox.join(format!("{}.json", message.id));
