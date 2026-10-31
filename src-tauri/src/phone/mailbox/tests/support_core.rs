@@ -767,7 +767,9 @@ impl CodexClearScannerFixture {
             .unwrap()
             .unwrap();
             let guard = PtyManager::lock_route_for_write(&writer).unwrap();
-            assert!(crate::pty::inject::write_exact_agent_input_first(guard, bytes));
+            assert!(crate::pty::inject::write_exact_agent_input_first(
+                guard, bytes
+            ));
         }
         crate::pty::inject::inject_text_into_session(self.app.handle(), id, "direct")
             .await
