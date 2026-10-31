@@ -43,46 +43,21 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
     let settings = app.state::<SettingsState>().inner().clone();
     // 1. Read config from existing session BEFORE destroying it.
     let source = read_restart_source(transaction, &session_mgr, request.session_id).await?;
-    let (input, continuation) = source.into_preparation(request);
-    let source::RestartContinuation {
-        uuid,
-        name,
-        git_repos,
-        is_root_agent,
-        telegram_bot_id,
-        old_status,
-        old_selected,
-        activate_after,
-        intent,
-        enforcement,
-    } = continuation;
+    let (input, next) = source.into_preparation(request);
+    let uuid = next.uuid;
     let prepared = prepare_restart(transaction, context, &settings, input).await;
-    let PreparedRestart {
-        shell,
-        shell_args,
-        cwd,
-        selected_agent_id,
-        agent_label,
-        resolved_spawn,
-        resolved_agent_host_shell,
-        restart_start_fresh,
-        carried_communication,
-    } = prepared?;
+    let prepared @ PreparedRestart { .. } = prepared?;
 
     let retirement = begin_restart_retirement(transaction, context).await?;
 
     // 3. Release the old runtime slot while retaining its canonical manager row.
     // Dormant rows skip teardown and remain retryable until replacement success.
-    let old_was_dormant = matches!(old_status, SessionStatus::Exited(_));
+    let old_was_dormant = matches!(next.old_status, SessionStatus::Exited(_));
     let teardown = teardown_old_for_restart(transaction, uuid, old_was_dormant).await;
-    if let Some(retirement) = retirement {
-        retirement.complete(match &teardown {
-            Ok(old_lost) => Ok(Some(format!("old_lost={old_lost}"))),
-            Err(error) => Err(format!("old_lost={}: {}", error.old_lost, error.message)),
-        });
-    }
+    complete_restart_retirement(retirement, &teardown);
     let old_lost =
-        accept_restart_teardown(transaction, teardown, uuid, old_selected, intent).await?;
+        accept_restart_teardown(transaction, teardown, uuid, next.old_selected, next.intent)
+            .await?;
 
     // Test-only rendezvous after the old id's early release and before the
     // replacement is created (phase 4 test 9).
@@ -92,35 +67,31 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
     // 4. Spawn the replacement as a pending, unannounced row.
     let binding_manager = session_mgr.read().await.clone();
     let coding_agent_binding = binding_manager.coding_agent_binding(uuid).await;
-    let target_ownership = context
-        .authority()
-        .map(|authority| authority.target_ownership())
-        .transpose()?
-        .flatten();
+    let target_ownership = restart_target_ownership(context)?;
     let completion = create_session_inner_impl(
         app,
         &session_mgr,
         &pty_mgr,
-        shell,
-        shell_args,
-        cwd.clone(),
-        Some(name),
-        selected_agent_id,
-        agent_label,
+        prepared.shell,
+        prepared.shell_args,
+        prepared.cwd.clone(),
+        Some(next.name),
+        prepared.selected_agent_id,
+        prepared.agent_label,
         false,
-        git_repos,
-        restart_start_fresh,
-        resolved_spawn,
-        resolved_agent_host_shell,
+        next.git_repos,
+        prepared.restart_start_fresh,
+        prepared.resolved_spawn,
+        prepared.resolved_agent_host_shell,
         None,
         CreateSelectionIntent::Suppress,
-        (!is_root_agent).then_some(restart_start_fresh),
-        carried_communication,
+        (!next.is_root_agent).then_some(prepared.restart_start_fresh),
+        prepared.carried_communication,
         Some(transaction),
-        Some(SelectionCause::Restart(intent)),
+        Some(SelectionCause::Restart(next.intent)),
         true,
         target_ownership.as_ref(),
-        enforcement,
+        next.enforcement,
         coding_agent_binding,
         context.authority(),
         None,
@@ -133,8 +104,8 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
         context,
         uuid,
         old_lost,
-        old_selected,
-        intent,
+        next.old_selected,
+        next.intent,
     )
     .await?;
     let (new_uuid, committed, session_info) = finalize_restart_deferred(
@@ -142,10 +113,10 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
         &deferred,
         uuid,
         old_lost,
-        old_selected,
-        activate_after,
-        intent,
-        restart_start_fresh,
+        next.old_selected,
+        next.activate_after,
+        next.intent,
+        prepared.restart_start_fresh,
     )
     .await?;
     let publication = publish_restart_before_warnings(
@@ -166,9 +137,9 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
         transaction,
         new_uuid,
         session_info,
-        restart_start_fresh,
-        telegram_bot_id.as_deref(),
-        &cwd,
+        prepared.restart_start_fresh,
+        next.telegram_bot_id.as_deref(),
+        &prepared.cwd,
         publication,
     )
     .await
@@ -311,31 +282,19 @@ async fn prepare_restart<R: tauri::Runtime>(
         let clean_args =
             crate::config::sessions_persistence::strip_auto_injected_args(&shell, &shell_args);
 
-        let requested_agent_id = agent_id;
-        let selected_requested_profile =
-            effective_restart_requested_profile(requested_profile, stored_requested_profile);
-        // #537 read-side / #2434: resolve the launch agent through the one matched
-        // selection drift also reads, and resolve its spawn under a single settings
-        // read guard. No await is held across the guard; it is dropped at the end of
-        // this block. The #1271 host-shell snapshot is copied from the SAME guard so
-        // program and args can never pair across a configuration change.
         let selection::RestartSelection {
             selected_agent_id,
             resolved_spawn,
             resolved_agent_host_shell,
-        } = {
-            let cfg = settings
-                .current_read()
-                .await
-                .map_err(|error| error.to_string())?;
-            selection::resolve_restart_selection(
-                &cfg,
-                &cwd,
-                requested_agent_id.as_deref(),
-                stored_agent_id.as_deref(),
-                selected_requested_profile.as_deref(),
-            )?
-        };
+        } = read_restart_selection(
+            settings,
+            &cwd,
+            agent_id.as_deref(),
+            stored_agent_id.as_deref(),
+            requested_profile,
+            stored_requested_profile,
+        )
+        .await?;
         // #2434 - prepare (isolated CODEX_HOME, OpenCode config dir) outside the
         // settings guard and BEFORE any teardown: a failure aborts the restart and
         // leaves the old session running.
@@ -417,4 +376,54 @@ async fn begin_restart_retirement<R: tauri::Runtime>(
     }
 
     Ok(retirement)
+}
+
+fn complete_restart_retirement(
+    retirement: Option<crate::session::selection::LifecycleEffectGuard>,
+    teardown: &Result<bool, super::settlement::RestartTeardownError>,
+) {
+    if let Some(retirement) = retirement {
+        retirement.complete(match teardown {
+            Ok(old_lost) => Ok(Some(format!("old_lost={old_lost}"))),
+            Err(error) => Err(format!("old_lost={}: {}", error.old_lost, error.message)),
+        });
+    }
+}
+
+async fn read_restart_selection(
+    settings: &SettingsState,
+    cwd: &str,
+    requested_agent_id: Option<&str>,
+    stored_agent_id: Option<&str>,
+    requested_profile: Option<String>,
+    stored_requested_profile: Option<String>,
+) -> Result<selection::RestartSelection, String> {
+    let selected_requested_profile =
+        effective_restart_requested_profile(requested_profile, stored_requested_profile);
+    // #537 read-side / #2434: resolve the launch agent through the one matched
+    // selection drift also reads, and resolve its spawn under a single settings
+    // read guard. No await is held across the guard; it is dropped at the end of
+    // this block. The #1271 host-shell snapshot is copied from the SAME guard so
+    // program and args can never pair across a configuration change.
+    let cfg = settings
+        .current_read()
+        .await
+        .map_err(|error| error.to_string())?;
+    selection::resolve_restart_selection(
+        &cfg,
+        cwd,
+        requested_agent_id,
+        stored_agent_id,
+        selected_requested_profile.as_deref(),
+    )
+}
+
+fn restart_target_ownership<'a>(
+    context: &'a LifecycleExecutionContext<'_>,
+) -> Result<Option<crate::api::message_store::PtyInputTargetOwnership<'a>>, String> {
+    context
+        .authority()
+        .map(|authority| authority.target_ownership())
+        .transpose()
+        .map(Option::flatten)
 }
