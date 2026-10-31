@@ -1,10 +1,12 @@
-use super::{SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME, STATE_SCHEMA_VERSION, STATE_TEMP_COUNTER};
+use super::{SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME, STATE_SCHEMA_VERSION};
 use sha2::Digest;
 use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static STATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
