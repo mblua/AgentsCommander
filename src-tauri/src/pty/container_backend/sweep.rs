@@ -195,6 +195,35 @@ impl ContainerTransportBackend {
                 format!("owner=containerShutdownWork {context}")
             }
         }));
+        self.append_installed_shutdown_contexts(&mut retained);
+        retained.extend(
+            self.cleanup_ownership
+                .contexts()
+                .into_iter()
+                .map(|context| context.diagnostic()),
+        );
+        if let Some(runtime) = self.runtime.as_ref() {
+            retained.extend(
+                runtime
+                    .retained_cleanup_contexts()
+                    .into_iter()
+                    .map(|context| context.diagnostic()),
+            );
+        }
+        retained.sort();
+        retained.dedup();
+        let terminal = work_report.terminal && retained.is_empty();
+        if !terminal {
+            log::error!(
+                "[container-transport] global shutdown cleanup retained unresolved ownership \
+                    count={}",
+                retained.len()
+            );
+        }
+        ContainerShutdownReport { terminal, retained }
+    }
+
+    fn append_installed_shutdown_contexts(&self, retained: &mut Vec<String>) {
         match self.sessions.try_lock() {
             Ok(sessions) => retained.extend(sessions.iter().map(|(id, state)| {
                 RetainedContainerOwnerContext {
@@ -257,31 +286,6 @@ impl ContainerTransportBackend {
                 .diagnostic(),
             ),
         }
-        retained.extend(
-            self.cleanup_ownership
-                .contexts()
-                .into_iter()
-                .map(|context| context.diagnostic()),
-        );
-        if let Some(runtime) = self.runtime.as_ref() {
-            retained.extend(
-                runtime
-                    .retained_cleanup_contexts()
-                    .into_iter()
-                    .map(|context| context.diagnostic()),
-            );
-        }
-        retained.sort();
-        retained.dedup();
-        let terminal = work_report.terminal && retained.is_empty();
-        if !terminal {
-            log::error!(
-                "[container-transport] global shutdown cleanup retained unresolved ownership \
-                    count={}",
-                retained.len()
-            );
-        }
-        ContainerShutdownReport { terminal, retained }
     }
 
     fn installed_session_ids_for_shutdown(
