@@ -11,6 +11,7 @@ mod list_sessions;
 mod loop_cmd;
 mod new_project;
 mod open_project;
+pub(crate) mod outbox_delivery;
 mod plain_clear;
 mod purge_wg;
 mod raise_hand;

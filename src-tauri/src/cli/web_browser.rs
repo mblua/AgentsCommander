@@ -15,7 +15,6 @@ use crate::phone::types::OutboxMessage;
 use super::self_clear::resolve_self_clear_sender;
 
 const POLL: Duration = Duration::from_millis(250);
-const CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -145,28 +144,18 @@ fn request(session: SessionArgs, action: &str, body: String) -> Result<String, (
     documents::write_cli_outbox_message(&outbox_file, json.as_bytes())
         .map_err(|e| (1, format!("failed to write outbox file: {e}")))?;
 
-    let delivered = outbox
-        .join("delivered")
-        .join(format!("{}.json", message.id));
-    let rejected = outbox
-        .join("rejected")
-        .join(format!("{}.reason.txt", message.id));
-    let start = Instant::now();
-    while !directories::cli_outbox_artifact_exists(&delivered) {
-        if directories::cli_outbox_artifact_exists(&rejected) {
-            let reason = documents::read_cli_outbox_text(&rejected)
-                .unwrap_or_else(|_| "unknown reason".to_string());
-            return Err((1, format!("{action} rejected - {}", reason.trim())));
-        }
-        if start.elapsed() >= CONFIRM_TIMEOUT {
-            let id = &message.id;
-            return Err((
-                1,
-                format!("delivery confirmation timeout after 30s (request {id})"),
-            ));
-        }
-        std::thread::sleep(POLL);
-    }
+    super::outbox_delivery::confirm(&outbox, &message.id).map_err(|error| {
+        let text = match error {
+            super::outbox_delivery::ConfirmationError::Rejected(reason) => {
+                format!("{action} rejected - {reason}")
+            }
+            super::outbox_delivery::ConfirmationError::Timeout => {
+                let id = &message.id;
+                format!("delivery confirmation timeout after 30s (request {id})")
+            }
+        };
+        (1, text)
+    })?;
 
     let request_id = message.request_id.unwrap_or_default();
     let response = ac_dir.join("responses").join(format!("{request_id}.json"));

@@ -168,51 +168,9 @@ pub fn execute(args: SelfClearArgs) -> i32 {
     } else {
         ac_dir.join("outbox")
     };
-    if let Err(e) = self_clear_files::create_self_clear_outbox(&outbox_dir) {
-        eprintln!("Error: failed to create outbox directory: {}", e);
+    if let Err(error) = super::outbox_delivery::deliver(&outbox_dir, &message, "self-clear") {
+        eprintln!("Error: {}", error);
         return 1;
-    }
-    let outbox_path = outbox_dir.join(format!("{}.json", msg_id));
-    let json = match serde_json::to_string_pretty(&message) {
-        Ok(j) => j,
-        Err(e) => {
-            eprintln!("Error: failed to serialize message: {}", e);
-            return 1;
-        }
-    };
-    if let Err(e) = self_clear_files::write_self_clear_outbox_message(&outbox_path, &json) {
-        eprintln!("Error: failed to write outbox file: {}", e);
-        return 1;
-    }
-
-    // Poll delivered/ | rejected/ (queue confirmation, 30s) - same loop as close_session::execute.
-    let delivered_path = outbox_dir
-        .join("delivered")
-        .join(format!("{}.json", msg_id));
-    let rejected_reason_path = outbox_dir
-        .join("rejected")
-        .join(format!("{}.reason.txt", msg_id));
-    let confirm_timeout = std::time::Duration::from_secs(30);
-    let confirm_poll = std::time::Duration::from_millis(250);
-    let start = std::time::Instant::now();
-    loop {
-        if self_clear_files::self_clear_path_exists(&delivered_path) {
-            break;
-        }
-        if self_clear_files::self_clear_path_exists(&rejected_reason_path) {
-            let reason = self_clear_files::read_self_clear_reply(&rejected_reason_path)
-                .unwrap_or_else(|_| "unknown reason".to_string());
-            eprintln!("Error: self-clear rejected - {}", reason.trim());
-            return 1;
-        }
-        if start.elapsed() >= confirm_timeout {
-            eprintln!(
-                "Error: delivery confirmation timeout after 30s (request {} may still be pending)",
-                msg_id
-            );
-            return 1;
-        }
-        std::thread::sleep(confirm_poll);
     }
 
     wait_for_self_clear_response(&ac_dir, &request_id, args.timeout)
