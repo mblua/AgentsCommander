@@ -26,8 +26,8 @@ mod initialization;
 mod status;
 
 use crate::filesystem::tasks::{
-    description_sentinel, io_boundary, open_status_append, open_task_sync, read_description_snapshot,
-    TaskLock, TaskLockError,
+    description_sentinel, io_boundary, open_status_append, open_task_sync,
+    read_description_snapshot, TaskLock, TaskLockError,
 };
 #[cfg(test)]
 use crate::filesystem::tasks::{IO_FAULT, IO_MUTATION};
