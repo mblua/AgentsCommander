@@ -172,6 +172,17 @@ pub async fn discover_ac_agents(
     })
 }
 
+fn discovery_project_directories(base: &Path) -> Vec<std::path::PathBuf> {
+    let mut dirs = vec![base.to_path_buf()];
+    crate::config::projects::visit_discovery_project_children(base, |p| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !name.starts_with('.') {
+            dirs.push(p);
+        }
+    });
+    dirs
+}
+
 async fn scan_agents(
     cfg: &crate::config::settings::AppSettings,
     clocks_snapshot: &HashMap<String, crate::config::coordinator_clocks::ClockEntry>,
@@ -196,16 +207,7 @@ async fn scan_agents(
         }
 
         // Also check children of the base path (same pattern as search_repos)
-        let dirs_to_check: Vec<std::path::PathBuf> = {
-            let mut dirs = vec![base.to_path_buf()];
-            crate::config::projects::visit_discovery_project_children(base, |p| {
-                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !name.starts_with('.') {
-                    dirs.push(p);
-                }
-            });
-            dirs
-        };
+        let dirs_to_check = discovery_project_directories(base);
 
         for repo_dir in dirs_to_check {
             let Some(ac_root) = existing_ac_root(&repo_dir) else {
