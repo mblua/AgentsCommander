@@ -34,80 +34,27 @@ pub(super) async fn poll_task(
     let mut network_error_state = PollNetworkErrorState::new();
     let mut poll_backoff = new_poll_backoff(&session_id_str);
 
-    // Skip old messages
-    match api::get_updates(&network, &token, 0, 0).await {
-        Ok(updates) => {
-            poll_backoff.reset();
-            if let Some(last) = updates.last() {
-                offset = last.update_id + 1;
-                logger.log(
-                    "POLL_INIT",
-                    &session_id_str,
-                    &format!("skipped {} old messages, offset={}", updates.len(), offset),
-                );
-            }
-        }
-        Err(e) => {
-            let msg = crate::telegram::redact::redact(&e.to_string());
-            let kind = TelegramErrKind::classify(&msg);
-
-            if matches!(kind, TelegramErrKind::Network) {
-                match network_error_state.record_network_failure(&network_error_policy) {
-                    PollNetworkLogAction::Failure {
-                        level,
-                        suppressed_since_last_emit,
-                        sustained,
-                    } => {
-                        logger.log("POLL_ERR", &session_id_str, &msg);
-                        let suffix = if suppressed_since_last_emit == 0 {
-                            String::new()
-                        } else {
-                            format!(" suppressed_repeats={}", suppressed_since_last_emit)
-                        };
-                        log::log!(
-                            level,
-                            "[bridge] Initial getUpdates network error kind={} session_id={} \
-                            sustained={} err={}{}",
-                            kind.as_str(),
-                            session_id_str,
-                            sustained,
-                            msg,
-                            suffix
-                        );
-                    }
-                    PollNetworkLogAction::Suppressed { level } => {
-                        logger.log(
-                            "POLL_ERR_SUPPRESSED",
-                            &session_id_str,
-                            &format!("kind={} phase=initial", kind.as_str()),
-                        );
-                        log::log!(
-                            level,
-                            "[bridge] Initial getUpdates network error suppressed kind={} \
-                            session_id={}",
-                            kind.as_str(),
-                            session_id_str
-                        );
-                    }
-                    PollNetworkLogAction::Recovery { .. } | PollNetworkLogAction::None => {
-                        unreachable!("record_network_failure only returns Failure or Suppressed")
-                    }
-                }
-            } else {
-                logger.log("POLL_ERR", &session_id_str, &msg);
-                log::error!(
-                    "[bridge] Initial getUpdates failed kind={} session_id={} err={}",
-                    kind.as_str(),
-                    session_id_str,
-                    msg
-                );
-            }
-            if !sleep_backoff_or_cancel(&cancel, &mut poll_backoff, &mut logger, &session_id_str)
-                .await
-            {
-                return;
-            }
-        }
+    let session = PollSession {
+        runtime: runtime.as_ref(),
+        event_port: event_port.as_ref(),
+        session_id,
+        session_id_str: &session_id_str,
+        network: &network,
+        token: &token,
+        chat_id,
+        cancel: &cancel,
+    };
+    if !skip_old_messages(
+        &session,
+        &mut offset,
+        &mut poll_backoff,
+        &mut logger,
+        &network_error_policy,
+        &mut network_error_state,
+    )
+    .await
+    {
+        return;
     }
 
     loop {
@@ -117,88 +64,12 @@ pub(super) async fn poll_task(
                 match result {
                     Ok(updates) => {
                         poll_backoff.reset();
-                        match network_error_state.record_success(&network_error_policy) {
-                            PollNetworkLogAction::Recovery {
-                                level,
-                                outage_seconds,
-                                suppressed_total,
-                                sustained,
-                            } => {
-                                logger.log(
-                                    "POLL_RECOVERY",
-                                    &session_id_str,
-                                    &format!(
-                                        "outage_seconds={} suppressed_total={} sustained={}",
-                                        outage_seconds, suppressed_total, sustained
-                                    ),
-                                );
-                                log::log!(
-                                    level,
-                                    "[bridge] Telegram poll recovered session_id={} \
-                                    outage_seconds={} suppressed_total={} sustained={}",
-                                    session_id_str,
-                                    outage_seconds,
-                                    suppressed_total,
-                                    sustained
-                                );
-                            }
-                            PollNetworkLogAction::None => {}
-                            PollNetworkLogAction::Failure { .. }
-                            | PollNetworkLogAction::Suppressed { .. } => {
-                                unreachable!("record_success only returns Recovery or None")
-                            }
-                        }
-                        for update in updates {
-                            offset = update.update_id + 1;
-
-                            if update.chat_id != chat_id {
-                                logger.log(
-                                    "POLL_SKIP",
-                                    &session_id_str,
-                                    &format!("wrong chat_id={}", update.chat_id),
-                                );
-                                continue;
-                            }
-
-                            let inject_text = match update.content {
-                                api::TelegramContent::Text(text) => {
-                                    logger.log(
-                                        "RECV_TG",
-                                        &session_id_str,
-                                        &format!("from={} text={}", update.from_name, text),
-                                    );
-                                    text
-                                }
-                                api::TelegramContent::Voice { file_id } => {
-                                    match transcribe_voice_update(
-                                        runtime.as_ref(),
-                                        &network,
-                                        &token,
-                                        chat_id,
-                                        &session_id_str,
-                                        &mut logger,
-                                        &update.from_name,
-                                        &file_id,
-                                    )
-                                    .await
-                                    {
-                                        Some(text) => text,
-                                        None => continue,
-                                    }
-                                }
-                            };
-
-                            deliver_text(
-                                runtime.as_ref(),
-                                event_port.as_ref(),
-                                session_id,
-                                &session_id_str,
-                                &inject_text,
-                                &update.from_name,
-                                &mut logger,
-                            )
-                            .await;
-                        }
+                        log_poll_recovery(
+                            network_error_state.record_success(&network_error_policy),
+                            &mut logger,
+                            &session_id_str,
+                        );
+                        deliver_updates(&session, updates, &mut offset, &mut logger).await;
                     }
                     Err(e) => {
                         let msg = crate::telegram::redact::redact(&e.to_string());
@@ -231,50 +102,15 @@ pub(super) async fn poll_task(
                             continue;
                         }
 
-                        match network_error_state.record_network_failure(&network_error_policy) {
-                            PollNetworkLogAction::Failure {
-                                level,
-                                suppressed_since_last_emit,
-                                sustained,
-                            } => {
-                                logger.log("POLL_ERR", &session_id_str, &msg);
-                                let suffix = if suppressed_since_last_emit == 0 {
-                                    String::new()
-                                } else {
-                                    format!(" suppressed_repeats={}", suppressed_since_last_emit)
-                                };
-                                log::log!(
-                                    level,
-                                    "[bridge] Telegram poll network error kind={} session_id={} \
-                                    pid={} bot_id={} sustained={} err={}{}",
-                                    kind.as_str(),
-                                    session_id_str,
-                                    pid,
-                                    token_prefix,
-                                    sustained,
-                                    msg,
-                                    suffix
-                                );
-                            }
-                            PollNetworkLogAction::Suppressed { level } => {
-                                logger.log(
-                                    "POLL_ERR_SUPPRESSED",
-                                    &session_id_str,
-                                    &format!("kind={} phase=poll", kind.as_str()),
-                                );
-                                log::log!(
-                                    level,
-                                    "[bridge] Telegram poll network error suppressed kind={} \
-                                    session_id={}",
-                                    kind.as_str(),
-                                    session_id_str
-                                );
-                            }
-                            PollNetworkLogAction::Recovery { .. } | PollNetworkLogAction::None => {
-                                unreachable!("record_network_failure only returns Failure or \
-                                Suppressed")
-                            }
-                        }
+                        log_poll_network_failure(
+                            network_error_state.record_network_failure(&network_error_policy),
+                            &mut logger,
+                            &session_id_str,
+                            kind,
+                            &msg,
+                            pid,
+                            token_prefix,
+                        );
                         if !sleep_backoff_or_cancel(
                             &cancel,
                             &mut poll_backoff,
@@ -289,6 +125,260 @@ pub(super) async fn poll_task(
                 }
             }
         }
+    }
+}
+
+struct PollSession<'a> {
+    runtime: &'a dyn TelegramRuntime,
+    event_port: &'a dyn TelegramEvents,
+    session_id: Uuid,
+    session_id_str: &'a str,
+    network: &'a OutboundNetwork,
+    token: &'a str,
+    chat_id: i64,
+    cancel: &'a CancellationToken,
+}
+
+async fn skip_old_messages(
+    session: &PollSession<'_>,
+    offset: &mut i64,
+    poll_backoff: &mut NetworkBackoff,
+    logger: &mut BridgeLogger,
+    network_error_policy: &TelegramNetworkPollErrorLogging,
+    network_error_state: &mut PollNetworkErrorState,
+) -> bool {
+    match api::get_updates(session.network, session.token, 0, 0).await {
+        Ok(updates) => {
+            poll_backoff.reset();
+            if let Some(last) = updates.last() {
+                *offset = last.update_id + 1;
+                logger.log(
+                    "POLL_INIT",
+                    session.session_id_str,
+                    &format!("skipped {} old messages, offset={}", updates.len(), *offset),
+                );
+            }
+        }
+        Err(e) => {
+            let msg = crate::telegram::redact::redact(&e.to_string());
+            let kind = TelegramErrKind::classify(&msg);
+
+            if matches!(kind, TelegramErrKind::Network) {
+                match network_error_state.record_network_failure(network_error_policy) {
+                    PollNetworkLogAction::Failure {
+                        level,
+                        suppressed_since_last_emit,
+                        sustained,
+                    } => {
+                        logger.log("POLL_ERR", session.session_id_str, &msg);
+                        let suffix = if suppressed_since_last_emit == 0 {
+                            String::new()
+                        } else {
+                            format!(" suppressed_repeats={}", suppressed_since_last_emit)
+                        };
+                        log::log!(
+                            level,
+                            "[bridge] Initial getUpdates network error kind={} session_id={} \
+                            sustained={} err={}{}",
+                            kind.as_str(),
+                            session.session_id_str,
+                            sustained,
+                            msg,
+                            suffix
+                        );
+                    }
+                    PollNetworkLogAction::Suppressed { level } => {
+                        logger.log(
+                            "POLL_ERR_SUPPRESSED",
+                            session.session_id_str,
+                            &format!("kind={} phase=initial", kind.as_str()),
+                        );
+                        log::log!(
+                            level,
+                            "[bridge] Initial getUpdates network error suppressed kind={} \
+                            session_id={}",
+                            kind.as_str(),
+                            session.session_id_str
+                        );
+                    }
+                    PollNetworkLogAction::Recovery { .. } | PollNetworkLogAction::None => {
+                        unreachable!("record_network_failure only returns Failure or Suppressed")
+                    }
+                }
+            } else {
+                logger.log("POLL_ERR", session.session_id_str, &msg);
+                log::error!(
+                    "[bridge] Initial getUpdates failed kind={} session_id={} err={}",
+                    kind.as_str(),
+                    session.session_id_str,
+                    msg
+                );
+            }
+            if !sleep_backoff_or_cancel(
+                session.cancel,
+                poll_backoff,
+                logger,
+                session.session_id_str,
+            )
+            .await
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn log_poll_recovery(
+    action: PollNetworkLogAction,
+    logger: &mut BridgeLogger,
+    session_id_str: &str,
+) {
+    match action {
+        PollNetworkLogAction::Recovery {
+            level,
+            outage_seconds,
+            suppressed_total,
+            sustained,
+        } => {
+            logger.log(
+                "POLL_RECOVERY",
+                session_id_str,
+                &format!(
+                    "outage_seconds={} suppressed_total={} sustained={}",
+                    outage_seconds, suppressed_total, sustained
+                ),
+            );
+            log::log!(
+                level,
+                "[bridge] Telegram poll recovered session_id={} \
+                outage_seconds={} suppressed_total={} sustained={}",
+                session_id_str,
+                outage_seconds,
+                suppressed_total,
+                sustained
+            );
+        }
+        PollNetworkLogAction::None => {}
+        PollNetworkLogAction::Failure { .. } | PollNetworkLogAction::Suppressed { .. } => {
+            unreachable!("record_success only returns Recovery or None")
+        }
+    }
+}
+
+fn log_poll_network_failure(
+    action: PollNetworkLogAction,
+    logger: &mut BridgeLogger,
+    session_id_str: &str,
+    kind: TelegramErrKind,
+    msg: &str,
+    pid: u32,
+    token_prefix: &str,
+) {
+    match action {
+        PollNetworkLogAction::Failure {
+            level,
+            suppressed_since_last_emit,
+            sustained,
+        } => {
+            logger.log("POLL_ERR", session_id_str, msg);
+            let suffix = if suppressed_since_last_emit == 0 {
+                String::new()
+            } else {
+                format!(" suppressed_repeats={}", suppressed_since_last_emit)
+            };
+            log::log!(
+                level,
+                "[bridge] Telegram poll network error kind={} session_id={} \
+                pid={} bot_id={} sustained={} err={}{}",
+                kind.as_str(),
+                session_id_str,
+                pid,
+                token_prefix,
+                sustained,
+                msg,
+                suffix
+            );
+        }
+        PollNetworkLogAction::Suppressed { level } => {
+            logger.log(
+                "POLL_ERR_SUPPRESSED",
+                session_id_str,
+                &format!("kind={} phase=poll", kind.as_str()),
+            );
+            log::log!(
+                level,
+                "[bridge] Telegram poll network error suppressed kind={} \
+                session_id={}",
+                kind.as_str(),
+                session_id_str
+            );
+        }
+        PollNetworkLogAction::Recovery { .. } | PollNetworkLogAction::None => {
+            unreachable!(
+                "record_network_failure only returns Failure or \
+            Suppressed"
+            )
+        }
+    }
+}
+
+async fn deliver_updates(
+    session: &PollSession<'_>,
+    updates: Vec<api::TelegramUpdate>,
+    offset: &mut i64,
+    logger: &mut BridgeLogger,
+) {
+    for update in updates {
+        *offset = update.update_id + 1;
+
+        if update.chat_id != session.chat_id {
+            logger.log(
+                "POLL_SKIP",
+                session.session_id_str,
+                &format!("wrong chat_id={}", update.chat_id),
+            );
+            continue;
+        }
+
+        let inject_text = match update.content {
+            api::TelegramContent::Text(text) => {
+                logger.log(
+                    "RECV_TG",
+                    session.session_id_str,
+                    &format!("from={} text={}", update.from_name, text),
+                );
+                text
+            }
+            api::TelegramContent::Voice { file_id } => {
+                match transcribe_voice_update(
+                    session.runtime,
+                    session.network,
+                    session.token,
+                    session.chat_id,
+                    session.session_id_str,
+                    logger,
+                    &update.from_name,
+                    &file_id,
+                )
+                .await
+                {
+                    Some(text) => text,
+                    None => continue,
+                }
+            }
+        };
+
+        deliver_text(
+            session.runtime,
+            session.event_port,
+            session.session_id,
+            session.session_id_str,
+            &inject_text,
+            &update.from_name,
+            logger,
+        )
+        .await;
     }
 }
 
