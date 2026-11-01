@@ -101,29 +101,7 @@ pub(super) async fn dispatch_session_command(
             Ok(json!(null))
         }
 
-        "subscribe_session" => {
-            let session_id = require_str(args, "sessionId")?;
-            let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-
-            let pty_mgr = state.pty_mgr.lock().unwrap();
-            let snapshot = pty_mgr.get_screen_snapshot(uuid);
-            let size = snapshot
-                .as_ref()
-                .map(|snapshot| (snapshot.rows, snapshot.cols))
-                .or_else(|| pty_mgr.get_pty_size(uuid));
-            drop(pty_mgr);
-
-            if let Some(snapshot) = snapshot {
-                state
-                    .broadcaster
-                    .broadcast_pty_output(&session_id, &snapshot.data);
-            }
-
-            match size {
-                Some((rows, cols)) => Ok(json!({ "rows": rows, "cols": cols })),
-                None => Ok(json!(null)),
-            }
-        }
+        "subscribe_session" => subscribe_session_command(state, args),
 
         "get_pty_size" => {
             let session_id = require_str(args, "sessionId")?;
@@ -136,6 +114,30 @@ pub(super) async fn dispatch_session_command(
             }
         }
         _ => Err(format!("Unknown command: {}", cmd)),
+    }
+}
+
+fn subscribe_session_command(state: &WsState, args: &Value) -> Result<Value, String> {
+    let session_id = require_str(args, "sessionId")?;
+    let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+
+    let pty_mgr = state.pty_mgr.lock().unwrap();
+    let snapshot = pty_mgr.get_screen_snapshot(uuid);
+    let size = snapshot
+        .as_ref()
+        .map(|snapshot| (snapshot.rows, snapshot.cols))
+        .or_else(|| pty_mgr.get_pty_size(uuid));
+    drop(pty_mgr);
+
+    if let Some(snapshot) = snapshot {
+        state
+            .broadcaster
+            .broadcast_pty_output(&session_id, &snapshot.data);
+    }
+
+    match size {
+        Some((rows, cols)) => Ok(json!({ "rows": rows, "cols": cols })),
+        None => Ok(json!(null)),
     }
 }
 
