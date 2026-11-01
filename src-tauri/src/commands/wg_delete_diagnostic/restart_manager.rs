@@ -280,6 +280,40 @@ fn collect_blockers_tolerant(wide: &[Vec<u16>], original_paths: &[&PathBuf]) -> 
     }
 }
 
+fn blocker_processes_by_pid(bulk_list: &[RM_PROCESS_INFO]) -> HashMap<u32, BlockerProcess> {
+    // Seed the result map with one entry per unique PID. Resolve the executable
+    // name now (prefer `strAppName`, fall back to `QueryFullProcessImageNameW`).
+    let mut by_pid: HashMap<u32, BlockerProcess> = HashMap::new();
+    for info in bulk_list {
+        let pid = info.Process.dwProcessId;
+        if pid == 0 {
+            // System Idle / kernel — never actionable, never a real blocker.
+            continue;
+        }
+        let name = {
+            let app = process_info_app_name(info);
+            if app.is_empty() {
+                let exe = pid_to_exe_basename(pid);
+                if exe.is_empty() {
+                    format!("pid {}", pid)
+                } else {
+                    exe
+                }
+            } else {
+                app
+            }
+        };
+        by_pid.entry(pid).or_insert(BlockerProcess {
+            pid,
+            name,
+            cwd: None,
+            files: Vec::new(),
+        });
+    }
+
+    by_pid
+}
+
 /// Two-pass Restart Manager scan:
 ///
 /// 1. **Bulk pass** — open RM sessions for batches of probed files (binary-search
@@ -338,35 +372,7 @@ pub(super) fn scan_restart_manager_processes_windows(
         return Ok(Vec::new());
     }
 
-    // Seed the result map with one entry per unique PID. Resolve the executable
-    // name now (prefer `strAppName`, fall back to `QueryFullProcessImageNameW`).
-    let mut by_pid: HashMap<u32, BlockerProcess> = HashMap::new();
-    for info in &bulk_list {
-        let pid = info.Process.dwProcessId;
-        if pid == 0 {
-            // System Idle / kernel — never actionable, never a real blocker.
-            continue;
-        }
-        let name = {
-            let app = process_info_app_name(info);
-            if app.is_empty() {
-                let exe = pid_to_exe_basename(pid);
-                if exe.is_empty() {
-                    format!("pid {}", pid)
-                } else {
-                    exe
-                }
-            } else {
-                app
-            }
-        };
-        by_pid.entry(pid).or_insert(BlockerProcess {
-            pid,
-            name,
-            cwd: None,
-            files: Vec::new(),
-        });
-    }
+    let mut by_pid = blocker_processes_by_pid(&bulk_list);
 
     // ── Phase 2: per-file attribution ────────────────────────────────────────
     let target_pids: HashSet<u32> = by_pid.keys().copied().collect();
