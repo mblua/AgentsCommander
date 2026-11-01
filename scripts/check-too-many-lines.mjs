@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { idFor, anchorFor, lexFile, scanSources } from './check-cognitive-complexity.mjs';
-import { isMain, createSnapshot } from './sanitizing_baseline.mjs';
+import { isMain, createSnapshot, gitRunner } from './sanitizing_baseline.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE = 'too-many-lines.baseline.json';
@@ -21,16 +21,19 @@ const requireInput = (ok, message) => { if (!ok) throw new InputError(message); 
 const read = file => fs.readFileSync(file, 'utf8');
 const document = file => JSON.parse(read(file));
 function git(root, args) {
-  const r = spawnSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true });
-  requireInput(!r.error && r.status === 0, `git ${args.join(' ')}: ${r.stderr || r.error}`);
-  return r.stdout.trim();
+  let r;
+  try { r = gitRunner(args, { cwd: root }); }
+  catch (error) { throw new InputError(`git ${args.join(' ')}: ${error.message}`); }
+  requireInput(!r.error && r.status === 0,
+    `git ${args.join(' ')}: ${r.stderr?.toString() || r.error}`);
+  return r.stdout.toString('utf8').trim();
 }
 
 export function checkEnvironment(env = process.env) {
   requireInput(env.CLIPPY_CONF_DIR === undefined, 'CLIPPY_CONF_DIR must be absent');
   for (const name of ['RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS']) {
-    const value = env[name] ?? '';
-    const override = /cap-lints|(?:^|[\s\x1f])-(?:A|W|D|F)|--(?:allow|warn|deny|forbid)/;
+    const value = (env[name] ?? '').replaceAll(String.fromCharCode(31), ' ');
+    const override = /cap-lints|(?:^|\s)-(?:A|W|D|F)|--(?:allow|warn|deny|forbid)/;
     requireInput(!override.test(value) && !/clippy|too.many.lines/i.test(value),
       `${name} contains a lint override`);
   }

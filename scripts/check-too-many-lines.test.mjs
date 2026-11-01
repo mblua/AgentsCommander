@@ -209,8 +209,10 @@ test('ratchet allows removal/lowering only', () => {
 });
 test('environment lint overrides cannot silence capture', () => {
   assert.doesNotThrow(() => checkEnvironment({}));
+  assert.doesNotThrow(() => checkEnvironment({ CARGO_ENCODED_RUSTFLAGS: '--cfg\x1ffoo' }));
   for (const env of [{ CLIPPY_CONF_DIR: '' }, { RUSTFLAGS: '--cap-lints allow' },
-    { RUSTFLAGS: '-Awarnings' }, { CARGO_ENCODED_RUSTFLAGS: '-A\x1fwarnings' }])
+    { RUSTFLAGS: '-Awarnings' }, { CARGO_ENCODED_RUSTFLAGS: '-A\x1fwarnings' },
+    { CARGO_ENCODED_RUSTFLAGS: '--cfg\x1ffoo\x1f-Awarnings' }])
     assert.throws(() => checkEnvironment(env));
 });
 test('strict modes and invalid flags', () => {
@@ -311,6 +313,9 @@ function workflowContract(workflow, warm) {
         assert.equal(commands.split(`--force-warn clippy::${flag}`).length - 1, 6);
       assert.match(lines.join('\n'), /timeout-minutes: 60/);
       assert.match(lines.join('\n'), /fail-fast: false/);
+      const frontend = exactly(steps(lines), /^      - name: Build measured frontend$/m);
+      assert.equal(run(frontend), ['cd "${RUNNER_TEMP}/tml-adoption-source"',
+        'npm ci --ignore-scripts', 'npm run build'].join('\n'));
       continue;
     }
     let expected = name === 'ci-tier' ? `(!${adoption})` :
@@ -371,6 +376,8 @@ const workflow = fs.readFileSync('.github/workflows/pr-regression-gates.yml', 'u
 const warm = fs.readFileSync('.github/workflows/cache-warm.yml', 'utf8');
 test('committed workflow contract', () => workflowContract(workflow, warm));
 const mutants = [
+  ['adoption install scripts', s => s.replace('          npm ci --ignore-scripts\n',
+    '          npm ci\n')],
   ['drop length flag', s => s.replace('--force-warn clippy::too_many_lines', '')],
   ['drop cognitive flag', s => s.replace('--force-warn clippy::cognitive_complexity', '')],
   ['remove check', s => s.replace('--check "${RUNNER_TEMP}/tml-observed-windows.json"', '')],

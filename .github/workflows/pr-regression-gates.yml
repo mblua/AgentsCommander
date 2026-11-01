@@ -73,7 +73,7 @@ jobs:
       - name: Build measured frontend
         run: |
           cd "${RUNNER_TEMP}/tml-adoption-source"
-          if [ "$TML_PLATFORM" = windows ]; then npm ci; else npm ci --ignore-scripts; fi
+          npm ci --ignore-scripts
           npm run build
 
       - name: Install Rust 1.98.1
