@@ -253,17 +253,15 @@ fn validate_snapshot_args(
     Ok((token, format))
 }
 
-fn execute_inner(
-    args: TerminalSnapshotArgs,
-    history: &SnapshotStageHistory,
-) -> Result<(), TerminalSnapshotRejection> {
+fn prepare_snapshot_directories(
+    root: &Path,
+    root_identity: &crate::path_identity::VerifiedPathIdentity,
+) -> Result<(PathBuf, PathBuf), TerminalSnapshotRejection> {
     use TerminalSnapshotField as F;
     use TerminalSnapshotReasonCode as C;
     use TerminalSnapshotRejectionReason as R;
 
-    let (token, format) = validate_snapshot_args(&args)?;
-    let (root_identity, from) = verify_requester_root(&args.root)?;
-    let local = args.root.join(crate::config::agent_local_dir_name());
+    let local = root.join(crate::config::agent_local_dir_name());
     let outbox = local.join("outbox");
     let request_directory = outbox.join("terminal-snapshot-requests");
     let response_directory = local.join("terminal-snapshot-responses");
@@ -271,12 +269,12 @@ fn execute_inner(
         || TerminalSnapshotRejection::new(C::UnsafePath, Some(F::Root), R::LocalStateUnsafe);
     let local_identity =
         crate::path_identity::verify_directory(&local).map_err(|_| local_state_unsafe())?;
-    if !crate::path_identity::is_verified_descendant(&local_identity, &root_identity) {
+    if !crate::path_identity::is_verified_descendant(&local_identity, root_identity) {
         return Err(local_state_unsafe());
     }
     let outbox_identity =
         crate::path_identity::verify_directory(&outbox).map_err(|_| local_state_unsafe())?;
-    if !crate::path_identity::is_verified_descendant(&outbox_identity, &root_identity) {
+    if !crate::path_identity::is_verified_descendant(&outbox_identity, root_identity) {
         return Err(local_state_unsafe());
     }
     let propagated_local_state_unsafe = |reason: String| {
@@ -288,6 +286,20 @@ fn execute_inner(
     };
     ensure_private_child(&outbox, &request_directory).map_err(propagated_local_state_unsafe)?;
     ensure_private_child(&local, &response_directory).map_err(propagated_local_state_unsafe)?;
+    Ok((request_directory, response_directory))
+}
+
+fn execute_inner(
+    args: TerminalSnapshotArgs,
+    history: &SnapshotStageHistory,
+) -> Result<(), TerminalSnapshotRejection> {
+    use TerminalSnapshotReasonCode as C;
+    use TerminalSnapshotRejectionReason as R;
+
+    let (token, format) = validate_snapshot_args(&args)?;
+    let (root_identity, from) = verify_requester_root(&args.root)?;
+    let (request_directory, response_directory) =
+        prepare_snapshot_directories(&args.root, &root_identity)?;
 
     let request_id = Uuid::new_v4();
     let issued = chrono::Utc::now();

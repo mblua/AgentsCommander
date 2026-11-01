@@ -226,7 +226,6 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
     suppress_selection: bool,
 ) -> Result<String, String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
-
     let snapshot = transaction.aggregate_snapshot().await;
     let record = snapshot
         .sessions
@@ -244,7 +243,6 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
         existing.set_focus().map_err(|error| error.to_string())?;
         return Ok(label);
     }
-
     let url = format!("index.html?window=detached&sessionId={session_id_string}");
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
         .map_err(|error| format!("Failed to load app icon: {error}"))?;
@@ -266,7 +264,6 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
         }
         builder.build().map_err(|error| error.to_string())?
     };
-
     transaction
         .app()
         .state::<DetachedSessionsState>()
@@ -310,7 +307,23 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
         }
         return Err("Session lost liveness during detach".to_string());
     }
+    finalize_detach_transaction(
+        transaction,
+        session_id,
+        suppress_selection,
+        session_id_string,
+        label,
+    )
+    .await
+}
 
+async fn finalize_detach_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+    suppress_selection: bool,
+    session_id_string: String,
+    label: String,
+) -> Result<String, String> {
     let final_snapshot = transaction.aggregate_snapshot().await;
     let decision = if final_snapshot.selection.id() != Some(session_id) {
         CommitDecision::Keep
@@ -506,6 +519,21 @@ pub(crate) async fn execute_attach_transaction<R: tauri::Runtime>(
             transaction.publish_communication_cleared(*cleared);
         }
     }
+    publish_terminal_attached(transaction, session_id);
+    if let Some(selection) = committed.selection.as_ref() {
+        transaction.publish_selection(selection);
+    }
+    if runtime.has_pty || matches!(record.status, SessionStatus::Exited(_)) {
+        Ok(())
+    } else {
+        Err("Session has no live PTY".to_string())
+    }
+}
+
+fn publish_terminal_attached<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+) {
     if let Err(error) = transaction.app().emit(
         "terminal_attached",
         serde_json::json!({ "sessionId": session_id.to_string() }),
@@ -515,14 +543,6 @@ pub(crate) async fn execute_attach_transaction<R: tauri::Runtime>(
             session_id,
             error
         );
-    }
-    if let Some(selection) = committed.selection.as_ref() {
-        transaction.publish_selection(selection);
-    }
-    if runtime.has_pty || matches!(record.status, SessionStatus::Exited(_)) {
-        Ok(())
-    } else {
-        Err("Session has no live PTY".to_string())
     }
 }
 
