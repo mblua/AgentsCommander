@@ -42,17 +42,8 @@ pub(super) fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<C
         if line.trim().is_empty() {
             continue;
         }
-        let parsed: serde_json::Value = match serde_json::from_str(line) {
-            Ok(value) => value,
-            Err(e) => {
-                errors.push(err_at_line(
-                    "prompt_suite_unparseable",
-                    format!("Prompt suite line {} is invalid JSON: {}", physical_line, e),
-                    physical_line,
-                    None,
-                ));
-                continue;
-            }
+        let Some(parsed) = parse_prompt_json(line, physical_line, &mut errors) else {
+            continue;
         };
         let Some(object) = parsed.as_object() else {
             errors.push(err_at_line(
@@ -131,6 +122,25 @@ pub(super) fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<C
         sha256,
         prompts,
     })
+}
+
+fn parse_prompt_json(
+    line: &str,
+    physical_line: usize,
+    errors: &mut Vec<CliError>,
+) -> Option<serde_json::Value> {
+    match serde_json::from_str(line) {
+        Ok(value) => Some(value),
+        Err(e) => {
+            errors.push(err_at_line(
+                "prompt_suite_unparseable",
+                format!("Prompt suite line {} is invalid JSON: {}", physical_line, e),
+                physical_line,
+                None,
+            ));
+            None
+        }
+    }
 }
 
 fn required_prompt_string(
