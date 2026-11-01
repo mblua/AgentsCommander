@@ -73,19 +73,13 @@ impl MailboxPoller {
             carried_communication = exited_candidate.communication.clone();
             self.destroy_exited_wake_session(app, exited_id)
                 .await
-                .map_err(|error| {
-                    format!(
-                        "Failed to destroy stale orchestrator session {}: {}",
-                        exited_id, error
-                    )
-                })?;
+                .map_err(|error| Self::stale_internal_session_error(exited_id, error))?;
             spawn_with_resume = true;
         }
 
         let (resolved_command, cwd, resolved_spawn, resolved_agent_host_shell) = self
             .prepare_internal_background_spawn(app, &target, &guard)
             .await?;
-
         if cancellation.is_cancelled() {
             return Err("Context alert delivery was canceled before background spawn".to_string());
         }
@@ -134,6 +128,23 @@ impl MailboxPoller {
             }
         }
 
+        let settle = self.wait_for_spawned_wake_idle(app, session_id);
+        Self::settle_internal_spawn(settle, &cancellation).await?;
+        self.inject_internal_system_notice(app, session_id, &target, &notice, guard)
+            .await
+    }
+
+    fn stale_internal_session_error(exited_id: Uuid, error: String) -> String {
+        format!(
+            "Failed to destroy stale orchestrator session {}: {}",
+            exited_id, error
+        )
+    }
+
+    async fn settle_internal_spawn(
+        settle: impl std::future::Future<Output = Result<SettleReadiness, String>>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), String> {
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
@@ -141,7 +152,7 @@ impl MailboxPoller {
                     "Context alert delivery was canceled during spawned-session settle".to_string(),
                 );
             }
-            result = self.wait_for_spawned_wake_idle(app, session_id) => {
+            result = settle => {
                 result?;
             }
         }
@@ -150,8 +161,7 @@ impl MailboxPoller {
                 "Context alert delivery was canceled before spawned-session injection".to_string(),
             );
         }
-        self.inject_internal_system_notice(app, session_id, &target, &notice, guard)
-            .await
+        Ok(())
     }
 
     async fn prepare_internal_background_spawn<S: PtyAuthorityState + ?Sized>(
@@ -674,28 +684,8 @@ impl MailboxPoller {
                     mailbox_archive: false,
                 });
             return Ok(());
-        } else {
-            crate::pty::inject::inject_internal_notice_into_supported_agent_session(
-                app,
-                session_id,
-                &payload,
-                |session: &Session| {
-                    if !canonical_cwd_owned_by_replica(
-                        &session.working_directory,
-                        target.replica_dir(),
-                    )? {
-                        return Err(format!(
-                            "Orchestrator session {} escaped canonical target replica",
-                            session_id
-                        ));
-                    }
-                    guard()
-                },
-            )
-            .await?;
         }
 
-        #[cfg(not(test))]
         crate::pty::inject::inject_internal_notice_into_supported_agent_session(
             app,
             session_id,
@@ -875,6 +865,19 @@ impl MailboxPoller {
             }
             break result;
         };
+        Self::finish_wake_injection(msg, response, result, || {
+            if let Some(idle) = app.try_state::<Arc<crate::pty::idle_detector::IdleDetector>>() {
+                idle.touch_silence(session_id);
+            }
+        })
+    }
+
+    fn finish_wake_injection(
+        msg: &OutboxMessage,
+        response: Option<&ResponseWakeWork>,
+        result: Result<(), String>,
+        touch_silence: impl FnOnce(),
+    ) -> Result<(), String> {
         if result.is_ok() {
             wake_receipt::mark_response_submitted(response, msg);
         }
@@ -885,11 +888,7 @@ impl MailboxPoller {
         // recipient's own response output would also reset silence via the read
         // loop; recording the delivery makes inter-agent traffic count at once.
         if result.is_ok() {
-            if let Some(idle) =
-                app.try_state::<std::sync::Arc<crate::pty::idle_detector::IdleDetector>>()
-            {
-                idle.touch_silence(session_id);
-            }
+            touch_silence();
         }
         // (#1001 PR1 / G6) Route the successful-inject return through the
         // shared verdict_to_result so this production site runs the exact
