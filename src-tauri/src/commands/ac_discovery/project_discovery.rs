@@ -138,6 +138,26 @@ pub(crate) async fn discover_project_inner(
         });
     }
 
+    log_project_discovery_summary(call_id, path, &workgroups, teams.len());
+    crate::config::seeded_context_templates::dedupe_context_template_updates(
+        &mut context_template_updates,
+    );
+
+    Ok(AcDiscoveryResult {
+        agents,
+        teams,
+        workgroups,
+        loops,
+        context_template_updates,
+    })
+}
+
+fn log_project_discovery_summary(
+    call_id: u64,
+    path: &str,
+    workgroups: &[super::model::AcWorkgroup],
+    team_count: usize,
+) {
     let total_replicas: usize = workgroups.iter().map(|wg| wg.agents.len()).sum();
     let total_coordinator: usize = workgroups
         .iter()
@@ -150,21 +170,10 @@ pub(crate) async fn discover_project_inner(
         call_id,
         path,
         workgroups.len(),
-        teams.len(),
+        team_count,
         total_replicas,
         total_coordinator
     );
-    crate::config::seeded_context_templates::dedupe_context_template_updates(
-        &mut context_template_updates,
-    );
-
-    Ok(AcDiscoveryResult {
-        agents,
-        teams,
-        workgroups,
-        loops,
-        context_template_updates,
-    })
 }
 
 async fn scan_project_context_updates(
