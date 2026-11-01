@@ -401,6 +401,14 @@ fn rotate(state: &AppLogFile) {
         return;
     }
 
+    open_rotated_log(state, &mut file_guard, base);
+}
+
+fn open_rotated_log(
+    state: &AppLogFile,
+    file_guard: &mut std::sync::MutexGuard<'_, std::fs::File>,
+    base: &std::path::Path,
+) {
     // Open a fresh active file. `create_new(true)` so we don't inherit a
     // stale fd or content if something else raced.
     let fresh = debug_logs::create_app_log(base).or_else(|e| {
@@ -418,7 +426,7 @@ fn rotate(state: &AppLogFile) {
 
     match fresh {
         Ok(f) => {
-            *file_guard = f;
+            **file_guard = f;
             state.bytes.store(0, Ordering::Relaxed);
         }
         Err(e) => {
