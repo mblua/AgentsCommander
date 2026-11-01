@@ -221,70 +221,10 @@ impl TargetProcessOwner {
         #[cfg(not(test))]
         let settlement_window = PROCESS_SETTLEMENT_WINDOW;
         let mut attempt = crate::process::host::job::SettlementAttempt::new(settlement_window);
-        let defects = &mut self.defects;
         let cleanup_required = !matches!(wait, TargetWait::Exited(Ok(_)));
-
-        #[cfg(windows)]
-        if cleanup_required {
-            if let Some(job) = self.job.as_ref() {
-                if let Err(error) = job.terminate_checked() {
-                    defects.push(format!("job termination failed: {error}"));
-                }
-            }
-        }
-        #[cfg(unix)]
-        if cleanup_required && self.pgid > 0 {
-            // SAFETY: the group was created for this updater step.
-            let result = unsafe { libc::kill(-self.pgid, libc::SIGKILL) };
-            if result != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-                defects.push(format!(
-                    "process-group termination failed: {}",
-                    std::io::Error::last_os_error()
-                ));
-            }
-        }
-        if cleanup_required {
-            if let Some(child) = self.child.as_mut() {
-                if let Err(error) = child.start_kill() {
-                    defects.push(format!("direct child termination failed: {error}"));
-                }
-            }
-        }
-        if cleanup_required {
-            if let Some(child) = self.child.as_mut() {
-                let mut wait_defect_recorded = false;
-                loop {
-                    match child.try_wait() {
-                        Ok(Some(_)) => break,
-                        Ok(None) => {}
-                        Err(error) => {
-                            if !wait_defect_recorded {
-                                defects.push(format!("direct child wait failed: {error}"));
-                                wait_defect_recorded = true;
-                            }
-                        }
-                    }
-                    if attempt.expired() {
-                        record_update_attempt_expiry(defects, "direct-child settlement");
-                        #[cfg(windows)]
-                        if let Some(job) = self.job.as_ref() {
-                            let _ = job.terminate_checked();
-                        }
-                        #[cfg(unix)]
-                        if self.pgid > 0 {
-                            // SAFETY: this remains the retained group identity.
-                            unsafe {
-                                libc::kill(-self.pgid, libc::SIGKILL);
-                            }
-                        }
-                        let _ = child.start_kill();
-                        attempt.restart();
-                    }
-                    tokio::time::sleep(PROCESS_SETTLEMENT_POLL.min(attempt.remaining())).await;
-                }
-            }
-        }
-        drop(self.child.take());
+        self.settle_direct_child(cleanup_required, &mut attempt)
+            .await;
+        let defects = &mut self.defects;
 
         #[cfg(windows)]
         if !cleanup_required {
@@ -352,12 +292,92 @@ impl TargetProcessOwner {
         }
     }
 
+    async fn settle_direct_child(
+        &mut self,
+        cleanup_required: bool,
+        attempt: &mut crate::process::host::job::SettlementAttempt,
+    ) {
+        let defects = &mut self.defects;
+
+        #[cfg(windows)]
+        if cleanup_required {
+            if let Some(job) = self.job.as_ref() {
+                if let Err(error) = job.terminate_checked() {
+                    defects.push(format!("job termination failed: {error}"));
+                }
+            }
+        }
+        #[cfg(unix)]
+        if cleanup_required && self.pgid > 0 {
+            // SAFETY: the group was created for this updater step.
+            let result = unsafe { libc::kill(-self.pgid, libc::SIGKILL) };
+            if result != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+                defects.push(format!(
+                    "process-group termination failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+        if cleanup_required {
+            if let Some(child) = self.child.as_mut() {
+                if let Err(error) = child.start_kill() {
+                    defects.push(format!("direct child termination failed: {error}"));
+                }
+            }
+        }
+        if cleanup_required {
+            if let Some(child) = self.child.as_mut() {
+                let mut wait_defect_recorded = false;
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) => break,
+                        Ok(None) => {}
+                        Err(error) => {
+                            if !wait_defect_recorded {
+                                defects.push(format!("direct child wait failed: {error}"));
+                                wait_defect_recorded = true;
+                            }
+                        }
+                    }
+                    if attempt.expired() {
+                        record_update_attempt_expiry(defects, "direct-child settlement");
+                        #[cfg(windows)]
+                        if let Some(job) = self.job.as_ref() {
+                            let _ = job.terminate_checked();
+                        }
+                        #[cfg(unix)]
+                        if self.pgid > 0 {
+                            // SAFETY: this remains the retained group identity.
+                            unsafe {
+                                libc::kill(-self.pgid, libc::SIGKILL);
+                            }
+                        }
+                        let _ = child.start_kill();
+                        attempt.restart();
+                    }
+                    tokio::time::sleep(PROCESS_SETTLEMENT_POLL.min(attempt.remaining())).await;
+                }
+            }
+        }
+        drop(self.child.take());
+    }
+
     async fn settle_native_proof(
         &mut self,
         attempt: &mut crate::process::host::job::SettlementAttempt,
     ) {
-        let defects = &mut self.defects;
         #[cfg(windows)]
+        self.settle_job_proof(attempt).await;
+        #[cfg(unix)]
+        self.settle_process_group_proof(attempt).await;
+    }
+
+    #[cfg(windows)]
+    async fn settle_job_proof(
+        &mut self,
+        attempt: &mut crate::process::host::job::SettlementAttempt,
+    ) {
+        let defects = &mut self.defects;
         if let Some(job) = self.job.as_ref() {
             let mut query_defect_recorded = false;
             loop {
@@ -406,8 +426,14 @@ impl TargetProcessOwner {
                 tokio::time::sleep(PROCESS_SETTLEMENT_POLL.min(attempt.remaining())).await;
             }
         }
+    }
 
-        #[cfg(unix)]
+    #[cfg(unix)]
+    async fn settle_process_group_proof(
+        &mut self,
+        attempt: &mut crate::process::host::job::SettlementAttempt,
+    ) {
+        let defects = &mut self.defects;
         if self.pgid > 0 {
             let mut errno_defect_recorded = false;
             loop {
