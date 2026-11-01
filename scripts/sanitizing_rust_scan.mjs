@@ -439,8 +439,9 @@ function ordinaryManifest(cargo, external = false, path, tree) {
       section = header[1].trim();
       targetTable = false;
       const simple = /^(?:package|lib|dependencies|dev-dependencies|build-dependencies|features)$/;
+      const lint = /^(?:lints|workspace\.lints\.clippy)$/;
       const target = /^target\.'cfg\([^'\\\r\n]*\)'\.(?:dev-|build-)?dependencies$/;
-      if (!simple.test(section) && !target.test(section) &&
+      if (!simple.test(section) && !lint.test(section) && !target.test(section) &&
           !(external && section === 'workspace')) return false;
       cargo = cargo.slice(header[0].length);
       continue;
