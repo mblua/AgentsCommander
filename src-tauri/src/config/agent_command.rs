@@ -704,6 +704,46 @@ fn resolve_spawn_command_placeholders(
     ))
 }
 
+// #598 - resolve the config-folder seed. Pure path math plus a log-only
+// warning string; NO filesystem is touched here. The destructive copy runs
+// later at the single session chokepoint (create_session_inner).
+fn resolve_spawn_config_seed(
+    seed_choice: Option<&crate::config::settings::ConfigSeedConfig>,
+    effective_profile: &str,
+    placeholder_context: Option<&PlaceholderContext>,
+    command: &NormalizedAgentCommand,
+    agent_env: &BTreeMap<String, String>,
+    profile_env: &BTreeMap<String, String>,
+    effective_codex_home: Option<&Path>,
+) -> Option<crate::config::config_seed::ResolvedConfigSeed> {
+    let cfg = seed_choice?;
+    // #2162: the host OS token drives the `.<os>` refinement of every tier.
+    let os_token = crate::config::config_seed::host_os_token();
+    let mut resolved = crate::config::config_seed::resolve_config_seed(
+        cfg,
+        effective_profile,
+        placeholder_context,
+        os_token,
+    );
+    if let Some(r) = resolved.as_mut() {
+        seed_candidates::append_catalog_defaults(
+            &cfg.dest,
+            placeholder_context,
+            os_token,
+            &mut r.candidates,
+        );
+        r.config_dir_warning = compute_config_dir_warning(
+            &r.dest,
+            &command.shell,
+            &command.shell_args,
+            agent_env,
+            profile_env,
+            effective_codex_home,
+        );
+    }
+    resolved
+}
+
 pub(crate) fn resolve_agent_spawn_command(
     settings: &AppSettings,
     agent_id: &str,
@@ -757,14 +797,13 @@ pub(crate) fn resolve_agent_spawn_command(
         &effective_command,
     );
 
-    let (NormalizedAgentCommand { shell, shell_args }, placeholder_context) =
-        resolve_spawn_command_placeholders(
-            agent,
-            &profile_resolution,
-            &effective_command,
-            launch_path,
-            seed_choice.is_some(),
-        )?;
+    let (command, placeholder_context) = resolve_spawn_command_placeholders(
+        agent,
+        &profile_resolution,
+        &effective_command,
+        launch_path,
+        seed_choice.is_some(),
+    )?;
 
     let agent_env = collect_agent_env(agent, placeholder_context.as_ref())?;
     let profile_env = collect_profile_env(
@@ -780,47 +819,24 @@ pub(crate) fn resolve_agent_spawn_command(
             .codex_home_key_by_agent
             .get(&agent.id)
             .map(String::as_str),
-        &shell,
-        &shell_args,
+        &command.shell,
+        &command.shell_args,
         &agent_env,
         &profile_env,
     )?;
     let child_env =
         merge_env_layers(&[&agent_env, &profile_env, &computed_codex_home.generated_env]);
 
-    // #598 - resolve the config-folder seed. Pure path math plus a log-only
-    // warning string; NO filesystem is touched here. The destructive copy runs
-    // later at the single session chokepoint (create_session_inner).
-    let seed = match seed_choice {
-        Some(cfg) => {
-            // #2162: the host OS token drives the `.<os>` refinement of every tier.
-            let os_token = crate::config::config_seed::host_os_token();
-            let mut resolved = crate::config::config_seed::resolve_config_seed(
-                cfg,
-                &profile_resolution.effective_profile,
-                placeholder_context.as_ref(),
-                os_token,
-            );
-            if let Some(r) = resolved.as_mut() {
-                seed_candidates::append_catalog_defaults(
-                    &cfg.dest,
-                    placeholder_context.as_ref(),
-                    os_token,
-                    &mut r.candidates,
-                );
-                r.config_dir_warning = compute_config_dir_warning(
-                    &r.dest,
-                    &shell,
-                    &shell_args,
-                    &agent_env,
-                    &profile_env,
-                    computed_codex_home.effective_codex_home.as_deref(),
-                );
-            }
-            resolved
-        }
-        None => None,
-    };
+    let seed = resolve_spawn_config_seed(
+        seed_choice,
+        &profile_resolution.effective_profile,
+        placeholder_context.as_ref(),
+        &command,
+        &agent_env,
+        &profile_env,
+        computed_codex_home.effective_codex_home.as_deref(),
+    );
+    let NormalizedAgentCommand { shell, shell_args } = command;
 
     Ok(AgentSpawnCommand {
         shell,
