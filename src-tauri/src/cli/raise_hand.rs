@@ -88,63 +88,13 @@ pub fn execute(args: RaiseHandArgs) -> i32 {
         pty_input: None,
     };
 
-    let outbox_dir = if is_root {
-        let app_outbox = crate::config::config_dir()
-            .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| documents::read_cli_outbox_text(&p).ok())
-            .map(|s| PathBuf::from(s.trim()));
-        match app_outbox {
-            Some(p) if directories::cli_agent_root_is_dir(&p) => p,
-            _ => ac_dir.join("outbox"),
-        }
-    } else {
-        ac_dir.join("outbox")
-    };
-    if let Err(e) = directories::ensure_cli_outbox(&outbox_dir) {
-        eprintln!("Error: failed to create outbox directory: {}", e);
+    let outbox_dir = crate::filesystem::app_outbox_pointer::directory(
+        is_root.then(crate::config::config_dir).flatten().as_deref(),
+        &ac_dir,
+    );
+    if let Err(error) = super::outbox_delivery::deliver(&outbox_dir, &message, "raise-hand") {
+        eprintln!("Error: {}", error);
         return 1;
-    }
-
-    let outbox_path = outbox_dir.join(format!("{}.json", msg_id));
-    let json = match serde_json::to_string_pretty(&message) {
-        Ok(j) => j,
-        Err(e) => {
-            eprintln!("Error: failed to serialize message: {}", e);
-            return 1;
-        }
-    };
-    if let Err(e) = documents::write_cli_outbox_message(&outbox_path, json.as_bytes()) {
-        eprintln!("Error: failed to write outbox file: {}", e);
-        return 1;
-    }
-
-    let delivered_path = outbox_dir
-        .join("delivered")
-        .join(format!("{}.json", msg_id));
-    let rejected_reason_path = outbox_dir
-        .join("rejected")
-        .join(format!("{}.reason.txt", msg_id));
-    let confirm_timeout = std::time::Duration::from_secs(30);
-    let confirm_poll = std::time::Duration::from_millis(250);
-    let start = std::time::Instant::now();
-    loop {
-        if directories::cli_outbox_artifact_exists(&delivered_path) {
-            break;
-        }
-        if directories::cli_outbox_artifact_exists(&rejected_reason_path) {
-            let reason = documents::read_cli_outbox_text(&rejected_reason_path)
-                .unwrap_or_else(|_| "unknown reason".to_string());
-            eprintln!("Error: raise-hand rejected - {}", reason.trim());
-            return 1;
-        }
-        if start.elapsed() >= confirm_timeout {
-            eprintln!(
-                "Error: delivery confirmation timeout after 30s (request {} may still be pending)",
-                msg_id
-            );
-            return 1;
-        }
-        std::thread::sleep(confirm_poll);
     }
 
     let responses_dir = ac_dir.join("responses");

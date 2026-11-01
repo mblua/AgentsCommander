@@ -1,16 +1,9 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager};
 
 pub(super) fn sorted_labels(labels: &HashSet<String>) -> Vec<String> {
     let mut labels: Vec<String> = labels.iter().cloned().collect();
-    labels.sort();
-    labels
-}
-
-pub(crate) fn available_window_labels(app: &AppHandle) -> Vec<String> {
-    let mut labels: Vec<String> = app.webview_windows().keys().cloned().collect();
     labels.sort();
     labels
 }
