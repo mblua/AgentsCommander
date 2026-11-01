@@ -421,19 +421,17 @@ async fn submit_pty_request(
                     })?;
                     return Err(http_error_code("pty_input_failed", status, &bytes));
                 }
-                match get_pty_status_at(client, base_url, authorization, op_id, Some(expected))
-                    .await
+                if let Ok(Some(result)) =
+                    get_pty_status_at(client, base_url, authorization, op_id, Some(expected)).await
                 {
-                    Ok(Some(result)) => return Ok(result),
-                    Ok(None) | Err(_) => {}
+                    return Ok(result);
                 }
             }
             Err(_) => {
-                match get_pty_status_at(client, base_url, authorization, op_id, Some(expected))
-                    .await
+                if let Ok(Some(result)) =
+                    get_pty_status_at(client, base_url, authorization, op_id, Some(expected)).await
                 {
-                    Ok(Some(result)) => return Ok(result),
-                    Ok(None) | Err(_) => {}
+                    return Ok(result);
                 }
             }
         }
