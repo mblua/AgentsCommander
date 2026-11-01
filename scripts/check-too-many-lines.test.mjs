@@ -195,6 +195,12 @@ test('platform-only sites and production/test union counts', () => {
   assert.equal(compare(envelope([], 'linux'), b, () => false).exit, 0);
   assert.equal(compare(envelope([entry()], 'linux'), b, () => false).exit, 1);
 });
+test('merge serialization is identical for every platform input permutation', () => {
+  const inputs = ['linux', 'macos', 'windows'].map(p => envelope([entry()], p));
+  const expected = JSON.stringify(merge(inputs));
+  for (const order of [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]])
+    assert.equal(JSON.stringify(merge(order.map(i => inputs[i]))), expected);
+});
 test('ratchet allows removal/lowering only', () => {
   assert.doesNotThrow(() => ratchet(baseline([]), baseline()));
   assert.doesNotThrow(() => ratchet(baseline([entry(149)]), baseline()));

@@ -10,15 +10,15 @@
       "name": "parse_result",
       "anchor": "cd501dcd1699",
       "sites": {
-        "windows": {
-          "lines": 158,
-          "production": true
-        },
         "linux": {
           "lines": 158,
           "production": true
         },
         "macos": {
+          "lines": 158,
+          "production": true
+        },
+        "windows": {
           "lines": 158,
           "production": true
         }
@@ -29,15 +29,15 @@
       "name": "docker_bridge_connects_streams_pty_output_and_exits",
       "anchor": "0439c79fe079",
       "sites": {
-        "windows": {
-          "lines": 115,
-          "production": false
-        },
         "linux": {
           "lines": 115,
           "production": false
         },
         "macos": {
+          "lines": 115,
+          "production": false
+        },
+        "windows": {
           "lines": 115,
           "production": false
         }
@@ -48,15 +48,15 @@
       "name": "terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output_failure_do_not_clobber",
       "anchor": "fe4aadec8f84",
       "sites": {
-        "windows": {
-          "lines": 111,
-          "production": false
-        },
         "linux": {
           "lines": 111,
           "production": false
         },
         "macos": {
+          "lines": 111,
+          "production": false
+        },
+        "windows": {
           "lines": 111,
           "production": false
         }
@@ -67,15 +67,15 @@
       "name": "borrowed_wire_debug_is_structural_and_non_disclosing",
       "anchor": "7446725863fc",
       "sites": {
-        "windows": {
-          "lines": 103,
-          "production": false
-        },
         "linux": {
           "lines": 103,
           "production": false
         },
         "macos": {
+          "lines": 103,
+          "production": false
+        },
+        "windows": {
           "lines": 103,
           "production": false
         }
@@ -86,15 +86,15 @@
       "name": "validate_generated_png",
       "anchor": "85b40fc23b5b",
       "sites": {
-        "windows": {
-          "lines": 133,
-          "production": true
-        },
         "linux": {
           "lines": 133,
           "production": true
         },
         "macos": {
+          "lines": 133,
+          "production": true
+        },
+        "windows": {
           "lines": 133,
           "production": true
         }
@@ -105,15 +105,15 @@
       "name": "terminal_payload_model_render_and_wire_debug_is_structural_only",
       "anchor": "0d5b9aa28140",
       "sites": {
-        "windows": {
-          "lines": 118,
-          "production": false
-        },
         "linux": {
           "lines": 118,
           "production": false
         },
         "macos": {
+          "lines": 118,
+          "production": false
+        },
+        "windows": {
           "lines": 118,
           "production": false
         }
@@ -124,15 +124,15 @@
       "name": "render_png_inner",
       "anchor": "16b376993e3c",
       "sites": {
-        "windows": {
-          "lines": 158,
-          "production": true
-        },
         "linux": {
           "lines": 158,
           "production": true
         },
         "macos": {
+          "lines": 158,
+          "production": true
+        },
+        "windows": {
           "lines": 158,
           "production": true
         }
@@ -143,15 +143,15 @@
       "name": "deliberately_failing_cargo_harness_diagnostics_are_payload_free",
       "anchor": "b45b0f54f86b",
       "sites": {
-        "windows": {
-          "lines": 132,
-          "production": false
-        },
         "linux": {
           "lines": 132,
           "production": false
         },
         "macos": {
+          "lines": 132,
+          "production": false
+        },
+        "windows": {
           "lines": 132,
           "production": false
         }
@@ -162,15 +162,15 @@
       "name": "cancel_all_updates",
       "anchor": "c5597ae9a46e",
       "sites": {
-        "windows": {
-          "lines": 113,
-          "production": true
-        },
         "linux": {
           "lines": 113,
           "production": true
         },
         "macos": {
+          "lines": 113,
+          "production": true
+        },
+        "windows": {
           "lines": 113,
           "production": true
         }
@@ -181,15 +181,15 @@
       "name": "agent_update_result_contract",
       "anchor": "75668b3ada4d",
       "sites": {
-        "windows": {
-          "lines": 135,
-          "production": false
-        },
         "linux": {
           "lines": 135,
           "production": false
         },
         "macos": {
+          "lines": 135,
+          "production": false
+        },
+        "windows": {
           "lines": 135,
           "production": false
         }
@@ -211,15 +211,15 @@
       "name": "step_admission_cancel_barrier_is_first_winner",
       "anchor": "1661edbd8d91",
       "sites": {
-        "windows": {
-          "lines": 143,
-          "production": false
-        },
         "linux": {
           "lines": 143,
           "production": false
         },
         "macos": {
+          "lines": 143,
+          "production": false
+        },
+        "windows": {
           "lines": 143,
           "production": false
         }
@@ -230,15 +230,15 @@
       "name": "build_plan_from_a_migrated_on_disk_catalog_keeps_first_entry_precedence",
       "anchor": "b3a5856dd4e5",
       "sites": {
-        "windows": {
-          "lines": 107,
-          "production": false
-        },
         "linux": {
           "lines": 107,
           "production": false
         },
         "macos": {
+          "lines": 107,
+          "production": false
+        },
+        "windows": {
           "lines": 107,
           "production": false
         }
@@ -249,15 +249,15 @@
       "name": "target_panic_during_real_probe_reader_settlement_recovers_same_reader",
       "anchor": "1b5a02342ba7",
       "sites": {
-        "windows": {
-          "lines": 136,
-          "production": false
-        },
         "linux": {
           "lines": 136,
           "production": false
         },
         "macos": {
+          "lines": 136,
+          "production": false
+        },
+        "windows": {
           "lines": 136,
           "production": false
         }
@@ -268,15 +268,15 @@
       "name": "target_panic_during_real_probe_settlement_retains_owner",
       "anchor": "5ffcd0f9a4ca",
       "sites": {
-        "windows": {
-          "lines": 107,
-          "production": false
-        },
         "linux": {
           "lines": 107,
           "production": false
         },
         "macos": {
+          "lines": 107,
+          "production": false
+        },
+        "windows": {
           "lines": 107,
           "production": false
         }
@@ -287,15 +287,15 @@
       "name": "target_panic_during_real_updater_reader_settlement_recovers_same_reader",
       "anchor": "60355bf01e91",
       "sites": {
-        "windows": {
-          "lines": 126,
-          "production": false
-        },
         "linux": {
           "lines": 126,
           "production": false
         },
         "macos": {
+          "lines": 126,
+          "production": false
+        },
+        "windows": {
           "lines": 126,
           "production": false
         }
@@ -306,15 +306,15 @@
       "name": "cancel_during_verifying_kills_probe_tree_and_terminalizes_cancelled",
       "anchor": "8d2ce2c2da60",
       "sites": {
-        "windows": {
-          "lines": 118,
-          "production": false
-        },
         "linux": {
           "lines": 118,
           "production": false
         },
         "macos": {
+          "lines": 118,
+          "production": false
+        },
+        "windows": {
           "lines": 118,
           "production": false
         }
@@ -325,15 +325,15 @@
       "name": "exercise_contained_update_cancellation",
       "anchor": "1d4d04835f91",
       "sites": {
-        "windows": {
-          "lines": 134,
-          "production": false
-        },
         "linux": {
           "lines": 134,
           "production": false
         },
         "macos": {
+          "lines": 134,
+          "production": false
+        },
+        "windows": {
           "lines": 134,
           "production": false
         }
@@ -344,15 +344,15 @@
       "name": "updater_settlement_cancellation_case",
       "anchor": "47848554f7e1",
       "sites": {
-        "windows": {
-          "lines": 129,
-          "production": false
-        },
         "linux": {
           "lines": 129,
           "production": false
         },
         "macos": {
+          "lines": 129,
+          "production": false
+        },
+        "windows": {
           "lines": 129,
           "production": false
         }
@@ -363,15 +363,15 @@
       "name": "run_dispatcher",
       "anchor": "8689e0c0fc7c",
       "sites": {
-        "windows": {
-          "lines": 103,
-          "production": true
-        },
         "linux": {
           "lines": 103,
           "production": true
         },
         "macos": {
+          "lines": 103,
+          "production": true
+        },
+        "windows": {
           "lines": 103,
           "production": true
         }
@@ -382,15 +382,15 @@
       "name": "post_inner",
       "anchor": "e7b0ac4cffa5",
       "sites": {
-        "windows": {
-          "lines": 106,
-          "production": true
-        },
         "linux": {
           "lines": 106,
           "production": true
         },
         "macos": {
+          "lines": 106,
+          "production": true
+        },
+        "windows": {
           "lines": 106,
           "production": true
         }
@@ -401,15 +401,15 @@
       "name": "record_host_pty_input_rejection",
       "anchor": "6b70e32caf71",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": true
-        },
         "linux": {
           "lines": 105,
           "production": true
         },
         "macos": {
+          "lines": 105,
+          "production": true
+        },
+        "windows": {
           "lines": 105,
           "production": true
         }
@@ -420,15 +420,15 @@
       "name": "terminalize_in_transaction",
       "anchor": "8654246c827e",
       "sites": {
-        "windows": {
-          "lines": 107,
-          "production": true
-        },
         "linux": {
           "lines": 107,
           "production": true
         },
         "macos": {
+          "lines": 107,
+          "production": true
+        },
+        "windows": {
           "lines": 107,
           "production": true
         }
@@ -439,15 +439,15 @@
       "name": "lease_due_hides_active_lease_until_expiry_then_redelivers",
       "anchor": "d32b1b8bcf79",
       "sites": {
-        "windows": {
-          "lines": 108,
-          "production": false
-        },
         "linux": {
           "lines": 108,
           "production": false
         },
         "macos": {
+          "lines": 108,
+          "production": false
+        },
+        "windows": {
           "lines": 108,
           "production": false
         }
@@ -458,15 +458,15 @@
       "name": "migration_creates_schema_and_enqueue_writes_row",
       "anchor": "dfb9dc48544f",
       "sites": {
-        "windows": {
-          "lines": 143,
-          "production": false
-        },
         "linux": {
           "lines": 143,
           "production": false
         },
         "macos": {
+          "lines": 143,
+          "production": false
+        },
+        "windows": {
           "lines": 143,
           "production": false
         }
@@ -477,15 +477,15 @@
       "name": "setup_v2_database",
       "anchor": "0b69e0c75074",
       "sites": {
-        "windows": {
-          "lines": 411,
-          "production": false
-        },
         "linux": {
           "lines": 411,
           "production": false
         },
         "macos": {
+          "lines": 411,
+          "production": false
+        },
+        "windows": {
           "lines": 411,
           "production": false
         }
@@ -496,15 +496,15 @@
       "name": "test_schema_v3_migration_rebuilds_check_constraints",
       "anchor": "8b8daa91a43c",
       "sites": {
-        "windows": {
-          "lines": 208,
-          "production": false
-        },
         "linux": {
           "lines": 208,
           "production": false
         },
         "macos": {
+          "lines": 208,
+          "production": false
+        },
+        "windows": {
           "lines": 208,
           "production": false
         }
@@ -515,15 +515,15 @@
       "name": "ambiguous_actuation_commit_returns_no_payload_and_preserves_no_replay_state",
       "anchor": "204e1ea3df50",
       "sites": {
-        "windows": {
-          "lines": 117,
-          "production": false
-        },
         "linux": {
           "lines": 117,
           "production": false
         },
         "macos": {
+          "lines": 117,
+          "production": false
+        },
+        "windows": {
           "lines": 117,
           "production": false
         }
@@ -534,15 +534,15 @@
       "name": "run",
       "anchor": "71cddd7fd250",
       "sites": {
-        "windows": {
-          "lines": 280,
-          "production": true
-        },
         "linux": {
           "lines": 280,
           "production": true
         },
         "macos": {
+          "lines": 280,
+          "production": true
+        },
+        "windows": {
           "lines": 280,
           "production": true
         }
@@ -553,15 +553,15 @@
       "name": "on_run_event",
       "anchor": "0f75d88416b4",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": true
-        },
         "linux": {
           "lines": 105,
           "production": true
         },
         "macos": {
+          "lines": 105,
+          "production": true
+        },
+        "windows": {
           "lines": 105,
           "production": true
         }
@@ -572,15 +572,15 @@
       "name": "apply_test_window_placement",
       "anchor": "fc16562bfe89",
       "sites": {
-        "windows": {
-          "lines": 129,
-          "production": true
-        },
         "linux": {
           "lines": 129,
           "production": true
         },
         "macos": {
+          "lines": 129,
+          "production": true
+        },
+        "windows": {
           "lines": 129,
           "production": true
         }
@@ -591,15 +591,15 @@
       "name": "setup",
       "anchor": "de3b71b19434",
       "sites": {
-        "windows": {
-          "lines": 438,
-          "production": true
-        },
         "linux": {
           "lines": 438,
           "production": true
         },
         "macos": {
+          "lines": 438,
+          "production": true
+        },
+        "windows": {
           "lines": 438,
           "production": true
         }
@@ -610,15 +610,15 @@
       "name": "execute_plain_clear",
       "anchor": "45bc8a221514",
       "sites": {
-        "windows": {
-          "lines": 103,
-          "production": true
-        },
         "linux": {
           "lines": 103,
           "production": true
         },
         "macos": {
+          "lines": 103,
+          "production": true
+        },
+        "windows": {
           "lines": 103,
           "production": true
         }
@@ -629,15 +629,15 @@
       "name": "run",
       "anchor": "3ad333442468",
       "sites": {
-        "windows": {
-          "lines": 108,
-          "production": true
-        },
         "linux": {
           "lines": 108,
           "production": true
         },
         "macos": {
+          "lines": 108,
+          "production": true
+        },
+        "windows": {
           "lines": 108,
           "production": true
         }
@@ -648,15 +648,15 @@
       "name": "parse_prompt_suite",
       "anchor": "da952999865c",
       "sites": {
-        "windows": {
-          "lines": 111,
-          "production": true
-        },
         "linux": {
           "lines": 111,
           "production": true
         },
         "macos": {
+          "lines": 111,
+          "production": true
+        },
+        "windows": {
           "lines": 111,
           "production": true
         }
@@ -667,15 +667,15 @@
       "name": "validate_attempt_state_contract",
       "anchor": "0215446cedf9",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": true
-        },
         "linux": {
           "lines": 104,
           "production": true
         },
         "macos": {
+          "lines": 104,
+          "production": true
+        },
+        "windows": {
           "lines": 104,
           "production": true
         }
@@ -686,15 +686,15 @@
       "name": "resume_fixture",
       "anchor": "c886c01f6dc7",
       "sites": {
-        "windows": {
-          "lines": 137,
-          "production": false
-        },
         "linux": {
           "lines": 137,
           "production": false
         },
         "macos": {
+          "lines": 137,
+          "production": false
+        },
+        "windows": {
           "lines": 137,
           "production": false
         }
@@ -705,15 +705,15 @@
       "name": "execute_pty_input",
       "anchor": "ca1bdf4add45",
       "sites": {
-        "windows": {
-          "lines": 106,
-          "production": true
-        },
         "linux": {
           "lines": 106,
           "production": true
         },
         "macos": {
+          "lines": 106,
+          "production": true
+        },
+        "windows": {
           "lines": 106,
           "production": true
         }
@@ -724,15 +724,15 @@
       "name": "clean_pair_locked",
       "anchor": "37584c2cc47f",
       "sites": {
-        "windows": {
-          "lines": 103,
-          "production": true
-        },
         "linux": {
           "lines": 103,
           "production": true
         },
         "macos": {
+          "lines": 103,
+          "production": true
+        },
+        "windows": {
           "lines": 103,
           "production": true
         }
@@ -743,15 +743,15 @@
       "name": "execute_inner",
       "anchor": "1328a253eef8",
       "sites": {
-        "windows": {
-          "lines": 112,
-          "production": true
-        },
         "linux": {
           "lines": 112,
           "production": true
         },
         "macos": {
+          "lines": 112,
+          "production": true
+        },
+        "windows": {
           "lines": 112,
           "production": true
         }
@@ -762,15 +762,15 @@
       "name": "timeout_cancellation_claims_and_removes_only_the_original_request",
       "anchor": "0b3ca9bb3534",
       "sites": {
-        "windows": {
-          "lines": 121,
-          "production": false
-        },
         "linux": {
           "lines": 121,
           "production": false
         },
         "macos": {
+          "lines": 121,
+          "production": false
+        },
+        "windows": {
           "lines": 121,
           "production": false
         }
@@ -781,15 +781,15 @@
       "name": "u1_parse_activity_filter_rejects_each_bad_value_with_the_exact_message",
       "anchor": "d45bfdc27ea0",
       "sites": {
-        "windows": {
-          "lines": 144,
-          "production": false
-        },
         "linux": {
           "lines": 144,
           "production": false
         },
         "macos": {
+          "lines": 144,
+          "production": false
+        },
+        "windows": {
           "lines": 144,
           "production": false
         }
@@ -800,15 +800,15 @@
       "name": "ensure_ac_root_gitignore_ignores_rtk_runtime_artifacts_narrowly",
       "anchor": "9ae35e9273ec",
       "sites": {
-        "windows": {
-          "lines": 150,
-          "production": false
-        },
         "linux": {
           "lines": 150,
           "production": false
         },
         "macos": {
+          "lines": 150,
+          "production": false
+        },
+        "windows": {
           "lines": 150,
           "production": false
         }
@@ -819,15 +819,15 @@
       "name": "stage_e_later_user_rule_and_excludes_win_over_managed_rules",
       "anchor": "0c5c2b428849",
       "sites": {
-        "windows": {
-          "lines": 136,
-          "production": false
-        },
         "linux": {
           "lines": 136,
           "production": false
         },
         "macos": {
+          "lines": 136,
+          "production": false
+        },
+        "windows": {
           "lines": 136,
           "production": false
         }
@@ -838,15 +838,15 @@
       "name": "enumerate_profile_assignment_targets",
       "anchor": "b9b4d3549058",
       "sites": {
-        "windows": {
-          "lines": 102,
-          "production": true
-        },
         "linux": {
           "lines": 102,
           "production": true
         },
         "macos": {
+          "lines": 102,
+          "production": true
+        },
+        "windows": {
           "lines": 102,
           "production": true
         }
@@ -857,15 +857,15 @@
       "name": "e2432_p02_contextless_default_ticket_and_source_decoys",
       "anchor": "794f87b07904",
       "sites": {
-        "windows": {
-          "lines": 103,
-          "production": false
-        },
         "linux": {
           "lines": 103,
           "production": false
         },
         "macos": {
+          "lines": 103,
+          "production": false
+        },
+        "windows": {
           "lines": 103,
           "production": false
         }
@@ -876,15 +876,15 @@
       "name": "e2432_p02_native_catalog_events_silent_registered_events_live",
       "anchor": "4545cd9778a0",
       "sites": {
-        "windows": {
-          "lines": 212,
-          "production": false
-        },
         "linux": {
           "lines": 212,
           "production": false
         },
         "macos": {
+          "lines": 212,
+          "production": false
+        },
+        "windows": {
           "lines": 212,
           "production": false
         }
@@ -895,15 +895,15 @@
       "name": "a_profile_edit_persists_except_for_the_overlay_introduced_agent",
       "anchor": "940eadc78073",
       "sites": {
-        "windows": {
-          "lines": 141,
-          "production": false
-        },
         "linux": {
           "lines": 141,
           "production": false
         },
         "macos": {
+          "lines": 141,
+          "production": false
+        },
+        "windows": {
           "lines": 141,
           "production": false
         }
@@ -914,15 +914,15 @@
       "name": "p6_profiles_command_case",
       "anchor": "8e385e61c9bc",
       "sites": {
-        "windows": {
-          "lines": 106,
-          "production": false
-        },
         "linux": {
           "lines": 106,
           "production": false
         },
         "macos": {
+          "lines": 106,
+          "production": false
+        },
+        "windows": {
           "lines": 106,
           "production": false
         }
@@ -944,15 +944,15 @@
       "name": "issue_1937_selection_api_barrier_read_cannot_observe_half_settled_apply",
       "anchor": "79a6019137c6",
       "sites": {
-        "windows": {
-          "lines": 118,
-          "production": false
-        },
         "linux": {
           "lines": 118,
           "production": false
         },
         "macos": {
+          "lines": 118,
+          "production": false
+        },
+        "windows": {
           "lines": 118,
           "production": false
         }
@@ -963,15 +963,15 @@
       "name": "bench_batch_locked",
       "anchor": "974a2d3529d5",
       "sites": {
-        "windows": {
-          "lines": 243,
-          "production": false
-        },
         "linux": {
           "lines": 243,
           "production": false
         },
         "macos": {
+          "lines": 243,
+          "production": false
+        },
+        "windows": {
           "lines": 243,
           "production": false
         }
@@ -982,15 +982,15 @@
       "name": "issue_2475_bench_drain_expiry_aborts_in_a_child_process",
       "anchor": "8a7250a14e7f",
       "sites": {
-        "windows": {
-          "lines": 101,
-          "production": false
-        },
         "linux": {
           "lines": 101,
           "production": false
         },
         "macos": {
+          "lines": 101,
+          "production": false
+        },
+        "windows": {
           "lines": 101,
           "production": false
         }
@@ -1001,15 +1001,15 @@
       "name": "issue_1937_selection_api_stale_approvals_are_rejected_without_writes",
       "anchor": "538667fd2177",
       "sites": {
-        "windows": {
-          "lines": 148,
-          "production": false
-        },
         "linux": {
           "lines": 148,
           "production": false
         },
         "macos": {
+          "lines": 148,
+          "production": false
+        },
+        "windows": {
           "lines": 148,
           "production": false
         }
@@ -1020,15 +1020,15 @@
       "name": "id_hash_activation_events_ignore_only_cell_metadata",
       "anchor": "2d0c482a7c13",
       "sites": {
-        "windows": {
-          "lines": 111,
-          "production": false
-        },
         "linux": {
           "lines": 111,
           "production": false
         },
         "macos": {
+          "lines": 111,
+          "production": false
+        },
+        "windows": {
           "lines": 111,
           "production": false
         }
@@ -1039,15 +1039,15 @@
       "name": "save_settings_draft_adopts_canonical_archive_without_resurrecting_absent_archive",
       "anchor": "3b8cac1c5b02",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": false
-        },
         "linux": {
           "lines": 105,
           "production": false
         },
         "macos": {
+          "lines": 105,
+          "production": false
+        },
+        "windows": {
           "lines": 105,
           "production": false
         }
@@ -1058,15 +1058,15 @@
       "name": "update_settings_adopts_canonical_archive_without_resurrecting_absent_archive",
       "anchor": "174ea88441b3",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": false
-        },
         "linux": {
           "lines": 105,
           "production": false
         },
         "macos": {
+          "lines": 105,
+          "production": false
+        },
+        "windows": {
           "lines": 105,
           "production": false
         }
@@ -1077,15 +1077,15 @@
       "name": "issue_3294_rollback_positive_control",
       "anchor": "8467e55627f2",
       "sites": {
-        "windows": {
-          "lines": 113,
-          "production": false
-        },
         "linux": {
           "lines": 113,
           "production": false
         },
         "macos": {
+          "lines": 113,
+          "production": false
+        },
+        "windows": {
           "lines": 113,
           "production": false
         }
@@ -1096,15 +1096,15 @@
       "name": "e2992_p42_invalid_defers_hold",
       "anchor": "131e614e2b10",
       "sites": {
-        "windows": {
-          "lines": 200,
-          "production": false
-        },
         "linux": {
           "lines": 200,
           "production": false
         },
         "macos": {
+          "lines": 200,
+          "production": false
+        },
+        "windows": {
           "lines": 200,
           "production": false
         }
@@ -1115,15 +1115,15 @@
       "name": "unsupported_backend_manual_kill_is_side_effect_free",
       "anchor": "f7f50e5c5cf5",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": false
-        },
         "linux": {
           "lines": 105,
           "production": false
         },
         "macos": {
+          "lines": 105,
+          "production": false
+        },
+        "windows": {
           "lines": 105,
           "production": false
         }
@@ -1134,15 +1134,15 @@
       "name": "assert_serialized_resource_kills",
       "anchor": "ca1a701fe5fe",
       "sites": {
-        "windows": {
-          "lines": 150,
-          "production": false
-        },
         "linux": {
           "lines": 150,
           "production": false
         },
         "macos": {
+          "lines": 150,
+          "production": false
+        },
+        "windows": {
           "lines": 150,
           "production": false
         }
@@ -1153,15 +1153,15 @@
       "name": "full_queue_watchdog_waiter_deduplicates_then_runs_one_whole_finalizer",
       "anchor": "bc5d196931bc",
       "sites": {
-        "windows": {
-          "lines": 125,
-          "production": false
-        },
         "linux": {
           "lines": 125,
           "production": false
         },
         "macos": {
+          "lines": 125,
+          "production": false
+        },
+        "windows": {
           "lines": 125,
           "production": false
         }
@@ -1172,15 +1172,15 @@
       "name": "create_pending",
       "anchor": "44b9a184e88c",
       "sites": {
-        "windows": {
-          "lines": 114,
-          "production": true
-        },
         "linux": {
           "lines": 114,
           "production": true
         },
         "macos": {
+          "lines": 114,
+          "production": true
+        },
+        "windows": {
           "lines": 114,
           "production": true
         }
@@ -1191,15 +1191,15 @@
       "name": "prepare_instructions",
       "anchor": "8188845680bc",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": true
-        },
         "linux": {
           "lines": 105,
           "production": true
         },
         "macos": {
+          "lines": 105,
+          "production": true
+        },
+        "windows": {
           "lines": 105,
           "production": true
         }
@@ -1210,15 +1210,15 @@
       "name": "prepare_resume",
       "anchor": "7d4572942818",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": true
-        },
         "linux": {
           "lines": 104,
           "production": true
         },
         "macos": {
+          "lines": 104,
+          "production": true
+        },
+        "windows": {
           "lines": 104,
           "production": true
         }
@@ -1229,15 +1229,15 @@
       "name": "complete",
       "anchor": "861a9d214253",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": true
-        },
         "linux": {
           "lines": 105,
           "production": true
         },
         "macos": {
+          "lines": 105,
+          "production": true
+        },
+        "windows": {
           "lines": 105,
           "production": true
         }
@@ -1248,15 +1248,15 @@
       "name": "execute_destroy_transaction_common",
       "anchor": "8dcb58494f91",
       "sites": {
-        "windows": {
-          "lines": 108,
-          "production": true
-        },
         "linux": {
           "lines": 108,
           "production": true
         },
         "macos": {
+          "lines": 108,
+          "production": true
+        },
+        "windows": {
           "lines": 108,
           "production": true
         }
@@ -1267,15 +1267,15 @@
       "name": "teardown_legacy_destroy_runtime",
       "anchor": "630b07efa486",
       "sites": {
-        "windows": {
-          "lines": 101,
-          "production": true
-        },
         "linux": {
           "lines": 101,
           "production": true
         },
         "macos": {
+          "lines": 101,
+          "production": true
+        },
+        "windows": {
           "lines": 101,
           "production": true
         }
@@ -1286,15 +1286,15 @@
       "name": "commit_response_close",
       "anchor": "2313cadebc3e",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": true
-        },
         "linux": {
           "lines": 105,
           "production": true
         },
         "macos": {
+          "lines": 105,
+          "production": true
+        },
+        "windows": {
           "lines": 105,
           "production": true
         }
@@ -1305,15 +1305,15 @@
       "name": "run_response_close_auxiliary",
       "anchor": "d3472245dda8",
       "sites": {
-        "windows": {
-          "lines": 103,
-          "production": true
-        },
         "linux": {
           "lines": 103,
           "production": true
         },
         "macos": {
+          "lines": 103,
+          "production": true
+        },
+        "windows": {
           "lines": 103,
           "production": true
         }
@@ -1324,15 +1324,15 @@
       "name": "settle_response_close_result",
       "anchor": "3b0ff37baf78",
       "sites": {
-        "windows": {
-          "lines": 111,
-          "production": true
-        },
         "linux": {
           "lines": 111,
           "production": true
         },
         "macos": {
+          "lines": 111,
+          "production": true
+        },
+        "windows": {
           "lines": 111,
           "production": true
         }
@@ -1343,15 +1343,15 @@
       "name": "prepare_lifecycle_entry_authority",
       "anchor": "5394d0dbeae9",
       "sites": {
-        "windows": {
-          "lines": 109,
-          "production": true
-        },
         "linux": {
           "lines": 109,
           "production": true
         },
         "macos": {
+          "lines": 109,
+          "production": true
+        },
+        "windows": {
           "lines": 109,
           "production": true
         }
@@ -1362,15 +1362,15 @@
       "name": "retire_lifecycle_entry_protection",
       "anchor": "fb14ad94e4cb",
       "sites": {
-        "windows": {
-          "lines": 108,
-          "production": true
-        },
         "linux": {
           "lines": 108,
           "production": true
         },
         "macos": {
+          "lines": 108,
+          "production": true
+        },
+        "windows": {
           "lines": 108,
           "production": true
         }
@@ -1381,15 +1381,15 @@
       "name": "validate_lifecycle_entry_authority",
       "anchor": "75ec99f2efbc",
       "sites": {
-        "windows": {
-          "lines": 112,
-          "production": true
-        },
         "linux": {
           "lines": 112,
           "production": true
         },
         "macos": {
+          "lines": 112,
+          "production": true
+        },
+        "windows": {
           "lines": 112,
           "production": true
         }
@@ -1400,15 +1400,15 @@
       "name": "a_live_restart_transfers_the_reader_to_the_new_uuid",
       "anchor": "7430a57209ca",
       "sites": {
-        "windows": {
-          "lines": 119,
-          "production": false
-        },
         "linux": {
           "lines": 119,
           "production": false
         },
         "macos": {
+          "lines": 119,
+          "production": false
+        },
+        "windows": {
           "lines": 119,
           "production": false
         }
@@ -1419,15 +1419,15 @@
       "name": "execute_restart_transaction_in_context",
       "anchor": "52cb20b02957",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": true
-        },
         "linux": {
           "lines": 105,
           "production": true
         },
         "macos": {
+          "lines": 105,
+          "production": true
+        },
+        "windows": {
           "lines": 105,
           "production": true
         }
@@ -1438,15 +1438,15 @@
       "name": "execute_root_transaction_in_context",
       "anchor": "f20b41ac904c",
       "sites": {
-        "windows": {
-          "lines": 111,
-          "production": true
-        },
         "linux": {
           "lines": 111,
           "production": true
         },
         "macos": {
+          "lines": 111,
+          "production": true
+        },
+        "windows": {
           "lines": 111,
           "production": true
         }
@@ -1457,15 +1457,15 @@
       "name": "port_native_wrong_payload_fixture_body",
       "anchor": "4ba74d8ffef1",
       "sites": {
-        "windows": {
-          "lines": 108,
-          "production": false
-        },
         "linux": {
           "lines": 108,
           "production": false
         },
         "macos": {
+          "lines": 108,
+          "production": false
+        },
+        "windows": {
           "lines": 108,
           "production": false
         }
@@ -1476,15 +1476,15 @@
       "name": "build",
       "anchor": "b4715c6cecd5",
       "sites": {
-        "windows": {
-          "lines": 122,
-          "production": false
-        },
         "linux": {
           "lines": 122,
           "production": false
         },
         "macos": {
+          "lines": 122,
+          "production": false
+        },
+        "windows": {
           "lines": 122,
           "production": false
         }
@@ -1495,15 +1495,15 @@
       "name": "new",
       "anchor": "8329dfd0fe9d",
       "sites": {
-        "windows": {
-          "lines": 130,
-          "production": false
-        },
         "linux": {
           "lines": 130,
           "production": false
         },
         "macos": {
+          "lines": 130,
+          "production": false
+        },
+        "windows": {
           "lines": 130,
           "production": false
         }
@@ -1514,15 +1514,15 @@
       "name": "retire",
       "anchor": "f76d5bb922e0",
       "sites": {
-        "windows": {
-          "lines": 123,
-          "production": false
-        },
         "linux": {
           "lines": 123,
           "production": false
         },
         "macos": {
+          "lines": 123,
+          "production": false
+        },
+        "windows": {
           "lines": 123,
           "production": false
         }
@@ -1533,15 +1533,15 @@
       "name": "create_protected_owner_is_exclusive_and_failed_tracker_cannot_use_e2",
       "anchor": "3a91209fba3e",
       "sites": {
-        "windows": {
-          "lines": 143,
-          "production": false
-        },
         "linux": {
           "lines": 143,
           "production": false
         },
         "macos": {
+          "lines": 143,
+          "production": false
+        },
+        "windows": {
           "lines": 143,
           "production": false
         }
@@ -1552,15 +1552,15 @@
       "name": "derived_agent_id_binding_save_replace_create_uses_post_edit_revision",
       "anchor": "1eedbb257267",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": false
-        },
         "linux": {
           "lines": 104,
           "production": false
         },
         "macos": {
+          "lines": 104,
+          "production": false
+        },
+        "windows": {
           "lines": 104,
           "production": false
         }
@@ -1571,15 +1571,15 @@
       "name": "derived_agent_id_binding_seedless_restore_and_new_birth_preserve_compatibility",
       "anchor": "b081e1db0768",
       "sites": {
-        "windows": {
-          "lines": 187,
-          "production": false
-        },
         "linux": {
           "lines": 187,
           "production": false
         },
         "macos": {
+          "lines": 187,
+          "production": false
+        },
+        "windows": {
           "lines": 187,
           "production": false
         }
@@ -1590,15 +1590,15 @@
       "name": "privileged_preheld_target_gate_does_not_reenter_and_rechecks_pending_or_live",
       "anchor": "d956b6b0db15",
       "sites": {
-        "windows": {
-          "lines": 101,
-          "production": false
-        },
         "linux": {
           "lines": 101,
           "production": false
         },
         "macos": {
+          "lines": 101,
+          "production": false
+        },
+        "windows": {
           "lines": 101,
           "production": false
         }
@@ -1609,15 +1609,15 @@
       "name": "restart_after_route_loss_cleans_old_external_state_once_before_replacement",
       "anchor": "a5d8ee6cfa55",
       "sites": {
-        "windows": {
-          "lines": 111,
-          "production": false
-        },
         "linux": {
           "lines": 111,
           "production": false
         },
         "macos": {
+          "lines": 111,
+          "production": false
+        },
+        "windows": {
           "lines": 111,
           "production": false
         }
@@ -1628,15 +1628,15 @@
       "name": "create_session_inner_gate_blocks_unregistered_cwd",
       "anchor": "a1a5749f3c12",
       "sites": {
-        "windows": {
-          "lines": 120,
-          "production": false
-        },
         "linux": {
           "lines": 120,
           "production": false
         },
         "macos": {
+          "lines": 120,
+          "production": false
+        },
+        "windows": {
           "lines": 120,
           "production": false
         }
@@ -1658,15 +1658,15 @@
       "name": "muse_fresh_and_resume_intents_share_one_launch_seam",
       "anchor": "250a7e800d81",
       "sites": {
-        "windows": {
-          "lines": 125,
-          "production": false
-        },
         "linux": {
           "lines": 125,
           "production": false
         },
         "macos": {
+          "lines": 125,
+          "production": false
+        },
+        "windows": {
           "lines": 125,
           "production": false
         }
@@ -1677,15 +1677,15 @@
       "name": "muse_resume_eligibility_is_exact_and_fail_closed",
       "anchor": "cd693cd57669",
       "sites": {
-        "windows": {
-          "lines": 135,
-          "production": false
-        },
         "linux": {
           "lines": 135,
           "production": false
         },
         "macos": {
+          "lines": 135,
+          "production": false
+        },
+        "windows": {
           "lines": 135,
           "production": false
         }
@@ -1696,15 +1696,15 @@
       "name": "trusted_muse_resume_reaches_backend_effective_argv_only",
       "anchor": "814308b3ba0b",
       "sites": {
-        "windows": {
-          "lines": 149,
-          "production": false
-        },
         "linux": {
           "lines": 149,
           "production": false
         },
         "macos": {
+          "lines": 149,
+          "production": false
+        },
+        "windows": {
           "lines": 149,
           "production": false
         }
@@ -1730,15 +1730,15 @@
       "name": "root_restore_case",
       "anchor": "f42701e2e277",
       "sites": {
-        "windows": {
-          "lines": 114,
-          "production": false
-        },
         "linux": {
           "lines": 114,
           "production": false
         },
         "macos": {
+          "lines": 114,
+          "production": false
+        },
+        "windows": {
           "lines": 114,
           "production": false
         }
@@ -1749,15 +1749,15 @@
       "name": "source_guards_round4_controls",
       "anchor": "3c39e7931bed",
       "sites": {
-        "windows": {
-          "lines": 144,
-          "production": false
-        },
         "linux": {
           "lines": 144,
           "production": false
         },
         "macos": {
+          "lines": 144,
+          "production": false
+        },
+        "windows": {
           "lines": 144,
           "production": false
         }
@@ -1768,15 +1768,15 @@
       "name": "blocker_report_serializes_with_camelcase_fields",
       "anchor": "2c511e10db88",
       "sites": {
-        "windows": {
-          "lines": 103,
-          "production": false
-        },
         "linux": {
           "lines": 103,
           "production": false
         },
         "macos": {
+          "lines": 103,
+          "production": false
+        },
+        "windows": {
           "lines": 103,
           "production": false
         }
@@ -1787,15 +1787,15 @@
       "name": "execute_detach_transaction",
       "anchor": "fa880bdf858c",
       "sites": {
-        "windows": {
-          "lines": 128,
-          "production": true
-        },
         "linux": {
           "lines": 128,
           "production": true
         },
         "macos": {
+          "lines": 128,
+          "production": true
+        },
+        "windows": {
           "lines": 128,
           "production": true
         }
@@ -1806,15 +1806,15 @@
       "name": "attach_post_destroy_pty_loss_clears_intent_preserves_geometry_and_publishes_exit",
       "anchor": "2a24ac8426dd",
       "sites": {
-        "windows": {
-          "lines": 113,
-          "production": false
-        },
         "linux": {
           "lines": 113,
           "production": false
         },
         "macos": {
+          "lines": 113,
+          "production": false
+        },
+        "windows": {
           "lines": 113,
           "production": false
         }
@@ -1825,15 +1825,15 @@
       "name": "reduce",
       "anchor": "b9e85cb59cb8",
       "sites": {
-        "windows": {
-          "lines": 118,
-          "production": false
-        },
         "linux": {
           "lines": 118,
           "production": false
         },
         "macos": {
+          "lines": 118,
+          "production": false
+        },
+        "windows": {
           "lines": 118,
           "production": false
         }
@@ -1844,15 +1844,15 @@
       "name": "prepared_identity_pair_serializer_cleanup_and_split_parity",
       "anchor": "23d65497bade",
       "sites": {
-        "windows": {
-          "lines": 120,
-          "production": false
-        },
         "linux": {
           "lines": 120,
           "production": false
         },
         "macos": {
+          "lines": 120,
+          "production": false
+        },
+        "windows": {
           "lines": 120,
           "production": false
         }
@@ -1863,15 +1863,15 @@
       "name": "a_refusal_keeps_every_value",
       "anchor": "3e026836dceb",
       "sites": {
-        "windows": {
-          "lines": 122,
-          "production": false
-        },
         "linux": {
           "lines": 122,
           "production": false
         },
         "macos": {
+          "lines": 122,
+          "production": false
+        },
+        "windows": {
           "lines": 122,
           "production": false
         }
@@ -1882,15 +1882,15 @@
       "name": "nothing_lands_between_the_cleanup_and_the_caller_sequence",
       "anchor": "e54f78ed1836",
       "sites": {
-        "windows": {
-          "lines": 156,
-          "production": false
-        },
         "linux": {
           "lines": 156,
           "production": false
         },
         "macos": {
+          "lines": 156,
+          "production": false
+        },
+        "windows": {
           "lines": 156,
           "production": false
         }
@@ -1901,15 +1901,15 @@
       "name": "commit_source_candidate_internal",
       "anchor": "d23b0f69dd78",
       "sites": {
-        "windows": {
-          "lines": 101,
-          "production": true
-        },
         "linux": {
           "lines": 101,
           "production": true
         },
         "macos": {
+          "lines": 101,
+          "production": true
+        },
+        "windows": {
           "lines": 101,
           "production": true
         }
@@ -1920,15 +1920,15 @@
       "name": "complete_identity_transition",
       "anchor": "0bc8921ffcea",
       "sites": {
-        "windows": {
-          "lines": 102,
-          "production": true
-        },
         "linux": {
           "lines": 102,
           "production": true
         },
         "macos": {
+          "lines": 102,
+          "production": true
+        },
+        "windows": {
           "lines": 102,
           "production": true
         }
@@ -1939,15 +1939,15 @@
       "name": "id_hash_activation_apply_uses_final_command_env_and_metadata_exclusions",
       "anchor": "3b3be6433e95",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": false
-        },
         "linux": {
           "lines": 105,
           "production": false
         },
         "macos": {
+          "lines": 105,
+          "production": false
+        },
+        "windows": {
           "lines": 105,
           "production": false
         }
@@ -1958,15 +1958,15 @@
       "name": "single_editor_inactive_gate",
       "anchor": "e1b9cbff2b71",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": false
-        },
         "linux": {
           "lines": 104,
           "production": false
         },
         "macos": {
+          "lines": 104,
+          "production": false
+        },
+        "windows": {
           "lines": 104,
           "production": false
         }
@@ -1977,15 +1977,15 @@
       "name": "single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets",
       "anchor": "47f4bd6d3040",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": false
-        },
         "linux": {
           "lines": 105,
           "production": false
         },
         "macos": {
+          "lines": 105,
+          "production": false
+        },
+        "windows": {
           "lines": 105,
           "production": false
         }
@@ -1996,15 +1996,15 @@
       "name": "single_editor_original_factory_real_matrix_default_group_and_history_no_default",
       "anchor": "dd0e60dcd5cf",
       "sites": {
-        "windows": {
-          "lines": 258,
-          "production": false
-        },
         "linux": {
           "lines": 258,
           "production": false
         },
         "macos": {
+          "lines": 258,
+          "production": false
+        },
+        "windows": {
           "lines": 258,
           "production": false
         }
@@ -2015,15 +2015,15 @@
       "name": "single_editor_all_authority_context_source_target_cas_failures",
       "anchor": "27d081e64a77",
       "sites": {
-        "windows": {
-          "lines": 115,
-          "production": false
-        },
         "linux": {
           "lines": 115,
           "production": false
         },
         "macos": {
+          "lines": 115,
+          "production": false
+        },
+        "windows": {
           "lines": 115,
           "production": false
         }
@@ -2034,15 +2034,15 @@
       "name": "single_editor_registered_source_after_restores_original_groups_two_targets",
       "anchor": "aa37b1891d3f",
       "sites": {
-        "windows": {
-          "lines": 129,
-          "production": false
-        },
         "linux": {
           "lines": 129,
           "production": false
         },
         "macos": {
+          "lines": 129,
+          "production": false
+        },
+        "windows": {
           "lines": 129,
           "production": false
         }
@@ -2053,15 +2053,15 @@
       "name": "single_editor_original_local_journal_immutable_and_missing_inventory_refusal",
       "anchor": "3667d18256a1",
       "sites": {
-        "windows": {
-          "lines": 102,
-          "production": false
-        },
         "linux": {
           "lines": 102,
           "production": false
         },
         "macos": {
+          "lines": 102,
+          "production": false
+        },
+        "windows": {
           "lines": 102,
           "production": false
         }
@@ -2072,15 +2072,15 @@
       "name": "r3_ready_fixture",
       "anchor": "172948fcaaaa",
       "sites": {
-        "windows": {
-          "lines": 154,
-          "production": false
-        },
         "linux": {
           "lines": 154,
           "production": false
         },
         "macos": {
+          "lines": 154,
+          "production": false
+        },
+        "windows": {
           "lines": 154,
           "production": false
         }
@@ -2091,15 +2091,15 @@
       "name": "discover_source_inventory_with_cut",
       "anchor": "800b76799d75",
       "sites": {
-        "windows": {
-          "lines": 103,
-          "production": true
-        },
         "linux": {
           "lines": 103,
           "production": true
         },
         "macos": {
+          "lines": 103,
+          "production": true
+        },
+        "windows": {
           "lines": 103,
           "production": true
         }
@@ -2110,15 +2110,15 @@
       "name": "c4_sites_3_8_9_10_11_leave_no_state_key_in_the_tracked_file",
       "anchor": "76ab823009a8",
       "sites": {
-        "windows": {
-          "lines": 119,
-          "production": false
-        },
         "linux": {
           "lines": 119,
           "production": false
         },
         "macos": {
+          "lines": 119,
+          "production": false
+        },
+        "windows": {
           "lines": 119,
           "production": false
         }
@@ -2129,15 +2129,15 @@
       "name": "e2432_source_prepared_publication_manual_clear_and_stale_are_atomic",
       "anchor": "0461564edb49",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": false
-        },
         "linux": {
           "lines": 105,
           "production": false
         },
         "macos": {
+          "lines": 105,
+          "production": false
+        },
+        "windows": {
           "lines": 105,
           "production": false
         }
@@ -2148,15 +2148,15 @@
       "name": "issue_1937_selection_state_intent_table",
       "anchor": "2ba1c74fc652",
       "sites": {
-        "windows": {
-          "lines": 131,
-          "production": false
-        },
         "linux": {
           "lines": 131,
           "production": false
         },
         "macos": {
+          "lines": 131,
+          "production": false
+        },
+        "windows": {
           "lines": 131,
           "production": false
         }
@@ -2167,15 +2167,15 @@
       "name": "parse_catalog_schema2",
       "anchor": "ca7d92c61c15",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": true
-        },
         "linux": {
           "lines": 104,
           "production": true
         },
         "macos": {
+          "lines": 104,
+          "production": true
+        },
+        "windows": {
           "lines": 104,
           "production": true
         }
@@ -2186,15 +2186,15 @@
       "name": "parse_local_layer",
       "anchor": "55ff39895773",
       "sites": {
-        "windows": {
-          "lines": 112,
-          "production": true
-        },
         "linux": {
           "lines": 112,
           "production": true
         },
         "macos": {
+          "lines": 112,
+          "production": true
+        },
+        "windows": {
           "lines": 112,
           "production": true
         }
@@ -2205,15 +2205,15 @@
       "name": "extract_legacy_local_mode",
       "anchor": "15e350e6d838",
       "sites": {
-        "windows": {
-          "lines": 110,
-          "production": true
-        },
         "linux": {
           "lines": 110,
           "production": true
         },
         "macos": {
+          "lines": 110,
+          "production": true
+        },
+        "windows": {
           "lines": 110,
           "production": true
         }
@@ -2224,15 +2224,15 @@
       "name": "resolve_catalog_snapshot",
       "anchor": "90f7b4032d0c",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": true
-        },
         "linux": {
           "lines": 105,
           "production": true
         },
         "macos": {
+          "lines": 105,
+          "production": true
+        },
+        "windows": {
           "lines": 105,
           "production": true
         }
@@ -2243,15 +2243,15 @@
       "name": "project_nonregular_and_read_errors_degrade_only_project",
       "anchor": "0e96f2fc07e6",
       "sites": {
-        "windows": {
-          "lines": 115,
-          "production": false
-        },
         "linux": {
           "lines": 115,
           "production": false
         },
         "macos": {
+          "lines": 115,
+          "production": false
+        },
+        "windows": {
           "lines": 115,
           "production": false
         }
@@ -2262,15 +2262,15 @@
       "name": "perform_seeds_from_highest_present_tier_and_clean_replaces_dest",
       "anchor": "4f4c74f3f0be",
       "sites": {
-        "windows": {
-          "lines": 113,
-          "production": false
-        },
         "linux": {
           "lines": 113,
           "production": false
         },
         "macos": {
+          "lines": 113,
+          "production": false
+        },
+        "windows": {
           "lines": 113,
           "production": false
         }
@@ -2281,15 +2281,15 @@
       "name": "issue_3294_discovery_positive_control",
       "anchor": "b887a802eb53",
       "sites": {
-        "windows": {
-          "lines": 107,
-          "production": false
-        },
         "linux": {
           "lines": 107,
           "production": false
         },
         "macos": {
+          "lines": 107,
+          "production": false
+        },
+        "windows": {
           "lines": 107,
           "production": false
         }
@@ -2300,15 +2300,15 @@
       "name": "collect_agent_team_mutations_raw",
       "anchor": "71be5c7d493f",
       "sites": {
-        "windows": {
-          "lines": 106,
-          "production": true
-        },
         "linux": {
           "lines": 106,
           "production": true
         },
         "macos": {
+          "lines": 106,
+          "production": true
+        },
+        "windows": {
           "lines": 106,
           "production": true
         }
@@ -2319,15 +2319,15 @@
       "name": "git_fixture_ignores_exactly_required_paths_without_untracking",
       "anchor": "4b9188a64447",
       "sites": {
-        "windows": {
-          "lines": 151,
-          "production": false
-        },
         "linux": {
           "lines": 151,
           "production": false
         },
         "macos": {
+          "lines": 151,
+          "production": false
+        },
+        "windows": {
           "lines": 151,
           "production": false
         }
@@ -2338,15 +2338,15 @@
       "name": "source_native_b_collision_and_foreign_identical_preserve_target_and_cleanup_owned_stage",
       "anchor": "4f3a59651cf4",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": false
-        },
         "linux": {
           "lines": 104,
           "production": false
         },
         "macos": {
+          "lines": 104,
+          "production": false
+        },
+        "windows": {
           "lines": 104,
           "production": false
         }
@@ -2357,15 +2357,15 @@
       "name": "the_loop_scope_ignores_the_new_names_before_it_renames_anything",
       "anchor": "e920b3e28054",
       "sites": {
-        "windows": {
-          "lines": 112,
-          "production": false
-        },
         "linux": {
           "lines": 112,
           "production": false
         },
         "macos": {
+          "lines": 112,
+          "production": false
+        },
+        "windows": {
           "lines": 112,
           "production": false
         }
@@ -2376,15 +2376,15 @@
       "name": "the_scope_ignores_the_new_names_before_it_renames_anything",
       "anchor": "551f2f59efae",
       "sites": {
-        "windows": {
-          "lines": 137,
-          "production": false
-        },
         "linux": {
           "lines": 137,
           "production": false
         },
         "macos": {
+          "lines": 137,
+          "production": false
+        },
+        "windows": {
           "lines": 137,
           "production": false
         }
@@ -2395,15 +2395,15 @@
       "name": "merge_root_agent_config_migration_table",
       "anchor": "ad6b11ac9cd6",
       "sites": {
-        "windows": {
-          "lines": 145,
-          "production": false
-        },
         "linux": {
           "lines": 145,
           "production": false
         },
         "macos": {
+          "lines": 145,
+          "production": false
+        },
+        "windows": {
           "lines": 145,
           "production": false
         }
@@ -2425,15 +2425,15 @@
       "name": "config_scope_replacement_is_canonical_noop_and_preserves_in_memory_semantics",
       "anchor": "6aba87b69c02",
       "sites": {
-        "windows": {
-          "lines": 107,
-          "production": false
-        },
         "linux": {
           "lines": 107,
           "production": false
         },
         "macos": {
+          "lines": 107,
+          "production": false
+        },
+        "windows": {
           "lines": 107,
           "production": false
         }
@@ -2455,15 +2455,15 @@
       "name": "load_state",
       "anchor": "7ec592990e15",
       "sites": {
-        "windows": {
-          "lines": 101,
-          "production": true
-        },
         "linux": {
           "lines": 101,
           "production": true
         },
         "macos": {
+          "lines": 101,
+          "production": true
+        },
+        "windows": {
           "lines": 101,
           "production": true
         }
@@ -2474,15 +2474,15 @@
       "name": "sync_customized_template",
       "anchor": "5957db461329",
       "sites": {
-        "windows": {
-          "lines": 101,
-          "production": true
-        },
         "linux": {
           "lines": 101,
           "production": true
         },
         "macos": {
+          "lines": 101,
+          "production": true
+        },
+        "windows": {
           "lines": 101,
           "production": true
         }
@@ -2493,15 +2493,15 @@
       "name": "the_read_path_no_longer_repairs_the_global_but_the_scan_does",
       "anchor": "317aa94c3bfc",
       "sites": {
-        "windows": {
-          "lines": 103,
-          "production": false
-        },
         "linux": {
           "lines": 103,
           "production": false
         },
         "macos": {
+          "lines": 103,
+          "production": false
+        },
+        "windows": {
           "lines": 103,
           "production": false
         }
@@ -2512,15 +2512,15 @@
       "name": "ensure_platform_context_templates_seeds_only_missing_platform_files",
       "anchor": "a152d4a6243c",
       "sites": {
-        "windows": {
-          "lines": 108,
-          "production": false
-        },
         "linux": {
           "lines": 108,
           "production": false
         },
         "macos": {
+          "lines": 108,
+          "production": false
+        },
+        "windows": {
           "lines": 108,
           "production": false
         }
@@ -2531,15 +2531,15 @@
       "name": "legacy_rendered_default_context_for_generation",
       "anchor": "4a221d65b426",
       "sites": {
-        "windows": {
-          "lines": 210,
-          "production": true
-        },
         "linux": {
           "lines": 210,
           "production": true
         },
         "macos": {
+          "lines": 210,
+          "production": true
+        },
+        "windows": {
           "lines": 210,
           "production": true
         }
@@ -2550,15 +2550,15 @@
       "name": "render_skills_section",
       "anchor": "fd4c6e9500e6",
       "sites": {
-        "windows": {
-          "lines": 101,
-          "production": true
-        },
         "linux": {
           "lines": 101,
           "production": true
         },
         "macos": {
+          "lines": 101,
+          "production": true
+        },
+        "windows": {
           "lines": 101,
           "production": true
         }
@@ -2569,15 +2569,15 @@
       "name": "assert_no_broad_read_grant",
       "anchor": "17aecd83b17d",
       "sites": {
-        "windows": {
-          "lines": 119,
-          "production": false
-        },
         "linux": {
           "lines": 119,
           "production": false
         },
         "macos": {
+          "lines": 119,
+          "production": false
+        },
+        "windows": {
           "lines": 119,
           "production": false
         }
@@ -2588,15 +2588,15 @@
       "name": "issue_2832_successful_root_resolver_and_direct_ensure_preserve_exclusions",
       "anchor": "b4238488e798",
       "sites": {
-        "windows": {
-          "lines": 148,
-          "production": false
-        },
         "linux": {
           "lines": 148,
           "production": false
         },
         "macos": {
+          "lines": 148,
+          "production": false
+        },
+        "windows": {
           "lines": 148,
           "production": false
         }
@@ -2607,15 +2607,15 @@
       "name": "golden_rule_room_replica_renders_entries_five_and_six_on_disk",
       "anchor": "dab88c4d1e02",
       "sites": {
-        "windows": {
-          "lines": 118,
-          "production": false
-        },
         "linux": {
           "lines": 118,
           "production": false
         },
         "macos": {
+          "lines": 118,
+          "production": false
+        },
+        "windows": {
           "lines": 118,
           "production": false
         }
@@ -2626,15 +2626,15 @@
       "name": "summarized_default_context_meets_size_budget",
       "anchor": "24924aced08a",
       "sites": {
-        "windows": {
-          "lines": 330,
-          "production": false
-        },
         "linux": {
           "lines": 330,
           "production": false
         },
         "macos": {
+          "lines": 330,
+          "production": false
+        },
+        "windows": {
           "lines": 330,
           "production": false
         }
@@ -2645,15 +2645,15 @@
       "name": "token_accounting_report",
       "anchor": "7db39b48b409",
       "sites": {
-        "windows": {
-          "lines": 116,
-          "production": false
-        },
         "linux": {
           "lines": 116,
           "production": false
         },
         "macos": {
+          "lines": 116,
+          "production": false
+        },
+        "windows": {
           "lines": 116,
           "production": false
         }
@@ -2664,15 +2664,15 @@
       "name": "prepare_protected_publication",
       "anchor": "7bc821512f4f",
       "sites": {
-        "windows": {
-          "lines": 103,
-          "production": true
-        },
         "linux": {
           "lines": 103,
           "production": true
         },
         "macos": {
+          "lines": 103,
+          "production": true
+        },
+        "windows": {
           "lines": 103,
           "production": true
         }
@@ -2683,15 +2683,15 @@
       "name": "persist_current_state_to_dir_for_project_paths_result_core",
       "anchor": "431b5b775563",
       "sites": {
-        "windows": {
-          "lines": 110,
-          "production": true
-        },
         "linux": {
           "lines": 110,
           "production": true
         },
         "macos": {
+          "lines": 110,
+          "production": true
+        },
+        "windows": {
           "lines": 110,
           "production": true
         }
@@ -2702,15 +2702,15 @@
       "name": "prepare_owned_replacement_publication",
       "anchor": "245f9c638574",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": true
-        },
         "linux": {
           "lines": 104,
           "production": true
         },
         "macos": {
+          "lines": 104,
+          "production": true
+        },
+        "windows": {
           "lines": 104,
           "production": true
         }
@@ -2721,15 +2721,15 @@
       "name": "unavailable_project_state_refuses_creation_and_blocked_menu_mutation",
       "anchor": "1f388b61db29",
       "sites": {
-        "windows": {
-          "lines": 129,
-          "production": false
-        },
         "linux": {
           "lines": 129,
           "production": false
         },
         "macos": {
+          "lines": 129,
+          "production": false
+        },
+        "windows": {
           "lines": 129,
           "production": false
         }
@@ -2740,15 +2740,15 @@
       "name": "e2432_source_seed_roundtrip_decoy",
       "anchor": "f101d5b0a434",
       "sites": {
-        "windows": {
-          "lines": 153,
-          "production": false
-        },
         "linux": {
           "lines": 153,
           "production": false
         },
         "macos": {
+          "lines": 153,
+          "production": false
+        },
+        "windows": {
           "lines": 153,
           "production": false
         }
@@ -2759,15 +2759,15 @@
       "name": "persist_prunes_dormant_orphan_keeps_live_orphan",
       "anchor": "8e9d5cc83b17",
       "sites": {
-        "windows": {
-          "lines": 117,
-          "production": false
-        },
         "linux": {
           "lines": 117,
           "production": false
         },
         "macos": {
+          "lines": 117,
+          "production": false
+        },
+        "windows": {
           "lines": 117,
           "production": false
         }
@@ -2778,15 +2778,15 @@
       "name": "native_rename_failure_keeps_epoch_checkpoint_and_own_pending_payload",
       "anchor": "092a8f1829ad",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": false
-        },
         "linux": {
           "lines": 105,
           "production": false
         },
         "macos": {
+          "lines": 105,
+          "production": false
+        },
+        "windows": {
           "lines": 105,
           "production": false
         }
@@ -2797,15 +2797,15 @@
       "name": "replacement_preparing_requires_current_confirmed_exited_key_and_exact_owner",
       "anchor": "4c1963393921",
       "sites": {
-        "windows": {
-          "lines": 242,
-          "production": false
-        },
         "linux": {
           "lines": 242,
           "production": false
         },
         "macos": {
+          "lines": 242,
+          "production": false
+        },
+        "windows": {
           "lines": 242,
           "production": false
         }
@@ -2816,15 +2816,15 @@
       "name": "export_blocking_menus_with_startup",
       "anchor": "6a51050b259d",
       "sites": {
-        "windows": {
-          "lines": 151,
-          "production": true
-        },
         "linux": {
           "lines": 151,
           "production": true
         },
         "macos": {
+          "lines": 151,
+          "production": true
+        },
+        "windows": {
           "lines": 151,
           "production": true
         }
@@ -2835,15 +2835,15 @@
       "name": "snapshot_from_captured_source",
       "anchor": "346a08ad514c",
       "sites": {
-        "windows": {
-          "lines": 143,
-          "production": true
-        },
         "linux": {
           "lines": 143,
           "production": true
         },
         "macos": {
+          "lines": 143,
+          "production": true
+        },
+        "windows": {
           "lines": 143,
           "production": true
         }
@@ -2854,15 +2854,15 @@
       "name": "prepare_agent_file_edits",
       "anchor": "2b1bbf563e25",
       "sites": {
-        "windows": {
-          "lines": 219,
-          "production": true
-        },
         "linux": {
           "lines": 219,
           "production": true
         },
         "macos": {
+          "lines": 219,
+          "production": true
+        },
+        "windows": {
           "lines": 219,
           "production": true
         }
@@ -2873,15 +2873,15 @@
       "name": "save_agents_instance_file",
       "anchor": "6dd5e1a0a68a",
       "sites": {
-        "windows": {
-          "lines": 168,
-          "production": true
-        },
         "linux": {
           "lines": 168,
           "production": true
         },
         "macos": {
+          "lines": 168,
+          "production": true
+        },
+        "windows": {
           "lines": 168,
           "production": true
         }
@@ -2892,15 +2892,15 @@
       "name": "validate_registered_overlay_profile_edits",
       "anchor": "f67b18516d78",
       "sites": {
-        "windows": {
-          "lines": 109,
-          "production": true
-        },
         "linux": {
           "lines": 109,
           "production": true
         },
         "macos": {
+          "lines": 109,
+          "production": true
+        },
+        "windows": {
           "lines": 109,
           "production": true
         }
@@ -2911,15 +2911,15 @@
       "name": "canonical_profile_source",
       "anchor": "2a5e7953a291",
       "sites": {
-        "windows": {
-          "lines": 158,
-          "production": true
-        },
         "linux": {
           "lines": 158,
           "production": true
         },
         "macos": {
+          "lines": 158,
+          "production": true
+        },
+        "windows": {
           "lines": 158,
           "production": true
         }
@@ -2930,15 +2930,15 @@
       "name": "physical_profile_sets",
       "anchor": "b6c7bc6ad851",
       "sites": {
-        "windows": {
-          "lines": 112,
-          "production": true
-        },
         "linux": {
           "lines": 112,
           "production": true
         },
         "macos": {
+          "lines": 112,
+          "production": true
+        },
+        "windows": {
           "lines": 112,
           "production": true
         }
@@ -2949,15 +2949,15 @@
       "name": "default",
       "anchor": "7e3365e7af00",
       "sites": {
-        "windows": {
-          "lines": 120,
-          "production": true
-        },
         "linux": {
           "lines": 120,
           "production": true
         },
         "macos": {
+          "lines": 120,
+          "production": true
+        },
+        "windows": {
           "lines": 120,
           "production": true
         }
@@ -2968,15 +2968,15 @@
       "name": "compose_settings_parts",
       "anchor": "9fa24d582911",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": true
-        },
         "linux": {
           "lines": 104,
           "production": true
         },
         "macos": {
+          "lines": 104,
+          "production": true
+        },
+        "windows": {
           "lines": 104,
           "production": true
         }
@@ -2987,15 +2987,15 @@
       "name": "load_settings_from_path_with_blocking_menus_publish",
       "anchor": "a23bda34078a",
       "sites": {
-        "windows": {
-          "lines": 107,
-          "production": true
-        },
         "linux": {
           "lines": 107,
           "production": true
         },
         "macos": {
+          "lines": 107,
+          "production": true
+        },
+        "windows": {
           "lines": 107,
           "production": true
         }
@@ -3006,15 +3006,15 @@
       "name": "capture_project_settings_with_startup",
       "anchor": "d582b6789568",
       "sites": {
-        "windows": {
-          "lines": 243,
-          "production": true
-        },
         "linux": {
           "lines": 243,
           "production": true
         },
         "macos": {
+          "lines": 243,
+          "production": true
+        },
+        "windows": {
           "lines": 243,
           "production": true
         }
@@ -3025,15 +3025,15 @@
       "name": "publish_project_migration_backup_labeled",
       "anchor": "2f30c38ab49c",
       "sites": {
-        "windows": {
-          "lines": 125,
-          "production": true
-        },
         "linux": {
           "lines": 125,
           "production": true
         },
         "macos": {
+          "lines": 125,
+          "production": true
+        },
+        "windows": {
           "lines": 125,
           "production": true
         }
@@ -3044,15 +3044,15 @@
       "name": "write_value_atomic_labeled",
       "anchor": "70c8eec901c2",
       "sites": {
-        "windows": {
-          "lines": 210,
-          "production": true
-        },
         "linux": {
           "lines": 210,
           "production": true
         },
         "macos": {
+          "lines": 210,
+          "production": true
+        },
+        "windows": {
           "lines": 210,
           "production": true
         }
@@ -3063,15 +3063,15 @@
       "name": "acquire_file",
       "anchor": "48c0c6b70005",
       "sites": {
-        "windows": {
-          "lines": 140,
-          "production": true
-        },
         "linux": {
           "lines": 140,
           "production": true
         },
         "macos": {
+          "lines": 140,
+          "production": true
+        },
+        "windows": {
           "lines": 140,
           "production": true
         }
@@ -3082,15 +3082,15 @@
       "name": "save_settings_value_locked_with_startup",
       "anchor": "e4399a3eb237",
       "sites": {
-        "windows": {
-          "lines": 314,
-          "production": true
-        },
         "linux": {
           "lines": 314,
           "production": true
         },
         "macos": {
+          "lines": 314,
+          "production": true
+        },
+        "windows": {
           "lines": 314,
           "production": true
         }
@@ -3101,15 +3101,15 @@
       "name": "validate",
       "anchor": "0a3e524c04e6",
       "sites": {
-        "windows": {
-          "lines": 155,
-          "production": true
-        },
         "linux": {
           "lines": 155,
           "production": true
         },
         "macos": {
+          "lines": 155,
+          "production": true
+        },
+        "windows": {
           "lines": 155,
           "production": true
         }
@@ -3120,15 +3120,15 @@
       "name": "capture",
       "anchor": "abdc686bda76",
       "sites": {
-        "windows": {
-          "lines": 184,
-          "production": true
-        },
         "linux": {
           "lines": 184,
           "production": true
         },
         "macos": {
+          "lines": 184,
+          "production": true
+        },
+        "windows": {
           "lines": 184,
           "production": true
         }
@@ -3139,15 +3139,15 @@
       "name": "source_original_mappings",
       "anchor": "fce330b124d7",
       "sites": {
-        "windows": {
-          "lines": 109,
-          "production": true
-        },
         "linux": {
           "lines": 109,
           "production": true
         },
         "macos": {
+          "lines": 109,
+          "production": true
+        },
+        "windows": {
           "lines": 109,
           "production": true
         }
@@ -3158,15 +3158,15 @@
       "name": "changed_origin_units",
       "anchor": "c3f43e1e9910",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": true
-        },
         "linux": {
           "lines": 105,
           "production": true
         },
         "macos": {
+          "lines": 105,
+          "production": true
+        },
+        "windows": {
           "lines": 105,
           "production": true
         }
@@ -3177,15 +3177,15 @@
       "name": "prepare_settings_without_source_write",
       "anchor": "18bdcde32c83",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": true
-        },
         "linux": {
           "lines": 105,
           "production": true
         },
         "macos": {
+          "lines": 105,
+          "production": true
+        },
+        "windows": {
           "lines": 105,
           "production": true
         }
@@ -3196,15 +3196,15 @@
       "name": "prepare_source_candidate_with_original_links",
       "anchor": "6fc84246808e",
       "sites": {
-        "windows": {
-          "lines": 166,
-          "production": true
-        },
         "linux": {
           "lines": 166,
           "production": true
         },
         "macos": {
+          "lines": 166,
+          "production": true
+        },
+        "windows": {
           "lines": 166,
           "production": true
         }
@@ -3215,15 +3215,15 @@
       "name": "publish_source_intent_with_validation",
       "anchor": "b1d4b9f4858f",
       "sites": {
-        "windows": {
-          "lines": 182,
-          "production": true
-        },
         "linux": {
           "lines": 182,
           "production": true
         },
         "macos": {
+          "lines": 182,
+          "production": true
+        },
+        "windows": {
           "lines": 182,
           "production": true
         }
@@ -3234,15 +3234,15 @@
       "name": "update_own_source_journal_for_publication",
       "anchor": "7d85f89ce1f2",
       "sites": {
-        "windows": {
-          "lines": 205,
-          "production": true
-        },
         "linux": {
           "lines": 205,
           "production": true
         },
         "macos": {
+          "lines": 205,
+          "production": true
+        },
+        "windows": {
           "lines": 205,
           "production": true
         }
@@ -3253,15 +3253,15 @@
       "name": "source_snapshot_from_original",
       "anchor": "8d9a4c6b8eec",
       "sites": {
-        "windows": {
-          "lines": 169,
-          "production": true
-        },
         "linux": {
           "lines": 169,
           "production": true
         },
         "macos": {
+          "lines": 169,
+          "production": true
+        },
+        "windows": {
           "lines": 169,
           "production": true
         }
@@ -3272,15 +3272,15 @@
       "name": "derived_agent_id_binding_save_narrow_and_cas_return_physical_revision",
       "anchor": "554b5024416e",
       "sites": {
-        "windows": {
-          "lines": 114,
-          "production": false
-        },
         "linux": {
           "lines": 114,
           "production": false
         },
         "macos": {
+          "lines": 114,
+          "production": false
+        },
+        "windows": {
           "lines": 114,
           "production": false
         }
@@ -3291,15 +3291,15 @@
       "name": "e2432_round7_complete_collision_matrix_leaves_every_id_and_publisher_untouched",
       "anchor": "39ad74ae4b64",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": false
-        },
         "linux": {
           "lines": 104,
           "production": false
         },
         "macos": {
+          "lines": 104,
+          "production": false
+        },
+        "windows": {
           "lines": 104,
           "production": false
         }
@@ -3310,15 +3310,15 @@
       "name": "check_issue_3047_pair_ownership_case",
       "anchor": "8488e0063673",
       "sites": {
-        "windows": {
-          "lines": 124,
-          "production": false
-        },
         "linux": {
           "lines": 124,
           "production": false
         },
         "macos": {
+          "lines": 124,
+          "production": false
+        },
+        "windows": {
           "lines": 124,
           "production": false
         }
@@ -3329,15 +3329,15 @@
       "name": "issue_3047_pair_load_save_fixed_point_and_untrusted_metadata",
       "anchor": "97f3533e767c",
       "sites": {
-        "windows": {
-          "lines": 106,
-          "production": false
-        },
         "linux": {
           "lines": 106,
           "production": false
         },
         "macos": {
+          "lines": 106,
+          "production": false
+        },
+        "windows": {
           "lines": 106,
           "production": false
         }
@@ -3348,15 +3348,15 @@
       "name": "issue_3047_pair_table_and_independent_preimages",
       "anchor": "08bef056c5fe",
       "sites": {
-        "windows": {
-          "lines": 160,
-          "production": false
-        },
         "linux": {
           "lines": 160,
           "production": false
         },
         "macos": {
+          "lines": 160,
+          "production": false
+        },
+        "windows": {
           "lines": 160,
           "production": false
         }
@@ -3367,15 +3367,15 @@
       "name": "settings_lock_debug_failure_scenarios",
       "anchor": "d33d8d9543e5",
       "sites": {
-        "windows": {
-          "lines": 108,
-          "production": false
-        },
         "linux": {
           "lines": 108,
           "production": false
         },
         "macos": {
+          "lines": 108,
+          "production": false
+        },
+        "windows": {
           "lines": 108,
           "production": false
         }
@@ -3386,15 +3386,15 @@
       "name": "project_archive_preserve_case",
       "anchor": "981961668fca",
       "sites": {
-        "windows": {
-          "lines": 145,
-          "production": false
-        },
         "linux": {
           "lines": 145,
           "production": false
         },
         "macos": {
+          "lines": 145,
+          "production": false
+        },
+        "windows": {
           "lines": 145,
           "production": false
         }
@@ -3405,15 +3405,15 @@
       "name": "every_rejection_names_its_check",
       "anchor": "65e13a5367ee",
       "sites": {
-        "windows": {
-          "lines": 162,
-          "production": false
-        },
         "linux": {
           "lines": 162,
           "production": false
         },
         "macos": {
+          "lines": 162,
+          "production": false
+        },
+        "windows": {
           "lines": 162,
           "production": false
         }
@@ -3424,15 +3424,15 @@
       "name": "general_settings_outward_compatibility_matrix",
       "anchor": "e6129ff34197",
       "sites": {
-        "windows": {
-          "lines": 134,
-          "production": false
-        },
         "linux": {
           "lines": 134,
           "production": false
         },
         "macos": {
+          "lines": 134,
+          "production": false
+        },
+        "windows": {
           "lines": 134,
           "production": false
         }
@@ -3443,15 +3443,15 @@
       "name": "settings_save_error_preserves_sources_and_separates_diagnostic_from_outward",
       "anchor": "826617b3bb4f",
       "sites": {
-        "windows": {
-          "lines": 131,
-          "production": false
-        },
         "linux": {
           "lines": 131,
           "production": false
         },
         "macos": {
+          "lines": 131,
+          "production": false
+        },
+        "windows": {
           "lines": 131,
           "production": false
         }
@@ -3462,15 +3462,15 @@
       "name": "preserve_disk_gate_failures_are_typed_and_do_not_overwrite",
       "anchor": "132babae33fe",
       "sites": {
-        "windows": {
-          "lines": 102,
-          "production": false
-        },
         "linux": {
           "lines": 102,
           "production": false
         },
         "macos": {
+          "lines": 102,
+          "production": false
+        },
+        "windows": {
           "lines": 102,
           "production": false
         }
@@ -3481,15 +3481,15 @@
       "name": "discover_verified_terminal_snapshot_targets_counted",
       "anchor": "01fcd71f85a7",
       "sites": {
-        "windows": {
-          "lines": 101,
-          "production": true
-        },
         "linux": {
           "lines": 101,
           "production": true
         },
         "macos": {
+          "lines": 101,
+          "production": true
+        },
+        "windows": {
           "lines": 101,
           "production": true
         }
@@ -3500,15 +3500,15 @@
       "name": "invoke_handler",
       "anchor": "6414ea1057d7",
       "sites": {
-        "windows": {
-          "lines": 195,
-          "production": true
-        },
         "linux": {
           "lines": 195,
           "production": true
         },
         "macos": {
+          "lines": 195,
+          "production": true
+        },
+        "windows": {
           "lines": 195,
           "production": true
         }
@@ -3519,15 +3519,15 @@
       "name": "restart_delivery_session",
       "anchor": "80caced17c03",
       "sites": {
-        "windows": {
-          "lines": 102,
-          "production": true
-        },
         "linux": {
           "lines": 102,
           "production": true
         },
         "macos": {
+          "lines": 102,
+          "production": true
+        },
+        "windows": {
           "lines": 102,
           "production": true
         }
@@ -3538,15 +3538,15 @@
       "name": "issue_3260_marker_probe_shutdown_order",
       "anchor": "d39b7a891eec",
       "sites": {
-        "windows": {
-          "lines": 108,
-          "production": false
-        },
         "linux": {
           "lines": 108,
           "production": false
         },
         "macos": {
+          "lines": 108,
+          "production": false
+        },
+        "windows": {
           "lines": 108,
           "production": false
         }
@@ -3557,15 +3557,15 @@
       "name": "scan_loop",
       "anchor": "b008df4b4a46",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": true
-        },
         "linux": {
           "lines": 104,
           "production": true
         },
         "macos": {
+          "lines": 104,
+          "production": true
+        },
+        "windows": {
           "lines": 104,
           "production": true
         }
@@ -3576,15 +3576,15 @@
       "name": "e2992_p43_invalid_no_candidate_action",
       "anchor": "b2cdc1859e43",
       "sites": {
-        "windows": {
-          "lines": 131,
-          "production": false
-        },
         "linux": {
           "lines": 131,
           "production": false
         },
         "macos": {
+          "lines": 131,
+          "production": false
+        },
+        "windows": {
           "lines": 131,
           "production": false
         }
@@ -3621,15 +3621,15 @@
       "name": "deliver_internal_system_wake",
       "anchor": "bb794053ede9",
       "sites": {
-        "windows": {
-          "lines": 106,
-          "production": true
-        },
         "linux": {
           "lines": 106,
           "production": true
         },
         "macos": {
+          "lines": 106,
+          "production": true
+        },
+        "windows": {
           "lines": 106,
           "production": true
         }
@@ -3640,15 +3640,15 @@
       "name": "inject_internal_system_notice",
       "anchor": "262e86dc3c36",
       "sites": {
-        "windows": {
-          "lines": 109,
-          "production": true
-        },
         "linux": {
           "lines": 109,
           "production": true
         },
         "macos": {
+          "lines": 109,
+          "production": true
+        },
+        "windows": {
           "lines": 109,
           "production": true
         }
@@ -3659,15 +3659,15 @@
       "name": "execute_owned_peer_replacement",
       "anchor": "c58f024c4249",
       "sites": {
-        "windows": {
-          "lines": 110,
-          "production": true
-        },
         "linux": {
           "lines": 110,
           "production": true
         },
         "macos": {
+          "lines": 110,
+          "production": true
+        },
+        "windows": {
           "lines": 110,
           "production": true
         }
@@ -3678,15 +3678,15 @@
       "name": "reserve_response_request_at_write",
       "anchor": "99778a58d9d6",
       "sites": {
-        "windows": {
-          "lines": 102,
-          "production": true
-        },
         "linux": {
           "lines": 102,
           "production": true
         },
         "macos": {
+          "lines": 102,
+          "production": true
+        },
+        "windows": {
           "lines": 102,
           "production": true
         }
@@ -3697,15 +3697,15 @@
       "name": "correlated_host_pty_metadata",
       "anchor": "ea327dcc744f",
       "sites": {
-        "windows": {
-          "lines": 101,
-          "production": true
-        },
         "linux": {
           "lines": 101,
           "production": true
         },
         "macos": {
+          "lines": 101,
+          "production": true
+        },
+        "windows": {
           "lines": 101,
           "production": true
         }
@@ -3716,15 +3716,15 @@
       "name": "process_pty_input_file",
       "anchor": "34a3d771ff0c",
       "sites": {
-        "windows": {
-          "lines": 106,
-          "production": true
-        },
         "linux": {
           "lines": 106,
           "production": true
         },
         "macos": {
+          "lines": 106,
+          "production": true
+        },
+        "windows": {
           "lines": 106,
           "production": true
         }
@@ -3735,15 +3735,15 @@
       "name": "spawn_owned_pty_replacement",
       "anchor": "d5c546dcda15",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": true
-        },
         "linux": {
           "lines": 105,
           "production": true
         },
         "macos": {
+          "lines": 105,
+          "production": true
+        },
+        "windows": {
           "lines": 105,
           "production": true
         }
@@ -3754,15 +3754,15 @@
       "name": "spawn_pty_input_target",
       "anchor": "030822aad376",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": true
-        },
         "linux": {
           "lines": 104,
           "production": true
         },
         "macos": {
+          "lines": 104,
+          "production": true
+        },
+        "windows": {
           "lines": 104,
           "production": true
         }
@@ -3773,15 +3773,15 @@
       "name": "with_verified_response_pair",
       "anchor": "60ae0b68bc3b",
       "sites": {
-        "windows": {
-          "lines": 110,
-          "production": true
-        },
         "linux": {
           "lines": 110,
           "production": true
         },
         "macos": {
+          "lines": 110,
+          "production": true
+        },
+        "windows": {
           "lines": 110,
           "production": true
         }
@@ -3792,15 +3792,15 @@
       "name": "dispatch_locked_operation",
       "anchor": "349384b1e65e",
       "sites": {
-        "windows": {
-          "lines": 107,
-          "production": true
-        },
         "linux": {
           "lines": 107,
           "production": true
         },
         "macos": {
+          "lines": 107,
+          "production": true
+        },
+        "windows": {
           "lines": 107,
           "production": true
         }
@@ -3811,15 +3811,15 @@
       "name": "dispatch_pty_input_operation_core",
       "anchor": "59c76465c1dd",
       "sites": {
-        "windows": {
-          "lines": 109,
-          "production": true
-        },
         "linux": {
           "lines": 109,
           "production": true
         },
         "macos": {
+          "lines": 109,
+          "production": true
+        },
+        "windows": {
           "lines": 109,
           "production": true
         }
@@ -3830,15 +3830,15 @@
       "name": "dispatch_selection_candidates",
       "anchor": "2e9d2724c550",
       "sites": {
-        "windows": {
-          "lines": 102,
-          "production": true
-        },
         "linux": {
           "lines": 102,
           "production": true
         },
         "macos": {
+          "lines": 102,
+          "production": true
+        },
+        "windows": {
           "lines": 102,
           "production": true
         }
@@ -3849,15 +3849,15 @@
       "name": "dispatch_boundary_authority",
       "anchor": "06846d6d1f2d",
       "sites": {
-        "windows": {
-          "lines": 132,
-          "production": true
-        },
         "linux": {
           "lines": 132,
           "production": true
         },
         "macos": {
+          "lines": 132,
+          "production": true
+        },
+        "windows": {
           "lines": 132,
           "production": true
         }
@@ -3868,15 +3868,15 @@
       "name": "dispatch_boundary_write",
       "anchor": "1929f7efd134",
       "sites": {
-        "windows": {
-          "lines": 112,
-          "production": true
-        },
         "linux": {
           "lines": 112,
           "production": true
         },
         "macos": {
+          "lines": 112,
+          "production": true
+        },
+        "windows": {
           "lines": 112,
           "production": true
         }
@@ -3887,15 +3887,15 @@
       "name": "dispatch_selection_spawn",
       "anchor": "67e8bc5d2f3b",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": true
-        },
         "linux": {
           "lines": 104,
           "production": true
         },
         "macos": {
+          "lines": 104,
+          "production": true
+        },
+        "windows": {
           "lines": 104,
           "production": true
         }
@@ -3906,15 +3906,15 @@
       "name": "dispatch_selection_spawn_result",
       "anchor": "de1c8df182d2",
       "sites": {
-        "windows": {
-          "lines": 138,
-          "production": true
-        },
         "linux": {
           "lines": 138,
           "production": true
         },
         "macos": {
+          "lines": 138,
+          "production": true
+        },
+        "windows": {
           "lines": 138,
           "production": true
         }
@@ -3925,15 +3925,15 @@
       "name": "select_pty_dispatch_session",
       "anchor": "4d29dd25dea6",
       "sites": {
-        "windows": {
-          "lines": 137,
-          "production": true
-        },
         "linux": {
           "lines": 137,
           "production": true
         },
         "macos": {
+          "lines": 137,
+          "production": true
+        },
+        "windows": {
           "lines": 137,
           "production": true
         }
@@ -3944,15 +3944,15 @@
       "name": "validate_and_enqueue_host_pty_input",
       "anchor": "4121b0940c78",
       "sites": {
-        "windows": {
-          "lines": 110,
-          "production": true
-        },
         "linux": {
           "lines": 110,
           "production": true
         },
         "macos": {
+          "lines": 110,
+          "production": true
+        },
+        "windows": {
           "lines": 110,
           "production": true
         }
@@ -3963,15 +3963,15 @@
       "name": "complete_response_request",
       "anchor": "ca33d41b74e8",
       "sites": {
-        "windows": {
-          "lines": 107,
-          "production": true
-        },
         "linux": {
           "lines": 107,
           "production": true
         },
         "macos": {
+          "lines": 107,
+          "production": true
+        },
+        "windows": {
           "lines": 107,
           "production": true
         }
@@ -3982,15 +3982,15 @@
       "name": "observe_response_return",
       "anchor": "526d96af419a",
       "sites": {
-        "windows": {
-          "lines": 109,
-          "production": true
-        },
         "linux": {
           "lines": 109,
           "production": true
         },
         "macos": {
+          "lines": 109,
+          "production": true
+        },
+        "windows": {
           "lines": 109,
           "production": true
         }
@@ -4001,15 +4001,15 @@
       "name": "run",
       "anchor": "8b05671e68aa",
       "sites": {
-        "windows": {
-          "lines": 120,
-          "production": false
-        },
         "linux": {
           "lines": 120,
           "production": false
         },
         "macos": {
+          "lines": 120,
+          "production": false
+        },
+        "windows": {
           "lines": 120,
           "production": false
         }
@@ -4020,15 +4020,15 @@
       "name": "report_self_handoff_failure",
       "anchor": "5b2c377fb4ae",
       "sites": {
-        "windows": {
-          "lines": 108,
-          "production": true
-        },
         "linux": {
           "lines": 108,
           "production": true
         },
         "macos": {
+          "lines": 108,
+          "production": true
+        },
+        "windows": {
           "lines": 108,
           "production": true
         }
@@ -4039,15 +4039,15 @@
       "name": "handle_purge_wg",
       "anchor": "40cfe953061c",
       "sites": {
-        "windows": {
-          "lines": 221,
-          "production": true
-        },
         "linux": {
           "lines": 221,
           "production": true
         },
         "macos": {
+          "lines": 221,
+          "production": true
+        },
+        "windows": {
           "lines": 221,
           "production": true
         }
@@ -4058,15 +4058,15 @@
       "name": "handle_self_clear",
       "anchor": "54790ad83bfe",
       "sites": {
-        "windows": {
-          "lines": 174,
-          "production": true
-        },
         "linux": {
           "lines": 174,
           "production": true
         },
         "macos": {
+          "lines": 174,
+          "production": true
+        },
+        "windows": {
           "lines": 174,
           "production": true
         }
@@ -4077,15 +4077,15 @@
       "name": "claim_and_spawn_refuses_while_the_previous_outcome_is_undrained",
       "anchor": "d52ddf60b366",
       "sites": {
-        "windows": {
-          "lines": 360,
-          "production": false
-        },
         "linux": {
           "lines": 360,
           "production": false
         },
         "macos": {
+          "lines": 360,
+          "production": false
+        },
+        "windows": {
           "lines": 360,
           "production": false
         }
@@ -4096,15 +4096,15 @@
       "name": "rejection_case",
       "anchor": "890a94418033",
       "sites": {
-        "windows": {
-          "lines": 107,
-          "production": false
-        },
         "linux": {
           "lines": 107,
           "production": false
         },
         "macos": {
+          "lines": 107,
+          "production": false
+        },
+        "windows": {
           "lines": 107,
           "production": false
         }
@@ -4115,15 +4115,15 @@
       "name": "raise_hand_process_message_bad_tokens_are_rejected_not_false",
       "anchor": "a8f33314324e",
       "sites": {
-        "windows": {
-          "lines": 110,
-          "production": false
-        },
         "linux": {
           "lines": 110,
           "production": false
         },
         "macos": {
+          "lines": 110,
+          "production": false
+        },
+        "windows": {
           "lines": 110,
           "production": false
         }
@@ -4134,15 +4134,15 @@
       "name": "internal_repeatable_guard_blocks_live_destroy_and_spawn_boundaries",
       "anchor": "78151d630ac6",
       "sites": {
-        "windows": {
-          "lines": 128,
-          "production": false
-        },
         "linux": {
           "lines": 128,
           "production": false
         },
         "macos": {
+          "lines": 128,
+          "production": false
+        },
+        "windows": {
           "lines": 128,
           "production": false
         }
@@ -4153,15 +4153,15 @@
       "name": "arming_a_turn_clears_the_control_write_mark_on_both_privileged_planes",
       "anchor": "86298ea60779",
       "sites": {
-        "windows": {
-          "lines": 129,
-          "production": false
-        },
         "linux": {
           "lines": 129,
           "production": false
         },
         "macos": {
+          "lines": 129,
+          "production": false
+        },
+        "windows": {
           "lines": 129,
           "production": false
         }
@@ -4172,15 +4172,15 @@
       "name": "comanaged_origin_rejects_action_and_command_while_replica_is_unchanged",
       "anchor": "302f3b5c76cb",
       "sites": {
-        "windows": {
-          "lines": 142,
-          "production": false
-        },
         "linux": {
           "lines": 142,
           "production": false
         },
         "macos": {
+          "lines": 142,
+          "production": false
+        },
+        "windows": {
           "lines": 142,
           "production": false
         }
@@ -4191,15 +4191,15 @@
       "name": "owned_outcome_drain_settles_or_requeues_every_disk_state",
       "anchor": "9f7361d1e825",
       "sites": {
-        "windows": {
-          "lines": 667,
-          "production": false
-        },
         "linux": {
           "lines": 667,
           "production": false
         },
         "macos": {
+          "lines": 667,
+          "production": false
+        },
+        "windows": {
           "lines": 667,
           "production": false
         }
@@ -4232,15 +4232,15 @@
       "name": "self_restart_driver_app_backed_prompt_reaches_pty_with_enter",
       "anchor": "22e07e79db01",
       "sites": {
-        "windows": {
-          "lines": 161,
-          "production": false
-        },
         "linux": {
           "lines": 161,
           "production": false
         },
         "macos": {
+          "lines": 161,
+          "production": false
+        },
+        "windows": {
           "lines": 161,
           "production": false
         }
@@ -4251,15 +4251,15 @@
       "name": "delivered_case",
       "anchor": "fd82d86cfb7d",
       "sites": {
-        "windows": {
-          "lines": 128,
-          "production": false
-        },
         "linux": {
           "lines": 128,
           "production": false
         },
         "macos": {
+          "lines": 128,
+          "production": false
+        },
+        "windows": {
           "lines": 128,
           "production": false
         }
@@ -4270,15 +4270,15 @@
       "name": "noncanonical_ids_retry_ten_times_before_rejection_without_action_effects",
       "anchor": "76deca313a07",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": false
-        },
         "linux": {
           "lines": 105,
           "production": false
         },
         "macos": {
+          "lines": 105,
+          "production": false
+        },
+        "windows": {
           "lines": 105,
           "production": false
         }
@@ -4289,15 +4289,15 @@
       "name": "retained_exited_respawn_host",
       "anchor": "8b713f8c5b59",
       "sites": {
-        "windows": {
-          "lines": 140,
-          "production": false
-        },
         "linux": {
           "lines": 140,
           "production": false
         },
         "macos": {
+          "lines": 140,
+          "production": false
+        },
+        "windows": {
           "lines": 140,
           "production": false
         }
@@ -4308,15 +4308,15 @@
       "name": "panicking_worker_reports_through_the_guard_and_frees_the_ledger",
       "anchor": "e2c24089ea24",
       "sites": {
-        "windows": {
-          "lines": 297,
-          "production": false
-        },
         "linux": {
           "lines": 297,
           "production": false
         },
         "macos": {
+          "lines": 297,
+          "production": false
+        },
+        "windows": {
           "lines": 297,
           "production": false
         }
@@ -4327,15 +4327,15 @@
       "name": "self_switch_driver_restarts_uses_new_id_and_cleans_pending",
       "anchor": "3cefdb845650",
       "sites": {
-        "windows": {
-          "lines": 108,
-          "production": false
-        },
         "linux": {
           "lines": 108,
           "production": false
         },
         "macos": {
+          "lines": 108,
+          "production": false
+        },
+        "windows": {
           "lines": 108,
           "production": false
         }
@@ -4346,15 +4346,15 @@
       "name": "issue_3189_locked_persist_retains_and_reports",
       "anchor": "1bba7be6eb97",
       "sites": {
-        "windows": {
-          "lines": 108,
-          "production": false
-        },
         "linux": {
           "lines": 108,
           "production": false
         },
         "macos": {
+          "lines": 108,
+          "production": false
+        },
+        "windows": {
           "lines": 108,
           "production": false
         }
@@ -4365,15 +4365,15 @@
       "name": "issue_1937_self_switch_turn",
       "anchor": "e164fe5e9286",
       "sites": {
-        "windows": {
-          "lines": 237,
-          "production": false
-        },
         "linux": {
           "lines": 237,
           "production": false
         },
         "macos": {
+          "lines": 237,
+          "production": false
+        },
+        "windows": {
           "lines": 237,
           "production": false
         }
@@ -4384,15 +4384,15 @@
       "name": "self_switch_established_source_to_pi_target_remains_supported",
       "anchor": "fc5491e4d19e",
       "sites": {
-        "windows": {
-          "lines": 192,
-          "production": false
-        },
         "linux": {
           "lines": 192,
           "production": false
         },
         "macos": {
+          "lines": 192,
+          "production": false
+        },
+        "windows": {
           "lines": 192,
           "production": false
         }
@@ -4403,15 +4403,15 @@
       "name": "self_switch_pi_source_omitted_target_hard_resets_to_pi",
       "anchor": "d884c57480af",
       "sites": {
-        "windows": {
-          "lines": 190,
-          "production": false
-        },
         "linux": {
           "lines": 190,
           "production": false
         },
         "macos": {
+          "lines": 190,
+          "production": false
+        },
+        "windows": {
           "lines": 190,
           "production": false
         }
@@ -4422,15 +4422,15 @@
       "name": "self_switch_pi_source_to_established_target_completes",
       "anchor": "8a445f8b21b5",
       "sites": {
-        "windows": {
-          "lines": 182,
-          "production": false
-        },
         "linux": {
           "lines": 182,
           "production": false
         },
         "macos": {
+          "lines": 182,
+          "production": false
+        },
+        "windows": {
           "lines": 182,
           "production": false
         }
@@ -4441,15 +4441,15 @@
       "name": "shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_target",
       "anchor": "d5f1f3a98674",
       "sites": {
-        "windows": {
-          "lines": 393,
-          "production": false
-        },
         "linux": {
           "lines": 393,
           "production": false
         },
         "macos": {
+          "lines": 393,
+          "production": false
+        },
+        "windows": {
           "lines": 393,
           "production": false
         }
@@ -4460,15 +4460,15 @@
       "name": "final_pty_boundary_rejects_identity_mutation_and_stamps_busy",
       "anchor": "b16073d522bc",
       "sites": {
-        "windows": {
-          "lines": 236,
-          "production": false
-        },
         "linux": {
           "lines": 236,
           "production": false
         },
         "macos": {
+          "lines": 236,
+          "production": false
+        },
+        "windows": {
           "lines": 236,
           "production": false
         }
@@ -4479,15 +4479,15 @@
       "name": "pty_input_boundary_yields_exactly_one_busy_record",
       "anchor": "a0c468a8d862",
       "sites": {
-        "windows": {
-          "lines": 101,
-          "production": false
-        },
         "linux": {
           "lines": 101,
           "production": false
         },
         "macos": {
+          "lines": 101,
+          "production": false
+        },
+        "windows": {
           "lines": 101,
           "production": false
         }
@@ -4498,15 +4498,15 @@
       "name": "shared_pty_engine_worker_drains_promptly_on_shutdown_without_writing",
       "anchor": "e13619ac17a5",
       "sites": {
-        "windows": {
-          "lines": 379,
-          "production": false
-        },
         "linux": {
           "lines": 379,
           "production": false
         },
         "macos": {
+          "lines": 379,
+          "production": false
+        },
+        "windows": {
           "lines": 379,
           "production": false
         }
@@ -4517,15 +4517,15 @@
       "name": "retained_exited_respawn_failure_cell",
       "anchor": "7e0ac61b54dc",
       "sites": {
-        "windows": {
-          "lines": 204,
-          "production": false
-        },
         "linux": {
           "lines": 204,
           "production": false
         },
         "macos": {
+          "lines": 204,
+          "production": false
+        },
+        "windows": {
           "lines": 204,
           "production": false
         }
@@ -4536,15 +4536,15 @@
       "name": "retained_exited_respawn_pty_held_cell",
       "anchor": "796959d034be",
       "sites": {
-        "windows": {
-          "lines": 144,
-          "production": false
-        },
         "linux": {
           "lines": 144,
           "production": false
         },
         "macos": {
+          "lines": 144,
+          "production": false
+        },
+        "windows": {
           "lines": 144,
           "production": false
         }
@@ -4555,15 +4555,15 @@
       "name": "retained_exited_respawn_root_full_cell",
       "anchor": "a623e8569de5",
       "sites": {
-        "windows": {
-          "lines": 153,
-          "production": false
-        },
         "linux": {
           "lines": 153,
           "production": false
         },
         "macos": {
+          "lines": 153,
+          "production": false
+        },
+        "windows": {
           "lines": 153,
           "production": false
         }
@@ -4574,15 +4574,15 @@
       "name": "retained_exited_respawn_caller_cell",
       "anchor": "e62cd0cb779e",
       "sites": {
-        "windows": {
-          "lines": 159,
-          "production": false
-        },
         "linux": {
           "lines": 159,
           "production": false
         },
         "macos": {
+          "lines": 159,
+          "production": false
+        },
+        "windows": {
           "lines": 159,
           "production": false
         }
@@ -4593,15 +4593,15 @@
       "name": "retained_exited_respawn_root_refusal_cell",
       "anchor": "1937550bd0bd",
       "sites": {
-        "windows": {
-          "lines": 117,
-          "production": false
-        },
         "linux": {
           "lines": 117,
           "production": false
         },
         "macos": {
+          "lines": 117,
+          "production": false
+        },
+        "windows": {
           "lines": 117,
           "production": false
         }
@@ -4612,15 +4612,15 @@
       "name": "retained_source_cleanup_race",
       "anchor": "b45699e4112d",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": false
-        },
         "linux": {
           "lines": 105,
           "production": false
         },
         "macos": {
+          "lines": 105,
+          "production": false
+        },
+        "windows": {
           "lines": 105,
           "production": false
         }
@@ -4631,15 +4631,15 @@
       "name": "assert_retained_pty_preboundary_rejections",
       "anchor": "52a3ff9fae5d",
       "sites": {
-        "windows": {
-          "lines": 368,
-          "production": false
-        },
         "linux": {
           "lines": 368,
           "production": false
         },
         "macos": {
+          "lines": 368,
+          "production": false
+        },
+        "windows": {
           "lines": 368,
           "production": false
         }
@@ -4650,15 +4650,15 @@
       "name": "retire_retained_fixture_member",
       "anchor": "bbf39efa22f3",
       "sites": {
-        "windows": {
-          "lines": 188,
-          "production": false
-        },
         "linux": {
           "lines": 188,
           "production": false
         },
         "macos": {
+          "lines": 188,
+          "production": false
+        },
+        "windows": {
           "lines": 188,
           "production": false
         }
@@ -4669,15 +4669,15 @@
       "name": "retained_exited_respawn_native_waiter_cell",
       "anchor": "d70c168bee38",
       "sites": {
-        "windows": {
-          "lines": 150,
-          "production": false
-        },
         "linux": {
           "lines": 150,
           "production": false
         },
         "macos": {
+          "lines": 150,
+          "production": false
+        },
+        "windows": {
           "lines": 150,
           "production": false
         }
@@ -4688,15 +4688,15 @@
       "name": "retained_source_operation",
       "anchor": "15947d26324b",
       "sites": {
-        "windows": {
-          "lines": 517,
-          "production": false
-        },
         "linux": {
           "lines": 517,
           "production": false
         },
         "macos": {
+          "lines": 517,
+          "production": false
+        },
+        "windows": {
           "lines": 517,
           "production": false
         }
@@ -4707,15 +4707,15 @@
       "name": "retained_exited_respawn_lifetime_cell",
       "anchor": "01bdb0b97895",
       "sites": {
-        "windows": {
-          "lines": 110,
-          "production": false
-        },
         "linux": {
           "lines": 110,
           "production": false
         },
         "macos": {
+          "lines": 110,
+          "production": false
+        },
+        "windows": {
           "lines": 110,
           "production": false
         }
@@ -4726,15 +4726,15 @@
       "name": "retained_exited_respawn_queued_cell",
       "anchor": "c2d712901e7a",
       "sites": {
-        "windows": {
-          "lines": 209,
-          "production": false
-        },
         "linux": {
           "lines": 209,
           "production": false
         },
         "macos": {
+          "lines": 209,
+          "production": false
+        },
+        "windows": {
           "lines": 209,
           "production": false
         }
@@ -4745,15 +4745,15 @@
       "name": "p02_budget_eight_cores_ninth_queued_and_per_id_exclusion",
       "anchor": "0f794984e1c0",
       "sites": {
-        "windows": {
-          "lines": 101,
-          "production": false
-        },
         "linux": {
           "lines": 101,
           "production": false
         },
         "macos": {
+          "lines": 101,
+          "production": false
+        },
+        "windows": {
           "lines": 101,
           "production": false
         }
@@ -4764,15 +4764,15 @@
       "name": "h2_purge_root_protection",
       "anchor": "c36da4b86d03",
       "sites": {
-        "windows": {
-          "lines": 150,
-          "production": false
-        },
         "linux": {
           "lines": 150,
           "production": false
         },
         "macos": {
+          "lines": 150,
+          "production": false
+        },
+        "windows": {
           "lines": 150,
           "production": false
         }
@@ -4783,15 +4783,15 @@
       "name": "assert_host_terminal_artifact_repair",
       "anchor": "a7ad365224c5",
       "sites": {
-        "windows": {
-          "lines": 179,
-          "production": false
-        },
         "linux": {
           "lines": 179,
           "production": false
         },
         "macos": {
+          "lines": 179,
+          "production": false
+        },
+        "windows": {
           "lines": 179,
           "production": false
         }
@@ -4802,15 +4802,15 @@
       "name": "final_pty_boundary_linearizes_wrapper_trust_against_concurrent_settings_mutation",
       "anchor": "1ea46755fde0",
       "sites": {
-        "windows": {
-          "lines": 140,
-          "production": false
-        },
         "linux": {
           "lines": 140,
           "production": false
         },
         "macos": {
+          "lines": 140,
+          "production": false
+        },
+        "windows": {
           "lines": 140,
           "production": false
         }
@@ -4821,15 +4821,15 @@
       "name": "the_pty_input_boundary_arms_the_session",
       "anchor": "2086a0ab1fa1",
       "sites": {
-        "windows": {
-          "lines": 103,
-          "production": false
-        },
         "linux": {
           "lines": 103,
           "production": false
         },
         "macos": {
+          "lines": 103,
+          "production": false
+        },
+        "windows": {
           "lines": 103,
           "production": false
         }
@@ -4840,15 +4840,15 @@
       "name": "both_injection_sites_defer_silently_and_report_real_pty_failures",
       "anchor": "7c7c11d8636c",
       "sites": {
-        "windows": {
-          "lines": 144,
-          "production": false
-        },
         "linux": {
           "lines": 144,
           "production": false
         },
         "macos": {
+          "lines": 144,
+          "production": false
+        },
+        "windows": {
           "lines": 144,
           "production": false
         }
@@ -4859,15 +4859,15 @@
       "name": "deliver_wake_terminal_commands_preflight_before_lifecycle",
       "anchor": "9846cb1f9e31",
       "sites": {
-        "windows": {
-          "lines": 118,
-          "production": false
-        },
         "linux": {
           "lines": 118,
           "production": false
         },
         "macos": {
+          "lines": 118,
+          "production": false
+        },
+        "windows": {
           "lines": 118,
           "production": false
         }
@@ -4878,15 +4878,15 @@
       "name": "reclaim_returns_unowned_claims_and_never_resurrects_settled_or_live_ones",
       "anchor": "ba7410c38af0",
       "sites": {
-        "windows": {
-          "lines": 162,
-          "production": false
-        },
         "linux": {
           "lines": 162,
           "production": false
         },
         "macos": {
+          "lines": 162,
+          "production": false
+        },
+        "windows": {
           "lines": 162,
           "production": false
         }
@@ -4897,15 +4897,15 @@
       "name": "admit_owned_peer_replacement",
       "anchor": "b4d885e52f66",
       "sites": {
-        "windows": {
-          "lines": 114,
-          "production": true
-        },
         "linux": {
           "lines": 114,
           "production": true
         },
         "macos": {
+          "lines": 114,
+          "production": true
+        },
+        "windows": {
           "lines": 114,
           "production": true
         }
@@ -4916,15 +4916,15 @@
       "name": "deliver_owned_peer_replacement",
       "anchor": "668c678dd4b3",
       "sites": {
-        "windows": {
-          "lines": 102,
-          "production": true
-        },
         "linux": {
           "lines": 102,
           "production": true
         },
         "macos": {
+          "lines": 102,
+          "production": true
+        },
+        "windows": {
           "lines": 102,
           "production": true
         }
@@ -4935,15 +4935,15 @@
       "name": "inject_into_pty_with_response",
       "anchor": "f21521930b3e",
       "sites": {
-        "windows": {
-          "lines": 284,
-          "production": true
-        },
         "linux": {
           "lines": 284,
           "production": true
         },
         "macos": {
+          "lines": 284,
+          "production": true
+        },
+        "windows": {
           "lines": 284,
           "production": true
         }
@@ -4954,15 +4954,15 @@
       "name": "poll",
       "anchor": "6bd711afcbe6",
       "sites": {
-        "windows": {
-          "lines": 167,
-          "production": true
-        },
         "linux": {
           "lines": 167,
           "production": true
         },
         "macos": {
+          "lines": 167,
+          "production": true
+        },
+        "windows": {
           "lines": 167,
           "production": true
         }
@@ -4973,15 +4973,15 @@
       "name": "process_claimed",
       "anchor": "12418962f12d",
       "sites": {
-        "windows": {
-          "lines": 106,
-          "production": true
-        },
         "linux": {
           "lines": 106,
           "production": true
         },
         "macos": {
+          "lines": 106,
+          "production": true
+        },
+        "windows": {
           "lines": 106,
           "production": true
         }
@@ -4992,15 +4992,15 @@
       "name": "publish_response_bytes",
       "anchor": "14973c66264a",
       "sites": {
-        "windows": {
-          "lines": 103,
-          "production": true
-        },
         "linux": {
           "lines": 103,
           "production": true
         },
         "macos": {
+          "lines": 103,
+          "production": true
+        },
+        "windows": {
           "lines": 103,
           "production": true
         }
@@ -5011,15 +5011,15 @@
       "name": "scan_root",
       "anchor": "ca2afa63ee2e",
       "sites": {
-        "windows": {
-          "lines": 111,
-          "production": true
-        },
         "linux": {
           "lines": 111,
           "production": true
         },
         "macos": {
+          "lines": 111,
+          "production": true
+        },
+        "windows": {
           "lines": 111,
           "production": true
         }
@@ -5030,15 +5030,15 @@
       "name": "settle",
       "anchor": "059ee76b179f",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": true
-        },
         "linux": {
           "lines": 104,
           "production": true
         },
         "macos": {
+          "lines": 104,
+          "production": true
+        },
+        "windows": {
           "lines": 104,
           "production": true
         }
@@ -5049,15 +5049,15 @@
       "name": "ensure_workers",
       "anchor": "4ff7346bd43d",
       "sites": {
-        "windows": {
-          "lines": 107,
-          "production": true
-        },
         "linux": {
           "lines": 107,
           "production": true
         },
         "macos": {
+          "lines": 107,
+          "production": true
+        },
+        "windows": {
           "lines": 107,
           "production": true
         }
@@ -5068,15 +5068,15 @@
       "name": "seal_and_drain_until",
       "anchor": "b71beded1bed",
       "sites": {
-        "windows": {
-          "lines": 115,
-          "production": true
-        },
         "linux": {
           "lines": 115,
           "production": true
         },
         "macos": {
+          "lines": 115,
+          "production": true
+        },
+        "windows": {
           "lines": 115,
           "production": true
         }
@@ -5087,15 +5087,15 @@
       "name": "spawn_runtime_backed",
       "anchor": "a78d8cd3d9fb",
       "sites": {
-        "windows": {
-          "lines": 110,
-          "production": true
-        },
         "linux": {
           "lines": 110,
           "production": true
         },
         "macos": {
+          "lines": 110,
+          "production": true
+        },
+        "windows": {
           "lines": 110,
           "production": true
         }
@@ -5106,15 +5106,15 @@
       "name": "start_runtime_and_attach",
       "anchor": "574dd0128095",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": true
-        },
         "linux": {
           "lines": 105,
           "production": true
         },
         "macos": {
+          "lines": 105,
+          "production": true
+        },
+        "windows": {
           "lines": 105,
           "production": true
         }
@@ -5125,15 +5125,15 @@
       "name": "docker_command_owner_stays_visible_during_real_global_sweep_retry",
       "anchor": "85a92e34d22b",
       "sites": {
-        "windows": {
-          "lines": 144,
-          "production": false
-        },
         "linux": {
           "lines": 144,
           "production": false
         },
         "macos": {
+          "lines": 144,
+          "production": false
+        },
+        "windows": {
           "lines": 144,
           "production": false
         }
@@ -5144,15 +5144,15 @@
       "name": "high_cardinality_retained_scheduling_obeys_the_advertised_deadline",
       "anchor": "8e72d314de49",
       "sites": {
-        "windows": {
-          "lines": 119,
-          "production": false
-        },
         "linux": {
           "lines": 119,
           "production": false
         },
         "macos": {
+          "lines": 119,
+          "production": false
+        },
+        "windows": {
           "lines": 119,
           "production": false
         }
@@ -5163,15 +5163,15 @@
       "name": "build_run_command",
       "anchor": "0fab40203ac7",
       "sites": {
-        "windows": {
-          "lines": 102,
-          "production": true
-        },
         "linux": {
           "lines": 102,
           "production": true
         },
         "macos": {
+          "lines": 102,
+          "production": true
+        },
+        "windows": {
           "lines": 102,
           "production": true
         }
@@ -5182,15 +5182,15 @@
       "name": "clear_watch_concurrency",
       "anchor": "5373a072cd70",
       "sites": {
-        "windows": {
-          "lines": 133,
-          "production": false
-        },
         "linux": {
           "lines": 133,
           "production": false
         },
         "macos": {
+          "lines": 133,
+          "production": false
+        },
+        "windows": {
           "lines": 133,
           "production": false
         }
@@ -5201,15 +5201,15 @@
       "name": "direct_shell_capability_matrix",
       "anchor": "3f7dd75374cc",
       "sites": {
-        "windows": {
-          "lines": 148,
-          "production": false
-        },
         "linux": {
           "lines": 148,
           "production": false
         },
         "macos": {
+          "lines": 148,
+          "production": false
+        },
+        "windows": {
           "lines": 148,
           "production": false
         }
@@ -5220,15 +5220,15 @@
       "name": "classify_chunk_matrix_pins_871_pending_and_submitted",
       "anchor": "b92443af4b6c",
       "sites": {
-        "windows": {
-          "lines": 138,
-          "production": false
-        },
         "linux": {
           "lines": 138,
           "production": false
         },
         "macos": {
+          "lines": 138,
+          "production": false
+        },
+        "windows": {
           "lines": 138,
           "production": false
         }
@@ -5239,15 +5239,15 @@
       "name": "validate_powershell_arguments",
       "anchor": "884db79aa3fd",
       "sites": {
-        "windows": {
-          "lines": 106,
-          "production": true
-        },
         "linux": {
           "lines": 106,
           "production": true
         },
         "macos": {
+          "lines": 106,
+          "production": true
+        },
+        "windows": {
           "lines": 106,
           "production": true
         }
@@ -5291,15 +5291,15 @@
       "name": "ordinary_ack_dormant_settlement",
       "anchor": "8af003106b35",
       "sites": {
-        "windows": {
-          "lines": 137,
-          "production": false
-        },
         "linux": {
           "lines": 137,
           "production": false
         },
         "macos": {
+          "lines": 137,
+          "production": false
+        },
+        "windows": {
           "lines": 137,
           "production": false
         }
@@ -5310,15 +5310,15 @@
       "name": "ordinary_ack_reopen_and_fresh_return",
       "anchor": "7d35ec8f38a8",
       "sites": {
-        "windows": {
-          "lines": 110,
-          "production": false
-        },
         "linux": {
           "lines": 110,
           "production": false
         },
         "macos": {
+          "lines": 110,
+          "production": false
+        },
+        "windows": {
           "lines": 110,
           "production": false
         }
@@ -5329,15 +5329,15 @@
       "name": "response_close_waiting_writer_is_counted_and_cancellation_releases_only_its_admission",
       "anchor": "95d54f3d7352",
       "sites": {
-        "windows": {
-          "lines": 496,
-          "production": false
-        },
         "linux": {
           "lines": 496,
           "production": false
         },
         "macos": {
+          "lines": 496,
+          "production": false
+        },
+        "windows": {
           "lines": 496,
           "production": false
         }
@@ -5348,15 +5348,15 @@
       "name": "scan_tick_with",
       "anchor": "64ee2ad90f94",
       "sites": {
-        "windows": {
-          "lines": 102,
-          "production": true
-        },
         "linux": {
           "lines": 102,
           "production": true
         },
         "macos": {
+          "lines": 102,
+          "production": true
+        },
+        "windows": {
           "lines": 102,
           "production": true
         }
@@ -5367,15 +5367,15 @@
       "name": "scan_transitions_preserve_frames_publication_and_disabled_cleanup",
       "anchor": "c59b1991fb6d",
       "sites": {
-        "windows": {
-          "lines": 153,
-          "production": false
-        },
         "linux": {
           "lines": 153,
           "production": false
         },
         "macos": {
+          "lines": 153,
+          "production": false
+        },
+        "windows": {
           "lines": 153,
           "production": false
         }
@@ -5386,15 +5386,15 @@
       "name": "run_round",
       "anchor": "1592dfac14cb",
       "sites": {
-        "windows": {
-          "lines": 102,
-          "production": true
-        },
         "linux": {
           "lines": 102,
           "production": true
         },
         "macos": {
+          "lines": 102,
+          "production": true
+        },
+        "windows": {
           "lines": 102,
           "production": true
         }
@@ -5405,15 +5405,15 @@
       "name": "i2768_all_runs_finish_once",
       "anchor": "9938d5219c43",
       "sites": {
-        "windows": {
-          "lines": 117,
-          "production": false
-        },
         "linux": {
           "lines": 117,
           "production": false
         },
         "macos": {
+          "lines": 117,
+          "production": false
+        },
+        "windows": {
           "lines": 117,
           "production": false
         }
@@ -5424,15 +5424,15 @@
       "name": "i2768_failures_preserve_known_runs",
       "anchor": "4cbc81d31d6b",
       "sites": {
-        "windows": {
-          "lines": 208,
-          "production": false
-        },
         "linux": {
           "lines": 208,
           "production": false
         },
         "macos": {
+          "lines": 208,
+          "production": false
+        },
+        "windows": {
           "lines": 208,
           "production": false
         }
@@ -5443,15 +5443,15 @@
       "name": "i2768_incomplete_evidence_never_finishes",
       "anchor": "dec21d46dfb2",
       "sites": {
-        "windows": {
-          "lines": 149,
-          "production": false
-        },
         "linux": {
           "lines": 149,
           "production": false
         },
         "macos": {
+          "lines": 149,
+          "production": false
+        },
+        "windows": {
           "lines": 149,
           "production": false
         }
@@ -5462,15 +5462,15 @@
       "name": "i2768_budget_accounts_for_corroboration",
       "anchor": "d91062a29979",
       "sites": {
-        "windows": {
-          "lines": 186,
-          "production": false
-        },
         "linux": {
           "lines": 186,
           "production": false
         },
         "macos": {
+          "lines": 186,
+          "production": false
+        },
+        "windows": {
           "lines": 186,
           "production": false
         }
@@ -5481,15 +5481,15 @@
       "name": "i2768_corroboration_limits_arm_the_global_gate",
       "anchor": "62fad36cd719",
       "sites": {
-        "windows": {
-          "lines": 101,
-          "production": false
-        },
         "linux": {
           "lines": 101,
           "production": false
         },
         "macos": {
+          "lines": 101,
+          "production": false
+        },
+        "windows": {
           "lines": 101,
           "production": false
         }
@@ -5500,15 +5500,15 @@
       "name": "i2768_lifecycle_isolation",
       "anchor": "298bb3eb52ee",
       "sites": {
-        "windows": {
-          "lines": 146,
-          "production": false
-        },
         "linux": {
           "lines": 146,
           "production": false
         },
         "macos": {
+          "lines": 146,
+          "production": false
+        },
+        "windows": {
           "lines": 146,
           "production": false
         }
@@ -5519,15 +5519,15 @@
       "name": "p2_apply_ci_clears_runs_on_suppressed_and_err_and_sets_failure_only_on_plain_err",
       "anchor": "9a8ad77e7a4e",
       "sites": {
-        "windows": {
-          "lines": 166,
-          "production": false
-        },
         "linux": {
           "lines": 166,
           "production": false
         },
         "macos": {
+          "lines": 166,
+          "production": false
+        },
+        "windows": {
           "lines": 166,
           "production": false
         }
@@ -5538,15 +5538,15 @@
       "name": "p3_producer_publishes_run_ids_prs_and_reason_end_to_end",
       "anchor": "21b4000390b4",
       "sites": {
-        "windows": {
-          "lines": 139,
-          "production": false
-        },
         "linux": {
           "lines": 139,
           "production": false
         },
         "macos": {
+          "lines": 139,
+          "production": false
+        },
+        "windows": {
           "lines": 139,
           "production": false
         }
@@ -5557,15 +5557,15 @@
       "name": "diagnostic_select_observation",
       "anchor": "ae3bf103d67b",
       "sites": {
-        "windows": {
-          "lines": 111,
-          "production": true
-        },
         "linux": {
           "lines": 111,
           "production": true
         },
         "macos": {
+          "lines": 111,
+          "production": true
+        },
+        "windows": {
           "lines": 111,
           "production": true
         }
@@ -5576,15 +5576,15 @@
       "name": "finish_response_close",
       "anchor": "a4745e9409b9",
       "sites": {
-        "windows": {
-          "lines": 111,
-          "production": true
-        },
         "linux": {
           "lines": 111,
           "production": true
         },
         "macos": {
+          "lines": 111,
+          "production": true
+        },
+        "windows": {
           "lines": 111,
           "production": true
         }
@@ -5595,15 +5595,15 @@
       "name": "prepare_inner",
       "anchor": "0267c047972b",
       "sites": {
-        "windows": {
-          "lines": 109,
-          "production": true
-        },
         "linux": {
           "lines": 109,
           "production": true
         },
         "macos": {
+          "lines": 109,
+          "production": true
+        },
+        "windows": {
           "lines": 109,
           "production": true
         }
@@ -5614,15 +5614,15 @@
       "name": "api_async_cancellation_reclaims_authority_without_disclosure",
       "anchor": "60c06be52a46",
       "sites": {
-        "windows": {
-          "lines": 309,
-          "production": false
-        },
         "linux": {
           "lines": 309,
           "production": false
         },
         "macos": {
+          "lines": 309,
+          "production": false
+        },
+        "windows": {
           "lines": 309,
           "production": false
         }
@@ -5633,15 +5633,15 @@
       "name": "common_blocking_late_completion_retains_authority_without_disclosure",
       "anchor": "3bd23ebd0124",
       "sites": {
-        "windows": {
-          "lines": 389,
-          "production": false
-        },
         "linux": {
           "lines": 389,
           "production": false
         },
         "macos": {
+          "lines": 389,
+          "production": false
+        },
+        "windows": {
           "lines": 389,
           "production": false
         }
@@ -5652,15 +5652,15 @@
       "name": "real_host_and_api_daemon_paths_enforce_no_oracle_and_final_handoff",
       "anchor": "792d3b5de88c",
       "sites": {
-        "windows": {
-          "lines": 219,
-          "production": false
-        },
         "linux": {
           "lines": 219,
           "production": false
         },
         "macos": {
+          "lines": 219,
+          "production": false
+        },
+        "windows": {
           "lines": 219,
           "production": false
         }
@@ -5671,15 +5671,15 @@
       "name": "new",
       "anchor": "8ecc2c061641",
       "sites": {
-        "windows": {
-          "lines": 250,
-          "production": false
-        },
         "linux": {
           "lines": 250,
           "production": false
         },
         "macos": {
+          "lines": 250,
+          "production": false
+        },
+        "windows": {
           "lines": 250,
           "production": false
         }
@@ -5690,15 +5690,15 @@
       "name": "host_timeout_cancellation_claims_only_the_unaccepted_request",
       "anchor": "62602fd08a08",
       "sites": {
-        "windows": {
-          "lines": 429,
-          "production": false
-        },
         "linux": {
           "lines": 429,
           "production": false
         },
         "macos": {
+          "lines": 429,
+          "production": false
+        },
+        "windows": {
           "lines": 429,
           "production": false
         }
@@ -5709,15 +5709,15 @@
       "name": "synchronous_host_finalizer_retains_authority_through_late_completion",
       "anchor": "e70812197f56",
       "sites": {
-        "windows": {
-          "lines": 353,
-          "production": false
-        },
         "linux": {
           "lines": 353,
           "production": false
         },
         "macos": {
+          "lines": 353,
+          "production": false
+        },
+        "windows": {
           "lines": 353,
           "production": false
         }
@@ -5728,15 +5728,15 @@
       "name": "real_host_and_api_daemon_paths_enforce_secondary_leakage_confinement",
       "anchor": "16f41147bd41",
       "sites": {
-        "windows": {
-          "lines": 427,
-          "production": false
-        },
         "linux": {
           "lines": 427,
           "production": false
         },
         "macos": {
+          "lines": 427,
+          "production": false
+        },
+        "windows": {
           "lines": 427,
           "production": false
         }
@@ -5747,15 +5747,15 @@
       "name": "snapshot_production_panic_boundaries_are_payload_free",
       "anchor": "e15eb2674432",
       "sites": {
-        "windows": {
-          "lines": 214,
-          "production": false
-        },
         "linux": {
           "lines": 214,
           "production": false
         },
         "macos": {
+          "lines": 214,
+          "production": false
+        },
+        "windows": {
           "lines": 214,
           "production": false
         }
@@ -5766,15 +5766,15 @@
       "name": "room_target_capture_and_cross_room_denial_use_the_discovered_fqn",
       "anchor": "07015c96f789",
       "sites": {
-        "windows": {
-          "lines": 114,
-          "production": false
-        },
         "linux": {
           "lines": 114,
           "production": false
         },
         "macos": {
+          "lines": 114,
+          "production": false
+        },
+        "windows": {
           "lines": 114,
           "production": false
         }
@@ -5785,15 +5785,15 @@
       "name": "run_composed_scanner_shutdown_phase",
       "anchor": "54c3e1498939",
       "sites": {
-        "windows": {
-          "lines": 290,
-          "production": false
-        },
         "linux": {
           "lines": 290,
           "production": false
         },
         "macos": {
+          "lines": 290,
+          "production": false
+        },
+        "windows": {
           "lines": 290,
           "production": false
         }
@@ -5914,15 +5914,15 @@
       "name": "new",
       "anchor": "e467596be2f1",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": false
-        },
         "linux": {
           "lines": 104,
           "production": false
         },
         "macos": {
+          "lines": 104,
+          "production": false
+        },
+        "windows": {
           "lines": 104,
           "production": false
         }
@@ -5933,15 +5933,15 @@
       "name": "run_resource_child",
       "anchor": "e82d3852dd26",
       "sites": {
-        "windows": {
-          "lines": 254,
-          "production": false
-        },
         "linux": {
           "lines": 254,
           "production": false
         },
         "macos": {
+          "lines": 254,
+          "production": false
+        },
+        "windows": {
           "lines": 254,
           "production": false
         }
@@ -5952,15 +5952,15 @@
       "name": "spawn_owner_cross_component_stop_preserves_record_identity",
       "anchor": "5d2027e16441",
       "sites": {
-        "windows": {
-          "lines": 110,
-          "production": false
-        },
         "linux": {
           "lines": 110,
           "production": false
         },
         "macos": {
+          "lines": 110,
+          "production": false
+        },
+        "windows": {
           "lines": 110,
           "production": false
         }
@@ -5971,15 +5971,15 @@
       "name": "start_native_restore_startup",
       "anchor": "1c78b942152f",
       "sites": {
-        "windows": {
-          "lines": 619,
-          "production": true
-        },
         "linux": {
           "lines": 619,
           "production": true
         },
         "macos": {
+          "lines": 619,
+          "production": true
+        },
+        "windows": {
           "lines": 619,
           "production": true
         }
@@ -5990,15 +5990,15 @@
       "name": "build_placement_physical_frame_unchanged",
       "anchor": "e0c8372a1549",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": false
-        },
         "linux": {
           "lines": 104,
           "production": false
         },
         "macos": {
+          "lines": 104,
+          "production": false
+        },
+        "windows": {
           "lines": 104,
           "production": false
         }
@@ -6020,15 +6020,15 @@
       "name": "selected_idle_team_closes_as_one_batch_and_clears_selection_once",
       "anchor": "1952bdb0c6fe",
       "sites": {
-        "windows": {
-          "lines": 126,
-          "production": false
-        },
         "linux": {
           "lines": 126,
           "production": false
         },
         "macos": {
+          "lines": 126,
+          "production": false
+        },
+        "windows": {
           "lines": 126,
           "production": false
         }
@@ -6039,15 +6039,15 @@
       "name": "run_context_alert_actor",
       "anchor": "3e40c43d5adf",
       "sites": {
-        "windows": {
-          "lines": 109,
-          "production": true
-        },
         "linux": {
           "lines": 109,
           "production": true
         },
         "macos": {
+          "lines": 109,
+          "production": true
+        },
+        "windows": {
           "lines": 109,
           "production": true
         }
@@ -6058,15 +6058,15 @@
       "name": "resolve_member_policy_blocking",
       "anchor": "625426740435",
       "sites": {
-        "windows": {
-          "lines": 111,
-          "production": true
-        },
         "linux": {
           "lines": 111,
           "production": true
         },
         "macos": {
+          "lines": 111,
+          "production": true
+        },
+        "windows": {
           "lines": 111,
           "production": true
         }
@@ -6077,15 +6077,15 @@
       "name": "production_attempt_guard_rechecks_cancellation_purge_registration_policy_and_route",
       "anchor": "0f0024656f44",
       "sites": {
-        "windows": {
-          "lines": 117,
-          "production": false
-        },
         "linux": {
           "lines": 117,
           "production": false
         },
         "macos": {
+          "lines": 117,
+          "production": false
+        },
+        "windows": {
           "lines": 117,
           "production": false
         }
@@ -6096,15 +6096,15 @@
       "name": "e2992_p44_retained_settings_permit",
       "anchor": "00ce798898ca",
       "sites": {
-        "windows": {
-          "lines": 382,
-          "production": false
-        },
         "linux": {
           "lines": 382,
           "production": false
         },
         "macos": {
+          "lines": 382,
+          "production": false
+        },
+        "windows": {
           "lines": 382,
           "production": false
         }
@@ -6115,15 +6115,15 @@
       "name": "response_close_carrier_versions_ignore_observations_noops_and_fail_closed_on_overflow",
       "anchor": "0af4b836294c",
       "sites": {
-        "windows": {
-          "lines": 110,
-          "production": false
-        },
         "linux": {
           "lines": 110,
           "production": false
         },
         "macos": {
+          "lines": 110,
+          "production": false
+        },
+        "windows": {
           "lines": 110,
           "production": false
         }
@@ -6134,15 +6134,15 @@
       "name": "muse_serde_profile_detection_and_submission_boundary_are_stable",
       "anchor": "db5b2c3aa862",
       "sites": {
-        "windows": {
-          "lines": 134,
-          "production": false
-        },
         "linux": {
           "lines": 134,
           "production": false
         },
         "macos": {
+          "lines": 134,
+          "production": false
+        },
+        "windows": {
           "lines": 134,
           "production": false
         }
@@ -6153,15 +6153,15 @@
       "name": "tokenized_group_and_control_position_transitions_stay_frozen",
       "anchor": "49d6c476ea80",
       "sites": {
-        "windows": {
-          "lines": 101,
-          "production": false
-        },
         "linux": {
           "lines": 101,
           "production": false
         },
         "macos": {
+          "lines": 101,
+          "production": false
+        },
+        "windows": {
           "lines": 101,
           "production": false
         }
@@ -6172,15 +6172,15 @@
       "name": "claim_and_cleanup_pending",
       "anchor": "cc222224515c",
       "sites": {
-        "windows": {
-          "lines": 109,
-          "production": true
-        },
         "linux": {
           "lines": 109,
           "production": true
         },
         "macos": {
+          "lines": 109,
+          "production": true
+        },
+        "windows": {
           "lines": 109,
           "production": true
         }
@@ -6191,15 +6191,15 @@
       "name": "finish_observed_work_transfer",
       "anchor": "dbcf26314836",
       "sites": {
-        "windows": {
-          "lines": 106,
-          "production": true
-        },
         "linux": {
           "lines": 106,
           "production": true
         },
         "macos": {
+          "lines": 106,
+          "production": true
+        },
+        "windows": {
           "lines": 106,
           "production": true
         }
@@ -6210,15 +6210,15 @@
       "name": "publish_checkpoint",
       "anchor": "6678f1fc171f",
       "sites": {
-        "windows": {
-          "lines": 110,
-          "production": true
-        },
         "linux": {
           "lines": 110,
           "production": true
         },
         "macos": {
+          "lines": 110,
+          "production": true
+        },
+        "windows": {
           "lines": 110,
           "production": true
         }
@@ -6229,15 +6229,15 @@
       "name": "commit_finalized",
       "anchor": "3bfe01d7d326",
       "sites": {
-        "windows": {
-          "lines": 107,
-          "production": true
-        },
         "linux": {
           "lines": 107,
           "production": true
         },
         "macos": {
+          "lines": 107,
+          "production": true
+        },
+        "windows": {
           "lines": 107,
           "production": true
         }
@@ -6248,15 +6248,15 @@
       "name": "complete_finalized_create",
       "anchor": "773d6ab01b46",
       "sites": {
-        "windows": {
-          "lines": 101,
-          "production": true
-        },
         "linux": {
           "lines": 101,
           "production": true
         },
         "macos": {
+          "lines": 101,
+          "production": true
+        },
+        "windows": {
           "lines": 101,
           "production": true
         }
@@ -6267,15 +6267,15 @@
       "name": "retire_previous",
       "anchor": "bf45129b3a1f",
       "sites": {
-        "windows": {
-          "lines": 108,
-          "production": true
-        },
         "linux": {
           "lines": 108,
           "production": true
         },
         "macos": {
+          "lines": 108,
+          "production": true
+        },
+        "windows": {
           "lines": 108,
           "production": true
         }
@@ -6286,15 +6286,15 @@
       "name": "finish_lifecycle_entry",
       "anchor": "12af84eced8a",
       "sites": {
-        "windows": {
-          "lines": 107,
-          "production": true
-        },
         "linux": {
           "lines": 107,
           "production": true
         },
         "macos": {
+          "lines": 107,
+          "production": true
+        },
+        "windows": {
           "lines": 107,
           "production": true
         }
@@ -6305,15 +6305,15 @@
       "name": "execute_accepted_entry",
       "anchor": "b09fb9389f1a",
       "sites": {
-        "windows": {
-          "lines": 108,
-          "production": true
-        },
         "linux": {
           "lines": 108,
           "production": true
         },
         "macos": {
+          "lines": 108,
+          "production": true
+        },
+        "windows": {
           "lines": 108,
           "production": true
         }
@@ -6324,15 +6324,15 @@
       "name": "execute_transition",
       "anchor": "59c0c7e0abd8",
       "sites": {
-        "windows": {
-          "lines": 113,
-          "production": true
-        },
         "linux": {
           "lines": 113,
           "production": true
         },
         "macos": {
+          "lines": 113,
+          "production": true
+        },
+        "windows": {
           "lines": 113,
           "production": true
         }
@@ -6343,15 +6343,15 @@
       "name": "cleanup_pending_creates_after_join",
       "anchor": "2c311612dff5",
       "sites": {
-        "windows": {
-          "lines": 113,
-          "production": true
-        },
         "linux": {
           "lines": 113,
           "production": true
         },
         "macos": {
+          "lines": 113,
+          "production": true
+        },
+        "windows": {
           "lines": 113,
           "production": true
         }
@@ -6362,15 +6362,15 @@
       "name": "full_queue_critical_route_waiter_is_deduplicated_and_runs_after_capacity_returns",
       "anchor": "0d70f5a75c7d",
       "sites": {
-        "windows": {
-          "lines": 118,
-          "production": false
-        },
         "linux": {
           "lines": 118,
           "production": false
         },
         "macos": {
+          "lines": 118,
+          "production": false
+        },
+        "windows": {
           "lines": 118,
           "production": false
         }
@@ -6381,15 +6381,15 @@
       "name": "assert_pending_container_shutdown_waits_for_stop",
       "anchor": "baf671e2fa4e",
       "sites": {
-        "windows": {
-          "lines": 257,
-          "production": false
-        },
         "linux": {
           "lines": 257,
           "production": false
         },
         "macos": {
+          "lines": 257,
+          "production": false
+        },
+        "windows": {
           "lines": 257,
           "production": false
         }
@@ -6400,15 +6400,15 @@
       "name": "assert_real_pending_container_start_shutdown_waits_for_stop",
       "anchor": "c1c6c13921ef",
       "sites": {
-        "windows": {
-          "lines": 363,
-          "production": false
-        },
         "linux": {
           "lines": 363,
           "production": false
         },
         "macos": {
+          "lines": 363,
+          "production": false
+        },
+        "windows": {
           "lines": 363,
           "production": false
         }
@@ -6419,15 +6419,15 @@
       "name": "assert_cancelled_critical_waiter_releases_key",
       "anchor": "6c92ae91d7d3",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": false
-        },
         "linux": {
           "lines": 104,
           "production": false
         },
         "macos": {
+          "lines": 104,
+          "production": false
+        },
+        "windows": {
           "lines": 104,
           "production": false
         }
@@ -6449,15 +6449,15 @@
       "name": "cancelled_and_panicked_post_spawn_creates_roll_back_without_ghost_events",
       "anchor": "96970fa0a07b",
       "sites": {
-        "windows": {
-          "lines": 128,
-          "production": false
-        },
         "linux": {
           "lines": 128,
           "production": false
         },
         "macos": {
+          "lines": 128,
+          "production": false
+        },
+        "windows": {
           "lines": 128,
           "production": false
         }
@@ -6468,15 +6468,15 @@
       "name": "capped_shutdown_aborts_a_held_worker_then_cleans_pending_resources_and_keys",
       "anchor": "6afae0aaa372",
       "sites": {
-        "windows": {
-          "lines": 107,
-          "production": false
-        },
         "linux": {
           "lines": 107,
           "production": false
         },
         "macos": {
+          "lines": 107,
+          "production": false
+        },
+        "windows": {
           "lines": 107,
           "production": false
         }
@@ -6487,15 +6487,15 @@
       "name": "installed_handle_cleanup_worker_spawn_failure_falls_back_without_panic",
       "anchor": "418b0302b3ed",
       "sites": {
-        "windows": {
-          "lines": 124,
-          "production": false
-        },
         "linux": {
           "lines": 124,
           "production": false
         },
         "macos": {
+          "lines": 124,
+          "production": false
+        },
+        "windows": {
           "lines": 124,
           "production": false
         }
@@ -6506,15 +6506,15 @@
       "name": "joined_worker_retains_no_coordinator_or_extra_pty_owner",
       "anchor": "64ede5ffab05",
       "sites": {
-        "windows": {
-          "lines": 126,
-          "production": false
-        },
         "linux": {
           "lines": 126,
           "production": false
         },
         "macos": {
+          "lines": 126,
+          "production": false
+        },
+        "windows": {
           "lines": 126,
           "production": false
         }
@@ -6525,15 +6525,15 @@
       "name": "user_switch_to_session_without_live_pty_publishes_no_view_requested",
       "anchor": "bf92e4c936ae",
       "sites": {
-        "windows": {
-          "lines": 103,
-          "production": false
-        },
         "linux": {
           "lines": 103,
           "production": false
         },
         "macos": {
+          "lines": 103,
+          "production": false
+        },
+        "windows": {
           "lines": 103,
           "production": false
         }
@@ -6544,15 +6544,15 @@
       "name": "issue_1937_operation_turn_restart_failure",
       "anchor": "bab244387550",
       "sites": {
-        "windows": {
-          "lines": 194,
-          "production": false
-        },
         "linux": {
           "lines": 194,
           "production": false
         },
         "macos": {
+          "lines": 194,
+          "production": false
+        },
+        "windows": {
           "lines": 194,
           "production": false
         }
@@ -6563,15 +6563,15 @@
       "name": "drain_after_shutdown",
       "anchor": "7318d4f04c6b",
       "sites": {
-        "windows": {
-          "lines": 168,
-          "production": true
-        },
         "linux": {
           "lines": 168,
           "production": true
         },
         "macos": {
+          "lines": 168,
+          "production": true
+        },
+        "windows": {
           "lines": 168,
           "production": true
         }
@@ -6582,15 +6582,15 @@
       "name": "execute_envelope",
       "anchor": "4643d8506375",
       "sites": {
-        "windows": {
-          "lines": 412,
-          "production": true
-        },
         "linux": {
           "lines": 412,
           "production": true
         },
         "macos": {
+          "lines": 412,
+          "production": true
+        },
+        "windows": {
           "lines": 412,
           "production": true
         }
@@ -6601,15 +6601,15 @@
       "name": "migrate_instance_families",
       "anchor": "17197e778097",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": true
-        },
         "linux": {
           "lines": 104,
           "production": true
         },
         "macos": {
+          "lines": 104,
+          "production": true
+        },
+        "windows": {
           "lines": 104,
           "production": true
         }
@@ -6620,15 +6620,15 @@
       "name": "watchdog_kill_results_preserve_already_pending_contract",
       "anchor": "724bd78305e1",
       "sites": {
-        "windows": {
-          "lines": 107,
-          "production": false
-        },
         "linux": {
           "lines": 107,
           "production": false
         },
         "macos": {
+          "lines": 107,
+          "production": false
+        },
+        "windows": {
           "lines": 107,
           "production": false
         }
@@ -6639,15 +6639,15 @@
       "name": "p4_co_managed_logs_never_carry_candidate_text_or_the_api_key",
       "anchor": "92df7ccbd1e1",
       "sites": {
-        "windows": {
-          "lines": 128,
-          "production": false
-        },
         "linux": {
           "lines": 128,
           "production": false
         },
         "macos": {
+          "lines": 128,
+          "production": false
+        },
+        "windows": {
           "lines": 128,
           "production": false
         }
@@ -6658,15 +6658,15 @@
       "name": "e2992_p51_invalid_no_co_managed_budget",
       "anchor": "0a1453b1d88f",
       "sites": {
-        "windows": {
-          "lines": 139,
-          "production": false
-        },
         "linux": {
           "lines": 139,
           "production": false
         },
         "macos": {
+          "lines": 139,
+          "production": false
+        },
+        "windows": {
           "lines": 139,
           "production": false
         }
@@ -6677,15 +6677,15 @@
       "name": "p51_restore_lifecycle_case",
       "anchor": "5dd40d18ff0e",
       "sites": {
-        "windows": {
-          "lines": 136,
-          "production": false
-        },
         "linux": {
           "lines": 136,
           "production": false
         },
         "macos": {
+          "lines": 136,
+          "production": false
+        },
+        "windows": {
           "lines": 136,
           "production": false
         }
@@ -6707,15 +6707,15 @@
       "name": "every_failure_keeps_the_previous_cache",
       "anchor": "fa5c9a911871",
       "sites": {
-        "windows": {
-          "lines": 109,
-          "production": false
-        },
         "linux": {
           "lines": 109,
           "production": false
         },
         "macos": {
+          "lines": 109,
+          "production": false
+        },
+        "windows": {
           "lines": 109,
           "production": false
         }
@@ -6726,15 +6726,15 @@
       "name": "agent_update_cancel_transport_parity",
       "anchor": "fe12243dd0e3",
       "sites": {
-        "windows": {
-          "lines": 132,
-          "production": false
-        },
         "linux": {
           "lines": 132,
           "production": false
         },
         "macos": {
+          "lines": 132,
+          "production": false
+        },
+        "windows": {
           "lines": 132,
           "production": false
         }
@@ -6745,15 +6745,15 @@
       "name": "e2432_p02_browser_catalog_events_silent_registered_events_live",
       "anchor": "86b676f0148a",
       "sites": {
-        "windows": {
-          "lines": 216,
-          "production": false
-        },
         "linux": {
           "lines": 216,
           "production": false
         },
         "macos": {
+          "lines": 216,
+          "production": false
+        },
+        "windows": {
           "lines": 216,
           "production": false
         }
@@ -6764,15 +6764,15 @@
       "name": "build_scope",
       "anchor": "3a3b0d0168a3",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": false
-        },
         "linux": {
           "lines": 104,
           "production": false
         },
         "macos": {
+          "lines": 104,
+          "production": false
+        },
+        "windows": {
           "lines": 104,
           "production": false
         }
@@ -6783,15 +6783,15 @@
       "name": "verify_exact_interface",
       "anchor": "7e5979f88587",
       "sites": {
-        "windows": {
-          "lines": 273,
-          "production": false
-        },
         "linux": {
           "lines": 273,
           "production": false
         },
         "macos": {
+          "lines": 273,
+          "production": false
+        },
+        "windows": {
           "lines": 273,
           "production": false
         }
@@ -6802,15 +6802,15 @@
       "name": "failure_messages_include_contract_diffs_rerun_scope_and_detector",
       "anchor": "d725b1ca00b1",
       "sites": {
-        "windows": {
-          "lines": 105,
-          "production": false
-        },
         "linux": {
           "lines": 105,
           "production": false
         },
         "macos": {
+          "lines": 105,
+          "production": false
+        },
+        "windows": {
           "lines": 105,
           "production": false
         }
@@ -6821,15 +6821,15 @@
       "name": "list_sessions_outputs_raised_hand_boolean_with_negative_cases",
       "anchor": "dc5d1447b71d",
       "sites": {
-        "windows": {
-          "lines": 103,
-          "production": false
-        },
         "linux": {
           "lines": 103,
           "production": false
         },
         "macos": {
+          "lines": 103,
+          "production": false
+        },
+        "windows": {
           "lines": 103,
           "production": false
         }
@@ -6840,15 +6840,15 @@
       "name": "public_subcommand_help_contracts",
       "anchor": "c9ae9f3f3f3e",
       "sites": {
-        "windows": {
-          "lines": 159,
-          "production": false
-        },
         "linux": {
           "lines": 159,
           "production": false
         },
         "macos": {
+          "lines": 159,
+          "production": false
+        },
+        "windows": {
           "lines": 159,
           "production": false
         }
@@ -6885,15 +6885,15 @@
       "name": "cli_add_from_catalog_is_persisted_only_and_preserves_existing_agents",
       "anchor": "e4b897c0a6a7",
       "sites": {
-        "windows": {
-          "lines": 104,
-          "production": false
-        },
         "linux": {
           "lines": 104,
           "production": false
         },
         "macos": {
+          "lines": 104,
+          "production": false
+        },
+        "windows": {
           "lines": 104,
           "production": false
         }
@@ -6904,15 +6904,15 @@
       "name": "new_project_seeds_catalog_into_ac",
       "anchor": "8e11cc954f9a",
       "sites": {
-        "windows": {
-          "lines": 156,
-          "production": false
-        },
         "linux": {
           "lines": 156,
           "production": false
         },
         "macos": {
+          "lines": 156,
+          "production": false
+        },
+        "windows": {
           "lines": 156,
           "production": false
         }
@@ -6923,15 +6923,15 @@
       "name": "assert_p03_gitignore_partial_retry_mode",
       "anchor": "41bfd6f40bed",
       "sites": {
-        "windows": {
-          "lines": 162,
-          "production": false
-        },
         "linux": {
           "lines": 162,
           "production": false
         },
         "macos": {
+          "lines": 162,
+          "production": false
+        },
+        "windows": {
           "lines": 162,
           "production": false
         }
@@ -6942,15 +6942,15 @@
       "name": "p03_real_readers_hold_shared_lock_and_retry_sidecar_without_managed_writes",
       "anchor": "b50ee02262c9",
       "sites": {
-        "windows": {
-          "lines": 127,
-          "production": false
-        },
         "linux": {
           "lines": 127,
           "production": false
         },
         "macos": {
+          "lines": 127,
+          "production": false
+        },
+        "windows": {
           "lines": 127,
           "production": false
         }
@@ -6961,15 +6961,15 @@
       "name": "role_experiment_dry_run_writes_planned_artifacts",
       "anchor": "415488e525e0",
       "sites": {
-        "windows": {
-          "lines": 126,
-          "production": false
-        },
         "linux": {
           "lines": 126,
           "production": false
         },
         "macos": {
+          "lines": 126,
+          "production": false
+        },
+        "windows": {
           "lines": 126,
           "production": false
         }
@@ -6980,15 +6980,15 @@
       "name": "role_experiment_report_reads_text_and_json_artifacts",
       "anchor": "143e09872c09",
       "sites": {
-        "windows": {
-          "lines": 147,
-          "production": false
-        },
         "linux": {
           "lines": 147,
           "production": false
         },
         "macos": {
+          "lines": 147,
+          "production": false
+        },
+        "windows": {
           "lines": 147,
           "production": false
         }
@@ -6999,15 +6999,15 @@
       "name": "issue_1937_repeat_member_preserves_config",
       "anchor": "274a5121cc86",
       "sites": {
-        "windows": {
-          "lines": 165,
-          "production": false
-        },
         "linux": {
           "lines": 165,
           "production": false
         },
         "macos": {
+          "lines": 165,
+          "production": false
+        },
+        "windows": {
           "lines": 165,
           "production": false
         }
@@ -7018,15 +7018,15 @@
       "name": "list_peers_surfaces_context_percent_for_matching_live_session",
       "anchor": "8229bb0c6693",
       "sites": {
-        "windows": {
-          "lines": 116,
-          "production": false
-        },
         "linux": {
           "lines": 116,
           "production": false
         },
         "macos": {
+          "lines": 116,
+          "production": false
+        },
+        "windows": {
           "lines": 116,
           "production": false
         }
@@ -7037,15 +7037,15 @@
       "name": "team_add_member_creates_replica_and_peer_is_reachable",
       "anchor": "36e510607b91",
       "sites": {
-        "windows": {
-          "lines": 115,
-          "production": false
-        },
         "linux": {
           "lines": 115,
           "production": false
         },
         "macos": {
+          "lines": 115,
+          "production": false
+        },
+        "windows": {
           "lines": 115,
           "production": false
         }
@@ -7056,15 +7056,15 @@
       "name": "instance_gitignore_names_nothing_that_reaches_the_knot",
       "anchor": "a1cfd4895f13",
       "sites": {
-        "windows": {
-          "lines": 160,
-          "production": false
-        },
         "linux": {
           "lines": 160,
           "production": false
         },
         "macos": {
+          "lines": 160,
+          "production": false
+        },
+        "windows": {
           "lines": 160,
           "production": false
         }
@@ -7075,15 +7075,15 @@
       "name": "the_constant_home_names_nothing_at_all",
       "anchor": "c4fcc44e2ea9",
       "sites": {
-        "windows": {
-          "lines": 129,
-          "production": false
-        },
         "linux": {
           "lines": 129,
           "production": false
         },
         "macos": {
+          "lines": 129,
+          "production": false
+        },
+        "windows": {
           "lines": 129,
           "production": false
         }
@@ -7094,15 +7094,15 @@
       "name": "scrub",
       "anchor": "1869d863852b",
       "sites": {
-        "windows": {
-          "lines": 126,
-          "production": false
-        },
         "linux": {
           "lines": 126,
           "production": false
         },
         "macos": {
+          "lines": 126,
+          "production": false
+        },
+        "windows": {
           "lines": 126,
           "production": false
         }
@@ -7113,15 +7113,15 @@
       "name": "issue_1850_admission_gate_table",
       "anchor": "29fdfb4e1f84",
       "sites": {
-        "windows": {
-          "lines": 109,
-          "production": false
-        },
         "linux": {
           "lines": 109,
           "production": false
         },
         "macos": {
+          "lines": 109,
+          "production": false
+        },
+        "windows": {
           "lines": 109,
           "production": false
         }
@@ -7132,15 +7132,15 @@
       "name": "run_case_inner",
       "anchor": "0d167a189f8a",
       "sites": {
-        "windows": {
-          "lines": 315,
-          "production": false
-        },
         "linux": {
           "lines": 315,
           "production": false
         },
         "macos": {
+          "lines": 315,
+          "production": false
+        },
+        "windows": {
           "lines": 315,
           "production": false
         }
@@ -7151,15 +7151,15 @@
       "name": "code_only",
       "anchor": "e43e4e71b74c",
       "sites": {
-        "windows": {
-          "lines": 118,
-          "production": false
-        },
         "linux": {
           "lines": 118,
           "production": false
         },
         "macos": {
+          "lines": 118,
+          "production": false
+        },
+        "windows": {
           "lines": 118,
           "production": false
         }
@@ -7170,15 +7170,15 @@
       "name": "no_loops_source_reaches_into_the_command_surface",
       "anchor": "75498fee010f",
       "sites": {
-        "windows": {
-          "lines": 113,
-          "production": false
-        },
         "linux": {
           "lines": 113,
           "production": false
         },
         "macos": {
+          "lines": 113,
+          "production": false
+        },
+        "windows": {
           "lines": 113,
           "production": false
         }
@@ -7189,15 +7189,15 @@
       "name": "scrub",
       "anchor": "1869d863852b",
       "sites": {
-        "windows": {
-          "lines": 126,
-          "production": false
-        },
         "linux": {
           "lines": 126,
           "production": false
         },
         "macos": {
+          "lines": 126,
+          "production": false
+        },
+        "windows": {
           "lines": 126,
           "production": false
         }
@@ -7208,15 +7208,15 @@
       "name": "production_library",
       "anchor": "bd5f654f5b84",
       "sites": {
-        "windows": {
-          "lines": 131,
-          "production": false
-        },
         "linux": {
           "lines": 131,
           "production": false
         },
         "macos": {
+          "lines": 131,
+          "production": false
+        },
+        "windows": {
           "lines": 131,
           "production": false
         }
@@ -7293,15 +7293,15 @@
       "name": "every_production_pty_writer_is_in_the_explicit_permit_inventory",
       "anchor": "cc7a360bc7da",
       "sites": {
-        "windows": {
-          "lines": 116,
-          "production": false
-        },
         "linux": {
           "lines": 116,
           "production": false
         },
         "macos": {
+          "lines": 116,
+          "production": false
+        },
+        "windows": {
           "lines": 116,
           "production": false
         }
@@ -7312,15 +7312,15 @@
       "name": "inventory_rejects_each_visibility_and_construction_mutation",
       "anchor": "23d422d3c75d",
       "sites": {
-        "windows": {
-          "lines": 135,
-          "production": false
-        },
         "linux": {
           "lines": 135,
           "production": false
         },
         "macos": {
+          "lines": 135,
+          "production": false
+        },
+        "windows": {
           "lines": 135,
           "production": false
         }

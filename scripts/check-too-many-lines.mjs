@@ -169,7 +169,9 @@ export function validateBaseline(d) {
 export function merge(emissions) {
   requireInput(emissions.length === 3, 'merge needs exactly three platforms');
   const platforms = new Set(), entries = new Map();
-  for (const raw of emissions) {
+  const ordered = [...emissions].sort((a, b) =>
+    PLATFORMS.indexOf(a.platform) - PLATFORMS.indexOf(b.platform));
+  for (const raw of ordered) {
     const d = validateEnvelope(raw);
     requireInput(d.productionMeasured, 'merge needs productionMeasured=true');
     requireInput(!platforms.has(d.platform), 'duplicate platform'); platforms.add(d.platform);
