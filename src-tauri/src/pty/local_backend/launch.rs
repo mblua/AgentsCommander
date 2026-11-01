@@ -352,14 +352,7 @@ pub(super) fn validate_powershell_arguments(
             "an unknown or ambiguous token",
         ));
     }
-    if let Some(option) = pending_operand {
-        return Err(adapter_error(
-            host_program,
-            &option,
-            "a missing or option-shaped operand (value-bearing option has no operand)",
-        ));
-    }
-    Ok(())
+    validate_powershell_pending_operand(host_program, pending_operand)
 }
 
 // --- Section 4.3.3 - cmd(.exe) ---------------------------------------------
@@ -818,4 +811,18 @@ pub(super) fn prepare_windows_resolved_agent_launch(
         program: host_shell.program.clone(),
         args: launch_args,
     })
+}
+
+fn validate_powershell_pending_operand(
+    host_program: &str,
+    pending_operand: Option<String>,
+) -> Result<(), AppError> {
+    if let Some(option) = pending_operand {
+        return Err(adapter_error(
+            host_program,
+            &option,
+            "a missing or option-shaped operand (value-bearing option has no operand)",
+        ));
+    }
+    Ok(())
 }

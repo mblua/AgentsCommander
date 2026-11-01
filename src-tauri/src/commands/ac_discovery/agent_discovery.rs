@@ -247,23 +247,12 @@ async fn scan_agents(
 
                 // Agent matrices: _agent_* (single underscore prefix)
                 if dir_name.starts_with("_agent_") {
-                    let display_name = agent_display_name(&project_folder, &dir_name);
-                    let role_exists = discovery_role_exists(&path.join("Role.md"));
-
-                    let preferred_agent_id = read_preferred_agent_id(&path, cfg);
-
-                    log::info!(
-                        "[ac-discovery] agent: dir={:?}, preferred_agent_id={:?}",
-                        dir_name,
-                        preferred_agent_id
-                    );
-
-                    agents.push(AcAgentMatrix {
-                        name: display_name,
-                        path: projected_path_string(&path),
-                        role_exists,
-                        preferred_agent_id,
-                    });
+                    agents.push(discover_agent_matrix(
+                        &path,
+                        &project_folder,
+                        &dir_name,
+                        cfg,
+                    ));
                 }
 
                 // Workgroups: wg-*
@@ -285,33 +274,8 @@ async fn scan_agents(
 
                 // Teams: _team_*
                 if dir_name.starts_with("_team_") {
-                    let team_name = dir_name
-                        .strip_prefix("_team_")
-                        .unwrap_or(&dir_name)
-                        .to_string();
-
-                    if let Some(parsed) = read_discovery_team_config(&path) {
-                        let team_agents = parsed
-                            .get("agents")
-                            .and_then(|a| a.as_array())
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|v| v.as_str())
-                                    .map(|r| resolve_agent_ref(&project_folder, r))
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default();
-
-                        let coordinator = parsed
-                            .get("coordinator")
-                            .and_then(|c| c.as_str())
-                            .map(|r| resolve_agent_ref(&project_folder, r));
-
-                        teams.push(AcTeam {
-                            name: team_name,
-                            agents: team_agents,
-                            coordinator,
-                        });
+                    if let Some(team) = discover_team(&path, &project_folder, &dir_name) {
+                        teams.push(team);
                     }
                 }
             }
@@ -332,6 +296,61 @@ async fn scan_agents(
         context_template_updates,
         wg_project_map,
     }
+}
+
+fn discover_agent_matrix(
+    path: &Path,
+    project_folder: &str,
+    dir_name: &str,
+    cfg: &crate::config::settings::AppSettings,
+) -> AcAgentMatrix {
+    let display_name = agent_display_name(project_folder, dir_name);
+    let role_exists = discovery_role_exists(&path.join("Role.md"));
+
+    let preferred_agent_id = read_preferred_agent_id(path, cfg);
+
+    log::info!(
+        "[ac-discovery] agent: dir={:?}, preferred_agent_id={:?}",
+        dir_name,
+        preferred_agent_id
+    );
+
+    AcAgentMatrix {
+        name: display_name,
+        path: projected_path_string(path),
+        role_exists,
+        preferred_agent_id,
+    }
+}
+
+fn discover_team(path: &Path, project_folder: &str, dir_name: &str) -> Option<AcTeam> {
+    let team_name = dir_name
+        .strip_prefix("_team_")
+        .unwrap_or(dir_name)
+        .to_string();
+
+    let parsed = read_discovery_team_config(path)?;
+    let team_agents = parsed
+        .get("agents")
+        .and_then(|a| a.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|r| resolve_agent_ref(project_folder, r))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let coordinator = parsed
+        .get("coordinator")
+        .and_then(|c| c.as_str())
+        .map(|r| resolve_agent_ref(project_folder, r));
+
+    Some(AcTeam {
+        name: team_name,
+        agents: team_agents,
+        coordinator,
+    })
 }
 
 async fn scan_context_templates(

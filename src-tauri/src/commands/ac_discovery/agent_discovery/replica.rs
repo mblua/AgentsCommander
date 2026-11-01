@@ -60,20 +60,7 @@ pub(crate) async fn discover_replica(
     let current_profile = profile_read.profile;
 
     // Extract repos from config.json and resolve to absolute paths
-    let repo_paths: Vec<String> = identity_read
-        .config
-        .as_ref()
-        .and_then(|v| v.get("repos")?.as_array().cloned())
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|r| r.as_str())
-        .filter_map(|rel| {
-            let resolved = wg_path.join(rel);
-            canonical_discovery_repo(&resolved)
-                .ok()
-                .map(|p| projected_path_string(&p))
-        })
-        .collect();
+    let repo_paths = discover_replica_repos(wg_path, identity_read.config.as_ref());
 
     // Detect git branch for single-repo replicas
     let repo_branch = if repo_paths.len() == 1 {
@@ -150,4 +137,19 @@ pub(crate) async fn discover_replica(
         selection_state,
         selection_error,
     }
+}
+
+fn discover_replica_repos(wg_path: &Path, config: Option<&serde_json::Value>) -> Vec<String> {
+    config
+        .and_then(|v| v.get("repos")?.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| r.as_str())
+        .filter_map(|rel| {
+            let resolved = wg_path.join(rel);
+            canonical_discovery_repo(&resolved)
+                .ok()
+                .map(|p| projected_path_string(&p))
+        })
+        .collect()
 }

@@ -40,58 +40,7 @@ impl MessageStore {
             )
             .optional()?
             .ok_or(MessageStoreError::InvalidTransition)?;
-        let actual_payload_bytes =
-            i64::try_from(row.payload.len()).map_err(|_| MessageStoreError::StoreCorrupt)?;
-        let issued = crate::phone::types::parse_canonical_pty_timestamp(&row.issued_at)
-            .map_err(|_| MessageStoreError::StoreCorrupt)?;
-        let expires = crate::phone::types::parse_canonical_pty_timestamp(&row.expires_at)
-            .map_err(|_| MessageStoreError::StoreCorrupt)?;
-        let authority_valid = match row.source.as_str() {
-            "host_cli" => {
-                row.authority_client_id.is_none() && row.authority_client_generation.is_none()
-            }
-            "container_api" => {
-                row.authority_client_id
-                    .as_deref()
-                    .is_some_and(|id| !id.is_empty())
-                    && row
-                        .authority_client_generation
-                        .as_deref()
-                        .is_some_and(|generation| {
-                            crate::phone::types::parse_canonical_uuid_v4(generation).is_ok()
-                        })
-            }
-            _ => false,
-        };
-        if row.version != 1
-            || row.enter_mode != "agent-submit"
-            || !authority_valid
-            || actual_payload_bytes != row.payload_bytes
-            || row.digest != sha256_hex(&row.payload)
-            || !is_lower_hex_64(&row.digest)
-            || !is_lower_hex_64(&row.nonce_sha256)
-            || !is_lower_hex_64(&row.request_fingerprint)
-            || !is_lower_hex_64(&row.sender_incarnation_fingerprint)
-            || !row
-                .sender_identity_fingerprint
-                .as_deref()
-                .is_some_and(is_lower_hex_64)
-            || !row
-                .target_identity_fingerprint
-                .as_deref()
-                .is_some_and(is_lower_hex_64)
-            || !row
-                .authority_session_id
-                .as_deref()
-                .is_some_and(|session_id| {
-                    crate::phone::types::parse_canonical_uuid_v4(session_id).is_ok()
-                })
-            || expires - issued != chrono::Duration::minutes(10)
-            || crate::phone::types::parse_canonical_uuid_v4(selected_session_id).is_err()
-            || !matches!(selected_backend, "localProcess" | "containerTransport")
-        {
-            return Err(MessageStoreError::StoreCorrupt);
-        }
+        validate_actuating_row(&row, selected_session_id, selected_backend)?;
         let payload = row.payload;
         let text = std::str::from_utf8(&payload).map_err(|_| MessageStoreError::StoreCorrupt)?;
         crate::pty::inject::validate_pty_input_text(text)
@@ -515,4 +464,64 @@ impl MessageStore {
         }
         Ok(compacted)
     }
+}
+
+fn validate_actuating_row(
+    row: &super::rows::ActuatingRow,
+    selected_session_id: &str,
+    selected_backend: &str,
+) -> Result<(), MessageStoreError> {
+    let actual_payload_bytes =
+        i64::try_from(row.payload.len()).map_err(|_| MessageStoreError::StoreCorrupt)?;
+    let issued = crate::phone::types::parse_canonical_pty_timestamp(&row.issued_at)
+        .map_err(|_| MessageStoreError::StoreCorrupt)?;
+    let expires = crate::phone::types::parse_canonical_pty_timestamp(&row.expires_at)
+        .map_err(|_| MessageStoreError::StoreCorrupt)?;
+    let authority_valid = match row.source.as_str() {
+        "host_cli" => {
+            row.authority_client_id.is_none() && row.authority_client_generation.is_none()
+        }
+        "container_api" => {
+            row.authority_client_id
+                .as_deref()
+                .is_some_and(|id| !id.is_empty())
+                && row
+                    .authority_client_generation
+                    .as_deref()
+                    .is_some_and(|generation| {
+                        crate::phone::types::parse_canonical_uuid_v4(generation).is_ok()
+                    })
+        }
+        _ => false,
+    };
+    if row.version != 1
+        || row.enter_mode != "agent-submit"
+        || !authority_valid
+        || actual_payload_bytes != row.payload_bytes
+        || row.digest != sha256_hex(&row.payload)
+        || !is_lower_hex_64(&row.digest)
+        || !is_lower_hex_64(&row.nonce_sha256)
+        || !is_lower_hex_64(&row.request_fingerprint)
+        || !is_lower_hex_64(&row.sender_incarnation_fingerprint)
+        || !row
+            .sender_identity_fingerprint
+            .as_deref()
+            .is_some_and(is_lower_hex_64)
+        || !row
+            .target_identity_fingerprint
+            .as_deref()
+            .is_some_and(is_lower_hex_64)
+        || !row
+            .authority_session_id
+            .as_deref()
+            .is_some_and(|session_id| {
+                crate::phone::types::parse_canonical_uuid_v4(session_id).is_ok()
+            })
+        || expires - issued != chrono::Duration::minutes(10)
+        || crate::phone::types::parse_canonical_uuid_v4(selected_session_id).is_err()
+        || !matches!(selected_backend, "localProcess" | "containerTransport")
+    {
+        return Err(MessageStoreError::StoreCorrupt);
+    }
+    Ok(())
 }

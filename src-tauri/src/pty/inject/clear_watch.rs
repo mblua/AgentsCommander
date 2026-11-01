@@ -34,6 +34,20 @@ impl ClearWatchOutcome {
     }
 }
 
+pub(super) fn for_injection(
+    permit: &crate::pty::manager::PtyInputPermit,
+    pty_manager: &std::sync::Mutex<crate::pty::manager::PtyManager>,
+) -> Result<ClearWatch, String> {
+    let observation = permit
+        .observation()
+        .map_err(|_| ClearWatchOutcome::ExecutionError.reason().to_string())?;
+    let backend = pty_manager
+        .lock()
+        .map_err(|_| ClearWatchOutcome::ExecutionError.reason().to_string())?
+        .backend_for_kind(observation.backend_kind());
+    Ok(ClearWatch::new(backend, observation))
+}
+
 /// The capture is already plain rendered rows. Bound work by existing viewport limits.
 fn normalize_failure_rows(rows: &[String]) -> Option<String> {
     if rows.len() > usize::from(terminal_snapshot_renderer::MAX_ROWS) {

@@ -341,12 +341,7 @@ impl MailboxPoller {
         // Re-check master token for coordinator auth bypass (independent of routing bypass above)
         let is_master = if let Some(ref token_str) = msg.token {
             let master = app.state::<MasterToken>();
-            if master.matches(token_str) {
-                true
-            } else {
-                let settings = crate::config::settings::load_settings();
-                settings.root_token.as_deref() == Some(token_str.as_str())
-            }
+            accepts_close_session_token(&master, token_str)
         } else {
             false
         };
@@ -398,11 +393,7 @@ impl MailboxPoller {
 
         log_close_session_attempt(&session_ids, target, &msg.from, force, timeout_secs);
 
-        let mut closed_ids: Vec<String> = Vec::new();
-        let mut failure = None;
-        let mut outcome_unknown = false;
-        let mut actively_closed = false;
-        let mut may_complete_later = false;
+        let mut result = CloseSessionOutcome::new(target, restore_in_progress_result, &session_ids);
         let budget = super::teardown::observation_budget(force, timeout_secs)
             .ok_or_else(|| "close observation budget overflow".to_string())?;
         for sid in &session_ids {
@@ -413,19 +404,7 @@ impl MailboxPoller {
                 self.close_session_attempt(app, *sid, force, timeout_secs, accepted),
             )
             .await;
-            if outcome.confirmed() {
-                actively_closed |= matches!(outcome, super::teardown::TeardownOutcome::Closed);
-                closed_ids.push(sid.to_string());
-            } else {
-                failure = outcome.reason().map(str::to_string);
-                if let super::teardown::TeardownOutcome::Uncertain {
-                    may_complete_later: pending,
-                    ..
-                } = outcome
-                {
-                    may_complete_later = pending;
-                    outcome_unknown = true;
-                }
+            if !result.record_attempt(*sid, outcome) {
                 break;
             }
         }
@@ -438,22 +417,22 @@ impl MailboxPoller {
             path,
             msg,
             is_app_outbox,
-            CloseSessionOutcome {
-                target,
-                restore_in_progress_result,
-                session_ids: &session_ids,
-                closed_ids,
-                failure,
-                outcome_unknown,
-                actively_closed,
-                may_complete_later,
-            },
+            result,
             self.resolve_repo_path(&msg.from, app),
         )
         .await;
 
         // Move original message to delivered/
         self.move_to_delivered(app, path, msg).await
+    }
+}
+
+fn accepts_close_session_token(master: &MasterToken, token_str: &str) -> bool {
+    if master.matches(token_str) {
+        true
+    } else {
+        let settings = crate::config::settings::load_settings();
+        settings.root_token.as_deref() == Some(token_str)
     }
 }
 
@@ -551,6 +530,40 @@ struct CloseSessionOutcome<'a> {
     may_complete_later: bool,
 }
 
+impl<'a> CloseSessionOutcome<'a> {
+    fn new(target: &'a str, restore_in_progress_result: bool, session_ids: &'a [Uuid]) -> Self {
+        Self {
+            target,
+            restore_in_progress_result,
+            session_ids,
+            closed_ids: Vec::new(),
+            failure: None,
+            outcome_unknown: false,
+            actively_closed: false,
+            may_complete_later: false,
+        }
+    }
+
+    fn record_attempt(&mut self, sid: Uuid, outcome: super::teardown::TeardownOutcome) -> bool {
+        if outcome.confirmed() {
+            self.actively_closed |= matches!(outcome, super::teardown::TeardownOutcome::Closed);
+            self.closed_ids.push(sid.to_string());
+        } else {
+            self.failure = outcome.reason().map(str::to_string);
+            if let super::teardown::TeardownOutcome::Uncertain {
+                may_complete_later: pending,
+                ..
+            } = outcome
+            {
+                self.may_complete_later = pending;
+                self.outcome_unknown = true;
+            }
+            return false;
+        }
+        true
+    }
+}
+
 // The sender lookup stays lazy: resolve only after the outbox-relative write,
 // and never when there is no request ID or serialization fails.
 async fn write_close_session_response(
@@ -641,28 +654,7 @@ async fn write_close_session_response(
         // also fails (msg.from not enumerable), the CLI hits the response
         // timeout and exits 2 (G-IMPL-3) — "outcome unknown".
         if !is_app_outbox {
-            let outbox_relative_responses_dir = path
-                .parent()
-                .and_then(|p| p.parent())
-                .map(|ac_dir| ac_dir.join("responses"));
-            if let Some(responses_dir) = outbox_relative_responses_dir {
-                let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-                let response_path = responses_dir.join(format!("{}.json", rid));
-                if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
-                    log::warn!(
-                        "[mailbox] Failed to write close-session response to outbox-relative \
-                        path {:?}: {}",
-                        response_path,
-                        e
-                    );
-                }
-            } else {
-                log::warn!(
-                    "[mailbox] close-session: cannot derive outbox-relative responses dir from \
-                    message path {:?}",
-                    path
-                );
-            }
+            write_outbox_close_session_response(path, rid, &json);
         }
 
         if let Some(sender_path) = sender_path.await {
@@ -691,6 +683,31 @@ async fn write_close_session_response(
                 msg.from
             );
         }
+    }
+}
+
+fn write_outbox_close_session_response(path: &std::path::Path, rid: &str, json: &str) {
+    let outbox_relative_responses_dir = path
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|ac_dir| ac_dir.join("responses"));
+    if let Some(responses_dir) = outbox_relative_responses_dir {
+        let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
+        let response_path = responses_dir.join(format!("{}.json", rid));
+        if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, json) {
+            log::warn!(
+                "[mailbox] Failed to write close-session response to outbox-relative \
+                path {:?}: {}",
+                response_path,
+                e
+            );
+        }
+    } else {
+        log::warn!(
+            "[mailbox] close-session: cannot derive outbox-relative responses dir from \
+            message path {:?}",
+            path
+        );
     }
 }
 

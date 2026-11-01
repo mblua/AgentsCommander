@@ -170,16 +170,6 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             Some(prepared) => prepared,
             None => return false,
         };
-        let InitialDispatchContext {
-            store,
-            initial,
-            injection_id,
-            source_plane,
-            api_client_store,
-            target_gate,
-            target,
-            shutdown,
-        } = initial_context;
         let context::PreparedDispatchClaim {
             lease_owner,
             claimed,
@@ -188,17 +178,17 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         } = prepared;
         let mut owned_work: Option<OwnedPtyWorkTransfer> = None;
         let context = PtyDispatchContext {
-            store,
-            initial,
+            store: initial_context.store,
+            initial: initial_context.initial,
             claimed: &claimed,
-            injection_id,
+            injection_id: initial_context.injection_id,
             lease_owner: &lease_owner,
-            source_plane,
-            api_client_store,
-            target_gate,
-            target,
+            source_plane: initial_context.source_plane,
+            api_client_store: initial_context.api_client_store,
+            target_gate: initial_context.target_gate,
+            target: initial_context.target,
             expires,
-            shutdown,
+            shutdown: initial_context.shutdown,
         };
         let mut guards = PtyDispatchGuards {
             target_guard,
@@ -520,12 +510,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             finish_owned_pty_work(app, guards.owned_work, observed).await;
             return Err(false);
         }
-        if guards.heartbeat.failed() {
-            let code = if context.expires <= chrono::Utc::now() {
-                C::Expired
-            } else {
-                C::LeaseLost
-            };
+        if let Some(code) = Self::dispatch_final_lease_failure(context, guards.heartbeat).await {
             let observed = finish_pty_input_before_boundary(
                 context.store,
                 guards.heartbeat,
@@ -540,6 +525,21 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             finish_owned_pty_work(app, guards.owned_work, observed).await;
             return Err(false);
         }
+
+        Ok((final_authority, write_guards))
+    }
+    async fn dispatch_final_lease_failure(
+        context: &PtyDispatchContext<'_>,
+        heartbeat: &mut crate::api::message_store::PreparationHeartbeatGuard,
+    ) -> Option<crate::phone::types::PtyInputReasonCode> {
+        use crate::phone::types::PtyInputReasonCode as C;
+        if heartbeat.failed() {
+            return Some(if context.expires <= chrono::Utc::now() {
+                C::Expired
+            } else {
+                C::LeaseLost
+            });
+        }
         if !matches!(
             context
                 .store
@@ -551,37 +551,12 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 .await,
             Ok(true)
         ) {
-            let observed = finish_pty_input_before_boundary(
-                context.store,
-                guards.heartbeat,
-                context.injection_id,
-                context.lease_owner,
-                pty_input_lease_failure_code(context.expires),
-            )
-            .await;
-            drop(guards.target_guard.take());
-            drop(guards.target_stripe.take());
-            drop(write_guards.permit);
-            finish_owned_pty_work(app, guards.owned_work, observed).await;
-            return Err(false);
+            return Some(pty_input_lease_failure_code(context.expires));
         }
-        if !guards.heartbeat.finish().await {
-            let observed = finish_pty_input_before_boundary(
-                context.store,
-                guards.heartbeat,
-                context.injection_id,
-                context.lease_owner,
-                pty_input_lease_failure_code(context.expires),
-            )
-            .await;
-            drop(guards.target_guard.take());
-            drop(guards.target_stripe.take());
-            drop(write_guards.permit);
-            finish_owned_pty_work(app, guards.owned_work, observed).await;
-            return Err(false);
+        if !heartbeat.finish().await {
+            return Some(pty_input_lease_failure_code(context.expires));
         }
-
-        Ok((final_authority, write_guards))
+        None
     }
     async fn ready_dispatch(
         &self,

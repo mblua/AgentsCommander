@@ -140,7 +140,7 @@ pub(super) async fn cleanup_pending_creates_after_join(
     };
     let manager = Arc::clone(&inner.manager);
     let cleanup_inner = Arc::clone(inner);
-    let mut cleanup = tokio::spawn(async move {
+    let cleanup = tokio::spawn(async move {
         let manager = manager.read().await.clone();
         let bindings = manager.pending_create_bindings().await;
         if !bindings.is_empty() {
@@ -244,6 +244,14 @@ pub(super) async fn cleanup_pending_creates_after_join(
         }
         retained
     });
+    await_pending_create_cleanup(inner, deadline, cleanup).await
+}
+
+async fn await_pending_create_cleanup(
+    inner: &Arc<CoordinatorInner>,
+    deadline: Instant,
+    mut cleanup: tokio::task::JoinHandle<Vec<String>>,
+) -> Vec<String> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     match tokio::time::timeout(remaining, &mut cleanup).await {
         Ok(Ok(retained)) => retained,

@@ -106,6 +106,58 @@ async fn publish_admission_failure(
     });
 }
 
+fn request_failure_publisher<'a>(
+    snapshot_state: &'a crate::pty::terminal_snapshot::TerminalSnapshotState,
+    response_directory: &'a std::path::Path,
+    request: &'a HostTerminalSnapshotRequest,
+    request_id: uuid::Uuid,
+) -> impl Fn(TerminalSnapshotReasonCode) + 'a {
+    move |reason| {
+        publish_correlated_ingress_failure(
+            snapshot_state,
+            response_directory,
+            request_id,
+            &request.confirmation_tag,
+            Some(request.format),
+            reason,
+        );
+    }
+}
+
+fn read_owned_request(
+    scanner_ownership: &ScannerTaskOwnership,
+    snapshot_state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
+    processing: &std::path::Path,
+    claimed: &crate::path_identity::VerifiedPathIdentity,
+    filename_request_id: String,
+    response_directory: &std::path::Path,
+) -> Option<(
+    HostTerminalSnapshotRequest,
+    uuid::Uuid,
+    uuid::Uuid,
+    chrono::DateTime<chrono::Utc>,
+)> {
+    if !scanner_ownership.mark_owned() {
+        return None;
+    }
+    #[cfg(test)]
+    snapshot_state.run_host_cancellation_hook(
+        crate::pty::terminal_snapshot::TerminalSnapshotHostCancellationStage::Processing,
+    );
+    let (request, request_id) =
+        read_correlated_request(snapshot_state, processing, claimed, filename_request_id)?;
+    let (_, token, expires_at) = match request.validate(chrono::Utc::now()) {
+        Ok(validated) => validated,
+        Err(reason) => {
+            request_failure_publisher(snapshot_state, response_directory, &request, request_id)(
+                reason,
+            );
+            return None;
+        }
+    };
+    Some((request, request_id, token, expires_at))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn process_claimed<R: tauri::Runtime>(
     scanner_ownership: ScannerTaskOwnership,
@@ -118,42 +170,18 @@ pub(super) async fn process_claimed<R: tauri::Runtime>(
     filename_request_id: String,
     ingress: tokio::sync::OwnedSemaphorePermit,
 ) {
-    if !scanner_ownership.mark_owned() {
-        return;
-    }
-    #[cfg(test)]
-    snapshot_state.run_host_cancellation_hook(
-        crate::pty::terminal_snapshot::TerminalSnapshotHostCancellationStage::Processing,
-    );
-    let Some((request, request_id)) =
-        read_correlated_request(&snapshot_state, &processing, &claimed, filename_request_id)
-    else {
+    let Some((request, request_id, token, expires_at)) = read_owned_request(
+        &scanner_ownership,
+        &snapshot_state,
+        &processing,
+        &claimed,
+        filename_request_id,
+        &response_directory,
+    ) else {
         return;
     };
-    let (_, token, expires_at) = match request.validate(chrono::Utc::now()) {
-        Ok(validated) => validated,
-        Err(reason) => {
-            publish_correlated_ingress_failure(
-                &snapshot_state,
-                &response_directory,
-                request_id,
-                &request.confirmation_tag,
-                Some(request.format),
-                reason,
-            );
-            return;
-        }
-    };
-    let publish_error = |reason| {
-        publish_correlated_ingress_failure(
-            &snapshot_state,
-            &response_directory,
-            request_id,
-            &request.confirmation_tag,
-            Some(request.format),
-            reason,
-        );
-    };
+    let publish_error =
+        request_failure_publisher(&snapshot_state, &response_directory, &request, request_id);
     let Some(session_manager) =
         app.try_state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>()
     else {

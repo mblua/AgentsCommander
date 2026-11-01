@@ -78,36 +78,7 @@ pub(crate) fn retire_live_standalone_global(
     // bytes are never decoded, re-encoded, or truncated. `atomic_replace_existing`
     // publishes `temp -> dest`, so `(live, backup)` is the correct argument order.
     if let Err(e) = publish(live_path, &backup_path) {
-        // Never blindly delete the destination after a failed move. Remove the
-        // reservation ONLY when the source is still a regular file AND the
-        // destination is still the zero-byte reservation this call created. An empty
-        // custom source is a valid unknown file, so "the source disappeared" is never
-        // proof that an empty destination is disposable.
-        let source_intact =
-            crate::filesystem::context_templates::inspect_template_source(live_path)
-                .map(|m| !is_link_or_reparse(&m) && m.is_file())
-                .unwrap_or(false);
-        let dest_is_reservation =
-            crate::filesystem::context_templates::inspect_template_source(&backup_path)
-                .map(|m| !is_link_or_reparse(&m) && m.is_file() && m.len() == 0)
-                .unwrap_or(false);
-        if source_intact && dest_is_reservation {
-            if let Err(cleanup_error) =
-                crate::filesystem::context_templates::remove_template_entry(&backup_path)
-            {
-                log::warn!(
-                    "[979] failed to remove the unused retirement reservation {}: {}",
-                    backup_path.display(),
-                    cleanup_error
-                );
-            }
-        } else {
-            log::warn!(
-                "[979] preserving {} after a failed retirement move: the source or the destination \
-                    is no longer the entry this call created",
-                backup_path.display()
-            );
-        }
+        cleanup_failed_retirement_reservation(live_path, &backup_path);
         return Err(e);
     }
 
@@ -194,6 +165,38 @@ pub(crate) fn retire_live_standalone_global(
         live_path.display()
     );
     Ok(())
+}
+
+fn cleanup_failed_retirement_reservation(live_path: &Path, backup_path: &Path) {
+    // Never blindly delete the destination after a failed move. Remove the
+    // reservation ONLY when the source is still a regular file AND the
+    // destination is still the zero-byte reservation this call created. An empty
+    // custom source is a valid unknown file, so "the source disappeared" is never
+    // proof that an empty destination is disposable.
+    let source_intact = crate::filesystem::context_templates::inspect_template_source(live_path)
+        .map(|m| !is_link_or_reparse(&m) && m.is_file())
+        .unwrap_or(false);
+    let dest_is_reservation =
+        crate::filesystem::context_templates::inspect_template_source(backup_path)
+            .map(|m| !is_link_or_reparse(&m) && m.is_file() && m.len() == 0)
+            .unwrap_or(false);
+    if source_intact && dest_is_reservation {
+        if let Err(cleanup_error) =
+            crate::filesystem::context_templates::remove_template_entry(backup_path)
+        {
+            log::warn!(
+                "[979] failed to remove the unused retirement reservation {}: {}",
+                backup_path.display(),
+                cleanup_error
+            );
+        }
+    } else {
+        log::warn!(
+            "[979] preserving {} after a failed retirement move: the source or the destination \
+                is no longer the entry this call created",
+            backup_path.display()
+        );
+    }
 }
 
 /// Reserve a unique inert same-directory name with `create_new(true)` and drop the

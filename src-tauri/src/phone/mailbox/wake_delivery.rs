@@ -23,6 +23,80 @@ use std::sync::Mutex;
 use tauri::Manager;
 use uuid::Uuid;
 
+async fn owned_snapshot(
+    manager: &SessionManager,
+    directory: &Path,
+    msg: &OutboxMessage,
+    physical: &crate::path_identity::VerifiedPathIdentity,
+    previous_id: Uuid,
+) -> (
+    bool,
+    Option<(
+        crate::config::sessions_persistence::PublishedCarrier,
+        crate::session::session::Session,
+    )>,
+) {
+    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    let captured = manager
+        .with_current_carrier_snapshot(&permit, |current| {
+            let scope = crate::config::sessions_persistence::classify_lifecycle_carrier_scope(
+                &permit,
+                Some(&msg.to),
+                &physical.canonical_path,
+            );
+            let foreign = matches!(
+                scope,
+                crate::config::sessions_persistence::CreateCarrierScope::Foreign { .. }
+            );
+            let carrier = crate::config::sessions_persistence::retained_carrier_for_replacement(
+                &permit,
+                directory,
+                &msg.to,
+                previous_id,
+                current,
+            );
+            let previous = current
+                .rows
+                .iter()
+                .find(|row| row.id == previous_id)
+                .cloned();
+            let old_missing = previous.is_none();
+            (foreign || old_missing, carrier.zip(previous))
+        })
+        .await;
+    drop(permit);
+    captured
+}
+
+async fn owned_peer_completion(
+    result: Result<OwnedPeerWakeStep, String>,
+    completion: &crate::session::selection::OwnedReplacementContinuation,
+    manager: &SessionManager,
+    pty: &Arc<Mutex<PtyManager>>,
+) -> Result<OwnedPeerWakeStep, String> {
+    #[cfg(test)]
+    if matches!(&result, Ok(OwnedPeerWakeStep::Retained)) {
+        // The accepted core has actually returned; its public wake caller
+        // intentionally remains pending below. This is observation only.
+        let _ = completion
+            .fixture_reached(crate::session::selection::ReplacementFixtureCut::SourceRetainedReturn)
+            .await;
+    }
+    // The existing result channel has returned the real legacy Err to the
+    // source-owning caller. The completed core has released its target
+    // guards; the original full message remains with this caller.
+    if result.is_err() && completion.precommit_rollback_completed() {
+        if let Some(effect) =
+            completion.start_effect(crate::session::selection::LifecycleEffectSlot::WorkTransfer)
+        {
+            completion
+                .finish_rolled_back_work(manager, pty, effect, true)
+                .await;
+        }
+    }
+    result
+}
+
 impl MailboxPoller {
     pub(crate) async fn validate_outbox_action_and_mode<R: tauri::Runtime>(
         &self,
@@ -567,37 +641,7 @@ impl MailboxPoller {
                 .await
                 .map_err(|_| "targetCreateGateUnavailable".to_string())?;
             let exact = gate.acquire_exact(&msg.to).await;
-            let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-            let captured = manager
-                .with_current_carrier_snapshot(&permit, |current| {
-                    let scope =
-                        crate::config::sessions_persistence::classify_lifecycle_carrier_scope(
-                            &permit,
-                            Some(&msg.to),
-                            &physical.canonical_path,
-                        );
-                    let foreign = matches!(
-                        scope,
-                        crate::config::sessions_persistence::CreateCarrierScope::Foreign { .. }
-                    );
-                    let carrier =
-                        crate::config::sessions_persistence::retained_carrier_for_replacement(
-                            &permit,
-                            &directory,
-                            &msg.to,
-                            previous_id,
-                            current,
-                        );
-                    let previous = current
-                        .rows
-                        .iter()
-                        .find(|row| row.id == previous_id)
-                        .cloned();
-                    let old_missing = previous.is_none();
-                    (foreign || old_missing, carrier.zip(previous))
-                })
-                .await;
-            drop(permit);
+            let captured = owned_snapshot(&manager, &directory, msg, &physical, previous_id).await;
             if captured.0 {
                 return Ok(None);
             }
@@ -766,28 +810,6 @@ impl MailboxPoller {
             result
         })
         .await;
-        #[cfg(test)]
-        if matches!(&result, Ok(OwnedPeerWakeStep::Retained)) {
-            // The accepted core has actually returned; its public wake caller
-            // intentionally remains pending below. This is observation only.
-            let _ = completion
-                .fixture_reached(
-                    crate::session::selection::ReplacementFixtureCut::SourceRetainedReturn,
-                )
-                .await;
-        }
-        // The existing result channel has returned the real legacy Err to the
-        // source-owning caller. The completed core has released its target
-        // guards; the original full message remains with this caller.
-        if result.is_err() && completion.precommit_rollback_completed() {
-            if let Some(effect) = completion
-                .start_effect(crate::session::selection::LifecycleEffectSlot::WorkTransfer)
-            {
-                completion
-                    .finish_rolled_back_work(&manager, &pty, effect, true)
-                    .await;
-            }
-        }
-        result
+        owned_peer_completion(result, &completion, &manager, &pty).await
     }
 }

@@ -196,19 +196,23 @@ pub(crate) fn discover_teams_in_project_filtered(
             coordinator_path,
         });
         let pushed = teams.last().expect("just pushed");
-        log::debug!(
-            "[teams] discovered team — project='{}' team='{}' coord_name={:?} coord_path={:?} \
-             agent_count={}",
-            pushed.project,
-            pushed.name,
-            pushed.coordinator_name,
-            pushed
-                .coordinator_path
-                .as_ref()
-                .map(|p| p.display().to_string()),
-            pushed.agent_names.len()
-        );
+        log_discovered_team(pushed);
     }
+}
+
+fn log_discovered_team(pushed: &DiscoveredTeam) {
+    log::debug!(
+        "[teams] discovered team — project='{}' team='{}' coord_name={:?} coord_path={:?} \
+         agent_count={}",
+        pushed.project,
+        pushed.name,
+        pushed.coordinator_name,
+        pushed
+            .coordinator_path
+            .as_ref()
+            .map(|p| p.display().to_string()),
+        pushed.agent_names.len()
+    );
 }
 
 fn log_team_config_read_error(

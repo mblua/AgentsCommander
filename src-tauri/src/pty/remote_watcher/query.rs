@@ -38,18 +38,7 @@ pub(crate) async fn query_key(
     // The compare runs FIRST when the staleness axis also needs it, so the
     // identical-to-default decision below reuses this round's one call.
     if plan.staleness {
-        outcome.staleness = Some(
-            match build_gh_command_spec(
-                gh,
-                GhQuery::Compare {
-                    nwo: &key.nwo,
-                    sha40: &key.sha40,
-                },
-            ) {
-                Ok(spec) => run_query(spawner, spec, parse_compare_response).await,
-                Err(_) => Err(FailureKind::Other),
-            },
-        );
+        outcome.staleness = Some(query_compare(spawner, gh, key).await);
     }
 
     if !plan.ci {
@@ -83,16 +72,7 @@ pub(crate) async fn query_key(
                     // identity question, and so the only place the round's
                     // reservation for it is consumed.
                     outcome.ci_identity_call = true;
-                    match build_gh_command_spec(
-                        gh,
-                        GhQuery::Compare {
-                            nwo: &key.nwo,
-                            sha40: &key.sha40,
-                        },
-                    ) {
-                        Ok(spec) => run_query(spawner, spec, parse_compare_response).await,
-                        Err(_) => Err(FailureKind::Other),
-                    }
+                    query_compare(spawner, gh, key).await
                 }
             };
             match compare {
@@ -131,12 +111,7 @@ pub(crate) async fn query_key(
         if closing_ready && completion.closing_ready && completion.all_proven() {
             outcome.ci_decision = Some(CiCompletionDecision::Accepted);
         } else {
-            let unproven = completion
-                .known
-                .values()
-                .find(|run| completion.proofs.get(&run.id) != Some(&run.proof()))
-                .map(|run| run.id);
-            if let Some(id) = unproven.filter(|_| reserved) {
+            if let Some(id) = unproven_ci_run(&completion).filter(|_| reserved) {
                 ci_result = corroborate_ci_run(
                     spawner,
                     gh,
@@ -166,6 +141,27 @@ pub(crate) async fn query_key(
     outcome.ci = Some(ci_result);
 
     outcome
+}
+
+fn unproven_ci_run(completion: &CiCompletionState) -> Option<u64> {
+    completion
+        .known
+        .values()
+        .find(|run| completion.proofs.get(&run.id) != Some(&run.proof()))
+        .map(|run| run.id)
+}
+
+async fn query_compare(spawner: &GhSpawner, gh: &Path, key: &QueryKey) -> super::CompareAnswer {
+    match build_gh_command_spec(
+        gh,
+        GhQuery::Compare {
+            nwo: &key.nwo,
+            sha40: &key.sha40,
+        },
+    ) {
+        Ok(spec) => run_query(spawner, spec, parse_compare_response).await,
+        Err(_) => Err(FailureKind::Other),
+    }
 }
 
 async fn query_ci(

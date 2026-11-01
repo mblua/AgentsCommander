@@ -245,15 +245,7 @@ pub(super) async fn sync_workgroup_repos_inner(
             // __agent_dev-rust → dev-rust
             let replica_name = dir_name.strip_prefix("__agent_").unwrap_or(dir_name);
 
-            // Compute assigned repos (relative strings, written to config.json).
-            let assigned_repos: Vec<String> = repos
-                .iter()
-                .filter(|r| r.agents.iter().any(|a| agent_matches(a, replica_name)))
-                .map(|r| {
-                    let d = format!("repo-{}", repo_dir_name_from_url(&r.url));
-                    format!("../{}", d)
-                })
-                .collect();
+            let assigned_repos = assigned_replica_repos(repos, replica_name);
 
             let _identity = match apply_wg_replica_repos(replica_dir, &assigned_repos) {
                 Ok(identity) => identity,
@@ -360,3 +352,15 @@ pub async fn get_team_config(
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+fn assigned_replica_repos(repos: &[RepoAssignment], replica_name: &str) -> Vec<String> {
+    // Compute assigned repos (relative strings, written to config.json).
+    repos
+        .iter()
+        .filter(|r| r.agents.iter().any(|a| agent_matches(a, replica_name)))
+        .map(|r| {
+            let d = format!("repo-{}", repo_dir_name_from_url(&r.url));
+            format!("../{}", d)
+        })
+        .collect()
+}

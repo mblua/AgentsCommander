@@ -1,5 +1,5 @@
 use clap::Args;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::filesystem::{directories, documents};
@@ -201,6 +201,16 @@ pub fn execute(args: PurgeWgArgs) -> i32 {
         return 1;
     }
 
+    wait_for_purge_response(&ac_dir, &outbox_dir, &request_id, &msg_id, &args)
+}
+
+fn wait_for_purge_response(
+    ac_dir: &Path,
+    outbox_dir: &Path,
+    request_id: &str,
+    msg_id: &str,
+    args: &PurgeWgArgs,
+) -> i32 {
     let response_path = ac_dir
         .join("responses")
         .join(format!("{}.json", request_id));

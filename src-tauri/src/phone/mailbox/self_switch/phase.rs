@@ -119,3 +119,87 @@ pub(crate) async fn begin_switch(
             error.to_string()
         })
 }
+
+pub(super) async fn restart_with_alias<Persist, PersistFut, Restart, RestartFut>(
+    targets: (&Path, &str, &str, std::time::Duration),
+    flavor: &SelfHandoffFlavor,
+    sessions: (Uuid, Uuid),
+    reservation: (
+        &crate::session::maintenance::PendingSelfClear,
+        &crate::session::maintenance::Lease,
+    ),
+    current: &mut Option<Uuid>,
+    persist: &mut Persist,
+    restart: &mut Restart,
+) -> Result<(impl Send, Uuid), String>
+where
+    Persist: FnMut(PathBuf, String, String) -> PersistFut,
+    PersistFut: std::future::Future<Output = Result<(), String>>,
+    Restart: FnMut(Uuid, String, String) -> RestartFut,
+    RestartFut: std::future::Future<Output = Result<String, String>>,
+{
+    let (cwd, target_agent, target_profile, settle) = targets;
+    let (original_session_id, session_id) = sessions;
+    let (pending, lease) = reservation;
+    let turn = begin_switch(session_id, settle, flavor, target_agent, target_profile).await?;
+    let new_id = persist_and_restart(
+        (cwd, target_agent, target_profile),
+        flavor,
+        (original_session_id, session_id),
+        current,
+        persist,
+        restart,
+    )
+    .await?;
+    if let Err(error) = pending.alias(lease, new_id) {
+        log::warn!(
+            "[mailbox] {}: new session {} alias refused: {:?}",
+            flavor.action,
+            new_id,
+            error
+        );
+    }
+    Ok((turn, new_id))
+}
+
+pub(super) fn abandon_reason(
+    flavor: &SelfHandoffFlavor,
+    original_session_id: Uuid,
+    session_id: Uuid,
+    reason: &str,
+) -> Option<String> {
+    log::warn!(
+        "[mailbox] {} ABANDONED for original session {} current session {}: {} \
+        (agent may re-issue)",
+        flavor.action,
+        original_session_id,
+        session_id,
+        reason
+    );
+    Some(reason.to_string())
+}
+
+pub(super) fn switch_outcome(
+    reason: Option<String>,
+    flavor: &SelfHandoffFlavor,
+    identity: (Uuid, Uuid, Option<Uuid>),
+    cwd: PathBuf,
+    continuation: bool,
+    forgotten: bool,
+) -> super::SelfHandoffOutcome {
+    use super::{SelfHandoffFailure, SelfHandoffOutcome};
+    let (attempt, original, current) = identity;
+    match reason {
+        None => SelfHandoffOutcome::Completed,
+        Some(reason) => SelfHandoffOutcome::Failed(SelfHandoffFailure {
+            action: flavor.action,
+            attempt,
+            original,
+            current,
+            root: cwd,
+            continuation,
+            reason,
+            forgotten,
+        }),
+    }
+}

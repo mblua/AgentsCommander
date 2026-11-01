@@ -1,5 +1,6 @@
-use super::super::session::SessionStatus;
+use super::super::session::{SessionCommunicationKind, SessionInfo, SessionStatus};
 use super::binding::binding_matches;
+use super::binding::{clear_failed_recipe_for_runtime_binding, retire_coding_agent_binding};
 use super::{
     CommitDecision, CommitResult, FinalizeMutation, LifecycleMutations, SessionManagerState,
 };
@@ -96,45 +97,7 @@ pub(super) fn validate_lifecycle_mutations(
         }
     }
 
-    for mutation in &mutations.finalizations {
-        match *mutation {
-            FinalizeMutation::Live(binding, witness) => {
-                if !binding_matches(state, binding) {
-                    return Err(format!(
-                        "create finalization capability mismatch: {}",
-                        binding.session_id
-                    ));
-                }
-                if witness.session_id != binding.session_id || !witness.has_pty || witness.detached
-                {
-                    return Err(format!(
-                        "live create finalization has invalid runtime witness: {}",
-                        binding.session_id
-                    ));
-                }
-                let record = state.sessions.get(&binding.session_id).ok_or_else(|| {
-                    format!("pending create record missing: {}", binding.session_id)
-                })?;
-                if matches!(record.status, SessionStatus::Exited(_)) {
-                    return Err(format!(
-                        "live create finalization targets exited record: {}",
-                        binding.session_id
-                    ));
-                }
-            }
-            FinalizeMutation::Dormant(binding, witness, _) => {
-                if !binding_matches(state, binding)
-                    || witness.session_id != binding.session_id
-                    || witness.detached
-                {
-                    return Err(format!(
-                        "dormant create finalization has invalid capability/witness: {}",
-                        binding.session_id
-                    ));
-                }
-            }
-        }
-    }
+    validate_finalization_witnesses(state, mutations)?;
     validate_unique_ids(
         "prompt transfer source",
         mutations.prompt_transfers.iter().map(|(id, _)| *id),
@@ -177,6 +140,52 @@ pub(super) fn validate_lifecycle_mutations(
         }
     }
     Ok((removals, exits, finalizations))
+}
+
+fn validate_finalization_witnesses(
+    state: &SessionManagerState,
+    mutations: &LifecycleMutations,
+) -> Result<(), String> {
+    for mutation in &mutations.finalizations {
+        match *mutation {
+            FinalizeMutation::Live(binding, witness) => {
+                if !binding_matches(state, binding) {
+                    return Err(format!(
+                        "create finalization capability mismatch: {}",
+                        binding.session_id
+                    ));
+                }
+                if witness.session_id != binding.session_id || !witness.has_pty || witness.detached
+                {
+                    return Err(format!(
+                        "live create finalization has invalid runtime witness: {}",
+                        binding.session_id
+                    ));
+                }
+                let record = state.sessions.get(&binding.session_id).ok_or_else(|| {
+                    format!("pending create record missing: {}", binding.session_id)
+                })?;
+                if matches!(record.status, SessionStatus::Exited(_)) {
+                    return Err(format!(
+                        "live create finalization targets exited record: {}",
+                        binding.session_id
+                    ));
+                }
+            }
+            FinalizeMutation::Dormant(binding, witness, _) => {
+                if !binding_matches(state, binding)
+                    || witness.session_id != binding.session_id
+                    || witness.detached
+                {
+                    return Err(format!(
+                        "dormant create finalization has invalid capability/witness: {}",
+                        binding.session_id
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn resolve_selection_commit_target(
@@ -287,6 +296,106 @@ pub(super) fn validate_unique_ids(
         if !seen.insert(id) {
             return Err(format!("duplicate {label} lifecycle mutation: {id}"));
         }
+    }
+    Ok(())
+}
+
+pub(super) fn apply_lifecycle_mutations(
+    state: &mut SessionManagerState,
+    mutations: LifecycleMutations,
+    result: &mut CommitResult,
+    changed_ids: &mut HashSet<Uuid>,
+) -> Vec<Uuid> {
+    // #1149 - ids only. The record itself is built after every fallible exit
+    // below, so a later `?` can never strand a record for a session this
+    // commit did not actually finalize.
+    let mut finalized_live_ids: Vec<Uuid> = Vec::new();
+    for mutation in mutations.finalizations {
+        match mutation {
+            FinalizeMutation::Live(binding, _) => {
+                state.pending_create.remove(&binding.session_id);
+                clear_failed_recipe_for_runtime_binding(state, binding.session_id);
+                if let Some(record) = state.sessions.get_mut(&binding.session_id) {
+                    record.status = SessionStatus::Running;
+                    finalized_live_ids.push(binding.session_id);
+                    result.finalized_rows.push(SessionInfo::from(&*record));
+                }
+            }
+            FinalizeMutation::Dormant(binding, _, exit_code) => {
+                state.pending_create.remove(&binding.session_id);
+                clear_failed_recipe_for_runtime_binding(state, binding.session_id);
+                if let Some(record) = state.sessions.get_mut(&binding.session_id) {
+                    record.status = SessionStatus::Exited(exit_code);
+                    result.finalized_rows.push(SessionInfo::from(&*record));
+                }
+            }
+        }
+    }
+
+    for (id, exit_code) in mutations.mark_exited {
+        let Some(record) = state.sessions.get_mut(&id) else {
+            result.missing_ids.push(id);
+            continue;
+        };
+        if matches!(record.status, SessionStatus::Exited(_)) {
+            continue;
+        }
+        let cleared_raise_hand = record.communication.as_ref().is_some_and(|communication| {
+            communication.kind == SessionCommunicationKind::RaiseHand && communication.visible
+        });
+        if cleared_raise_hand {
+            record.communication = None;
+            result.cleared_raise_hand_ids.push(id);
+        }
+        record.status = SessionStatus::Exited(exit_code);
+        changed_ids.insert(id);
+    }
+
+    for (id, detached) in mutations.detached_intent {
+        let Some(record) = state.sessions.get_mut(&id) else {
+            result.missing_ids.push(id);
+            continue;
+        };
+        if record.was_detached != detached {
+            record.was_detached = detached;
+            changed_ids.insert(id);
+        }
+    }
+
+    for id in mutations.removals {
+        if let Some(record) = state.sessions.remove(&id) {
+            state.order.retain(|candidate| *candidate != id);
+            state.prompt_keys.remove(&id);
+            state.prompt_seed_blocked.remove(&id);
+            state.pending_prompts.remove(&id);
+            state.pending_create.remove(&id);
+            retire_coding_agent_binding(state, id);
+            result.removed_rows.push(SessionInfo::from(&record));
+        } else {
+            result.missing_ids.push(id);
+        }
+    }
+
+    finalized_live_ids
+}
+
+pub(super) fn validate_canonical_selection_target(
+    target_mode: SelectionMode,
+    target_id: Option<Uuid>,
+    target_status: Option<&SessionStatus>,
+) -> Result<(), String> {
+    // Every fallible check runs before either row receives transferred text.
+    if !matches!(
+        (target_mode, target_id, target_status),
+        (SelectionMode::None, None, _)
+            | (SelectionMode::Live, Some(_), _)
+            | (
+                SelectionMode::Dormant,
+                Some(_),
+                Some(SessionStatus::Exited(_))
+            )
+    ) {
+        return Err("invalid canonical selection target".to_string());
     }
     Ok(())
 }

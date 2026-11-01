@@ -260,17 +260,8 @@ pub async fn create_workgroup(
             } else {
                 repo_stage.finish(Outcome::Error, Some(Reason::Failed));
             }
-            match result {
-                Ok(_) => {
-                    log::info!("[entity_creation] Cloned {} → {}", url, target.display());
-                }
-                Err(e) => {
-                    log::error!("[entity_creation] Failed to clone {}: {}", url, e);
-                    clone_errors.push(CloneError {
-                        url: url.clone(),
-                        error: e,
-                    });
-                }
+            if let Some(error) = record_workgroup_clone_result(url, &target, result) {
+                clone_errors.push(error);
             }
         }
 
@@ -302,4 +293,24 @@ pub async fn create_workgroup(
         operation.finish(Outcome::clones(created.clone_errors.len()), None);
     }
     operation.result(result)
+}
+
+fn record_workgroup_clone_result(
+    url: &str,
+    target: &Path,
+    result: Result<(), String>,
+) -> Option<CloneError> {
+    match result {
+        Ok(_) => {
+            log::info!("[entity_creation] Cloned {} → {}", url, target.display());
+            None
+        }
+        Err(error) => {
+            log::error!("[entity_creation] Failed to clone {}: {}", url, error);
+            Some(CloneError {
+                url: url.to_string(),
+                error,
+            })
+        }
+    }
 }

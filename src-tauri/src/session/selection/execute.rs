@@ -308,7 +308,7 @@ pub(super) async fn execute_restore_dormant<R: Runtime>(
 ) -> Result<SessionInfo, String> {
     let id = Uuid::new_v4();
     let binding = PendingCreateBinding::new(id, Uuid::new_v4());
-    let persisted = request.persisted;
+    let persisted = &request.persisted;
     let retained_key = crate::config::sessions_persistence::prompt_key(
         &request.working_directory,
         persisted.agent_id.as_deref(),
@@ -320,51 +320,7 @@ pub(super) async fn execute_restore_dormant<R: Runtime>(
         Some(SessionStatus::Exited(code)) => code,
         _ => 0,
     };
-    let session = crate::session::session::Session {
-        id,
-        name: persisted.name,
-        shell: persisted.shell,
-        shell_args: persisted.shell_args,
-        backend_kind: crate::pty::backend::SessionBackendKind::LocalProcess,
-        effective_shell_args: None,
-        created_at: chrono::Utc::now(),
-        working_directory: request.working_directory,
-        status: SessionStatus::Running,
-        waiting_for_input: false,
-        communication: persisted.communication,
-        pending_review: false,
-        last_prompt: if persisted.start_fresh_on_restore {
-            None
-        } else {
-            persisted.last_prompt.clone()
-        },
-        agent_id: persisted.agent_id,
-        agent_label: persisted.agent_label,
-        git_repos: persisted.git_repos,
-        is_coordinator: request.is_coordinator,
-        is_root_agent: request.is_root_agent,
-        git_repos_gen: 0,
-        agent_turn_armed: false,
-        token: Uuid::new_v4(),
-        agent_kind: None,
-        requested_profile: persisted.requested_profile,
-        effective_profile: persisted.effective_profile,
-        profile_fallback_chain: Vec::new(),
-        profile_fallback_applied: false,
-        match_tier: None,
-        original_profile_letter: None,
-        effective_codex_home: None,
-        resolved_claude_projects_dir: None,
-        profile_content_hash: None,
-        trusted_configured_spawn: false,
-        telegram_bot_id: persisted.telegram_bot_id,
-        was_detached: persisted.was_detached,
-        detached_geometry: persisted.detached_geometry,
-        start_fresh_on_restore: persisted.start_fresh_on_restore,
-        // #1088 ignored on restore: the scraper re-reads and re-commits on its
-        // first post-restart tick (mirrors id/waiting_for_input/created_at above).
-        context_percent: None,
-    };
+    let session = restored_dormant_session(request, id);
     let manager = transaction.manager().await;
     crate::config::sessions_persistence::initialize_prompt_retention(&manager).await;
     let initial_prompt = session.last_prompt.clone();
@@ -428,6 +384,58 @@ pub(super) async fn execute_restore_dormant<R: Runtime>(
         .await;
     transaction.publish_created(&info);
     Ok(info)
+}
+
+fn restored_dormant_session(
+    request: DormantRestoreRequest,
+    id: Uuid,
+) -> crate::session::session::Session {
+    let persisted = request.persisted;
+    crate::session::session::Session {
+        id,
+        name: persisted.name,
+        shell: persisted.shell,
+        shell_args: persisted.shell_args,
+        backend_kind: crate::pty::backend::SessionBackendKind::LocalProcess,
+        effective_shell_args: None,
+        created_at: chrono::Utc::now(),
+        working_directory: request.working_directory,
+        status: SessionStatus::Running,
+        waiting_for_input: false,
+        communication: persisted.communication,
+        pending_review: false,
+        last_prompt: if persisted.start_fresh_on_restore {
+            None
+        } else {
+            persisted.last_prompt.clone()
+        },
+        agent_id: persisted.agent_id,
+        agent_label: persisted.agent_label,
+        git_repos: persisted.git_repos,
+        is_coordinator: request.is_coordinator,
+        is_root_agent: request.is_root_agent,
+        git_repos_gen: 0,
+        agent_turn_armed: false,
+        token: Uuid::new_v4(),
+        agent_kind: None,
+        requested_profile: persisted.requested_profile,
+        effective_profile: persisted.effective_profile,
+        profile_fallback_chain: Vec::new(),
+        profile_fallback_applied: false,
+        match_tier: None,
+        original_profile_letter: None,
+        effective_codex_home: None,
+        resolved_claude_projects_dir: None,
+        profile_content_hash: None,
+        trusted_configured_spawn: false,
+        telegram_bot_id: persisted.telegram_bot_id,
+        was_detached: persisted.was_detached,
+        detached_geometry: persisted.detached_geometry,
+        start_fresh_on_restore: persisted.start_fresh_on_restore,
+        // #1088 ignored on restore: the scraper re-reads and re-commits on its
+        // first post-restart tick (mirrors id/waiting_for_input/created_at above).
+        context_percent: None,
+    }
 }
 
 pub(super) async fn execute_rollback_create<R: Runtime>(

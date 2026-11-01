@@ -95,35 +95,7 @@ async fn authorize_transport(
     };
     let client = &fresh.client;
     let session_id_text = query.session_id.to_string();
-    let generation = match client.credential_generation.as_deref() {
-        Some(generation) => generation,
-        None => {
-            return Err(reject_transport_auth(
-                state,
-                ip,
-                Some(client),
-                "unbound_client",
-            ));
-        }
-    };
-    if !client.has_scope(SCOPE_SESSION_TRANSPORT) {
-        return Err(reject_transport_auth(
-            state,
-            ip,
-            Some(client),
-            "forbidden_scope",
-        ));
-    }
-    if client.bound_session_id.as_deref() != Some(session_id_text.as_str())
-        || crate::api::identity::resolve_from(client).is_err()
-    {
-        return Err(reject_transport_auth(
-            state,
-            ip,
-            Some(client),
-            "binding_mismatch",
-        ));
-    }
+    let generation = validate_transport_client(state, ip, client, &session_id_text)?;
 
     let backend = {
         let pty_mgr = state.pty_mgr.lock().unwrap();
@@ -196,6 +168,44 @@ async fn authorize_transport(
         session_id: query.session_id,
         bound_root: client.bound_root.clone(),
     })
+}
+
+fn validate_transport_client<'a>(
+    state: &ApiState,
+    ip: std::net::IpAddr,
+    client: &'a crate::api::auth::ApiClient,
+    session_id_text: &str,
+) -> Result<&'a str, ApiError> {
+    let generation = match client.credential_generation.as_deref() {
+        Some(generation) => generation,
+        None => {
+            return Err(reject_transport_auth(
+                state,
+                ip,
+                Some(client),
+                "unbound_client",
+            ));
+        }
+    };
+    if !client.has_scope(SCOPE_SESSION_TRANSPORT) {
+        return Err(reject_transport_auth(
+            state,
+            ip,
+            Some(client),
+            "forbidden_scope",
+        ));
+    }
+    if client.bound_session_id.as_deref() != Some(session_id_text)
+        || crate::api::identity::resolve_from(client).is_err()
+    {
+        return Err(reject_transport_auth(
+            state,
+            ip,
+            Some(client),
+            "binding_mismatch",
+        ));
+    }
+    Ok(generation)
 }
 
 fn reject_transport_auth(

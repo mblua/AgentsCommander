@@ -141,22 +141,8 @@ pub(crate) async fn handle_resource_watchdog_backend_request_with_config<H: Back
         warn_matches,
     );
 
-    let snapshot_diagnostics = if monitor.supports_process_tree_enforcement() {
-        json!({
-            "capturedAt": snapshot.captured_at,
-            "overallState": snapshot.overall_state,
-            "activeAgentGroups": snapshot.active_agent_groups,
-            "appPrivateBytes": snapshot.app_private_bytes,
-            "warnings": snapshot.warnings,
-        })
-    } else {
-        json!({
-            "overallState": snapshot.overall_state,
-            "activeAgentGroups": snapshot.active_agent_groups,
-            "appPrivateBytes": snapshot.app_private_bytes,
-            "warnings": snapshot.warnings,
-        })
-    };
+    let snapshot_diagnostics =
+        watchdog_snapshot_diagnostics(&snapshot, monitor.supports_process_tree_enforcement());
 
     UiAutomationResponse {
         ok: true,
@@ -205,6 +191,28 @@ pub(crate) async fn handle_resource_watchdog_backend_request_with_config<H: Back
         available_windows: None,
         timeout_ms: None,
         phase: None,
+    }
+}
+
+fn watchdog_snapshot_diagnostics(
+    snapshot: &crate::resource_monitor::types::ResourceSnapshot,
+    supports_process_tree_enforcement: bool,
+) -> serde_json::Value {
+    if supports_process_tree_enforcement {
+        json!({
+            "capturedAt": snapshot.captured_at,
+            "overallState": snapshot.overall_state,
+            "activeAgentGroups": snapshot.active_agent_groups,
+            "appPrivateBytes": snapshot.app_private_bytes,
+            "warnings": snapshot.warnings,
+        })
+    } else {
+        json!({
+            "overallState": snapshot.overall_state,
+            "activeAgentGroups": snapshot.active_agent_groups,
+            "appPrivateBytes": snapshot.app_private_bytes,
+            "warnings": snapshot.warnings,
+        })
     }
 }
 

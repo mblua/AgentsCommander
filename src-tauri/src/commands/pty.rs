@@ -246,39 +246,7 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
         clear_control_write_mark(app, session_id);
     }
     let cleared =
-        match crate::config::sessions_persistence::clear_user_input_transitions_and_persist_result(
-            &manager,
-            session_id,
-            substantive,
-        )
-        .await
-        {
-            Ok(cleared) => cleared,
-            Err(e) => {
-                log::error!(
-                    "Failed to persist user-input session state transitions: {}",
-                    e
-                );
-                // The in-memory clear still applied; only the snapshot failed.
-                // Suppress the clear event so the live UI does not diverge from the
-                // durable file (the next persist will reconcile disk).
-                crate::config::sessions_persistence::ClearedUserInputTransitions::default()
-            }
-        };
-
-    if cleared.cleared_start_fresh {
-        log::info!(
-            "[session-state] {} fresh intent cleared: substantive {} input (#871)",
-            &session_id.to_string()[..8],
-            source_class
-        );
-    } else if !substantive {
-        log::debug!(
-            "[session-state] {} non-substantive {} write; fresh intent preserved (#871)",
-            &session_id.to_string()[..8],
-            source_class
-        );
-    }
+        persist_user_input_transitions(&manager, session_id, substantive, source_class).await;
 
     if cleared.cleared_raise_hand {
         crate::session::selection::publish_session_communication(app, session_id, None);
@@ -336,6 +304,50 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
             log::warn!("[coordinator-clocks] fresh-intent clear save failed: {}", e);
         }
     }
+}
+
+async fn persist_user_input_transitions(
+    manager: &crate::session::manager::SessionManager,
+    session_id: Uuid,
+    substantive: bool,
+    source_class: &'static str,
+) -> crate::config::sessions_persistence::ClearedUserInputTransitions {
+    let cleared =
+        match crate::config::sessions_persistence::clear_user_input_transitions_and_persist_result(
+            manager,
+            session_id,
+            substantive,
+        )
+        .await
+        {
+            Ok(cleared) => cleared,
+            Err(e) => {
+                log::error!(
+                    "Failed to persist user-input session state transitions: {}",
+                    e
+                );
+                // The in-memory clear still applied; only the snapshot failed.
+                // Suppress the clear event so the live UI does not diverge from the
+                // durable file (the next persist will reconcile disk).
+                crate::config::sessions_persistence::ClearedUserInputTransitions::default()
+            }
+        };
+
+    if cleared.cleared_start_fresh {
+        log::info!(
+            "[session-state] {} fresh intent cleared: substantive {} input (#871)",
+            &session_id.to_string()[..8],
+            source_class
+        );
+    } else if !substantive {
+        log::debug!(
+            "[session-state] {} non-substantive {} write; fresh intent preserved (#871)",
+            &session_id.to_string()[..8],
+            source_class
+        );
+    }
+
+    cleared
 }
 
 /// (#2232 phase 3) Does this user input recharge the room's automatic-action

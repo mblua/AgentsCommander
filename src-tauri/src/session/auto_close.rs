@@ -239,36 +239,18 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
         let g = clocks.lock().unwrap_or_else(|e| e.into_inner());
         g.snapshot()
     };
-    for (team, (fqn, cwd)) in &coord_refs {
-        let e = snap.get(fqn);
-        let anchor = logged_team_idle_anchor(team, e, now_secs);
-        if anchor != i64::MIN && last_emitted.get(team).copied() != Some(anchor) {
-            last_emitted.insert(team.clone(), anchor);
-            if let Some(dt) = DateTime::<Utc>::from_timestamp(anchor, 0) {
-                let _ = app.emit(
-                    "coordinator_clock_updated",
-                    serde_json::json!({ "replicaPath": cwd, "lastUserMessageAt": dt.to_rfc3339() }),
-                );
-            }
-        }
-    }
-    last_emitted.retain(|team, _| coord_refs.contains_key(team)); // bound the map
+    emit_idle_badges(&coord_refs, &snap, now_secs, last_emitted, |cwd, dt| {
+        let _ = app.emit(
+            "coordinator_clock_updated",
+            serde_json::json!({ "replicaPath": cwd, "lastUserMessageAt": dt.to_rfc3339() }),
+        );
+    });
 
     // (3) KILL: gated on the setting; SAME anchor; established + timeout.
-    let Some((enabled, timeout_min, skip_telegram_assigned)) = close_settings else {
+    let Some(policy) = auto_close_policy(close_settings, now_secs) else {
         return;
     };
-    if !enabled || timeout_min == 0 {
-        return;
-    }
-    let timeout_secs = i64::from(timeout_min) * 60;
-    // closeable iff: an ESTABLISHED member is present AND idle past timeout.
-    // `snap` already reflects step 1's advance (taken after it) -> reuse, no re-lock.
-    let policy = AutoClosePolicy {
-        now_secs,
-        timeout_secs,
-        skip_telegram_assigned,
-    };
+    // The snapshot already reflects step 1's advance; reuse it without re-locking.
     let to_close = closeable_members(
         &members,
         &coord_refs,
@@ -310,29 +292,73 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
         if let Some(clocks) =
             app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
         {
-            let now = chrono::Utc::now();
-            for team in &coord_closed_teams {
-                // No live coordinator record for this team at close time (already
-                // torn down) -> nothing to badge; sessions were still terminated.
-                // Rare; documented in plan §7.
-                let Some((fqn, cwd)) = coord_refs.get(team) else {
-                    continue;
-                };
-                let newly = {
-                    clocks
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .mark_auto_closed(fqn, now)
-                };
-                if newly {
-                    let _ = app.emit(
-                        "coordinator_auto_close_changed",
-                        serde_json::json!({ "replicaPath": cwd, "autoClosedAt": now.to_rfc3339() }),
-                    );
-                }
+            mark_closed_badges(&clocks, &coord_closed_teams, &coord_refs, |cwd, now| {
+                let _ = app.emit(
+                    "coordinator_auto_close_changed",
+                    serde_json::json!({ "replicaPath": cwd, "autoClosedAt": now.to_rfc3339() }),
+                );
+            });
+        }
+    }
+}
+
+/// Emit only changed, valid anchors and discard teams that no longer exist.
+fn emit_idle_badges(
+    coord_refs: &HashMap<String, (String, String)>,
+    snap: &HashMap<String, ClockEntry>,
+    now_secs: i64,
+    last_emitted: &mut HashMap<String, i64>,
+    mut emit: impl FnMut(&str, DateTime<Utc>),
+) {
+    for (team, (fqn, cwd)) in coord_refs {
+        let e = snap.get(fqn);
+        let anchor = logged_team_idle_anchor(team, e, now_secs);
+        if anchor != i64::MIN && last_emitted.get(team).copied() != Some(anchor) {
+            last_emitted.insert(team.clone(), anchor);
+            if let Some(dt) = DateTime::<Utc>::from_timestamp(anchor, 0) {
+                emit(cwd, dt);
             }
         }
     }
+    last_emitted.retain(|team, _| coord_refs.contains_key(team));
+}
+
+/// Mark only newly closed coordinator rows, releasing the lock before each event.
+fn mark_closed_badges(
+    clocks: &CoordinatorClocksState,
+    coord_closed_teams: &HashSet<String>,
+    coord_refs: &HashMap<String, (String, String)>,
+    mut emit: impl FnMut(&str, DateTime<Utc>),
+) {
+    let now = Utc::now();
+    for team in coord_closed_teams {
+        // No coordinator record at close time means there is no row to badge.
+        let Some((fqn, cwd)) = coord_refs.get(team) else {
+            continue;
+        };
+        let newly = clocks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .mark_auto_closed(fqn, now);
+        if newly {
+            emit(cwd, now);
+        }
+    }
+}
+
+fn auto_close_policy(
+    close_settings: Option<(bool, u32, bool)>,
+    now_secs: i64,
+) -> Option<AutoClosePolicy> {
+    let (enabled, timeout_min, skip_telegram_assigned) = close_settings?;
+    if !enabled || timeout_min == 0 {
+        return None;
+    }
+    Some(AutoClosePolicy {
+        now_secs,
+        timeout_secs: i64::from(timeout_min) * 60,
+        skip_telegram_assigned,
+    })
 }
 
 fn live_members(

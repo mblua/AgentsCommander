@@ -775,15 +775,7 @@ where
         let manager = session_mgr.read().await.clone();
         manager
     };
-    let session = manager.get_session(session_id).await;
-    let shell = session.as_ref().map(|session| session.shell.clone());
-    let send_enter = shell.as_deref().map(needs_explicit_enter).unwrap_or(false);
-    log::info!(
-        "[inject] session={} shell={:?} send_enter={}",
-        session_id,
-        shell,
-        send_enter
-    );
+    let (session, send_enter) = session_injection_mode(&manager, session_id).await;
 
     // Acquire the per-session input permit before running the pre-write closure,
     // so the closure and the first checked write happen together at the real
@@ -801,8 +793,7 @@ where
     // boundary. Callers of the supported variant perform their final
     // filesystem/config guard here.
     // Peer callbacks use the fresh interior snapshot below, after all waits.
-    let peer_boundary = matches!(hold_policy, HoldPolicy::PeerWake(_));
-    let legacy_check = if peer_boundary {
+    let legacy_check = if matches!(hold_policy, HoldPolicy::PeerWake(_)) {
         Some(pre_write_check)
     } else {
         // Internal notices must not admit a stale row after waiting for the writer.
@@ -826,20 +817,7 @@ where
     };
 
     let mut watch = if on_observation.is_some() {
-        let observation = permit.observation().map_err(|_| {
-            clear_watch::ClearWatchOutcome::ExecutionError
-                .reason()
-                .to_string()
-        })?;
-        let backend = pty_manager
-            .lock()
-            .map_err(|_| {
-                clear_watch::ClearWatchOutcome::ExecutionError
-                    .reason()
-                    .to_string()
-            })?
-            .backend_for_kind(observation.backend_kind());
-        Some(clear_watch::ClearWatch::new(backend, observation))
+        Some(clear_watch::for_injection(&permit, &pty_manager)?)
     } else {
         None
     };
@@ -859,22 +837,7 @@ where
         legacy_check,
     )
     .await;
-    written.map_err(|error| {
-        if error == OWNED_WORK_SCOPE_WAIT {
-            return error;
-        }
-        log::error!(
-            "[inject] PTY write FAILED session={}: {}",
-            session_id,
-            error
-        );
-        error
-    })?;
-    log::info!(
-        "[inject] PTY write OK session={} bytes={}",
-        session_id,
-        text.len()
-    );
+    finish_injected_text_write(written, session_id, text.len())?;
     crate::commands::pty::mark_successful_pty_write_busy(app, session_id, text.len()).await;
 
     // Supported interactive agent CLIs receive two staggered Enters. The
@@ -908,6 +871,47 @@ where
         watch.finish().await.into_result()?;
     }
 
+    Ok(())
+}
+
+async fn session_injection_mode(
+    manager: &SessionManager,
+    session_id: Uuid,
+) -> (Option<Session>, bool) {
+    let session = manager.get_session(session_id).await;
+    let shell = session.as_ref().map(|session| session.shell.clone());
+    let send_enter = shell.as_deref().map(needs_explicit_enter).unwrap_or(false);
+    log::info!(
+        "[inject] session={} shell={:?} send_enter={}",
+        session_id,
+        shell,
+        send_enter
+    );
+
+    (session, send_enter)
+}
+
+fn finish_injected_text_write(
+    written: Result<(), String>,
+    session_id: Uuid,
+    text_bytes: usize,
+) -> Result<(), String> {
+    written.map_err(|error| {
+        if error == OWNED_WORK_SCOPE_WAIT {
+            return error;
+        }
+        log::error!(
+            "[inject] PTY write FAILED session={}: {}",
+            session_id,
+            error
+        );
+        error
+    })?;
+    log::info!(
+        "[inject] PTY write OK session={} bytes={}",
+        session_id,
+        text_bytes
+    );
     Ok(())
 }
 

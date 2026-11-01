@@ -229,76 +229,18 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
         );
         return;
     }
-    let Some(member) = current_response_row(current, &prepared.member) else {
-        response_diag_local!(
-            "prewrite_reserve",
-            "current_member_missing",
-            work.diagnostic_message_id
-        );
+    let Some((member, coordinator)) =
+        response_request_participants(current, session, prepared, work)
+    else {
         return;
     };
-    let Some(coordinator) = current_response_row(current, &prepared.coordinator) else {
-        response_diag_local!(
-            "prewrite_reserve",
-            "current_coordinator_missing",
-            work.diagnostic_message_id
-        );
-        return;
-    };
-    if session.id != member.id
-        || member.backend_kind != SessionBackendKind::LocalProcess
-        || member.is_coordinator
-        || member.is_root_agent
-        || member.agent_kind.is_none()
-        || member
-            .communication
-            .as_ref()
-            .is_some_and(|communication| communication.kind == SessionCommunicationKind::CoManaged)
-        || !coordinator.is_coordinator
-        || coordinator.is_root_agent
-    {
-        response_diag_local!(
-            "prewrite_reserve",
-            "role_or_backend_or_communication",
-            work.diagnostic_message_id
-        );
-        return;
-    }
     let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-    let Ok(member_route) = PtyManager::snapshot_route_proof(&pty, member.id) else {
-        response_diag_local!(
-            "prewrite_reserve",
-            "member_route_missing",
-            work.diagnostic_message_id
-        );
+    let Some(member_route) = response_request_member_route(&pty, member, work) else {
         return;
     };
     let Some(replica) = member_route.saved_replica() else {
-        response_diag_local!(
-            "prewrite_reserve",
-            "member_replica_missing",
-            work.diagnostic_message_id
-        );
         return;
     };
-    if member_route.backend_kind() != SessionBackendKind::LocalProcess
-        || !crate::path_identity::verify_directory(std::path::Path::new(&member.working_directory))
-            .is_ok_and(|actual| {
-                crate::path_identity::same_object(&actual, member_route.saved_cwd())
-            })
-        || !member_route.matches_requester_route(
-            member.backend_kind,
-            member_route.saved_cwd(),
-            Some(replica),
-        )
-    {
-        response_diag_local!(
-            "prewrite_reserve",
-            "member_route_mismatch",
-            work.diagnostic_message_id
-        );
-        return;
-    }
     let Ok(coordinator_route) = PtyManager::snapshot_route_proof(&pty, coordinator.id) else {
         response_diag_local!(
             "prewrite_reserve",
@@ -344,6 +286,114 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
         );
         return;
     }
+    publish_response_request_candidate(
+        prepared,
+        work,
+        attempt,
+        member,
+        coordinator,
+        replica,
+        &settings,
+    );
+}
+
+fn response_request_member_route(
+    pty: &Arc<Mutex<PtyManager>>,
+    member: &Session,
+    work: &ResponseWakeWork,
+) -> Option<crate::pty::manager::PtySnapshotRouteProof> {
+    let Ok(member_route) = PtyManager::snapshot_route_proof(pty, member.id) else {
+        response_diag_local!(
+            "prewrite_reserve",
+            "member_route_missing",
+            work.diagnostic_message_id
+        );
+        return None;
+    };
+    let Some(replica) = member_route.saved_replica() else {
+        response_diag_local!(
+            "prewrite_reserve",
+            "member_replica_missing",
+            work.diagnostic_message_id
+        );
+        return None;
+    };
+    if member_route.backend_kind() != SessionBackendKind::LocalProcess
+        || !crate::path_identity::verify_directory(std::path::Path::new(&member.working_directory))
+            .is_ok_and(|actual| {
+                crate::path_identity::same_object(&actual, member_route.saved_cwd())
+            })
+        || !member_route.matches_requester_route(
+            member.backend_kind,
+            member_route.saved_cwd(),
+            Some(replica),
+        )
+    {
+        response_diag_local!(
+            "prewrite_reserve",
+            "member_route_mismatch",
+            work.diagnostic_message_id
+        );
+        return None;
+    }
+    Some(member_route)
+}
+
+fn response_request_participants<'a>(
+    current: &'a crate::session::manager::CarrierSnapshot,
+    session: &Session,
+    prepared: &PreparedResponseRequest,
+    work: &ResponseWakeWork,
+) -> Option<(&'a Session, &'a Session)> {
+    let Some(member) = current_response_row(current, &prepared.member) else {
+        response_diag_local!(
+            "prewrite_reserve",
+            "current_member_missing",
+            work.diagnostic_message_id
+        );
+        return None;
+    };
+    let Some(coordinator) = current_response_row(current, &prepared.coordinator) else {
+        response_diag_local!(
+            "prewrite_reserve",
+            "current_coordinator_missing",
+            work.diagnostic_message_id
+        );
+        return None;
+    };
+    if session.id != member.id
+        || member.backend_kind != SessionBackendKind::LocalProcess
+        || member.is_coordinator
+        || member.is_root_agent
+        || member.agent_kind.is_none()
+        || member
+            .communication
+            .as_ref()
+            .is_some_and(|communication| communication.kind == SessionCommunicationKind::CoManaged)
+        || !coordinator.is_coordinator
+        || coordinator.is_root_agent
+    {
+        response_diag_local!(
+            "prewrite_reserve",
+            "role_or_backend_or_communication",
+            work.diagnostic_message_id
+        );
+        return None;
+    }
+    Some((member, coordinator))
+}
+
+// The caller retains the settings read lock and coordinator authority guard
+// throughout publication and candidate reservation.
+fn publish_response_request_candidate(
+    prepared: &PreparedResponseRequest,
+    work: &ResponseWakeWork,
+    attempt: &ResponseCandidateAttempt,
+    member: &Session,
+    coordinator: &Session,
+    replica: &crate::path_identity::VerifiedPathIdentity,
+    settings: &crate::config::settings::AppSettings,
+) {
     let now = std::time::Instant::now();
     work.state.apply_settings(
         settings.response_close_enabled,

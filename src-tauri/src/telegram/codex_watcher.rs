@@ -521,6 +521,36 @@ pub(crate) async fn lock_global_diagnostic_files() -> tokio::sync::MutexGuard<'s
         .await
 }
 
+macro_rules! bridge_log {
+    ($state:ident, $tag:expr, $msg:expr) => {
+        if let Some(bridge_logger) = $state.logger.as_mut() {
+            bridge_logger.log($tag, &$state.session_id, $msg);
+        }
+    };
+}
+struct CodexWatchState {
+    search_root: PathBuf,
+    expected_cwd: String,
+    attach_time: DateTime<Utc>,
+    network: OutboundNetwork,
+    session_id: String,
+    event_port: Arc<dyn TelegramEvents>,
+    bot_target: Option<BotTarget>,
+    logger: Option<BridgeLogger>,
+    diag: Option<DiagLogger>,
+    buffer: String,
+    last_buffer_add: Instant,
+    capture_tx: Option<UnboundedSender<Arc<CapturedRecord>>>,
+    reader_seq: u64,
+    turns: TurnAccumulator,
+    observer: ReaderObservations,
+    current_file: Option<PathBuf>,
+    current_file_mtime: Option<SystemTime>,
+    last_mtime_advance: Instant,
+    file_offset: u64,
+    line_remainder: String,
+    search_warned: bool,
+}
 #[allow(clippy::too_many_arguments)]
 async fn watch_loop(
     search_root: PathBuf,
@@ -534,351 +564,322 @@ async fn watch_loop(
     sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
 ) {
     let mut dest_rx = dest;
-    // The task owns the current target and follows `changed()` itself
-    // (section 4.1): a bot can attach over a room-only reader, and a detach
-    // stops sends without stopping capture.
-    let mut bot_target: Option<BotTarget> = dest_rx.borrow_and_update().clone();
-    // #2232 phase 4 section 8: with no bot demand no diagnostic is built, so
-    // `BridgeLogger::new` — which truncates the **global** diagnostic files
-    // (`telegram/output.rs:140`) — is never called for a room-only reader. On a
-    // hot attach the loggers are born at that moment, which is when they are
-    // truncated on attach today.
-    let mut logger = bot_target.as_ref().map(|_| BridgeLogger::new(&session_id));
-    let mut diag = bot_target.as_ref().map(|_| DiagLogger::new());
-    // Log through the bridge logger only when one exists. With no bot demand
-    // there is no logger, so `CODEX_EXTRACT` is not written and no global log
-    // file is touched (#2232 phase 4 section 8).
-    macro_rules! bridge_log {
-        ($tag:expr, $msg:expr) => {
-            if let Some(bridge_logger) = logger.as_mut() {
-                bridge_logger.log($tag, &session_id, $msg);
-            }
-        };
-    }
-    let mut buffer = String::new();
-    let mut last_buffer_add = Instant::now();
+    let bot_target = dest_rx.borrow_and_update().clone();
+    let logger = bot_target.as_ref().map(|_| BridgeLogger::new(&session_id));
+    let diag = bot_target.as_ref().map(|_| DiagLogger::new());
+    let buffer = String::new();
+    let last_buffer_add = Instant::now();
     let flush_delay = Duration::from_millis(FLUSH_DELAY_MS);
-
-    // #2232 phase 1: records are built and delivered per accepted JSONL record,
-    // but no sink is attached yet — phase 4 passes a real sender into this
-    // watcher. With `None` the emit is a no-op and the Telegram path stays
-    // byte-identical.
-    // #2232 phase 4 section 4.2: the supervisor passes the live sender in, so a
-    // room-only reader emits into `CaptureRegistry` with no bot anywhere.
-    let capture_tx: Option<UnboundedSender<Arc<CapturedRecord>>> = sink;
-    let mut reader_seq: u64 = 0;
-    // #2232 phase 5: survives every poll for this reader, so a turn split over
-    // several reads still assembles once at its closure.
-    let mut turns = TurnAccumulator::new();
-    // #2232 phase 3: the reader's own epoch and file observation, computed only
-    // when a sink is attached. Codex re-anchors at the new file's EOF on
-    // rotation and therefore never replays, so it has no rotation backfill to
-    // mark; the Claude reader, which reads a rotated file from zero, does.
-    let mut observer = ReaderObservations::default();
-
-    let mut current_file: Option<PathBuf> = None;
-    let mut current_file_mtime: Option<SystemTime> = None;
-    let mut last_mtime_advance: Instant = Instant::now();
-    let mut file_offset: u64 = 0;
-    let mut line_remainder = String::new();
-    let mut search_warned = false;
-    let search_anchor = attach_time;
-
+    let mut state = CodexWatchState {
+        search_root,
+        expected_cwd,
+        attach_time,
+        network,
+        session_id,
+        event_port,
+        bot_target,
+        logger,
+        diag,
+        buffer,
+        last_buffer_add,
+        capture_tx: sink,
+        reader_seq: 0,
+        turns: TurnAccumulator::new(),
+        observer: ReaderObservations::default(),
+        current_file: None,
+        current_file_mtime: None,
+        last_mtime_advance: Instant::now(),
+        file_offset: 0,
+        line_remainder: String::new(),
+        search_warned: false,
+    };
     bridge_log!(
+        state,
         "CODEX_INIT",
         &format!(
             "search_root={} expected_cwd={}",
-            search_root.display(),
-            expected_cwd
+            state.search_root.display(),
+            state.expected_cwd
         )
     );
-
     let mut poll_interval = tokio::time::interval(Duration::from_millis(POLL_INTERVAL_MS));
     poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
     loop {
-        // `biased`: a destination change is processed before the next file
-        // poll, never after it (section 6).
         tokio::select! {
             biased;
             _ = cancel.cancelled() => break,
-
-            // §6: the destination is consulted only when it changes, and the
-            // three transitions run **inside the reader task**, with no
-            // `await` between them. Section 4.1: this is what lets a bot
-            // attach over a room-only reader and detach again while capture
-            // continues.
             changed = dest_rx.changed() => {
                 if changed.is_err() {
-                    // The supervisor dropped the sender: the reader is going away.
                     break;
                 }
                 let new_target = dest_rx.borrow_and_update().clone();
-                let attaching = new_target.is_some();
-                // The loggers are born at the moment of a hot attach, which is
-                // when they are truncated on attach today, so what is
-                // observable does not change (§8); a detach drops them.
-                if attaching {
-                    if logger.is_none() {
-                        logger = Some(BridgeLogger::new(&session_id));
-                    }
-                    if diag.is_none() {
-                        diag = Some(DiagLogger::new());
-                    }
-                } else {
-                    logger = None;
-                    diag = None;
-                }
-
-                // The three transitions, in order and with no `await` between:
-                // 1. discard the pending buffer;
-                // 2. switch the destination;
-                // 3. run the preamble (live attach only).
-                buffer.clear();
-                bot_target = new_target;
-                if attaching {
-                    if let Some(ref path) = current_file {
-                        match read_preamble_with_starts(path, Utc::now()) {
-                            Ok(lines) => {
-                                for (start, body) in lines {
-                                    // Only the lines below the reader's current
-                                    // offset; the normal loop sends the rest.
-                                    if start < file_offset {
-                                        bridge_log!("CODEX_PREAMBLE", &body);
-                                        buffer.push_str(&body);
-                                        buffer.push('\n');
-                                        last_buffer_add = Instant::now();
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                log::warn!("[CODEX_ERR] live-attach preamble read failed: {}", e);
-                            }
-                        }
-                    }
-                }
+                state.destination_changed(new_target);
             }
-
             _ = poll_interval.tick() => {
-                // M5: re-scan only when we don't have a current file, the tracked
-                // file has been unlinked, or the file's mtime has not advanced
-                // for ROTATION_STALE_SECS wall-clock seconds (i.e. it might have
-                // been rotated out from under us).
-                // `last_mtime_advance` is updated below when we observe the
-                // file's current mtime grow.
-                let need_rescan = match &current_file {
-                    None => true,
-                    Some(p) if !jsonl_kernel::transcript_exists(p) => true,
-                    Some(_) => last_mtime_advance.elapsed().as_secs() >= ROTATION_STALE_SECS,
+                state.rescan();
+                state.read_current();
+                state.flush_due(flush_delay).await;
+            }
+        }
+    }
+    state.finish().await;
+}
+impl CodexWatchState {
+    fn destination_changed(&mut self, new_target: Option<BotTarget>) {
+        let attaching = new_target.is_some();
+        if attaching {
+            if self.logger.is_none() {
+                self.logger = Some(BridgeLogger::new(&self.session_id));
+            }
+            if self.diag.is_none() {
+                self.diag = Some(DiagLogger::new());
+            }
+        } else {
+            self.logger = None;
+            self.diag = None;
+        }
+        self.buffer.clear();
+        self.bot_target = new_target;
+        if attaching {
+            if let Some(ref path) = self.current_file {
+                match read_preamble_with_starts(path, Utc::now()) {
+                    Ok(lines) => {
+                        for (start, body) in lines {
+                            if start < self.file_offset {
+                                bridge_log!(self, "CODEX_PREAMBLE", &body);
+                                self.buffer.push_str(&body);
+                                self.buffer.push('\n');
+                                self.last_buffer_add = Instant::now();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("[CODEX_ERR] live-attach preamble read failed: {}", e);
+                    }
+                }
+            }
+        }
+    }
+    fn rescan(&mut self) {
+        let need_rescan = match &self.current_file {
+            None => true,
+            Some(p) if !jsonl_kernel::transcript_exists(p) => true,
+            Some(_) => self.last_mtime_advance.elapsed().as_secs() >= ROTATION_STALE_SECS,
+        };
+        if need_rescan {
+            if let Some(found) =
+                find_session_file(&self.search_root, &self.expected_cwd, self.attach_time)
+            {
+                let same_as_current = self.current_file.as_ref() == Some(&found);
+                if !same_as_current {
+                    self.bind_file(&found);
+                    self.current_file = Some(found);
+                }
+                let new_mtime = self
+                    .current_file
+                    .as_ref()
+                    .and_then(|p| jsonl_kernel::transcript_metadata(p).ok())
+                    .and_then(|m| m.modified().ok());
+                if new_mtime != self.current_file_mtime {
+                    self.last_mtime_advance = Instant::now();
+                }
+                self.current_file_mtime = new_mtime;
+            } else if !self.search_warned {
+                bridge_log!(self, "CODEX_WAIT", "no rollout matching cwd found yet");
+                self.search_warned = true;
+            }
+        }
+    }
+    fn bind_file(&mut self, found: &Path) {
+        let first_bind = self.current_file.is_none();
+        if first_bind {
+            self.line_remainder.clear();
+            match read_preamble_for_race(found, self.attach_time, codex_preamble_extractor) {
+                Ok((bodies, _ids, file_len)) => {
+                    let attach = if self.capture_tx.is_some() {
+                        self.observer.observe(found, file_len, Vec::new())
+                    } else {
+                        ReaderAttachment::default()
+                    };
+                    for record in capture_preamble_bodies(
+                        bodies,
+                        &self.session_id,
+                        found,
+                        &mut self.reader_seq,
+                        self.capture_tx.as_ref(),
+                        &attach,
+                    ) {
+                        bridge_log!(self, "CODEX_PREAMBLE", &record.text);
+                        if self.bot_target.is_some() {
+                            self.buffer.push_str(&record.text);
+                            self.buffer.push('\n');
+                            self.last_buffer_add = Instant::now();
+                        }
+                    }
+                    self.file_offset = file_len;
+                    bridge_log!(
+                        self,
+                        "CODEX_FILE",
+                        &format!(
+                            "bound to {}, preamble done, offset={}",
+                            found.display(),
+                            self.file_offset
+                        )
+                    );
+                }
+                Err(e) => {
+                    bridge_log!(self, "CODEX_ERR", &format!("preamble scan failed: {}", e));
+                    self.file_offset = jsonl_kernel::transcript_metadata(found)
+                        .ok()
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                }
+            }
+        } else {
+            self.line_remainder.clear();
+            self.file_offset = jsonl_kernel::transcript_metadata(found)
+                .ok()
+                .map(|m| m.len())
+                .unwrap_or(0);
+            bridge_log!(
+                self,
+                "CODEX_ROTATE",
+                &format!(
+                    "rotated to {}, offset={}",
+                    found.display(),
+                    self.file_offset
+                )
+            );
+        }
+    }
+    fn read_current(&mut self) {
+        if let Some(ref path) = self.current_file {
+            let read_start = self.file_offset;
+            match read_new_lines_with_starts(path, &mut self.file_offset, &mut self.line_remainder)
+            {
+                Ok(new_lines) => {
+                    let attach = if self.capture_tx.is_some() {
+                        let head = head_from_lines(&new_lines, read_start);
+                        self.observer.observe(path, self.file_offset, head)
+                    } else {
+                        ReaderAttachment::default()
+                    };
+                    for record in capture_live_lines(
+                        new_lines,
+                        &self.session_id,
+                        path,
+                        &mut self.reader_seq,
+                        self.capture_tx.as_ref(),
+                        RecordOrigin::Live,
+                        &attach,
+                        &mut self.turns,
+                    ) {
+                        bridge_log!(self, "CODEX_EXTRACT", &record.text);
+                        if self.bot_target.is_some() {
+                            self.buffer.push_str(&record.text);
+                            self.buffer.push('\n');
+                            self.last_buffer_add = Instant::now();
+                        }
+                    }
+                    let new_mtime = jsonl_kernel::transcript_metadata(path)
+                        .ok()
+                        .and_then(|m| m.modified().ok());
+                    if new_mtime != self.current_file_mtime {
+                        self.last_mtime_advance = Instant::now();
+                    }
+                    self.current_file_mtime = new_mtime;
+                }
+                Err(e) => {
+                    bridge_log!(self, "CODEX_ERR", &e.to_string());
+                    log::error!(
+                        "[CODEX_ERR] Read error for session {}: {}",
+                        self.session_id,
+                        e
+                    );
+                    self.event_port.bridge_error(
+                        &self.session_id,
+                        &format!("Codex JSONL read error: {}", e),
+                        None,
+                    );
+                }
+            }
+        }
+    }
+    async fn flush_due(&mut self, flush_delay: Duration) {
+        if !self.buffer.is_empty() {
+            let elapsed = self.last_buffer_add.elapsed();
+            if elapsed >= flush_delay || self.buffer.len() > FLUSH_BYTES {
+                if let (Some(target), Some(bridge_logger), Some(diag_logger)) = (
+                    self.bot_target.as_ref(),
+                    self.logger.as_mut(),
+                    self.diag.as_mut(),
+                ) {
+                    flush_buffer(
+                        &mut self.buffer,
+                        &self.network,
+                        &target.token,
+                        target.chat_id,
+                        &self.session_id,
+                        self.event_port.as_ref(),
+                        bridge_logger,
+                        diag_logger,
+                        true,
+                    )
+                    .await;
+                } else {
+                    self.buffer.clear();
+                }
+            }
+        }
+    }
+    async fn finish(&mut self) {
+        if let Some(ref path) = self.current_file {
+            let read_start = self.file_offset;
+            if let Ok(new_lines) =
+                read_new_lines_with_starts(path, &mut self.file_offset, &mut self.line_remainder)
+            {
+                let attach = if self.capture_tx.is_some() {
+                    let head = head_from_lines(&new_lines, read_start);
+                    self.observer.observe(path, self.file_offset, head)
+                } else {
+                    ReaderAttachment::default()
                 };
-
-                if need_rescan {
-                    if let Some(found) =
-                        find_session_file(&search_root, &expected_cwd, search_anchor)
-                    {
-                        let same_as_current = current_file.as_ref() == Some(&found);
-                        if !same_as_current {
-                            // First bind or rotation.
-                            //  - first bind: run the §J preamble scan to emit
-                            //    any final assistant answer from the file's
-                            //    tail with timestamp >= attach_time - 5s, then
-                            //    set offset = file_len;
-                            //  - different path: existing EOF rotation policy.
-                            let first_bind = current_file.is_none();
-                            if first_bind {
-                                line_remainder.clear();
-                                match read_preamble_for_race(
-                                    &found,
-                                    attach_time,
-                                    codex_preamble_extractor,
-                                ) {
-                                    Ok((bodies, _ids, file_len)) => {
-                                        // The §J scan reads the tail, so it
-                                        // carries no head evidence: length
-                                        // alone decides the epoch here.
-                                        let attach = if capture_tx.is_some() {
-                                            observer.observe(&found, file_len, Vec::new())
-                                        } else {
-                                            ReaderAttachment::default()
-                                        };
-                                        for record in capture_preamble_bodies(
-                                            bodies,
-                                            &session_id,
-                                            &found,
-                                            &mut reader_seq,
-                                            capture_tx.as_ref(),
-                                            &attach,
-                                        ) {
-                                            bridge_log!("CODEX_PREAMBLE", &record.text);
-                                            if bot_target.is_some() {
-                                                buffer.push_str(&record.text);
-                                                buffer.push('\n');
-                                                last_buffer_add = Instant::now();
-                                            }
-                                        }
-                                        file_offset = file_len;
-                                        bridge_log!(
-                                            "CODEX_FILE",
-                                            &format!(
-                                                "bound to {}, preamble done, offset={}",
-                                                found.display(),
-                                                file_offset
-                                            )
-                                        );
-                                    }
-                                    Err(e) => {
-                                        bridge_log!(
-                                            "CODEX_ERR",
-                                            &format!("preamble scan failed: {}", e)
-                                        );
-                                        file_offset = jsonl_kernel::transcript_metadata(&found)
-                                            .ok()
-                                            .map(|m| m.len())
-                                            .unwrap_or(0);
-                                    }
-                                }
-                            } else {
-                                // Different path: existing EOF rotation policy.
-                                line_remainder.clear();
-                                file_offset = jsonl_kernel::transcript_metadata(&found)
-                                    .ok()
-                                    .map(|m| m.len())
-                                    .unwrap_or(0);
-                                bridge_log!(
-                                    "CODEX_ROTATE",
-                                    &format!(
-                                        "rotated to {}, offset={}",
-                                        found.display(),
-                                        file_offset
-                                    )
-                                );
-                            }
-                            current_file = Some(found);
-                        }
-                        let new_mtime = current_file.as_ref()
-                            .and_then(|p| jsonl_kernel::transcript_metadata(p).ok())
-                            .and_then(|m| m.modified().ok());
-                        if new_mtime != current_file_mtime {
-                            last_mtime_advance = Instant::now();
-                        }
-                        current_file_mtime = new_mtime;
-                    } else if !search_warned {
-                        bridge_log!("CODEX_WAIT", "no rollout matching cwd found yet");
-                        search_warned = true;
-                    }
-                }
-
-                if let Some(ref path) = current_file {
-                    let read_start = file_offset;
-                    match read_new_lines_with_starts(path, &mut file_offset, &mut line_remainder) {
-                        Ok(new_lines) => {
-                            let attach = if capture_tx.is_some() {
-                                let head = head_from_lines(&new_lines, read_start);
-                                observer.observe(path, file_offset, head)
-                            } else {
-                                ReaderAttachment::default()
-                            };
-                            for record in capture_live_lines(
-                                new_lines,
-                                &session_id,
-                                path,
-                                &mut reader_seq,
-                                capture_tx.as_ref(),
-                                RecordOrigin::Live,
-                                &attach,
-                                &mut turns,
-                            ) {
-                                bridge_log!("CODEX_EXTRACT", &record.text);
-                                if bot_target.is_some() {
-                                    buffer.push_str(&record.text);
-                                    buffer.push('\n');
-                                    last_buffer_add = Instant::now();
-                                }
-                            }
-                            let new_mtime = jsonl_kernel::transcript_metadata(path).ok()
-                                .and_then(|m| m.modified().ok());
-                            if new_mtime != current_file_mtime {
-                                last_mtime_advance = Instant::now();
-                            }
-                            current_file_mtime = new_mtime;
-                        }
-                        Err(e) => {
-                            bridge_log!("CODEX_ERR", &e.to_string());
-                            log::error!("[CODEX_ERR] Read error for session {}: {}", session_id, e);
-                            event_port.bridge_error(
-                                &session_id,
-                                &format!("Codex JSONL read error: {}", e),
-                                None,
-                            );
-                        }
-                    }
-                }
-
-                if !buffer.is_empty() {
-                    let elapsed = last_buffer_add.elapsed();
-                    if elapsed >= flush_delay || buffer.len() > FLUSH_BYTES {
-                        if let (Some(target), Some(bridge_logger), Some(diag_logger)) =
-                            (bot_target.as_ref(), logger.as_mut(), diag.as_mut())
-                        {
-                            flush_buffer(
-                                &mut buffer, &network, &target.token, target.chat_id,
-                                &session_id, event_port.as_ref(), bridge_logger, diag_logger,
-                                true,
-                            ).await;
-                        } else {
-                            buffer.clear();
-                        }
+                for record in capture_live_lines(
+                    new_lines,
+                    &self.session_id,
+                    path,
+                    &mut self.reader_seq,
+                    self.capture_tx.as_ref(),
+                    RecordOrigin::Live,
+                    &attach,
+                    &mut self.turns,
+                ) {
+                    if self.bot_target.is_some() {
+                        self.buffer.push_str(&record.text);
+                        self.buffer.push('\n');
                     }
                 }
             }
         }
-    }
-
-    // Final poll + flush after cancel.
-    if let Some(ref path) = current_file {
-        let read_start = file_offset;
-        if let Ok(new_lines) =
-            read_new_lines_with_starts(path, &mut file_offset, &mut line_remainder)
-        {
-            let attach = if capture_tx.is_some() {
-                let head = head_from_lines(&new_lines, read_start);
-                observer.observe(path, file_offset, head)
-            } else {
-                ReaderAttachment::default()
-            };
-            for record in capture_live_lines(
-                new_lines,
-                &session_id,
-                path,
-                &mut reader_seq,
-                capture_tx.as_ref(),
-                RecordOrigin::Live,
-                &attach,
-                &mut turns,
+        if !self.buffer.is_empty() {
+            if let (Some(target), Some(bridge_logger), Some(diag_logger)) = (
+                self.bot_target.as_ref(),
+                self.logger.as_mut(),
+                self.diag.as_mut(),
             ) {
-                if bot_target.is_some() {
-                    buffer.push_str(&record.text);
-                    buffer.push('\n');
-                }
+                flush_buffer(
+                    &mut self.buffer,
+                    &self.network,
+                    &target.token,
+                    target.chat_id,
+                    &self.session_id,
+                    self.event_port.as_ref(),
+                    bridge_logger,
+                    diag_logger,
+                    true,
+                )
+                .await;
             }
-        }
-    }
-    if !buffer.is_empty() {
-        if let (Some(target), Some(bridge_logger), Some(diag_logger)) =
-            (bot_target.as_ref(), logger.as_mut(), diag.as_mut())
-        {
-            flush_buffer(
-                &mut buffer,
-                &network,
-                &target.token,
-                target.chat_id,
-                &session_id,
-                event_port.as_ref(),
-                bridge_logger,
-                diag_logger,
-                true,
-            )
-            .await;
         }
     }
 }

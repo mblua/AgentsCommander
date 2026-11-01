@@ -101,27 +101,7 @@ pub(crate) async fn complete<'a: 'b, 'b, R: tauri::Runtime>(
             || skip_auto_resume
             || pending_start_fresh == Some(true)
             || fresh_forced_by_mirror);
-    let key = if session.backend_kind == crate::pty::backend::SessionBackendKind::LocalProcess {
-        crate::config::sessions_persistence::prompt_key(
-            cwd,
-            session.agent_id.as_deref(),
-            session.requested_profile.as_deref(),
-            session.effective_profile.as_deref(),
-        )
-    } else {
-        None
-    };
-    let initial = initial_last_prompt
-        .as_ref()
-        .filter(|source| source.compatible(&session))
-        .and_then(|source| source.text.clone());
-    let revalidated = crate::config::sessions_persistence::prompt_key(
-        cwd,
-        session.agent_id.as_deref(),
-        session.requested_profile.as_deref(),
-        session.effective_profile.as_deref(),
-    );
-    let key = key.filter(|candidate| Some(candidate) == revalidated.as_ref());
+    let (key, initial) = prompt_initialization(cwd, &session, initial_last_prompt);
     let carrier_prompt = match with_create_resource_region(
         create_owner,
         &mut resource_permit,
@@ -521,4 +501,33 @@ pub(crate) fn mirror_fresh_intent<R: tauri::Runtime>(
     }
 
     (skip_auto_resume, fresh_forced_by_mirror)
+}
+
+fn prompt_initialization(
+    cwd: &str,
+    session: &crate::session::session::Session,
+    initial_last_prompt: Option<&crate::commands::session::create::contracts::InitialLastPrompt>,
+) -> (Option<crate::session::manager::PromptKey>, Option<String>) {
+    let key = if session.backend_kind == crate::pty::backend::SessionBackendKind::LocalProcess {
+        crate::config::sessions_persistence::prompt_key(
+            cwd,
+            session.agent_id.as_deref(),
+            session.requested_profile.as_deref(),
+            session.effective_profile.as_deref(),
+        )
+    } else {
+        None
+    };
+    let initial = initial_last_prompt
+        .as_ref()
+        .filter(|source| source.compatible(session))
+        .and_then(|source| source.text.clone());
+    let revalidated = crate::config::sessions_persistence::prompt_key(
+        cwd,
+        session.agent_id.as_deref(),
+        session.requested_profile.as_deref(),
+        session.effective_profile.as_deref(),
+    );
+    let key = key.filter(|candidate| Some(candidate) == revalidated.as_ref());
+    (key, initial)
 }

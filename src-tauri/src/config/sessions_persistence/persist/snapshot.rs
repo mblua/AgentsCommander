@@ -312,62 +312,71 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
 
         result
     } else {
-        let mut result = Vec::with_capacity(args.len());
-        let mut skip_next = false;
-        for (idx, a) in args.iter().enumerate() {
-            if skip_next {
-                skip_next = false;
-                continue;
-            }
-            if is_codex
-                && idx == 0
-                && a.eq_ignore_ascii_case("resume")
-                && args
-                    .get(1)
-                    .is_some_and(|next| next.eq_ignore_ascii_case("--last"))
-            {
-                continue;
-            }
-            if is_codex
-                && idx == 1
-                && args
-                    .first()
-                    .is_some_and(|first| first.eq_ignore_ascii_case("resume"))
-                && a.eq_ignore_ascii_case("--last")
-            {
-                continue;
-            }
-
-            if is_antigravity && a.eq_ignore_ascii_case("--continue") {
-                continue;
-            }
-            if is_claude && a.eq_ignore_ascii_case("--continue") {
-                continue;
-            }
-            // (#756) Rider belt, direct-exec form: strip the launcher-minted
-            // `--session-id <v4>` pair / `--session-id=<v4>` joined token.
-            // UUID-gated so user-authored non-UUID values are preserved.
-            if is_claude {
-                let lower = a.to_lowercase();
-                if lower == "--session-id"
-                    && args
-                        .get(idx + 1)
-                        .is_some_and(|v| uuid::Uuid::parse_str(v).is_ok())
-                {
-                    skip_next = true; // consume the paired UUID value too
-                    continue;
-                }
-                if lower
-                    .strip_prefix("--session-id=")
-                    .is_some_and(|v| uuid::Uuid::parse_str(v).is_ok())
-                {
-                    continue;
-                }
-            }
-            result.push(a.clone());
-        }
-        result
+        strip_direct_injected_args(args, is_claude, is_codex, is_antigravity)
     }
+}
+
+fn strip_direct_injected_args(
+    args: &[String],
+    is_claude: bool,
+    is_codex: bool,
+    is_antigravity: bool,
+) -> Vec<String> {
+    let mut result = Vec::with_capacity(args.len());
+    let mut skip_next = false;
+    for (idx, a) in args.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if is_codex
+            && idx == 0
+            && a.eq_ignore_ascii_case("resume")
+            && args
+                .get(1)
+                .is_some_and(|next| next.eq_ignore_ascii_case("--last"))
+        {
+            continue;
+        }
+        if is_codex
+            && idx == 1
+            && args
+                .first()
+                .is_some_and(|first| first.eq_ignore_ascii_case("resume"))
+            && a.eq_ignore_ascii_case("--last")
+        {
+            continue;
+        }
+
+        if is_antigravity && a.eq_ignore_ascii_case("--continue") {
+            continue;
+        }
+        if is_claude && a.eq_ignore_ascii_case("--continue") {
+            continue;
+        }
+        // (#756) Rider belt, direct-exec form: strip the launcher-minted
+        // `--session-id <v4>` pair / `--session-id=<v4>` joined token.
+        // UUID-gated so user-authored non-UUID values are preserved.
+        if is_claude {
+            let lower = a.to_lowercase();
+            if lower == "--session-id"
+                && args
+                    .get(idx + 1)
+                    .is_some_and(|v| uuid::Uuid::parse_str(v).is_ok())
+            {
+                skip_next = true; // consume the paired UUID value too
+                continue;
+            }
+            if lower
+                .strip_prefix("--session-id=")
+                .is_some_and(|v| uuid::Uuid::parse_str(v).is_ok())
+            {
+                continue;
+            }
+        }
+        result.push(a.clone());
+    }
+    result
 }
 
 /// Pure: produce a sanitized copy of a failed-recoverable PersistedSession

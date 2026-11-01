@@ -221,10 +221,9 @@ fn validate_snapshot_output(
     Ok(())
 }
 
-fn execute_inner(
-    args: TerminalSnapshotArgs,
-    history: &SnapshotStageHistory,
-) -> Result<(), TerminalSnapshotRejection> {
+fn validate_snapshot_args(
+    args: &TerminalSnapshotArgs,
+) -> Result<(Uuid, TerminalSnapshotFormat), TerminalSnapshotRejection> {
     use TerminalSnapshotField as F;
     use TerminalSnapshotReasonCode as C;
     use TerminalSnapshotRejectionReason as R;
@@ -251,7 +250,18 @@ fn execute_inner(
     })?;
     let format = TerminalSnapshotFormat::from(args.format);
     validate_snapshot_output(format, args.output.as_deref())?;
+    Ok((token, format))
+}
 
+fn execute_inner(
+    args: TerminalSnapshotArgs,
+    history: &SnapshotStageHistory,
+) -> Result<(), TerminalSnapshotRejection> {
+    use TerminalSnapshotField as F;
+    use TerminalSnapshotReasonCode as C;
+    use TerminalSnapshotRejectionReason as R;
+
+    let (token, format) = validate_snapshot_args(&args)?;
     let (root_identity, from) = verify_requester_root(&args.root)?;
     let local = args.root.join(crate::config::agent_local_dir_name());
     let outbox = local.join("outbox");

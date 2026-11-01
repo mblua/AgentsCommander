@@ -19,6 +19,9 @@ use super::settle::{
     archive_root_md, capture_self_forget_summary, inject_handoff_prompt_with_archive,
     self_clear_gate_advance, SelfClearBoundary, SelfClearGateAction, SelfClearGateState,
 };
+use crate::commands::pty::{
+    note_post_boundary_content_to_session, stamp_fresh_boundary_to_session,
+};
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
@@ -43,48 +46,19 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         is_app_outbox: bool,
     ) -> Result<(), String> {
-        let token_uuid = match msg.token.as_deref().and_then(|t| Uuid::parse_str(t).ok()) {
-            Some(u) => u,
-            None => {
-                return self
-                    .reject_message(
-                        path,
-                        msg,
-                        "self-handoff-and-switch requires a valid session token; restart or \
-                        respawn the session",
-                    )
-                    .await;
-            }
-        };
-        let session = {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = session_mgr.read().await;
-            mgr.find_by_token(token_uuid).await
-        };
-        let session = match session {
-            Some(s) => s,
-            None => {
-                return self
-                    .reject_message(
-                        path,
-                        msg,
-                        "self-handoff-and-switch: no live session owns this token; restart or \
-                        respawn the session",
-                    )
-                    .await;
-            }
-        };
-        let session_id = match Uuid::parse_str(&session.id) {
-            Ok(u) => u,
-            Err(_) => {
-                return self
-                    .reject_message(
-                        path,
-                        msg,
-                        "self-handoff-and-switch: internal error resolving session id",
-                    )
-                    .await;
-            }
+        let (session, session_id) = match resolve_self_handoff_identity(
+            msg,
+            "self-handoff-and-switch",
+            |token_uuid| async move {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+                mgr.find_by_token(token_uuid).await
+            },
+        )
+        .await
+        {
+            Ok(identity) => identity,
+            Err(reason) => return self.reject_message(path, msg, &reason).await,
         };
 
         if !crate::pty::inject::supports_self_handoff_switch(&session.shell) {
@@ -204,51 +178,19 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         is_app_outbox: bool,
     ) -> Result<(), String> {
-        // 1. Token parse.
-        let token_uuid = match msg.token.as_deref().and_then(|t| Uuid::parse_str(t).ok()) {
-            Some(u) => u,
-            None => {
-                return self
-                    .reject_message(
-                        path,
-                        msg,
-                        "self-handoff-and-restart requires a valid session token; restart or \
-                        respawn the session",
-                    )
-                    .await;
-            }
-        };
-        // 2. Sole authorization: the session that owns the presented token.
-        let session = {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = session_mgr.read().await;
-            mgr.find_by_token(token_uuid).await
-        };
-        let session = match session {
-            Some(s) => s,
-            None => {
-                return self
-                    .reject_message(
-                        path,
-                        msg,
-                        "self-handoff-and-restart: no live session owns this token; restart or \
-                        respawn the session",
-                    )
-                    .await;
-            }
-        };
-        // 3. Session id.
-        let session_id = match Uuid::parse_str(&session.id) {
-            Ok(u) => u,
-            Err(_) => {
-                return self
-                    .reject_message(
-                        path,
-                        msg,
-                        "self-handoff-and-restart: internal error resolving session id",
-                    )
-                    .await;
-            }
+        let (session, session_id) = match resolve_self_handoff_identity(
+            msg,
+            "self-handoff-and-restart",
+            |token_uuid| async move {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+                mgr.find_by_token(token_uuid).await
+            },
+        )
+        .await
+        {
+            Ok(identity) => identity,
+            Err(reason) => return self.reject_message(path, msg, &reason).await,
         };
 
         let recipe = match resolve_self_restart_request(&session) {
@@ -365,12 +307,7 @@ impl MailboxPoller {
             let app = app_for_state.clone();
             async move {
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = session_mgr.read().await;
-                let sessions = mgr.list_sessions().await;
-                match sessions.iter().find(|s| s.id == session_id.to_string()) {
-                    Some(s) => (true, s.waiting_for_input),
-                    None => (false, false),
-                }
+                Self::self_handoff_session_state(session_mgr.inner(), session_id).await
             }
         };
 
@@ -387,14 +324,10 @@ impl MailboxPoller {
             async move {
                 match boundary {
                     SelfClearBoundary::Cleared => {
-                        crate::commands::pty::stamp_fresh_boundary_to_session(&app, session_id)
-                            .await
+                        stamp_fresh_boundary_to_session(&app, session_id).await
                     }
                     SelfClearBoundary::ContentInjected => {
-                        crate::commands::pty::note_post_boundary_content_to_session(
-                            &app, session_id,
-                        )
-                        .await
+                        note_post_boundary_content_to_session(&app, session_id).await
                     }
                 };
             }
@@ -453,16 +386,16 @@ impl MailboxPoller {
                 "[mailbox] clear driver missing legacy reservation for {}",
                 session_id
             );
-            return SelfHandoffOutcome::Failed(SelfHandoffFailure {
-                action: SELF_CLEAR_ACTION,
-                attempt: Uuid::new_v4(),
-                original: session_id,
-                current: Some(session_id),
+            return clear_self_handoff_outcome(
+                session_id,
                 root,
-                continuation: false,
-                reason: format!("clear driver missing legacy reservation for {session_id}"),
-                forgotten: forgotten_summary.is_some(),
-            });
+                forgotten_summary.is_some(),
+                Uuid::new_v4(),
+                false,
+                Some(format!(
+                    "clear driver missing legacy reservation for {session_id}"
+                )),
+            );
         };
         let attempt = Uuid::new_v4();
         let mut continuation = false;
@@ -487,23 +420,10 @@ impl MailboxPoller {
             match action {
                 SelfClearGateAction::Wait => continue,
                 SelfClearGateAction::InjectClear => {
-                    log::info!(
-                        "[mailbox] self-handoff-and-clear: session {} idle >={}s; injecting {} \
-                        (phase 1)",
-                        session_id,
-                        settle.as_secs(),
-                        clear_text
-                    );
-                    // The idle-to-final-Enter race matches the remote logical-clear path.
-                    if let Err(e) = inject(session_id, clear_text.to_string()).await {
-                        log::warn!(
-                            "[mailbox] self-handoff-and-clear: {} injection failed for session {}: \
-                            {}",
-                            clear_text,
-                            session_id,
-                            e
-                        );
-                        break Some(e); // clear may have been partially submitted
+                    if let Err(e) =
+                        inject_self_clear_phase(session_id, clear_text, settle, &mut inject).await
+                    {
+                        break Some(e);
                     }
                     // Logical clear reached the PTY; stamp before phase 2
                     // can possibly drop (stamp-then-drop ordering).
@@ -512,18 +432,10 @@ impl MailboxPoller {
                     continue; // state is already Phase 2 with reset clocks
                 }
                 SelfClearGateAction::InjectHandoff => {
-                    log::info!(
-                        "[mailbox] self-handoff-and-clear: session {} idle >={}s post-clear; \
-                        injecting handoff prompt (phase 2)",
-                        session_id,
-                        settle.as_secs()
-                    );
-                    // #749 - archive-first contract; see inject_handoff_prompt_with_archive.
-                    let injected = inject_handoff_prompt_with_archive(
+                    let injected = inject_self_clear_handoff(
                         &root,
                         session_id,
-                        SELF_CLEAR_ACTION,
-                        build_self_clear_handoff_prompt,
+                        settle,
                         forgotten_summary.as_ref(),
                         &mut inject,
                     )
@@ -551,19 +463,14 @@ impl MailboxPoller {
         // Always de-register (handoff injected / destroy / cap-expiry / clear-inject-fail all land
         // here).
         pending.release(&lease);
-        match reason {
-            None => SelfHandoffOutcome::Completed,
-            Some(reason) => SelfHandoffOutcome::Failed(SelfHandoffFailure {
-                action: SELF_CLEAR_ACTION,
-                attempt,
-                original: session_id,
-                current: Some(session_id),
-                root,
-                continuation,
-                reason,
-                forgotten: forgotten_summary.is_some(),
-            }),
-        }
+        clear_self_handoff_outcome(
+            session_id,
+            root,
+            forgotten_summary.is_some(),
+            attempt,
+            continuation,
+            reason,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -587,12 +494,7 @@ impl MailboxPoller {
             let app = app_for_state.clone();
             async move {
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = session_mgr.read().await;
-                let sessions = mgr.list_sessions().await;
-                match sessions.iter().find(|s| s.id == session_id.to_string()) {
-                    Some(s) => (true, s.waiting_for_input),
-                    None => (false, false),
-                }
+                Self::self_handoff_session_state(session_mgr.inner(), session_id).await
             }
         };
 
@@ -603,11 +505,7 @@ impl MailboxPoller {
                 if flavor.action == SELF_HANDOFF_FLAVOR_RESTART.action {
                     return Ok(());
                 }
-                let settings_snapshot = {
-                    let settings = app.state::<SettingsState>();
-                    let snapshot = settings.read().await.clone();
-                    snapshot
-                };
+                let settings_snapshot = app.state::<SettingsState>().read().await.clone();
                 crate::config::coding_agent_profiles::set_replica_coding_agent_selection(
                     &settings_snapshot,
                     &cwd,
@@ -624,17 +522,8 @@ impl MailboxPoller {
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
                 let settings = app.state::<SettingsState>();
-                // (#747) The self-clear restart is agent-initiated, not user
-                // input: a pending raised hand must survive it (the injected
-                // handoff continues the same work). Capture before the
-                // destroy; restore_communication re-gates kind, visibility,
-                // and coordinator, so no pre-filter is needed here.
-                let carried_communication = {
-                    let mgr = session_mgr.read().await;
-                    mgr.get_session(session_id)
-                        .await
-                        .and_then(|s| s.communication.clone())
-                };
+                let carried_communication =
+                    restart_communication(session_mgr.inner(), session_id).await;
                 let result = crate::commands::session::restart_session_inner_with_intent(
                     &app,
                     session_mgr.inner(),
@@ -673,14 +562,10 @@ impl MailboxPoller {
             async move {
                 match boundary {
                     SelfClearBoundary::Cleared => {
-                        crate::commands::pty::stamp_fresh_boundary_to_session(&app, session_id)
-                            .await
+                        stamp_fresh_boundary_to_session(&app, session_id).await
                     }
                     SelfClearBoundary::ContentInjected => {
-                        crate::commands::pty::note_post_boundary_content_to_session(
-                            &app, session_id,
-                        )
-                        .await
+                        note_post_boundary_content_to_session(&app, session_id).await
                     }
                 };
             }
@@ -820,6 +705,143 @@ impl MailboxPoller {
             format!("The agent could not be notified: {reason}"),
         );
     }
+    async fn self_handoff_session_state(
+        session_mgr: &tokio::sync::RwLock<SessionManager>,
+        session_id: Uuid,
+    ) -> (bool, bool) {
+        let mgr = session_mgr.read().await;
+        let sessions = mgr.list_sessions().await;
+        match sessions.iter().find(|s| s.id == session_id.to_string()) {
+            Some(s) => (true, s.waiting_for_input),
+            None => (false, false),
+        }
+    }
+}
+
+async fn restart_communication(
+    session_mgr: &tokio::sync::RwLock<SessionManager>,
+    session_id: Uuid,
+) -> Option<crate::session::session::SessionCommunication> {
+    // (#747) The self-clear restart is agent-initiated, not user
+    // input: a pending raised hand must survive it (the injected
+    // handoff continues the same work). Capture before the
+    // destroy; restore_communication re-gates kind, visibility,
+    // and coordinator, so no pre-filter is needed here.
+    let mgr = session_mgr.read().await;
+    mgr.get_session(session_id)
+        .await
+        .and_then(|s| s.communication.clone())
+}
+
+async fn resolve_self_handoff_identity<Lookup, LookupFut>(
+    msg: &OutboxMessage,
+    action: &'static str,
+    lookup: Lookup,
+) -> Result<(SessionInfo, Uuid), String>
+where
+    Lookup: FnOnce(Uuid) -> LookupFut,
+    LookupFut: std::future::Future<Output = Option<SessionInfo>>,
+{
+    // 1. Token parse.
+    let token_uuid = msg
+        .token
+        .as_deref()
+        .and_then(|t| Uuid::parse_str(t).ok())
+        .ok_or_else(|| {
+            format!("{action} requires a valid session token; restart or respawn the session")
+        })?;
+    // 2. Sole authorization: the session that owns the presented token.
+    let session = lookup(token_uuid).await;
+    let session = session.ok_or_else(|| {
+        format!("{action}: no live session owns this token; restart or respawn the session")
+    })?;
+    // 3. Session id.
+    let session_id = Uuid::parse_str(&session.id)
+        .map_err(|_| format!("{action}: internal error resolving session id"))?;
+    Ok((session, session_id))
+}
+
+async fn inject_self_clear_phase<Inject, InjectFut>(
+    session_id: Uuid,
+    clear_text: &'static str,
+    settle: std::time::Duration,
+    inject: &mut Inject,
+) -> Result<(), String>
+where
+    Inject: FnMut(Uuid, String) -> InjectFut + Send,
+    InjectFut: std::future::Future<Output = Result<(), String>> + Send,
+{
+    log::info!(
+        "[mailbox] self-handoff-and-clear: session {} idle >={}s; injecting {} \
+        (phase 1)",
+        session_id,
+        settle.as_secs(),
+        clear_text
+    );
+    // The idle-to-final-Enter race matches the remote logical-clear path.
+    if let Err(e) = inject(session_id, clear_text.to_string()).await {
+        log::warn!(
+            "[mailbox] self-handoff-and-clear: {} injection failed for session {}: \
+            {}",
+            clear_text,
+            session_id,
+            e
+        );
+        return Err(e); // clear may have been partially submitted
+    }
+    Ok(())
+}
+
+fn clear_self_handoff_outcome(
+    session_id: Uuid,
+    root: PathBuf,
+    forgotten: bool,
+    attempt: Uuid,
+    continuation: bool,
+    reason: Option<String>,
+) -> SelfHandoffOutcome {
+    match reason {
+        None => SelfHandoffOutcome::Completed,
+        Some(reason) => SelfHandoffOutcome::Failed(SelfHandoffFailure {
+            action: SELF_CLEAR_ACTION,
+            attempt,
+            original: session_id,
+            current: Some(session_id),
+            root,
+            continuation,
+            reason,
+            forgotten,
+        }),
+    }
+}
+
+async fn inject_self_clear_handoff<Inject, InjectFut>(
+    root: &Path,
+    session_id: Uuid,
+    settle: std::time::Duration,
+    forgotten_summary: Option<&ForgottenSummary>,
+    inject: &mut Inject,
+) -> bool
+where
+    Inject: FnMut(Uuid, String) -> InjectFut + Send + 'static,
+    InjectFut: std::future::Future<Output = Result<(), String>> + Send,
+{
+    log::info!(
+        "[mailbox] self-handoff-and-clear: session {} idle >={}s post-clear; \
+        injecting handoff prompt (phase 2)",
+        session_id,
+        settle.as_secs()
+    );
+    // #749 - archive-first contract; see inject_handoff_prompt_with_archive.
+    inject_handoff_prompt_with_archive(
+        root,
+        session_id,
+        SELF_CLEAR_ACTION,
+        build_self_clear_handoff_prompt,
+        forgotten_summary,
+        inject,
+    )
+    .await
 }
 
 fn validate_self_restart_spawn(

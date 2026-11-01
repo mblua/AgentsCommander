@@ -148,26 +148,8 @@ pub(crate) async fn run_update_sequence_cancellable(
             }
         }
         gate.owner_installed(&target.command, work, epoch);
-        let waited = {
-            let lease = owner_slot.lease.as_mut().expect("installed target lease");
-            owner_slot
-                .updater
-                .as_mut()
-                .expect("installed target owner")
-                .wait(step_timeout, &mut lease.cancel)
-                .await
-        };
-        let settlement = {
-            let lease = owner_slot.lease.as_mut().expect("settled target lease");
-            owner_slot
-                .updater
-                .as_mut()
-                .expect("settled target owner")
-                .settle_observing_cancellation(&waited, &mut lease.cancel, || {
-                    gate.owner_observed_cancellation(&target.command, work, epoch);
-                })
-                .await
-        };
+        let (waited, settlement) =
+            wait_and_settle_update_step(target, step_timeout, gate, owner_slot, work, epoch).await;
         let cancellation_reserved = owner_slot.owner_returned(gate, &target.command);
         if !settlement.defects.is_empty() {
             log::warn!(
@@ -229,6 +211,37 @@ pub(crate) async fn run_update_sequence_cancellable(
         }
     }
     UpdaterStepOutcome::Succeeded
+}
+
+async fn wait_and_settle_update_step(
+    target: &UpdateTarget,
+    step_timeout: Duration,
+    gate: &AgentUpdateGate,
+    owner_slot: &mut TargetOwnerSlot,
+    work: TargetWork,
+    epoch: u64,
+) -> (TargetWait, TargetSettlement) {
+    let waited = {
+        let lease = owner_slot.lease.as_mut().expect("installed target lease");
+        owner_slot
+            .updater
+            .as_mut()
+            .expect("installed target owner")
+            .wait(step_timeout, &mut lease.cancel)
+            .await
+    };
+    let settlement = {
+        let lease = owner_slot.lease.as_mut().expect("settled target lease");
+        owner_slot
+            .updater
+            .as_mut()
+            .expect("settled target owner")
+            .settle_observing_cancellation(&waited, &mut lease.cancel, || {
+                gate.owner_observed_cancellation(&target.command, work, epoch);
+            })
+            .await
+    };
+    (waited, settlement)
 }
 
 #[cfg(test)]

@@ -661,6 +661,36 @@ fn force_quit_round(gate: &QuitGate, host: &dyn QuitGateHost, epoch: Option<u64>
     QuitOutcome::exiting(supplied)
 }
 
+// Atomic install: allocate the epoch, snapshot the registered gates and
+// install every pending sender under one lock.
+fn install_quit_round(
+    gate: &QuitGate,
+) -> Result<(u64, Vec<tokio::sync::oneshot::Receiver<bool>>), QuitOutcome> {
+    let mut inner = gate.lock();
+    if let Some(round) = inner.round.as_ref() {
+        return Err(QuitOutcome::in_flight(round.epoch));
+    }
+    let new_epoch = inner.alloc_epoch();
+    let snapshot = inner.registered.clone();
+    let mut pending = HashMap::new();
+    let mut receivers = Vec::new();
+    for label in &snapshot {
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        pending.insert(label.clone(), tx);
+        receivers.push(rx);
+    }
+    inner.round = Some(QuitRound {
+        epoch: new_epoch,
+        snapshot,
+        pending,
+        refusing: std::collections::BTreeSet::new(),
+        busy: HashSet::new(),
+        remaining: QUIT_GATE_TIMEOUT,
+        deadline: Some(gate.clock.now() + QUIT_GATE_TIMEOUT),
+    });
+    Ok((new_epoch, receivers))
+}
+
 /// Runs a quit round to its terminal outcome. `force` takes the epoch to
 /// supersede; a non-force call allocates a fresh one.
 pub async fn quit_gate_run(
@@ -687,32 +717,9 @@ pub async fn quit_gate_run(
         return Err("quit_application requires a nonempty attemptId".to_string());
     }
 
-    // Atomic install: allocate the epoch, snapshot the registered gates and
-    // install every pending sender under one lock.
-    let (new_epoch, receivers) = {
-        let mut inner = gate.lock();
-        if let Some(round) = inner.round.as_ref() {
-            return Ok(QuitOutcome::in_flight(round.epoch));
-        }
-        let new_epoch = inner.alloc_epoch();
-        let snapshot = inner.registered.clone();
-        let mut pending = HashMap::new();
-        let mut receivers = Vec::new();
-        for label in &snapshot {
-            let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-            pending.insert(label.clone(), tx);
-            receivers.push(rx);
-        }
-        inner.round = Some(QuitRound {
-            epoch: new_epoch,
-            snapshot,
-            pending,
-            refusing: std::collections::BTreeSet::new(),
-            busy: HashSet::new(),
-            remaining: QUIT_GATE_TIMEOUT,
-            deadline: Some(gate.clock.now() + QUIT_GATE_TIMEOUT),
-        });
-        (new_epoch, receivers)
+    let (new_epoch, receivers) = match install_quit_round(gate.as_ref()) {
+        Ok(installed) => installed,
+        Err(outcome) => return Ok(outcome),
     };
 
     let mut guard = QuitRoundGuard {

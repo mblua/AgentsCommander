@@ -674,17 +674,11 @@ pub(crate) fn current_response_row<'a>(
     })
 }
 
-/// Both frozen route lifecycles and the caller's current interior manager read
-/// remain live through the pure tracker transition. The coordinator keeps its
-/// actual backend; the member alone must be a local interactive process.
-pub(crate) fn with_verified_response_pair<T>(
+fn response_pair_current_diagnostic(
     current: &crate::session::manager::CarrierSnapshot,
-    pty: &Arc<Mutex<PtyManager>>,
-    state: &crate::pty::manager::ResponseCloseState,
     member: &crate::pty::manager::ResponseRouteIdentity,
     coordinator: &crate::pty::manager::ResponseRouteIdentity,
-    publish: impl FnOnce(&Session, &Session) -> T,
-) -> Option<T> {
+) {
     response_diag_debug_only(|| {
         log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag \
             site={} outcome=observed stage=verified_pair scope=stage_current id=unknown member={} \
@@ -700,6 +694,20 @@ pub(crate) fn with_verified_response_pair<T>(
             coordinator.carrier_version
         );
     });
+}
+
+/// Both frozen route lifecycles and the caller's current interior manager read
+/// remain live through the pure tracker transition. The coordinator keeps its
+/// actual backend; the member alone must be a local interactive process.
+pub(crate) fn with_verified_response_pair<T>(
+    current: &crate::session::manager::CarrierSnapshot,
+    pty: &Arc<Mutex<PtyManager>>,
+    state: &crate::pty::manager::ResponseCloseState,
+    member: &crate::pty::manager::ResponseRouteIdentity,
+    coordinator: &crate::pty::manager::ResponseRouteIdentity,
+    publish: impl FnOnce(&Session, &Session) -> T,
+) -> Option<T> {
+    response_pair_current_diagnostic(current, member, coordinator);
     let member_row = response_diag_option_local!(
         current_response_row(current, member),
         "verified_pair",

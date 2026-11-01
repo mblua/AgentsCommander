@@ -8,12 +8,10 @@ use crate::commands::session::create::admission::release_resource_launch_permit;
 use crate::commands::session::create::admission::with_create_resource_region;
 use crate::commands::session::create::admission::CoordinatorCreateTicket;
 use crate::commands::session::create::admission::CreateResourceAdmission;
-use crate::commands::session::create::admission::OwnedCreateAdmission;
 use crate::commands::session::create::contracts::CreateBodyContext;
 use crate::commands::session::create::contracts::CreateCompletion;
 use crate::commands::session::create::contracts::CreateSelectionIntent;
 use crate::commands::session::create::contracts::InitialLastPrompt;
-use crate::commands::session::create::contracts::PendingLaunch;
 use crate::commands::session::create::publication::acquire_create_target_lease;
 use crate::commands::session::create::publication::finish_create_core_result;
 use crate::commands::session::create::publication::resolve_create_destination;
@@ -38,7 +36,6 @@ use crate::session::selection::SelectionCoordinator;
 use crate::session::selection::SelectionTransaction;
 use crate::session::session::SessionCommunication;
 use crate::session::session::SessionRepo;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::AppHandle;
@@ -92,33 +89,17 @@ pub(crate) async fn create_session_inner_core<R: tauri::Runtime>(
     )
     .await?;
     let create_manager = session_mgr.read().await.clone();
-    let Some((create_nonce, create_binding)) =
-        creation::create_binding(&create_manager, owned_replacement.as_ref())
-    else {
+    let Some(create_owner) = creation::create_owner(
+        preheld_target.is_some(),
+        owned_replacement.as_ref(),
+        pty_mgr,
+        create_target_key.clone(),
+        &cwd,
+        &create_manager,
+        _owned_target_gate,
+    ) else {
         return Ok(CreateCompletion::Retained);
     };
-    let create_owner = Arc::new(Mutex::new(OwnedCreateAdmission {
-        preheld_target: preheld_target.is_some(),
-        owned_replacement: owned_replacement.clone(),
-        replacement_pty: owned_replacement.as_ref().map(|_| pty_mgr.clone()),
-        tracker: pty_mgr
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .response_close_state(),
-        target: create_target_key
-            .clone()
-            .unwrap_or_else(|| format!("create-cwd:{}", cwd)),
-        cwd: PathBuf::from(&cwd),
-        nonce: create_nonce,
-        binding: create_binding,
-        reservation: None,
-        failed_foreign: false,
-        owned_target: _owned_target_gate,
-        capacity: None,
-        resource: None,
-        blocked_bound: false,
-        capacity_error: None,
-    }));
     let session_label = session_name.as_deref().unwrap_or(&shell).to_string();
     let coordinator = app
         .try_state::<SelectionCoordinator>()
@@ -132,7 +113,6 @@ pub(crate) async fn create_session_inner_core<R: tauri::Runtime>(
     )
     .await?;
     let inline_pending_binding = Arc::new(Mutex::new(None));
-    let inline_pending_for_body = Arc::clone(&inline_pending_binding);
     // (#2413) Close-marker ticket of this create; the body fills it, the outer
     // scope ends it after the select.
     let marker_ticket = Mutex::new(None::<CoordinatorCreateTicket<R>>);
@@ -158,7 +138,7 @@ pub(crate) async fn create_session_inner_core<R: tauri::Runtime>(
         coordinator: coordinator.inner(),
         create_ticket: &create_ticket,
         marker_ticket: &marker_ticket,
-        inline_pending_for_body: inline_pending_for_body.as_ref(),
+        inline_pending_for_body: inline_pending_binding.as_ref(),
     };
     let create_body = create_body(
         &ctx,
@@ -181,10 +161,7 @@ pub(crate) async fn create_session_inner_core<R: tauri::Runtime>(
     // Coordinator shutdown may reject finalization, but cannot drop a pending
     // backend/native effect and manufacture completion for the caller.
     let result = Box::pin(create_body).await;
-    let marker = marker_ticket
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take();
+    let marker = creation::take_marker_ticket(&marker_ticket);
     finish_create_core_result(
         marker,
         result,
@@ -311,7 +288,7 @@ pub(crate) async fn create_body<R: tauri::Runtime>(
 
 pub(crate) async fn reserve_launch<R: tauri::Runtime>(
     ctx: &CreateBodyContext<'_, R>,
-    input: CreateInput,
+    mut input: CreateInput,
 ) -> Result<CreateCompletion, String> {
     let &CreateBodyContext {
         app,
@@ -323,20 +300,6 @@ pub(crate) async fn reserve_launch<R: tauri::Runtime>(
         marker_ticket,
         ..
     } = ctx;
-    let CreateInput {
-        session_label,
-        shell_args,
-        session_name,
-        agent_id,
-        agent_label,
-        git_repos,
-        skip_auto_resume,
-        pending_communication,
-        enforcement,
-        coding_agent_binding,
-        selection_intent,
-        create_target_replica_identity,
-    } = input;
     // Recompute is_coordinator from the current team snapshot. One source of truth:
     // every caller of create_session_inner gets the same computation.
     let teams = tokio::task::spawn_blocking(crate::config::teams::discover_teams)
@@ -355,14 +318,14 @@ pub(crate) async fn reserve_launch<R: tauri::Runtime>(
     }
 
     let (skip_auto_resume, fresh_forced_by_mirror) =
-        publication::mirror_fresh_intent(app, cwd, is_coordinator, skip_auto_resume);
+        publication::mirror_fresh_intent(app, cwd, is_coordinator, input.skip_auto_resume);
 
-    let agent_kind = CodingAgentKind::detect(shell, &shell_args);
-    let is_agent_owned_launch = agent_id.is_some() || agent_kind.is_some() || is_root_agent;
+    let agent_kind = CodingAgentKind::detect(shell, &input.shell_args);
+    let is_agent_owned_launch = input.agent_id.is_some() || agent_kind.is_some() || is_root_agent;
     let coding_agent_binding = creation::resolve_coding_agent_binding(
         app,
-        coding_agent_binding.clone(),
-        agent_id.as_ref(),
+        input.coding_agent_binding.clone(),
+        input.agent_id.as_ref(),
     )
     .await?;
     let resource_monitor = app.state::<Arc<ResourceMonitorState>>().inner().clone();
@@ -410,40 +373,15 @@ pub(crate) async fn reserve_launch<R: tauri::Runtime>(
     } else {
         None
     };
-    // #935 - resolve the container's read-write repo bind mounts from its own
-    // per-agent config.json repos[] (plan Sec 2/4), on the CANONICAL host root.
-    // This runs BEFORE create_session below, so an inadmissible entry (an escape
-    // signature: a repos[] rewrite reaching a sibling replica or messaging/) hard-
-    // fails the spawn here with no session record, token, or container created
-    // (plan Sec 4.3/4.4). None for local-process sessions.
-    let container_repos = match container_path_context.as_ref() {
-        Some(context) => {
-            match crate::pty::container_repos::resolve_repo_mounts(std::path::Path::new(
-                &context.host_root,
-            )) {
-                Ok(resolution) => Some(resolution),
-                Err(err) => {
-                    release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-                    return Err(err);
-                }
-            }
+    let container_repos = match creation::container_repos(container_path_context.as_ref()) {
+        Ok(repos) => repos,
+        Err(err) => {
+            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            return Err(err);
         }
-        None => None,
     };
-    let input = CreateInput {
-        session_label,
-        shell_args,
-        session_name,
-        agent_id,
-        agent_label,
-        git_repos,
-        skip_auto_resume,
-        pending_communication,
-        enforcement,
-        coding_agent_binding,
-        selection_intent,
-        create_target_replica_identity,
-    };
+    input.skip_auto_resume = skip_auto_resume;
+    input.coding_agent_binding = coding_agent_binding;
     let state = LaunchState {
         is_coordinator,
         is_root_agent,
@@ -462,46 +400,33 @@ pub(crate) async fn reserve_launch<R: tauri::Runtime>(
 pub(crate) async fn create_pending<R: tauri::Runtime>(
     ctx: &CreateBodyContext<'_, R>,
     mut input: CreateInput,
-    state: LaunchState,
+    mut state: LaunchState,
 ) -> Result<CreateCompletion, String> {
-    let &CreateBodyContext {
-        pty_mgr,
-        shell,
-        cwd,
-        inline_transaction,
-        lifecycle_domain,
-        create_owner,
-        inline_pending_for_body,
-        ..
-    } = ctx;
-    let LaunchState {
-        resource_monitor,
-        mut resource_permit,
-        mgr,
-        ..
-    } = state;
-    // Attach the B capability already retained before create effects to
-    // this ticket/inline owner. No binder, default insert, or queue
-    // admission may mint another binding in the publication region.
+    let (pty_mgr, shell, cwd) = (ctx.pty_mgr, ctx.shell, ctx.cwd);
+    let create_owner = ctx.create_owner;
+    let resource_monitor = &state.resource_monitor;
+    let resource_permit = &mut state.resource_permit;
+    let mgr = &state.mgr;
+    // Reuse retained B capability; publication must not mint another binding.
     let prepared_binding = create_owner.lock().ok().map(|owner| owner.binding);
     let Some(prepared_binding) = prepared_binding else {
         return Ok(CreateCompletion::Retained);
     };
     let carrier_u0 = match with_create_resource_region(
         create_owner,
-        &mut resource_permit,
+        resource_permit,
         acquire_lifecycle_create_publication_region(
             create_owner,
-            &mgr,
-            lifecycle_domain,
-            inline_transaction,
+            mgr,
+            ctx.lifecycle_domain,
+            ctx.inline_transaction,
         ),
     )
     .await
     {
         Ok(permit) => permit,
         Err(error) => {
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            release_resource_launch_permit(resource_monitor, resource_permit);
             return Err(error);
         }
     };
@@ -510,9 +435,9 @@ pub(crate) async fn create_pending<R: tauri::Runtime>(
         context::BindTargetInput {
             target: &input.create_target_replica_identity,
             selection_intent: input.selection_intent,
-            mgr: &mgr,
-            resource_monitor: &resource_monitor,
-            resource_permit: &mut resource_permit,
+            mgr,
+            resource_monitor,
+            resource_permit,
             prepared_binding,
             carrier_u0,
         },
@@ -546,18 +471,18 @@ pub(crate) async fn create_pending<R: tauri::Runtime>(
         Ok(created) => created,
         Err(e) => {
             drop(carrier_u0);
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            release_resource_launch_permit(resource_monitor, resource_permit);
             return Err(e);
         }
     };
     if !context::pending_is_observed(ctx, pending_binding) {
         drop(carrier_u0);
-        release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+        release_resource_launch_permit(resource_monitor, resource_permit);
         return Ok(CreateCompletion::Retained);
     }
     let carrier_u0 = match creation::apply_pending_binding(
         ctx,
-        &mgr,
+        mgr,
         carrier_u0,
         pending_binding,
         &mut session,
@@ -567,23 +492,19 @@ pub(crate) async fn create_pending<R: tauri::Runtime>(
     .await
     {
         Ok(Some(permit)) => permit,
-        Ok(None) => {
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-            return Ok(CreateCompletion::Retained);
-        }
-        Err(error) => {
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-            return Err(error);
+        result => {
+            release_resource_launch_permit(resource_monitor, resource_permit);
+            return result.map(|_| CreateCompletion::Retained);
         }
     };
-    if inline_transaction.is_some() {
-        *inline_pending_for_body
+    if ctx.inline_transaction.is_some() {
+        *ctx.inline_pending_for_body
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(pending_binding);
     }
     context::apply_pending_options(
         ctx,
-        &mgr,
+        mgr,
         &carrier_u0,
         pending_binding,
         &mut session,
@@ -593,20 +514,7 @@ pub(crate) async fn create_pending<R: tauri::Runtime>(
 
     drop(carrier_u0);
     let input = creation::metadata_input(input);
-    let state = PendingState {
-        is_coordinator: state.is_coordinator,
-        is_root_agent: state.is_root_agent,
-        fresh_forced_by_mirror: state.fresh_forced_by_mirror,
-        agent_kind: state.agent_kind,
-        resource_monitor,
-        resource_permit,
-        mgr,
-        container_path_context: state.container_path_context,
-        container_repos: state.container_repos,
-        session,
-        pending_binding,
-        spawn_mark,
-    };
+    let state = creation::pending_state(state, session, pending_binding, spawn_mark);
     prepare_metadata(ctx, input, state).await
 }
 
@@ -615,7 +523,7 @@ pub(crate) async fn prepare_metadata<R: tauri::Runtime>(
     input: MetadataInput,
     state: PendingState,
 ) -> Result<CreateCompletion, String> {
-    let (input, state) = recheck_pending_archive(ctx, input, state).await?;
+    let (input, mut state) = recheck_pending_archive(ctx, input, state).await?;
     let &CreateBodyContext {
         app,
         session_mgr,
@@ -628,39 +536,17 @@ pub(crate) async fn prepare_metadata<R: tauri::Runtime>(
         create_owner,
         ..
     } = ctx;
-    let MetadataInput {
-        session_label: _session_label,
-        shell_args,
-        session_name,
-        agent_id,
-        agent_label,
-        skip_auto_resume,
-        pending_communication: _pending_communication,
-        enforcement: _enforcement,
-        selection_intent: _selection_intent,
-        create_target_replica_identity: _create_target_replica_identity,
-    } = input;
-    let PendingState {
-        is_coordinator,
-        is_root_agent,
-        fresh_forced_by_mirror,
-        agent_kind,
-        resource_monitor,
-        mut resource_permit,
-        mgr,
-        container_path_context,
-        container_repos,
-        mut session,
-        pending_binding,
-        spawn_mark,
-    } = state;
-
+    let mgr = &state.mgr;
+    let resource_monitor = &state.resource_monitor;
+    let resource_permit = &mut state.resource_permit;
+    let session = &mut state.session;
+    let pending_binding = state.pending_binding;
     let carrier_u1 = match with_create_resource_region(
         create_owner,
-        &mut resource_permit,
+        resource_permit,
         acquire_lifecycle_create_publication_region(
             create_owner,
-            &mgr,
+            mgr,
             lifecycle_domain,
             inline_transaction,
         ),
@@ -669,60 +555,61 @@ pub(crate) async fn prepare_metadata<R: tauri::Runtime>(
     {
         Ok(permit) => permit,
         Err(error) => {
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            release_resource_launch_permit(resource_monitor, resource_permit);
             return Err(error);
         }
     };
     creation::record_pending_designation(
-        &mgr,
+        mgr,
         &carrier_u1,
         pending_binding,
-        &mut session,
-        fresh_forced_by_mirror,
-        is_root_agent,
+        session,
+        state.fresh_forced_by_mirror,
+        state.is_root_agent,
     )
     .await?;
 
-    if let Some(name) = session_name {
+    if let Some(name) = input.session_name.as_ref() {
         if let Err(e) = mgr
             .rename_pending_session_with_carrier_permit(&carrier_u1, pending_binding, name.clone())
             .await
         {
             let err = e.to_string();
             drop(carrier_u1);
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-            drop(mgr);
+            release_resource_launch_permit(resource_monitor, resource_permit);
+            drop(state.mgr);
             rollback_pre_created_session(app, session_mgr, pty_mgr, session.id, &err).await;
             return Err(err);
         }
-        session.name = name;
+        session.name = name.clone();
     }
 
     context::apply_profile_metadata(
         ctx,
-        &mgr,
+        mgr,
         &carrier_u1,
         pending_binding,
-        &mut session,
-        container_path_context.as_ref(),
+        session,
+        state.container_path_context.as_ref(),
     )
     .await?;
 
-    let configured_identity = configured_prompt_identity(agent_kind, shell, &shell_args);
-    let full_cmd = format!("{} {}", shell, shell_args.join(" "));
-    let context_target = creation::context_target(agent_kind);
+    let configured_identity =
+        configured_prompt_identity(state.agent_kind, shell, &input.shell_args);
+    let full_cmd = format!("{} {}", shell, input.shell_args.join(" "));
+    let context_target = creation::context_target(state.agent_kind);
 
     // Single source of truth: store the identity on the SessionManager record
     // AND the local clone (the latter feeds the imminent `session_created` emit).
-    mgr.set_pending_agent_kind_with_carrier_permit(&carrier_u1, pending_binding, agent_kind)
+    mgr.set_pending_agent_kind_with_carrier_permit(&carrier_u1, pending_binding, state.agent_kind)
         .await
         .map_err(|error| error.to_string())?;
-    session.agent_kind = agent_kind;
+    session.agent_kind = state.agent_kind;
     creation::record_configured_spawn(
-        &mgr,
+        mgr,
         &carrier_u1,
         pending_binding,
-        &mut session,
+        session,
         resolved_spawn.is_some(),
     )
     .await?;
@@ -730,32 +617,13 @@ pub(crate) async fn prepare_metadata<R: tauri::Runtime>(
     drop(carrier_u1);
     if let Some(continuation) = owned_replacement {
         if !continuation.validate_source().await {
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            release_resource_launch_permit(resource_monitor, resource_permit);
             return Ok(CreateCompletion::Retained);
         }
     }
 
-    let input = PendingLaunch {
-        agent_id,
-        agent_label,
-        agent_kind,
-        is_coordinator,
-        is_root_agent,
-        fresh_forced_by_mirror,
-        skip_auto_resume,
-        pending_binding,
-        shell_args,
-        container_path_context,
-        container_repos,
-        context_target,
-        full_cmd,
-        configured_identity,
-        session,
-        spawn_mark,
-        mgr,
-        resource_permit,
-        resource_monitor,
-    };
+    let input =
+        creation::pending_launch(input, state, context_target, full_cmd, configured_identity);
     context::prepare(ctx, input).await
 }
 

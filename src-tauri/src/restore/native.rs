@@ -80,15 +80,7 @@ pub(crate) fn start_native_restore_startup(
                 sessions_persistence::block_duplicate_restore_prompt_domains(&manager, &persisted)
                     .await;
             }
-            for ps in &mut persisted {
-                if let Err(error) = ps.capture_binding_seed(&settings_snapshot) {
-                    log::error!(
-                        "[restore] binding seed unavailable for '{}': {}",
-                        ps.name,
-                        error
-                    );
-                }
-            }
+            capture_binding_seeds(&mut persisted, &settings_snapshot);
             let mut active_id = None;
             let mut failed_recoverable: Vec<sessions_persistence::PersistedSession> = Vec::new();
 
@@ -235,56 +227,13 @@ pub(crate) fn start_native_restore_startup(
                                 }
                             }
                             if should_create {
-                                let mut rebuild_failed = false;
-                                let resolved_spawn = if ps.agent_id.is_some()
-                                    && settings_snapshot.agents_layer.unreadable_path().is_some()
-                                {
-                                    // #2716 (B3, 4.5b option S): skip, and push nothing to
-                                    // failed_recoverable, so the row keeps its wake inputs;
-                                    // save_sessions_to_dir suppresses the rewrite.
-                                    log::warn!(
-                                        "[root-agent] Skipping restore of '{}': the agents \
-                                            layer is unreadable",
-                                        ps.name
-                                    );
-                                    rebuild_failed = true;
-                                    None
-                                } else if let Some(aid) = ps.agent_id.as_deref() {
-                                    match commands::session::build_configured_agent_spawn_for_cwd(
+                                let (rebuild_failed, resolved_spawn, resolved_agent_host_shell) =
+                                    root_spawn_recipe(
+                                        ps,
                                         &settings_snapshot,
-                                        aid,
                                         &root_path,
-                                        ps.requested_profile.as_deref(),
-                                    ) {
-                                        Ok(spawn) => spawn,
-                                        Err(e) => {
-                                            log::error!(
-                                                "[root-agent] Failed to rebuild configured \
-                                                    agent command for restore '{}': {}",
-                                                ps.name,
-                                                e
-                                            );
-                                            failed_recoverable.push(ps.clone());
-                                            rebuild_failed = true;
-                                            None
-                                        }
-                                    }
-                                } else {
-                                    None
-                                };
-                                // #1271 - the host shell is rebuilt at restore
-                                // time from the SAME settings snapshot that
-                                // re-resolved the agent command (no persistence:
-                                // a persisted shell could pair with a freshly
-                                // re-resolved command across a config change).
-                                let resolved_agent_host_shell = if resolved_spawn.is_some() {
-                                    Some(crate::pty::backend::ResolvedAgentHostShell {
-                                        program: settings_snapshot.default_shell.clone(),
-                                        args: settings_snapshot.default_shell_args.clone(),
-                                    })
-                                } else {
-                                    None
-                                };
+                                        &mut failed_recoverable,
+                                    );
                                 if !rebuild_failed {
                                     match commands::session::create_persisted_root_for_restore(
                                         &restore_transaction_for_task,
@@ -485,31 +434,19 @@ pub(crate) fn start_native_restore_startup(
                 // §DR2: use `agent_fqn_from_path` so WG replicas get project-precise
                 // team membership and coordinator checks. Strict `is_coordinator`
                 // (§AR2-strict) requires the FQN to avoid cross-project flag leaks.
-                let agent_name = crate::config::teams::agent_fqn_from_path(&ps.working_directory);
-                let live_is_coord = crate::config::teams::is_any_coordinator(&agent_name, &teams);
-                // (#630) Backstop a transient empty discover_teams() with the snapshot's
-                // persisted is_coordinator so a real coordinator is not silently downgraded
-                // to "deferred" when project paths were not ready at cold start.
-                let is_coord = resolve_is_coord_for_restore(
+                let (
+                    agent_name,
                     live_is_coord,
-                    teams.is_empty(),
-                    ps.is_coordinator,
-                );
-                let archived_session = sessions_persistence::is_under_normalized_archived_roots(
-                    &ps.working_directory,
-                    &archived_roots,
-                );
-                let persisted_working = crate::session::session::persisted_is_working(
-                    ps.status.as_ref(),
-                    ps.waiting_for_input,
-                );
-                let wake = restore_session_should_wake(
-                    archived_session,
-                    setting_on,
-                    settings_snapshot.restart_resume_wake_working_agents,
                     is_coord,
-                    ps.status.as_ref(),
+                    archived_session,
                     persisted_working,
+                    wake,
+                ) = session_wake_decision(
+                    ps,
+                    &teams,
+                    &archived_roots,
+                    setting_on,
+                    &settings_snapshot,
                 );
 
                 if !wake {
@@ -560,36 +497,11 @@ pub(crate) fn start_native_restore_startup(
 
                 // Wake: rebuild configured-agent sessions from the persisted recipe,
                 // while custom-shell records keep their materialized shell args.
-                let resolved_spawn = if ps.agent_id.is_some()
-                    && settings_snapshot.agents_layer.unreadable_path().is_some()
-                {
-                    // #2716 (B3, 4.5b option S): skip without pushing to failed_recoverable.
-                    log::warn!(
-                        "Skipping restore of '{}': the agents layer is unreadable",
-                        ps.name
-                    );
-                    continue;
-                } else if let Some(aid) = ps.agent_id.as_deref() {
-                    match commands::session::build_configured_agent_spawn_for_cwd(
-                        &settings_snapshot,
-                        aid,
-                        &ps.working_directory,
-                        ps.requested_profile.as_deref(),
-                    ) {
+                let resolved_spawn =
+                    match session_spawn_recipe(ps, &settings_snapshot, &mut failed_recoverable) {
                         Ok(spawn) => spawn,
-                        Err(e) => {
-                            log::error!(
-                                "Failed to rebuild configured agent command for restore '{}': {}",
-                                ps.name,
-                                e
-                            );
-                            failed_recoverable.push(ps.clone());
-                            continue;
-                        }
-                    }
-                } else {
-                    None
-                };
+                        Err(()) => continue,
+                    };
                 // #1271 - rebuilt at restore time from the SAME settings
                 // snapshot that re-resolved the agent command (no
                 // persistence, same rationale as the root-agent restore).
@@ -675,33 +587,14 @@ pub(crate) fn start_native_restore_startup(
 
                         // (#1793) Pair the row with the session it just became;
                         // both are in hand, so no correlation key is needed.
-                        if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
-                            let prompt = commands::session::restart_resume_prompt_for(
-                                &settings_snapshot,
-                                is_coord,
-                                ps.start_fresh_on_restore,
-                                persisted_working,
-                            );
-                            if let Some(prompt) = prompt {
-                                let target = commands::session::RestartResumeTarget {
-                                    session_id: uuid,
-                                    name: ps.name.clone(),
-                                    working_directory: ps.working_directory.clone(),
-                                    prompt: prompt.to_string(),
-                                    // (#1793) Stamped HERE, after the PTY was
-                                    // spawned and therefore after
-                                    // `register_session` seeded the activity
-                                    // clock, so "printable output strictly
-                                    // after this instant" cannot be satisfied
-                                    // by the spawn seed alone.
-                                    collected_at: std::time::Instant::now(),
-                                };
-                                restart_resume_targets_for_body
-                                    .lock()
-                                    .unwrap_or_else(|error| error.into_inner())
-                                    .push(target);
-                            }
-                        }
+                        collect_restart_resume_target(
+                            &info.id,
+                            ps,
+                            &settings_snapshot,
+                            is_coord,
+                            persisted_working,
+                            &restart_resume_targets_for_body,
+                        );
 
                         // Phase 3 restore: reconstruct detach state for the live session.
                         // Deferred sessions (handled above with a `continue`) never reach
@@ -776,16 +669,7 @@ pub(crate) fn start_native_restore_startup(
                 session_mgr_clone.read().await;
             sessions_persistence::persist_merging_failed(&mgr, &failed_recoverable).await;
 
-            if !failed_recoverable.is_empty() {
-                log::warn!(
-                    "Session restore: {} sessions failed (preserved for next attempt): {:?}",
-                    failed_recoverable.len(),
-                    failed_recoverable
-                        .iter()
-                        .map(|s| &s.name)
-                        .collect::<Vec<_>>()
-                );
-            }
+            report_failed_sessions(&failed_recoverable);
         })
     });
     let continuation = Box::new(move || -> futures::future::BoxFuture<'static, ()> {
@@ -875,4 +759,205 @@ pub(crate) fn start_native_restore_startup(
         body,
         continuation,
     )
+}
+
+fn capture_binding_seeds(
+    persisted: &mut [sessions_persistence::PersistedSession],
+    settings_snapshot: &config::settings::AppSettings,
+) {
+    for ps in persisted {
+        if let Err(error) = ps.capture_binding_seed(settings_snapshot) {
+            log::error!(
+                "[restore] binding seed unavailable for '{}': {}",
+                ps.name,
+                error
+            );
+        }
+    }
+}
+
+fn session_wake_decision(
+    ps: &sessions_persistence::PersistedSession,
+    teams: &[crate::config::teams::DiscoveredTeam],
+    archived_roots: &[String],
+    setting_on: bool,
+    settings_snapshot: &config::settings::AppSettings,
+) -> (String, bool, bool, bool, bool, bool) {
+    let agent_name = crate::config::teams::agent_fqn_from_path(&ps.working_directory);
+    let live_is_coord = crate::config::teams::is_any_coordinator(&agent_name, teams);
+    // (#630) Backstop a transient empty discover_teams() with the snapshot's
+    // persisted is_coordinator so a real coordinator is not silently downgraded
+    // to "deferred" when project paths were not ready at cold start.
+    let is_coord = resolve_is_coord_for_restore(live_is_coord, teams.is_empty(), ps.is_coordinator);
+    let archived_session = sessions_persistence::is_under_normalized_archived_roots(
+        &ps.working_directory,
+        archived_roots,
+    );
+    let persisted_working =
+        crate::session::session::persisted_is_working(ps.status.as_ref(), ps.waiting_for_input);
+    let wake = restore_session_should_wake(
+        archived_session,
+        setting_on,
+        settings_snapshot.restart_resume_wake_working_agents,
+        is_coord,
+        ps.status.as_ref(),
+        persisted_working,
+    );
+    (
+        agent_name,
+        live_is_coord,
+        is_coord,
+        archived_session,
+        persisted_working,
+        wake,
+    )
+}
+
+fn collect_restart_resume_target(
+    session_id: &str,
+    ps: &sessions_persistence::PersistedSession,
+    settings_snapshot: &config::settings::AppSettings,
+    is_coord: bool,
+    persisted_working: bool,
+    restart_resume_targets_for_body: &Mutex<Vec<commands::session::RestartResumeTarget>>,
+) {
+    if let Ok(uuid) = uuid::Uuid::parse_str(session_id) {
+        let prompt = commands::session::restart_resume_prompt_for(
+            settings_snapshot,
+            is_coord,
+            ps.start_fresh_on_restore,
+            persisted_working,
+        );
+        if let Some(prompt) = prompt {
+            let target = commands::session::RestartResumeTarget {
+                session_id: uuid,
+                name: ps.name.clone(),
+                working_directory: ps.working_directory.clone(),
+                prompt: prompt.to_string(),
+                // (#1793) Stamped HERE, after the PTY was
+                // spawned and therefore after
+                // `register_session` seeded the activity
+                // clock, so "printable output strictly
+                // after this instant" cannot be satisfied
+                // by the spawn seed alone.
+                collected_at: std::time::Instant::now(),
+            };
+            restart_resume_targets_for_body
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(target);
+        }
+    }
+}
+
+fn report_failed_sessions(failed_recoverable: &[sessions_persistence::PersistedSession]) {
+    if !failed_recoverable.is_empty() {
+        log::warn!(
+            "Session restore: {} sessions failed (preserved for next attempt): {:?}",
+            failed_recoverable.len(),
+            failed_recoverable
+                .iter()
+                .map(|s| &s.name)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+fn root_spawn_recipe(
+    ps: &sessions_persistence::PersistedSession,
+    settings_snapshot: &config::settings::AppSettings,
+    root_path: &str,
+    failed_recoverable: &mut Vec<sessions_persistence::PersistedSession>,
+) -> (
+    bool,
+    Option<crate::config::agent_command::AgentSpawnCommand>,
+    Option<crate::pty::backend::ResolvedAgentHostShell>,
+) {
+    let mut rebuild_failed = false;
+    let resolved_spawn =
+        if ps.agent_id.is_some() && settings_snapshot.agents_layer.unreadable_path().is_some() {
+            // #2716 (B3, 4.5b option S): skip, and push nothing to
+            // failed_recoverable, so the row keeps its wake inputs;
+            // save_sessions_to_dir suppresses the rewrite.
+            log::warn!(
+                "[root-agent] Skipping restore of '{}': the agents \
+                                layer is unreadable",
+                ps.name
+            );
+            rebuild_failed = true;
+            None
+        } else if let Some(aid) = ps.agent_id.as_deref() {
+            match commands::session::build_configured_agent_spawn_for_cwd(
+                settings_snapshot,
+                aid,
+                root_path,
+                ps.requested_profile.as_deref(),
+            ) {
+                Ok(spawn) => spawn,
+                Err(e) => {
+                    log::error!(
+                        "[root-agent] Failed to rebuild configured \
+                                        agent command for restore '{}': {}",
+                        ps.name,
+                        e
+                    );
+                    failed_recoverable.push(ps.clone());
+                    rebuild_failed = true;
+                    None
+                }
+            }
+        } else {
+            None
+        };
+    // #1271 - the host shell is rebuilt at restore
+    // time from the SAME settings snapshot that
+    // re-resolved the agent command (no persistence:
+    // a persisted shell could pair with a freshly
+    // re-resolved command across a config change).
+    let resolved_agent_host_shell = if resolved_spawn.is_some() {
+        Some(crate::pty::backend::ResolvedAgentHostShell {
+            program: settings_snapshot.default_shell.clone(),
+            args: settings_snapshot.default_shell_args.clone(),
+        })
+    } else {
+        None
+    };
+    (rebuild_failed, resolved_spawn, resolved_agent_host_shell)
+}
+
+fn session_spawn_recipe(
+    ps: &sessions_persistence::PersistedSession,
+    settings_snapshot: &config::settings::AppSettings,
+    failed_recoverable: &mut Vec<sessions_persistence::PersistedSession>,
+) -> Result<Option<crate::config::agent_command::AgentSpawnCommand>, ()> {
+    let resolved_spawn =
+        if ps.agent_id.is_some() && settings_snapshot.agents_layer.unreadable_path().is_some() {
+            // #2716 (B3, 4.5b option S): skip without pushing to failed_recoverable.
+            log::warn!(
+                "Skipping restore of '{}': the agents layer is unreadable",
+                ps.name
+            );
+            return Err(());
+        } else if let Some(aid) = ps.agent_id.as_deref() {
+            match commands::session::build_configured_agent_spawn_for_cwd(
+                settings_snapshot,
+                aid,
+                &ps.working_directory,
+                ps.requested_profile.as_deref(),
+            ) {
+                Ok(spawn) => spawn,
+                Err(e) => {
+                    log::error!(
+                        "Failed to rebuild configured agent command for restore '{}': {}",
+                        ps.name,
+                        e
+                    );
+                    failed_recoverable.push(ps.clone());
+                    return Err(());
+                }
+            }
+        } else {
+            None
+        };
+    Ok(resolved_spawn)
 }

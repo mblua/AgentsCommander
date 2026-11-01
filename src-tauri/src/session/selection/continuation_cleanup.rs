@@ -3,6 +3,10 @@ use std::time::Duration;
 
 use uuid::Uuid;
 
+use crate::config::sessions_persistence::{
+    prepare_owned_replacement_publication, publish_owned_replacement,
+    OwnedReplacementPublicationOutcome,
+};
 use crate::pty::manager::PtyManager;
 use crate::session::manager::{PendingCreateBinding, SessionManager};
 
@@ -172,18 +176,7 @@ impl OwnedReplacementContinuation {
         if !self.validate_source().await {
             return false;
         }
-        use crate::config::sessions_persistence::{
-            prepare_owned_replacement_publication, publish_owned_replacement,
-            OwnedReplacementPublicationOutcome,
-        };
-        let OwnedReplacementDescriptor::Replacement(descriptor) = &self.owner.descriptor else {
-            return false;
-        };
-        let Some(binding) = self.binding() else {
-            return false;
-        };
-        self.reset_recheckpoint_effects();
-        let Some(rename) = self.start_effect(LifecycleEffectSlot::CarrierRename) else {
+        let Some((descriptor, binding, rename)) = self.checkpoint_publication() else {
             return false;
         };
         #[cfg(test)]
@@ -216,13 +209,7 @@ impl OwnedReplacementContinuation {
         };
         #[cfg(test)]
         {
-            if let Some(ReplacementFixtureAction::PublicationLeaf(kind)) =
-                self.fixture.as_ref().and_then(|control| {
-                    control.take_action(self, |action| {
-                        matches!(action, ReplacementFixtureAction::PublicationLeaf(_))
-                    })
-                })
-            {
+            if let Some(kind) = self.publication_fixture_action() {
                 prepared.attach_fixture_action(self.owner.operation, &descriptor.directory, kind);
             }
             if !self
@@ -264,20 +251,7 @@ impl OwnedReplacementContinuation {
             drop(permit);
             match outcome {
                 OwnedReplacementPublicationOutcome::Confirmed(carrier) => {
-                    rename.complete(Ok(Some(carrier.session_id.to_string())));
-                    readback.complete(Ok(Some(carrier.nonce.to_string())));
-                    let Ok(mut state) = self.owner.state.lock() else {
-                        return false;
-                    };
-                    let Some(progress) = state.replacement.as_mut() else {
-                        return false;
-                    };
-                    if progress.first_checkpoint.is_none() {
-                        progress.first_checkpoint = Some(carrier.clone());
-                    }
-                    progress.current_checkpoint = Some(carrier);
-                    progress.pending_carrier = None;
-                    return true;
+                    return self.confirm_checkpoint(carrier, rename, readback);
                 }
                 OwnedReplacementPublicationOutcome::Pending(carrier) => {
                     rename.complete(Ok(Some(carrier.session_id.to_string())));
@@ -800,22 +774,7 @@ impl OwnedReplacementContinuation {
         let Some(effect) = self.start_effect(LifecycleEffectSlot::PendingRollback) else {
             return false;
         };
-        let killed = match pty.try_lock() {
-            Ok(pty) => match pty.backend_kind(binding.session_id()) {
-                Some(kind)
-                    if pending.as_ref().is_some_and(|row| row.backend_kind == kind)
-                        && self.pending_cleanup_runtime_matches(binding, launch.as_ref(), &pty) =>
-                {
-                    pty.kill_for_kind(binding.session_id(), kind)
-                        .map_err(|error| error.to_string())
-                }
-                None if self.pending_cleanup_runtime_matches(binding, launch.as_ref(), &pty) => {
-                    Ok(())
-                }
-                _ => Err("replacement pending runtime identity changed".into()),
-            },
-            Err(_) => Err("replacement pending runtime unavailable".into()),
-        };
+        let killed = self.kill_pending_runtime(binding, pending.as_ref(), launch.as_ref(), pty);
         if let Err(error) = killed {
             effect.complete(Err(error));
             return false;
@@ -924,5 +883,80 @@ impl OwnedReplacementContinuation {
             attempt,
             completed: false,
         })
+    }
+
+    fn confirm_checkpoint(
+        &self,
+        carrier: crate::config::sessions_persistence::PublishedCarrier,
+        rename: LifecycleEffectGuard,
+        readback: LifecycleEffectGuard,
+    ) -> bool {
+        rename.complete(Ok(Some(carrier.session_id.to_string())));
+        readback.complete(Ok(Some(carrier.nonce.to_string())));
+        let Ok(mut state) = self.owner.state.lock() else {
+            return false;
+        };
+        let Some(progress) = state.replacement.as_mut() else {
+            return false;
+        };
+        if progress.first_checkpoint.is_none() {
+            progress.first_checkpoint = Some(carrier.clone());
+        }
+        progress.current_checkpoint = Some(carrier);
+        progress.pending_carrier = None;
+        true
+    }
+
+    #[cfg(test)]
+    fn publication_fixture_action(
+        &self,
+    ) -> Option<crate::config::sessions_persistence::FixturePublicationActionKind> {
+        match self.fixture.as_ref().and_then(|control| {
+            control.take_action(self, |action| {
+                matches!(action, ReplacementFixtureAction::PublicationLeaf(_))
+            })
+        }) {
+            Some(ReplacementFixtureAction::PublicationLeaf(kind)) => Some(kind),
+            _ => None,
+        }
+    }
+
+    fn kill_pending_runtime(
+        &self,
+        binding: PendingCreateBinding,
+        pending: Option<&crate::session::session::Session>,
+        launch: Option<&OwnedLaunchReceipt>,
+        pty: &Arc<Mutex<PtyManager>>,
+    ) -> Result<(), String> {
+        match pty.try_lock() {
+            Ok(pty) => match pty.backend_kind(binding.session_id()) {
+                Some(kind)
+                    if pending.is_some_and(|row| row.backend_kind == kind)
+                        && self.pending_cleanup_runtime_matches(binding, launch, &pty) =>
+                {
+                    pty.kill_for_kind(binding.session_id(), kind)
+                        .map_err(|error| error.to_string())
+                }
+                None if self.pending_cleanup_runtime_matches(binding, launch, &pty) => Ok(()),
+                _ => Err("replacement pending runtime identity changed".into()),
+            },
+            Err(_) => Err("replacement pending runtime unavailable".into()),
+        }
+    }
+
+    fn checkpoint_publication(
+        &self,
+    ) -> Option<(
+        &super::ResolvedReplacement,
+        PendingCreateBinding,
+        LifecycleEffectGuard,
+    )> {
+        let OwnedReplacementDescriptor::Replacement(descriptor) = &self.owner.descriptor else {
+            return None;
+        };
+        let binding = self.binding()?;
+        self.reset_recheckpoint_effects();
+        let rename = self.start_effect(LifecycleEffectSlot::CarrierRename)?;
+        Some((descriptor, binding, rename))
     }
 }

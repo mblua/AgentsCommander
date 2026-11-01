@@ -350,21 +350,9 @@ where
             };
         }
     };
-    let message_store = match app_handle.message_store_state() {
-        Some(state) => match &state.store {
-            Ok(store) => Arc::clone(store),
-            Err(code) => {
-                let message = format!("Cannot initialize API DB message store: {code}");
-                log::error!("[api-server] {}; API server not started", message);
-                let _send_result = readiness_tx.send(Err(message));
-                return ApiServerStart {
-                    join_handle: app_handle.spawn_owned(Box::pin(async {})),
-                    readiness,
-                };
-            }
-        },
-        None => {
-            let message = "Managed API DB message store is unavailable".to_string();
+    let message_store = match startup_message_store(&app_handle) {
+        Ok(store) => store,
+        Err(message) => {
             log::error!("[api-server] {}; API server not started", message);
             let _send_result = readiness_tx.send(Err(message));
             return ApiServerStart {
@@ -375,16 +363,7 @@ where
     };
 
     let messages = app_handle.message_warnings();
-    let state = ApiState {
-        #[cfg(any(target_os = "windows", test))]
-        window_screenshot_limiter: Arc::new(WindowScreenshotLimiter::new()),
-        store: store.clone(),
-        message_store: message_store.clone(),
-        lockout: Arc::new(auth::FailedAuthLockout::default()),
-        resources: Arc::new(app_handle.clone()),
-        session_mgr,
-        pty_mgr,
-    };
+    let state = startup_api_state(&app_handle, &store, &message_store, session_mgr, pty_mgr);
     let router = build_router(state);
 
     let server_host = app_handle.clone();
@@ -462,6 +441,37 @@ where
     ApiServerStart {
         join_handle,
         readiness,
+    }
+}
+
+fn startup_message_store<H: dispatcher::DispatcherDelivery>(
+    app_handle: &H,
+) -> Result<Arc<message_store::MessageStore>, String> {
+    match app_handle.message_store_state() {
+        Some(state) => match &state.store {
+            Ok(store) => Ok(Arc::clone(store)),
+            Err(code) => Err(format!("Cannot initialize API DB message store: {code}")),
+        },
+        None => Err("Managed API DB message store is unavailable".to_string()),
+    }
+}
+
+fn startup_api_state<H: NativeApiSpawner + ApiRequestResources>(
+    app_handle: &H,
+    store: &Arc<auth::ApiClientStore>,
+    message_store: &Arc<message_store::MessageStore>,
+    session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: Arc<Mutex<PtyManager>>,
+) -> ApiState {
+    ApiState {
+        #[cfg(any(target_os = "windows", test))]
+        window_screenshot_limiter: Arc::new(WindowScreenshotLimiter::new()),
+        store: store.clone(),
+        message_store: message_store.clone(),
+        lockout: Arc::new(auth::FailedAuthLockout::default()),
+        resources: Arc::new(app_handle.clone()),
+        session_mgr,
+        pty_mgr,
     }
 }
 

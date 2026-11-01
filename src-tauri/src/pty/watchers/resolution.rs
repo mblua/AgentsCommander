@@ -98,34 +98,11 @@ pub fn resolve_watchers(
 
         // A selector that does not tokenize skips the WHOLE watcher. Never "reaches
         // everything": a typo in one entry must not silently widen a pattern to every agent.
-        let selector = match &config.commands {
-            None => None,
-            Some(list) => {
-                let mut stems = Vec::with_capacity(list.len());
-                let mut broken: Option<String> = None;
-                for token in list {
-                    match command_executable_basename(token) {
-                        Some(stem) => stems.push(stem),
-                        None => {
-                            broken = Some(token.clone());
-                            break;
-                        }
-                    }
-                }
-                if let Some(token) = broken {
-                    let detail = list.join("\u{1f}");
-                    notices.push(ResolutionNotice {
-                        subject: format!("commands:{id}"),
-                        message: format!(
-                            "[watchers] watcher '{id}' is being skipped: its commands selector \
-                             entry '{token}' is not a command. A watcher with an unreadable \
-                             selector reaches nobody, never everybody"
-                        ),
-                        detail,
-                    });
-                    continue;
-                }
-                Some(stems)
+        let selector = match resolve_selector(id, config.commands.as_deref()) {
+            Ok(selector) => selector,
+            Err(notice) => {
+                notices.push(notice);
+                continue;
             }
         };
 
@@ -169,13 +146,7 @@ pub fn resolve_watchers(
         let mut running = Vec::new();
         let mut over_budget = Vec::new();
         for (watcher, selector) in &usable {
-            let reaches = match selector {
-                None => true,
-                Some(stems) => agent_stem
-                    .as_ref()
-                    .is_some_and(|stem| stems.iter().any(|candidate| candidate == stem)),
-            };
-            if !reaches {
+            if !selector_reaches_agent(selector.as_deref(), agent_stem.as_deref()) {
                 continue;
             }
             if running.len() < WATCHERS_PER_AGENT_BUDGET {
@@ -210,6 +181,43 @@ pub fn resolve_watchers(
     }
 
     (resolved, notices)
+}
+
+fn selector_reaches_agent(selector: Option<&[String]>, agent_stem: Option<&str>) -> bool {
+    match selector {
+        None => true,
+        Some(stems) => {
+            agent_stem.is_some_and(|stem| stems.iter().any(|candidate| candidate == stem))
+        }
+    }
+}
+
+fn resolve_selector(
+    id: &str,
+    commands: Option<&[String]>,
+) -> Result<Option<Vec<String>>, ResolutionNotice> {
+    let Some(list) = commands else {
+        return Ok(None);
+    };
+    let mut stems = Vec::with_capacity(list.len());
+    for token in list {
+        match command_executable_basename(token) {
+            Some(stem) => stems.push(stem),
+            None => {
+                let detail = list.join("\u{1f}");
+                return Err(ResolutionNotice {
+                    subject: format!("commands:{id}"),
+                    message: format!(
+                        "[watchers] watcher '{id}' is being skipped: its commands selector \
+                         entry '{token}' is not a command. A watcher with an unreadable \
+                         selector reaches nobody, never everybody"
+                    ),
+                    detail,
+                });
+            }
+        }
+    }
+    Ok(Some(stems))
 }
 
 /// Log-once bookkeeping for `ResolutionNotice`s, across ticks.

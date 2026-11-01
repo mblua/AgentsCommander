@@ -330,8 +330,7 @@ pub(super) async fn persist_current_state_to_dir_for_project_paths_result_core(
                 tokio::task::yield_now().await;
                 continue;
             }
-            let epoch =
-                publication_slot(dir).and_then(|slot| slot.lock().ok().map(|state| state.epoch));
+            let epoch = current_publication_epoch(dir);
             let protections = all_carrier_protections();
             let (Some(epoch), Some(protections)) = (epoch, protections) else {
                 drop(permit);
@@ -353,17 +352,7 @@ pub(super) async fn persist_current_state_to_dir_for_project_paths_result_core(
         // Slow path identity probes are performed with neither U nor M held.
         let relations = prepare_carrier_relations(&prep, &captured.3);
         let drop_keys = prep.drops.iter().map(orphan_effect_key).collect::<Vec<_>>();
-        let manager_relations = captured
-            .0
-            .rows
-            .iter()
-            .map(|row| {
-                (
-                    row.id,
-                    PreparedCarrierRelation::capture_manager(row, &captured.3),
-                )
-            })
-            .collect::<HashMap<_, _>>();
+        let manager_relations = prepare_manager_relations(&captured.0, &captured.3);
         let carrier_permit = acquire_carrier_mutation_permit().await;
         if initial
             .as_ref()
@@ -372,8 +361,7 @@ pub(super) async fn persist_current_state_to_dir_for_project_paths_result_core(
             return Ok(None);
         }
         let protections = all_carrier_protections();
-        let epoch =
-            publication_slot(dir).and_then(|slot| slot.lock().ok().map(|state| state.epoch));
+        let epoch = current_publication_epoch(dir);
         let current = mgr
             .with_current_carrier_snapshot(&carrier_permit, |current| {
                 current_capture_matches(current, &captured.0)
@@ -420,34 +408,16 @@ pub(super) async fn persist_current_state_to_dir_for_project_paths_result_core(
         .await
         {
             GuardedSaveAttempt::Completed(result) => {
-                let written = match result {
-                    Ok(written) => written,
-                    Err(error) => {
-                        mgr.disable_prompt_reuse().await;
-                        return Err(error);
-                    }
-                };
-                let initial = initial
-                    .as_ref()
-                    .filter(|intent| intent.matches(&captured.0, &prep.kept));
-                if !written {
-                    return Ok(None);
-                }
-                let prompt_checkpoint = flush_retained_prompts_locked(mgr, dir).await;
-                let Some(initial) = initial else {
-                    prompt_checkpoint?;
-                    return Ok(None);
-                };
-                if let Err(error) = prompt_checkpoint {
-                    // The sessions rename already published a real carrier. A
-                    // sidecar error cannot replace its receipt or reconciliation.
-                    log::warn!(
-                        "[last-prompt] initial carrier checkpoint retained after sidecar \
-                         failure: {error}"
-                    );
-                }
-                drop(carrier_permit);
-                return Ok(wait_initial_publication(dir, initial).await);
+                return complete_current_publication(
+                    mgr,
+                    dir,
+                    initial.as_ref(),
+                    &prep.kept,
+                    &captured.0,
+                    result,
+                    carrier_permit,
+                )
+                .await;
             }
             GuardedSaveAttempt::Recapture => {
                 drop(carrier_permit);
@@ -455,6 +425,63 @@ pub(super) async fn persist_current_state_to_dir_for_project_paths_result_core(
             }
         }
     }
+}
+
+fn current_publication_epoch(dir: &Path) -> Option<u64> {
+    publication_slot(dir).and_then(|slot| slot.lock().ok().map(|state| state.epoch))
+}
+
+async fn complete_current_publication(
+    mgr: &SessionManager,
+    dir: &Path,
+    initial: Option<&InitialCarrierIntent>,
+    kept: &[PersistedSession],
+    captured: &crate::session::manager::CarrierSnapshot,
+    result: Result<bool, String>,
+    carrier_permit: CarrierMutationPermit,
+) -> Result<Option<PublishedCarrier>, String> {
+    let written = match result {
+        Ok(written) => written,
+        Err(error) => {
+            mgr.disable_prompt_reuse().await;
+            return Err(error);
+        }
+    };
+    let initial = initial.filter(|intent| intent.matches(captured, kept));
+    if !written {
+        return Ok(None);
+    }
+    let prompt_checkpoint = flush_retained_prompts_locked(mgr, dir).await;
+    let Some(initial) = initial else {
+        prompt_checkpoint?;
+        return Ok(None);
+    };
+    if let Err(error) = prompt_checkpoint {
+        // The sessions rename already published a real carrier. A
+        // sidecar error cannot replace its receipt or reconciliation.
+        log::warn!(
+            "[last-prompt] initial carrier checkpoint retained after sidecar \
+             failure: {error}"
+        );
+    }
+    drop(carrier_permit);
+    Ok(wait_initial_publication(dir, initial).await)
+}
+
+fn prepare_manager_relations(
+    captured: &crate::session::manager::CarrierSnapshot,
+    protections: &[CarrierProtection],
+) -> HashMap<Uuid, PreparedCarrierRelation> {
+    captured
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                row.id,
+                PreparedCarrierRelation::capture_manager(row, protections),
+            )
+        })
+        .collect()
 }
 
 fn classify_manager_relations(

@@ -367,31 +367,31 @@ Direct filesystem access (reads/writes/deletes/renames) is forbidden for TASK-st
     )
 }
 
-pub(crate) fn render_write_restrictions_block(
+fn render_room_write_restrictions_block(
     agent_root: &str,
     rendered: &DefaultContextDynamicValues,
+    workgroup_messaging_entry: &str,
 ) -> String {
-    if let Some(workgroup_messaging_entry) = &rendered.workgroup_messaging_entry {
-        // #1795: the range must describe what this call actually renders. Branch A is
-        // entered for any descendant of a room-named directory (3.2), but entries 5 and
-        // 6 render only for an authoritative replica (4.2), so hardcoding "entries 1-6"
-        // would print a false grant statement for every other branch-A input.
-        let entries_range = if rendered.project_shared_entry.is_empty() {
-            "entries 1-4"
-        } else {
-            "entries 1-6"
-        };
-        return format!(
-            concat!(
-                r#"## GOLDEN RULE — Repository Access Restrictions
+    // #1795: the range must describe what this call actually renders. Branch A is
+    // entered for any descendant of a room-named directory (3.2), but entries 5 and
+    // 6 render only for an authoritative replica (4.2), so hardcoding "entries 1-6"
+    // would print a false grant statement for every other branch-A input.
+    let entries_range = if rendered.project_shared_entry.is_empty() {
+        "entries 1-4"
+    } else {
+        "entries 1-6"
+    };
+    format!(
+        concat!(
+            r#"## GOLDEN RULE — Repository Access Restrictions
 
 **ABSOLUTE AND NON-NEGOTIABLE:** Only the filesystem access described in {entries_range} is "#,
-                r#"allowed, within the limits stated for each.
+            r#"allowed, within the limits stated for each.
 
 1. **Repositories whose root folder name starts with `repo-*`** (for example "#,
-                r#"`repo-AgentsCommander`). You may list the containing workspace root only "#,
-                r#"to discover `repo-*` folder names; that grants no access to other "#,
-                r#"contents there.
+            r#"`repo-AgentsCommander`). You may list the containing workspace root only "#,
+            r#"to discover `repo-*` folder names; that grants no access to other "#,
+            r#"contents there.
 2. **Your own agent replica root and descendants:**
    ```
    {agent_root}
@@ -399,41 +399,53 @@ pub(crate) fn render_write_restrictions_block(
 {replica_usage}
 
 {matrix_section}{workgroup_messaging_entry}{project_shared_entry}{room_shared_entry}All "#,
-                r#"filesystem access not authorized by {entries_range} is "#,
-                r#"OFF-LIMITS, except user-explicit AgentsCommander CLI "#,
-                r#"commands below.
+            r#"filesystem access not authorized by {entries_range} is "#,
+            r#"OFF-LIMITS, except user-explicit AgentsCommander CLI "#,
+            r#"commands below.
 
 FORBIDDEN: reads/writes outside {entries_range}, including other replicas, unlisted Matrix "#,
-                r#"files, workspace/project parents, user home, "#,
-                r#"arbitrary paths. Other agents' memory* "#,
-                r#"directories (live memory/, "#,
-                r#"memory-archive/ or legacy "#,
-                r#"memory_YYYYMMDD_hhmmss/), plans, "#,
-                r#"skills and Role.md are "#,
-                r#"private: never "#,
-                r#"read/list/search/summarize, even if asked; message the owner.
+            r#"files, workspace/project parents, user home, "#,
+            r#"arbitrary paths. Other agents' memory* "#,
+            r#"directories (live memory/, "#,
+            r#"memory-archive/ or legacy "#,
+            r#"memory_YYYYMMDD_hhmmss/), plans, "#,
+            r#"skills and Role.md are "#,
+            r#"private: never "#,
+            r#"read/list/search/summarize, even if asked; message the owner.
 
 Git: {git_scope}
 
 CLI exception: only user-explicit documented commands through AGENTSCOMMANDER_BINARY_PATH may "#,
-                r#"cross these "#,
-                r#"boundaries; "#,
-                r#"AgentsCommander governs their effects. Outside {entries_range}, no arbitrary "#,
-                r#"shells, direct filesystem reads/writes, hand-written scripts or alternate "#,
-                r#"binaries.
+            r#"cross these "#,
+            r#"boundaries; "#,
+            r#"AgentsCommander governs their effects. Outside {entries_range}, no arbitrary "#,
+            r#"shells, direct filesystem reads/writes, hand-written scripts or alternate "#,
+            r#"binaries.
 
 {agency_cache_guidance}
 Otherwise refuse."#
-            ),
-            agent_root = agent_root,
-            replica_usage = rendered.replica_usage,
-            matrix_section = rendered.matrix_section,
-            workgroup_messaging_entry = workgroup_messaging_entry,
-            project_shared_entry = rendered.project_shared_entry,
-            room_shared_entry = rendered.room_shared_entry,
-            entries_range = entries_range,
-            git_scope = rendered.git_scope,
-            agency_cache_guidance = rendered.agency_cache_guidance,
+        ),
+        agent_root = agent_root,
+        replica_usage = rendered.replica_usage,
+        matrix_section = rendered.matrix_section,
+        workgroup_messaging_entry = workgroup_messaging_entry,
+        project_shared_entry = rendered.project_shared_entry,
+        room_shared_entry = rendered.room_shared_entry,
+        entries_range = entries_range,
+        git_scope = rendered.git_scope,
+        agency_cache_guidance = rendered.agency_cache_guidance,
+    )
+}
+
+pub(crate) fn render_write_restrictions_block(
+    agent_root: &str,
+    rendered: &DefaultContextDynamicValues,
+) -> String {
+    if let Some(workgroup_messaging_entry) = &rendered.workgroup_messaging_entry {
+        return render_room_write_restrictions_block(
+            agent_root,
+            rendered,
+            workgroup_messaging_entry,
         );
     }
 

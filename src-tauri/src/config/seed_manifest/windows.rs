@@ -44,6 +44,62 @@ struct WindowsPublicationFailure<'a> {
 #[cfg(windows)]
 impl WindowsPublicationFailure<'_> {
     fn recover(self) -> Result<OpenedRegularFile, SeedManifestError> {
+        match self.operation {
+            WindowsNamespaceOperation::MoveFileEx => self.recover_move_file_ex(),
+            WindowsNamespaceOperation::ReplaceFile => self.recover_replace_file(),
+        }
+    }
+
+    fn recover_move_file_ex(self) -> Result<OpenedRegularFile, SeedManifestError> {
+        let Self {
+            operation,
+            raw_error,
+            canonical_path,
+            temp_path,
+            source_identity,
+            source_witness,
+            bytes,
+            canonical_state,
+            temp_state,
+            ..
+        } = self;
+        if matches!(canonical_state, WindowsPathState::NotFound)
+            && temp_state.is_exact_same(source_identity, true)
+        {
+            if let Err(cleanup_error) = cleanup_windows_temp_with_witness(
+                source_witness,
+                &temp_path,
+                source_identity,
+                Some(bytes),
+            ) {
+                log::warn!(
+                    "[seed_manifest] Windows current-owned temp cleanup failed \
+                        after MoveFileExW raw_error={} path={} cleanup_error={}",
+                    raw_error,
+                    temp_path.display(),
+                    cleanup_error
+                );
+            }
+            Err(SeedManifestError::WindowsNamespaceFailure {
+                operation,
+                raw_error,
+                canonical: canonical_path.to_path_buf(),
+                temp: temp_path,
+                canonical_state: Box::new(canonical_state),
+                temp_state: Box::new(temp_state),
+            })
+        } else {
+            Err(SeedManifestError::WindowsMoveRecoveryRequired {
+                raw_error,
+                canonical: canonical_path.to_path_buf(),
+                temp: temp_path,
+                canonical_state: Box::new(canonical_state),
+                temp_state: Box::new(temp_state),
+            })
+        }
+    }
+
+    fn recover_replace_file(self) -> Result<OpenedRegularFile, SeedManifestError> {
         use windows_sys::Win32::Foundation::{
             ERROR_UNABLE_TO_MOVE_REPLACEMENT, ERROR_UNABLE_TO_MOVE_REPLACEMENT_2,
             ERROR_UNABLE_TO_REMOVE_REPLACED,
@@ -61,107 +117,67 @@ impl WindowsPublicationFailure<'_> {
             canonical_state,
             temp_state,
         } = self;
-        match operation {
-            WindowsNamespaceOperation::MoveFileEx => {
-                if matches!(canonical_state, WindowsPathState::NotFound)
-                    && temp_state.is_exact_same(source_identity, true)
-                {
-                    if let Err(cleanup_error) = cleanup_windows_temp_with_witness(
-                        source_witness,
-                        &temp_path,
-                        source_identity,
-                        Some(bytes),
-                    ) {
-                        log::warn!(
-                            "[seed_manifest] Windows current-owned temp cleanup failed \
-                                after MoveFileExW raw_error={} path={} cleanup_error={}",
-                            raw_error,
-                            temp_path.display(),
-                            cleanup_error
-                        );
-                    }
-                    Err(SeedManifestError::WindowsNamespaceFailure {
-                        operation,
-                        raw_error,
-                        canonical: canonical_path.to_path_buf(),
-                        temp: temp_path,
-                        canonical_state: Box::new(canonical_state),
-                        temp_state: Box::new(temp_state),
-                    })
-                } else {
-                    Err(SeedManifestError::WindowsMoveRecoveryRequired {
-                        raw_error,
-                        canonical: canonical_path.to_path_buf(),
-                        temp: temp_path,
-                        canonical_state: Box::new(canonical_state),
-                        temp_state: Box::new(temp_state),
-                    })
-                }
-            }
-            WindowsNamespaceOperation::ReplaceFile => {
-                if raw_error == ERROR_UNABLE_TO_MOVE_REPLACEMENT {
-                    return Err(SeedManifestError::WindowsReplacePartial {
-                        raw_error,
-                        partial: WindowsReplacePartial::CanonicalRemovedReplacementAtTemp,
-                        canonical: canonical_path.to_path_buf(),
-                        temp: temp_path,
-                        canonical_state: Box::new(canonical_state),
-                        temp_state: Box::new(temp_state),
-                    });
-                }
-                if raw_error == ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 {
-                    return Err(SeedManifestError::WindowsReplacePartial {
-                        raw_error,
-                        partial: WindowsReplacePartial::ReplacementEnrichedOldDestinationRenamed,
-                        canonical: canonical_path.to_path_buf(),
-                        temp: temp_path,
-                        canonical_state: Box::new(canonical_state),
-                        temp_state: Box::new(temp_state),
-                    });
-                }
+        if raw_error == ERROR_UNABLE_TO_MOVE_REPLACEMENT {
+            return Err(SeedManifestError::WindowsReplacePartial {
+                raw_error,
+                partial: WindowsReplacePartial::CanonicalRemovedReplacementAtTemp,
+                canonical: canonical_path.to_path_buf(),
+                temp: temp_path,
+                canonical_state: Box::new(canonical_state),
+                temp_state: Box::new(temp_state),
+            });
+        }
+        if raw_error == ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 {
+            return Err(SeedManifestError::WindowsReplacePartial {
+                raw_error,
+                partial: WindowsReplacePartial::ReplacementEnrichedOldDestinationRenamed,
+                canonical: canonical_path.to_path_buf(),
+                temp: temp_path,
+                canonical_state: Box::new(canonical_state),
+                temp_state: Box::new(temp_state),
+            });
+        }
 
-                let stable_destination = destination_identity
-                    .is_some_and(|identity| canonical_state.is_exact_same(identity, false));
-                let stable_source = temp_state.is_exact_same(source_identity, true);
-                if stable_destination && stable_source {
-                    if let Err(cleanup_error) = cleanup_windows_temp_with_witness(
-                        source_witness,
-                        &temp_path,
-                        source_identity,
-                        Some(bytes),
-                    ) {
-                        log::warn!(
-                            "[seed_manifest] Windows current-owned temp cleanup failed \
-                                after ReplaceFileW raw_error={} path={} cleanup_error={}",
-                            raw_error,
-                            temp_path.display(),
-                            cleanup_error
-                        );
-                    }
-                    Err(SeedManifestError::WindowsNamespaceFailure {
-                        operation,
-                        raw_error,
-                        canonical: canonical_path.to_path_buf(),
-                        temp: temp_path,
-                        canonical_state: Box::new(canonical_state),
-                        temp_state: Box::new(temp_state),
-                    })
-                } else {
-                    if raw_error == ERROR_UNABLE_TO_REMOVE_REPLACED {
-                        log::warn!(
-                            "[seed_manifest] ReplaceFileW error 1175 contradicted the \
-                                documented stable-name state; preserving all observed names"
-                        );
-                    }
-                    Err(SeedManifestError::WindowsReplaceRecoveryRequired {
-                        raw_error,
-                        canonical: canonical_path.to_path_buf(),
-                        temp: temp_path,
-                        canonical_state: Box::new(canonical_state),
-                        temp_state: Box::new(temp_state),
-                    })
-                }
+        let stable_destination = destination_identity
+            .is_some_and(|identity| canonical_state.is_exact_same(identity, false));
+        let stable_source = temp_state.is_exact_same(source_identity, true);
+        if stable_destination && stable_source {
+            if let Err(cleanup_error) = cleanup_windows_temp_with_witness(
+                source_witness,
+                &temp_path,
+                source_identity,
+                Some(bytes),
+            ) {
+                log::warn!(
+                    "[seed_manifest] Windows current-owned temp cleanup failed \
+                        after ReplaceFileW raw_error={} path={} cleanup_error={}",
+                    raw_error,
+                    temp_path.display(),
+                    cleanup_error
+                );
             }
+            Err(SeedManifestError::WindowsNamespaceFailure {
+                operation,
+                raw_error,
+                canonical: canonical_path.to_path_buf(),
+                temp: temp_path,
+                canonical_state: Box::new(canonical_state),
+                temp_state: Box::new(temp_state),
+            })
+        } else {
+            if raw_error == ERROR_UNABLE_TO_REMOVE_REPLACED {
+                log::warn!(
+                    "[seed_manifest] ReplaceFileW error 1175 contradicted the \
+                        documented stable-name state; preserving all observed names"
+                );
+            }
+            Err(SeedManifestError::WindowsReplaceRecoveryRequired {
+                raw_error,
+                canonical: canonical_path.to_path_buf(),
+                temp: temp_path,
+                canonical_state: Box::new(canonical_state),
+                temp_state: Box::new(temp_state),
+            })
         }
     }
 }

@@ -220,43 +220,7 @@ pub(crate) fn capture_lifecycle_claim(
                 current,
             )?;
             let row = current.rows.iter().find(|row| row.id == session_id)?;
-            let generation = if let Some(historical) = carrier.retired_local_generation() {
-                let physical_replica = crate::session::manager::CarrierPhysicalIdentity::from(
-                    source.replica.as_ref()?.clone(),
-                );
-                if !carrier.retired_local_replica_matches(&physical_replica) {
-                    return None;
-                }
-                if tracker.generation(session_id).is_some()
-                    || !matches!(
-                        crate::session::manager::RetiredCarrierRouteObservation::from(
-                            PtyManager::snapshot_route_proof(pty, session_id)
-                        ),
-                        crate::session::manager::RetiredCarrierRouteObservation::Absent
-                    )
-                    || pty.lock().ok()?.backend_kind(session_id).is_some()
-                {
-                    return None;
-                }
-                historical
-            } else {
-                if matches!(row.status, SessionStatus::Exited(_)) {
-                    return None;
-                }
-                let generation = tracker.generation(session_id)?;
-                let route = PtyManager::snapshot_route_proof(pty, session_id).ok()?;
-                let actual_generation = pty.lock().ok()?.route_identities(session_id)?.2;
-                if actual_generation != generation
-                    || !route.matches_requester_route(
-                        row.backend_kind,
-                        &source.directory,
-                        source.replica.as_ref(),
-                    )
-                {
-                    return None;
-                }
-                generation
-            };
+            let generation = lifecycle_claim_generation(&carrier, source, row, tracker, pty)?;
             let identity = ResponseRouteIdentity {
                 target: target.clone(),
                 session_id,
@@ -482,29 +446,9 @@ pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
     };
     let key = crate::config::teams::pty_input_create_gate_key_from_cwd(Path::new(cwd))
         .map_err(|_| "targetCreateGateUnavailable".to_string())?;
-    let mut source = if let Some(row) = source_row {
-        let Some(source) = lifecycle_source_identity(row, &snapshot) else {
-            return Ok(LifecycleAuthorityAdmission::Waiting);
-        };
-        Some(source)
-    } else {
-        None
-    };
-    let source_key = source_row
-        .map(|row| {
-            crate::config::teams::pty_input_create_gate_key_from_cwd(Path::new(
-                &row.working_directory,
-            ))
-        })
-        .transpose()
-        .map_err(|_| "targetCreateGateUnavailable".to_string())?
-        .flatten();
-    if source
-        .as_mut()
-        .is_some_and(|source| !capture_lifecycle_source_replica(source))
-    {
+    let Some(prepared_source) = prepare_lifecycle_source(source_row, &snapshot)? else {
         return Ok(LifecycleAuthorityAdmission::Waiting);
-    }
+    };
     let lease = if let Some(key) = key {
         let gate = app
             .try_state::<crate::api::message_store::PtyInputTargetGateState>()
@@ -531,19 +475,11 @@ pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
     };
     // Gate acquisition may have suspended. Never admit an identity verified
     // only before those waits; cancellation drops exact then stripe normally.
-    if !prepared_lifecycle_identity_matches(&lease, source.as_ref()) {
+    if !prepared_lifecycle_identity_matches(&lease, prepared_source.identity.as_ref()) {
         drop(lease);
         return Ok(LifecycleAuthorityAdmission::Waiting);
     }
-    let destination = match &lease {
-        LifecycleTargetLease::Keyed { destination, .. }
-        | LifecycleTargetLease::VerifiedNoReplica { destination } => destination,
-        _ => unreachable!("prepared destination"),
-    };
-    let destination_key = match &lease {
-        LifecycleTargetLease::Keyed { key, .. } => Some(key.as_str()),
-        _ => None,
-    };
+    let (destination, destination_key) = prepared_lifecycle_destination(&lease);
     let tracker = app
         .state::<Arc<Mutex<PtyManager>>>()
         .lock()
@@ -551,20 +487,20 @@ pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
         .response_close_state();
     let target = destination_key
         .map(str::to_owned)
-        .or(source_key.clone())
+        .or(prepared_source.key.clone())
         .unwrap_or_else(|| format!("create-cwd:{}", destination.canonical_path.display()));
     let permit = acquire_carrier_mutation_permit().await;
     let reservation = manager
         .with_current_carrier_snapshot(&permit, |current| {
-            if !lifecycle_source_matches(current, source.as_ref(), root_request) {
+            if !lifecycle_source_matches(current, prepared_source.identity.as_ref(), root_request) {
                 return None;
             }
             capture_lifecycle_claim(
                 &permit,
                 current,
                 LifecycleClaimScope {
-                    source: source.as_ref(),
-                    source_key: source_key.as_deref(),
+                    source: prepared_source.identity.as_ref(),
+                    source_key: prepared_source.key.as_deref(),
                     destination,
                     destination_key,
                     fallback_target: &target,
@@ -582,17 +518,13 @@ pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
         drop(lease);
         return Ok(LifecycleAuthorityAdmission::Waiting);
     };
-    Ok(LifecycleAuthorityAdmission::Ready(
-        LifecycleEntryAuthority {
-            lease,
-            source,
-            root_request,
-            operation,
-            reservation: Mutex::new(reservation.reservation),
-            interrupted: std::sync::atomic::AtomicBool::new(false),
-            discard: reservation.discard,
-            tracker: Some(tracker),
-        },
+    Ok(ready_lifecycle_admission(
+        lease,
+        prepared_source.identity,
+        root_request,
+        operation,
+        reservation,
+        tracker,
     ))
 }
 
@@ -914,4 +846,124 @@ pub(crate) async fn prepare_restore_lifecycle_authority<R: tauri::Runtime>(
             }
         }
     }
+}
+
+fn lifecycle_claim_generation(
+    carrier: &crate::config::sessions_persistence::PublishedCarrier,
+    source: &LifecycleSourceIdentity,
+    row: &crate::session::session::Session,
+    tracker: &crate::pty::manager::ResponseCloseState,
+    pty: &Arc<Mutex<PtyManager>>,
+) -> Option<u64> {
+    let session_id = row.id;
+    if let Some(historical) = carrier.retired_local_generation() {
+        let physical_replica = crate::session::manager::CarrierPhysicalIdentity::from(
+            source.replica.as_ref()?.clone(),
+        );
+        if !carrier.retired_local_replica_matches(&physical_replica) {
+            return None;
+        }
+        if tracker.generation(session_id).is_some()
+            || !matches!(
+                crate::session::manager::RetiredCarrierRouteObservation::from(
+                    PtyManager::snapshot_route_proof(pty, session_id)
+                ),
+                crate::session::manager::RetiredCarrierRouteObservation::Absent
+            )
+            || pty.lock().ok()?.backend_kind(session_id).is_some()
+        {
+            return None;
+        }
+        Some(historical)
+    } else {
+        if matches!(row.status, SessionStatus::Exited(_)) {
+            return None;
+        }
+        let generation = tracker.generation(session_id)?;
+        let route = PtyManager::snapshot_route_proof(pty, session_id).ok()?;
+        let actual_generation = pty.lock().ok()?.route_identities(session_id)?.2;
+        if actual_generation != generation
+            || !route.matches_requester_route(
+                row.backend_kind,
+                &source.directory,
+                source.replica.as_ref(),
+            )
+        {
+            return None;
+        }
+        Some(generation)
+    }
+}
+
+struct LifecycleSourcePreparation {
+    identity: Option<LifecycleSourceIdentity>,
+    key: Option<String>,
+}
+
+fn prepare_lifecycle_source(
+    source_row: Option<&crate::session::session::Session>,
+    snapshot: &crate::session::manager::CarrierSnapshot,
+) -> Result<Option<LifecycleSourcePreparation>, String> {
+    let mut source = if let Some(row) = source_row {
+        let Some(source) = lifecycle_source_identity(row, snapshot) else {
+            return Ok(None);
+        };
+        Some(source)
+    } else {
+        None
+    };
+    let source_key = source_row
+        .map(|row| {
+            crate::config::teams::pty_input_create_gate_key_from_cwd(Path::new(
+                &row.working_directory,
+            ))
+        })
+        .transpose()
+        .map_err(|_| "targetCreateGateUnavailable".to_string())?
+        .flatten();
+    if source
+        .as_mut()
+        .is_some_and(|source| !capture_lifecycle_source_replica(source))
+    {
+        return Ok(None);
+    }
+    Ok(Some(LifecycleSourcePreparation {
+        identity: source,
+        key: source_key,
+    }))
+}
+
+fn ready_lifecycle_admission(
+    lease: LifecycleTargetLease,
+    source: Option<LifecycleSourceIdentity>,
+    root_request: bool,
+    operation: Uuid,
+    reservation: LifecycleClaim,
+    tracker: crate::pty::manager::ResponseCloseState,
+) -> LifecycleAuthorityAdmission {
+    LifecycleAuthorityAdmission::Ready(LifecycleEntryAuthority {
+        lease,
+        source,
+        root_request,
+        operation,
+        reservation: Mutex::new(reservation.reservation),
+        interrupted: std::sync::atomic::AtomicBool::new(false),
+        discard: reservation.discard,
+        tracker: Some(tracker),
+    })
+}
+
+fn prepared_lifecycle_destination(
+    lease: &LifecycleTargetLease,
+) -> (&crate::path_identity::VerifiedPathIdentity, Option<&str>) {
+    let destination = match lease {
+        LifecycleTargetLease::Keyed { destination, .. }
+        | LifecycleTargetLease::VerifiedNoReplica { destination } => destination,
+        _ => unreachable!("prepared destination"),
+    };
+    let destination_key = match lease {
+        LifecycleTargetLease::Keyed { key, .. } => Some(key.as_str()),
+        _ => None,
+    };
+    (destination, destination_key)
 }

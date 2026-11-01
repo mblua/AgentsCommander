@@ -78,24 +78,7 @@ pub(super) async fn run_context_alert_actor(
         tokio::select! {
             biased;
             _ = shutdown.cancelled() => {
-                if let Some(slot) = in_flight.take() {
-                    slot.cancellation.cancel();
-                    if let Err(error) = slot.join.await {
-                        log::warn!(
-                            "[context-alert] delivery wrapper join failed during shutdown: {}",
-                            error
-                        );
-                    } else if let Ok(completion) = completion_rx.try_recv() {
-                        if let Err(error) = completion.result {
-                            log::warn!(
-                                "[context-alert] delivery generation={} ended with error \
-                                 during shutdown: {}",
-                                completion.generation,
-                                error
-                            );
-                        }
-                    }
-                }
+                finish_in_flight_shutdown(&mut in_flight, &mut completion_rx).await;
                 state.sessions.clear();
                 state.batches.clear();
                 break;
@@ -643,34 +626,7 @@ pub(super) async fn dispatch_due_batch(
     match preparation {
         AttemptPreparation::Ready(attempt) => {
             let session_id = attempt.snapshot.session_id;
-            let fingerprint_matches = state
-                .sessions
-                .get(&session_id)
-                .and_then(|session| session.fingerprint.as_ref())
-                == Some(&attempt.snapshot.fingerprint);
-            if !fingerprint_matches {
-                state.remove_session(session_id, None);
-                return ResolutionRecovery::default();
-            }
-            reconcile_policy(
-                state,
-                None,
-                session_id,
-                &attempt.snapshot.fingerprint,
-                &attempt.current_policy,
-                now,
-            );
-            let still_matches = state.batches.get(&generation).is_some_and(|current| {
-                // Only a context alert ever reaches this actor, so the invariant
-                // is named rather than defaulted: a remote notice must never
-                // silently count as "no thresholds crossed".
-                let attempt_thresholds = attempt
-                    .thresholds()
-                    .expect("a context-alert attempt always carries thresholds");
-                current.thresholds == attempt_thresholds
-                    && current.fingerprint == attempt.snapshot.fingerprint
-            });
-            if !still_matches {
+            if !ready_attempt_matches(state, &attempt, generation, now) {
                 return ResolutionRecovery::default();
             }
             if let Some(current) = state.batches.get_mut(&generation) {
@@ -707,54 +663,28 @@ pub(super) async fn dispatch_due_batch(
                 generation,
                 reason
             );
-            match current_policy {
-                Some(policy) if policy.fingerprint == batch.fingerprint => {
-                    let recovery = clear_resolution_errors_for_identity(
-                        state,
-                        batch.session_id,
-                        &policy.fingerprint,
-                    );
-                    if policy.thresholds.is_empty() {
-                        state.remove_session(batch.session_id, None);
-                    } else {
-                        reconcile_policy(
-                            state,
-                            None,
-                            batch.session_id,
-                            &policy.fingerprint,
-                            &policy.thresholds,
-                            now,
-                        );
-                        state.remove_batch(generation);
-                    }
-                    recovery
-                }
-                _ => {
-                    state.remove_session(batch.session_id, None);
-                    ResolutionRecovery::default()
-                }
-            }
+            reconcile_canceled_batch(
+                state,
+                batch.session_id,
+                &batch.fingerprint,
+                current_policy,
+                generation,
+                now,
+            )
         }
         AttemptPreparation::Paused {
             fingerprint,
             class,
             message,
-        } => {
-            let same_identity = state
-                .sessions
-                .get(&batch.session_id)
-                .and_then(|session| session.fingerprint.as_ref())
-                == Some(&fingerprint);
-            if !same_identity {
-                state.remove_session(batch.session_id, None);
-                return ResolutionRecovery::default();
-            }
-            if let Some(session) = state.sessions.get_mut(&batch.session_id) {
-                set_policy_error(session, batch.session_id, class, message.clone());
-            }
-            fail_batch(state, generation, now, &message);
-            ResolutionRecovery::default()
-        }
+        } => pause_batch_for_identity(
+            state,
+            batch.session_id,
+            &fingerprint,
+            class,
+            message,
+            generation,
+            now,
+        ),
         AttemptPreparation::RetryableFailure(message) => {
             fail_batch(state, generation, now, &message);
             ResolutionRecovery::default()
@@ -854,4 +784,123 @@ pub(super) async fn run_maintenance(
             runtime.retire_sample_registration(session_id);
         }
     }
+}
+
+async fn finish_in_flight_shutdown(
+    in_flight: &mut Option<InFlightSlot>,
+    completion_rx: &mut mpsc::Receiver<DeliveryCompletion>,
+) {
+    if let Some(slot) = in_flight.take() {
+        slot.cancellation.cancel();
+        if let Err(error) = slot.join.await {
+            log::warn!(
+                "[context-alert] delivery wrapper join failed during shutdown: {}",
+                error
+            );
+        } else if let Ok(completion) = completion_rx.try_recv() {
+            if let Err(error) = completion.result {
+                log::warn!(
+                    "[context-alert] delivery generation={} ended with error \
+                     during shutdown: {}",
+                    completion.generation,
+                    error
+                );
+            }
+        }
+    }
+}
+
+fn reconcile_canceled_batch(
+    state: &mut ActorState,
+    session_id: Uuid,
+    fingerprint: &MemberIdentityFingerprint,
+    current_policy: Option<super::ResolvedPolicy>,
+    generation: u64,
+    now: Instant,
+) -> ResolutionRecovery {
+    match current_policy {
+        Some(policy) if policy.fingerprint == *fingerprint => {
+            let recovery =
+                clear_resolution_errors_for_identity(state, session_id, &policy.fingerprint);
+            if policy.thresholds.is_empty() {
+                state.remove_session(session_id, None);
+            } else {
+                reconcile_policy(
+                    state,
+                    None,
+                    session_id,
+                    &policy.fingerprint,
+                    &policy.thresholds,
+                    now,
+                );
+                state.remove_batch(generation);
+            }
+            recovery
+        }
+        _ => {
+            state.remove_session(session_id, None);
+            ResolutionRecovery::default()
+        }
+    }
+}
+
+fn pause_batch_for_identity(
+    state: &mut ActorState,
+    session_id: Uuid,
+    fingerprint: &MemberIdentityFingerprint,
+    class: &'static str,
+    message: String,
+    generation: u64,
+    now: Instant,
+) -> ResolutionRecovery {
+    let same_identity = state
+        .sessions
+        .get(&session_id)
+        .and_then(|session| session.fingerprint.as_ref())
+        == Some(fingerprint);
+    if !same_identity {
+        state.remove_session(session_id, None);
+        return ResolutionRecovery::default();
+    }
+    if let Some(session) = state.sessions.get_mut(&session_id) {
+        set_policy_error(session, session_id, class, message.clone());
+    }
+    fail_batch(state, generation, now, &message);
+    ResolutionRecovery::default()
+}
+
+fn ready_attempt_matches(
+    state: &mut ActorState,
+    attempt: &super::ReadyAttempt,
+    generation: u64,
+    now: Instant,
+) -> bool {
+    let session_id = attempt.snapshot.session_id;
+    let fingerprint_matches = state
+        .sessions
+        .get(&session_id)
+        .and_then(|session| session.fingerprint.as_ref())
+        == Some(&attempt.snapshot.fingerprint);
+    if !fingerprint_matches {
+        state.remove_session(session_id, None);
+        return false;
+    }
+    reconcile_policy(
+        state,
+        None,
+        session_id,
+        &attempt.snapshot.fingerprint,
+        &attempt.current_policy,
+        now,
+    );
+    state.batches.get(&generation).is_some_and(|current| {
+        // Only a context alert ever reaches this actor, so the invariant
+        // is named rather than defaulted: a remote notice must never
+        // silently count as "no thresholds crossed".
+        let attempt_thresholds = attempt
+            .thresholds()
+            .expect("a context-alert attempt always carries thresholds");
+        current.thresholds == attempt_thresholds
+            && current.fingerprint == attempt.snapshot.fingerprint
+    })
 }

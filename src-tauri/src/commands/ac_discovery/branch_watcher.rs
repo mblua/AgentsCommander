@@ -269,6 +269,41 @@ impl DiscoveryBranchWatcher {
         });
     }
 
+    fn refreshed_repos(&self, entry: &ReplicaBranchEntry) -> Vec<SessionRepo> {
+        // #1298 - pure map reads. This loop no longer spawns `git`: the global
+        // `GitSweeper` is the only polling producer, and this poll consumes its
+        // published snapshot. An unpublished path reads `None`, which is the
+        // same "unknown" a failed detection produced before.
+        let statuses: Vec<Option<crate::pty::git_watcher::GitStatus>> = entry
+            .repos
+            .iter()
+            .map(|(_, path)| crate::pty::git_watcher::read_git_status(path, &self.git_state))
+            .collect();
+
+        entry
+            .repos
+            .iter()
+            .zip(statuses)
+            .map(|((label, path), status)| SessionRepo {
+                label: label.clone(),
+                source_path: path.clone(),
+                // #1028 - `branch` keeps its old behaviour exactly: a failed
+                // detection reports `None`, with no hold.
+                branch: status.as_ref().and_then(|s| s.branch.clone()),
+                // #1028 - identical shape to GitWatcher::poll, over the SAME
+                // shared map. Both badge writers must compute `dirty` the same
+                // way: they take turns writing this vec, and if only one of them
+                // computed it the other would write `None` every 15s and flicker
+                // the badge violet twice a cycle.
+                dirty: crate::pty::git_watcher::remember_dirty(
+                    path,
+                    status.as_ref().map(|s| s.dirty),
+                    &self.git_state,
+                ),
+            })
+            .collect()
+    }
+
     pub(crate) async fn poll(&self) -> Result<(), String> {
         // Flatten per-project entries.
         let entries: Vec<ReplicaBranchEntry> = {
@@ -296,40 +331,7 @@ impl DiscoveryBranchWatcher {
                     }
                 };
 
-                // #1298 - pure map reads. This loop no longer spawns `git`: the global
-                // `GitSweeper` is the only polling producer, and this poll consumes its
-                // published snapshot. An unpublished path reads `None`, which is the
-                // same "unknown" a failed detection produced before.
-                let statuses: Vec<Option<crate::pty::git_watcher::GitStatus>> = entry
-                    .repos
-                    .iter()
-                    .map(|(_, path)| {
-                        crate::pty::git_watcher::read_git_status(path, &self.git_state)
-                    })
-                    .collect();
-
-                let refreshed: Vec<SessionRepo> = entry
-                    .repos
-                    .iter()
-                    .zip(statuses)
-                    .map(|((label, path), status)| SessionRepo {
-                        label: label.clone(),
-                        source_path: path.clone(),
-                        // #1028 - `branch` keeps its old behaviour exactly: a failed
-                        // detection reports `None`, with no hold.
-                        branch: status.as_ref().and_then(|s| s.branch.clone()),
-                        // #1028 - identical shape to GitWatcher::poll, over the SAME
-                        // shared map. Both badge writers must compute `dirty` the same
-                        // way: they take turns writing this vec, and if only one of them
-                        // computed it the other would write `None` every 15s and flicker
-                        // the badge violet twice a cycle.
-                        dirty: crate::pty::git_watcher::remember_dirty(
-                            path,
-                            status.as_ref().map(|s| s.dirty),
-                            &self.git_state,
-                        ),
-                    })
-                    .collect();
+                let refreshed = self.refreshed_repos(entry);
 
                 // Gate A: emit ac_discovery_branch_updated (AcDiscoveryPanel's branch
                 // chip, plus #943 B2's per-repo branches for cold replicas).

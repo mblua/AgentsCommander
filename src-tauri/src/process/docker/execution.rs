@@ -200,34 +200,7 @@ impl DockerProcessState {
             recorded_commands.lock().unwrap().push(spec.clone());
             if let Some(results) = &self.scripted_results {
                 if let Some(result) = results.lock().unwrap().pop_front() {
-                    return match result {
-                        ScriptedDockerCommandResult::Output { stdout, stderr } => {
-                            Ok(DockerCommandOutput {
-                                stdout: CappedCommandStream {
-                                    bytes: stdout,
-                                    truncated: false,
-                                },
-                                stderr: CappedCommandStream {
-                                    bytes: stderr,
-                                    truncated: false,
-                                },
-                            })
-                        }
-                        ScriptedDockerCommandResult::SpawnedError(error) => {
-                            Err(DockerCommandError {
-                                source: AppError::PtyError(error),
-                                spawned: true,
-                            })
-                        }
-                        ScriptedDockerCommandResult::ReaderError(error) => {
-                            Err(DockerCommandError {
-                                source: AppError::PtyError(format!(
-                                    "container runtime command stdout read failed: {error}"
-                                )),
-                                spawned: true,
-                            })
-                        }
-                    };
+                    return Self::scripted_command_output(result);
                 }
             }
             return Ok(DockerCommandOutput::empty());
@@ -316,6 +289,34 @@ impl DockerProcessState {
         )?;
 
         self.collect_command_output(owner, status, &spec, control, hard_deadline)
+    }
+
+    #[cfg(test)]
+    fn scripted_command_output(
+        result: ScriptedDockerCommandResult,
+    ) -> Result<DockerCommandOutput, DockerCommandError> {
+        match result {
+            ScriptedDockerCommandResult::Output { stdout, stderr } => Ok(DockerCommandOutput {
+                stdout: CappedCommandStream {
+                    bytes: stdout,
+                    truncated: false,
+                },
+                stderr: CappedCommandStream {
+                    bytes: stderr,
+                    truncated: false,
+                },
+            }),
+            ScriptedDockerCommandResult::SpawnedError(error) => Err(DockerCommandError {
+                source: AppError::PtyError(error),
+                spawned: true,
+            }),
+            ScriptedDockerCommandResult::ReaderError(error) => Err(DockerCommandError {
+                source: AppError::PtyError(format!(
+                    "container runtime command stdout read failed: {error}"
+                )),
+                spawned: true,
+            }),
+        }
     }
 
     fn collect_command_output(

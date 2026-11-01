@@ -169,35 +169,45 @@ impl ResponseCloseState {
                 inner.settings_epoch,
                 inner.unknown_spawns
             );
-            log::debug!(
-                target: DIAG_TARGET,
-                "response_close_diag id=unknown site={} outcome=observed stage=select_route \
-                 member={} generation={} tracker_mirror_version={} eligible={} \
-                 manager_working={:?} detector_working={:?} menu_blocked={:?} hold_known={} \
-                 hold_remaining_ms={:?} held_count={} writers={} work_epoch={} \
-                 activity_version={} closing={} external_live_facts=unknown policy_present={}",
-                line!(),
-                id,
-                route.generation,
-                route.manager_version,
-                route.eligible,
-                route.manager_working,
-                route.detector_working,
-                route.menu_blocked,
-                route.hold_known,
-                route.hold_until.map(|end| end.saturating_duration_since(now).as_millis()),
-                route.held.len(),
-                route.writers,
-                route.work_epoch,
-                route.activity_version,
-                route.closing.is_some(),
-                policy.is_some()
-            );
-            Self::diagnostic_select_policy(inner, route, now, anchor);
+            Self::diagnostic_select_route(inner, route, id, now, anchor);
         }
         if let Some(route) = inner.routes.get_mut(&id) {
             route.diagnostic_select = next_cache;
         }
+    }
+
+    fn diagnostic_select_route(
+        inner: &ResponseCloseInner,
+        route: &ResponseCloseRoute,
+        id: Uuid,
+        now: std::time::Instant,
+        anchor: Option<std::time::Instant>,
+    ) {
+        log::debug!(
+            target: DIAG_TARGET,
+            "response_close_diag id=unknown site={} outcome=observed stage=select_route \
+             member={} generation={} tracker_mirror_version={} eligible={} \
+             manager_working={:?} detector_working={:?} menu_blocked={:?} hold_known={} \
+             hold_remaining_ms={:?} held_count={} writers={} work_epoch={} \
+             activity_version={} closing={} external_live_facts=unknown policy_present={}",
+            line!(),
+            id,
+            route.generation,
+            route.manager_version,
+            route.eligible,
+            route.manager_working,
+            route.detector_working,
+            route.menu_blocked,
+            route.hold_known,
+            route.hold_until.map(|end| end.saturating_duration_since(now).as_millis()),
+            route.held.len(),
+            route.writers,
+            route.work_epoch,
+            route.activity_version,
+            route.closing.is_some(),
+            route.policy.is_some()
+        );
+        Self::diagnostic_select_policy(inner, route, now, anchor);
     }
 
     pub(in crate::pty) fn diagnostic_select_policy(

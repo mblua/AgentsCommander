@@ -1,7 +1,6 @@
 use super::handoff::{
-    dedup_outbox_dirs_by_object_id, is_permanent_delivery_error, outbox_message_send_time,
-    prune_retry_tracker, wake_claim_has_settled_receipt, wake_claim_origin, wake_claim_path,
-    WakeHandoff, WakeOutcomeReport, WAKE_CLAIM_EXTENSION,
+    is_permanent_delivery_error, prune_retry_tracker, wake_claim_has_settled_receipt,
+    wake_claim_origin, wake_claim_path, WakeHandoff, WakeOutcomeReport,
 };
 use super::notice::{
     retain_unarchived_session_dirs, OutboxOrigin, RetryState, MAX_DELIVERY_ATTEMPTS,
@@ -18,6 +17,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::Manager;
+
+mod outboxes;
 
 impl MailboxPoller {
     /// Settlement only: marker presence never enters execution validation or a wake lane.
@@ -460,6 +461,101 @@ impl MailboxPoller {
         self.drain_wake_outcomes().await;
     }
 
+    async fn poll_session_paths(
+        repo_paths: Vec<String>,
+        archived: Vec<String>,
+        session_mgr: &tokio::sync::RwLock<SessionManager>,
+    ) -> Result<(Vec<String>, Vec<String>, Vec<(uuid::Uuid, String)>), String> {
+        let session_dirs = {
+            let mgr = session_mgr.read().await;
+            mgr.get_sessions_working_dirs().await
+        };
+        let snapshot_session_dirs = session_dirs.clone();
+        let archived_for_snapshot = archived.clone();
+        let session_dirs = if archived.is_empty() {
+            session_dirs
+        } else {
+            tokio::task::spawn_blocking(move || {
+                let roots = crate::config::sessions_persistence::normalize_project_roots(&archived);
+                retain_unarchived_session_dirs(session_dirs, &roots)
+            })
+            .await
+            .map_err(|e| format!("archived mailbox-session filter task failed: {}", e))?
+        };
+
+        let mut startup_project_paths = repo_paths.clone();
+        for path in &archived_for_snapshot {
+            if !startup_project_paths.contains(path) {
+                startup_project_paths.push(path.clone());
+            }
+        }
+        let mut all_paths: Vec<String> = repo_paths;
+        for (_, dir) in &session_dirs {
+            if !all_paths.contains(dir) {
+                all_paths.push(dir.clone());
+            }
+        }
+        Ok((startup_project_paths, all_paths, snapshot_session_dirs))
+    }
+
+    fn poll_snapshot_startup(
+        &mut self,
+        state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
+        startup_project_paths: &[String],
+    ) {
+        let mut startup_objects = std::collections::HashSet::new();
+        if let Ok(root) = crate::config::root_agent::root_agent_dir() {
+            let root = PathBuf::from(root);
+            if let Ok(identity) = crate::path_identity::verify_directory(&root) {
+                if startup_objects.insert(identity.object_id) {
+                    self.snapshot_scanner.startup_sweep_root(state, &root);
+                }
+            }
+        }
+        let mut target_count = 0usize;
+        for project in startup_project_paths {
+            let Ok(targets) = crate::config::teams::discover_verified_terminal_snapshot_targets(
+                std::slice::from_ref(project),
+            ) else {
+                continue;
+            };
+            for target in targets {
+                target_count = target_count.saturating_add(1);
+                if target_count > 4_096 {
+                    break;
+                }
+                let Ok(identity) = crate::path_identity::verify_directory(&target.replica_root)
+                else {
+                    continue;
+                };
+                if startup_objects.insert(identity.object_id) {
+                    self.snapshot_scanner
+                        .startup_sweep_root(state, &target.replica_root);
+                }
+            }
+            if target_count > 4_096 {
+                break;
+            }
+        }
+    }
+
+    fn poll_outbox_entries(&self, outbox_dir: &Path) -> Option<Vec<PathBuf>> {
+        let (mut entries, claims) = outboxes::read_entries(outbox_dir)?;
+        // (#1399 R2) Reclamation renames files a live worker may own, and
+        // the ownership test is path-keyed, so it runs only where the
+        // outbox identity is established: an unverifiable spelling of an
+        // aliased outbox can never resurrect a live claim. An outbox that
+        // fails verification cannot deliver anyway (the hardened reader
+        // rejects its messages for the same reason), so nothing that works
+        // today is lost. Reclaimed files are re-scanned on the NEXT cycle;
+        // `entries` for this one is already collected.
+        if crate::path_identity::verify_directory(outbox_dir).is_ok() {
+            self.reclaim_unowned_wake_claims(outbox_dir, &claims);
+        }
+        outboxes::sort_entries(&mut entries);
+        Some(entries)
+    }
+
     /// One poll cycle: scan all repo outbox dirs, process each message.
     pub(crate) async fn poll<R: tauri::Runtime>(
         &mut self,
@@ -514,35 +610,8 @@ impl MailboxPoller {
 
         // Also scan CWDs of active sessions for repos not in settings
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let session_dirs = {
-            let mgr = session_mgr.read().await;
-            mgr.get_sessions_working_dirs().await
-        };
-        let snapshot_session_dirs = session_dirs.clone();
-        let archived_for_snapshot = archived.clone();
-        let session_dirs = if archived.is_empty() {
-            session_dirs
-        } else {
-            tokio::task::spawn_blocking(move || {
-                let roots = crate::config::sessions_persistence::normalize_project_roots(&archived);
-                retain_unarchived_session_dirs(session_dirs, &roots)
-            })
-            .await
-            .map_err(|e| format!("archived mailbox-session filter task failed: {}", e))?
-        };
-
-        let mut startup_project_paths = repo_paths.clone();
-        for path in &archived_for_snapshot {
-            if !startup_project_paths.contains(path) {
-                startup_project_paths.push(path.clone());
-            }
-        }
-        let mut all_paths: Vec<String> = repo_paths;
-        for (_, dir) in &session_dirs {
-            if !all_paths.contains(dir) {
-                all_paths.push(dir.clone());
-            }
-        }
+        let (startup_project_paths, all_paths, snapshot_session_dirs) =
+            Self::poll_session_paths(repo_paths, archived, &session_mgr).await?;
 
         // One bounded startup sweep covers canonical Root plus verified WG
         // replicas under active and archived projects. Fresh artifacts are
@@ -551,43 +620,7 @@ impl MailboxPoller {
             if let Some(state) =
                 app.try_state::<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>()
             {
-                let mut startup_objects = std::collections::HashSet::new();
-                if let Ok(root) = crate::config::root_agent::root_agent_dir() {
-                    let root = PathBuf::from(root);
-                    if let Ok(identity) = crate::path_identity::verify_directory(&root) {
-                        if startup_objects.insert(identity.object_id) {
-                            self.snapshot_scanner.startup_sweep_root(&state, &root);
-                        }
-                    }
-                }
-                let mut target_count = 0usize;
-                for project in &startup_project_paths {
-                    let Ok(targets) =
-                        crate::config::teams::discover_verified_terminal_snapshot_targets(
-                            std::slice::from_ref(project),
-                        )
-                    else {
-                        continue;
-                    };
-                    for target in targets {
-                        target_count = target_count.saturating_add(1);
-                        if target_count > 4_096 {
-                            break;
-                        }
-                        let Ok(identity) =
-                            crate::path_identity::verify_directory(&target.replica_root)
-                        else {
-                            continue;
-                        };
-                        if startup_objects.insert(identity.object_id) {
-                            self.snapshot_scanner
-                                .startup_sweep_root(&state, &target.replica_root);
-                        }
-                    }
-                    if target_count > 4_096 {
-                        break;
-                    }
-                }
+                self.poll_snapshot_startup(&state, &startup_project_paths);
             }
             self.snapshot_scanner.finish_startup_sweep();
         }
@@ -616,54 +649,7 @@ impl MailboxPoller {
         let app_outbox = app.state::<AppOutbox>();
         let app_outbox_path = app_outbox.path().to_string();
 
-        // Collect all outbox directories to scan
-        let mut outbox_dirs: Vec<PathBuf> = all_paths
-            .iter()
-            .map(|p| {
-                Path::new(p)
-                    .join(crate::config::agent_local_dir_name())
-                    .join("outbox")
-            })
-            .collect();
-        // (#1399 R9) Dedup BEFORE the app outbox is pushed: `retain` keeps the
-        // first occurrence, so running it over the full list could drop the
-        // app entry in favour of an aliasing project spelling and silently
-        // turn `is_app_outbox` false. This ordering makes that structurally
-        // impossible.
-        dedup_outbox_dirs_by_object_id(&mut outbox_dirs);
-        outbox_dirs.push(PathBuf::from(&app_outbox_path));
-
-        // #2232 phase 7: the Co-managed provenance queues of every room an
-        // active session lives in. Each is its own scanned directory with its
-        // own origin, never an outbox subdirectory (the sweep skips those).
-        let mut queue_dirs: Vec<PathBuf> = Vec::new();
-        for path in &all_paths {
-            let Some(room_root) = crate::config::co_managed::room_root_for_path(Path::new(path))
-            else {
-                continue;
-            };
-            let queue = crate::config::co_managed::queue_dir(&room_root);
-            if !queue_dirs.contains(&queue) {
-                queue_dirs.push(queue);
-            }
-        }
-
-        let mut scan_dirs: Vec<(PathBuf, OutboxOrigin)> = outbox_dirs
-            .into_iter()
-            .map(|dir| {
-                let origin = if dir.as_path() == Path::new(&app_outbox_path) {
-                    OutboxOrigin::Master
-                } else {
-                    OutboxOrigin::Replica
-                };
-                (dir, origin)
-            })
-            .collect();
-        scan_dirs.extend(
-            queue_dirs
-                .into_iter()
-                .map(|dir| (dir, OutboxOrigin::CoManaged)),
-        );
+        let scan_dirs = outboxes::scan_dirs(&all_paths, &app_outbox_path);
 
         for (outbox_dir, origin) in &scan_dirs {
             if !mailbox_disk::mailbox_path_is_dir(outbox_dir) {
@@ -676,53 +662,9 @@ impl MailboxPoller {
                 }
             }
 
-            // (#1399) One walk partitions the outbox root by extension:
-            // messages to scan and claim markers to reclaim. Deliberately
-            // unbounded, exactly as today's scan is.
-            let mut entries: Vec<PathBuf> = Vec::new();
-            let mut claims: Vec<PathBuf> = Vec::new();
-            match mailbox_disk::mailbox_directory_paths(outbox_dir) {
-                Ok(rd) => {
-                    for path in rd.filter_map(|e| e.ok()) {
-                        // Skip files in subdirectories (delivered/, rejected/)
-                        if path.parent() != Some(outbox_dir.as_path()) {
-                            continue;
-                        }
-                        match path.extension().and_then(|s| s.to_str()) {
-                            Some("json") => entries.push(path),
-                            Some(WAKE_CLAIM_EXTENSION) => claims.push(path),
-                            _ => {}
-                        }
-                    }
-                }
-                Err(_) => continue,
-            }
-            // (#1399 R2) Reclamation renames files a live worker may own, and
-            // the ownership test is path-keyed, so it runs only where the
-            // outbox identity is established: an unverifiable spelling of an
-            // aliased outbox can never resurrect a live claim. An outbox that
-            // fails verification cannot deliver anyway (the hardened reader
-            // rejects its messages for the same reason), so nothing that works
-            // today is lost. Reclaimed files are re-scanned on the NEXT cycle;
-            // `entries` for this one is already collected.
-            if crate::path_identity::verify_directory(outbox_dir).is_ok() {
-                self.reclaim_unowned_wake_claims(outbox_dir, &claims);
-            }
-
-            // (#1399) Process a batch in send order. `read_dir` yields NTFS
-            // filename order over random UUID names, so today's order is
-            // arbitrary; once the per-target lane defers the rest of a
-            // target's queue, that arbitrary order becomes the ADMISSION
-            // decision, re-rolled every cycle, and an already-queued message
-            // could be passed over indefinitely by newer arrivals whose names
-            // sort lower. `sort_by_cached_key` reads each file at most once;
-            // `None` sorts first so an unreadable document still reaches the
-            // existing rejection path promptly; the path tie-breaker makes
-            // equal timestamps deterministic. The length guard keeps the
-            // steady state (zero or one message) at exactly zero extra reads.
-            if entries.len() > 1 {
-                entries.sort_by_cached_key(|path| (outbox_message_send_time(path), path.clone()));
-            }
+            let Some(entries) = self.poll_outbox_entries(outbox_dir) else {
+                continue;
+            };
 
             for path in entries {
                 messages_processed += 1;

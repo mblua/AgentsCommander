@@ -71,44 +71,10 @@ where
 {
     let project_dir =
         crate::config::projects::absolutise(path).map_err(|error| error.to_string())?;
-    match project_fs::project_path_symlink_metadata(&project_dir) {
-        Ok(metadata) if !metadata.is_dir() => {
-            return Err(format!(
-                "Project path is not a directory: {}",
-                project_dir.display()
-            ))
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            discovery::create_project_directory_all(&project_dir).map_err(|error| {
-                format!(
-                    "Failed to create project directory {}: {}",
-                    project_dir.display(),
-                    error
-                )
-            })?;
-        }
-        Err(error) => {
-            return Err(format!(
-                "Failed to inspect project directory {}: {}",
-                project_dir.display(),
-                error
-            ))
-        }
-    }
+    ensure_project_directory(&project_dir)?;
 
     let ac_root = ac_root_for_project(&project_dir);
-    let created = match discovery::create_project_ac_root(&ac_root) {
-        Ok(()) => true,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
-        Err(error) => {
-            return Err(format!(
-                "Failed to create {} directory: {}",
-                canonical_ac_root_label(),
-                error
-            ))
-        }
-    };
+    let created = create_project_root(&ac_root)?;
     let pinned_project = crate::config::seed_manifest::PinnedDirectory::open(&project_dir)
         .map_err(|error| {
             format!(
@@ -204,4 +170,45 @@ where
     })?;
     guard.release();
     Ok(())
+}
+
+fn ensure_project_directory(project_dir: &Path) -> Result<(), String> {
+    match project_fs::project_path_symlink_metadata(project_dir) {
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(format!(
+                "Project path is not a directory: {}",
+                project_dir.display()
+            ))
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            discovery::create_project_directory_all(project_dir).map_err(|error| {
+                format!(
+                    "Failed to create project directory {}: {}",
+                    project_dir.display(),
+                    error
+                )
+            })?;
+        }
+        Err(error) => {
+            return Err(format!(
+                "Failed to inspect project directory {}: {}",
+                project_dir.display(),
+                error
+            ))
+        }
+    }
+    Ok(())
+}
+
+fn create_project_root(ac_root: &Path) -> Result<bool, String> {
+    match discovery::create_project_ac_root(ac_root) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(format!(
+            "Failed to create {} directory: {}",
+            canonical_ac_root_label(),
+            error
+        )),
+    }
 }

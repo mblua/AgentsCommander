@@ -244,6 +244,15 @@ pub(super) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> 
     // project isn't in settings. Mirrors `cli/send.rs::effective_project_paths`
     // (send.rs `derive_root_project_dir` augmentation) and the mailbox
     // root-recipient arm's `derive_project_from_outbox_path` augmentation.
+    let effective_paths = effective_wg_project_paths(&wg, project_paths);
+    if let Some(root_peer) = build_root_agent_synthetic_peer(&wg, &effective_paths) {
+        peers.push(root_peer);
+    }
+
+    peers
+}
+
+fn effective_wg_project_paths(wg: &WgReplicaInfo, project_paths: &[String]) -> Vec<String> {
     let mut effective_paths = project_paths.to_vec();
     if let Some(project_dir) = wg.ac_root.parent() {
         if let Some(project_str) = project_dir.to_str() {
@@ -264,11 +273,7 @@ pub(super) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> 
             }
         }
     }
-    if let Some(root_peer) = build_root_agent_synthetic_peer(&wg, &effective_paths) {
-        peers.push(root_peer);
-    }
-
-    peers
+    effective_paths
 }
 
 pub(super) fn append_origin_team_peers(

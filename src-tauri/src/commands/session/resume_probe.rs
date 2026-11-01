@@ -11,7 +11,7 @@ use crate::pty::container_paths::{
 };
 use crate::pty::container_runtime::DEFAULT_CONTAINER_WORKDIR;
 use crate::session::profile::{locate_pi_command, CodingAgentKind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// Resolve the directory where Claude Code stores its project transcripts for
@@ -50,6 +50,82 @@ pub(crate) fn resolve_claude_projects_dir(
     )
 }
 
+fn strip_ascii_prefix_ci<'a>(haystack: &'a str, needle: &str) -> Option<&'a str> {
+    if haystack.len() < needle.len() {
+        return None;
+    }
+    if haystack.as_bytes()[..needle.len()].eq_ignore_ascii_case(needle.as_bytes()) {
+        Some(&haystack[needle.len()..])
+    } else {
+        None
+    }
+}
+
+fn parse_config_dir_from_wrapper(path: &Path) -> Option<PathBuf> {
+    let bytes = crate::config::agent_command::read_claude_resume_wrapper(path)?;
+    // Strip UTF-8 BOM if present; tolerate non-UTF-8 by lossy decode.
+    let text_bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    let text = String::from_utf8_lossy(text_bytes);
+
+    for raw_line in text.lines() {
+        let line = raw_line.trim_start();
+
+        // Strip optional shell-prefix introducer:
+        //   `cmd`/`.bat`: `set CLAUDE_CONFIG_DIR=...`
+        //   `cmd`/`.bat`: `set "CLAUDE_CONFIG_DIR=..."`     (cmd-quoted whole-assignment)
+        //   `.ps1`:       `$env:CLAUDE_CONFIG_DIR = ...`
+        //   `.sh`:        `export CLAUDE_CONFIG_DIR=...`
+        //   Bare:         `CLAUDE_CONFIG_DIR=...`
+        let after_prefix = if let Some(rest) = strip_ascii_prefix_ci(line, "set ") {
+            rest.trim_start()
+        } else if let Some(rest) = strip_ascii_prefix_ci(line, "$env:") {
+            rest.trim_start()
+        } else if let Some(rest) = strip_ascii_prefix_ci(line, "export ") {
+            rest.trim_start()
+        } else {
+            line
+        };
+
+        // Detect cmd's whole-assignment quoting: `set "VAR=value"`. After the
+        // `set ` strip we may be sitting on a leading `"`; if so, the matching
+        // closing `"` terminates the value (rather than wrapping it).
+        let (after_open_quote, cmd_quoted) = match after_prefix.strip_prefix('"') {
+            Some(rest) => (rest, true),
+            None => (after_prefix, false),
+        };
+
+        let Some(rest) = strip_ascii_prefix_ci(after_open_quote, "CLAUDE_CONFIG_DIR") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        let value = rest.trim();
+
+        // Strip surrounding quotes. Two flavors:
+        //   (a) cmd whole-assignment: `set "VAR=value"`     → consume trailing `"`
+        //   (b) value-quoted:         `set VAR="value"` or `'value'` → strip matched pair
+        let unquoted: &str = if cmd_quoted {
+            value.strip_suffix('"').unwrap_or(value)
+        } else if value.len() >= 2
+            && ((value.starts_with('"') && value.ends_with('"'))
+                || (value.starts_with('\'') && value.ends_with('\'')))
+        {
+            &value[1..value.len() - 1]
+        } else {
+            value
+        };
+
+        if unquoted.is_empty() {
+            return None;
+        }
+        let expanded = expand_env_var_refs(unquoted);
+        return Some(PathBuf::from(expanded));
+    }
+    None
+}
+
 /// #2589 - `resolve_claude_projects_dir` resolving a bare wrapper token through
 /// an explicit search path.
 pub(crate) fn resolve_claude_projects_dir_in(
@@ -62,82 +138,6 @@ pub(crate) fn resolve_claude_projects_dir_in(
 
     fn default_base() -> Option<PathBuf> {
         dirs::home_dir().map(|h| h.join(".claude"))
-    }
-
-    fn strip_ascii_prefix_ci<'a>(haystack: &'a str, needle: &str) -> Option<&'a str> {
-        if haystack.len() < needle.len() {
-            return None;
-        }
-        if haystack.as_bytes()[..needle.len()].eq_ignore_ascii_case(needle.as_bytes()) {
-            Some(&haystack[needle.len()..])
-        } else {
-            None
-        }
-    }
-
-    fn parse_config_dir_from_wrapper(path: &Path) -> Option<PathBuf> {
-        let bytes = crate::config::agent_command::read_claude_resume_wrapper(path)?;
-        // Strip UTF-8 BOM if present; tolerate non-UTF-8 by lossy decode.
-        let text_bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
-        let text = String::from_utf8_lossy(text_bytes);
-
-        for raw_line in text.lines() {
-            let line = raw_line.trim_start();
-
-            // Strip optional shell-prefix introducer:
-            //   `cmd`/`.bat`: `set CLAUDE_CONFIG_DIR=...`
-            //   `cmd`/`.bat`: `set "CLAUDE_CONFIG_DIR=..."`     (cmd-quoted whole-assignment)
-            //   `.ps1`:       `$env:CLAUDE_CONFIG_DIR = ...`
-            //   `.sh`:        `export CLAUDE_CONFIG_DIR=...`
-            //   Bare:         `CLAUDE_CONFIG_DIR=...`
-            let after_prefix = if let Some(rest) = strip_ascii_prefix_ci(line, "set ") {
-                rest.trim_start()
-            } else if let Some(rest) = strip_ascii_prefix_ci(line, "$env:") {
-                rest.trim_start()
-            } else if let Some(rest) = strip_ascii_prefix_ci(line, "export ") {
-                rest.trim_start()
-            } else {
-                line
-            };
-
-            // Detect cmd's whole-assignment quoting: `set "VAR=value"`. After the
-            // `set ` strip we may be sitting on a leading `"`; if so, the matching
-            // closing `"` terminates the value (rather than wrapping it).
-            let (after_open_quote, cmd_quoted) = match after_prefix.strip_prefix('"') {
-                Some(rest) => (rest, true),
-                None => (after_prefix, false),
-            };
-
-            let Some(rest) = strip_ascii_prefix_ci(after_open_quote, "CLAUDE_CONFIG_DIR") else {
-                continue;
-            };
-            let rest = rest.trim_start();
-            let Some(rest) = rest.strip_prefix('=') else {
-                continue;
-            };
-            let value = rest.trim();
-
-            // Strip surrounding quotes. Two flavors:
-            //   (a) cmd whole-assignment: `set "VAR=value"`     → consume trailing `"`
-            //   (b) value-quoted:         `set VAR="value"` or `'value'` → strip matched pair
-            let unquoted: &str = if cmd_quoted {
-                value.strip_suffix('"').unwrap_or(value)
-            } else if value.len() >= 2
-                && ((value.starts_with('"') && value.ends_with('"'))
-                    || (value.starts_with('\'') && value.ends_with('\'')))
-            {
-                &value[1..value.len() - 1]
-            } else {
-                value
-            };
-
-            if unquoted.is_empty() {
-                return None;
-            }
-            let expanded = expand_env_var_refs(unquoted);
-            return Some(PathBuf::from(expanded));
-        }
-        None
     }
 
     fn looks_like_wrapper_extension(path: &Path) -> bool {

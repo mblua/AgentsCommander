@@ -65,52 +65,7 @@ async fn post_inner(
     }
     let (parts, body) = request.into_parts();
     validate_request_headers(&parts.headers)?;
-    state
-        .lockout
-        .check(address.ip())
-        .map_err(|_| TerminalSnapshotReasonCode::RateLimited)?;
-    let bearer = match crate::api::handlers::bearer_token_strict(&parts.headers) {
-        Ok(token) => token,
-        Err(_) => {
-            state
-                .lockout
-                .record_failure(address.ip())
-                .map_err(|_| TerminalSnapshotReasonCode::ServiceUnavailable)?;
-            return Err(TerminalSnapshotReasonCode::RequesterUnavailable);
-        }
-    };
-    let fresh = match state
-        .store
-        .authenticate_privileged_fresh_offloaded(bearer)
-        .await
-    {
-        Ok(Some(guard)) => guard,
-        Ok(None) => {
-            state
-                .lockout
-                .record_failure(address.ip())
-                .map_err(|_| TerminalSnapshotReasonCode::ServiceUnavailable)?;
-            return Err(TerminalSnapshotReasonCode::RequesterUnavailable);
-        }
-        Err(FreshRegistryError::Contended | FreshRegistryError::Internal) => {
-            return Err(TerminalSnapshotReasonCode::ServiceUnavailable)
-        }
-    };
-    state
-        .lockout
-        .record_success(address.ip())
-        .map_err(|_| TerminalSnapshotReasonCode::ServiceUnavailable)?;
-    if !fresh.client.has_scope(SCOPE_TERMINAL_SNAPSHOT)
-        || fresh.client.bound_session_id.is_none()
-        || fresh.client.credential_generation.is_none()
-    {
-        return Err(TerminalSnapshotReasonCode::NotAuthorized);
-    }
-    let proof =
-        InitialApiCredentialProof::from_fresh_guard(fresh).map_err(map_bound_authority_error)?;
-    let authority = crate::api::identity::verify_live_bound_container_coordinator(&state, proof)
-        .await
-        .map_err(map_bound_authority_error)?;
+    let authority = authenticate_requester(&state, address, &parts.headers).await?;
 
     let context = service_context(&state)?;
     let admission = snapshot_state
@@ -190,6 +145,59 @@ async fn post_inner(
         disclosure.finalize_failure(TerminalSnapshotReasonCode::AuthorityChanged);
     }
     Ok(response)
+}
+
+async fn authenticate_requester(
+    state: &ApiState,
+    address: SocketAddr,
+    headers: &HeaderMap,
+) -> Result<crate::api::identity::VerifiedBoundContainerCoordinator, TerminalSnapshotReasonCode> {
+    state
+        .lockout
+        .check(address.ip())
+        .map_err(|_| TerminalSnapshotReasonCode::RateLimited)?;
+    let bearer = match crate::api::handlers::bearer_token_strict(headers) {
+        Ok(token) => token,
+        Err(_) => {
+            state
+                .lockout
+                .record_failure(address.ip())
+                .map_err(|_| TerminalSnapshotReasonCode::ServiceUnavailable)?;
+            return Err(TerminalSnapshotReasonCode::RequesterUnavailable);
+        }
+    };
+    let fresh = match state
+        .store
+        .authenticate_privileged_fresh_offloaded(bearer)
+        .await
+    {
+        Ok(Some(guard)) => guard,
+        Ok(None) => {
+            state
+                .lockout
+                .record_failure(address.ip())
+                .map_err(|_| TerminalSnapshotReasonCode::ServiceUnavailable)?;
+            return Err(TerminalSnapshotReasonCode::RequesterUnavailable);
+        }
+        Err(FreshRegistryError::Contended | FreshRegistryError::Internal) => {
+            return Err(TerminalSnapshotReasonCode::ServiceUnavailable)
+        }
+    };
+    state
+        .lockout
+        .record_success(address.ip())
+        .map_err(|_| TerminalSnapshotReasonCode::ServiceUnavailable)?;
+    if !fresh.client.has_scope(SCOPE_TERMINAL_SNAPSHOT)
+        || fresh.client.bound_session_id.is_none()
+        || fresh.client.credential_generation.is_none()
+    {
+        return Err(TerminalSnapshotReasonCode::NotAuthorized);
+    }
+    let proof =
+        InitialApiCredentialProof::from_fresh_guard(fresh).map_err(map_bound_authority_error)?;
+    crate::api::identity::verify_live_bound_container_coordinator(state, proof)
+        .await
+        .map_err(map_bound_authority_error)
 }
 
 fn service_context(

@@ -429,19 +429,18 @@ fn repair_distribution_template(
 }
 
 fn sync_customized_template(
-    context: ExistingTemplateSync<'_>,
+    mut context: ExistingTemplateSync<'_>,
     return_pending: bool,
     clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
 ) -> ContextTemplateExecution<TemplateSyncOutcome> {
     let ExistingTemplateSync {
-        project_dir,
-        ac_root,
-        path,
+        ref path,
         spec,
-        loaded,
-        snapshot,
-        current_default_sha256,
+        ref mut loaded,
+        ref snapshot,
+        ref current_default_sha256,
         carried_publication,
+        ..
     } = context;
     // Root migration authority comes only from exact shipped bytes, independently
     // of absent, stale, or forged persisted state.
@@ -451,11 +450,11 @@ fn sync_customized_template(
             .is_some_and(|matches| matches(&snapshot.content))
     {
         return sync_generated_template(
-            &path,
+            path,
             spec,
             &snapshot.sha256,
             loaded,
-            &current_default_sha256,
+            current_default_sha256,
             clock,
         );
     }
@@ -474,11 +473,11 @@ fn sync_customized_template(
                 .is_some_and(|matches| matches(&snapshot.content))
         {
             return sync_generated_template(
-                &path,
+                path,
                 spec,
                 &snapshot.sha256,
                 loaded,
-                &current_default_sha256,
+                current_default_sha256,
                 clock,
             );
         }
@@ -491,11 +490,11 @@ fn sync_customized_template(
             .is_some_and(|matches| matches(&snapshot.content))
     {
         return sync_generated_template(
-            &path,
+            path,
             spec,
             &snapshot.sha256,
             loaded,
-            &current_default_sha256,
+            current_default_sha256,
             clock,
         );
     }
@@ -540,6 +539,23 @@ fn sync_customized_template(
         }
     }
 
+    observe_customized_template(context, return_pending)
+}
+
+fn observe_customized_template(
+    context: ExistingTemplateSync<'_>,
+    return_pending: bool,
+) -> ContextTemplateExecution<TemplateSyncOutcome> {
+    let ExistingTemplateSync {
+        project_dir,
+        ac_root,
+        path,
+        spec,
+        loaded,
+        snapshot,
+        current_default_sha256,
+        carried_publication,
+    } = context;
     loaded.mark_observed(spec, &snapshot.sha256);
     let pending_update = if return_pending {
         let project_dir = match project_dir {

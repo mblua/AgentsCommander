@@ -156,11 +156,7 @@ pub(super) fn recover_clean_pair_locked(root: &Path) -> Result<(), TaskOpError> 
     finish_clean_locked(root, &journal, &bytes)
 }
 
-fn finish_clean_locked(
-    root: &Path,
-    journal: &CleanJournal,
-    journal_bytes: &[u8],
-) -> Result<(), TaskOpError> {
+fn validate_clean_pair(root: &Path, journal: &CleanJournal) -> Result<(), TaskOpError> {
     // Validate the entire pair before replacing either target.
     for (side, target) in [
         (&journal.task, TASK_FILE_NAME),
@@ -195,6 +191,15 @@ fn finish_clean_locked(
             return Err(clean_conflict("missing or changed needed stage"));
         }
     }
+    Ok(())
+}
+
+fn finish_clean_locked(
+    root: &Path,
+    journal: &CleanJournal,
+    journal_bytes: &[u8],
+) -> Result<(), TaskOpError> {
+    validate_clean_pair(root, journal)?;
     for (side, target, boundary) in [
         (&journal.task, TASK_FILE_NAME, "task_rename"),
         (&journal.status, STATUS_NAME, "status_rename"),
@@ -367,6 +372,23 @@ fn archive_clean_pair(
     Ok(())
 }
 
+fn clean_status_seed(now: &DateTime<Utc>) -> Result<Vec<u8>, TaskOpError> {
+    let seed = StatusRecord {
+        schema_version: 1,
+        kind: "topic_started".into(),
+        topic_id: uuid::Uuid::new_v4().to_string(),
+        sequence: 0,
+        request_id: None,
+        base_revision: None,
+        recorded_at: now.to_rfc3339(),
+        author: None,
+        status: None,
+    };
+    let mut seed_bytes = serde_json::to_vec(&seed).map_err(|e| status_invalid(e.to_string()))?;
+    seed_bytes.push(b'\n');
+    Ok(seed_bytes)
+}
+
 pub(super) fn clean_pair_locked(
     root: &Path,
     existing: &str,
@@ -409,19 +431,7 @@ pub(super) fn clean_pair_locked(
         return Err(clean_conflict("description changed before archive"));
     }
     let new_content = render(&cleaned);
-    let seed = StatusRecord {
-        schema_version: 1,
-        kind: "topic_started".into(),
-        topic_id: uuid::Uuid::new_v4().to_string(),
-        sequence: 0,
-        request_id: None,
-        base_revision: None,
-        recorded_at: now.to_rfc3339(),
-        author: None,
-        status: None,
-    };
-    let mut seed_bytes = serde_json::to_vec(&seed).map_err(|e| status_invalid(e.to_string()))?;
-    seed_bytes.push(b'\n');
+    let seed_bytes = clean_status_seed(&now)?;
     let tx = uuid::Uuid::new_v4().to_string();
     let stamp = now.format("%Y%m%d-%H%M%S").to_string();
     let mut journal = CleanJournal {

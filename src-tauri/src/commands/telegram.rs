@@ -395,17 +395,16 @@ pub(crate) async fn release_reader_demand<R: tauri::Runtime>(
     }
 }
 
-pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    session_id: Uuid,
-    bot_id: &str,
-) -> Result<BridgeInfo, String> {
-    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-    let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
-    let tg_mgr = app.state::<TelegramBridgeState>();
-    let settings = app.state::<SettingsState>();
-    let network = app.state::<OutboundNetwork>().inner().clone();
+struct TelegramAttachReader {
+    agent_kind: Option<CodingAgentKind>,
+    shell: String,
+    reader: Result<Option<SessionReaderKind>, String>,
+}
 
+async fn resolve_telegram_attach_reader(
+    session_mgr: &tokio::sync::RwLock<SessionManager>,
+    session_id: Uuid,
+) -> Result<TelegramAttachReader, String> {
     let (
         agent_kind,
         shell,
@@ -433,7 +432,7 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
         )
     };
 
-    let reader = match derive_reader(
+    let reader = derive_reader(
         &shell,
         &shell_args,
         effective_shell_args.as_deref().unwrap_or(&shell_args),
@@ -442,7 +441,46 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
         agent_kind,
         resolved_claude_projects_dir,
         effective_codex_home.as_deref(),
-    ) {
+    );
+    Ok(TelegramAttachReader {
+        agent_kind,
+        shell,
+        reader,
+    })
+}
+
+async fn configured_telegram_attach_bot(
+    settings: &SettingsState,
+    bot_id: &str,
+) -> Result<TelegramBotConfig, String> {
+    let cfg = settings
+        .current_read()
+        .await
+        .map_err(|error| error.to_string())?;
+    cfg.telegram_bots
+        .iter()
+        .find(|b| b.id == bot_id)
+        .cloned()
+        .ok_or_else(|| format!("Bot not found: {}", bot_id))
+}
+
+pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    bot_id: &str,
+) -> Result<BridgeInfo, String> {
+    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+    let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+    let tg_mgr = app.state::<TelegramBridgeState>();
+    let settings = app.state::<SettingsState>();
+    let network = app.state::<OutboundNetwork>().inner().clone();
+
+    let TelegramAttachReader {
+        agent_kind,
+        shell,
+        reader,
+    } = resolve_telegram_attach_reader(&session_mgr, session_id).await?;
+    let reader = match reader {
         Ok(r) => r,
         Err(reason) => {
             let err_msg = format!(
@@ -461,17 +499,7 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
         }
     };
 
-    let bot = {
-        let cfg = settings
-            .current_read()
-            .await
-            .map_err(|error| error.to_string())?;
-        cfg.telegram_bots
-            .iter()
-            .find(|b| b.id == bot_id)
-            .cloned()
-            .ok_or_else(|| format!("Bot not found: {}", bot_id))?
-    };
+    let bot = configured_telegram_attach_bot(&settings, bot_id).await?;
 
     // #2232 phase 4: the reader no longer lives in the bridge. The bridge owns
     // the bot-side tasks; the reader is raised as a **Bot demand** below, which

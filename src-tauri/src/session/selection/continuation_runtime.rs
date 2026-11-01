@@ -123,26 +123,7 @@ impl OwnedReplacementContinuation {
             })
             .await;
         drop(permit);
-        let committed = self.retained_commit_copy()?;
-        {
-            let mut state = self.owner.state.lock().ok()?;
-            let progress = state.replacement.as_mut()?;
-            if progress.activity_started {
-                return None;
-            }
-            progress.activity_started = true;
-        }
-        crate::config::activity_log::append_batch(&committed.activity, &activity_owner);
-        if let Ok(mut state) = self.owner.state.lock() {
-            if let Some(progress) = state.replacement.as_mut() {
-                progress.activity_completed = true;
-            }
-            if !baseline {
-                state.stage = ReplacementStage::Ambiguous;
-                state.retained_reason =
-                    Some("initial B receipt unavailable before releasing finalization U".into());
-            }
-        }
+        let committed = self.record_finalized_activity(baseline, &activity_owner)?;
         #[cfg(test)]
         if baseline {
             if let Some(control) = &self.fixture {
@@ -154,6 +135,34 @@ impl OwnedReplacementContinuation {
             }
         }
         baseline.then_some(Ok(committed))
+    }
+
+    fn record_finalized_activity(
+        &self,
+        baseline: bool,
+        activity_owner: &crate::config::activity_log::ActivityCoalescer,
+    ) -> Option<CommitResult> {
+        let committed = self.retained_commit_copy()?;
+        {
+            let mut state = self.owner.state.lock().ok()?;
+            let progress = state.replacement.as_mut()?;
+            if progress.activity_started {
+                return None;
+            }
+            progress.activity_started = true;
+        }
+        crate::config::activity_log::append_batch(&committed.activity, activity_owner);
+        if let Ok(mut state) = self.owner.state.lock() {
+            if let Some(progress) = state.replacement.as_mut() {
+                progress.activity_completed = true;
+            }
+            if !baseline {
+                state.stage = ReplacementStage::Ambiguous;
+                state.retained_reason =
+                    Some("initial B receipt unavailable before releasing finalization U".into());
+            }
+        }
+        Some(committed)
     }
 
     fn record_initial_b(
@@ -266,20 +275,7 @@ impl OwnedReplacementContinuation {
                 return None;
             }
         };
-        // Record the actual removal before any cleanup await. A missing A is
-        // admissible on recovery only through this same-operation receipt.
-        {
-            let mut state = self.owner.state.lock().ok()?;
-            let progress = state.replacement.as_mut()?;
-            progress.retired = retired
-                .removed_rows
-                .iter()
-                .any(|row| row.id == descriptor.previous.id.to_string());
-            progress.retirement_result = Some(retired);
-            if !progress.retired {
-                return None;
-            }
-        }
+        self.record_retirement(retired, descriptor.previous.id)?;
         // The version is observed after manager Drop under the SAME retirement U.
         let reusable = manager
             .with_current_carrier_snapshot(&permit, |current| {
@@ -321,6 +317,24 @@ impl OwnedReplacementContinuation {
         }
         effect.complete(Ok(Some(descriptor.previous.id.to_string())));
         Some(reusable.is_some())
+    }
+
+    fn record_retirement(&self, retired: CommitResult, previous: uuid::Uuid) -> Option<()> {
+        // Record the actual removal before any cleanup await. A missing A is
+        // admissible on recovery only through this same-operation receipt.
+        {
+            let mut state = self.owner.state.lock().ok()?;
+            let progress = state.replacement.as_mut()?;
+            progress.retired = retired
+                .removed_rows
+                .iter()
+                .any(|row| row.id == previous.to_string());
+            progress.retirement_result = Some(retired);
+            if !progress.retired {
+                return None;
+            }
+        }
+        Some(())
     }
 
     pub(super) async fn complete_finalized_create<R: Runtime>(

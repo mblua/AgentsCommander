@@ -289,6 +289,31 @@ async fn select_created_root_transaction<R: tauri::Runtime>(
     Ok(())
 }
 
+fn root_restart_request(
+    request: RootJobRequest,
+    session_id: Uuid,
+    wake_dormant: bool,
+) -> RestartJobRequest {
+    let restart_intent = match request.intent {
+        TrustedCreateIntent::User => TrustedRestartIntent::User,
+        TrustedCreateIntent::Background => TrustedRestartIntent::Background,
+    };
+    RestartJobRequest {
+        session_id,
+        agent_id: request.requested_agent_id,
+        requested_profile: request.requested_profile,
+        skip_auto_resume: Some(if wake_dormant {
+            false
+        } else {
+            request.skip_auto_resume_for_new_session
+        }),
+        activate_after: request.select_after,
+        intent: restart_intent,
+        communication_override: None,
+        enforcement: crate::config::sessions_persistence::default_creation_gate_enforcement(),
+    }
+}
+
 pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     request: RootJobRequest,
@@ -344,28 +369,9 @@ pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
                     classify_existing_root(&existing.status, has_pty),
                     ExistingRootAction::WakeDormant
                 );
-                let restart_intent = match request.intent {
-                    TrustedCreateIntent::User => TrustedRestartIntent::User,
-                    TrustedCreateIntent::Background => TrustedRestartIntent::Background,
-                };
                 return execute_restart_transaction_in_context(
                     transaction,
-                    RestartJobRequest {
-                        session_id,
-                        agent_id: request.requested_agent_id,
-                        requested_profile: request.requested_profile,
-                        skip_auto_resume: Some(if wake_dormant {
-                            false
-                        } else {
-                            request.skip_auto_resume_for_new_session
-                        }),
-                        activate_after: request.select_after,
-                        intent: restart_intent,
-                        communication_override: None,
-                        enforcement:
-                            crate::config::sessions_persistence::default_creation_gate_enforcement(
-                            ),
-                    },
+                    root_restart_request(request, session_id, wake_dormant),
                     context,
                 )
                 .await;

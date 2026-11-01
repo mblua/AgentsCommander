@@ -287,27 +287,9 @@ impl RemoteSweeper {
         let paths = self.work_list(archived).await;
         let rooms = room_map(&self.git_state);
 
-        let mut facts: Vec<PathFacts> = Vec::with_capacity(paths.len());
-        for path in &paths {
-            facts.push(self.read_local_facts(path, &rooms).await);
-        }
+        let facts = self.read_round_facts(&paths, &rooms).await;
 
-        let mut groups: BTreeMap<QueryKey, Vec<usize>> = BTreeMap::new();
-        for (index, fact) in facts.iter().enumerate() {
-            let (Some(nwo), Some(head_sha), Some(branch)) =
-                (&fact.nwo, &fact.head_sha, &fact.branch)
-            else {
-                continue;
-            };
-            groups
-                .entry(QueryKey {
-                    nwo: nwo.clone(),
-                    sha40: head_sha.clone(),
-                    branch: branch.clone(),
-                })
-                .or_default()
-                .push(index);
-        }
+        let groups = query_groups(&facts);
 
         self.carry_staleness(&groups);
 
@@ -396,6 +378,18 @@ impl RemoteSweeper {
             groups.len(),
             if throttled { ", throttled" } else { "" }
         );
+    }
+
+    async fn read_round_facts(
+        &self,
+        paths: &[String],
+        rooms: &HashMap<String, Vec<String>>,
+    ) -> Vec<PathFacts> {
+        let mut facts: Vec<PathFacts> = Vec::with_capacity(paths.len());
+        for path in paths {
+            facts.push(self.read_local_facts(path, rooms).await);
+        }
+        facts
     }
 
     /// One warning per freshness window while the destination stays broken; a
@@ -521,4 +515,23 @@ impl RemoteSweeper {
             Some(branch.to_string())
         }
     }
+}
+
+fn query_groups(facts: &[PathFacts]) -> BTreeMap<QueryKey, Vec<usize>> {
+    let mut groups: BTreeMap<QueryKey, Vec<usize>> = BTreeMap::new();
+    for (index, fact) in facts.iter().enumerate() {
+        let (Some(nwo), Some(head_sha), Some(branch)) = (&fact.nwo, &fact.head_sha, &fact.branch)
+        else {
+            continue;
+        };
+        groups
+            .entry(QueryKey {
+                nwo: nwo.clone(),
+                sha40: head_sha.clone(),
+                branch: branch.clone(),
+            })
+            .or_default()
+            .push(index);
+    }
+    groups
 }

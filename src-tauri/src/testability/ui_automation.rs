@@ -477,6 +477,15 @@ impl UiAutomationState {
             return;
         }
 
+        self.emit_frontend_request(app, request, inflight_path);
+    }
+
+    fn emit_frontend_request<H: UiAutomationHost>(
+        &self,
+        app: &H,
+        request: UiAutomationRequest,
+        inflight_path: PathBuf,
+    ) {
         let response_path = self.response_path(&request.request_id);
         let pending = PendingRequest {
             request: request.clone(),

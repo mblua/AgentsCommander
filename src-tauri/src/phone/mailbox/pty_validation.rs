@@ -21,8 +21,7 @@ impl MailboxPoller {
         envelope: &crate::phone::types::PtyInputHostEnvelope,
     ) -> Result<String, crate::phone::types::PtyInputReasonCode> {
         use crate::phone::types::{
-            pty_input_confirmation_tag, pty_input_host_request_fingerprint, sha256_hex,
-            PtyInputHostFingerprint, PtyInputReasonCode as C, PtyInputSourcePlane,
+            pty_input_confirmation_tag, sha256_hex, PtyInputReasonCode as C, PtyInputSourcePlane,
         };
         let token = validate_host_pty_input_envelope(path, is_app_outbox, envelope)?;
         let payload = &envelope.pty_input;
@@ -89,19 +88,7 @@ impl MailboxPoller {
         let confirmation_tag =
             pty_input_confirmation_tag(&payload.injection_id, &payload.op_id, &payload.nonce);
         let nonce_sha256 = sha256_hex(payload.nonce.as_bytes());
-        let fingerprint = pty_input_host_request_fingerprint(&PtyInputHostFingerprint {
-            injection_id: &payload.injection_id,
-            op_id: &payload.op_id,
-            token: &envelope.token,
-            sender_fqn: &route.sender.canonical_fqn,
-            target_fqn: &route.target.canonical_fqn,
-            nonce: &payload.nonce,
-            issued_at: &payload.issued_at,
-            expires_at: &payload.expires_at,
-            text: &payload.text,
-            agent_id: payload.agent_id.as_deref(),
-            confirmation_tag: &confirmation_tag,
-        });
+        let fingerprint = host_pty_request_fingerprint(envelope, &route, &confirmation_tag);
         let enqueue = store
             .enqueue_pty_input_offloaded(crate::api::message_store::PtyInputEnqueueRequest {
                 injection_id: payload.injection_id.clone(),
@@ -387,6 +374,28 @@ impl MailboxPoller {
             operation.await;
         }
     }
+}
+
+fn host_pty_request_fingerprint(
+    envelope: &crate::phone::types::PtyInputHostEnvelope,
+    route: &crate::config::teams::VerifiedPtyInputRoute,
+    confirmation_tag: &str,
+) -> String {
+    use crate::phone::types::{pty_input_host_request_fingerprint, PtyInputHostFingerprint};
+    let payload = &envelope.pty_input;
+    pty_input_host_request_fingerprint(&PtyInputHostFingerprint {
+        injection_id: &payload.injection_id,
+        op_id: &payload.op_id,
+        token: &envelope.token,
+        sender_fqn: &route.sender.canonical_fqn,
+        target_fqn: &route.target.canonical_fqn,
+        nonce: &payload.nonce,
+        issued_at: &payload.issued_at,
+        expires_at: &payload.expires_at,
+        text: &payload.text,
+        agent_id: payload.agent_id.as_deref(),
+        confirmation_tag,
+    })
 }
 
 fn validate_host_pty_input_envelope(

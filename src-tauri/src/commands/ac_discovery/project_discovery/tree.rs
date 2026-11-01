@@ -186,50 +186,16 @@ async fn discover_workgroup(
                 let (repo_paths, repo_branch) =
                     discover_replica_repositories(&wg_path, identity_read.config.as_ref()).await;
 
-                // §AR2-strict: `is_coordinator` short-circuits on
-                // unqualified names, so build the project-qualified FQN
-                // (mirrors `agent_fqn_from_path`'s `<proj>:<wg>/<agent>`
-                // shape). Covered by
-                // teams::tests::is_any_coordinator_requires_qualified_fqn.
-                let is_coordinator =
-                    crate::config::teams::resolve_wg_coordinator_replica(ac_root, entry_path)
-                        .map(|resolved| resolved.agent_name == replica_name)
-                        .unwrap_or(false);
-
-                log::debug!(
-                    "[ac-discovery] call={} replica — project='{}' wg='{}' replica='{}' \
-                        fqn='{}:{}/{}' is_coordinator={}",
-                    call_id,
-                    project_folder,
-                    dir_name,
-                    replica_name,
-                    project_folder,
-                    dir_name,
-                    replica_name,
-                    is_coordinator
-                );
-
-                // #552 look up this coordinator's persisted clocks by FQN
-                // (same shape as agent_fqn_from_path: <project>:<wg>/<agent>).
-                let fqn = format!("{}:{}/{}", project_folder, dir_name, replica_name);
-                let clock_entry = if is_coordinator {
-                    clocks_snapshot.get(&fqn)
-                } else {
-                    None
-                };
-                // (#580) the badge field carries the unified idle anchor
-                // max(user, activity) (rename deferred, Decision C) so a
-                // dormant/just-loaded row shows the real accumulated idle
-                // (closed time included), not just the user-message age.
-                let last_user_message_at = clock_entry
-                    .and_then(|e| e.idle_anchor())
-                    .map(|dt| dt.to_rfc3339());
-                let auto_closed_at = clock_entry
-                    .and_then(|e| e.auto_closed_at)
-                    .map(|dt| dt.to_rfc3339());
-                let manually_closed_at = clock_entry
-                    .and_then(|e| e.manually_closed_at)
-                    .map(|dt| dt.to_rfc3339());
+                let (is_coordinator, last_user_message_at, auto_closed_at, manually_closed_at) =
+                    replica_coordinator_fields(
+                        ac_root,
+                        entry_path,
+                        &replica_name,
+                        project_folder,
+                        dir_name,
+                        clocks_snapshot,
+                        call_id,
+                    );
 
                 // #1941 - strict protection state from the same validated
                 // replica directory; an invalid state is surfaced as
@@ -269,6 +235,67 @@ async fn discover_workgroup(
         repo_path,
         team_name: None,
     }
+}
+
+fn replica_coordinator_fields(
+    ac_root: &Path,
+    entry_path: &Path,
+    replica_name: &str,
+    project_folder: &str,
+    dir_name: &str,
+    clocks_snapshot: &HashMap<String, ClockEntry>,
+    call_id: u64,
+) -> (bool, Option<String>, Option<String>, Option<String>) {
+    // §AR2-strict: `is_coordinator` short-circuits on
+    // unqualified names, so build the project-qualified FQN
+    // (mirrors `agent_fqn_from_path`'s `<proj>:<wg>/<agent>`
+    // shape). Covered by
+    // teams::tests::is_any_coordinator_requires_qualified_fqn.
+    let is_coordinator = crate::config::teams::resolve_wg_coordinator_replica(ac_root, entry_path)
+        .map(|resolved| resolved.agent_name == replica_name)
+        .unwrap_or(false);
+
+    log::debug!(
+        "[ac-discovery] call={} replica — project='{}' wg='{}' replica='{}' \
+            fqn='{}:{}/{}' is_coordinator={}",
+        call_id,
+        project_folder,
+        dir_name,
+        replica_name,
+        project_folder,
+        dir_name,
+        replica_name,
+        is_coordinator
+    );
+
+    // #552 look up this coordinator's persisted clocks by FQN
+    // (same shape as agent_fqn_from_path: <project>:<wg>/<agent>).
+    let fqn = format!("{}:{}/{}", project_folder, dir_name, replica_name);
+    let clock_entry = if is_coordinator {
+        clocks_snapshot.get(&fqn)
+    } else {
+        None
+    };
+    // (#580) the badge field carries the unified idle anchor
+    // max(user, activity) (rename deferred, Decision C) so a
+    // dormant/just-loaded row shows the real accumulated idle
+    // (closed time included), not just the user-message age.
+    let last_user_message_at = clock_entry
+        .and_then(|e| e.idle_anchor())
+        .map(|dt| dt.to_rfc3339());
+    let auto_closed_at = clock_entry
+        .and_then(|e| e.auto_closed_at)
+        .map(|dt| dt.to_rfc3339());
+    let manually_closed_at = clock_entry
+        .and_then(|e| e.manually_closed_at)
+        .map(|dt| dt.to_rfc3339());
+
+    (
+        is_coordinator,
+        last_user_message_at,
+        auto_closed_at,
+        manually_closed_at,
+    )
 }
 
 pub(crate) fn associate_workgroups_with_teams(workgroups: &mut [AcWorkgroup], teams: &[AcTeam]) {

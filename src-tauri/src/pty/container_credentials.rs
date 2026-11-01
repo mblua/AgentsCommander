@@ -221,42 +221,7 @@ pub fn ensure_first_run_state(plan: &ContainerCredentialPlan, container_workdir:
 
     let mut changed = set_true(&mut root, state.onboarding_flag);
 
-    // `projects[<container_workdir>]` = { "hasTrustDialogAccepted": true, ... }.
-    // The mount root IS the container workdir, and AC already trusts it by
-    // bind-mounting it, so pre-accepting the folder-trust dialog adds no new
-    // exposure. A non-object at either level is left untouched (warn + skip).
-    if !state.project_flags.is_empty() {
-        let projects = root
-            .entry(state.projects_key)
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        match projects.as_object_mut() {
-            Some(projects) => {
-                let entry = projects
-                    .entry(container_workdir)
-                    .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-                match entry.as_object_mut() {
-                    Some(entry) => {
-                        for flag in state.project_flags {
-                            changed |= set_true(entry, flag);
-                        }
-                    }
-                    None => log::warn!(
-                        concat!(
-                            "[container-cred] {} entry for '{}' is not a JSON object; skipping ",
-                            "the trust entry",
-                        ),
-                        path.display(),
-                        container_workdir
-                    ),
-                }
-            }
-            None => log::warn!(
-                "[container-cred] {} field '{}' is not a JSON object; skipping the trust entry",
-                path.display(),
-                state.projects_key
-            ),
-        }
-    }
+    changed |= apply_project_flags(&mut root, &state, container_workdir, &path);
 
     if !changed {
         log::debug!(
@@ -303,6 +268,52 @@ pub fn ensure_first_run_state(plan: &ContainerCredentialPlan, container_workdir:
         state.onboarding_flag,
         container_workdir
     );
+}
+
+fn apply_project_flags(
+    root: &mut serde_json::Map<String, serde_json::Value>,
+    state: &ContainerFirstRunState,
+    container_workdir: &str,
+    path: &Path,
+) -> bool {
+    let mut changed = false;
+    // `projects[<container_workdir>]` = { "hasTrustDialogAccepted": true, ... }.
+    // The mount root IS the container workdir, and AC already trusts it by
+    // bind-mounting it, so pre-accepting the folder-trust dialog adds no new
+    // exposure. A non-object at either level is left untouched (warn + skip).
+    if !state.project_flags.is_empty() {
+        let projects = root
+            .entry(state.projects_key)
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        match projects.as_object_mut() {
+            Some(projects) => {
+                let entry = projects
+                    .entry(container_workdir)
+                    .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                match entry.as_object_mut() {
+                    Some(entry) => {
+                        for flag in state.project_flags {
+                            changed |= set_true(entry, flag);
+                        }
+                    }
+                    None => log::warn!(
+                        concat!(
+                            "[container-cred] {} entry for '{}' is not a JSON object; skipping ",
+                            "the trust entry",
+                        ),
+                        path.display(),
+                        container_workdir
+                    ),
+                }
+            }
+            None => log::warn!(
+                "[container-cred] {} field '{}' is not a JSON object; skipping the trust entry",
+                path.display(),
+                state.projects_key
+            ),
+        }
+    }
+    changed
 }
 
 fn read_first_run_state(path: &Path) -> Option<serde_json::Map<String, serde_json::Value>> {

@@ -508,6 +508,19 @@ pub async fn destroy_session(
     destroy_session_inner(&app, uuid).await
 }
 
+async fn coordinator_cascade_close_enabled(app: &AppHandle) -> Result<bool, String> {
+    // E0716: bind the State to a local FIRST (matches auto_close.rs:115). The
+    // guard-bound-then-used-next-line form does NOT compile (the temporary State is
+    // dropped at the `;`, so the read guard dangles). `bool` is Copy.
+    let settings = app.state::<SettingsState>();
+    let enabled = settings
+        .current_read()
+        .await
+        .map_err(|error| error.to_string())?
+        .coordinator_cascade_close_enabled;
+    Ok(enabled)
+}
+
 /// #588 Manually close a coordinator (and, when the cascade setting is on, its
 /// team). Sets the MANUALLY-CLOSED marker on the coordinator regardless of the
 /// cascade setting. When cascade is on and confirmation has not been given and at
@@ -547,15 +560,7 @@ pub async fn close_coordinator(
         None => String::new(),
     };
 
-    // E0716: bind the State to a local FIRST (matches auto_close.rs:115). The
-    // guard-bound-then-used-next-line form does NOT compile (the temporary State is
-    // dropped at the `;`, so the read guard dangles). `bool` is Copy.
-    let settings = app.state::<SettingsState>();
-    let cascade = settings
-        .current_read()
-        .await
-        .map_err(|error| error.to_string())?
-        .coordinator_cascade_close_enabled;
+    let cascade = coordinator_cascade_close_enabled(&app).await?;
     let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
     // LIVE-PTY members of THIS team, excluding the coordinator (decision 1; mirrors

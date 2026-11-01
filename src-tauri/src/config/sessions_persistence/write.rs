@@ -530,6 +530,29 @@ pub(super) fn settle_rename_attempt(
     }
 }
 
+fn prepare_current_checkpoint(
+    slot: &PublicationSlot,
+    rows: &[PersistedSession],
+    captured: &crate::session::manager::CarrierSnapshot,
+    expected_epoch: u64,
+) -> Option<PublicationState> {
+    let state = slot.lock().ok()?;
+    if state.epoch != expected_epoch {
+        return None;
+    }
+    let epoch = state.epoch.checked_add(1)?;
+    let mut next = state.clone();
+    next.epoch = epoch;
+    next.checkpoint = Some(PublicationCheckpoint {
+        nonce: Uuid::new_v4(),
+        epoch,
+        rows: rows.to_vec(),
+        versions: captured.versions.clone(),
+        confirmed: false,
+    });
+    Some(next)
+}
+
 pub(super) async fn save_current_snapshot_guarded(
     mgr: &SessionManager,
     permit: &CarrierMutationPermit,
@@ -542,26 +565,9 @@ pub(super) async fn save_current_snapshot_guarded(
     let Some(slot) = publication_slot(dir) else {
         return GuardedSaveAttempt::Recapture;
     };
-    let mut prepared = {
-        let Ok(state) = slot.lock() else {
-            return GuardedSaveAttempt::Recapture;
-        };
-        if state.epoch != expected_epoch {
-            return GuardedSaveAttempt::Recapture;
-        }
-        let Some(epoch) = state.epoch.checked_add(1) else {
-            return GuardedSaveAttempt::Recapture;
-        };
-        let mut next = state.clone();
-        next.epoch = epoch;
-        next.checkpoint = Some(PublicationCheckpoint {
-            nonce: Uuid::new_v4(),
-            epoch,
-            rows: rows.to_vec(),
-            versions: captured.versions.clone(),
-            confirmed: false,
-        });
-        next
+    let Some(mut prepared) = prepare_current_checkpoint(&slot, rows, captured, expected_epoch)
+    else {
+        return GuardedSaveAttempt::Recapture;
     };
     if !prepare_protected_publication(&mut prepared, rows, captured, initial) {
         return GuardedSaveAttempt::Recapture;

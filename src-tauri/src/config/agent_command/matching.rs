@@ -128,24 +128,12 @@ pub fn resolve_portable_reference(
     outcome
 }
 
-pub(super) fn resolve_portable_reference_logged(
+fn match_reference_digest(
     settings: &AppSettings,
     reference: &StoredReference,
     warnings: &mut Vec<String>,
-) -> MatchOutcome {
+) -> Option<AgentMatch> {
     let source = reference.source_letter.as_deref();
-
-    // Tier 0: the id is local. Same machine, unchanged behaviour.
-    if settings.agents.iter().any(|agent| agent.id == reference.id) {
-        return MatchOutcome::Matched(AgentMatch {
-            agent_id: reference.id.clone(),
-            profile_letter: reference.source_letter.clone(),
-            tier: None,
-            original_letter: None,
-        });
-    }
-
-    // Tier 1: one target digest (the source letter's), else every descriptor digest.
     if !reference.identity.is_empty() {
         let targets: Vec<(&String, &String)> =
             match source.and_then(|letter| reference.identity.get_key_value(letter)) {
@@ -209,13 +197,38 @@ pub(super) fn resolve_portable_reference_logged(
                 ));
             }
             let (_, letter, key) = (*chosen).clone();
-            return MatchOutcome::Matched(AgentMatch {
+            return Some(AgentMatch {
                 agent_id: agent_id.clone(),
                 original_letter: (key != letter).then_some(key),
                 profile_letter: Some(letter),
                 tier: Some(MatchTier::Hash),
             });
         }
+    }
+
+    None
+}
+
+pub(super) fn resolve_portable_reference_logged(
+    settings: &AppSettings,
+    reference: &StoredReference,
+    warnings: &mut Vec<String>,
+) -> MatchOutcome {
+    let source = reference.source_letter.as_deref();
+
+    // Tier 0: the id is local. Same machine, unchanged behaviour.
+    if settings.agents.iter().any(|agent| agent.id == reference.id) {
+        return MatchOutcome::Matched(AgentMatch {
+            agent_id: reference.id.clone(),
+            profile_letter: reference.source_letter.clone(),
+            tier: None,
+            original_letter: None,
+        });
+    }
+
+    // Tier 1: one target digest (the source letter's), else every descriptor digest.
+    if let Some(matched) = match_reference_digest(settings, reference, warnings) {
+        return MatchOutcome::Matched(matched);
     }
 
     // Tiers 2-3 test the candidate against the source letter, or the implicit

@@ -135,37 +135,7 @@ async fn post_inner(
         .map_err(|_| pty_input_error(crate::phone::types::PtyInputReasonCode::InvalidEnvelope))?;
     let request: PtyInputRequest = serde_json::from_value(value)
         .map_err(|_| pty_input_error(crate::phone::types::PtyInputReasonCode::InvalidEnvelope))?;
-    if request.api_version != API_VERSION || request.pty_input.version != PTY_INPUT_VERSION {
-        return Err(pty_input_error(
-            crate::phone::types::PtyInputReasonCode::UnsupportedVersion,
-        ));
-    }
-    if request.pty_input.enter != PtyInputEnterMode::AgentSubmit {
-        return Err(pty_input_error(
-            crate::phone::types::PtyInputReasonCode::InvalidEnterMode,
-        ));
-    }
-    crate::phone::types::parse_canonical_uuid_v4(&request.op_id)
-        .map_err(|_| pty_input_error(crate::phone::types::PtyInputReasonCode::InvalidId))?;
-    crate::config::teams::validate_pty_input_target_syntax(&request.to)
-        .map_err(|_| pty_input_error(crate::phone::types::PtyInputReasonCode::InvalidTarget))?;
-    if let Err(error) = crate::pty::inject::validate_pty_input_text(&request.pty_input.text) {
-        return Err(match error.kind {
-            crate::pty::inject::PtyInputTextErrorKind::TooLarge => {
-                pty_input_error(crate::phone::types::PtyInputReasonCode::PayloadTooLarge)
-            }
-            _ => pty_input_error(crate::phone::types::PtyInputReasonCode::InvalidText),
-        });
-    }
-    let agent_id = match request.agent_id.as_deref() {
-        None | Some("auto") => None,
-        Some(agent_id) => {
-            crate::config::coding_agent_mutations::validate_custom_agent_id(agent_id).map_err(
-                |_| pty_input_error(crate::phone::types::PtyInputReasonCode::UnsupportedProfile),
-            )?;
-            Some(agent_id.to_string())
-        }
-    };
+    let agent_id = validate_pty_input_request(&request)?;
     let proof = crate::api::identity::InitialApiCredentialProof::from_fresh_guard(fresh)
         .map_err(|_| pty_input_error(crate::phone::types::PtyInputReasonCode::ApiClientUnbound))?;
     let authority = crate::api::identity::verify_live_pty_input_authority(state, proof).await?;
@@ -256,6 +226,41 @@ async fn post_inner(
         &result.result,
     );
     Ok((status, result.result))
+}
+
+fn validate_pty_input_request(request: &PtyInputRequest) -> Result<Option<String>, ApiError> {
+    if request.api_version != API_VERSION || request.pty_input.version != PTY_INPUT_VERSION {
+        return Err(pty_input_error(
+            crate::phone::types::PtyInputReasonCode::UnsupportedVersion,
+        ));
+    }
+    if request.pty_input.enter != PtyInputEnterMode::AgentSubmit {
+        return Err(pty_input_error(
+            crate::phone::types::PtyInputReasonCode::InvalidEnterMode,
+        ));
+    }
+    crate::phone::types::parse_canonical_uuid_v4(&request.op_id)
+        .map_err(|_| pty_input_error(crate::phone::types::PtyInputReasonCode::InvalidId))?;
+    crate::config::teams::validate_pty_input_target_syntax(&request.to)
+        .map_err(|_| pty_input_error(crate::phone::types::PtyInputReasonCode::InvalidTarget))?;
+    if let Err(error) = crate::pty::inject::validate_pty_input_text(&request.pty_input.text) {
+        return Err(match error.kind {
+            crate::pty::inject::PtyInputTextErrorKind::TooLarge => {
+                pty_input_error(crate::phone::types::PtyInputReasonCode::PayloadTooLarge)
+            }
+            _ => pty_input_error(crate::phone::types::PtyInputReasonCode::InvalidText),
+        });
+    }
+    let agent_id = match request.agent_id.as_deref() {
+        None | Some("auto") => None,
+        Some(agent_id) => {
+            crate::config::coding_agent_mutations::validate_custom_agent_id(agent_id).map_err(
+                |_| pty_input_error(crate::phone::types::PtyInputReasonCode::UnsupportedProfile),
+            )?;
+            Some(agent_id.to_string())
+        }
+    };
+    Ok(agent_id)
 }
 
 async fn get_inner(

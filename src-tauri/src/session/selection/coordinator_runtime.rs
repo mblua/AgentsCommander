@@ -156,52 +156,8 @@ impl SelectionCoordinator {
         let mut diagnostic_reason = (7, "ticket_absent");
         let ticket = manager
             .with_current_carrier_snapshot(&carrier_permit, |current| {
-                let member =
-                    response_registration_row(current, &registration.member).or_else(|| {
-                        if log::log_enabled!(
-                            target: "agentscommander_lib::response_close_diag",
-                            log::Level::Debug
-                        ) {
-                            diagnostic_reason = (8, "current_member_rejected");
-                        }
-                        None
-                    })?;
-                let coordinator = response_registration_row(current, &registration.coordinator)
-                    .or_else(|| {
-                        if log::log_enabled!(
-                            target: "agentscommander_lib::response_close_diag",
-                            log::Level::Debug
-                        ) {
-                            diagnostic_reason = (9, "current_coordinator_rejected");
-                        }
-                        None
-                    })?;
-                if member.backend_kind != crate::pty::backend::SessionBackendKind::LocalProcess
-                    || member.is_root_agent
-                    || member.is_coordinator
-                    || member.agent_kind.is_none()
-                    || !coordinator.is_coordinator
-                    || coordinator.is_root_agent
-                {
-                    if log::log_enabled!(
-                        target: "agentscommander_lib::response_close_diag",
-                        log::Level::Debug
-                    ) {
-                        diagnostic_reason = (10, "role_or_backend_rejected");
-                    }
-                    return None;
-                }
-                if !response_registration_route(&pty, &registration.member, member)
-                    || !response_registration_route(&pty, &registration.coordinator, coordinator)
-                {
-                    if log::log_enabled!(
-                        target: "agentscommander_lib::response_close_diag",
-                        log::Level::Debug
-                    ) {
-                        diagnostic_reason = (11, "member_or_coordinator_route_rejected");
-                    }
-                    return None;
-                }
+                let (member, coordinator) =
+                    Self::response_close_rows(current, registration, &pty, &mut diagnostic_reason)?;
                 let now = Instant::now();
                 tracker.apply_settings(
                     settings.response_close_enabled,
@@ -348,15 +304,7 @@ impl SelectionCoordinator {
                 return (Err(error), true);
             }
         }
-        let mut root_directory = owner.state.lock().ok().and_then(|state| {
-            match &state.effects[LifecycleEffectSlot::RootDirectory as usize] {
-                OwnedEffectState::Completed {
-                    outcome: Ok(Some(path)),
-                    ..
-                } => Some(path.clone()),
-                _ => None,
-            }
-        });
+        let mut root_directory = Self::completed_root_directory(&owner);
         let (requested, root_request) = match &owner.descriptor {
             OwnedReplacementDescriptor::EntryRestart(request) => (Some(request.session_id), false),
             OwnedReplacementDescriptor::EntryRoot(_) => (None, true),
@@ -389,25 +337,7 @@ impl SelectionCoordinator {
                     tokio::task::yield_now().await;
                 }
                 Ok(LifecycleAdmission::NeedsRootDirectory) => {
-                    let effect = owner.state.lock().ok().and_then(|mut state| {
-                        if state.executor_nonce != executor_nonce
-                            || !matches!(
-                                state.effects[LifecycleEffectSlot::RootDirectory as usize],
-                                OwnedEffectState::NotStarted
-                            )
-                        {
-                            return None;
-                        }
-                        let attempt = Uuid::new_v4();
-                        state.effects[LifecycleEffectSlot::RootDirectory as usize] =
-                            OwnedEffectState::Running(attempt);
-                        Some(LifecycleEffectGuard {
-                            owner: owner.clone(),
-                            slot: LifecycleEffectSlot::RootDirectory,
-                            attempt,
-                            completed: false,
-                        })
-                    });
+                    let effect = Self::pending_root_directory_effect(&owner, executor_nonce);
                     let Some(effect) = effect else {
                         return std::future::pending().await;
                     };
@@ -464,15 +394,113 @@ impl SelectionCoordinator {
             Ok(result) => (result, false),
             Err(_) => {
                 // Lost internal outcome has no public fabricated result or retry.
-                if let Ok(mut state) = owner.state.lock() {
-                    state.stage = ReplacementStage::Ambiguous;
-                    state
-                        .retained_reason
-                        .get_or_insert_with(|| "lifecycle internal result lost".into());
-                }
+                Self::retain_ambiguous_entry(&owner);
                 std::future::pending().await
             }
         }
+    }
+
+    fn response_close_rows<'a>(
+        current: &'a crate::session::manager::CarrierSnapshot,
+        registration: &ResponseCloseRegistration,
+        pty: &Arc<Mutex<PtyManager>>,
+        diagnostic_reason: &mut (u64, &'static str),
+    ) -> Option<(
+        &'a crate::session::session::Session,
+        &'a crate::session::session::Session,
+    )> {
+        let member = response_registration_row(current, &registration.member).or_else(|| {
+            if log::log_enabled!(
+                target: "agentscommander_lib::response_close_diag",
+                log::Level::Debug
+            ) {
+                *diagnostic_reason = (8, "current_member_rejected");
+            }
+            None
+        })?;
+        let coordinator =
+            response_registration_row(current, &registration.coordinator).or_else(|| {
+                if log::log_enabled!(
+                    target: "agentscommander_lib::response_close_diag",
+                    log::Level::Debug
+                ) {
+                    *diagnostic_reason = (9, "current_coordinator_rejected");
+                }
+                None
+            })?;
+        if member.backend_kind != crate::pty::backend::SessionBackendKind::LocalProcess
+            || member.is_root_agent
+            || member.is_coordinator
+            || member.agent_kind.is_none()
+            || !coordinator.is_coordinator
+            || coordinator.is_root_agent
+        {
+            if log::log_enabled!(
+                target: "agentscommander_lib::response_close_diag",
+                log::Level::Debug
+            ) {
+                *diagnostic_reason = (10, "role_or_backend_rejected");
+            }
+            return None;
+        }
+        if !response_registration_route(pty, &registration.member, member)
+            || !response_registration_route(pty, &registration.coordinator, coordinator)
+        {
+            if log::log_enabled!(
+                target: "agentscommander_lib::response_close_diag",
+                log::Level::Debug
+            ) {
+                *diagnostic_reason = (11, "member_or_coordinator_route_rejected");
+            }
+            return None;
+        }
+        Some((member, coordinator))
+    }
+
+    fn retain_ambiguous_entry(owner: &Arc<ReplacementOwner>) {
+        if let Ok(mut state) = owner.state.lock() {
+            state.stage = ReplacementStage::Ambiguous;
+            state
+                .retained_reason
+                .get_or_insert_with(|| "lifecycle internal result lost".into());
+        }
+    }
+
+    fn completed_root_directory(owner: &Arc<ReplacementOwner>) -> Option<String> {
+        owner.state.lock().ok().and_then(|state| {
+            match &state.effects[LifecycleEffectSlot::RootDirectory as usize] {
+                OwnedEffectState::Completed {
+                    outcome: Ok(Some(path)),
+                    ..
+                } => Some(path.clone()),
+                _ => None,
+            }
+        })
+    }
+
+    fn pending_root_directory_effect(
+        owner: &Arc<ReplacementOwner>,
+        executor_nonce: Uuid,
+    ) -> Option<LifecycleEffectGuard> {
+        owner.state.lock().ok().and_then(|mut state| {
+            if state.executor_nonce != executor_nonce
+                || !matches!(
+                    state.effects[LifecycleEffectSlot::RootDirectory as usize],
+                    OwnedEffectState::NotStarted
+                )
+            {
+                return None;
+            }
+            let attempt = Uuid::new_v4();
+            state.effects[LifecycleEffectSlot::RootDirectory as usize] =
+                OwnedEffectState::Running(attempt);
+            Some(LifecycleEffectGuard {
+                owner: owner.clone(),
+                slot: LifecycleEffectSlot::RootDirectory,
+                attempt,
+                completed: false,
+            })
+        })
     }
 
     fn initial_root_directory_effect(
