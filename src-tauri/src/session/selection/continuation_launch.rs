@@ -611,6 +611,15 @@ impl OwnedReplacementContinuation {
             Ok(CreateAdmission::Reserved(reservation)) => reservation,
             _ => return false,
         };
+        self.record_create_region(previous, actual, reservation)
+    }
+
+    fn record_create_region(
+        &self,
+        previous: crate::session::session::Session,
+        actual: crate::config::sessions_persistence::PublishedCarrier,
+        reservation: crate::pty::manager::CreateOwnerReservation,
+    ) -> bool {
         let Ok(mut state) = self.owner.state.lock() else {
             return false;
         };
