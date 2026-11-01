@@ -5,15 +5,174 @@ on:
     # `labeled` lets adding the `ci:full` label start a full run.
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
+    inputs:
+      tml_adoption_source:
+        description: 'Clean main SHA for native length-gate adoption'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: pr-regression-gates-${{ github.ref }}
-  cancel-in-progress: true
+  group: pr-regression-gates-${{ github.ref }}${{ (github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '') && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '') }}
 
 jobs:
+  tml-adoption:
+    if: github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != ''
+    name: tml-adoption (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+    defaults:
+      run:
+        shell: bash
+    env:
+      TML_SOURCE: ${{ inputs.tml_adoption_source }}
+      TML_PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate and check out measured source
+        run: |
+          set -euo pipefail
+          [[ "$TML_SOURCE" =~ ^[a-f0-9]{40}$ ]]
+          git fetch origin main
+          git merge-base --is-ancestor "$TML_SOURCE" origin/main
+          source_root="${RUNNER_TEMP}/tml-adoption-source"
+          git clone --no-hardlinks --no-checkout "$GITHUB_WORKSPACE" "$source_root"
+          git -C "$source_root" checkout --detach "$TML_SOURCE"
+          test "$(git -C "$source_root" rev-parse HEAD)" = "$TML_SOURCE"
+          test -z "$(git -C "$source_root" status --porcelain --untracked-files=no)"
+          mkdir -p "${RUNNER_TEMP}/tml-adoption"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2 --ignore-scripts
+
+      - name: Install native Linux dependencies
+        if: matrix.platform == 'linux'
+        run: bash scripts/ci-install-linux-deps.sh
+
+      - name: Build measured frontend
+        run: |
+          cd "${RUNNER_TEMP}/tml-adoption-source"
+          if [ "$TML_PLATFORM" = windows ]; then npm ci; else npm ci --ignore-scripts; fi
+          npm run build
+
+      - name: Install Rust 1.98.1
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          components: clippy
+          toolchain: '1.98.1'
+
+      - name: Capture observations and denominator proof
+        run: |
+          set -euo pipefail
+          node --input-type=module -e \
+            'import {checkEnvironment} from "./scripts/check-too-many-lines.mjs"; checkEnvironment();'
+          out="${RUNNER_TEMP}/tml-adoption"
+          source_root="${RUNNER_TEMP}/tml-adoption-source"
+          control="${RUNNER_TEMP}/tml-denominator"
+          mkdir -p "$control/src"
+          cp "$source_root/clippy.toml" "$control/clippy.toml"
+          printf '[package]\nname="tml-denominator"\nversion="0.0.0"\nedition="2021"\n[workspace]\n' \
+            > "$control/Cargo.toml"
+          {
+            printf 'fn heavy() -> u64 {\nlet mut x = 0u64;\n'
+            for i in $(seq 1 120); do printf 'x = std::hint::black_box(x + 1);\n'; done
+            printf 'x\n}\nfn main() { println!("{}", heavy()); }\n'
+          } > "$control/src/main.rs"
+          cargo generate-lockfile --manifest-path "$control/Cargo.toml"
+          rustc -vV > "$out/rustc.txt"
+          cargo clippy --version > "$out/clippy.txt"
+          test "$(rustc -vV | sed -n 's/^release: //p')" = 1.98.1
+          start=$(date -u +%s)
+          cd "$source_root/src-tauri"
+          set +e
+          cargo clippy --locked --workspace --all-targets --message-format=json \
+            -- -D warnings --force-warn clippy::cognitive_complexity \
+            --force-warn clippy::too_many_lines > "$out/tml-all.jsonl"
+          all_exit=$?
+          all_end=$(date -u +%s)
+          cargo clippy --locked --workspace --lib --bins --message-format=json \
+            -- -D warnings --force-warn clippy::cognitive_complexity \
+            --force-warn clippy::too_many_lines > "$out/tml-production.jsonl"
+          production_exit=$?
+          production_end=$(date -u +%s)
+          cd "$control"
+          cargo clippy --locked --workspace --all-targets --manifest-path "$control/Cargo.toml" \
+            --message-format=json -- -D warnings --force-warn clippy::cognitive_complexity \
+            --force-warn clippy::too_many_lines > "$out/denominator.jsonl"
+          denominator_exit=$?
+          set -e
+          end=$(date -u +%s)
+          cp "$control/src/main.rs" "$out/control.rs"
+          cp "$control/Cargo.toml" "$out/control-Cargo.toml"
+          cp "$control/Cargo.lock" "$out/control-Cargo.lock"
+          cp "$control/clippy.toml" "$out/control-clippy.toml"
+          cd "$GITHUB_WORKSPACE"
+          printf 'source=%s\nchecker=%s\nplatform=%s\n' \
+            "$TML_SOURCE" "$(git rev-parse HEAD)" "$TML_PLATFORM" > "$out/receipt.txt"
+          printf 'all_exit=%s\nproduction_exit=%s\ndenominator_exit=%s\n' \
+            "$all_exit" "$production_exit" "$denominator_exit" >> "$out/receipt.txt"
+          printf 'start=%s\nall_end=%s\nproduction_end=%s\nend=%s\n' \
+            "$start" "$all_end" "$production_end" "$end" >> "$out/receipt.txt"
+          printf '%s\n' \
+            'all: cargo clippy --locked --workspace --all-targets --message-format=json -- -D warnings --force-warn clippy::cognitive_complexity --force-warn clippy::too_many_lines' \
+            'production: cargo clippy --locked --workspace --lib --bins --message-format=json -- -D warnings --force-warn clippy::cognitive_complexity --force-warn clippy::too_many_lines' \
+            "control: cargo clippy --locked --workspace --all-targets --manifest-path $control/Cargo.toml --message-format=json -- -D warnings --force-warn clippy::cognitive_complexity --force-warn clippy::too_many_lines" \
+            >> "$out/receipt.txt"
+          node scripts/check-too-many-lines.mjs \
+            --capture "$out/tml-all.jsonl" --clippy-exit "$all_exit" \
+            --production-capture "$out/tml-production.jsonl" \
+            --production-clippy-exit "$production_exit" --adoption-source "$TML_SOURCE" \
+            --denominator-proof "$out/denominator.jsonl" \
+            --denominator-clippy-exit "$denominator_exit" \
+            --platform "$TML_PLATFORM" --rustc-version 1.98.1 --commit "$TML_SOURCE" \
+            --workspace-root "$source_root" --emit "$out/observed.json"
+          test -z "$(git -C "$source_root" status --porcelain --untracked-files=no)"
+
+      - name: Hash adoption evidence
+        if: always()
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          const root = path.join(process.env.RUNNER_TEMP, 'tml-adoption');
+          const files = fs.readdirSync(root).sort().map(name => {
+            const bytes = fs.readFileSync(path.join(root, name));
+            return { name, size: bytes.length,
+              sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+          });
+          fs.writeFileSync(path.join(root, 'hashes.json'), JSON.stringify(files, null, 2));
+          JS
+
+      - name: Upload adoption evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tml-adoption-${{ matrix.platform }}-${{ inputs.tml_adoption_source }}
+          path: ${{ runner.temp }}/tml-adoption
+          if-no-files-found: error
+
   # Light tier runs on every event: rust-regression-windows, rust-slow-test-windows and
   # issue-1850-release-windows (Windows, the only leg above a 2.5% failure
   # rate), clippy-linux, plus rust-fmt and test-debt (cheap).
@@ -21,6 +180,7 @@ jobs:
   # adding the `ci:full` label, or on a manual dispatch. See #2417 for the
   # failure-rate sample.
   ci-tier:
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != ''))
     name: ci-tier
     runs-on: ubuntu-latest
     outputs:
@@ -44,7 +204,7 @@ jobs:
   test-debt:
     name: test-debt
     # Skip branch-deletion push events while still requiring pull request validation.
-    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -144,6 +304,16 @@ jobs:
         run: |
           npm run cog:self
           npm run cog:scan
+      - name: Length gate self-test
+        shell: bash
+        run: npm run tml:self
+
+      - name: Length baseline ratchet
+        shell: bash
+        env:
+          GATE_BASE_REF: ${{ github.event.pull_request.base.ref && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        run: npm run tml:baseline -- --base-ref "${GATE_BASE_REF:-origin/main}"
+
       - name: "Check cognitive-complexity baseline growth (#2234)"
         continue-on-error: true
         env:
@@ -175,7 +345,7 @@ jobs:
   rust-regression-windows:
     name: rust-regression-windows
     # Skip branch-deletion push events while still requiring pull request validation.
-    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -284,7 +454,7 @@ jobs:
           set +e
           set -uo pipefail
           cargo clippy --locked --workspace --all-targets --message-format=json \
-            -- -D warnings --force-warn clippy::cognitive_complexity \
+            -- -D warnings --force-warn clippy::cognitive_complexity --force-warn clippy::too_many_lines \
             > "${RUNNER_TEMP}/cog-windows.jsonl"
           code=$?
           rustc_version="$(rustc -vV | sed -n 's/^release: //p')"
@@ -393,10 +563,43 @@ jobs:
   # overlaps that job instead of extending it. Same toolchain pin and gate-debug
   # cache as that job. A rename of the test fails the guards below instead of
   # silently running nothing.
+      - name: Length gate
+        shell: bash
+        run: |
+          node scripts/check-too-many-lines.mjs \
+            --capture "${RUNNER_TEMP}/cog-windows.jsonl" \
+            --clippy-exit "$COG_CLIPPY_EXIT" --platform windows \
+            --rustc-version "$COG_RUSTC_VERSION" --commit "${GITHUB_SHA}" \
+            --workspace-root "${GITHUB_WORKSPACE}" \
+            --emit "${RUNNER_TEMP}/tml-observed-windows.json"
+          node scripts/check-too-many-lines.mjs \
+            --check "${RUNNER_TEMP}/tml-observed-windows.json" \
+            --baseline too-many-lines.baseline.json
+
+      - name: Length observation metadata
+        if: always()
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf 'checkout=%s\npr_head=%s\nplatform=windows\n' \
+            "$GITHUB_SHA" "$PR_HEAD" > "${RUNNER_TEMP}/tml-windows-metadata.txt"
+
+      - name: Upload length observations
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tml-observed-windows
+          path: |
+            ${{ runner.temp }}/tml-observed-windows.json
+            ${{ runner.temp }}/tml-observed-windows.json.summary.json
+            ${{ runner.temp }}/tml-windows-metadata.txt
+          if-no-files-found: warn
+
   rust-slow-test-windows:
     name: rust-slow-test-windows
     # Skip branch-deletion push events while still requiring pull request validation.
-    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -455,7 +658,7 @@ jobs:
   issue-1850-release-windows:
     name: issue-1850-release-windows
     # Skip branch-deletion push events while still requiring pull request validation.
-    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -970,7 +1173,7 @@ jobs:
   # needs all three per-platform emissions.
   clippy-linux:
     name: clippy-linux
-    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -1026,7 +1229,7 @@ jobs:
           set +e
           set -uo pipefail
           cargo clippy --locked --workspace --all-targets --message-format=json \
-            -- -D warnings --force-warn clippy::cognitive_complexity \
+            -- -D warnings --force-warn clippy::cognitive_complexity --force-warn clippy::too_many_lines \
             > "${RUNNER_TEMP}/cog-linux.jsonl"
           code=$?
           rustc_version="$(rustc -vV | sed -n 's/^release: //p')"
@@ -1059,11 +1262,44 @@ jobs:
           path: ${{ runner.temp }}/cog-observed-linux.json
           if-no-files-found: warn
 
+      - name: Length gate
+        shell: bash
+        run: |
+          node scripts/check-too-many-lines.mjs \
+            --capture "${RUNNER_TEMP}/cog-linux.jsonl" \
+            --clippy-exit "$COG_CLIPPY_EXIT" --platform linux \
+            --rustc-version "$COG_RUSTC_VERSION" --commit "${GITHUB_SHA}" \
+            --workspace-root "${GITHUB_WORKSPACE}" \
+            --emit "${RUNNER_TEMP}/tml-observed-linux.json"
+          node scripts/check-too-many-lines.mjs \
+            --check "${RUNNER_TEMP}/tml-observed-linux.json" \
+            --baseline too-many-lines.baseline.json
+
+      - name: Length observation metadata
+        if: always()
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf 'checkout=%s\npr_head=%s\nplatform=linux\n' \
+            "$GITHUB_SHA" "$PR_HEAD" > "${RUNNER_TEMP}/tml-linux-metadata.txt"
+
+      - name: Upload length observations
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tml-observed-linux
+          path: |
+            ${{ runner.temp }}/tml-observed-linux.json
+            ${{ runner.temp }}/tml-observed-linux.json.summary.json
+            ${{ runner.temp }}/tml-linux-metadata.txt
+          if-no-files-found: warn
+
   rust-regression-linux:
     name: rust-regression-linux
     # Skip branch-deletion push events while still requiring pull request validation.
     needs: ci-tier
-    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -2083,7 +2319,7 @@ jobs:
     #
     # Skip branch-deletion push events while still requiring pull request validation.
     needs: ci-tier
-    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')))
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -2312,7 +2548,7 @@ jobs:
     name: rust-regression-macos
     # Skip branch-deletion push events while still requiring pull request validation.
     needs: ci-tier
-    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')))
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -2358,7 +2594,7 @@ jobs:
           set +e
           set -uo pipefail
           cargo clippy --locked --workspace --all-targets --message-format=json \
-            -- -D warnings --force-warn clippy::cognitive_complexity \
+            -- -D warnings --force-warn clippy::cognitive_complexity --force-warn clippy::too_many_lines \
             > "${RUNNER_TEMP}/cog-macos.jsonl"
           code=$?
           rustc_version="$(rustc -vV | sed -n 's/^release: //p')"
@@ -2593,11 +2829,44 @@ jobs:
   # so their release compile runs in parallel; steps and assertions unchanged.
   # It restores gate-release-macos, the release dependency cache cache-warm.yml
   # saves on main, so it installs the same floating stable toolchain as that cache.
+      - name: Length gate
+        shell: bash
+        run: |
+          node scripts/check-too-many-lines.mjs \
+            --capture "${RUNNER_TEMP}/cog-macos.jsonl" \
+            --clippy-exit "$COG_CLIPPY_EXIT" --platform macos \
+            --rustc-version "$COG_RUSTC_VERSION" --commit "${GITHUB_SHA}" \
+            --workspace-root "${GITHUB_WORKSPACE}" \
+            --emit "${RUNNER_TEMP}/tml-observed-macos.json"
+          node scripts/check-too-many-lines.mjs \
+            --check "${RUNNER_TEMP}/tml-observed-macos.json" \
+            --baseline too-many-lines.baseline.json
+
+      - name: Length observation metadata
+        if: always()
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf 'checkout=%s\npr_head=%s\nplatform=macos\n' \
+            "$GITHUB_SHA" "$PR_HEAD" > "${RUNNER_TEMP}/tml-macos-metadata.txt"
+
+      - name: Upload length observations
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tml-observed-macos
+          path: |
+            ${{ runner.temp }}/tml-observed-macos.json
+            ${{ runner.temp }}/tml-observed-macos.json.summary.json
+            ${{ runner.temp }}/tml-macos-metadata.txt
+          if-no-files-found: warn
+
   issue-1850-release-macos:
     name: issue-1850-release-macos
     # Skip branch-deletion push events while still requiring pull request validation.
     needs: ci-tier
-    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')))
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -3103,7 +3372,7 @@ jobs:
   rust-fmt:
     name: rust-fmt
     # Skip branch-deletion push events while still requiring pull request validation.
-    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -3121,7 +3390,7 @@ jobs:
     name: terminal-snapshot-portable (${{ matrix.os }})
     # Skip branch-deletion push events while still requiring pull request validation.
     needs: ci-tier
-    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')))
     strategy:
       fail-fast: false
       matrix:
@@ -3152,7 +3421,7 @@ jobs:
     name: release-cli-smoke-windows
     # Skip branch-deletion push events while still requiring pull request validation.
     needs: ci-tier
-    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')))
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -3211,7 +3480,7 @@ jobs:
     name: issue-1850-profile-windows (${{ matrix.mode }})
     # Skip branch-deletion push events while still requiring pull request validation.
     needs: ci-tier
-    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')))
     runs-on: windows-latest
     timeout-minutes: 75
     strategy:
@@ -3391,7 +3660,7 @@ jobs:
     name: frontend-regression
     # Skip branch-deletion push events while still requiring pull request validation.
     needs: ci-tier
-    if: needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
