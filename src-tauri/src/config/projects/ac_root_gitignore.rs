@@ -121,6 +121,33 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         // naming migration sets a displaced project file aside in `.ac/`.
         project_settings_lock_row,
         set_aside_row,
+    ];
+    required_entries.extend(agent_runtime_ignore_entries());
+    required_entries.extend(catalog_ignore_entries(&catalog));
+    required_entries.extend([
+        // #2807 - the agent state file beside each tracked `config.json`, its
+        // lock sidecar and its publish temporary.
+        config_state_row,
+        config_state_lock_row,
+        config_state_tmp_row,
+    ]);
+    for pattern in &custom_patterns {
+        required_entries.push((
+            pattern.as_str(),
+            "# AgentsCommander: exclude managed session context files inside replica agent \
+                folders.",
+        ));
+    }
+
+    write_required_gitignore(
+        &gitignore_path,
+        &required_entries,
+        project_settings_gitignore_pattern,
+    )
+}
+
+fn agent_runtime_ignore_entries() -> [(&'static str, &'static str); 7] {
+    [
         (
             "_agent_*/rtk-matrix-history*.db",
             "# AgentsCommander: exclude RTK matrix-history databases.",
@@ -149,28 +176,7 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
             "_agent_*/**/*.pyc",
             "# AgentsCommander: exclude Python bytecode inside agent folders.",
         ),
-    ];
-    required_entries.extend(catalog_ignore_entries(&catalog));
-    required_entries.extend([
-        // #2807 - the agent state file beside each tracked `config.json`, its
-        // lock sidecar and its publish temporary.
-        config_state_row,
-        config_state_lock_row,
-        config_state_tmp_row,
-    ]);
-    for pattern in &custom_patterns {
-        required_entries.push((
-            pattern.as_str(),
-            "# AgentsCommander: exclude managed session context files inside replica agent \
-                folders.",
-        ));
-    }
-
-    write_required_gitignore(
-        &gitignore_path,
-        &required_entries,
-        project_settings_gitignore_pattern,
-    )
+    ]
 }
 
 fn catalog_ignore_entries(catalog: &[String; 10]) -> [(&str, &str); 10] {
