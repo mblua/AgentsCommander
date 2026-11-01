@@ -173,68 +173,74 @@ pub(crate) fn initialize_catalog_under_lock(
                 }
             }
         }
-        None => {
-            // An absent project base may import ONLY the instance agents.json.
-            let instance_path = legacy_catalog_dir.map(|dir| dir.join(CATALOG_MANIFEST_FILENAME));
-            let instance_bytes = match instance_path.as_ref() {
-                Some(path) => match read_instance_legacy_source(path) {
-                    Ok(bytes) => bytes,
-                    Err(reason) => {
-                        outcome.warnings.push(catalog_diagnostic(
-                            REPORT_CODE_MIGRATION_CONFLICT,
-                            path,
-                            reason,
-                        ));
-                        return outcome;
-                    }
-                },
-                None => None,
-            };
-            // #2021 2.3: a MANAGED (or foreign-managed) instance base is not
-            // importable legacy territory; importing it would fail with
-            // MIGRATION_CONFLICT and leave the project without a catalog, so
-            // fresh-seed the project's own managed base instead. A marker-less
-            // legacy file, or bytes this build cannot parse, stay on the
-            // existing migration path unchanged (it already reports corrupt
-            // input).
-            let instance_is_managed = match (instance_bytes.as_deref(), instance_path.as_ref()) {
-                (Some(bytes), Some(path)) => matches!(
-                    analyze_base_bytes(path, bytes),
-                    Ok(analysis)
-                        if matches!(
-                            analysis.kind,
-                            CatalogBaseKind::Managed | CatalogBaseKind::ForeignManaged
-                        )
-                ),
-                _ => false,
-            };
-            match (instance_bytes, instance_path) {
-                (Some(bytes), Some(path)) if !instance_is_managed => {
-                    match migrate_legacy(paths, MIGRATION_SOURCE_INSTANCE, &path, &bytes) {
-                        Ok(published_at) => outcome.published_at = published_at,
-                        Err(reason) => outcome.warnings.push(catalog_diagnostic(
-                            REPORT_CODE_MIGRATION_CONFLICT,
-                            &path,
-                            reason,
-                        )),
-                    }
-                }
-                _ => match fresh_initialize_catalog(paths) {
-                    Ok((published_at, stub_warning)) => {
-                        outcome.published_at = published_at;
-                        outcome.warnings.extend(stub_warning);
-                    }
-                    Err(reason) => outcome.warnings.push(catalog_diagnostic(
-                        REPORT_CODE_REFRESH_FAILED,
-                        &paths.base,
-                        reason,
-                    )),
-                },
-            }
-        }
+        None => initialize_absent_catalog(paths, legacy_catalog_dir, &mut outcome),
     }
 
     outcome
+}
+
+fn initialize_absent_catalog(
+    paths: &CatalogPaths,
+    legacy_catalog_dir: Option<&Path>,
+    outcome: &mut CatalogInitOutcome,
+) {
+    // An absent project base may import ONLY the instance agents.json.
+    let instance_path = legacy_catalog_dir.map(|dir| dir.join(CATALOG_MANIFEST_FILENAME));
+    let instance_bytes = match instance_path.as_ref() {
+        Some(path) => match read_instance_legacy_source(path) {
+            Ok(bytes) => bytes,
+            Err(reason) => {
+                outcome.warnings.push(catalog_diagnostic(
+                    REPORT_CODE_MIGRATION_CONFLICT,
+                    path,
+                    reason,
+                ));
+                return;
+            }
+        },
+        None => None,
+    };
+    // #2021 2.3: a MANAGED (or foreign-managed) instance base is not
+    // importable legacy territory; importing it would fail with
+    // MIGRATION_CONFLICT and leave the project without a catalog, so
+    // fresh-seed the project's own managed base instead. A marker-less
+    // legacy file, or bytes this build cannot parse, stay on the
+    // existing migration path unchanged (it already reports corrupt
+    // input).
+    let instance_is_managed = match (instance_bytes.as_deref(), instance_path.as_ref()) {
+        (Some(bytes), Some(path)) => matches!(
+            analyze_base_bytes(path, bytes),
+            Ok(analysis)
+                if matches!(
+                    analysis.kind,
+                    CatalogBaseKind::Managed | CatalogBaseKind::ForeignManaged
+                )
+        ),
+        _ => false,
+    };
+    match (instance_bytes, instance_path) {
+        (Some(bytes), Some(path)) if !instance_is_managed => {
+            match migrate_legacy(paths, MIGRATION_SOURCE_INSTANCE, &path, &bytes) {
+                Ok(published_at) => outcome.published_at = published_at,
+                Err(reason) => outcome.warnings.push(catalog_diagnostic(
+                    REPORT_CODE_MIGRATION_CONFLICT,
+                    &path,
+                    reason,
+                )),
+            }
+        }
+        _ => match fresh_initialize_catalog(paths) {
+            Ok((published_at, stub_warning)) => {
+                outcome.published_at = published_at;
+                outcome.warnings.extend(stub_warning);
+            }
+            Err(reason) => outcome.warnings.push(catalog_diagnostic(
+                REPORT_CODE_REFRESH_FAILED,
+                &paths.base,
+                reason,
+            )),
+        },
+    }
 }
 
 pub(crate) fn run_catalog_initialization(
@@ -498,6 +504,27 @@ pub(crate) fn migrate_catalog_family(
         }
     }
 
+    record_catalog_family_completion(dir, journal_dir, &key).map_err(journal_error)?;
+
+    if base_moved && scope == InitScope::Project {
+        log::warn!(
+            "[coding-agents] renamed {} to {} in {}; Git shows the tracked {} as deleted and {} as \
+                new (a delete plus an add), and AC runs no Git",
+            CATALOG_FAMILY_RENAMES[0].from,
+            CATALOG_FAMILY_RENAMES[0].to,
+            dir.display(),
+            CATALOG_FAMILY_RENAMES[0].from,
+            CATALOG_FAMILY_RENAMES[0].to,
+        );
+    }
+    Ok(published_at)
+}
+
+fn record_catalog_family_completion(
+    dir: &Path,
+    journal_dir: Option<&Path>,
+    key: &str,
+) -> Result<(), naming_migration::Refusal> {
     // A lock sidecar and the two immutable #1968 sidecars are never renamed
     // or deleted, only noted.
     let mut notes = Vec::new();
@@ -521,24 +548,11 @@ pub(crate) fn migrate_catalog_family(
     }
     naming_migration::update_journal(journal_dir, |j| {
         for note in &notes {
-            j.note(&key, note);
+            j.note(key, note);
         }
-        j.set_status(&key, naming_migration::ScopeStatus::Complete);
+        j.set_status(key, naming_migration::ScopeStatus::Complete);
     })
-    .map_err(journal_error)?;
-
-    if base_moved && scope == InitScope::Project {
-        log::warn!(
-            "[coding-agents] renamed {} to {} in {}; Git shows the tracked {} as deleted and {} as \
-                new (a delete plus an add), and AC runs no Git",
-            CATALOG_FAMILY_RENAMES[0].from,
-            CATALOG_FAMILY_RENAMES[0].to,
-            dir.display(),
-            CATALOG_FAMILY_RENAMES[0].from,
-            CATALOG_FAMILY_RENAMES[0].to,
-        );
-    }
-    Ok(published_at)
+    .map(|_| ())
 }
 
 /// #2715 5.4 - the legacy instance catalog is its own scope, migrated before
