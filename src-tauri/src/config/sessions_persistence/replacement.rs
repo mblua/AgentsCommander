@@ -206,6 +206,46 @@ fn replacement_publication_row(
     Some(b_row)
 }
 
+fn replacement_destination(
+    source: &PublishedCarrier,
+    replacement: Uuid,
+    token: Uuid,
+    version: u64,
+    old: &CarrierProtection,
+    epoch: u64,
+    b_row: super::record::PersistedSession,
+) -> (PublishedCarrier, CarrierProtection) {
+    let lifetime = std::sync::Arc::new(());
+    let destination_key = PublishedCarrier {
+        target: source.target.clone(),
+        session_id: replacement,
+        token,
+        nonce: Uuid::new_v4(),
+        version,
+        slot: source.slot.clone(),
+        directory: source.directory.clone(),
+        lifetime: lifetime.clone(),
+        retired_local: None,
+    };
+    let protection = CarrierProtection {
+        target: source.target.clone(),
+        session_id: replacement,
+        token,
+        nonce: destination_key.nonce,
+        epoch,
+        version,
+        row: b_row,
+        canonical_cwd: old.canonical_cwd.clone(),
+        phase: old.phase.clone(),
+        retired_local: None,
+        lifetime: std::sync::Arc::downgrade(&lifetime),
+        retained: None,
+        pending_lifetime: Some(lifetime),
+        active: None,
+    };
+    (destination_key, protection)
+}
+
 /// Capture under U, then release it for filtering, physical probes, serialization
 /// and temporary-file preparation. Only A is omitted before normal deduplication.
 pub(crate) async fn prepare_owned_replacement_publication<V, VF>(
@@ -268,38 +308,9 @@ where
     if !prepare_protected_publication(&mut next, &prep.kept, &captured, None) {
         return Ok(None);
     }
-    let lifetime = std::sync::Arc::new(());
-    let destination_key = PublishedCarrier {
-        target: source.target.clone(),
-        session_id: replacement,
-        token: b.token,
-        nonce: Uuid::new_v4(),
-        version,
-        slot: source.slot.clone(),
-        directory: source.directory.clone(),
-        lifetime: lifetime.clone(),
-        retired_local: None,
-    };
-    next.protections.push(CarrierProtection {
-        target: source.target.clone(),
-        session_id: replacement,
-        token: b.token,
-        nonce: destination_key.nonce,
-        epoch,
-        version,
-        row: b_row,
-        canonical_cwd: old.canonical_cwd.clone(),
-        phase: ProtectionPhase::Preparing {
-            owner_nonce,
-            previous,
-            replacement,
-        },
-        retired_local: None,
-        lifetime: std::sync::Arc::downgrade(&lifetime),
-        retained: None,
-        pending_lifetime: Some(lifetime),
-        active: None,
-    });
+    let (destination_key, protection) =
+        replacement_destination(source, replacement, b.token, version, &old, epoch, b_row);
+    next.protections.push(protection);
     let nonce = Uuid::new_v4();
     next.checkpoint = Some(PublicationCheckpoint {
         nonce,
