@@ -383,6 +383,10 @@ pub fn classify(record: &BlackBoxRecord, marker: Option<&FreezeMarker>) -> Verdi
         // saturation forges (a). Evaluate as if no episode had happened.
         return no_episode(record);
     }
+    open_episode_verdict(record, m, probed)
+}
+
+fn open_episode_verdict(record: &BlackBoxRecord, marker: &FreezeMarker, probed: bool) -> Verdict {
     if probed {
         // Received a probe and issued no invoke at or after the onset: alive,
         // receiving, and never obliged to send, so the episode is not this
@@ -396,7 +400,7 @@ pub fn classify(record: &BlackBoxRecord, marker: Option<&FreezeMarker>) -> Verdi
     // (c) is bounded by the silence ONSET, not by a constant: probes exist
     // only from the onset onwards, so only a record still being written at or
     // after it can be said to have missed one.
-    if record.written_at_ms >= m.silence_started_at_ms {
+    if record.written_at_ms >= marker.silence_started_at_ms {
         return Verdict::IpcDeadBothWays;
     }
     // `pagehide` ran, so this window's loop was ALIVE at teardown: TaskLoopStopped
@@ -408,7 +412,9 @@ pub fn classify(record: &BlackBoxRecord, marker: Option<&FreezeMarker>) -> Verdi
     if record.closed_cleanly {
         return Verdict::Healthy;
     }
-    let outlived_ms = record.written_at_ms.saturating_sub(m.last_invoke_at_ms);
+    let outlived_ms = record
+        .written_at_ms
+        .saturating_sub(marker.last_invoke_at_ms);
     if outlived_ms < LOOP_OUTLIVED_MS {
         Verdict::TaskLoopStopped // proved dead before the onset
     } else {
