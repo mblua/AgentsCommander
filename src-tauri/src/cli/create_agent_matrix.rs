@@ -172,28 +172,8 @@ pub(crate) fn execute_matrix_project_create(
                             // sidecar, with a bounded wait. Rejection is
                             // distinguishable in this command's own output.
                             launch_agent_id = Some(agent.id.clone());
-                            match session_request::wait_for_session_request_result(
-                                &request.id,
-                                session_request::SESSION_REQUEST_RESULT_TIMEOUT,
-                            ) {
-                                session_request::LaunchOutcome::Launched { .. } => {
-                                    launched = true;
-                                    launch_status = LaunchStatus::Launched;
-                                }
-                                session_request::LaunchOutcome::Rejected { error } => {
-                                    launch_status = LaunchStatus::Rejected;
-                                    launch_error = Some(error.clone());
-                                    eprintln!("Warning: session launch rejected: {}", error);
-                                }
-                                session_request::LaunchOutcome::Pending => {
-                                    launch_status = LaunchStatus::Pending;
-                                    eprintln!(
-                                        "Warning: no launch result within {}s \
-                                         (is the AgentsCommander app running?)",
-                                        session_request::SESSION_REQUEST_RESULT_TIMEOUT.as_secs()
-                                    );
-                                }
-                            }
+                            (launched, launch_status, launch_error) =
+                                wait_for_matrix_launch_result(&request.id);
                         }
                         Err(e) => {
                             launch_status = LaunchStatus::Rejected;
@@ -248,6 +228,28 @@ pub(crate) fn execute_matrix_project_create(
     }
 
     0
+}
+
+fn wait_for_matrix_launch_result(request_id: &str) -> (bool, LaunchStatus, Option<String>) {
+    match session_request::wait_for_session_request_result(
+        request_id,
+        session_request::SESSION_REQUEST_RESULT_TIMEOUT,
+    ) {
+        session_request::LaunchOutcome::Launched { .. } => (true, LaunchStatus::Launched, None),
+        session_request::LaunchOutcome::Rejected { error } => {
+            let launch_error = Some(error.clone());
+            eprintln!("Warning: session launch rejected: {}", error);
+            (false, LaunchStatus::Rejected, launch_error)
+        }
+        session_request::LaunchOutcome::Pending => {
+            eprintln!(
+                "Warning: no launch result within {}s \
+                 (is the AgentsCommander app running?)",
+                session_request::SESSION_REQUEST_RESULT_TIMEOUT.as_secs()
+            );
+            (false, LaunchStatus::Pending, None)
+        }
+    }
 }
 
 fn request_matrix_project_refresh(
