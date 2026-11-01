@@ -440,7 +440,7 @@ fn check_pty_enqueue_admission(
                 COALESCE(SUM(payload_bytes), 0)
             FROM pty_input_operations
             WHERE status IN ('queued','preparing','retry','actuating')
-        "#,
+            "#,
         [&req.sender_fqn],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
@@ -460,7 +460,7 @@ fn check_pty_enqueue_admission(
                 SELECT 1 FROM pty_input_tombstones
                 WHERE injection_id = ?1 OR (sender_fqn = ?2 AND nonce_sha256 = ?3)
             )
-        "#,
+            "#,
         params![req.injection_id, req.sender_fqn, req.nonce_sha256],
         |row| row.get(0),
     )?;
