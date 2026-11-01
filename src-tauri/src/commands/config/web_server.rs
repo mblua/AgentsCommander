@@ -672,7 +672,7 @@ pub async fn list_web_server_interfaces() -> Result<Vec<WebServerInterfaceInfo>,
             .into_iter()
             .filter_map(|iface| match iface.addr {
                 if_addrs::IfAddr::V4(v4) => Some((iface.name, v4.ip)),
-                _ => None,
+                if_addrs::IfAddr::V6(_) => None,
             })
             .collect(),
     ))

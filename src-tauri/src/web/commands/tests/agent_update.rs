@@ -953,7 +953,7 @@ async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
                 serde_json::from_str::<Value>(&text).unwrap()["event"],
                 json!(expected)
             ),
-            other => panic!("unexpected WS message {other:?}"),
+            other @ WsOutMsg::Binary(_) => panic!("unexpected WS message {other:?}"),
         }
     }
     assert!(events.try_recv().is_err());

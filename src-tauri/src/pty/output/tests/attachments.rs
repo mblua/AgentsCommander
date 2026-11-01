@@ -88,7 +88,7 @@ fn fanout_characterization_preserves_raw_order_and_ui_is_last() {
         crate::web::broadcast::WsOutMsg::Binary(frame) => {
             assert_eq!(&frame[36..], bytes.as_slice());
         }
-        other => panic!("expected websocket binary payload, got {other:?}"),
+        other @ WsOutMsg::Text(_) => panic!("expected websocket binary payload, got {other:?}"),
     }
     assert!(
         events(&sink).is_empty(),

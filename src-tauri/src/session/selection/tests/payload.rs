@@ -80,7 +80,7 @@ fn authoritative_publisher_sends_byte_equivalent_tauri_and_websocket_payloads() 
         WsOutMsg::Text(text) => {
             serde_json::from_str::<serde_json::Value>(&text).expect("parse websocket selection")
         }
-        other => panic!("expected websocket text event, got {other:?}"),
+        other @ WsOutMsg::Binary(_) => panic!("expected websocket text event, got {other:?}"),
     };
     assert_eq!(websocket["event"], "session_switched");
     assert_eq!(websocket["payload"], native);

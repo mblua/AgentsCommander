@@ -497,7 +497,7 @@ impl ProjectSeedManifestGuard {
             },
         ) {
             CanonicalSnapshot::Writable { canonical, .. } => canonical,
-            other => {
+            other @ CanonicalSnapshot::ReadOnly { .. } => {
                 // Unreachable: write_canonical leaves the snapshot untouched
                 // on error, so it is still the Writable we just installed.
                 self.snapshot = other;

@@ -192,7 +192,9 @@ async fn winner_above_threshold_and_margin_is_classified() {
             assert!((score - 0.85).abs() < 1e-6);
             assert!((runner_up - 0.60).abs() < 1e-6);
         }
-        other => panic!("expected a classification, got {other:?}"),
+        other @ ClassifyOutcome::Abstained { .. } => {
+            panic!("expected a classification, got {other:?}")
+        }
     }
 }
 
@@ -209,7 +211,9 @@ async fn winner_below_margin_abstains() {
             assert!(reason.contains("margin"), "{reason}");
             assert!(reason.contains("0.05"), "{reason}");
         }
-        other => panic!("expected an abstention, got {other:?}"),
+        other @ ClassifyOutcome::Classified { .. } => {
+            panic!("expected an abstention, got {other:?}")
+        }
     }
 }
 
@@ -233,7 +237,7 @@ async fn single_category_below_threshold_abstains_and_above_it_passes() {
         ClassifyOutcome::Abstained { reason } => {
             assert!(reason.contains("threshold"), "{reason}")
         }
-        other => panic!("0.65 must abstain, got {other:?}"),
+        other @ ClassifyOutcome::Classified { .. } => panic!("0.65 must abstain, got {other:?}"),
     }
 
     let (high_url, _) = serve(vec![(200, body_with(&[("only", 0.85)]))], None).await;
@@ -284,7 +288,7 @@ async fn permanent_4xx_abstains_with_zero_retries() {
         ClassifyOutcome::Abstained { reason } => {
             assert!(reason.contains("403"), "{reason}")
         }
-        other => panic!("403 must abstain, got {other:?}"),
+        other @ ClassifyOutcome::Classified { .. } => panic!("403 must abstain, got {other:?}"),
     }
     assert_eq!(hits.load(AtomicOrdering::SeqCst), 1, "403 is never retried");
 }
@@ -317,7 +321,9 @@ async fn malformed_bodies_abstain_with_zero_retries() {
                 reason.contains(expected),
                 "body {body} must fail with {expected:?}, got {reason:?}"
             ),
-            other => panic!("body {body} must abstain, got {other:?}"),
+            other @ ClassifyOutcome::Classified { .. } => {
+                panic!("body {body} must abstain, got {other:?}")
+            }
         }
         assert_eq!(
             hits.load(AtomicOrdering::SeqCst),
@@ -374,7 +380,9 @@ async fn absent_catalog_is_inert_and_issues_no_request() {
         ClassifyOutcome::Abstained { reason } => {
             assert!(reason.contains("NoCatalogFile"), "{reason}")
         }
-        other => panic!("a missing catalog must be inert, got {other:?}"),
+        other @ ClassifyOutcome::Classified { .. } => {
+            panic!("a missing catalog must be inert, got {other:?}")
+        }
     }
     assert_eq!(
         hits.load(AtomicOrdering::SeqCst),
@@ -395,7 +403,9 @@ async fn a_missing_api_key_is_inert_and_issues_no_request() {
         ClassifyOutcome::Abstained { reason } => {
             assert!(reason.contains("NoApiKey"), "{reason}")
         }
-        other => panic!("a missing API key must be inert, got {other:?}"),
+        other @ ClassifyOutcome::Classified { .. } => {
+            panic!("a missing API key must be inert, got {other:?}")
+        }
     }
     assert_eq!(
         hits.load(AtomicOrdering::SeqCst),
@@ -418,7 +428,9 @@ async fn a_fifth_destination_abstains_while_a_valid_sibling_classifies() {
             assert!(reason.contains("\"b\""), "{reason}");
             assert!(reason.contains("banana"), "{reason}");
         }
-        other => panic!("the fifth destination must abstain, got {other:?}"),
+        other @ ClassifyOutcome::Classified { .. } => {
+            panic!("the fifth destination must abstain, got {other:?}")
+        }
     }
 
     let (url, _) = serve(vec![(200, body_with(&[("a", 0.90), ("b", 0.10)]))], None).await;
@@ -445,7 +457,9 @@ async fn orchestrator_without_peer_and_default_reply_without_reply_abstain() {
             ClassifyOutcome::Abstained { reason } => {
                 assert!(reason.contains(name), "{reason}")
             }
-            other => panic!("{name} must abstain, got {other:?}"),
+            other @ ClassifyOutcome::Classified { .. } => {
+                panic!("{name} must abstain, got {other:?}")
+            }
         }
     }
 }
@@ -509,6 +523,8 @@ async fn a_non_default_model_classifies_and_names_itself_in_abstentions() {
         ClassifyOutcome::Abstained { reason } => {
             assert!(reason.contains("jev-9.9.9"), "{reason}")
         }
-        other => panic!("a low score must abstain, got {other:?}"),
+        other @ ClassifyOutcome::Classified { .. } => {
+            panic!("a low score must abstain, got {other:?}")
+        }
     }
 }
