@@ -243,6 +243,18 @@ struct ReconcilePlan<'a> {
     append: Vec<&'a MessageSpec>,
 }
 
+fn recognizes_template(
+    spec: &MessageSpec,
+    entry_state: &MessageStateEntry,
+    observed_hash: &str,
+) -> bool {
+    entry_state.last_seeded_sha256.as_deref() == Some(observed_hash)
+        || spec
+            .known_default_sha256
+            .iter()
+            .any(|known| *known == observed_hash)
+}
+
 /// Plan entry changes and advisory state updates before publishing any edits.
 fn reconcile_entries<'a>(
     path: &Path,
@@ -290,11 +302,7 @@ fn reconcile_entries<'a>(
             }
             Some(EntryValue::Template(template)) => {
                 let observed_hash = sha256_hex(template.as_bytes());
-                let recognized = entry_state.last_seeded_sha256.as_deref() == Some(&observed_hash)
-                    || spec
-                        .known_default_sha256
-                        .iter()
-                        .any(|known| *known == observed_hash);
+                let recognized = recognizes_template(spec, entry_state, &observed_hash);
 
                 if is_forced {
                     refresh.insert(spec.id.to_string(), spec);
