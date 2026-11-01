@@ -82,6 +82,13 @@ struct UnrecordedDelivery {
     state_after: Vec<u8>,
 }
 
+struct LoopScanSnapshot {
+    config: LoopConfigToml,
+    state: LoopState,
+    raw: Option<Vec<u8>>,
+    generation: u64,
+}
+
 #[derive(Clone)]
 enum SchedulerContext {
     Native(Arc<dyn SchedulerHost>),
@@ -411,6 +418,78 @@ impl LoopScheduler {
         None
     }
 
+    async fn scan_snapshot(&self, dir: &Path) -> Result<Option<LoopScanSnapshot>, String> {
+        // S0: a Loop that is gone at entry is a quiet skip.
+        let _io = self.io_lock.lock().await;
+        let _loop_lock = acquire_loop_lock_for_dir(dir, LOOP_LOCK_TIMEOUT)?;
+        if !dir.is_dir() {
+            return Ok(None);
+        }
+        let Some(config) = read_loop_config_if_present(dir)? else {
+            return Ok(None);
+        };
+        let (state, raw) = read_state_snapshot(dir)?;
+        Ok(Some(LoopScanSnapshot {
+            config,
+            state,
+            raw,
+            generation: self.loop_generation(dir),
+        }))
+    }
+
+    async fn commit_scan_baseline(
+        &self,
+        dir: &Path,
+        config: &LoopConfigToml,
+        s0_generation: u64,
+        s0_raw: Option<&[u8]>,
+    ) -> Result<(), String> {
+        let _io = self.io_lock.lock().await;
+        // #2682: no Loop lock here. `commit_scan_section` takes it at entry
+        // and re-checks freshness and config presence under it; holding it
+        // here too would self-deadlock, since a second handle in this
+        // process blocks on the same sidecar (T0).
+        if !loop_is_current_for_delivery(dir, config)? {
+            return Ok(());
+        }
+        let state = baseline_loop_state(config, Utc::now())?;
+        self.commit_scan_section(dir, s0_generation, s0_raw, None, &state)?;
+        Ok(())
+    }
+
+    async fn finish_scan_entry(
+        &self,
+        context: &SchedulerContext,
+        project_dir: &Path,
+        dir: &Path,
+        snapshot: &LoopScanSnapshot,
+    ) -> Result<bool, String> {
+        let raw = snapshot.raw.as_deref();
+        if let Some(record) =
+            self.replayable_delivery(dir, &snapshot.config, snapshot.generation, raw)
+        {
+            self.retry_unrecorded_delivery(
+                context,
+                project_dir,
+                dir,
+                record,
+                snapshot.generation,
+                raw,
+            )
+            .await?;
+            return Ok(true);
+        }
+        if !snapshot.config.loop_def.enabled {
+            return Ok(true);
+        }
+        if snapshot.state.last_checked_at.is_none() {
+            self.commit_scan_baseline(dir, &snapshot.config, snapshot.generation, raw)
+                .await?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     async fn scan_loop(
         &self,
         context: &SchedulerContext,
@@ -419,43 +498,22 @@ impl LoopScheduler {
         startup: bool,
         pending_only: bool,
     ) -> Result<(), String> {
-        // S0: a Loop that is gone at entry is a quiet skip.
-        let (config, mut state, s0_raw, s0_generation) = {
-            let _io = self.io_lock.lock().await;
-            let _loop_lock = acquire_loop_lock_for_dir(dir, LOOP_LOCK_TIMEOUT)?;
-            if !dir.is_dir() {
-                return Ok(());
-            }
-            let Some(config) = read_loop_config_if_present(dir)? else {
-                return Ok(());
-            };
-            let (state, raw) = read_state_snapshot(dir)?;
-            (config, state, raw, self.loop_generation(dir))
+        let Some(snapshot) = self.scan_snapshot(dir).await? else {
+            return Ok(());
         };
-        let s0_raw = s0_raw.as_deref();
-        if let Some(record) = self.replayable_delivery(dir, &config, s0_generation, s0_raw) {
-            return self
-                .retry_unrecorded_delivery(context, project_dir, dir, record, s0_generation, s0_raw)
-                .await;
-        }
-        if !config.loop_def.enabled {
+        if self
+            .finish_scan_entry(context, project_dir, dir, &snapshot)
+            .await?
+        {
             return Ok(());
         }
-
-        if state.last_checked_at.is_none() {
-            let _io = self.io_lock.lock().await;
-            // #2682: no Loop lock here. `commit_scan_section` takes it at entry
-            // and re-checks freshness and config presence under it; holding it
-            // here too would self-deadlock, since a second handle in this
-            // process blocks on the same sidecar (T0).
-            if !loop_is_current_for_delivery(dir, &config)? {
-                return Ok(());
-            }
-            state = baseline_loop_state(&config, Utc::now())?;
-            self.commit_scan_section(dir, s0_generation, s0_raw, None, &state)?;
-            return Ok(());
-        }
-
+        let LoopScanSnapshot {
+            config,
+            mut state,
+            raw,
+            generation: s0_generation,
+        } = snapshot;
+        let s0_raw = raw.as_deref();
         if let (Some(pending_due), Some(pending_run)) = (state.pending_due_at, state.pending_run_id)
         {
             if !loop_is_current_for_delivery(dir, &config)? {
@@ -478,51 +536,49 @@ impl LoopScheduler {
                 .await?;
                 return Ok(());
             }
-            self.apply_delivery_report(
-                context,
-                project_dir,
-                dir,
-                &config,
-                state,
-                report,
-                pending_run,
-                pending_due,
-                started_at,
-                s0_generation,
-                s0_raw,
-            )
-            .await?;
-            return Ok(());
+            return self
+                .apply_delivery_report(
+                    context,
+                    project_dir,
+                    dir,
+                    &config,
+                    state,
+                    report,
+                    pending_run,
+                    pending_due,
+                    started_at,
+                    s0_generation,
+                    s0_raw,
+                )
+                .await
+                .map(|_| ());
         }
 
         if pending_only {
             return Ok(());
         }
 
-        let now = Utc::now();
-        let last_checked = state.last_checked_at.unwrap_or(now);
-        let Some(due_at) = latest_due_between(&config.trigger.expr, last_checked, now)? else {
+        let Some((run_id, due_at)) = due_scan_run(&config, &state)? else {
             return Ok(());
         };
-
-        let run_id = Uuid::new_v4();
         if startup {
             if !loop_is_current_for_delivery(dir, &config)? {
                 return Ok(());
             }
-            self.record_missed_while_closed(
-                context,
-                project_dir,
-                dir,
-                &config,
-                state,
-                run_id,
-                due_at,
-                s0_generation,
-                s0_raw,
-            )
-            .await?;
-            return Ok(());
+            return self
+                .record_missed_while_closed(
+                    context,
+                    project_dir,
+                    dir,
+                    &config,
+                    state,
+                    run_id,
+                    due_at,
+                    s0_generation,
+                    s0_raw,
+                )
+                .await
+                .map(|_| ());
         }
 
         let started_at = Utc::now();
@@ -545,8 +601,8 @@ impl LoopScheduler {
             s0_generation,
             s0_raw,
         )
-        .await?;
-        Ok(())
+        .await
+        .map(|_| ())
     }
 }
 
@@ -554,6 +610,16 @@ impl Default for LoopScheduler {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn due_scan_run(
+    config: &LoopConfigToml,
+    state: &LoopState,
+) -> Result<Option<(Uuid, DateTime<Utc>)>, String> {
+    let now = Utc::now();
+    let last_checked = state.last_checked_at.unwrap_or(now);
+    Ok(latest_due_between(&config.trigger.expr, last_checked, now)?
+        .map(|due_at| (Uuid::new_v4(), due_at)))
 }
 
 async fn active_project_candidates(owner: &SettingsState) -> Vec<ProjectResolution> {
