@@ -91,7 +91,11 @@ async fn execute_peer_replacement_fixture<R: tauri::Runtime>(
     continuation: &crate::session::selection::OwnedReplacementContinuation,
     fixture: Option<Arc<crate::session::selection::ReplacementFixtureControl>>,
 ) -> PeerReplacementFixture {
-    let Some(control) = fixture else {
+    let Some(control) = fixture.filter(|control| {
+        !control
+            .ticket_only
+            .load(std::sync::atomic::Ordering::Acquire)
+    }) else {
         return PeerReplacementFixture::NotUsed;
     };
     let (Some(exact), Some(stripe)) = (execution.exact.take(), execution.stripe.take()) else {
@@ -130,19 +134,33 @@ async fn execute_peer_replacement_fixture<R: tauri::Runtime>(
     PeerReplacementFixture::Created(Box::new(result.outcome))
 }
 
+async fn peer_candidate_carry(
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    session_id: Uuid,
+) -> (
+    Option<String>,
+    Option<crate::session::session::SessionCommunication>,
+) {
+    let mgr = session_mgr.read().await;
+    mgr.get_session(session_id)
+        .await
+        .map(|s| (s.telegram_bot_id.clone(), s.communication.clone()))
+        .unwrap_or((None, None))
+}
+
 impl MailboxPoller {
-    pub(crate) async fn execute_owned_peer_replacement<R: tauri::Runtime>(
+    #[cfg(test)]
+    fn peer_replacement_fixture_context(
         &self,
-        app: &tauri::AppHandle<R>,
-        execution: &mut OwnedPeerWakeExecution,
-    ) -> Result<OwnedPeerWakeStep, String> {
-        use crate::session::selection::LifecycleEffectSlot;
-        #[cfg(test)]
+        execution: &OwnedPeerWakeExecution,
+    ) -> (
+        Option<Arc<crate::session::selection::ReplacementFixtureControl>>,
+        crate::session::selection::OwnedReplacementContinuation,
+    ) {
         let fixture_control = self
             .test_hooks
             .as_ref()
             .and_then(MailboxTestHooks::replacement_fixture_control);
-        #[cfg(test)]
         let fixture_continuation = match &fixture_control {
             Some(control) => execution
                 .continuation
@@ -150,6 +168,45 @@ impl MailboxPoller {
                 .with_fixture_control(control.clone()),
             None => execution.continuation.clone(),
         };
+        (fixture_control, fixture_continuation)
+    }
+
+    async fn peer_wake_candidates<S: super::pty_observation::PtyAuthorityState + ?Sized>(
+        &self,
+        app: &S,
+        msg: &OutboxMessage,
+    ) -> (Vec<(Uuid, crate::session::session::SessionStatus)>, bool) {
+        // Issue #223: enumerate ALL viable CWD candidates (PTY-liveness filtered)
+        // with their captured status, plus a had_any_match flag for the phantoms-
+        // only AC5-preservation path (grinch G.H2). Iterate so a stale-Running
+        // phantom no longer blocks delivery to the live Idle recipient at the
+        // same CWD; defer Exited destroys until later Inject attempts fail
+        // (grinch G.H1) — preserves AC5's "first Exited wins respawn slot".
+        //
+        // #293: Root Agent recipient uses the `is_root_agent` flag lookup,
+        // not CWD-FQN match, since `agent_fqn_from_path(ac-root-agent)` does
+        // not produce `ROOT_AGENT_SENDER`. Exited records are filtered out by
+        // `find_root_session_candidate` so the deferred-destroy block never
+        // fires on a user-launched session.
+        if crate::config::root_agent::is_root_agent_target(&msg.to) {
+            match self.find_root_session_candidate(app).await {
+                Some(pair) => (vec![pair], true),
+                None => (Vec::new(), false),
+            }
+        } else {
+            self.find_live_candidates(app, &msg.to).await
+        }
+    }
+
+    pub(crate) async fn execute_owned_peer_replacement<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        execution: &mut OwnedPeerWakeExecution,
+    ) -> Result<OwnedPeerWakeStep, String> {
+        use crate::session::selection::LifecycleEffectSlot;
+        #[cfg(test)]
+        let (fixture, fixture_continuation) = self.peer_replacement_fixture_context(execution);
+
         #[cfg(test)]
         let continuation = &fixture_continuation;
         #[cfg(not(test))]
@@ -174,19 +231,14 @@ impl MailboxPoller {
             return Ok(OwnedPeerWakeStep::Retained);
         }
         #[cfg(test)]
-        let fixture = fixture_control.filter(|control| {
-            !control
-                .ticket_only
-                .load(std::sync::atomic::Ordering::Acquire)
-        });
-        #[cfg(test)]
         let fixture_created =
             match execute_peer_replacement_fixture(app, execution, continuation, fixture).await {
                 PeerReplacementFixture::Retained => return Ok(OwnedPeerWakeStep::Retained),
                 PeerReplacementFixture::Created(created) => Some(*created),
                 PeerReplacementFixture::NotUsed => None,
             };
-        #[cfg(test)]
+        #[cfg(not(test))]
+        let fixture_created = None;
         let created = match fixture_created {
             Some(created) => created,
             None => {
@@ -200,17 +252,7 @@ impl MailboxPoller {
                 .await
             }
         };
-        #[cfg(not(test))]
-        let created = {
-            let proof = replacement_target_ownership(execution)?;
-            crate::commands::session::create_owned_response_replacement(
-                app,
-                execution.request.clone(),
-                continuation.clone(),
-                &proof,
-            )
-            .await
-        };
+
         match created {
             Ok(crate::commands::session::OwnedReplacementCreateStep::Finalized(_)) => {}
             Ok(crate::commands::session::OwnedReplacementCreateStep::Retained) => {
@@ -397,27 +439,7 @@ impl MailboxPoller {
         // upstream cause (race-killed siblings vs. desync phantoms).
         let mut lost_inject_to_race = false;
 
-        // Issue #223: enumerate ALL viable CWD candidates (PTY-liveness filtered)
-        // with their captured status, plus a had_any_match flag for the phantoms-
-        // only AC5-preservation path (grinch G.H2). Iterate so a stale-Running
-        // phantom no longer blocks delivery to the live Idle recipient at the
-        // same CWD; defer Exited destroys until later Inject attempts fail
-        // (grinch G.H1) — preserves AC5's "first Exited wins respawn slot".
-        //
-        // #293: Root Agent recipient uses the `is_root_agent` flag lookup,
-        // not CWD-FQN match, since `agent_fqn_from_path(ac-root-agent)` does
-        // not produce `ROOT_AGENT_SENDER`. Exited records are filtered out by
-        // `find_root_session_candidate` so the deferred-destroy block never
-        // fires on a user-launched session.
-        let (candidates, had_any_match) =
-            if crate::config::root_agent::is_root_agent_target(&msg.to) {
-                match self.find_root_session_candidate(app).await {
-                    Some(pair) => (vec![pair], true),
-                    None => (Vec::new(), false),
-                }
-            } else {
-                self.find_live_candidates(app, &msg.to).await
-            };
+        let (candidates, had_any_match) = self.peer_wake_candidates(app, msg).await;
 
         for &(session_id, ref status) in &candidates {
             log::debug!(
@@ -451,15 +473,9 @@ impl MailboxPoller {
                     // semantic.
                     if pending_exited_destroy.is_none() {
                         pending_exited_destroy = Some(session_id);
-                        let (bot_id, communication) = {
-                            let session_mgr =
-                                app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                            let mgr = session_mgr.read().await;
-                            mgr.get_session(session_id)
-                                .await
-                                .map(|s| (s.telegram_bot_id.clone(), s.communication.clone()))
-                                .unwrap_or((None, None))
-                        };
+                        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                        let (bot_id, communication) =
+                            peer_candidate_carry(session_mgr.inner(), session_id).await;
                         pending_exited_telegram_bot_id = bot_id;
                         // (#747) carry a restored raised hand across the
                         // destroy+respawn; the wake injection is not user input
