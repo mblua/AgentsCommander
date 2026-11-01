@@ -386,6 +386,35 @@ pub(crate) async fn prepare_persist_snapshot(
     .map_err(|e| format!("session persistence prepare task failed: {}", e))
 }
 
+async fn dormant_orphan_ids(mgr: Option<&SessionManager>, drops: &[OrphanDrop]) -> HashSet<Uuid> {
+    // Decide which drop ids are DORMANT (will be archived + pruned) vs LIVE
+    // (kept in RAM). At site A (mgr=None) everything is dormant. At site B this
+    // mirrors the same oracle `remove_exited_sessions` re-verifies (status
+    // Exited AND not pending); `remove_exited_sessions` stays the source of
+    // truth for the actual mutation, this set only decides what gets archived.
+    match mgr {
+        Some(mgr) => {
+            let snap = mgr.aggregate_snapshot().await;
+            drops
+                .iter()
+                .filter_map(|drop| drop.session.id.as_deref())
+                .filter_map(|id| Uuid::parse_str(id).ok())
+                .filter(|uuid| {
+                    snap.sessions
+                        .iter()
+                        .any(|s| &s.id == uuid && matches!(s.status, SessionStatus::Exited(_)))
+                        && !snap.pending_ids.contains(uuid)
+                })
+                .collect()
+        }
+        None => drops
+            .iter()
+            .filter_map(|drop| drop.session.id.as_deref())
+            .filter_map(|id| Uuid::parse_str(id).ok())
+            .collect(),
+    }
+}
+
 /// §1295 — the shared drop handler. The caller MUST already hold
 /// `sessions_save_lock()`.
 ///
@@ -419,32 +448,7 @@ pub(super) async fn handle_orphan_drops(
     }
     let archive_path = dir.join(ORPHAN_ARCHIVE_FILENAME);
 
-    // Decide which drop ids are DORMANT (will be archived + pruned) vs LIVE
-    // (kept in RAM). At site A (mgr=None) everything is dormant. At site B this
-    // mirrors the same oracle `remove_exited_sessions` re-verifies (status
-    // Exited AND not pending); `remove_exited_sessions` stays the source of
-    // truth for the actual mutation, this set only decides what gets archived.
-    let dormant: HashSet<Uuid> = match mgr {
-        Some(mgr) => {
-            let snap = mgr.aggregate_snapshot().await;
-            drops
-                .iter()
-                .filter_map(|drop| drop.session.id.as_deref())
-                .filter_map(|id| Uuid::parse_str(id).ok())
-                .filter(|uuid| {
-                    snap.sessions
-                        .iter()
-                        .any(|s| &s.id == uuid && matches!(s.status, SessionStatus::Exited(_)))
-                        && !snap.pending_ids.contains(uuid)
-                })
-                .collect()
-        }
-        None => drops
-            .iter()
-            .filter_map(|drop| drop.session.id.as_deref())
-            .filter_map(|id| Uuid::parse_str(id).ok())
-            .collect(),
-    };
+    let dormant = dormant_orphan_ids(mgr, drops).await;
 
     let mut candidate_ids: Vec<Uuid> = Vec::new();
     for drop in drops {
