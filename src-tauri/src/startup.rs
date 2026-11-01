@@ -343,6 +343,21 @@ pub(crate) fn migrate_instance_families(dir: &Path) -> Result<Option<String>, St
         )?;
     }
 
+    let record = complete_instance_families(dir, &journal_path)?;
+    drop(held);
+
+    Ok(Some(instance_families_summary(record)))
+}
+
+fn complete_instance_families(
+    dir: &Path,
+    journal_path: &Path,
+) -> Result<Option<crate::config::naming_migration::ScopeRecord>, StartupError> {
+    use crate::config::naming_migration as nm;
+    use config::instance_artifacts as names;
+
+    let scope = INSTANCE_FAMILIES_SCOPE;
+    let journal_dir = Some(dir);
     // A lock sidecar or a stale write temporary is never renamed or deleted,
     // only noted.
     let mut notes = Vec::new();
@@ -363,18 +378,15 @@ pub(crate) fn migrate_instance_families(dir: &Path) -> Result<Option<String>, St
             format!("left on disk: {name} (a stale write temporary is never renamed or deleted)")
         }));
     }
-    let record = nm::update_journal(journal_dir, |journal| {
+    Ok(nm::update_journal(journal_dir, |journal| {
         for note in &notes {
             journal.note(scope, note);
         }
         journal.set_status(scope, nm::ScopeStatus::Complete);
         journal.scope(scope).cloned()
     })
-    .map_err(|refusal| naming_migration_error(refusal_reason(refusal), journal_path.clone()))?
-    .flatten();
-    drop(held);
-
-    Ok(Some(instance_families_summary(record)))
+    .map_err(|refusal| naming_migration_error(refusal_reason(refusal), journal_path.to_path_buf()))?
+    .flatten())
 }
 
 fn instance_families_summary(
