@@ -54,72 +54,7 @@ use std::path::Path;
 pub(super) fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
     let (loaded, mut plan, mut warnings) = prepare_execution_plan(&args)?;
     let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let mut run_artifact = if let Some(mut run_artifact) = plan.resume_run_artifact.take() {
-        run_artifact.status = "running".to_string();
-        run_artifact.updated_at = timestamp.clone();
-        run_artifact.workgroup = Some(plan.workgroup.clone());
-        if let Some(execution) = run_artifact.execution.as_mut() {
-            execution.provider = args.provider.clone();
-            execution.attempt_timeout_secs = args.attempt_timeout_secs;
-            execution.max_parallel = args.max_parallel;
-            execution.started_at = Some(timestamp.clone());
-            execution.completed_at = None;
-            execution.cancellation_requested = false;
-            execution.executor = "fake".to_string();
-        }
-        run_artifact
-    } else {
-        let (seed, seed_provided) = match args.seed {
-            Some(seed) => (seed, true),
-            None => (generated_seed_from_uuid(uuid::Uuid::new_v4()), false),
-        };
-        RunArtifact {
-            schema_version: 1,
-            run_id: plan.run_id.clone(),
-            project: args.project.clone(),
-            experiment: loaded.experiment.name.clone(),
-            status: "running".to_string(),
-            dry_run: false,
-            created_at: timestamp.clone(),
-            updated_at: timestamp.clone(),
-            suite: RunSuiteArtifact {
-                path: plan.suite.path.to_string_lossy().to_string(),
-                sha256: plan.suite.sha256.clone(),
-                prompt_count: plan.suite.prompts.len(),
-            },
-            seed,
-            seed_provided,
-            replicates: args.replicates,
-            variants: plan
-                .variants
-                .iter()
-                .map(|variant| RunVariantArtifact {
-                    name: variant.name.clone(),
-                    agent_name: variant.agent_name.clone(),
-                    role_sha256: variant.role_sha256.clone(),
-                    role_path: variant.role_path.clone(),
-                })
-                .collect(),
-            attempt_count: plan.attempts.len(),
-            artifacts: default_run_artifact_paths(attempts_name()),
-            execution: Some(RunExecutionArtifact {
-                provider: args.provider.clone(),
-                attempt_timeout_secs: args.attempt_timeout_secs,
-                max_parallel: args.max_parallel,
-                started_at: Some(timestamp.clone()),
-                completed_at: None,
-                cancellation_requested: false,
-                executor: "fake".to_string(),
-            }),
-            workgroup: Some(plan.workgroup.clone()),
-            warnings: vec![
-                "run_workgroup_retained".to_string(),
-                "transcript_capture_best_effort".to_string(),
-                "no_scoring".to_string(),
-                "real_execution_deferred".to_string(),
-            ],
-        }
-    };
+    let mut run_artifact = prepare_fake_run_artifact(&args, &loaded, &mut plan, &timestamp);
 
     let result = execute_attempts_with_fake_executor(&args, &loaded, &mut plan, &mut run_artifact)?;
     let completed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
@@ -180,6 +115,80 @@ pub(super) fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<Cli
         warnings,
         errors: Vec::new(),
     })
+}
+
+fn prepare_fake_run_artifact(
+    args: &RunArgs,
+    loaded: &LoadedExperiment,
+    plan: &mut ExecutionPlan,
+    timestamp: &str,
+) -> RunArtifact {
+    if let Some(mut run_artifact) = plan.resume_run_artifact.take() {
+        run_artifact.status = "running".to_string();
+        run_artifact.updated_at = timestamp.to_string();
+        run_artifact.workgroup = Some(plan.workgroup.clone());
+        if let Some(execution) = run_artifact.execution.as_mut() {
+            execution.provider = args.provider.clone();
+            execution.attempt_timeout_secs = args.attempt_timeout_secs;
+            execution.max_parallel = args.max_parallel;
+            execution.started_at = Some(timestamp.to_string());
+            execution.completed_at = None;
+            execution.cancellation_requested = false;
+            execution.executor = "fake".to_string();
+        }
+        run_artifact
+    } else {
+        let (seed, seed_provided) = match args.seed {
+            Some(seed) => (seed, true),
+            None => (generated_seed_from_uuid(uuid::Uuid::new_v4()), false),
+        };
+        RunArtifact {
+            schema_version: 1,
+            run_id: plan.run_id.clone(),
+            project: args.project.clone(),
+            experiment: loaded.experiment.name.clone(),
+            status: "running".to_string(),
+            dry_run: false,
+            created_at: timestamp.to_string(),
+            updated_at: timestamp.to_string(),
+            suite: RunSuiteArtifact {
+                path: plan.suite.path.to_string_lossy().to_string(),
+                sha256: plan.suite.sha256.clone(),
+                prompt_count: plan.suite.prompts.len(),
+            },
+            seed,
+            seed_provided,
+            replicates: args.replicates,
+            variants: plan
+                .variants
+                .iter()
+                .map(|variant| RunVariantArtifact {
+                    name: variant.name.clone(),
+                    agent_name: variant.agent_name.clone(),
+                    role_sha256: variant.role_sha256.clone(),
+                    role_path: variant.role_path.clone(),
+                })
+                .collect(),
+            attempt_count: plan.attempts.len(),
+            artifacts: default_run_artifact_paths(attempts_name()),
+            execution: Some(RunExecutionArtifact {
+                provider: args.provider.clone(),
+                attempt_timeout_secs: args.attempt_timeout_secs,
+                max_parallel: args.max_parallel,
+                started_at: Some(timestamp.to_string()),
+                completed_at: None,
+                cancellation_requested: false,
+                executor: "fake".to_string(),
+            }),
+            workgroup: Some(plan.workgroup.clone()),
+            warnings: vec![
+                "run_workgroup_retained".to_string(),
+                "transcript_capture_best_effort".to_string(),
+                "no_scoring".to_string(),
+                "real_execution_deferred".to_string(),
+            ],
+        }
+    }
 }
 
 fn fake_execution_warnings() -> [CliWarning; 4] {
