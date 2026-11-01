@@ -282,11 +282,50 @@ impl LocalProcessBackend {
         let spawn_started = Instant::now();
         let (child, child_pid) =
             spawn_local_child(pair.slave.as_ref(), command, &launch_witness, id)?;
+        let spawned =
+            instance::prepare_spawn_instance(pair, child, &mut resource_registration, cols, rows)?;
+        self.finish_spawn(
+            id,
+            spawned,
+            (rows, cols),
+            idle_tuning,
+            output_target,
+            || {
+                let redact = spawn_redaction_values(&extra_env, &configured_env);
+                SpawnRecordInit {
+                    session_id: id,
+                    pid: child_pid,
+                    argv: exec_argv,
+                    cwd: spawn_cwd,
+                    cli: coding_agent,
+                    agent_profile_id: agent_id,
+                    codex_home,
+                    configured_env_count: configured_env.len(),
+                    removed_env_count: env_remove_keys.len(),
+                    redact,
+                    window: spawn_window,
+                    started: spawn_started,
+                    thresholds: diag_thresholds,
+                }
+            },
+        )
+    }
+
+    fn finish_spawn(
+        &self,
+        id: Uuid,
+        spawned: instance::SpawnedInstance,
+        dimensions: (u16, u16),
+        idle_tuning: crate::session::profile::IdleTuning,
+        output_target: crate::pty::output::PtyOutputTarget,
+        record_init: impl FnOnce() -> SpawnRecordInit,
+    ) -> Result<(), AppError> {
+        let (rows, cols) = dimensions;
         let instance::SpawnedInstance {
             instance,
             reader,
             rendered,
-        } = instance::prepare_spawn_instance(pair, child, &mut resource_registration, cols, rows)?;
+        } = spawned;
 
         #[cfg(windows)]
         let cursor_writer = Arc::downgrade(&instance.writer);
@@ -295,28 +334,9 @@ impl LocalProcessBackend {
 
         let output_token =
             self.register_spawn_output(id, instance, idle_tuning, rows, cols, output_target)?;
-        let redact = spawn_redaction_values(&extra_env, &configured_env);
-
         // #942 - emits `[pty] spawn-record` (argv, cwd, CLI, profile, CODEX_HOME,
         // concurrency).
-        let record = spawn_diagnostics::register(
-            SpawnRecordInit {
-                session_id: id,
-                pid: child_pid,
-                argv: exec_argv,
-                cwd: spawn_cwd,
-                cli: coding_agent,
-                agent_profile_id: agent_id,
-                codex_home,
-                configured_env_count: configured_env.len(),
-                removed_env_count: env_remove_keys.len(),
-                redact,
-                window: spawn_window,
-                started: spawn_started,
-                thresholds: diag_thresholds,
-            },
-            self.spawn.as_ref(),
-        );
+        let record = spawn_diagnostics::register(record_init(), self.spawn.as_ref());
 
         // #942 - the startup verdict at the deadline and exit attribution. The PTY
         // reader alone cannot carry either: ConPTY holds the pipe open past the death of
