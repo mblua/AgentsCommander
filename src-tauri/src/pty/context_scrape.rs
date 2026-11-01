@@ -318,6 +318,42 @@ impl ContextScraper {
         pattern
     }
 
+    fn read_sample(
+        &self,
+        id: Uuid,
+        usable_pattern: Option<Arc<ContextPattern>>,
+    ) -> (Option<u8>, ContextSample, bool) {
+        match usable_pattern {
+            None => match self.rows.get_session_liveness(id) {
+                ContextSessionLiveness::Live | ContextSessionLiveness::Unavailable => {
+                    (None, ContextSample::Unavailable { session_id: id }, false)
+                }
+                ContextSessionLiveness::SessionOver => {
+                    (None, ContextSample::SessionOver { session_id: id }, true)
+                }
+            },
+            Some(pattern) => match self.rows.get_screen_rows(id) {
+                ScreenRowsRead::Rows(rows) => match rows::extract(&pattern, &rows) {
+                    Some(percent) => (
+                        Some(percent),
+                        ContextSample::Reading {
+                            session_id: id,
+                            percent,
+                        },
+                        false,
+                    ),
+                    None => (None, ContextSample::Unavailable { session_id: id }, false),
+                },
+                ScreenRowsRead::Unavailable => {
+                    (None, ContextSample::Unavailable { session_id: id }, false)
+                }
+                ScreenRowsRead::SessionOver => {
+                    (None, ContextSample::SessionOver { session_id: id }, true)
+                }
+            },
+        }
+    }
+
     pub(crate) async fn tick(&self) {
         // Before `patterns()`, so an app with no agent session running reads nothing at all.
         if self
@@ -375,35 +411,7 @@ impl ContextScraper {
                 .filter(|source| !source.trim().is_empty())
                 .and_then(|source| self.resolve(&agent_id, source));
 
-            let (reading, sample, session_over) = match usable_pattern {
-                None => match self.rows.get_session_liveness(id) {
-                    ContextSessionLiveness::Live | ContextSessionLiveness::Unavailable => {
-                        (None, ContextSample::Unavailable { session_id: id }, false)
-                    }
-                    ContextSessionLiveness::SessionOver => {
-                        (None, ContextSample::SessionOver { session_id: id }, true)
-                    }
-                },
-                Some(pattern) => match self.rows.get_screen_rows(id) {
-                    ScreenRowsRead::Rows(rows) => match rows::extract(&pattern, &rows) {
-                        Some(percent) => (
-                            Some(percent),
-                            ContextSample::Reading {
-                                session_id: id,
-                                percent,
-                            },
-                            false,
-                        ),
-                        None => (None, ContextSample::Unavailable { session_id: id }, false),
-                    },
-                    ScreenRowsRead::Unavailable => {
-                        (None, ContextSample::Unavailable { session_id: id }, false)
-                    }
-                    ScreenRowsRead::SessionOver => {
-                        (None, ContextSample::SessionOver { session_id: id }, true)
-                    }
-                },
-            };
+            let (reading, sample, session_over) = self.read_sample(id, usable_pattern);
 
             let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
             if !self
