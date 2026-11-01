@@ -85,45 +85,16 @@ pub(super) fn load_and_validate_resume_artifacts(
     ) {
         errors.append(&mut report_errors);
     }
-    if run_artifact.schema_version != 1 || run_artifact.project != args.project {
-        errors.push(err(
-            "run_artifact_mismatch",
-            "Run artifact schema or project does not match resume arguments",
-            None,
-        ));
-    }
-    if run_artifact.run_id != run_id
-        || run_artifact.experiment != loaded.experiment.name
-        || run_artifact.dry_run
-        || run_artifact.execution.is_none()
-    {
-        errors.push(err(
-            "run_artifact_mismatch",
-            "Run artifact identity does not match resume arguments",
-            None,
-        ));
-    }
-    if run_artifact.suite != expected_suite
-        || run_artifact.replicates != args.replicates
-        || run_artifact.variants != expected_variants
-        || run_artifact.attempt_count != expected_attempts.len()
-        || run_artifact.artifacts != default_run_artifact_paths(attempts_name())
-    {
-        errors.push(err(
-            "run_artifact_mismatch",
-            "Run artifact contract does not match resume arguments",
-            None,
-        ));
-    }
-    if let Some(seed) = args.seed {
-        if run_artifact.seed != seed || !run_artifact.seed_provided {
-            errors.push(err(
-                "run_artifact_mismatch",
-                "Run artifact seed does not match resume arguments",
-                None,
-            ));
-        }
-    }
+    validate_resume_run_contract(
+        args,
+        loaded,
+        run_id,
+        &run_artifact,
+        &expected_suite,
+        &expected_variants,
+        expected_attempts.len(),
+        &mut errors,
+    );
     validate_resume_attempt_and_report_identity(
         &attempts,
         &expected_attempts,
@@ -166,6 +137,58 @@ pub(super) fn load_and_validate_resume_artifacts(
         Ok((run_artifact, attempts, report_artifact, workgroup))
     } else {
         Err(errors)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_resume_run_contract(
+    args: &RunArgs,
+    loaded: &LoadedExperiment,
+    run_id: &str,
+    run_artifact: &RunArtifact,
+    expected_suite: &RunSuiteArtifact,
+    expected_variants: &[RunVariantArtifact],
+    expected_attempt_count: usize,
+    errors: &mut Vec<CliError>,
+) {
+    if run_artifact.schema_version != 1 || run_artifact.project != args.project {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Run artifact schema or project does not match resume arguments",
+            None,
+        ));
+    }
+    if run_artifact.run_id != run_id
+        || run_artifact.experiment != loaded.experiment.name
+        || run_artifact.dry_run
+        || run_artifact.execution.is_none()
+    {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Run artifact identity does not match resume arguments",
+            None,
+        ));
+    }
+    if run_artifact.suite != *expected_suite
+        || run_artifact.replicates != args.replicates
+        || run_artifact.variants != expected_variants
+        || run_artifact.attempt_count != expected_attempt_count
+        || run_artifact.artifacts != default_run_artifact_paths(attempts_name())
+    {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Run artifact contract does not match resume arguments",
+            None,
+        ));
+    }
+    if let Some(seed) = args.seed {
+        if run_artifact.seed != seed || !run_artifact.seed_provided {
+            errors.push(err(
+                "run_artifact_mismatch",
+                "Run artifact seed does not match resume arguments",
+                None,
+            ));
+        }
     }
 }
 
