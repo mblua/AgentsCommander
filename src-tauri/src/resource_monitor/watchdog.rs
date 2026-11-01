@@ -275,6 +275,14 @@ pub(crate) async fn retry_quarantined_group(
         };
     }
 
+    retry_orphaned_group(monitor, session_id, root_identity).await
+}
+
+async fn retry_orphaned_group(
+    monitor: &ResourceMonitorState,
+    session_id: Uuid,
+    root_identity: ProcessIdentity,
+) -> QuarantineRetryReport {
     let monitor_c = monitor.clone();
     // #1151 - this spawn_blocking is the ONLY production invocation of
     // retry_orphaned_quarantine. kill_group can cost ~2s per stubborn PID
