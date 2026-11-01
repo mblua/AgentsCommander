@@ -249,10 +249,7 @@ fn recognizes_template(
     observed_hash: &str,
 ) -> bool {
     entry_state.last_seeded_sha256.as_deref() == Some(observed_hash)
-        || spec
-            .known_default_sha256
-            .iter()
-            .any(|known| *known == observed_hash)
+        || spec.known_default_sha256.contains(&observed_hash)
 }
 
 /// Plan entry changes and advisory state updates before publishing any edits.
