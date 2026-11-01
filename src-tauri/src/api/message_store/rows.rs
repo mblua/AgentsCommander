@@ -414,22 +414,7 @@ pub(super) fn terminalize_in_transaction(
         return Err(MessageStoreError::InvalidTransition);
     }
     insert_pty_audit(&tx, injection_id, status, reason, now)?;
-    tx.execute(
-        r#"INSERT INTO pty_input_tombstones(
-             injection_id,sender_fqn,target_fqn,op_id,nonce_sha256,
-             request_fingerprint,confirmation_tag,sender_incarnation_fingerprint,
-             version,payload_sha256,payload_bytes,source_plane,selected_session_id,
-             selected_backend,issued_at,expires_at,queued_at,actuating_at,
-             terminal_at,status,reason_code,reason_detail
-           ) SELECT injection_id,sender_fqn,target_fqn,op_id,nonce_sha256,
-                    request_fingerprint,confirmation_tag,sender_incarnation_fingerprint,
-                    version,payload_sha256,payload_bytes,source_plane,selected_session_id,
-                    selected_backend,issued_at,expires_at,queued_at,actuating_at,
-                    terminal_at,status,reason_code,reason_detail
-             FROM pty_input_operations WHERE injection_id=?1
-           ON CONFLICT(injection_id) DO NOTHING"#,
-        [injection_id],
-    )?;
+    insert_pty_tombstone(&tx, injection_id)?;
     if !tombstone_matches(&tx, injection_id)? {
         return Err(MessageStoreError::StoreCorrupt);
     }
@@ -483,4 +468,27 @@ pub(super) fn is_lower_hex_64(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn insert_pty_tombstone(
+    tx: &rusqlite::Transaction<'_>,
+    injection_id: &str,
+) -> Result<(), rusqlite::Error> {
+    tx.execute(
+        r#"INSERT INTO pty_input_tombstones(
+             injection_id,sender_fqn,target_fqn,op_id,nonce_sha256,
+             request_fingerprint,confirmation_tag,sender_incarnation_fingerprint,
+             version,payload_sha256,payload_bytes,source_plane,selected_session_id,
+             selected_backend,issued_at,expires_at,queued_at,actuating_at,
+             terminal_at,status,reason_code,reason_detail
+           ) SELECT injection_id,sender_fqn,target_fqn,op_id,nonce_sha256,
+                    request_fingerprint,confirmation_tag,sender_incarnation_fingerprint,
+                    version,payload_sha256,payload_bytes,source_plane,selected_session_id,
+                    selected_backend,issued_at,expires_at,queued_at,actuating_at,
+                    terminal_at,status,reason_code,reason_detail
+             FROM pty_input_operations WHERE injection_id=?1
+           ON CONFLICT(injection_id) DO NOTHING"#,
+        [injection_id],
+    )?;
+    Ok(())
 }
