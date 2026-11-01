@@ -91,24 +91,8 @@ pub(super) fn init_for_project_path(
     let ac_root = resolve_ac_root(project_path)?;
     reject_link_or_reparse(&ac_root, "workspace_link_or_reparse", None)?;
 
-    let source_ref = map_err(
-        resolve_agent_ref(&ac_root, &args.source_agent),
-        "source_agent_missing",
-        None,
-    )?;
-    let source_agent = agent_ref_bare_name(&source_ref);
-    validate_slug_identity(&source_agent, "Source agent", "source_agent_invalid")?;
-    let source_matrix = source_matrix_path(&ac_root, &source_agent);
-    let source_role = source_matrix.join("Role.md");
-    reject_link_or_reparse(&source_matrix, "source_role_link_or_reparse", None)?;
-    reject_link_or_reparse(&source_role, "source_role_link_or_reparse", None)?;
-    if !directories::experiment_path_is_file(&source_role) {
-        return Err(vec![err(
-            "source_role_missing",
-            format!("Source Role.md not found at {}", source_role.display()),
-            None,
-        )]);
-    }
+    let (source_agent, source_matrix, source_role) =
+        init_source_paths(&ac_root, &args.source_agent)?;
 
     let (variants, mut preflight_errors) =
         collect_init_variants_preflight(&args.variants, &ac_root, &source_agent);
@@ -129,16 +113,7 @@ pub(super) fn init_for_project_path(
     let role_bytes = read_init_source_role(&source_role)?;
     let role_sha = sha256_hex(&role_bytes);
     let now = chrono::Utc::now().to_rfc3339();
-    map_err(
-        directories::ensure_experiment_directory(&experiment_dir.join("variants")),
-        "experiment_metadata_write_failed",
-        None,
-    )?;
-    map_err(
-        directories::ensure_experiment_directory(&experiment_dir.join("runs")),
-        "experiment_metadata_write_failed",
-        None,
-    )?;
+    create_init_directories(&experiment_dir)?;
 
     let mut result_variants = Vec::new();
     let mut warnings = Vec::new();
@@ -191,18 +166,7 @@ pub(super) fn init_for_project_path(
         }));
     }
 
-    let experiment = ExperimentMetadata {
-        schema_version: 1,
-        name: args.name.clone(),
-        project: args.project.clone(),
-        source_agent: source_agent.clone(),
-        source_matrix_path: format!("../../_agent_{}", source_agent),
-        source_role_path: format!("../../_agent_{}/Role.md", source_agent),
-        source_role_sha256: role_sha.clone(),
-        created_at: now.clone(),
-        updated_at: now,
-        variants,
-    };
+    let experiment = init_experiment_metadata(&args, &source_agent, &role_sha, now, variants);
     write_json(
         &experiment_dir.join("experiment.json"),
         &experiment,
@@ -385,36 +349,7 @@ pub(super) fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<Cli
         return Err(errors);
     }
 
-    let role_input = PathBuf::from(&args.role_file);
-    reject_link_or_reparse(
-        &role_input,
-        "role_file_link_or_reparse",
-        Some(args.variant.as_str()),
-    )?;
-    let role_input = map_err(
-        crate::filesystem::documents::canonical_experiment_role(&role_input),
-        "role_file_missing",
-        Some(args.variant.as_str()),
-    )?;
-    if is_replica_role_file(&role_input) {
-        return Err(vec![err(
-            "replica_role_file_not_allowed",
-            "Replica-local Role.md files cannot be used as variant source",
-            Some(args.variant.as_str()),
-        )]);
-    }
-    let meta = map_err(
-        crate::filesystem::documents::experiment_role_metadata(&role_input),
-        "role_file_missing",
-        Some(args.variant.as_str()),
-    )?;
-    if !meta.is_file() {
-        return Err(vec![err(
-            "role_file_missing",
-            format!("Role file is not a regular file: {}", role_input.display()),
-            Some(args.variant.as_str()),
-        )]);
-    }
+    let role_input = variant_role_input(&args)?;
 
     let blockers = find_live_sessions_for_variant(&loaded.ac_root, &variant.agent_name);
     if !blockers.is_empty() {
@@ -760,19 +695,7 @@ pub(super) fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
         variants: validation
             .variant_metas
             .iter()
-            .map(|variant| RunVariantArtifact {
-                name: variant.name.clone(),
-                agent_name: variant.agent_name.clone(),
-                role_sha256: variant.role_sha256.clone(),
-                role_path: variant_matrix_path(
-                    &loaded.ac_root,
-                    &loaded.experiment.source_agent,
-                    &variant.name,
-                )
-                .join("Role.md")
-                .to_string_lossy()
-                .to_string(),
-            })
+            .map(|variant| dry_run_variant_artifact(&loaded, variant))
             .collect(),
         attempt_count: attempts.len(),
         artifacts: artifacts.clone(),
@@ -921,5 +844,121 @@ pub(super) fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
             warnings: validation.warnings,
             errors: Vec::new(),
         })
+    }
+}
+
+fn init_source_paths(
+    ac_root: &Path,
+    requested_agent: &str,
+) -> Result<(String, PathBuf, PathBuf), Vec<CliError>> {
+    let source_ref = map_err(
+        resolve_agent_ref(ac_root, requested_agent),
+        "source_agent_missing",
+        None,
+    )?;
+    let source_agent = agent_ref_bare_name(&source_ref);
+    validate_slug_identity(&source_agent, "Source agent", "source_agent_invalid")?;
+    let source_matrix = source_matrix_path(ac_root, &source_agent);
+    let source_role = source_matrix.join("Role.md");
+    reject_link_or_reparse(&source_matrix, "source_role_link_or_reparse", None)?;
+    reject_link_or_reparse(&source_role, "source_role_link_or_reparse", None)?;
+    if !directories::experiment_path_is_file(&source_role) {
+        return Err(vec![err(
+            "source_role_missing",
+            format!("Source Role.md not found at {}", source_role.display()),
+            None,
+        )]);
+    }
+
+    Ok((source_agent, source_matrix, source_role))
+}
+
+fn create_init_directories(experiment_dir: &Path) -> Result<(), Vec<CliError>> {
+    map_err(
+        directories::ensure_experiment_directory(&experiment_dir.join("variants")),
+        "experiment_metadata_write_failed",
+        None,
+    )?;
+    map_err(
+        directories::ensure_experiment_directory(&experiment_dir.join("runs")),
+        "experiment_metadata_write_failed",
+        None,
+    )?;
+
+    Ok(())
+}
+
+fn variant_role_input(args: &VariantSetArgs) -> Result<PathBuf, Vec<CliError>> {
+    let role_input = PathBuf::from(&args.role_file);
+    reject_link_or_reparse(
+        &role_input,
+        "role_file_link_or_reparse",
+        Some(args.variant.as_str()),
+    )?;
+    let role_input = map_err(
+        crate::filesystem::documents::canonical_experiment_role(&role_input),
+        "role_file_missing",
+        Some(args.variant.as_str()),
+    )?;
+    if is_replica_role_file(&role_input) {
+        return Err(vec![err(
+            "replica_role_file_not_allowed",
+            "Replica-local Role.md files cannot be used as variant source",
+            Some(args.variant.as_str()),
+        )]);
+    }
+    let meta = map_err(
+        crate::filesystem::documents::experiment_role_metadata(&role_input),
+        "role_file_missing",
+        Some(args.variant.as_str()),
+    )?;
+    if !meta.is_file() {
+        return Err(vec![err(
+            "role_file_missing",
+            format!("Role file is not a regular file: {}", role_input.display()),
+            Some(args.variant.as_str()),
+        )]);
+    }
+
+    Ok(role_input)
+}
+
+fn dry_run_variant_artifact(
+    loaded: &LoadedExperiment,
+    variant: &VariantMetadata,
+) -> RunVariantArtifact {
+    RunVariantArtifact {
+        name: variant.name.clone(),
+        agent_name: variant.agent_name.clone(),
+        role_sha256: variant.role_sha256.clone(),
+        role_path: variant_matrix_path(
+            &loaded.ac_root,
+            &loaded.experiment.source_agent,
+            &variant.name,
+        )
+        .join("Role.md")
+        .to_string_lossy()
+        .to_string(),
+    }
+}
+
+fn init_experiment_metadata(
+    args: &InitArgs,
+    source_agent: &str,
+    role_sha: &str,
+    now: String,
+    variants: Vec<String>,
+) -> ExperimentMetadata {
+    ExperimentMetadata {
+        schema_version: 1,
+        name: args.name.clone(),
+        project: args.project.clone(),
+        source_agent: source_agent.to_string(),
+        source_matrix_path: format!("../../_agent_{}", source_agent),
+        source_role_path: format!("../../_agent_{}/Role.md", source_agent),
+        source_role_sha256: role_sha.to_string(),
+        created_at: now.clone(),
+        updated_at: now,
+        variants,
     }
 }
