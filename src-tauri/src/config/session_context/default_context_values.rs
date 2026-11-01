@@ -58,30 +58,7 @@ pub(crate) fn default_context_dynamic_values(
     } else {
         "the workspace root"
     };
-    let forbidden_scope = if is_root_agent {
-        "the entries listed above; your write scope already covers every registered project folder \
-            in `projectPaths` in `project-paths.json`, so the only writes off-limits are the \
-            global `settings.json`, `project-paths.json`, the Agency template cache, and any other \
-            file anywhere under the app config directory outside your own Root Agent home \
-            (CLI-managed, even when the app config directory falls within a registered project \
-            folder), plus anything outside the registered set: files of projects not listed in \
-            `projectPaths` in `project-paths.json`, user home files unrelated to AgentsCommander, \
-            and arbitrary paths on disk"
-            .to_string()
-    } else if matrix_root.is_some() {
-        format!(
-            "the entries listed above — including other agents' replica directories, any other \
-                files inside the Agent Matrix, {ws}, parent project dirs, user home files, or \
-                arbitrary paths on disk",
-            ws = ac_root_phrase,
-        )
-    } else {
-        format!(
-            "the entries listed above — including other agents' replica directories, {ws}, parent \
-                project dirs, user home files, or arbitrary paths on disk",
-            ws = ac_root_phrase,
-        )
-    };
+    let forbidden_scope = forbidden_write_scope(is_root_agent, matrix_root, ac_root_phrase);
     // Root and None retain fine-grained messaging grants outside the numbered entries.
     // Workgroup messaging is its normal entry 4, so it has no exception carve-out.
     let messaging_read_phrase = match &messaging_mode {
@@ -148,6 +125,37 @@ pub(crate) fn default_context_dynamic_values(
         send_message_instructions,
         root_scope_section,
         root_authority_section,
+    }
+}
+
+fn forbidden_write_scope(
+    is_root_agent: bool,
+    matrix_root: Option<&str>,
+    ac_root_phrase: &str,
+) -> String {
+    if is_root_agent {
+        "the entries listed above; your write scope already covers every registered project folder \
+            in `projectPaths` in `project-paths.json`, so the only writes off-limits are the \
+            global `settings.json`, `project-paths.json`, the Agency template cache, and any other \
+            file anywhere under the app config directory outside your own Root Agent home \
+            (CLI-managed, even when the app config directory falls within a registered project \
+            folder), plus anything outside the registered set: files of projects not listed in \
+            `projectPaths` in `project-paths.json`, user home files unrelated to AgentsCommander, \
+            and arbitrary paths on disk"
+            .to_string()
+    } else if matrix_root.is_some() {
+        format!(
+            "the entries listed above — including other agents' replica directories, any other \
+                files inside the Agent Matrix, {ws}, parent project dirs, user home files, or \
+                arbitrary paths on disk",
+            ws = ac_root_phrase,
+        )
+    } else {
+        format!(
+            "the entries listed above — including other agents' replica directories, {ws}, parent \
+                project dirs, user home files, or arbitrary paths on disk",
+            ws = ac_root_phrase,
+        )
     }
 }
 
