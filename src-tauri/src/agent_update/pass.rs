@@ -532,6 +532,50 @@ where
         );
         runtime.started = true;
 
+        let updates = self.prompt_updates(plan).await;
+
+        runtime.updated_targets = updates.clone();
+        for target in updates {
+            if self.gate.cancellation_reserved(&target.command) {
+                self.terminalize_pending_cancel(&target).await;
+                continue;
+            }
+            let app = self.app.clone();
+            let gate = Arc::clone(&self.gate);
+            let task_target = target.clone();
+            runtime.tasks.push(SupervisedTargetTask {
+                target,
+                handle: Some(tokio::spawn(async move {
+                    run_update_target(app, gate, task_target).await
+                })),
+            });
+        }
+
+        for task in &mut runtime.tasks {
+            let joined = task
+                .handle
+                .as_mut()
+                .expect("supervisor target handle")
+                .await;
+            task.handle = None;
+            if joined.is_err() {
+                TargetTerminalizer::new(
+                    self.app.clone(),
+                    Arc::clone(&self.gate),
+                    task.target.clone(),
+                )
+                .publish(failed_update_result(
+                    &task.target,
+                    None,
+                    None,
+                    "Update task failed unexpectedly.",
+                ))
+                .await;
+            }
+        }
+    }
+
+    async fn prompt_updates(&self, plan: AgentUpdatePlan) -> Vec<UpdateTarget> {
         if !plan.prompts.is_empty() {
             log::info!(
                 "[agent-update] prompt phase started: {} command(s) await SI/NO ({}s each, \
@@ -580,45 +624,7 @@ where
             }
         }
 
-        runtime.updated_targets = updates.clone();
-        for target in updates {
-            if self.gate.cancellation_reserved(&target.command) {
-                self.terminalize_pending_cancel(&target).await;
-                continue;
-            }
-            let app = self.app.clone();
-            let gate = Arc::clone(&self.gate);
-            let task_target = target.clone();
-            runtime.tasks.push(SupervisedTargetTask {
-                target,
-                handle: Some(tokio::spawn(async move {
-                    run_update_target(app, gate, task_target).await
-                })),
-            });
-        }
-
-        for task in &mut runtime.tasks {
-            let joined = task
-                .handle
-                .as_mut()
-                .expect("supervisor target handle")
-                .await;
-            task.handle = None;
-            if joined.is_err() {
-                TargetTerminalizer::new(
-                    self.app.clone(),
-                    Arc::clone(&self.gate),
-                    task.target.clone(),
-                )
-                .publish(failed_update_result(
-                    &task.target,
-                    None,
-                    None,
-                    "Update task failed unexpectedly.",
-                ))
-                .await;
-            }
-        }
+        updates
     }
 
     pub(crate) async fn settle_pass_panic(&self, runtime: &mut PassRuntime) {
