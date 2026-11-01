@@ -63,41 +63,7 @@ impl MessageStore {
             });
         }
 
-        let (sender_count, global_count, aggregate_bytes): (i64, i64, i64) = tx.query_row(
-            r#"
-            SELECT
-                COALESCE(SUM(CASE WHEN sender_fqn = ?1 THEN 1 ELSE 0 END), 0),
-                COUNT(*),
-                COALESCE(SUM(payload_bytes), 0)
-            FROM pty_input_operations
-            WHERE status IN ('queued','preparing','retry','actuating')
-            "#,
-            [&req.sender_fqn],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
-        if sender_count >= PTY_INPUT_MAX_NONTERMINAL_PER_SENDER
-            || global_count >= PTY_INPUT_MAX_NONTERMINAL_GLOBAL
-            || aggregate_bytes.saturating_add(payload_bytes) > PTY_INPUT_MAX_NONTERMINAL_BYTES
-        {
-            return Err(MessageStoreError::CapacityExceeded);
-        }
-
-        let collision: bool = tx.query_row(
-            r#"
-            SELECT EXISTS(
-                SELECT 1 FROM pty_input_operations
-                WHERE injection_id = ?1 OR (sender_fqn = ?2 AND nonce_sha256 = ?3)
-                UNION ALL
-                SELECT 1 FROM pty_input_tombstones
-                WHERE injection_id = ?1 OR (sender_fqn = ?2 AND nonce_sha256 = ?3)
-            )
-            "#,
-            params![req.injection_id, req.sender_fqn, req.nonce_sha256],
-            |row| row.get(0),
-        )?;
-        if collision {
-            return Err(MessageStoreError::IdempotencyConflict);
-        }
+        check_pty_enqueue_admission(&tx, &req, payload_bytes)?;
 
         tx.execute(
             r#"
@@ -459,6 +425,49 @@ impl MessageStore {
         )?;
         Ok(changed == 1)
     }
+}
+
+fn check_pty_enqueue_admission(
+    tx: &rusqlite::Transaction<'_>,
+    req: &PtyInputEnqueueRequest,
+    payload_bytes: i64,
+) -> Result<(), MessageStoreError> {
+    let (sender_count, global_count, aggregate_bytes): (i64, i64, i64) = tx.query_row(
+        r#"
+            SELECT
+                COALESCE(SUM(CASE WHEN sender_fqn = ?1 THEN 1 ELSE 0 END), 0),
+                COUNT(*),
+                COALESCE(SUM(payload_bytes), 0)
+            FROM pty_input_operations
+            WHERE status IN ('queued','preparing','retry','actuating')
+        "#,
+        [&req.sender_fqn],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if sender_count >= PTY_INPUT_MAX_NONTERMINAL_PER_SENDER
+        || global_count >= PTY_INPUT_MAX_NONTERMINAL_GLOBAL
+        || aggregate_bytes.saturating_add(payload_bytes) > PTY_INPUT_MAX_NONTERMINAL_BYTES
+    {
+        return Err(MessageStoreError::CapacityExceeded);
+    }
+
+    let collision: bool = tx.query_row(
+        r#"
+            SELECT EXISTS(
+                SELECT 1 FROM pty_input_operations
+                WHERE injection_id = ?1 OR (sender_fqn = ?2 AND nonce_sha256 = ?3)
+                UNION ALL
+                SELECT 1 FROM pty_input_tombstones
+                WHERE injection_id = ?1 OR (sender_fqn = ?2 AND nonce_sha256 = ?3)
+            )
+        "#,
+        params![req.injection_id, req.sender_fqn, req.nonce_sha256],
+        |row| row.get(0),
+    )?;
+    if collision {
+        return Err(MessageStoreError::IdempotencyConflict);
+    }
+    Ok(())
 }
 
 fn validate_pty_enqueue_request(
