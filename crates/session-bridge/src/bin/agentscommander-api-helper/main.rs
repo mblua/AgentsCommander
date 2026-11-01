@@ -425,7 +425,7 @@ async fn submit_pty_request(
                     .await
                 {
                     Ok(Some(result)) => return Ok(result),
-                    Ok(None) | Err(_) => continue,
+                    Ok(None) | Err(_) => {}
                 }
             }
             Err(_) => {
@@ -433,7 +433,7 @@ async fn submit_pty_request(
                     .await
                 {
                     Ok(Some(result)) => return Ok(result),
-                    Ok(None) | Err(_) => continue,
+                    Ok(None) | Err(_) => {}
                 }
             }
         }

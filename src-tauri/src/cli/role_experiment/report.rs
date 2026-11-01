@@ -44,7 +44,7 @@ pub(super) fn create_generated_run_dir(
         let dir = run_dir(loaded, &run_id);
         match directories::create_experiment_directory(&dir) {
             Ok(()) => return Ok((run_id, dir)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => {
                 return Err(vec![err_at_path(
                     "run_artifact_write_failed",

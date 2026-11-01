@@ -230,7 +230,7 @@ pub(crate) fn reserve_retired_backup_path(live_path: &Path) -> Result<PathBuf, S
                 drop(file);
                 return Ok(backup_path);
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => {
                 return Err(format!(
                     "Failed to reserve the retirement backup path {}: {}",
