@@ -522,44 +522,56 @@ fn append_skill_metadata(index: &mut SkillIndex, candidates: Vec<(String, PathBu
         }
         seen_skill_names.insert(skill_name.clone(), folder_name.clone());
 
-        let mut metadata_warnings = Vec::new();
-        let description = match yaml_field_string(mapping, "description") {
-            Ok(Some(description)) => Some(sanitize_skill_metadata_for_context(&description)),
-            Ok(None) => {
-                metadata_warnings.push(
-                    "description metadata is missing; inspect SKILL.md before use.".to_string(),
-                );
-                None
-            }
-            Err(e) => {
-                metadata_warnings.push(format!("{}; inspect SKILL.md before use.", e));
-                None
-            }
-        };
-        let when_to_use = match yaml_field_string(mapping, "when_to_use") {
-            Ok(Some(when_to_use)) => Some(sanitize_skill_metadata_for_context(&when_to_use)),
-            Ok(None) => None,
-            Err(e) => {
-                metadata_warnings.push(format!("{}; omitted when_to_use metadata.", e));
-                None
-            }
-        };
+        index.skills.push(build_skill_metadata(
+            mapping,
+            display_folder,
+            &skill_name,
+            &entrypoint,
+        ));
+    }
+}
 
-        let entrypoint_display =
-            crate::filesystem::context_skills::canonical_skill_source(&entrypoint)
-                .map(|p| display_path(&p))
-                .unwrap_or_else(|_| display_path(&entrypoint));
+fn build_skill_metadata(
+    mapping: &serde_yaml::Mapping,
+    display_folder: String,
+    skill_name: &str,
+    entrypoint: &Path,
+) -> SkillMetadata {
+    let mut metadata_warnings = Vec::new();
+    let description = match yaml_field_string(mapping, "description") {
+        Ok(Some(description)) => Some(sanitize_skill_metadata_for_context(&description)),
+        Ok(None) => {
+            metadata_warnings
+                .push("description metadata is missing; inspect SKILL.md before use.".to_string());
+            None
+        }
+        Err(e) => {
+            metadata_warnings.push(format!("{}; inspect SKILL.md before use.", e));
+            None
+        }
+    };
+    let when_to_use = match yaml_field_string(mapping, "when_to_use") {
+        Ok(Some(when_to_use)) => Some(sanitize_skill_metadata_for_context(&when_to_use)),
+        Ok(None) => None,
+        Err(e) => {
+            metadata_warnings.push(format!("{}; omitted when_to_use metadata.", e));
+            None
+        }
+    };
 
-        index.skills.push(SkillMetadata {
-            folder_name: display_folder,
-            name: sanitize_skill_metadata_for_context(&skill_name),
-            entrypoint_path: sanitize_skill_metadata_for_context(&entrypoint_display),
-            description,
-            when_to_use,
-            metadata_warnings: metadata_warnings
-                .into_iter()
-                .map(|warning| sanitize_skill_metadata_for_context(&warning))
-                .collect(),
-        });
+    let entrypoint_display = crate::filesystem::context_skills::canonical_skill_source(entrypoint)
+        .map(|p| display_path(&p))
+        .unwrap_or_else(|_| display_path(entrypoint));
+
+    SkillMetadata {
+        folder_name: display_folder,
+        name: sanitize_skill_metadata_for_context(skill_name),
+        entrypoint_path: sanitize_skill_metadata_for_context(&entrypoint_display),
+        description,
+        when_to_use,
+        metadata_warnings: metadata_warnings
+            .into_iter()
+            .map(|warning| sanitize_skill_metadata_for_context(&warning))
+            .collect(),
     }
 }
