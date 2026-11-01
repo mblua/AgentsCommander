@@ -94,6 +94,27 @@ fn build_git_guard_env(sequence: &GitGuardTempSequence) -> Result<Option<GitGuar
     }))
 }
 
+fn spawn_local_child(
+    slave: &dyn portable_pty::SlavePty,
+    command: portable_pty::CommandBuilder,
+    launch_witness: &crate::pty::backend::LaunchWitness,
+    id: Uuid,
+) -> Result<(Box<dyn portable_pty::Child + Send + Sync>, Option<u32>), AppError> {
+    let child = slave
+        .spawn_command(command)
+        .map_err(|e| AppError::PtyError(e.to_string()))?;
+    // #2413 - a child exists from here on; every later `Err` is fenced.
+    launch_witness.mark();
+    let child_pid = child.process_id();
+    log::info!(
+        "[pty] Spawned session {} with child pid {:?}",
+        id,
+        child_pid
+    );
+
+    Ok((child, child_pid))
+}
+
 pub struct LocalProcessBackend {
     spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>,
     #[cfg(windows)]
@@ -259,19 +280,8 @@ impl LocalProcessBackend {
 
         // #942 - time zero for time-to-first-output.
         let spawn_started = Instant::now();
-        let child = pair
-            .slave
-            .spawn_command(command)
-            .map_err(|e| AppError::PtyError(e.to_string()))?;
-        // #2413 - a child exists from here on; every later `Err` is fenced.
-        launch_witness.mark();
-        let child_pid = child.process_id();
-        log::info!(
-            "[pty] Spawned session {} with child pid {:?}",
-            id,
-            child_pid
-        );
-
+        let (child, child_pid) =
+            spawn_local_child(pair.slave.as_ref(), command, &launch_witness, id)?;
         let instance::SpawnedInstance {
             instance,
             reader,
@@ -283,24 +293,8 @@ impl LocalProcessBackend {
         #[cfg(all(test, windows))]
         let cursor_observer = self.cursor_observers.lock().unwrap().get(&id).cloned();
 
-        self.ptys
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, instance);
         let output_token =
-            match self
-                .fanout
-                .register_session(id, idle_tuning, rows, cols, output_target)
-            {
-                Ok(token) => token,
-                Err(_) => {
-                    let _ = self.kill(id);
-                    return Err(AppError::PtyError(
-                        "terminal output registration failed".to_string(),
-                    ));
-                }
-            };
-
+            self.register_spawn_output(id, instance, idle_tuning, rows, cols, output_target)?;
         let redact = spawn_redaction_values(&extra_env, &configured_env);
 
         // #942 - emits `[pty] spawn-record` (argv, cwd, CLI, profile, CODEX_HOME,
@@ -347,6 +341,36 @@ impl LocalProcessBackend {
         .start(self.clone(), id);
 
         Ok(())
+    }
+
+    fn register_spawn_output(
+        &self,
+        id: Uuid,
+        instance: PtyInstance,
+        idle_tuning: crate::session::profile::IdleTuning,
+        rows: u16,
+        cols: u16,
+        output_target: crate::pty::output::PtyOutputTarget,
+    ) -> Result<crate::pty::output::PtyOutputRegistrationToken, AppError> {
+        self.ptys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, instance);
+        let output_token =
+            match self
+                .fanout
+                .register_session(id, idle_tuning, rows, cols, output_target)
+            {
+                Ok(token) => token,
+                Err(_) => {
+                    let _ = self.kill(id);
+                    return Err(AppError::PtyError(
+                        "terminal output registration failed".to_string(),
+                    ));
+                }
+            };
+
+        Ok(output_token)
     }
 
     fn prepare_spawn_pty(
