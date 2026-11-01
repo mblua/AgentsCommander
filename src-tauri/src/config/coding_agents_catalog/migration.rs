@@ -452,24 +452,7 @@ pub(crate) fn extract_legacy_local_mode(
         }
     }
     if historical {
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct HistoricalLayer<'a> {
-            schema_version: u32,
-            agents: Vec<HistoricalLocalRowWire<'a>>,
-            order: Option<Vec<String>>,
-        }
-        let layer = HistoricalLayer {
-            schema_version: CATALOG_SCHEMA_VERSION,
-            agents: local_rows
-                .iter()
-                .map(HistoricalLocalRowWire::from)
-                .collect(),
-            order: Some(order),
-        };
-        let mut bytes = serde_json::to_vec_pretty(&layer).map_err(|error| error.to_string())?;
-        bytes.push(b'\n');
-        return Ok(bytes);
+        return historical_local_layer_bytes(&local_rows, order);
     }
     if local_rows
         .iter()
@@ -483,6 +466,30 @@ pub(crate) fn extract_legacy_local_mode(
             Some(&value),
         ))
     }
+}
+
+fn historical_local_layer_bytes(
+    local_rows: &[LocalRowWire],
+    order: Vec<String>,
+) -> Result<Vec<u8>, String> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct HistoricalLayer<'a> {
+        schema_version: u32,
+        agents: Vec<HistoricalLocalRowWire<'a>>,
+        order: Option<Vec<String>>,
+    }
+    let layer = HistoricalLayer {
+        schema_version: CATALOG_SCHEMA_VERSION,
+        agents: local_rows
+            .iter()
+            .map(HistoricalLocalRowWire::from)
+            .collect(),
+        order: Some(order),
+    };
+    let mut bytes = serde_json::to_vec_pretty(&layer).map_err(|error| error.to_string())?;
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 /// Execute one migration transaction under the held catalog lock. Order:
@@ -615,35 +622,7 @@ pub(crate) fn recover_interrupted_migration(
                 .to_string(),
         );
     }
-    let managed_base_value = journal.managed_base.clone();
-    let saved_agents = managed_base_value
-        .get("agents")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
-    let managed_definitions: Vec<CodingAgentDefinition> = serde_json::from_value(saved_agents)
-        .map_err(|_| {
-            "the journal saved managed base is not a coding-agent definition array".to_string()
-        })?;
-    let saved_revision = managed_base_value
-        .get("managed")
-        .and_then(|marker| marker.get("revision"))
-        .and_then(|value| value.as_str());
-    let saved_content = managed_base_value
-        .get("managed")
-        .and_then(|marker| marker.get("contentSha256"))
-        .and_then(|value| value.as_str());
-    if saved_revision != Some(journal.managed_revision.as_str())
-        || saved_content != Some(journal.managed_content_sha256.as_str())
-    {
-        return Err(
-            "the journal saved managed base does not match its recorded revision; recovery is \
-                blocked"
-                .to_string(),
-        );
-    }
-    let mut managed_bytes = serde_json::to_vec_pretty(&managed_base_value)
-        .map_err(|e| format!("the journal saved managed base did not serialize ({e})"))?;
-    managed_bytes.push(b'\n');
+    let (managed_definitions, managed_bytes) = journal_managed_base(&journal)?;
 
     if let Some(base_bytes) = read_optional_regular_file(&paths.base, "persisted catalog")? {
         if let Ok(analysis) = analyze_base_bytes(&paths.base, &base_bytes) {
@@ -721,6 +700,42 @@ pub(crate) fn recover_interrupted_migration(
     inject_catalog_failure("after_base")?;
     log::info!("[coding-agents] resumed and completed an interrupted managed-catalog migration");
     Ok(Some(published_at))
+}
+
+fn journal_managed_base(
+    journal: &MigrationJournalWire,
+) -> Result<(Vec<CodingAgentDefinition>, Vec<u8>), String> {
+    let managed_base_value = journal.managed_base.clone();
+    let saved_agents = managed_base_value
+        .get("agents")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let managed_definitions: Vec<CodingAgentDefinition> = serde_json::from_value(saved_agents)
+        .map_err(|_| {
+            "the journal saved managed base is not a coding-agent definition array".to_string()
+        })?;
+    let saved_revision = managed_base_value
+        .get("managed")
+        .and_then(|marker| marker.get("revision"))
+        .and_then(|value| value.as_str());
+    let saved_content = managed_base_value
+        .get("managed")
+        .and_then(|marker| marker.get("contentSha256"))
+        .and_then(|value| value.as_str());
+    if saved_revision != Some(journal.managed_revision.as_str())
+        || saved_content != Some(journal.managed_content_sha256.as_str())
+    {
+        return Err(
+            "the journal saved managed base does not match its recorded revision; recovery is \
+                blocked"
+                .to_string(),
+        );
+    }
+    let mut managed_bytes = serde_json::to_vec_pretty(&managed_base_value)
+        .map_err(|e| format!("the journal saved managed base did not serialize ({e})"))?;
+    managed_bytes.push(b'\n');
+
+    Ok((managed_definitions, managed_bytes))
 }
 
 /// Finish a journal recovery's base publication: a project migration replaces
