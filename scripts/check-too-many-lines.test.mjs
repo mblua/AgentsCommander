@@ -454,6 +454,9 @@ test('adoption proof transport and candidate pins', () => fixture(f => {
   for (const patch of [{ 'denominator-clippy-exit': '1' }, { commit: sha },
     { 'adoption-source': sha }, { 'rustc-version': '1.99.0' }])
     assert.throws(() => capture({ ...o, ...patch }));
+  for (const flag of ['clippy-exit', 'production-clippy-exit', 'denominator-clippy-exit'])
+    for (const value of ['', ' ', '-1', '0x0', 'zero'])
+      assert.throws(() => capture({ ...o, [flag]: value }), /decimal exit code/);
   for (const proof of [jsonl([end]), '', '{', jsonl([diagnostic()]),
     raw.replace('(150/100)', '(150/101)')]) {
     f.write('output/proof.jsonl', proof); assert.throws(() => capture(o));
@@ -513,3 +516,47 @@ test('relevant main drift requires re-adoption; unrelated drift preserves S', ()
   f.commit();
   assert.throws(() => baselineDiff('origin/main', f.root));
 }));
+test('AC-3507-001 real donor with format/vec permits relocation', () => fixture(f => {
+  const old = measured('fn heavy() {}');
+  f.write('src/a.rs', 'fn helper() { let _ = format!("heavy"); let _ = vec![1, 2]; }');
+  const moved = measured('fn heavy() {}', 'src/b.rs', 1, 149);
+  f.write('src/b.rs', 'fn heavy() {}');
+  const before = baseline(old.entries), bytes = JSON.stringify(before);
+  const result = compare(moved, before, e => originalAbsent(e, { root: f.root,
+    readSource: file => fs.readFileSync(path.join(f.root, file), 'utf8') }));
+  assert.equal(result.exit, 0); assert.equal(result.results[0].status, 'MOVED');
+  assert.equal(JSON.stringify(before), bytes);
+}));
+test('AC-3507-001 real same-path container move with macro body passes', () => fixture(f => {
+  const old = measured('impl A {\n fn heavy() {}\n}', 'src/a.rs', 2);
+  const source = 'impl B {\n fn heavy() { println!("heavy"); }\n}';
+  const moved = measured(source, 'src/a.rs', 2);
+  f.write('src/a.rs', source);
+  const result = compare(moved, baseline(old.entries), e => originalAbsent(e, { root: f.root,
+    readSource: file => fs.readFileSync(path.join(f.root, file), 'utf8') }));
+  assert.equal(result.exit, 0); assert.equal(result.results[0].status, 'MOVED');
+}));
+test('AC-3507-001 donor macro arguments and identifier pasting remain fail closed', () => {
+  for (const source of ['make!(heavy);', 'make! { r#heavy }',
+    'paste! { fn [<hea vy>]() {} }', 'concat_idents!(hea, vy);',
+    'outer!(inner!(heavy));', 'macro_rules! m { () => { fn heavy() {} } }'])
+    assert.throws(() => originalAbsent(entry(), { root: '/repo', stat: () => ({}),
+      readSource: () => source }), /macro donor identity/);
+  for (const source of ['fn helper(){println!("heavy");}',
+    'fn helper(){println!(r###"m!(heavy)"###);}',
+    '/* nested /* make!(heavy); */ comment */ fn helper() {}',
+    '// make!(heavy);\nfn helper() {}'])
+    assert.equal(originalAbsent(entry(), { root: '/repo', stat: () => ({}),
+      readSource: () => source }), true);
+});
+for (const mode of ['candidate', 'main'])
+  test(`AC-3507-002 ${mode} rename out of protected Rust/config paths fails`, () => fixture(f => {
+    f.git('mv', 'src/a.rs', 'notes.txt');
+    f.git('mv', '.cargo/config.toml', 'cargo-config.bak');
+    const renamed = f.commit();
+    f.git('update-ref', 'refs/remotes/origin/main', mode === 'main' ? renamed : f.source);
+    f.write('too-many-lines.baseline.json', JSON.stringify(
+      { ...baseline(), sourceCommit: f.source })); f.commit();
+    assert.throws(() => baselineDiff('origin/main', f.root),
+      mode === 'main' ? /relevant main drift/ : /protected sources differ/);
+  }));

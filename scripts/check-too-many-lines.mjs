@@ -197,12 +197,76 @@ export function counts(baseline) {
   return result;
 }
 
+// Tokenize only what the macro guard needs; strings/comments cannot name a declaration.
+function macroTokens(source) {
+  const tokens = [];
+  for (let i = 0; i < source.length;) {
+    const rest = source.slice(i);
+    if (/^\s/.test(rest)) { i++; continue; }
+    if (rest.startsWith('//')) {
+      const end = source.indexOf('\n', i); i = end < 0 ? source.length : end; continue;
+    }
+    if (rest.startsWith('/*')) {
+      let depth = 1; i += 2;
+      while (i < source.length && depth) {
+        if (source.startsWith('/*', i)) { depth++; i += 2; }
+        else if (source.startsWith('*/', i)) { depth--; i += 2; }
+        else i++;
+      }
+      requireInput(depth === 0, 'unterminated donor comment'); continue;
+    }
+    const raw = /^(?:br|cr|r)(#*)"/.exec(rest);
+    if (raw) {
+      const end = source.indexOf(`"${raw[1]}`, i + raw[0].length);
+      requireInput(end >= 0, 'unterminated donor raw string');
+      i = end + 1 + raw[1].length; continue;
+    }
+    const quoted = /^(?:b|c)?"/.exec(rest);
+    if (quoted) {
+      i += quoted[0].length; let closed = false;
+      while (i < source.length) {
+        if (source[i] === '\\') { i += 2; continue; }
+        if (source[i++] === '"') { closed = true; break; }
+      }
+      requireInput(closed, 'unterminated donor string'); continue;
+    }
+    const character = /^(?:b)?'(?:\\(?:u\{[\da-fA-F_]+\}|.)|[^'\\\r\n])'/u.exec(rest);
+    if (character) { i += character[0].length; continue; }
+    const name = /^(?:r#)?[\p{ID_Start}_][\p{ID_Continue}]*/u.exec(rest);
+    if (name) { tokens.push(name[0]); i += name[0].length; }
+    else tokens.push(source[i++]);
+  }
+  return tokens;
+}
+function macroMayCarry(source, name) {
+  const tokens = macroTokens(source), matching = { '(': ')', '[': ']', '{': '}' };
+  for (let i = 1; i < tokens.length; i++) {
+    if (tokens[i] !== '!' || !NAME.test(tokens[i - 1])) continue;
+    const macro = tokens[i - 1];
+    let start = i + 1;
+    if (macro === 'macro_rules' && NAME.test(tokens[start] ?? '')) start++;
+    if (!matching[tokens[start]]) continue;
+    const stack = [matching[tokens[start]]];
+    for (let j = start + 1; j < tokens.length; j++) {
+      const token = tokens[j];
+      if (token.replace(/^r#/, '') === name.replace(/^r#/, '') ||
+        /paste|concat_idents/.test(macro) || token === '[' && tokens[j + 1] === '<') return true;
+      if (matching[token]) stack.push(matching[token]);
+      else if ([')', ']', '}'].includes(token)) {
+        requireInput(stack.pop() === token, 'unbalanced donor macro');
+        if (!stack.length) break;
+      }
+      requireInput(j + 1 < tokens.length || !stack.length, 'unterminated donor macro');
+    }
+  }
+  return false;
+}
 // Only ENOENT proves deletion. Inactive cfg declarations also reserve identity.
 export function originalAbsent(entry, { readSource, stat = fs.statSync, root = ROOT }) {
   const file = entry.id.slice(5).split('::')[0];
   try { stat(path.join(root, file)); }
   catch (e) { if (e.code === 'ENOENT') return true; throw e; }
-  requireInput(!/\bmacro_rules\s*!|\b[\w:]+!\s*[{([]/.test(readSource(file)),
+  requireInput(!macroMayCarry(readSource(file), entry.name),
     `macro donor identity unsupported in ${file}`);
   const frames = lexFile(file, readSource);
   for (const frame of frames.filter(f => f.kind === 'fn')) {
@@ -272,6 +336,7 @@ function allowedCandidate(file) {
 }
 export function baselineDiff(baseRef, root = ROOT) {
   const s = createSnapshot({ baseRef, cwd: root });
+  requireInput(s.headTree.has(BASELINE), `${BASELINE} missing from HEAD; finish native adoption`);
   const head = validateBaseline(JSON.parse(s.readBlob(s.headTree.get(BASELINE))));
   if (s.baseTree.has(BASELINE)) ratchet(head, JSON.parse(s.readBlob(s.baseTree.get(BASELINE))));
   else {
@@ -281,10 +346,12 @@ export function baselineDiff(baseRef, root = ROOT) {
     requireInput(remote === s.refOid && !git(root, ['ls-tree', remote, '--', BASELINE]),
       'initial adoption requires absent baseline on resolved main');
     git(root, ['merge-base', '--is-ancestor', head.sourceCommit, remote]);
-    const drift = git(root, ['diff', '--name-only', head.sourceCommit, remote, '--'])
+    const drift = git(root, ['diff', '--no-renames', '--name-only',
+      head.sourceCommit, remote, '--'])
       .split('\n').filter(Boolean);
     requireInput(!drift.some(protectedPath), 'relevant main drift: re-adopt at current main');
-    const candidate = git(root, ['diff', '--name-only', head.sourceCommit, s.headOid, '--'])
+    const candidate = git(root, ['diff', '--no-renames', '--name-only',
+      head.sourceCommit, s.headOid, '--'])
       .split('\n').filter(Boolean);
     requireInput(!candidate.some(f => protectedPath(f) && !allowedCandidate(f)),
       'candidate protected sources differ from adoption source');
@@ -315,6 +382,11 @@ function validateConfig(root, adoption) {
 }
 export function capture(options, root = options['workspace-root']) {
   checkEnvironment();
+  for (const flag of ['clippy-exit', 'production-clippy-exit', 'denominator-clippy-exit']) {
+    if (options[flag] === undefined) continue;
+    requireInput(/^\d+$/.test(options[flag]) && Number.isSafeInteger(+options[flag]),
+      `${flag} must be a nonnegative decimal exit code`);
+  }
   requireInput(root && SHA.test(options.commit) && PLATFORMS.includes(options.platform) &&
     options['rustc-version'] === '1.98.1', 'capture needs explicit root/SHA/platform/pinned rustc');
   requireInput(git(root, ['rev-parse', 'HEAD']) === options.commit, 'measured HEAD mismatch');
