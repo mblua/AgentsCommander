@@ -117,6 +117,49 @@ fn read_session_request(path: &Path) -> Option<crate::cli::create_agent::Session
     Some(request)
 }
 
+fn complete_session_request(
+    request: &crate::cli::create_agent::SessionRequest,
+    path: &Path,
+    create_result: Result<crate::session::session::SessionInfo, String>,
+) {
+    match &create_result {
+        Ok(info) => {
+            log::info!(
+                "[session-requests] Created session '{}' (id={})",
+                request.session_name,
+                info.id
+            );
+        }
+        Err(e) => {
+            log::error!(
+                "[session-requests] Failed to create session '{}': {}",
+                request.session_name,
+                e
+            );
+        }
+    }
+
+    // #1163: answer the request with the terminal outcome, then delete.
+    let result = match create_result {
+        Ok(info) => crate::cli::create_agent::SessionRequestResult {
+            id: request.id.clone(),
+            status: crate::cli::create_agent::SessionRequestResultStatus::Created,
+            session_id: Some(info.id),
+            error: None,
+        },
+        Err(e) => crate::cli::create_agent::SessionRequestResult {
+            id: request.id.clone(),
+            status: crate::cli::create_agent::SessionRequestResultStatus::Rejected,
+            session_id: None,
+            error: Some(e.to_string()),
+        },
+    };
+    write_session_result(result);
+
+    // Delete processed request file regardless of success/failure
+    let _ = mailbox_disk::remove_mailbox_artifact(path);
+}
+
 impl MailboxPoller {
     /// Move an outbox message to outbox/delivered/ with token stripped.
     pub(crate) async fn move_to_delivered<R: tauri::Runtime>(
@@ -370,42 +413,7 @@ impl MailboxPoller {
                 crate::commands::session::CreateSelectionIntent::Background,
             )
             .await;
-            match &create_result {
-                Ok(info) => {
-                    log::info!(
-                        "[session-requests] Created session '{}' (id={})",
-                        request.session_name,
-                        info.id
-                    );
-                }
-                Err(e) => {
-                    log::error!(
-                        "[session-requests] Failed to create session '{}': {}",
-                        request.session_name,
-                        e
-                    );
-                }
-            }
-
-            // #1163: answer the request with the terminal outcome, then delete.
-            let result = match create_result {
-                Ok(info) => crate::cli::create_agent::SessionRequestResult {
-                    id: request.id.clone(),
-                    status: crate::cli::create_agent::SessionRequestResultStatus::Created,
-                    session_id: Some(info.id),
-                    error: None,
-                },
-                Err(e) => crate::cli::create_agent::SessionRequestResult {
-                    id: request.id.clone(),
-                    status: crate::cli::create_agent::SessionRequestResultStatus::Rejected,
-                    session_id: None,
-                    error: Some(e.to_string()),
-                },
-            };
-            write_session_result(result);
-
-            // Delete processed request file regardless of success/failure
-            let _ = mailbox_disk::remove_mailbox_artifact(&path);
+            complete_session_request(&request, &path, create_result);
         }
     }
 
