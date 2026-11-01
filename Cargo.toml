@@ -10,3 +10,6 @@ default-members = [
     "crates/terminal-snapshot-renderer",
 ]
 resolver = "2"
+
+[workspace.lints.clippy]
+fn_params_excessive_bools = "warn"
