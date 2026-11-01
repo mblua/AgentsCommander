@@ -169,6 +169,18 @@ where
     .await
     .map_err(|e| format!("Team delete blocking preparation failed: {e}"))??;
 
+    finish_team_deletion_clocks(app, project_path, team_name, &report);
+    emit_coordinator_refresh(app, session_mgr).await;
+    Ok(())
+}
+
+/// Log the committed team deletion and remove its workgroup clocks.
+fn finish_team_deletion_clocks(
+    app: &AppHandle,
+    project_path: &str,
+    team_name: &str,
+    report: &TeamDeleteReport,
+) {
     log::info!(
         "[entity_creation] Deleted team: {} (workgroups removed={}, failed={})",
         team_name,
@@ -177,7 +189,7 @@ where
     );
 
     // Post-commit (guards released): drop coordinator-clock keys for removed
-    // workgroups and persist once, then refresh.
+    // workgroups and persist once; the caller refreshes afterward.
     let mut team_clock_removed = 0usize;
     if let Some(project_name) = Path::new(project_path).file_name().and_then(|n| n.to_str()) {
         if let Some(clocks) =
@@ -201,6 +213,4 @@ where
             }
         }
     }
-    emit_coordinator_refresh(app, session_mgr).await;
-    Ok(())
 }
