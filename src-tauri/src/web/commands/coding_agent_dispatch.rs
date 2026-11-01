@@ -106,48 +106,55 @@ pub(super) async fn dispatch_coding_agent_command(
 
         "apply_selection_lock_removal" => apply_selection_lock_removal_command(state, args).await,
 
-        "get_replica_selection_default" => {
-            let request: crate::commands::config::GetReplicaSelectionDefaultRequest =
-                require_json(args, "request")?;
-            let state = state.clone();
-            crate::session::selection::run_owned_selection_read_timed(
-                "get_replica_selection_default",
-                move || async move {
-                    let result = crate::commands::config::get_replica_selection_default_inner(
-                        &state.settings,
-                        request,
-                    )
-                    .await?;
-                    serde_json::to_value(result).map_err(|e| e.to_string())
-                },
-            )
-            .await
-        }
+        "get_replica_selection_default" => get_replica_selection_default_command(state, args).await,
 
-        "set_replica_selection_default" => {
-            let request: crate::commands::config::SetReplicaSelectionDefaultRequest =
-                require_json(args, "request")?;
-            let state = state.clone();
-            crate::session::selection::run_owned_selection_operation(move || async move {
-                let (result, payload) =
-                    crate::commands::config::set_replica_selection_default_inner(
-                        &state.settings,
-                        request,
-                    )
-                    .await?;
-                broadcast_all(
-                    state.desktop_events.as_ref(),
-                    &state.broadcaster,
-                    "coding_agent_profile_selection_updated",
-                    &payload,
-                );
-                serde_json::to_value(result).map_err(|e| e.to_string())
-            })
-            .await
-        }
+        "set_replica_selection_default" => set_replica_selection_default_command(state, args).await,
 
         _ => Err(format!("Unknown command: {}", cmd)),
     }
+}
+
+async fn get_replica_selection_default_command(
+    state: &WsState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request: crate::commands::config::GetReplicaSelectionDefaultRequest =
+        require_json(args, "request")?;
+    let state = state.clone();
+    crate::session::selection::run_owned_selection_read_timed(
+        "get_replica_selection_default",
+        move || async move {
+            let result = crate::commands::config::get_replica_selection_default_inner(
+                &state.settings,
+                request,
+            )
+            .await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        },
+    )
+    .await
+}
+
+async fn set_replica_selection_default_command(
+    state: &WsState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request: crate::commands::config::SetReplicaSelectionDefaultRequest =
+        require_json(args, "request")?;
+    let state = state.clone();
+    crate::session::selection::run_owned_selection_operation(move || async move {
+        let (result, payload) =
+            crate::commands::config::set_replica_selection_default_inner(&state.settings, request)
+                .await?;
+        broadcast_all(
+            state.desktop_events.as_ref(),
+            &state.broadcaster,
+            "coding_agent_profile_selection_updated",
+            &payload,
+        );
+        serde_json::to_value(result).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// #2306 P2 - browser route body for `move_coding_agent`, factored so a test
