@@ -25,32 +25,7 @@ pub(super) fn run_cli_request(input: &CliRequest) -> Result<UiAutomationResponse
     let session_path = automation_dir.join(SESSION_FILE);
     let session = load_session_for_cli(&session_path, &input.window)?;
 
-    directories::ensure_ui_automation_directory(&automation_dir.join(REQUESTS_DIR)).map_err(
-        |e| {
-            preflight_error(
-                "automation_filesystem_error",
-                "Failed to create automation request directory.",
-                Some(json!({
-                    "operation": "create_requests_dir",
-                    "path": automation_dir.join(REQUESTS_DIR).to_string_lossy(),
-                    "message": e.to_string(),
-                })),
-            )
-        },
-    )?;
-    directories::ensure_ui_automation_directory(&automation_dir.join(RESPONSES_DIR)).map_err(
-        |e| {
-            preflight_error(
-                "automation_filesystem_error",
-                "Failed to create automation response directory.",
-                Some(json!({
-                    "operation": "create_responses_dir",
-                    "path": automation_dir.join(RESPONSES_DIR).to_string_lossy(),
-                    "message": e.to_string(),
-                })),
-            )
-        },
-    )?;
+    ensure_cli_automation_directories(&automation_dir)?;
 
     let request_id = Uuid::new_v4().to_string();
     let request = UiAutomationRequest {
@@ -139,6 +114,36 @@ pub(super) fn run_cli_request(input: &CliRequest) -> Result<UiAutomationResponse
 
         std::thread::sleep(Duration::from_millis(POLL_MS));
     }
+}
+
+fn ensure_cli_automation_directories(automation_dir: &Path) -> Result<(), Value> {
+    directories::ensure_ui_automation_directory(&automation_dir.join(REQUESTS_DIR)).map_err(
+        |e| {
+            preflight_error(
+                "automation_filesystem_error",
+                "Failed to create automation request directory.",
+                Some(json!({
+                    "operation": "create_requests_dir",
+                    "path": automation_dir.join(REQUESTS_DIR).to_string_lossy(),
+                    "message": e.to_string(),
+                })),
+            )
+        },
+    )?;
+    directories::ensure_ui_automation_directory(&automation_dir.join(RESPONSES_DIR)).map_err(
+        |e| {
+            preflight_error(
+                "automation_filesystem_error",
+                "Failed to create automation response directory.",
+                Some(json!({
+                    "operation": "create_responses_dir",
+                    "path": automation_dir.join(RESPONSES_DIR).to_string_lossy(),
+                    "message": e.to_string(),
+                })),
+            )
+        },
+    )?;
+    Ok(())
 }
 
 pub fn resolve_enabled_from_cli_or_env(ui_automation: bool) -> Result<bool, String> {
