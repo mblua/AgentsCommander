@@ -26,6 +26,61 @@ use tauri::Manager;
 use uuid::Uuid;
 
 impl MailboxPoller {
+    fn pty_input_target_is_ready<S: PtyReadinessState + ?Sized>(
+        app: &S,
+        verified_target: &crate::config::teams::VerifiedPtyInputIdentity,
+        session_id: Uuid,
+        session: &crate::session::session::Session,
+    ) -> Result<bool, crate::phone::types::PtyInputReasonCode> {
+        use crate::phone::types::PtyInputReasonCode as C;
+        let route_valid = {
+            let manager = app.pty_routes();
+            let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
+            manager.has_session(session_id)
+                && manager.backend_kind(session_id) == Some(session.backend_kind)
+                && manager
+                    .route_identities(session_id)
+                    .is_some_and(|(cwd, replica, _)| {
+                        cwd.as_ref().is_some_and(|cwd| {
+                            crate::path_identity::is_verified_descendant(
+                                cwd,
+                                &verified_target.replica_identity,
+                            )
+                        }) && replica.as_ref().is_some_and(|replica| {
+                            crate::path_identity::same_object(
+                                replica,
+                                &verified_target.replica_identity,
+                            )
+                        })
+                    })
+        };
+        if !route_valid {
+            return Err(C::SessionRace);
+        }
+        let readiness = app
+            .pty_readiness()
+            .purge_readiness(&[session_id])
+            .into_iter()
+            .next()
+            .ok_or(C::UntrackedReadiness)?;
+        let activity_required = readiness
+            .idle_threshold
+            .checked_add(std::time::Duration::from_secs(2))
+            .ok_or(C::UntrackedReadiness)?;
+        let activity_age = readiness.activity_age.ok_or(C::UntrackedReadiness)?;
+        let resize_ready = match readiness.last_resize_age {
+            None => true,
+            Some(age) => readiness
+                .resize_grace
+                .checked_add(std::time::Duration::from_secs(2))
+                .is_some_and(|required| age >= required),
+        };
+        Ok(session.waiting_for_input
+            && readiness.watcher_idle
+            && activity_age >= activity_required
+            && resize_ready)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn wait_for_pty_input_ready<S: PtyReadinessState + ?Sized>(
         &self,
@@ -114,53 +169,7 @@ impl MailboxPoller {
             {
                 return Err(C::SessionRace);
             }
-            let route_valid = {
-                let manager = app.pty_routes();
-                let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
-                manager.has_session(session_id)
-                    && manager.backend_kind(session_id) == Some(session.backend_kind)
-                    && manager
-                        .route_identities(session_id)
-                        .is_some_and(|(cwd, replica, _)| {
-                            cwd.as_ref().is_some_and(|cwd| {
-                                crate::path_identity::is_verified_descendant(
-                                    cwd,
-                                    &verified_target.replica_identity,
-                                )
-                            }) && replica.as_ref().is_some_and(|replica| {
-                                crate::path_identity::same_object(
-                                    replica,
-                                    &verified_target.replica_identity,
-                                )
-                            })
-                        })
-            };
-            if !route_valid {
-                return Err(C::SessionRace);
-            }
-            let readiness = app
-                .pty_readiness()
-                .purge_readiness(&[session_id])
-                .into_iter()
-                .next()
-                .ok_or(C::UntrackedReadiness)?;
-            let activity_required = readiness
-                .idle_threshold
-                .checked_add(std::time::Duration::from_secs(2))
-                .ok_or(C::UntrackedReadiness)?;
-            let activity_age = readiness.activity_age.ok_or(C::UntrackedReadiness)?;
-            let resize_ready = match readiness.last_resize_age {
-                None => true,
-                Some(age) => readiness
-                    .resize_grace
-                    .checked_add(std::time::Duration::from_secs(2))
-                    .is_some_and(|required| age >= required),
-            };
-            if session.waiting_for_input
-                && readiness.watcher_idle
-                && activity_age >= activity_required
-                && resize_ready
-            {
+            if Self::pty_input_target_is_ready(app, verified_target, session_id, &session)? {
                 return Ok(());
             }
             if !spawned && !session.waiting_for_input {
