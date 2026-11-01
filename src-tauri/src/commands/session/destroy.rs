@@ -259,6 +259,10 @@ pub(crate) async fn execute_destroy_transaction<R: tauri::Runtime>(
     }
 }
 
+fn planned_destroy_ids(ids: &[Uuid]) -> std::collections::HashSet<Uuid> {
+    ids.iter().copied().collect()
+}
+
 pub(crate) async fn execute_destroy_transaction_common<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     request: DestroyRequest,
@@ -269,11 +273,7 @@ pub(crate) async fn execute_destroy_transaction_common<R: tauri::Runtime>(
             .await
             .map(DestroyCompletion::Response);
     }
-    let planned = request
-        .ids
-        .iter()
-        .copied()
-        .collect::<std::collections::HashSet<_>>();
+    let planned = planned_destroy_ids(&request.ids);
     let before = transaction.aggregate_snapshot().await;
     let selected_id = before.selection.id();
     let mut outcome = DestroyOutcome::default();
