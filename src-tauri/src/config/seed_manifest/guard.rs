@@ -473,6 +473,10 @@ impl ProjectSeedManifestGuard {
             state,
             canonical: Some(canonical),
         };
+        self.write_upgrade_canonical(bytes, &canonical_path);
+    }
+
+    fn write_upgrade_canonical(&mut self, bytes: Vec<u8>, canonical_path: &Path) {
         if let Err(error) = self.write_canonical(bytes) {
             log::warn!(
                 "[seed_manifest] v1->v2 upgrade write failed path={} error={}; manifest stays \
@@ -480,26 +484,30 @@ impl ProjectSeedManifestGuard {
                 canonical_path.display(),
                 error
             );
-            let canonical = match std::mem::replace(
-                &mut self.snapshot,
-                CanonicalSnapshot::ReadOnly {
-                    reason: ManifestDegradedReason::InvalidCanonical,
-                    canonical: None,
-                },
-            ) {
-                CanonicalSnapshot::Writable { canonical, .. } => canonical,
-                other => {
-                    // Unreachable: write_canonical leaves the snapshot untouched
-                    // on error, so it is still the Writable we just installed.
-                    self.snapshot = other;
-                    None
-                }
-            };
-            self.snapshot = CanonicalSnapshot::ReadOnly {
-                reason: ManifestDegradedReason::InvalidCanonical,
-                canonical,
-            };
+            self.restore_failed_upgrade_snapshot();
         }
+    }
+
+    fn restore_failed_upgrade_snapshot(&mut self) {
+        let canonical = match std::mem::replace(
+            &mut self.snapshot,
+            CanonicalSnapshot::ReadOnly {
+                reason: ManifestDegradedReason::InvalidCanonical,
+                canonical: None,
+            },
+        ) {
+            CanonicalSnapshot::Writable { canonical, .. } => canonical,
+            other => {
+                // Unreachable: write_canonical leaves the snapshot untouched
+                // on error, so it is still the Writable we just installed.
+                self.snapshot = other;
+                None
+            }
+        };
+        self.snapshot = CanonicalSnapshot::ReadOnly {
+            reason: ManifestDegradedReason::InvalidCanonical,
+            canonical,
+        };
     }
 
     pub(crate) fn inventory_prior_temps(&self) -> TempInventory {
