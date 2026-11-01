@@ -376,26 +376,7 @@ pub(crate) fn parse_local_layer(
         .and_then(serde_json::Value::as_u64)
         == Some(2)
     {
-        let catalog = parse_catalog_schema2(bytes).map_err(|e| e.to_string())?;
-        let rows = catalog
-            .agents
-            .iter()
-            .map(|agent| {
-                let raw = serde_json::to_value(agent).map_err(|e| e.to_string())?;
-                let fields =
-                    parse_local_fields(raw.as_object().expect("definition"), "schema2 definition")?;
-                Ok(LocalRow {
-                    key: agent.key.clone(),
-                    remove: false,
-                    fields,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        return Ok(LocalLayer {
-            rows,
-            order: None,
-            complete_definitions: true,
-        });
+        return parse_schema2_local_layer(bytes);
     }
     crate::config::settings::physical_profile_sets(&value, false)?;
     reject_unknown_json_fields(
@@ -498,6 +479,29 @@ pub(crate) fn parse_local_layer(
         rows,
         order,
         complete_definitions: false,
+    })
+}
+
+fn parse_schema2_local_layer(bytes: &[u8]) -> Result<LocalLayer, String> {
+    let catalog = parse_catalog_schema2(bytes).map_err(|e| e.to_string())?;
+    let rows = catalog
+        .agents
+        .iter()
+        .map(|agent| {
+            let raw = serde_json::to_value(agent).map_err(|e| e.to_string())?;
+            let fields =
+                parse_local_fields(raw.as_object().expect("definition"), "schema2 definition")?;
+            Ok(LocalRow {
+                key: agent.key.clone(),
+                remove: false,
+                fields,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(LocalLayer {
+        rows,
+        order: None,
+        complete_definitions: true,
     })
 }
 
