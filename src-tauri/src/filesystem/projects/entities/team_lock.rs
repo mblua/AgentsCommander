@@ -150,6 +150,21 @@ pub(crate) fn acquire(
         ));
     }
 
+    wait_for_lock(&file, &lock_path, poll_interval, timeout)?;
+
+    Ok(LockedTeam {
+        _file: file,
+        canonical_ac_root,
+        lock_path,
+    })
+}
+
+fn wait_for_lock(
+    file: &File,
+    lock_path: &Path,
+    poll_interval: Duration,
+    timeout: Duration,
+) -> Result<(), LockFailure> {
     let started = Instant::now();
     loop {
         match file.try_lock() {
@@ -157,7 +172,7 @@ pub(crate) fn acquire(
             Err(TryLockError::WouldBlock) if started.elapsed() >= timeout => {
                 return Err(LockFailure::new(
                     LockStep::Acquire,
-                    &lock_path,
+                    lock_path,
                     LockCause::Timeout {
                         milliseconds: timeout.as_millis(),
                     },
@@ -177,18 +192,13 @@ pub(crate) fn acquire(
             Err(TryLockError::Error(e)) => {
                 return Err(LockFailure::new(
                     LockStep::Acquire,
-                    &lock_path,
+                    lock_path,
                     LockCause::Io(e),
                 ));
             }
         }
     }
-
-    Ok(LockedTeam {
-        _file: file,
-        canonical_ac_root,
-        lock_path,
-    })
+    Ok(())
 }
 
 impl LockedTeam {
