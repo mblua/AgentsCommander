@@ -59,37 +59,7 @@ pub(super) async fn dispatch_settings_command(
             serde_json::to_value(&snapshot).map_err(|e| e.to_string())
         }
 
-        "update_settings" => {
-            let new_settings: crate::config::settings::AppSettings =
-                serde_json::from_value(args.get("newSettings").cloned().unwrap_or(args.clone()))
-                    .map_err(|e| e.to_string())?;
-            let tracker = operations.response_close().cloned();
-            let (saved, changed) =
-                crate::commands::config::persist_protected_settings_update_with_publication(
-                    &state.settings,
-                    new_settings,
-                    |written| {
-                        if let Some(tracker) = &tracker {
-                            tracker.apply_settings(
-                                written.response_close_enabled,
-                                written.response_close_idle_seconds,
-                                std::time::Instant::now(),
-                            );
-                        }
-                    },
-                )
-                .await?;
-            if changed {
-                broadcast_all(
-                    state.desktop_events.as_ref(),
-                    &state.broadcaster,
-                    "room_idle_confirmation_updated",
-                    &json!({}),
-                );
-            }
-            crate::commands::config::purge_sessions_after_settings_update(&saved).await;
-            Ok(json!(null))
-        }
+        "update_settings" => update_settings_command(state, args).await,
 
         "save_settings_draft" => save_settings_draft_command(state, args).await,
 
@@ -137,6 +107,39 @@ pub(super) async fn dispatch_settings_command(
         }
         _ => Err(format!("Unknown command: {}", cmd)),
     }
+}
+
+async fn update_settings_command(state: &WsState, args: &Value) -> Result<Value, String> {
+    let operations = state.operations.as_ref();
+    let new_settings: crate::config::settings::AppSettings =
+        serde_json::from_value(args.get("newSettings").cloned().unwrap_or(args.clone()))
+            .map_err(|e| e.to_string())?;
+    let tracker = operations.response_close().cloned();
+    let (saved, changed) =
+        crate::commands::config::persist_protected_settings_update_with_publication(
+            &state.settings,
+            new_settings,
+            |written| {
+                if let Some(tracker) = &tracker {
+                    tracker.apply_settings(
+                        written.response_close_enabled,
+                        written.response_close_idle_seconds,
+                        std::time::Instant::now(),
+                    );
+                }
+            },
+        )
+        .await?;
+    if changed {
+        broadcast_all(
+            state.desktop_events.as_ref(),
+            &state.broadcaster,
+            "room_idle_confirmation_updated",
+            &json!({}),
+        );
+    }
+    crate::commands::config::purge_sessions_after_settings_update(&saved).await;
+    Ok(json!(null))
 }
 
 async fn save_settings_draft_command(state: &WsState, args: &Value) -> Result<Value, String> {
