@@ -210,41 +210,50 @@ impl MessageStore {
                         now,
                     )?;
                 } else {
-                    let mut conn = self
-                        .conn
-                        .lock()
-                        .map_err(|_| MessageStoreError::StoreCorrupt)?;
-                    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                    let changed = tx.execute(
-                        r#"UPDATE pty_input_operations
-                           SET status='retry',lease_owner=NULL,lease_until=NULL,
-                               next_attempt_at=?1,updated_at=?1,reason_code=?2,reason_detail=?3
-                           WHERE injection_id=?4 AND status='preparing' AND lease_until <= ?1"#,
-                        params![
-                            now_s,
-                            reason_code_string(crate::phone::types::PtyInputReasonCode::LeaseLost),
-                            crate::phone::types::safe_detail(
-                                crate::phone::types::PtyInputReasonCode::LeaseLost
-                            ),
-                            injection_id
-                        ],
-                    )?;
-                    if changed != 1 {
-                        return Err(MessageStoreError::InvalidTransition);
-                    }
-                    insert_pty_audit(
-                        &tx,
-                        &injection_id,
-                        PTY_STATUS_RETRY,
-                        Some(crate::phone::types::PtyInputReasonCode::LeaseLost),
-                        &now_s,
-                    )?;
-                    tx.commit()?;
+                    self.retry_runtime_pty_preparation(&injection_id, &now_s)?;
                 }
                 recovered += 1;
             }
         }
         Ok(recovered)
+    }
+
+    fn retry_runtime_pty_preparation(
+        &self,
+        injection_id: &str,
+        now_s: &str,
+    ) -> Result<(), MessageStoreError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| MessageStoreError::StoreCorrupt)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            r#"UPDATE pty_input_operations
+                           SET status='retry',lease_owner=NULL,lease_until=NULL,
+                               next_attempt_at=?1,updated_at=?1,reason_code=?2,reason_detail=?3
+                           WHERE injection_id=?4 AND status='preparing' AND lease_until <= ?1"#,
+            params![
+                now_s,
+                reason_code_string(crate::phone::types::PtyInputReasonCode::LeaseLost),
+                crate::phone::types::safe_detail(
+                    crate::phone::types::PtyInputReasonCode::LeaseLost
+                ),
+                injection_id
+            ],
+        )?;
+        if changed != 1 {
+            return Err(MessageStoreError::InvalidTransition);
+        }
+        insert_pty_audit(
+            &tx,
+            injection_id,
+            PTY_STATUS_RETRY,
+            Some(crate::phone::types::PtyInputReasonCode::LeaseLost),
+            now_s,
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn try_operation_lock(
