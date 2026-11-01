@@ -54,6 +54,10 @@ pub(crate) fn should_wake_working_agent_on_restore(
     resume_agents_on && !is_coord && persisted_working
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "Preserve restore policy inputs and existing callers; coordinator arms stay disjoint"
+)]
 pub(crate) fn restore_session_should_wake(
     archived_session: bool,
     setting_on: bool,
