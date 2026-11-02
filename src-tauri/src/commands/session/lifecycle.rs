@@ -140,7 +140,7 @@ impl LifecycleEntryAuthority {
         match &self.lease {
             LifecycleTargetLease::Keyed { key: actual, .. } => key == Some(actual.as_str()),
             LifecycleTargetLease::VerifiedNoReplica { .. } => key.is_none(),
-            _ => false,
+            LifecycleTargetLease::MissingSource { .. } => false,
         }
     }
 }
@@ -959,7 +959,7 @@ fn prepared_lifecycle_destination(
     let destination = match lease {
         LifecycleTargetLease::Keyed { destination, .. }
         | LifecycleTargetLease::VerifiedNoReplica { destination } => destination,
-        _ => unreachable!("prepared destination"),
+        LifecycleTargetLease::MissingSource { .. } => unreachable!("prepared destination"),
     };
     let destination_key = match lease {
         LifecycleTargetLease::Keyed { key, .. } => Some(key.as_str()),

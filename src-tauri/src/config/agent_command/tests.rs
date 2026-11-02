@@ -189,7 +189,7 @@ fn resolve_with_warnings(
 fn matched(outcome: super::MatchOutcome) -> super::AgentMatch {
     match outcome {
         super::MatchOutcome::Matched(found) => found,
-        other => panic!("expected a match, got {other:?}"),
+        other @ super::MatchOutcome::NoMatch { .. } => panic!("expected a match, got {other:?}"),
     }
 }
 

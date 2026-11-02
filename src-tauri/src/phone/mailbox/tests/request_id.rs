@@ -539,6 +539,25 @@ fn assert_delivered_work_terminal(
     assert_eq!(error, expected);
 }
 
+fn assert_claimed_invalid_delivery_receipt(
+    outbox: &Path,
+    delivered: &Path,
+    origin: &Path,
+    claimed: bool,
+    valid: bool,
+    failure: u8,
+) {
+    if claimed && !valid && failure == 0 {
+        assert!(!outbox.join("rejected/src.json").exists());
+        assert_eq!(
+            super::super::handoff::wake_claim_has_settled_receipt(origin),
+            Ok(true)
+        );
+        assert!(delivered.join("src.json").is_file());
+        assert!(!delivered.join("src.json.in-flight").exists());
+    }
+}
+
 async fn delivered_case(raw: &str, valid: bool, claimed: bool, failure: u8) {
     let fixture = make_mailbox_fixture();
     let app = app_handle(&fixture.app);
@@ -639,15 +658,9 @@ async fn delivered_case(raw: &str, valid: bool, claimed: bool, failure: u8) {
             serde_json::to_value(archived).unwrap(),
             serde_json::to_value(stripped).unwrap()
         );
-        if claimed && !valid && failure == 0 {
-            assert!(!outbox.join("rejected/src.json").exists());
-            assert_eq!(
-                super::super::handoff::wake_claim_has_settled_receipt(&origin),
-                Ok(true)
-            );
-            assert!(delivered.join("src.json").is_file());
-            assert!(!delivered.join("src.json.in-flight").exists());
-        }
+        assert_claimed_invalid_delivery_receipt(
+            &outbox, &delivered, &origin, claimed, valid, failure,
+        );
     }
     expected.sort();
     assert_eq!(

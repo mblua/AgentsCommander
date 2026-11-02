@@ -99,7 +99,7 @@ async fn issue_1937_transport_parity_removal_commands_match_inner_and_broadcast(
     );
     let event = match rx.try_recv().expect("broadcast event") {
         WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
-        other => panic!("expected text event, got {other:?}"),
+        other @ WsOutMsg::Binary(_) => panic!("expected text event, got {other:?}"),
     };
     assert_eq!(
         event["event"],
@@ -192,7 +192,7 @@ async fn issue_1937_transport_parity_default_commands_match_inner_and_broadcast(
     );
     let event = match rx.try_recv().expect("broadcast event") {
         WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
-        other => panic!("expected text event, got {other:?}"),
+        other @ WsOutMsg::Binary(_) => panic!("expected text event, got {other:?}"),
     };
     assert_eq!(
         event["event"],
@@ -441,7 +441,7 @@ async fn issue_1937_transport_parity_event_refreshes_another_subscriber_after_wa
         .expect("subscriber channel open");
     let event = match event {
         WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
-        other => panic!("expected text event, got {other:?}"),
+        other @ WsOutMsg::Binary(_) => panic!("expected text event, got {other:?}"),
     };
     assert_eq!(
         event["event"],

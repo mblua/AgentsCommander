@@ -100,6 +100,14 @@ pub(super) struct ConfigSeedTestHooks {
 }
 
 impl ConfigSeedTestHooks {
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "self controla fallo inyectado compilación de pruebas; preservar hook y orden \
+                de publicación."
+        )
+    )]
     fn install(&self, staging: &Path, dest: &Path) -> std::io::Result<()> {
         #[cfg(test)]
         if self.fail_install {
@@ -110,6 +118,14 @@ impl ConfigSeedTestHooks {
         seed_disk::rename_seed_tree(staging, dest)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "self controla creación ajena inyectada compilación de pruebas; conservar \
+                seam."
+        )
+    )]
     fn before_restore(&self, dest: &Path) {
         #[cfg(test)]
         if self.destination_appears_before_restore {
@@ -121,6 +137,14 @@ impl ConfigSeedTestHooks {
         let _ = dest;
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "self controla fallo inyectado compilación de pruebas; preservar \
+                recuperación."
+        )
+    )]
     fn restore(&self, trash: &Path, dest: &Path) -> std::io::Result<()> {
         #[cfg(test)]
         if self.fail_restore {
@@ -131,6 +155,14 @@ impl ConfigSeedTestHooks {
         seed_disk::rename_seed_tree(trash, dest)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "self controla metadata fallida en compilación de pruebas; conservar \
+                diagnóstico normal y seam."
+        )
+    )]
     fn staged_diagnostic(&self, staged: &PinnedDirectory, trash: &Path) -> String {
         #[cfg(test)]
         if self.fail_staged_metadata {

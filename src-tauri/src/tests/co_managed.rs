@@ -249,7 +249,7 @@ fn peer_destinations_apply_can_communicate_and_reject_unreachable_peers() {
         super::CoManagedRoute::Wake { to, .. } => {
             assert_eq!(to, "proj-a:room-1-dev-team/dev-rust")
         }
-        _ => panic!("a same-room peer must be reachable"),
+        super::CoManagedRoute::User { .. } => panic!("a same-room peer must be reachable"),
     }
     let unreachable = resolve_co_managed_route(
         crate::capture::jev::ClassifyOutcome::Classified {
@@ -267,7 +267,7 @@ fn peer_destinations_apply_can_communicate_and_reject_unreachable_peers() {
         super::CoManagedRoute::User { reason, .. } => {
             assert!(reason.contains("not reachable"), "{reason}")
         }
-        _ => panic!("an unreachable peer must not be routed"),
+        super::CoManagedRoute::Wake { .. } => panic!("an unreachable peer must not be routed"),
     }
 }
 
@@ -291,7 +291,7 @@ async fn root_destination_uses_the_verified_coordinator_validator_not_can_commun
         super::CoManagedRoute::Wake { to, .. } => {
             assert_eq!(to, crate::config::root_agent::ROOT_AGENT_SENDER)
         }
-        _ => panic!("a verified coordinator may route to Root"),
+        super::CoManagedRoute::User { .. } => panic!("a verified coordinator may route to Root"),
     }
     match resolve_co_managed_route(
         outcome(),
@@ -306,7 +306,7 @@ async fn root_destination_uses_the_verified_coordinator_validator_not_can_commun
                 "{reason}"
             )
         }
-        _ => panic!("a non-verified sender may not route to Root"),
+        super::CoManagedRoute::Wake { .. } => panic!("a non-verified sender may not route to Root"),
     }
     assert!(!crate::config::teams::can_communicate(
         verified,

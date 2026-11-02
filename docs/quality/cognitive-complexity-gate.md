@@ -149,7 +149,7 @@ allows a bounded shrink.
 - **A shrink must be earned.** Removing an entry is accepted only when the pull request touched
   the entry's `.rs` file (it appears in `git diff --name-only <base>...HEAD`) or the file is gone
   from the working tree. Otherwise the step prints
-  `Baseline entry removed without touching its file: <id>` followed by
+  `Baseline entry removed without touching its file: <id>#<anchor> (<platform>)` followed by
   `A shrink is only credible where the pull request changed the code. Include that file, or explain the removal in a toolchain-refresh pull request.`
 - **The single growth exemption is a toolchain refresh.** If the diff contains **no `.rs` path** and the
   head baseline's `toolchain` is **strictly higher** than the base's (numeric comparison of the
@@ -392,3 +392,38 @@ To bump:
    that is what keeps a toolchain bump from smuggling source changes.
 4. When the new toolchain's lints demand `.rs` changes, split them into their own, earlier pull
    request. The pin and the regenerated baseline follow in the second one.
+
+
+## 8. One-time historical cleanup #3527
+
+Delegated decisions P339-1/P340-1 in
+[the issue](https://github.com/mblua/AgentsCommander/issues/3527#issuecomment-6570315755)
+authorize a separate historical shrink clause and growth of the existing checker without
+splitting it. This narrowly replaces the earlier prohibition on new historical exceptions;
+it does not authorize new debt or change threshold 25, Clippy 1.98.1 or the allowlist.
+
+The checker freezes 18 exact identities, their 54 singleton platform/anchor tuples and
+17 source Git blobs. Admission requires no additions, both baseline toolchains literally
+1.98.1, precisely those selected sites in the base, no selected identity in the head and
+complete removals equal to those 54 tuples. No partial or extra shrink qualifies.
+Top-level metadata and the non-sites fields of every common nonselected entry must have
+identical key sets and recursively equal values. Object key order is ignored; array order
+and missing versus present keys matter. Selected-entry presence/sites and all removals
+are checked separately, not hidden by metadata comparison.
+
+The base baseline Git blob must be 775da4366730fe0e1e5a3d3262e1e038a0441ac5.
+Each pinned source must be untouched in the committed diff and readable in the workspace;
+its base, HEAD and attribute-aware workspace Git hashes must equal the frozen source pin.
+The workspace check uses Git hash-object --path, preserving Git's CRLF normalization.
+Missing evidence, IO/Git/hash failure or any mismatch denies historical admission.
+Ordinary touched/gone proof and the earlier #3319 clause remain independent. Schema errors,
+growth rejection and higher-toolchain/no-Rust refresh retain their existing behavior.
+
+An accepted cleanup prints exactly 54 historical-cleanup#3527 records with identity,
+anchor and platform, alongside accepted-removal records. Blocked removals likewise report
+all three fields. Self-tests exercise real dispatch, per-path pins and guard mutations.
+Native Windows, Linux and macOS captures must independently prove zero NEW, STALE baseline
+and STALE allowlist findings; self-tests alone do not establish native absence.
+
+After the base no longer contains these identities, the clause is dormant. Never repin it,
+replay an artificial base or reintroduce removed debt. A returning warning is NEW.

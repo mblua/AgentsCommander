@@ -422,6 +422,14 @@ impl RetainedDirectory {
         }
     }
 
+    #[cfg_attr(
+        windows,
+        expect(
+            clippy::unused_self,
+            reason = "En Unix usa self para witness; en Windows usa handles libres. Preservar \
+                API uniforme por plataforma."
+        )
+    )]
     pub fn remove_regular_file_if_same(
         &self,
         path: &Path,

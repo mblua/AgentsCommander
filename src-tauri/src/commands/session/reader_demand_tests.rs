@@ -340,6 +340,11 @@ impl RestartHarness {
     }
 
     /// The Claude transcript directory the configured memo resolves to.
+    #[expect(
+        clippy::unused_self,
+        reason = "Método de fixture existente: conservar interfaz de construcción de rutas y \
+            sus callers; sin refactor de fixtures."
+    )]
     fn claude_projects_dir(&self, config_dir: &std::path::Path, cwd: &std::path::Path) -> PathBuf {
         config_dir
             .join("projects")
