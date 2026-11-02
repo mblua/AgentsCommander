@@ -195,12 +195,17 @@ A nonempty adoption dispatch runs only the native adoption matrix, with run-spec
 concurrency and without cancelling ordinary enforcement. Normal PR/full-tier runs
 remain enforced. Each native job uses one clean main source S, Rust 1.98.1,
 Node 22/npm 11.6.2, `npm ci --ignore-scripts` then `npm run build` on every platform.
-The earlier Windows lifecycle mirror is no longer in the shipped workflow.
+The adoption job's earlier Windows `npm ci` mirror is no longer in that job;
+the ordinary `rust-regression-windows` job still uses plain `npm ci`.
 
 Before capture, the owner verifies S descends from the coordinator-supplied actual
 #3505 merge SHA with `git merge-base --is-ancestor "$MERGE_3505" "$S"`.
 Checker/workflow SHA, measured source S, PR head and CI merge-checkout SHA are distinct:
 the checker runs against a separate clean checkout of S; PR CI tests its merge tree.
+For the final adoption, checker/workflow SHA was
+`0c0ad8818c15a99e704cc00ddbd1ba58e2fcb6b5`. Final P01 CI tested merge checkout
+`8fff2d26f424495487e0c9bb934c7cad95061b98` for PR head
+`28585703d547127fc0abce3a42540bb438dc4051`.
 The default-100 exception requires verified historical configuration and a real native
 control diagnostic whose denominator is 100, rather than relying on a default claim.
 
@@ -255,9 +260,10 @@ to identify its source, then coordinate the owner's fix and fresh full-tier CI.
 
 For #3507 adoption, room-04 warned room-29 before S capture with an estimated hold;
 room-29 and room-37 held their windows, with holds above two hours requiring renewed
-discussion. After P01 merged, room-04 sent both coordinators merge SHA
-`8a2fdeb670966e8bf774b3a20ac36a73d4c87cd7`. P02 documentation was authorized to land
-separately without extending that hold.
+discussion. After P01 merged, room-04 sent merge SHA
+`8a2fdeb670966e8bf774b3a20ac36a73d4c87cd7` to room-29. As room-29 had instructed,
+room-29 then notified room-37 and the other rooms. P02 documentation was authorized
+to land separately without extending that hold.
 
 From that merge, landing windows require the tested CI checkout tree to equal the
 clean `git merge-tree --write-tree origin/main <head>` tree against current main,
