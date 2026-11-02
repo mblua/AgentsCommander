@@ -67,6 +67,14 @@ pub(crate) struct MatrixCopyHooks<'a> {
 }
 
 impl MatrixCopyHooks<'_> {
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "self selecciona callback compilación de pruebas; conservar el préstamo \
+                mutable y orden del seam."
+        )
+    )]
     pub(crate) fn run(&mut self, stage: MatrixCopyStage, path: &Path) -> Result<(), String> {
         #[cfg(test)]
         if let Some(callback) = &mut self.callback {
@@ -278,6 +286,10 @@ impl OwnedCopyArtifacts {
         }
         let identity = Self::identity_of_file(&input)?;
         let mut digest = sha2::Sha256::new();
+        #[expect(
+            clippy::large_stack_arrays,
+            reason = "Preserve bounded 64 KiB streaming buffer and existing I/O behavior"
+        )]
         let mut chunk = [0u8; 64 * 1024];
         loop {
             let count = input.read(&mut chunk).map_err(|e| e.to_string())?;

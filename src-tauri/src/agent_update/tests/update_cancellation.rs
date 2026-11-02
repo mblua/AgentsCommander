@@ -1,5 +1,9 @@
 use super::*;
 
+#[expect(
+    clippy::match_wild_err_arm,
+    reason = "Preserve cancellation fixture failure; outcome has no formatting contract"
+)]
 async fn exercise_contained_update_cancellation(
     work: TargetWork,
     hold_before_native_proof: bool,

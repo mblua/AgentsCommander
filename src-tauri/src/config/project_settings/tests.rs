@@ -623,7 +623,9 @@ fn issue_3361_settings_ignore_rows_preserve_prefix_and_errors() {
         naming_migration::Refusal::Io(message) => {
             assert!(message.starts_with(&format!("failed to read {}:", path.display())));
         }
-        other => panic!("unexpected refusal: {other:?}"),
+        other @ naming_migration::Refusal::LockUnavailable => {
+            panic!("unexpected refusal: {other:?}")
+        }
     }
     assert!(path.is_dir());
     assert!(!settings_path(temp.path()).exists());

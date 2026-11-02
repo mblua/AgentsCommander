@@ -115,7 +115,7 @@ async fn move_coding_agent_native_and_browser_events_are_byte_equivalent() {
     .expect("parse native event");
     let browser_event = match rx.try_recv().expect("browser event") {
         WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse browser event"),
-        other => panic!("expected text event, got {other:?}"),
+        other @ WsOutMsg::Binary(_) => panic!("expected text event, got {other:?}"),
     };
     assert_eq!(
         browser_event["event"],
@@ -250,7 +250,7 @@ async fn reorder_coding_agent_native_and_browser_events_are_byte_equivalent() {
     .expect("parse native event");
     let browser_event = match rx.try_recv().expect("browser event") {
         WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse browser event"),
-        other => panic!("expected text event, got {other:?}"),
+        other @ WsOutMsg::Binary(_) => panic!("expected text event, got {other:?}"),
     };
     assert_eq!(
         browser_event["event"],
@@ -395,7 +395,7 @@ async fn apply_coding_agent_profile_selection_web_dispatch_broadcasts() {
     // browser clients refresh, mirroring the save_settings_draft pattern.
     let event = match rx.try_recv().expect("broadcast event") {
         WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
-        other => panic!("expected text event, got {other:?}"),
+        other @ WsOutMsg::Binary(_) => panic!("expected text event, got {other:?}"),
     };
     assert_eq!(
         event["event"],

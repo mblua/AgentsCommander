@@ -26,7 +26,7 @@ fn broadcast_all_sends_to_explicit_websocket_broadcaster() {
 
     let event = match receiver.try_recv().expect("broadcast event") {
         WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
-        other => panic!("expected text event, got {other:?}"),
+        other @ WsOutMsg::Binary(_) => panic!("expected text event, got {other:?}"),
     };
     assert_eq!(event["event"], json!("project_archive_changed"));
     assert_eq!(event["payload"], payload);

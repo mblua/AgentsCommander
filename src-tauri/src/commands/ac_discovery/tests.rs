@@ -172,7 +172,7 @@ impl crate::pty::backend::PtyBackend for FlippingLiveBackend {
 fn recv_ws_event(rx: &mut tokio::sync::mpsc::Receiver<WsOutMsg>) -> Value {
     match rx.try_recv().expect("broadcast event") {
         WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
-        other => panic!("expected text event, got {other:?}"),
+        other @ WsOutMsg::Binary(_) => panic!("expected text event, got {other:?}"),
     }
 }
 

@@ -456,6 +456,11 @@ impl SessionManager {
 
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]
+    #[expect(
+        clippy::unused_self,
+        reason = "Método de CarrierManager existente, dormant allow(dead_code): no activar, \
+            remover ni rediseñar binding por un lint."
+    )]
     pub(crate) fn reserve_carrier_create_binding(&self) -> PendingCreateBinding {
         PendingCreateBinding::new(Uuid::new_v4(), Uuid::new_v4())
     }
