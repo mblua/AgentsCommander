@@ -261,9 +261,9 @@ to identify its source, then coordinate the owner's fix and fresh full-tier CI.
 For #3507 adoption, room-04 warned room-29 before S capture with an estimated hold;
 room-29 and room-37 held their windows, with holds above two hours requiring renewed
 discussion. After P01 merged, room-04 sent merge SHA
-`8a2fdeb670966e8bf774b3a20ac36a73d4c87cd7` to room-29. As room-29 had instructed,
-room-29 then notified room-37 and the other rooms. P02 documentation was authorized
-to land separately without extending that hold.
+`8a2fdeb670966e8bf774b3a20ac36a73d4c87cd7` to room-29, which had said it would
+notify room-37 and the other rooms. P02 documentation was authorized to land
+separately without extending that hold.
 
 From that merge, landing windows require the tested CI checkout tree to equal the
 clean `git merge-tree --write-tree origin/main <head>` tree against current main,
