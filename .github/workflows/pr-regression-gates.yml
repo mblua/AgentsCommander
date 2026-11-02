@@ -304,6 +304,18 @@ jobs:
         run: |
           npm run cog:self
           npm run cog:scan
+      - name: Seven-lint gate self-test
+        shell: bash
+        run: npm run seven:self
+
+      - name: Seven-lint baseline ratchet
+        shell: bash
+        env:
+          GATE_BASE_REF: >-
+            ${{ github.event.pull_request.base.ref &&
+            format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        run: npm run seven:baseline -- --base-ref "${GATE_BASE_REF:-origin/main}"
+
       - name: Length gate self-test
         shell: bash
         run: npm run tml:self
@@ -347,6 +359,7 @@ jobs:
     # Skip branch-deletion push events while still requiring pull request validation.
     if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
@@ -455,8 +468,16 @@ jobs:
           set -uo pipefail
           cargo clippy --locked --workspace --all-targets --message-format=json \
             -- -D warnings --force-warn clippy::cognitive_complexity --force-warn clippy::too_many_lines \
-            > "${RUNNER_TEMP}/cog-windows.jsonl"
+            --force-warn clippy::doc_markdown \
+            --force-warn clippy::implicit_clone \
+            --force-warn clippy::map_unwrap_or \
+            --force-warn clippy::match_same_arms \
+            --force-warn clippy::semicolon_if_nothing_returned \
+            --force-warn clippy::unnested_or_patterns \
+            --force-warn clippy::map_err_ignore \
+            > "${RUNNER_TEMP}/cog-windows.jsonl" 2> "${RUNNER_TEMP}/cog-windows.stderr"
           code=$?
+          printf '%s\n' "$code" > "${RUNNER_TEMP}/seven-windows.exit"
           rustc_version="$(rustc -vV | sed -n 's/^release: //p')"
           echo "COG_CLIPPY_EXIT=$code" >> "$GITHUB_ENV"
           echo "COG_RUSTC_VERSION=$rustc_version" >> "$GITHUB_ENV"
@@ -465,6 +486,50 @@ jobs:
             exit 1
           fi
           exit "$code"
+
+      - name: Seven-lint gate
+        shell: bash
+        run: |
+          node scripts/check-clippy-seven.mjs \
+            --capture "${RUNNER_TEMP}/cog-windows.jsonl" \
+            --clippy-exit "$COG_CLIPPY_EXIT" --platform windows \
+            --rustc-version "$COG_RUSTC_VERSION" --commit "$GITHUB_SHA" \
+            --workspace-root "$GITHUB_WORKSPACE" \
+            --emit "${RUNNER_TEMP}/seven-windows.json"
+          node scripts/check-clippy-seven.mjs \
+            --check "${RUNNER_TEMP}/seven-windows.json" \
+            --baseline clippy-seven.baseline.json --workspace-root "$GITHUB_WORKSPACE"
+
+      - name: Seven-lint evidence metadata
+        if: always()
+        shell: bash
+        env:
+          SEVEN_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          SEVEN_PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          printf 'checkout=%s\ntree=%s\npr_head=%s\npr_base=%s\nevent=%s\n' \
+            "$GITHUB_SHA" "$(git rev-parse 'HEAD^{tree}')" "$SEVEN_PR_HEAD" \
+            "$SEVEN_PR_BASE" "$GITHUB_SHA" > "${RUNNER_TEMP}/seven-windows-metadata.txt"
+          printf 'run=%s\nattempt=%s\nplatform=windows\nexit=%s\nrustc=%s\nroot=%s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "${COG_CLIPPY_EXIT:-missing}" \
+            "${COG_RUSTC_VERSION:-missing}" "$GITHUB_WORKSPACE" \
+            >> "${RUNNER_TEMP}/seven-windows-metadata.txt"
+
+      - name: Upload seven-lint evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: seven-lint-windows
+          path: |
+            ${{ runner.temp }}/cog-windows.jsonl
+            ${{ runner.temp }}/cog-windows.stderr
+            ${{ runner.temp }}/seven-windows.exit
+            ${{ runner.temp }}/seven-windows.json
+            ${{ runner.temp }}/seven-windows.json.controls.json
+            ${{ runner.temp }}/seven-windows.json.summary.json
+            ${{ runner.temp }}/seven-windows-metadata.txt
+          retention-days: 14
+          if-no-files-found: error
 
       - name: Complexity check
         continue-on-error: true
@@ -1175,6 +1240,7 @@ jobs:
     name: clippy-linux
     if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
@@ -1230,8 +1296,16 @@ jobs:
           set -uo pipefail
           cargo clippy --locked --workspace --all-targets --message-format=json \
             -- -D warnings --force-warn clippy::cognitive_complexity --force-warn clippy::too_many_lines \
-            > "${RUNNER_TEMP}/cog-linux.jsonl"
+            --force-warn clippy::doc_markdown \
+            --force-warn clippy::implicit_clone \
+            --force-warn clippy::map_unwrap_or \
+            --force-warn clippy::match_same_arms \
+            --force-warn clippy::semicolon_if_nothing_returned \
+            --force-warn clippy::unnested_or_patterns \
+            --force-warn clippy::map_err_ignore \
+            > "${RUNNER_TEMP}/cog-linux.jsonl" 2> "${RUNNER_TEMP}/cog-linux.stderr"
           code=$?
+          printf '%s\n' "$code" > "${RUNNER_TEMP}/seven-linux.exit"
           rustc_version="$(rustc -vV | sed -n 's/^release: //p')"
           echo "COG_CLIPPY_EXIT=$code" >> "$GITHUB_ENV"
           echo "COG_RUSTC_VERSION=$rustc_version" >> "$GITHUB_ENV"
@@ -1240,6 +1314,50 @@ jobs:
             exit 1
           fi
           exit "$code"
+
+      - name: Seven-lint gate
+        shell: bash
+        run: |
+          node scripts/check-clippy-seven.mjs \
+            --capture "${RUNNER_TEMP}/cog-linux.jsonl" \
+            --clippy-exit "$COG_CLIPPY_EXIT" --platform linux \
+            --rustc-version "$COG_RUSTC_VERSION" --commit "$GITHUB_SHA" \
+            --workspace-root "$GITHUB_WORKSPACE" \
+            --emit "${RUNNER_TEMP}/seven-linux.json"
+          node scripts/check-clippy-seven.mjs \
+            --check "${RUNNER_TEMP}/seven-linux.json" \
+            --baseline clippy-seven.baseline.json --workspace-root "$GITHUB_WORKSPACE"
+
+      - name: Seven-lint evidence metadata
+        if: always()
+        shell: bash
+        env:
+          SEVEN_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          SEVEN_PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          printf 'checkout=%s\ntree=%s\npr_head=%s\npr_base=%s\nevent=%s\n' \
+            "$GITHUB_SHA" "$(git rev-parse 'HEAD^{tree}')" "$SEVEN_PR_HEAD" \
+            "$SEVEN_PR_BASE" "$GITHUB_SHA" > "${RUNNER_TEMP}/seven-linux-metadata.txt"
+          printf 'run=%s\nattempt=%s\nplatform=linux\nexit=%s\nrustc=%s\nroot=%s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "${COG_CLIPPY_EXIT:-missing}" \
+            "${COG_RUSTC_VERSION:-missing}" "$GITHUB_WORKSPACE" \
+            >> "${RUNNER_TEMP}/seven-linux-metadata.txt"
+
+      - name: Upload seven-lint evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: seven-lint-linux
+          path: |
+            ${{ runner.temp }}/cog-linux.jsonl
+            ${{ runner.temp }}/cog-linux.stderr
+            ${{ runner.temp }}/seven-linux.exit
+            ${{ runner.temp }}/seven-linux.json
+            ${{ runner.temp }}/seven-linux.json.controls.json
+            ${{ runner.temp }}/seven-linux.json.summary.json
+            ${{ runner.temp }}/seven-linux-metadata.txt
+          retention-days: 14
+          if-no-files-found: error
 
       - name: Complexity check
         continue-on-error: true
