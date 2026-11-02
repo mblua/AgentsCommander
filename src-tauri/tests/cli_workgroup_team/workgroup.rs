@@ -1,12 +1,10 @@
-use agentscommander_lib::config::sessions_persistence::load_sessions_raw_from_dir_for_test;
-
 use super::{
     assert_no_side_effect_dirs, assert_outside_sentinel_survives, assert_refresh_request,
     assert_same_path, config_dir_for_bin, copy_binary_into, create_basic_workgroup,
     create_dirty_repo, create_outside_sentinel, find_refresh_request, git_available,
     has_refresh_reason, project_refresh_request_paths, project_with_agents,
     read_project_refresh_requests, run_fail, run_json, run_json_machine, run_stdout,
-    write_live_session, write_settings, SessionStatus, Tmp,
+    write_live_session, write_settings, PersistedSession, SessionStatus, Tmp,
 };
 #[cfg(target_os = "windows")]
 use super::{create_junction, open_without_delete_share, run_fail_output};
@@ -391,7 +389,10 @@ fn workgroup_remove_refuses_live_persisted_session_even_with_force() {
     let session_cwd = wg_dir.join("__agent_architect");
     write_live_session(&config_dir, &session_cwd);
 
-    let parsed = load_sessions_raw_from_dir_for_test(&config_dir);
+    let contents = std::fs::read_to_string(config_dir.join("sessions.json"))
+        .expect("read live session fixture");
+    let parsed: Vec<PersistedSession> =
+        serde_json::from_str(&contents).expect("decode live session fixture");
     assert_eq!(parsed.len(), 1);
     assert_eq!(parsed[0].status, Some(SessionStatus::Running));
     assert!(parsed[0].id.is_some(), "live session fixture must carry id");
