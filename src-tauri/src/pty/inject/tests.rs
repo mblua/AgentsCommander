@@ -20,6 +20,10 @@ struct RecordingBackend {
     watch_timing: Mutex<Option<(std::time::Duration, std::time::Duration)>>,
     /// #2586 - scripted screen rows. `None` keeps the `SessionOver` answer,
     /// `Some(None)` answers `Unavailable`, `Some(Some(rows))` answers `Rows`.
+    #[expect(
+        clippy::option_option,
+        reason = "None: SessionOver default; Some(None): Unavailable; Some(Some(rows)): Rows"
+    )]
     screen_rows: Mutex<Option<Option<Vec<String>>>>,
 }
 

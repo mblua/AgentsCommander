@@ -430,16 +430,32 @@ pub(crate) struct LocalFieldPatch {
     pub(crate) color: Option<String>,
     pub(crate) command: Option<String>,
     /// `None` = absent; `Some(None)` = explicit `null`.
+    #[expect(
+        clippy::option_option,
+        reason = "Absent inherits/omits; null clears; value replaces; keep patch/wire historic JSON"
+    )]
     pub(crate) instructions_filename: Option<Option<String>>,
     pub(crate) envs: Option<Vec<CodingAgentEnv>>,
     pub(crate) isolated_home: Option<bool>,
     /// `None` = absent; `Some(None)` = explicit `null`; `Some(Some(_))` = object.
+    #[expect(
+        clippy::option_option,
+        reason = "Absent inherits/omits; null clears; value replaces; keep patch/wire historic JSON"
+    )]
     pub(crate) config_seed: Option<Option<ConfigSeedPatch>>,
     pub(crate) removable: Option<bool>,
     pub(crate) update_commands: Option<Vec<String>>,
     pub(crate) auto_update: Option<bool>,
     /// `None` = absent; `Some(None)` = explicit `null`; `Some(Some(_))` = object.
+    #[expect(
+        clippy::option_option,
+        reason = "Absent inherits/omits; null clears; value replaces; keep patch/wire historic JSON"
+    )]
     pub(crate) idle_burst: Option<Option<IdleBurstConfig>>,
     /// `None` = absent; `Some(None)` = explicit `null`; `Some(Some(_))` = object.
+    #[expect(
+        clippy::option_option,
+        reason = "Absent inherits/omits; null clears; value replaces; keep patch/wire historic JSON"
+    )]
     pub(crate) install_commands: Option<Option<InstallCommandsPatch>>,
 }

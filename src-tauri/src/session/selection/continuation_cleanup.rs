@@ -23,6 +23,10 @@ use super::replacement_fixture::{ReplacementFixtureAction, ReplacementFixtureCut
 
 impl OwnedReplacementContinuation {
     /// Some(None) is the explicit newer-B path, never a replacement baseline.
+    #[expect(
+        clippy::option_option,
+        reason = "None denies; Some(None): newer-B; Some(Some(capability)): finalized capability"
+    )]
     pub(super) fn finalized_carry_capability(
         &self,
         permit: &crate::session::manager::CarrierMutationPermit,

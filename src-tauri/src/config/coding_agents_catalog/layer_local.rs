@@ -17,8 +17,20 @@ use super::{
 #[derive(Debug, Clone, Default)]
 pub(crate) struct InstallCommandsPatch {
     pub(crate) default: Option<String>,
+    #[expect(
+        clippy::option_option,
+        reason = "Absent inherits/omits; null clears; value replaces; keep patch/wire historic JSON"
+    )]
     pub(crate) windows: Option<Option<String>>,
+    #[expect(
+        clippy::option_option,
+        reason = "Absent inherits/omits; null clears; value replaces; keep patch/wire historic JSON"
+    )]
     pub(crate) macos: Option<Option<String>>,
+    #[expect(
+        clippy::option_option,
+        reason = "Absent inherits/omits; null clears; value replaces; keep patch/wire historic JSON"
+    )]
     pub(crate) linux: Option<Option<String>>,
 }
 
