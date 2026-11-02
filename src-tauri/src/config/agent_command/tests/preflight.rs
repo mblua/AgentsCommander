@@ -224,6 +224,8 @@ fn configured_chain_changes_identity() {
     );
     assert_ne!(id(Some("a b"), None, None), id(Some("\"a b\""), None, None));
     assert_eq!(id(Some("a"), None, None), id(Some("a"), Some(60), None));
+    assert_ne!(id(Some("a"), None, None), id(None, None, Some("a")));
+    assert_eq!(id(Some("a  b"), None, None), id(Some("a b"), None, None));
 }
 
 #[test]
