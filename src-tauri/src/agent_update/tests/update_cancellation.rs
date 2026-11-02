@@ -1,5 +1,9 @@
 use super::*;
 
+#[expect(
+    clippy::match_wild_err_arm,
+    reason = "Preserve cancellation fixture failure; outcome has no formatting contract"
+)]
 async fn exercise_contained_update_cancellation(
     work: TargetWork,
     hold_before_native_proof: bool,
@@ -49,10 +53,6 @@ async fn exercise_contained_update_cancellation(
     command.kill_on_drop(true);
     #[cfg(unix)]
     command.process_group(0);
-    #[expect(
-        clippy::match_wild_err_arm,
-        reason = "Preserve cancellation fixture failure; outcome has no formatting contract"
-    )]
     let mut owner = match TargetProcessOwner::spawn(&mut command).await {
         Ok(owner) => owner,
         Err(_) => panic!("contained owner spawn"),

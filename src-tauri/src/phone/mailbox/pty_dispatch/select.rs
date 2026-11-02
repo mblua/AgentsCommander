@@ -978,6 +978,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         finish_owned_pty_work(self.app, guards.owned_work, observed).await;
         false
     }
+    #[expect(clippy::unused_self, reason = "Keep the dispatcher method contract.")]
     fn dispatch_boundary_terminal_failed(&self, context: &PtyDispatchContext<'_>) -> bool {
         let terminal = context.store.terminalize_pty_input(
             context.injection_id,
