@@ -145,6 +145,11 @@ impl SnapshotMailboxScanner {
         self.startup_sweep_complete = true;
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "API de scanner con &mut self: conservar préstamo y llamadas del barrido; no \
+            rediseñar ciclo/ownership."
+    )]
     pub(crate) fn startup_sweep_root(
         &mut self,
         state: &crate::pty::terminal_snapshot::TerminalSnapshotState,

@@ -26,6 +26,11 @@ impl Observation {
         *ENTRIES.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
         Observation { _slot: slot }
     }
+    #[expect(
+        clippy::unused_self,
+        reason = "El receptor conserva el guard Observation/slot mientras lee el registro \
+            global; no ofrecer lectura desacoplada del guard."
+    )]
     pub(crate) fn loads(&self) -> Vec<PathBuf> {
         ENTRIES
             .lock()

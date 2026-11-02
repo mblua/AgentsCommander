@@ -20,6 +20,10 @@ const SEAM_FROM: &str = "proj:room-1/tech-lead";
 
 /// Drive one peer-wake injection with `settle` and optional scripted rows
 /// (`Some(None)` = `Unavailable`, `None` = the default `SessionOver`).
+#[expect(
+    clippy::option_option,
+    reason = "None: SessionOver default; Some(None): Unavailable; Some(Some(rows)): Rows"
+)]
 async fn seam_run(
     shell: &str,
     text: &str,

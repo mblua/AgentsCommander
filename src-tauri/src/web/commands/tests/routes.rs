@@ -243,7 +243,7 @@ fn broadcast_all_r_sends_to_managed_websocket_broadcaster() {
 
     let event = match receiver.try_recv().expect("broadcast event") {
         WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
-        other => panic!("expected text event, got {other:?}"),
+        other @ WsOutMsg::Binary(_) => panic!("expected text event, got {other:?}"),
     };
     assert_eq!(event["event"], json!("project_archive_changed"));
     assert_eq!(event["payload"], payload);
@@ -311,7 +311,7 @@ async fn update_project_groups_web_dispatch_broadcasts_saved_config() {
 
     let event = match receiver.try_recv().expect("broadcast event") {
         WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
-        other => panic!("expected text event, got {other:?}"),
+        other @ WsOutMsg::Binary(_) => panic!("expected text event, got {other:?}"),
     };
     assert_eq!(event["event"], json!(PROJECT_GROUPS_UPDATED_EVENT));
     assert_eq!(event["payload"]["projectPath"], json!(path));

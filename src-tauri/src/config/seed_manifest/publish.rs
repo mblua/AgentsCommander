@@ -206,6 +206,10 @@ pub(crate) fn verify_temp_path(
 pub(crate) fn stream_matches(file: &mut (impl Read + Seek), expected: &[u8]) -> io::Result<bool> {
     file.seek(SeekFrom::Start(0))?;
     let mut offset = 0_usize;
+    #[expect(
+        clippy::large_stack_arrays,
+        reason = "Preserve bounded 64 KiB streaming buffer and existing I/O behavior"
+    )]
     let mut buffer = [0_u8; RAW_COMPARE_BUFFER_BYTES];
     loop {
         let read = file.read(&mut buffer)?;

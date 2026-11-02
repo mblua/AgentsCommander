@@ -353,7 +353,7 @@ fn issue_2868_generated_custom_and_override_append_only_once_without_authored_mu
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "Only entries 1-6 allowed. ## Project Skills")]
 fn issue_2868_vague_supplement_does_not_satisfy_exclusive_rule_contract() {
     issue_2868_assert_permission(
         "Only entries 1-6 allowed. ## Project Skills\nYou may read project skills.",

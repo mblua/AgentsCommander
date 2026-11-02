@@ -145,7 +145,9 @@ async fn window_screenshot_fresh_guard_is_released_before_queue_wait() {
     {
         Ok(Ok(lock)) => lock,
         Ok(Err(error)) => panic!("registry lock probe task must not panic: {error}"),
-        Err(_) => panic!("queued screenshot request retained a freshness registry lock"),
+        Err(error) => {
+            panic!("queued screenshot request retained a freshness registry lock: {error}")
+        }
     };
     drop(registry_lock);
     drop(admission_probe);

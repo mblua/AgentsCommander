@@ -497,7 +497,7 @@ impl ProjectSeedManifestGuard {
             },
         ) {
             CanonicalSnapshot::Writable { canonical, .. } => canonical,
-            other => {
+            other @ CanonicalSnapshot::ReadOnly { .. } => {
                 // Unreachable: write_canonical leaves the snapshot untouched
                 // on error, so it is still the Writable we just installed.
                 self.snapshot = other;
@@ -832,6 +832,11 @@ impl ProjectSeedManifestGuard {
         ))
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "API del guard existente para cleanup con ownership; conservar interfaz y \
+            flujo/diagnósticos sin rediseñar."
+    )]
     pub(crate) fn cleanup_owned_temp(
         &self,
         temp: &OpenedRegularFile,

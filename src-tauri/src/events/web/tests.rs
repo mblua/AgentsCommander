@@ -11,7 +11,7 @@ use crate::web::event_broadcast::broadcast_all;
 fn receive(receiver: &mut tokio::sync::mpsc::Receiver<WsOutMsg>) -> Value {
     match receiver.try_recv().expect("WebSocket event") {
         WsOutMsg::Text(text) => serde_json::from_str(&text).expect("event JSON"),
-        other => panic!("expected text event, got {other:?}"),
+        other @ WsOutMsg::Binary(_) => panic!("expected text event, got {other:?}"),
     }
 }
 
