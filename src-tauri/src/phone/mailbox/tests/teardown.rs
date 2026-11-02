@@ -411,18 +411,15 @@ async fn unrelated_progress(
     );
 }
 
-async fn native_timeout_case(purge: bool, graceful: bool) {
-    let (fixture, sender, _peer, sid) = native_fixture().await;
-    let app = fixture.app.handle();
-    let coordinator = app.state::<SelectionCoordinator>().inner().clone();
-    let manager = app
-        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-        .read()
-        .await
-        .clone();
+async fn native_teardown_request(
+    fixture: &support_commands::SessionRequestFixture,
+    sender: &Path,
+    purge: bool,
+    graceful: bool,
+) -> String {
     // Empty-to close actions use the fixture master credential; purge requires a session token.
     let token = if purge {
-        sender_token(&fixture, &sender).await
+        sender_token(fixture, sender).await
     } else {
         MAILBOX_MASTER_TOKEN.to_string()
     };
@@ -432,13 +429,26 @@ async fn native_timeout_case(purge: bool, graceful: bool) {
         "close-session"
     };
     let blocked_id = Uuid::new_v4().to_string();
-    let path = request(&sender, &blocked_id, action, token);
+    let path = request(sender, &blocked_id, action, token);
     if graceful {
         let mut message: OutboxMessage =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         message.force = Some(false);
         std::fs::write(&path, serde_json::to_vec(&message).unwrap()).unwrap();
     }
+    blocked_id
+}
+
+async fn native_timeout_case(purge: bool, graceful: bool) {
+    let (fixture, sender, _peer, sid) = native_fixture().await;
+    let app = fixture.app.handle();
+    let coordinator = app.state::<SelectionCoordinator>().inner().clone();
+    let manager = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .read()
+        .await
+        .clone();
+    let blocked_id = native_teardown_request(&fixture, &sender, purge, graceful).await;
     let barrier = crate::commands::session::restart_reader_seam::install_after_old_release(
         &format!("destroy:{sid}"),
     );
