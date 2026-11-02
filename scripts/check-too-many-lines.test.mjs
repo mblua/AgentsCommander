@@ -373,9 +373,7 @@ function workflowContract(workflow, warm) {
   assert.ok(workflow.includes(`cancel-in-progress: \${{ !${adoption} }}`));
 }
 function workflowText(file) {
-  return fs.readFileSync(file, 'utf8').replaceAll('
-', '
-');
+  return fs.readFileSync(file, 'utf8').replaceAll('\r\n', '\n');
 }
 const workflow = workflowText('.github/workflows/pr-regression-gates.yml');
 const warm = workflowText('.github/workflows/cache-warm.yml');
