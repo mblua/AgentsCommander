@@ -113,6 +113,10 @@ pub(crate) fn task_source_state(path: &Path) -> std::io::Result<TaskSourceState>
     };
     let meta = file.metadata()?;
     let mut hash = sha2::Sha256::new();
+    #[expect(
+        clippy::large_stack_arrays,
+        reason = "Preserve bounded 64 KiB streaming buffer and existing I/O behavior"
+    )]
     let mut buf = [0u8; 65536];
     let mut len = 0;
     loop {
@@ -239,6 +243,10 @@ impl TaskWriter {
         io_boundary(&format!("{boundary}_copy"))?;
         if exists {
             let mut source = std::fs::File::open(source)?;
+            #[expect(
+                clippy::large_stack_arrays,
+                reason = "Preserve bounded 64 KiB streaming buffer and existing I/O behavior"
+            )]
             let mut buffer = [0u8; 65536];
             loop {
                 let count = source.read(&mut buffer)?;

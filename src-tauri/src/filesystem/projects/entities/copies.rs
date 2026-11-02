@@ -286,6 +286,10 @@ impl OwnedCopyArtifacts {
         }
         let identity = Self::identity_of_file(&input)?;
         let mut digest = sha2::Sha256::new();
+        #[expect(
+            clippy::large_stack_arrays,
+            reason = "Preserve bounded 64 KiB streaming buffer and existing I/O behavior"
+        )]
         let mut chunk = [0u8; 64 * 1024];
         loop {
             let count = input.read(&mut chunk).map_err(|e| e.to_string())?;

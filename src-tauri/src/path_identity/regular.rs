@@ -86,6 +86,10 @@ where
     after_first_snapshot();
     file.seek(SeekFrom::Start(0))
         .map_err(|_| "unsafe_path".to_string())?;
+    #[expect(
+        clippy::large_stack_arrays,
+        reason = "Preserve bounded 64 KiB streaming buffer and existing I/O behavior"
+    )]
     let mut verification = [0_u8; 64 * 1024];
     let mut verified_bytes = 0usize;
     loop {
