@@ -11,6 +11,7 @@ pub(crate) fn io_boundary(name: &str) -> std::io::Result<()> {
     if std::env::var("AC_TASK_OPS_CHILD_BOUNDARY").as_deref() == Ok(name)
         && std::env::var_os("AC_TASK_OPS_CHILD_FIXTURE").is_some()
     {
+        #[expect(clippy::exit, reason = "Crash-boundary child must exit without unwinding")]
         std::process::exit(71);
     }
     IO_MUTATION.with(|v| {

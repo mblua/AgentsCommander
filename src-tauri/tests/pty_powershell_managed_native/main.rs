@@ -935,5 +935,6 @@ fn ac_1271_reporter_mode() {
         }
     }
     let exit_code = (logical.iter().map(|arg| arg.len()).sum::<usize>() % 256) as i32;
+    #[expect(clippy::exit, reason = "Native reporter returns the argument-derived process status")]
     std::process::exit(exit_code);
 }

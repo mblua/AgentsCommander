@@ -6,6 +6,10 @@ fn store() -> MessageStore {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join(DB_FILENAME);
     let store = MessageStore::open(path).unwrap();
+    #[expect(
+        clippy::mem_forget,
+        reason = "Keep the database directory alive for the returned MessageStore"
+    )]
     std::mem::forget(dir);
     store
 }

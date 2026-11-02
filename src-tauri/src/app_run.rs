@@ -21,6 +21,7 @@ use crate::{
     WebAccessToken, WebServerHandle, WsBroadcaster,
 };
 
+#[expect(clippy::exit, reason = "Tauri generated thread failure exits")]
 pub(crate) fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
     ui_automation_enabled: bool,
@@ -373,11 +374,7 @@ pub(crate) fn run(
         // entered" signal is produced. The `[ipc-blackbox] coverage:` line repeats
         // this in every record block.
         .invoke_handler(crate::invoke_handler(ipc_observer_for_handler))
-        .build({
-            #[expect(clippy::exit, reason = "Tauri generated thread failure exits")]
-            let context = tauri::generate_context!();
-            context
-        })
+        .build(tauri::generate_context!())
         .expect("error while building application")
         .run({
             let detached_set = detached_sessions.clone();
