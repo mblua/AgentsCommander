@@ -59,7 +59,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ALLOWLIST_FILE, parseAllowlist } from './sanitizing_baseline.mjs';
+import { ALLOWLIST_FILE, parseAllowlist, isMain } from './sanitizing_baseline.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SKIP_DIRS = new Set(['target', 'node_modules', 'dist', '.git']);
@@ -487,10 +487,15 @@ function validateRootClippyToml(text) {
   }
   const lines = text.slice(0, -1).split('\n');
   let assignments = 0;
+  let lengthAssignments = 0;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     if (line.trim() === '') continue;
     if (line.trimStart().startsWith('#')) continue;
+    if (line === 'too-many-lines-threshold = 100' && lengthAssignments === 0) {
+      lengthAssignments += 1;
+      continue;
+    }
     if (line === PINNED_THRESHOLD_LINE) {
       assignments += 1;
       continue;
@@ -4454,4 +4459,4 @@ function selfTest({ stdout, stderr }) {
   return 0;
 }
 
-process.exitCode = main(process.argv.slice(2));
+if (isMain(import.meta.url)) process.exitCode = main(process.argv.slice(2));
