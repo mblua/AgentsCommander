@@ -484,6 +484,10 @@ pub(crate) fn run_inner_with_fault(name: &str, fault: Fault) -> ChildRun {
 
     let mut out = String::new();
     if let Ok(mut f) = std::fs::File::open(&log.0) {
+        #[expect(
+            clippy::verbose_file_reads,
+            reason = "Retain partial child log output even when reading fails"
+        )]
         let _ = f.read_to_string(&mut out);
     }
     ChildRun {

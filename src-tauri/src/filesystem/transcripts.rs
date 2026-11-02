@@ -95,6 +95,10 @@ pub(crate) fn read_new_lines_with_starts(
 
     file.seek(SeekFrom::Start(*offset))?;
     let mut buf = String::new();
+    #[expect(
+        clippy::verbose_file_reads,
+        reason = "Read from saved cursor and advance by actual bytes"
+    )]
     file.read_to_string(&mut buf)?;
 
     // G2: Track offset by actual bytes read, not reported file length
@@ -168,6 +172,10 @@ pub(crate) fn read_preamble_for_race(
     let mut f = std::fs::File::open(path)?;
     f.seek(SeekFrom::Start(start))?;
     let mut buf: Vec<u8> = Vec::with_capacity((initial_len - start) as usize);
+    #[expect(
+        clippy::verbose_file_reads,
+        reason = "Read sought preamble handle and retain actual replay offset"
+    )]
     f.read_to_end(&mut buf)?;
     // Return the offset that matches what we ACTUALLY read (start + bytes read),
     // not the stale path-level metadata `initial_len`. Concurrent writers can
@@ -240,6 +248,10 @@ pub(crate) fn read_live_preamble_window(
     let mut file = std::fs::File::open(path)?;
     file.seek(SeekFrom::Start(window_start))?;
     let mut buf: Vec<u8> = Vec::new();
+    #[expect(
+        clippy::verbose_file_reads,
+        reason = "Read live preamble from the selected window cursor"
+    )]
     file.read_to_end(&mut buf)?;
     Ok((buf, window_start))
 }

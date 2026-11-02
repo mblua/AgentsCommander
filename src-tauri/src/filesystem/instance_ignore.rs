@@ -71,6 +71,10 @@ pub(crate) fn seek_ignore_start(file: &mut File) -> io::Result<u64> {
 }
 
 pub(crate) fn read_ignore_bytes(file: &mut File, bytes: &mut Vec<u8>) -> io::Result<usize> {
+    #[expect(
+        clippy::verbose_file_reads,
+        reason = "Read the safely opened caller handle without reopening its path"
+    )]
     file.read_to_end(bytes)
 }
 

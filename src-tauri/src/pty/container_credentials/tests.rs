@@ -138,11 +138,8 @@ fn ensure_first_run_state_merges_into_existing_config_without_touching_other_key
     let dir = root.path().join(".claude");
     std::fs::create_dir_all(&dir).expect("dir");
     let path = dir.join(".claude.json");
-    std::fs::write(
-        &path,
-        include_str!("tests/fixtures/existing_config.json").as_bytes(),
-    )
-    .expect("seed config");
+    std::fs::write(&path, include_bytes!("tests/fixtures/existing_config.json"))
+        .expect("seed config");
 
     ensure_first_run_state(&plan_for(root.path(), Some(first_run())), "/workspace");
 
