@@ -314,10 +314,8 @@ function workflowContract(workflow, warm) {
       assert.match(lines.join('\n'), /timeout-minutes: 60/);
       assert.match(lines.join('\n'), /fail-fast: false/);
       const frontend = exactly(steps(lines), /^      - name: Build measured frontend$/m);
-      const install = 'if [ "$TML_PLATFORM" = windows ]; then npm ci; ' +
-        'else npm ci --ignore-scripts; fi';
       assert.equal(run(frontend), ['cd "${RUNNER_TEMP}/tml-adoption-source"',
-        install, 'npm run build'].join('\n'));
+        'npm ci --ignore-scripts', 'npm run build'].join('\n'));
       continue;
     }
     let expected = name === 'ci-tier' ? `(!${adoption})` :
@@ -378,8 +376,8 @@ const workflow = fs.readFileSync('.github/workflows/pr-regression-gates.yml', 'u
 const warm = fs.readFileSync('.github/workflows/cache-warm.yml', 'utf8');
 test('committed workflow contract', () => workflowContract(workflow, warm));
 const mutants = [
-  ['adoption mirrored lifecycle', s => s.replace('then npm ci;',
-    'then npm ci --ignore-scripts;')],
+  ['adoption enables lifecycle', s => s.replace(
+    '          npm ci --ignore-scripts\n', '          npm ci\n')],
   ['drop length flag', s => s.replace('--force-warn clippy::too_many_lines', '')],
   ['drop cognitive flag', s => s.replace('--force-warn clippy::cognitive_complexity', '')],
   ['remove check', s => s.replace('--check "${RUNNER_TEMP}/tml-observed-windows.json"', '')],
