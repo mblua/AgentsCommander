@@ -40,9 +40,10 @@ pub mod settings;
 pub(crate) mod shared_locations;
 pub(crate) mod teams;
 
+use crate::filesystem::config_write_probe;
+
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -484,10 +485,10 @@ fn probe_candidate_write(candidate: &Path) -> WriteProbeOutcome {
         RetryPlatform::current(),
         candidate,
         &probe_path,
-        |path| fs::create_dir_all(path),
-        |path| OpenOptions::new().write(true).create_new(true).open(path),
-        |file: &mut File| file.write_all(b"AgentsCommander write probe\n"),
-        |path| fs::remove_file(path),
+        config_write_probe::ensure_candidate_directory,
+        config_write_probe::create_probe_file,
+        config_write_probe::write_probe_file,
+        config_write_probe::remove_probe_file,
         std::thread::sleep,
     )
 }
