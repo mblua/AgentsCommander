@@ -2226,7 +2226,8 @@ function historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
   });
   if (!exactSites) return false; // #3527 condition-2
   const actual = removals.map(historical3527TupleKey).sort();
-  const expected = historical3527Tuples().map(historical3527TupleKey).sort();
+  const expected = historical3527Tuples().map(historical3527TupleKey)
+    .sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   if (!historical3527Equal(actual, expected)) return false; // #3527 condition-3
   const selected = new Set(HISTORICAL_3527_SITES.map(([id]) => id));
   const equalMetadata = historical3527Equal(historical3527Without(baseDocument, 'entries'),
@@ -4260,7 +4261,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
           });
         }));
       const sameLines = (actual, expected, label) => expectEqual(
-        JSON.stringify([...actual].sort()), JSON.stringify([...expected].sort()), label);
+        JSON.stringify([...actual].sort((a, b) => a < b ? -1 : a > b ? 1 : 0)),
+        JSON.stringify([...expected].sort((a, b) => a < b ? -1 : a > b ? 1 : 0)), label);
       const run = (name, { before = base, after = head, diff = [], working = paths,
         proof = {}, kind = 'blocked', exit = 1 } = {}) => {
         const fixture = baselineDiffFixture({ base: JSON.stringify(before),
@@ -4407,7 +4409,7 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       growth.entries.find((e) => e.id === entries[0].id).sites.windows = [extraAnchor];
       run('3527 equal-size swap', { after: growth, kind: 'growth' });
       growth.entries.find((e) => e.id === entries[0].id).sites.windows =
-        [entries[0].sites.windows[0], extraAnchor].sort();
+        [entries[0].sites.windows[0], extraAnchor].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
       run('3527 returned extra anchor', { after: growth, kind: 'growth' });
       run('3527 growth', { before: head, after: base, kind: 'growth' });
       run('3527 dormant', { before: head, kind: 'ordinary', exit: 0 });
