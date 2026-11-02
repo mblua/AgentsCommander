@@ -471,6 +471,11 @@ impl<R: Runtime> SelectionTransaction<R> {
 
     /// Uses the caller's preallocated binding and the current selection turn.
     /// This reserves no queue slot and performs no manager access.
+    #[expect(
+        clippy::unused_self,
+        reason = "API transaccional existente: preservar método y semántica de \
+            reserva/consumo; no modificar callers."
+    )]
     pub(crate) fn prepare_inline_create_binding(
         &self,
         binding: PendingCreateBinding,

@@ -721,6 +721,11 @@ impl Fixture {
             .path()
             .join("config-identity-reservation.state.no-git.json")
     }
+    #[expect(
+        clippy::unused_self,
+        reason = "Método de fixture de pair_activity: conservar API de fixture; convertir \
+            requiere churn ajeno al lint."
+    )]
     fn write(&self, path: &Path, value: Value) {
         std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
     }

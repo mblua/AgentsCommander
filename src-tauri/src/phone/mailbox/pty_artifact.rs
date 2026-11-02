@@ -322,6 +322,11 @@ impl MailboxPoller {
         true
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "API de MailboxPoller existente: preservar receptor y callers, \
+            límites/rutas/escritura y ownership sin refactor transversal."
+    )]
     fn write_pty_input_artifact(
         &self,
         source: &Path,
@@ -415,6 +420,11 @@ impl MailboxPoller {
         Ok(())
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "API de MailboxPoller existente: conservar receptor y publicación del marker \
+            sin cambiar callers."
+    )]
     pub(crate) fn replace_host_request_with_marker(
         &self,
         path: &Path,
@@ -484,6 +494,11 @@ impl MailboxPoller {
         Ok((marker, identity, owner))
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "API de MailboxPoller existente: conservar método y validación de identidad, \
+            sin ampliar refactor."
+    )]
     pub(crate) fn verified_pty_outbox_owner(
         &self,
         path: &Path,

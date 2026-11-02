@@ -832,6 +832,11 @@ impl ProjectSeedManifestGuard {
         ))
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "API del guard existente para cleanup con ownership; conservar interfaz y \
+            flujo/diagnósticos sin rediseñar."
+    )]
     pub(crate) fn cleanup_owned_temp(
         &self,
         temp: &OpenedRegularFile,

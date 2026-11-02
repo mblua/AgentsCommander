@@ -342,6 +342,11 @@ impl<'a> SnapshotStore<'a> {
             .map(|inner| SnapshotLeafGuard { _inner: inner })
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "API del store propietario de persistencia: mantener la operación a través \
+            del receptor y contrato actual."
+    )]
     pub(super) fn replace_prepared_once(
         &self,
         write: &PreparedSessionsWrite,

@@ -527,6 +527,11 @@ impl ClearObservationProbe {
 }
 
 impl CodexClearScannerFixture {
+    #[expect(
+        clippy::unused_self,
+        reason = "Método del fixture CodexClearScannerFixture: preservar interfaz de inyección \
+            del probe."
+    )]
     pub(crate) fn observe_deliveries(
         &self,
         poller: &mut MailboxPoller,

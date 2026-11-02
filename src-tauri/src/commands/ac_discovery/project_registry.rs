@@ -244,6 +244,14 @@ pub(crate) struct NewProjectTransactionHooks {
 }
 
 impl NewProjectTransactionHooks {
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "self contiene inyección de fallo en cfg(test); preservar hook y contrato \
+                de transacción."
+        )
+    )]
     pub(crate) fn save_settings(
         &self,
         settings: &crate::config::settings::AppSettings,
@@ -256,6 +264,13 @@ impl NewProjectTransactionHooks {
         transaction.commit_project_groups(settings, true, true)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "self contiene hook en cfg(test); conservar orden y revalidación final."
+        )
+    )]
     pub(crate) fn before_final_revalidation(&self, ac_root: &Path) {
         #[cfg(test)]
         if let Some(hook) = &self.before_final_revalidation {

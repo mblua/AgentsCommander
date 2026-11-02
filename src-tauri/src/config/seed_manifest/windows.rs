@@ -408,6 +408,14 @@ impl ProjectSeedManifestGuard {
         Ok(final_file)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "self ofrece hook Windows cfg(test); preservar misma llamada nativa en \
+                producción."
+        )
+    )]
     pub(crate) fn call_windows_namespace(
         &self,
         operation: WindowsNamespaceOperation,

@@ -67,6 +67,14 @@ pub(crate) struct MatrixCopyHooks<'a> {
 }
 
 impl MatrixCopyHooks<'_> {
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "self selecciona callback cfg(test); conservar el préstamo mutable y \
+                orden del seam."
+        )
+    )]
     pub(crate) fn run(&mut self, stage: MatrixCopyStage, path: &Path) -> Result<(), String> {
         #[cfg(test)]
         if let Some(callback) = &mut self.callback {

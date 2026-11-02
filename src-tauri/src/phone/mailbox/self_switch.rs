@@ -721,6 +721,11 @@ impl MailboxPoller {
 
     /// Check if sender can reach destination via team membership.
     /// Only agents in the same team can communicate — no parent directory fallback.
+    #[expect(
+        clippy::unused_self,
+        reason = "API de MailboxPoller existente: preservar método y delegación a teams; sin \
+            cambiar callers."
+    )]
     pub(crate) fn can_reach(
         &self,
         from: &str,
