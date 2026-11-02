@@ -149,7 +149,7 @@ allows a bounded shrink.
 - **A shrink must be earned.** Removing an entry is accepted only when the pull request touched
   the entry's `.rs` file (it appears in `git diff --name-only <base>...HEAD`) or the file is gone
   from the working tree. Otherwise the step prints
-  `Baseline entry removed without touching its file: <id>` followed by
+  `Baseline entry removed without touching its file: <id>#<anchor> (<platform>)` followed by
   `A shrink is only credible where the pull request changed the code. Include that file, or explain the removal in a toolchain-refresh pull request.`
 - **The single growth exemption is a toolchain refresh.** If the diff contains **no `.rs` path** and the
   head baseline's `toolchain` is **strictly higher** than the base's (numeric comparison of the
