@@ -69,6 +69,10 @@ pub(crate) async fn accept_restart_deferred_completion<R: tauri::Runtime>(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "Preserve restart settlement inputs for rollback, selection and prompt transfer"
+)]
 pub(crate) async fn finalize_restart_deferred<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     deferred: &DeferredCreateOutput,

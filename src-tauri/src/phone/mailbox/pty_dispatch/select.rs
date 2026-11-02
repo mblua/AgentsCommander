@@ -7,10 +7,10 @@ use crate::config::teams::VerifiedPtyInputIdentity;
 use crate::phone::events::PtyInputEvents;
 #[cfg(test)]
 use crate::phone::mailbox::pty_claim::MailboxTestHooks;
+use crate::phone::mailbox::pty_claim::PtyReacquireGoal::{Published, Spawn};
 use crate::phone::mailbox::pty_claim::{
     await_pty_input_before_deadline, finish_pty_input_before_boundary,
     reacquire_pty_dispatch_target, reject_pty_input_before_boundary, PtyInputPreBoundaryStop,
-    PtyReacquireGoal,
 };
 use crate::phone::mailbox::settle::{
     finish_owned_pty_work, session_has_current_pty_submission_provenance, PtySpawnStep,
@@ -70,44 +70,20 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             let (selected, spawned) = if let Some(selected) = eligible.into_iter().next() {
                 (selected, false)
             } else if saw_supported_busy {
-                let observed = reject_pty_input_before_boundary(
-                    context.store,
-                    guards.heartbeat,
-                    context.injection_id,
-                    C::Busy,
-                )
-                .await;
-                drop(guards.target_guard.take());
-                drop(guards.target_stripe.take());
-                finish_owned_pty_work(app, guards.owned_work, observed).await;
+                self.dispatch_selection_reject(context, &mut guards, C::Busy)
+                    .await;
                 return Err(false);
             } else if saw_live_temporary {
-                let observed = reject_pty_input_before_boundary(
-                    context.store,
-                    guards.heartbeat,
-                    context.injection_id,
-                    C::NonpersistentLiveSession,
-                )
-                .await;
-                drop(guards.target_guard.take());
-                drop(guards.target_stripe.take());
-                finish_owned_pty_work(app, guards.owned_work, observed).await;
+                self.dispatch_selection_reject(context, &mut guards, C::NonpersistentLiveSession)
+                    .await;
                 return Err(false);
             } else if saw_live_inconsistent {
                 return Err(self
                     .dispatch_selection_inconsistent(context, &mut guards)
                     .await);
             } else if saw_live_unsupported {
-                let observed = reject_pty_input_before_boundary(
-                    context.store,
-                    guards.heartbeat,
-                    context.injection_id,
-                    C::UnsupportedSession,
-                )
-                .await;
-                drop(guards.target_guard.take());
-                drop(guards.target_stripe.take());
-                finish_owned_pty_work(app, guards.owned_work, observed).await;
+                self.dispatch_selection_reject(context, &mut guards, C::UnsupportedSession)
+                    .await;
                 return Err(false);
             } else {
                 let spawn = self
@@ -135,37 +111,15 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 }
             };
             let selected_id = Uuid::parse_str(&selected.id).ok();
-            if guards.owned_work.is_none()
-                && selected_id.is_some_and(|id| {
-                    crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
-                        &context.claimed.target_fqn,
-                        id,
-                    )
-                })
-            {
-                drop(guards.target_guard.take());
-                drop(guards.target_stripe.take());
-                let Some(id) = selected_id else {
-                    guards.heartbeat.finish().await;
-                    return Err(false);
-                };
-                let Some((stripe, exact)) = reacquire_pty_dispatch_target(
-                    app,
-                    (context.store, context.initial, context.claimed),
-                    (
-                        context.target_gate,
-                        &verified_target,
-                        PtyReacquireGoal::Published(id),
-                    ),
-                    (context.expires, context.shutdown),
-                    guards.heartbeat,
+            if self
+                .dispatch_selection_wait_published(
+                    context,
+                    &mut guards,
+                    selected_id,
+                    &verified_target,
                 )
-                .await
-                else {
-                    return Err(false);
-                };
-                *guards.target_stripe = Some(stripe);
-                *guards.target_guard = Some(exact);
+                .await?
+            {
                 continue;
             }
             return Ok((
@@ -184,39 +138,20 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
     ) -> Result<crate::config::teams::VerifiedPtyInputRoute, bool> {
         let app = self.app;
 
-        use crate::phone::types::PtyInputReasonCode as C;
         if app
             .try_state::<Arc<crate::RestoreInProgress>>()
             .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
         {
-            let observed = finish_pty_input_before_boundary(
-                context.store,
-                guards.heartbeat,
-                context.injection_id,
-                context.lease_owner,
-                C::RestoreInProgress,
-            )
-            .await;
-            drop(guards.target_guard.take());
-            drop(guards.target_stripe.take());
-            finish_owned_pty_work(app, guards.owned_work, observed).await;
+            self.dispatch_selection_finish(context, guards, C::RestoreInProgress)
+                .await;
             return Err(false);
         }
         if app
             .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
             .is_some_and(|guard| guard.blocks_agent(&context.claimed.target_fqn))
         {
-            let observed = finish_pty_input_before_boundary(
-                context.store,
-                guards.heartbeat,
-                context.injection_id,
-                context.lease_owner,
-                C::PurgeInProgress,
-            )
-            .await;
-            drop(guards.target_guard.take());
-            drop(guards.target_stripe.take());
-            finish_owned_pty_work(app, guards.owned_work, observed).await;
+            self.dispatch_selection_finish(context, guards, C::PurgeInProgress)
+                .await;
             return Err(false);
         }
 
@@ -231,17 +166,8 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 {
                     Ok(route) => route,
                     Err(_) => {
-                        let observed = finish_pty_input_before_boundary(
-                            context.store,
-                            guards.heartbeat,
-                            context.injection_id,
-                            context.lease_owner,
-                            C::StoreTransient,
-                        )
-                        .await;
-                        drop(guards.target_guard.take());
-                        drop(guards.target_stripe.take());
-                        finish_owned_pty_work(app, guards.owned_work, observed).await;
+                        self.dispatch_selection_finish(context, guards, C::StoreTransient)
+                            .await;
                         return Err(false);
                     }
                 }
@@ -253,29 +179,12 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             } else {
                 C::ApiBindingMismatch
             };
-            let observed = reject_pty_input_before_boundary(
-                context.store,
-                guards.heartbeat,
-                context.injection_id,
-                code,
-            )
-            .await;
-            drop(guards.target_guard.take());
-            drop(guards.target_stripe.take());
-            finish_owned_pty_work(app, guards.owned_work, observed).await;
+            self.dispatch_selection_reject(context, guards, code).await;
             return Err(false);
         };
         if verified_route.target.canonical_fqn != *context.target {
-            let observed = reject_pty_input_before_boundary(
-                context.store,
-                guards.heartbeat,
-                context.injection_id,
-                C::AuthorityChanged,
-            )
-            .await;
-            drop(guards.target_guard.take());
-            drop(guards.target_stripe.take());
-            finish_owned_pty_work(app, guards.owned_work, observed).await;
+            self.dispatch_selection_reject(context, guards, C::AuthorityChanged)
+                .await;
             return Err(false);
         }
         Ok(verified_route)
@@ -363,38 +272,8 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             .await
         };
         #[cfg(test)]
-        if let Some(lease) = fixture_lease {
-            let restored = Arc::try_unwrap(lease);
-            let worker_still_holds_clone = restored.is_err();
-            let receipt_missing = fixture_control.as_ref().is_some_and(|control| {
-                control.submitted.load(std::sync::atomic::Ordering::Acquire)
-                    && !control.received.load(std::sync::atomic::Ordering::Acquire)
-            });
-            match restored {
-                Ok(lease) if !receipt_missing => {
-                    *guards.target_guard = Some(lease.exact);
-                    *guards.target_stripe = Some(lease.stripe);
-                }
-                other => {
-                    drop(other);
-                    if let Some(control) = fixture_control.as_ref() {
-                        control.restoration_shared.store(
-                            worker_still_holds_clone,
-                            std::sync::atomic::Ordering::Release,
-                        );
-                        control
-                            .restoration_failed
-                            .store(true, std::sync::atomic::Ordering::Release);
-                    }
-                    // This cut precedes every Retained/timeout/error
-                    // handoff, even if the owner already has a stop or
-                    // rollback receipt. A submitted job without actual
-                    // receive has no source-side work authority.
-                    guards.heartbeat.finish().await;
-                    return Err(false);
-                }
-            }
-        }
+        self.dispatch_selection_restore_fixture(guards, fixture_lease, fixture_control.as_ref())
+            .await?;
         Ok(spawn)
     }
     async fn dispatch_selection_spawn_result(
@@ -407,7 +286,6 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
     ) -> Result<Option<(SessionInfo, bool)>, bool> {
         let app = self.app;
 
-        use crate::phone::types::PtyInputReasonCode as C;
         let selected = match spawn {
             Ok(Ok(PtySpawnStep::Created(session))) => (session, true),
             Ok(Ok(PtySpawnStep::OwnedCreated(session, continuation))) => {
@@ -426,59 +304,9 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 continuation,
                 failed,
             })) => {
-                drop(guards.target_guard.take());
-                drop(guards.target_stripe.take());
-                let stop = continuation.source_stop();
-                let rolled_back = continuation.precommit_rollback_completed();
-                if stop.is_none() && !rolled_back {
-                    guards.heartbeat.finish().await;
-                    return Err(failed);
-                }
-                let effect = continuation
-                    .start_effect(crate::session::selection::LifecycleEffectSlot::WorkTransfer);
-                use crate::session::selection::OwnedSourceStop as Stop;
-                let observed = match stop {
-                    Some(Stop::Terminal) => {
-                        guards.heartbeat.finish().await;
-                        true
-                    }
-                    reason => {
-                        let code = match reason {
-                            Some(Stop::AuthorityChanged) => C::AuthorityChanged,
-                            Some(Stop::StoreTransient) => C::StoreTransient,
-                            Some(Stop::Expired) => C::Expired,
-                            Some(Stop::LeaseLost) => C::LeaseLost,
-                            Some(Stop::Terminal) => unreachable!(),
-                            None => C::SpawnFailedSafe,
-                        };
-                        finish_pty_input_before_boundary(
-                            context.store,
-                            guards.heartbeat,
-                            context.injection_id,
-                            context.lease_owner,
-                            code,
-                        )
-                        .await
-                    }
-                };
-                if let Some(effect) = effect {
-                    let manager = app
-                        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-                        .read()
-                        .await
-                        .clone();
-                    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-                    if rolled_back {
-                        continuation
-                            .finish_rolled_back_work(&manager, &pty, effect, observed)
-                            .await;
-                    } else {
-                        continuation
-                            .finish_observed_work_transfer(&manager, &pty, effect, observed)
-                            .await;
-                    }
-                }
-                return Err(failed);
+                return Err(self
+                    .dispatch_selection_retained(context, guards, continuation, failed)
+                    .await);
             }
             Ok(Ok(PtySpawnStep::RetainedUnowned)) => {
                 drop(guards.target_guard.take());
@@ -494,11 +322,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 let Some((stripe, exact)) = reacquire_pty_dispatch_target(
                     app,
                     (context.store, context.initial, context.claimed),
-                    (
-                        context.target_gate,
-                        verified_target,
-                        PtyReacquireGoal::Spawn,
-                    ),
+                    (context.target_gate, verified_target, Spawn),
                     (context.expires, context.shutdown),
                     guards.heartbeat,
                 )
@@ -511,30 +335,12 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 return Ok(None);
             }
             Ok(Err(code)) => {
-                let observed = finish_pty_input_before_boundary(
-                    context.store,
-                    guards.heartbeat,
-                    context.injection_id,
-                    context.lease_owner,
-                    code,
-                )
-                .await;
-                drop(guards.target_guard.take());
-                drop(guards.target_stripe.take());
-                finish_owned_pty_work(app, guards.owned_work, observed).await;
+                self.dispatch_selection_finish(context, guards, code).await;
                 return Err(false);
             }
             Err(PtyInputPreBoundaryStop::Expired) => {
-                let observed = reject_pty_input_before_boundary(
-                    context.store,
-                    guards.heartbeat,
-                    context.injection_id,
-                    C::Expired,
-                )
-                .await;
-                drop(guards.target_guard.take());
-                drop(guards.target_stripe.take());
-                finish_owned_pty_work(app, guards.owned_work, observed).await;
+                self.dispatch_selection_reject(context, guards, C::Expired)
+                    .await;
                 return Err(false);
             }
             Err(PtyInputPreBoundaryStop::Shutdown) => {
@@ -554,11 +360,10 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
     ) -> Result<(BoundaryAuthority, BoundaryWriteGuards), bool> {
         let BoundaryWriteGuards {
             permit,
-            mut final_api_guard,
+            final_api_guard,
         } = write_guards;
         let app = self.app;
 
-        use crate::phone::types::{PtyInputPublicStatus as S, PtyInputReasonCode as C};
         let manager = {
             let guard = selection.session_manager.read().await;
             guard.clone()
@@ -572,29 +377,13 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         ) {
             Ok(id) => id,
             Err(_) => {
-                let terminal = context
-                    .store
-                    .terminalize_pty_input_offloaded(
-                        context.injection_id.to_string(),
-                        S::Indeterminate,
-                        Some(C::FinalRevalidationFailed),
-                        chrono::Utc::now(),
-                    )
-                    .await;
-                let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
-                drop(final_api_guard.take());
-                drop(guards.target_guard.take());
-                drop(guards.target_stripe.take());
-                drop(permit);
-                finish_owned_pty_work(app, guards.owned_work, observed).await;
-                if terminal.is_err() {
-                    log::error!(
-                        "[pty-input] boundary terminalization failed id={} \
-                        code=terminal_store_failed",
-                        context.injection_id
-                    );
-                }
-                return Err(false);
+                let write_guards = BoundaryWriteGuards {
+                    final_api_guard,
+                    permit,
+                };
+                return Err(self
+                    .dispatch_boundary_authority_failed(context, guards, write_guards, true)
+                    .await);
             }
         };
         let authority_backend = match context.source_plane {
@@ -612,26 +401,13 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             match PtyManager::authority_route_proof(selection.pty_manager, authority_id) {
                 Ok(proof) => proof,
                 Err(_) => {
-                    let terminal = context.store.terminalize_pty_input(
-                        context.injection_id,
-                        S::Indeterminate,
-                        Some(C::FinalRevalidationFailed),
-                        chrono::Utc::now(),
-                    );
-                    let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
-                    drop(final_api_guard.take());
-                    drop(guards.target_guard.take());
-                    drop(guards.target_stripe.take());
-                    drop(permit);
-                    finish_owned_pty_work(app, guards.owned_work, observed).await;
-                    if terminal.is_err() {
-                        log::error!(
-                            "[pty-input] boundary terminalization failed id={} \
-                        code=terminal_store_failed",
-                            context.injection_id
-                        );
-                    }
-                    return Err(false);
+                    let write_guards = BoundaryWriteGuards {
+                        final_api_guard,
+                        permit,
+                    };
+                    return Err(self
+                        .dispatch_boundary_authority_failed(context, guards, write_guards, false)
+                        .await);
                 }
             };
         let expected_api_binding = final_api_guard.as_ref().and_then(|fresh| {
@@ -648,25 +424,13 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         if context.source_plane == crate::phone::types::PtyInputSourcePlane::ContainerApi
             && expected_api_binding.is_none()
         {
-            let terminal = context.store.terminalize_pty_input(
-                context.injection_id,
-                S::Indeterminate,
-                Some(C::FinalRevalidationFailed),
-                chrono::Utc::now(),
-            );
-            let observed = terminal.as_ref().is_ok_and(|result| result.terminal);
-            drop(final_api_guard.take());
-            drop(guards.target_guard.take());
-            drop(guards.target_stripe.take());
-            drop(permit);
-            finish_owned_pty_work(app, guards.owned_work, observed).await;
-            if terminal.is_err() {
-                log::error!(
-                    "[pty-input] boundary terminalization failed id={} code=terminal_store_failed",
-                    context.injection_id
-                );
-            }
-            return Err(false);
+            let write_guards = BoundaryWriteGuards {
+                final_api_guard,
+                permit,
+            };
+            return Err(self
+                .dispatch_boundary_authority_failed(context, guards, write_guards, false)
+                .await);
         }
 
         Ok((
@@ -690,7 +454,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         context: &PtyDispatchContext<'_>,
         guards: &mut PtyDispatchGuards<'_>,
         selection: &DispatchSelection<'_>,
-        mut write_guards: BoundaryWriteGuards,
+        write_guards: BoundaryWriteGuards,
         input: FinalDispatchInput<'_>,
         authority: &BoundaryAuthority,
     ) -> Result<(Result<bool, bool>, BoundaryWriteGuards), bool> {
@@ -717,39 +481,20 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             .owned_work
             .as_ref()
             .and_then(|(continuation, _)| continuation.launch_token());
-        let owned_current = match guards.owned_work.as_ref() {
-            Some((continuation, _)) => {
-                manager
-                    .with_current_carrier_snapshot(&boundary_carrier, |current| {
-                        owned_token.is_some()
-                            && continuation.current_completion_region(
-                                &boundary_carrier,
-                                current,
-                                selection.pty_manager,
-                            )
-                    })
-                    .await
-            }
-            None => true,
-        };
+        let owned_current = self
+            .dispatch_boundary_owned_current(
+                guards,
+                selection,
+                manager,
+                &boundary_carrier,
+                owned_token,
+            )
+            .await;
         if !owned_current {
             drop(boundary_carrier);
-            let observed = context
-                .store
-                .terminalize_pty_input_offloaded(
-                    context.injection_id.to_string(),
-                    S::Indeterminate,
-                    Some(C::FinalRevalidationFailed),
-                    chrono::Utc::now(),
-                )
-                .await
-                .is_ok_and(|result| result.terminal);
-            drop(write_guards.final_api_guard.take());
-            drop(guards.target_guard.take());
-            drop(guards.target_stripe.take());
-            drop(write_guards.permit);
-            finish_owned_pty_work(app, guards.owned_work, observed).await;
-            return Err(false);
+            return Err(self
+                .dispatch_boundary_owned_stale(context, guards, write_guards)
+                .await);
         }
         let boundary_write = match manager
             .prepare_pty_input_boundary_with_carrier_permit(
@@ -790,20 +535,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 drop(boundary_carrier);
                 // The guard-bearing Result ends in this match. Only the
                 // observed terminal boolean survives to the work handoff await.
-                let terminal = context.store.terminalize_pty_input(
-                    context.injection_id,
-                    S::Indeterminate,
-                    Some(C::FinalRevalidationFailed),
-                    chrono::Utc::now(),
-                );
-                if terminal.is_err() {
-                    log::error!(
-                        "[pty-input] boundary terminalization failed id={} \
-                        code=terminal_store_failed",
-                        context.injection_id
-                    );
-                }
-                Err(terminal.as_ref().is_ok_and(|result| result.terminal))
+                Err(self.dispatch_boundary_terminal_failed(context))
             }
         };
 
@@ -918,30 +650,12 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         context: &PtyDispatchContext<'_>,
         guards: &mut PtyDispatchGuards<'_>,
     ) -> bool {
-        let app = self.app;
         if context.claimed.attempt < 5 {
-            let observed = finish_pty_input_before_boundary(
-                context.store,
-                guards.heartbeat,
-                context.injection_id,
-                context.lease_owner,
-                C::SessionRace,
-            )
-            .await;
-            drop(guards.target_guard.take());
-            drop(guards.target_stripe.take());
-            finish_owned_pty_work(app, guards.owned_work, observed).await;
+            self.dispatch_selection_finish(context, guards, C::SessionRace)
+                .await;
         } else {
-            let observed = reject_pty_input_before_boundary(
-                context.store,
-                guards.heartbeat,
-                context.injection_id,
-                C::InconsistentSession,
-            )
-            .await;
-            drop(guards.target_guard.take());
-            drop(guards.target_stripe.take());
-            finish_owned_pty_work(app, guards.owned_work, observed).await;
+            self.dispatch_selection_reject(context, guards, C::InconsistentSession)
+                .await;
         }
         false
     }
@@ -987,5 +701,297 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             }
             _ => false,
         }
+    }
+    async fn dispatch_selection_finish(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+        code: C,
+    ) -> bool {
+        let observed = finish_pty_input_before_boundary(
+            context.store,
+            guards.heartbeat,
+            context.injection_id,
+            context.lease_owner,
+            code,
+        )
+        .await;
+        drop(guards.target_guard.take());
+        drop(guards.target_stripe.take());
+        finish_owned_pty_work(self.app, guards.owned_work, observed).await;
+        false
+    }
+    async fn dispatch_selection_reject(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+        code: C,
+    ) -> bool {
+        let observed = reject_pty_input_before_boundary(
+            context.store,
+            guards.heartbeat,
+            context.injection_id,
+            code,
+        )
+        .await;
+        drop(guards.target_guard.take());
+        drop(guards.target_stripe.take());
+        finish_owned_pty_work(self.app, guards.owned_work, observed).await;
+        false
+    }
+    async fn dispatch_selection_wait_published(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+        selected_id: Option<Uuid>,
+        verified_target: &VerifiedPtyInputIdentity,
+    ) -> Result<bool, bool> {
+        let app = self.app;
+        if guards.owned_work.is_none()
+            && selected_id.is_some_and(|id| {
+                crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
+                    &context.claimed.target_fqn,
+                    id,
+                )
+            })
+        {
+            drop(guards.target_guard.take());
+            drop(guards.target_stripe.take());
+            let Some(id) = selected_id else {
+                guards.heartbeat.finish().await;
+                return Err(false);
+            };
+            let Some((stripe, exact)) = reacquire_pty_dispatch_target(
+                app,
+                (context.store, context.initial, context.claimed),
+                (context.target_gate, verified_target, Published(id)),
+                (context.expires, context.shutdown),
+                guards.heartbeat,
+            )
+            .await
+            else {
+                return Err(false);
+            };
+            *guards.target_stripe = Some(stripe);
+            *guards.target_guard = Some(exact);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+    #[cfg(test)]
+    async fn dispatch_selection_restore_fixture(
+        &self,
+        guards: &mut PtyDispatchGuards<'_>,
+        lease: Option<Arc<crate::commands::session::FixturePtyCutLease>>,
+        control: Option<&Arc<crate::session::selection::ReplacementFixtureControl>>,
+    ) -> Result<(), bool> {
+        if let Some(lease) = lease {
+            let restored = Arc::try_unwrap(lease);
+            let worker_still_holds_clone = restored.is_err();
+            let receipt_missing = control.is_some_and(|control| {
+                control.submitted.load(std::sync::atomic::Ordering::Acquire)
+                    && !control.received.load(std::sync::atomic::Ordering::Acquire)
+            });
+            match restored {
+                Ok(lease) if !receipt_missing => {
+                    *guards.target_guard = Some(lease.exact);
+                    *guards.target_stripe = Some(lease.stripe);
+                }
+                other => {
+                    drop(other);
+                    if let Some(control) = control {
+                        control.restoration_shared.store(
+                            worker_still_holds_clone,
+                            std::sync::atomic::Ordering::Release,
+                        );
+                        control
+                            .restoration_failed
+                            .store(true, std::sync::atomic::Ordering::Release);
+                    }
+                    // This cut precedes every Retained/timeout/error
+                    // handoff, even if the owner already has a stop or
+                    // rollback receipt. A submitted job without actual
+                    // receive has no source-side work authority.
+                    guards.heartbeat.finish().await;
+                    return Err(false);
+                }
+            }
+        }
+        Ok(())
+    }
+    async fn dispatch_selection_retained(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+        continuation: crate::session::selection::OwnedReplacementContinuation,
+        failed: bool,
+    ) -> bool {
+        let app = self.app;
+        drop(guards.target_guard.take());
+        drop(guards.target_stripe.take());
+        let stop = continuation.source_stop();
+        let rolled_back = continuation.precommit_rollback_completed();
+        if stop.is_none() && !rolled_back {
+            guards.heartbeat.finish().await;
+            return failed;
+        }
+        let effect =
+            continuation.start_effect(crate::session::selection::LifecycleEffectSlot::WorkTransfer);
+        use crate::session::selection::OwnedSourceStop as Stop;
+        let observed = match stop {
+            Some(Stop::Terminal) => {
+                guards.heartbeat.finish().await;
+                true
+            }
+            reason => {
+                let code = match reason {
+                    Some(Stop::AuthorityChanged) => C::AuthorityChanged,
+                    Some(Stop::StoreTransient) => C::StoreTransient,
+                    Some(Stop::Expired) => C::Expired,
+                    Some(Stop::LeaseLost) => C::LeaseLost,
+                    Some(Stop::Terminal) => unreachable!(),
+                    None => C::SpawnFailedSafe,
+                };
+                finish_pty_input_before_boundary(
+                    context.store,
+                    guards.heartbeat,
+                    context.injection_id,
+                    context.lease_owner,
+                    code,
+                )
+                .await
+            }
+        };
+        if let Some(effect) = effect {
+            let manager = app
+                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                .read()
+                .await
+                .clone();
+            let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+            if rolled_back {
+                continuation
+                    .finish_rolled_back_work(&manager, &pty, effect, observed)
+                    .await;
+            } else {
+                continuation
+                    .finish_observed_work_transfer(&manager, &pty, effect, observed)
+                    .await;
+            }
+        }
+        failed
+    }
+    async fn dispatch_boundary_authority_failed(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+        write_guards: BoundaryWriteGuards,
+        offloaded: bool,
+    ) -> bool {
+        let BoundaryWriteGuards {
+            permit,
+            mut final_api_guard,
+        } = write_guards;
+        let (observed, error) = if offloaded {
+            let terminal = context
+                .store
+                .terminalize_pty_input_offloaded(
+                    context.injection_id.to_string(),
+                    S::Indeterminate,
+                    Some(C::FinalRevalidationFailed),
+                    chrono::Utc::now(),
+                )
+                .await;
+            (
+                terminal.as_ref().is_ok_and(|result| result.terminal),
+                terminal.is_err(),
+            )
+        } else {
+            let terminal = context.store.terminalize_pty_input(
+                context.injection_id,
+                S::Indeterminate,
+                Some(C::FinalRevalidationFailed),
+                chrono::Utc::now(),
+            );
+            (
+                terminal.as_ref().is_ok_and(|result| result.terminal),
+                terminal.is_err(),
+            )
+        };
+        drop(final_api_guard.take());
+        drop(guards.target_guard.take());
+        drop(guards.target_stripe.take());
+        drop(permit);
+        finish_owned_pty_work(self.app, guards.owned_work, observed).await;
+        if error {
+            log::error!(
+                "[pty-input] boundary terminalization failed id={} code=terminal_store_failed",
+                context.injection_id
+            );
+        }
+        false
+    }
+    async fn dispatch_boundary_owned_current(
+        &self,
+        guards: &PtyDispatchGuards<'_>,
+        selection: &DispatchSelection<'_>,
+        manager: &SessionManager,
+        carrier: &crate::session::manager::CarrierMutationPermit,
+        token: Option<Uuid>,
+    ) -> bool {
+        match guards.owned_work.as_ref() {
+            Some((continuation, _)) => {
+                manager
+                    .with_current_carrier_snapshot(carrier, |current| {
+                        token.is_some()
+                            && continuation.current_completion_region(
+                                carrier,
+                                current,
+                                selection.pty_manager,
+                            )
+                    })
+                    .await
+            }
+            None => true,
+        }
+    }
+    async fn dispatch_boundary_owned_stale(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+        mut write_guards: BoundaryWriteGuards,
+    ) -> bool {
+        let observed = context
+            .store
+            .terminalize_pty_input_offloaded(
+                context.injection_id.to_string(),
+                S::Indeterminate,
+                Some(C::FinalRevalidationFailed),
+                chrono::Utc::now(),
+            )
+            .await
+            .is_ok_and(|result| result.terminal);
+        drop(write_guards.final_api_guard.take());
+        drop(guards.target_guard.take());
+        drop(guards.target_stripe.take());
+        drop(write_guards.permit);
+        finish_owned_pty_work(self.app, guards.owned_work, observed).await;
+        false
+    }
+    fn dispatch_boundary_terminal_failed(&self, context: &PtyDispatchContext<'_>) -> bool {
+        let terminal = context.store.terminalize_pty_input(
+            context.injection_id,
+            S::Indeterminate,
+            Some(C::FinalRevalidationFailed),
+            chrono::Utc::now(),
+        );
+        if terminal.is_err() {
+            log::error!(
+                "[pty-input] boundary terminalization failed id={} \
+                code=terminal_store_failed",
+                context.injection_id
+            );
+        }
+        terminal.as_ref().is_ok_and(|result| result.terminal)
     }
 }

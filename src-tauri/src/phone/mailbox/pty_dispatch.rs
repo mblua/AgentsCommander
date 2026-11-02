@@ -59,106 +59,128 @@ impl MailboxPoller {
         }
         // Borrow the lexical observer through the whole existing dispatch
         // body. This is polled inline, with no new task or accepted core.
-        let failed = async {
-            let store = match &state.store {
-                Ok(store) => Arc::clone(store),
-                Err(_) => return false,
-            };
-            let shutdown = app
-                .try_state::<crate::shutdown::ShutdownSignal>()
-                .map(|signal| signal.token().clone())
-                .unwrap_or_else(tokio_util::sync::CancellationToken::new);
-            let _operation_lock = match store.try_operation_lock(injection_id) {
-                Ok(Some(lock)) => lock,
-                _ => return false,
-            };
-            let _active = match state.active_operations.try_register(injection_id) {
-                Some(active) => active,
-                None => return false,
-            };
-            let initial = match store
-                .query_pty_input_by_injection_offloaded(injection_id.to_string())
-                .await
-            {
-                Ok(Some(result)) if !result.terminal => result,
-                _ => return false,
-            };
-            let target = match initial.target.clone() {
-                Some(target) => target,
-                None => return false,
-            };
-            let _response_delivery = match store.begin_response_delivery(&target) {
-                Ok(reservation) => reservation,
-                Err(_) => return false,
-            };
-            let target_gate = match &state.target_gate {
-                Ok(gate) => Arc::clone(gate),
-                Err(_) => return false,
-            };
-            // Startup restore must finish before this dispatch owns target guards.
-            // No claim or payload has been consumed at this point.
-            if let Some(coordinator) =
-                app.try_state::<crate::session::selection::SelectionCoordinator>()
-            {
-                if coordinator.wait_for_restore_release().await.is_err() {
-                    return false;
-                }
-            }
-            let mut target_stripe = Some(match target_gate.try_target_lock(&target) {
-                Ok(Some(lock)) => lock,
-                _ => return false,
-            });
-            let mut target_guard = Some(
-                match dispatcher
-                    .acquire_initial_dispatch_target(
-                        &store,
-                        &initial,
-                        injection_id,
-                        &target_gate,
-                        &target,
-                        &shutdown,
-                    )
-                    .await
-                {
-                    Ok(guard) => guard,
-                    Err(failed) => return failed,
-                },
-            );
-            {
-                let (Some(stripe), Some(exact)) = (target_stripe.as_ref(), target_guard.as_ref())
-                else {
-                    return false;
-                };
-                if target_gate
-                    .target_ownership(&target, stripe, exact)
-                    .is_err()
-                {
-                    return false;
-                }
-            }
-            dispatcher
-                .dispatch_locked_operation(
-                    InitialDispatchContext {
-                        store: &store,
-                        initial: &initial,
-                        injection_id,
-                        source_plane,
-                        api_client_store,
-                        target_gate: &target_gate,
-                        target: &target,
-                        shutdown: &shutdown,
-                    },
-                    &mut target_guard,
-                    &mut target_stripe,
-                    &mut source_executor,
-                )
-                .await
-        }
-        .await;
+        let failed = dispatcher
+            .dispatch_accepted_operation(
+                state,
+                injection_id,
+                source_plane,
+                api_client_store,
+                &mut source_executor,
+            )
+            .await;
         source_executor.returned(failed);
     }
 }
 impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
+    async fn dispatch_accepted_operation(
+        &self,
+        state: &crate::api::message_store::MessageStoreState,
+        injection_id: &str,
+        source_plane: crate::phone::types::PtyInputSourcePlane,
+        api_client_store: Option<&Arc<crate::api::auth::ApiClientStore>>,
+        source_executor: &mut crate::session::selection::SourceExecutorGuard,
+    ) -> bool {
+        let app = self.app;
+        let store = match &state.store {
+            Ok(store) => Arc::clone(store),
+            Err(_) => return false,
+        };
+        let shutdown = app
+            .try_state::<crate::shutdown::ShutdownSignal>()
+            .map(|signal| signal.token().clone())
+            .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+        let _operation_lock = match store.try_operation_lock(injection_id) {
+            Ok(Some(lock)) => lock,
+            _ => return false,
+        };
+        let _active = match state.active_operations.try_register(injection_id) {
+            Some(active) => active,
+            None => return false,
+        };
+        let initial = match store
+            .query_pty_input_by_injection_offloaded(injection_id.to_string())
+            .await
+        {
+            Ok(Some(result)) if !result.terminal => result,
+            _ => return false,
+        };
+        let target = match initial.target.clone() {
+            Some(target) => target,
+            None => return false,
+        };
+        let _response_delivery = match store.begin_response_delivery(&target) {
+            Ok(reservation) => reservation,
+            Err(_) => return false,
+        };
+        let target_gate = match &state.target_gate {
+            Ok(gate) => Arc::clone(gate),
+            Err(_) => return false,
+        };
+        if !self.wait_for_dispatch_restore().await {
+            return false;
+        }
+        let mut target_stripe = Some(match target_gate.try_target_lock(&target) {
+            Ok(Some(lock)) => lock,
+            _ => return false,
+        });
+        let mut target_guard = Some(
+            match self
+                .acquire_initial_dispatch_target(
+                    &store,
+                    &initial,
+                    injection_id,
+                    &target_gate,
+                    &target,
+                    &shutdown,
+                )
+                .await
+            {
+                Ok(guard) => guard,
+                Err(failed) => return failed,
+            },
+        );
+        {
+            let (Some(stripe), Some(exact)) = (target_stripe.as_ref(), target_guard.as_ref())
+            else {
+                return false;
+            };
+            if target_gate
+                .target_ownership(&target, stripe, exact)
+                .is_err()
+            {
+                return false;
+            }
+        }
+        self.dispatch_locked_operation(
+            InitialDispatchContext {
+                store: &store,
+                initial: &initial,
+                injection_id,
+                source_plane,
+                api_client_store,
+                target_gate: &target_gate,
+                target: &target,
+                shutdown: &shutdown,
+            },
+            &mut target_guard,
+            &mut target_stripe,
+            source_executor,
+        )
+        .await
+    }
+    async fn wait_for_dispatch_restore(&self) -> bool {
+        let app = self.app;
+        // Startup restore must finish before this dispatch owns target guards.
+        // No claim or payload has been consumed at this point.
+        if let Some(coordinator) =
+            app.try_state::<crate::session::selection::SelectionCoordinator>()
+        {
+            if coordinator.wait_for_restore_release().await.is_err() {
+                return false;
+            }
+        }
+        true
+    }
     async fn dispatch_locked_operation(
         &self,
         initial_context: InitialDispatchContext<'_>,
@@ -197,8 +219,15 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             owned_work: &mut owned_work,
             source_executor,
         };
+        self.dispatch_claimed_operation(&context, &mut guards).await
+    }
+    async fn dispatch_claimed_operation(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+    ) -> bool {
         let (selected, spawned, verified_target, session_manager, pty_manager) = match self
-            .select_pty_dispatch_session(&context, guards.reborrow())
+            .select_pty_dispatch_session(context, guards.reborrow())
             .await
         {
             Ok(value) => value,
@@ -212,33 +241,27 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             pty_manager: &pty_manager,
             selected_id: Uuid::nil(),
         };
-        selection.selected_id = match self.ready_dispatch(&context, &mut guards, &selection).await {
+        selection.selected_id = match self.ready_dispatch(context, guards, &selection).await {
             Ok(id) => id,
             Err(failed) => return failed,
         };
-        let permit = match self
-            .dispatch_writer(&context, &mut guards, &selection)
-            .await
-        {
+        let permit = match self.dispatch_writer(context, guards, &selection).await {
             Ok(value) => value,
             Err(failed) => return failed,
         };
-        let write_guards = match self
-            .dispatch_fresh_binding(&context, &mut guards, permit)
-            .await
-        {
+        let write_guards = match self.dispatch_fresh_binding(context, guards, permit).await {
             Ok(value) => value,
             Err(failed) => return failed,
         };
         let (final_authority, write_guards) = match self
-            .dispatch_final_authority(&context, &mut guards, &selection, write_guards)
+            .dispatch_final_authority(context, guards, &selection, write_guards)
             .await
         {
             Ok(value) => value,
             Err(failed) => return failed,
         };
         let (payload, write_guards) = match self
-            .dispatch_payload(&context, &mut guards, &selection, write_guards)
+            .dispatch_payload(context, guards, &selection, write_guards)
             .await
         {
             Ok(value) => value,
@@ -246,8 +269,8 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         };
         let write_guards = match self
             .dispatch_post_authority(
-                &context,
-                &mut guards,
+                context,
+                guards,
                 &selection,
                 write_guards,
                 FinalDispatchInput {
@@ -261,8 +284,8 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             Err(failed) => return failed,
         };
         self.dispatch_boundary(
-            &context,
-            &mut guards,
+            context,
+            guards,
             &selection,
             write_guards,
             FinalDispatchInput {
@@ -558,17 +581,16 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         }
         None
     }
-    async fn ready_dispatch(
+    async fn parse_dispatch_session_id(
         &self,
         context: &PtyDispatchContext<'_>,
         guards: &mut PtyDispatchGuards<'_>,
         selection: &DispatchSelection<'_>,
     ) -> Result<Uuid, bool> {
         let app = self.app;
-
         use crate::phone::types::PtyInputReasonCode as C;
-        let selected_id = match Uuid::parse_str(&selection.selected.id) {
-            Ok(id) => id,
+        match Uuid::parse_str(&selection.selected.id) {
+            Ok(id) => Ok(id),
             Err(_) => {
                 let observed = reject_pty_input_before_boundary(
                     context.store,
@@ -580,9 +602,22 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 drop(guards.target_guard.take());
                 drop(guards.target_stripe.take());
                 finish_owned_pty_work(app, guards.owned_work, observed).await;
-                return Err(false);
+                Err(false)
             }
-        };
+        }
+    }
+    async fn ready_dispatch(
+        &self,
+        context: &PtyDispatchContext<'_>,
+        guards: &mut PtyDispatchGuards<'_>,
+        selection: &DispatchSelection<'_>,
+    ) -> Result<Uuid, bool> {
+        let app = self.app;
+
+        use crate::phone::types::PtyInputReasonCode as C;
+        let selected_id = self
+            .parse_dispatch_session_id(context, guards, selection)
+            .await?;
         let readiness = await_pty_input_before_deadline(
             context.expires,
             context.shutdown,

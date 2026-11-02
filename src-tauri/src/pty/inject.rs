@@ -1,4 +1,5 @@
 mod clear_watch;
+mod preflight;
 
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -8,7 +9,7 @@ use uuid::Uuid;
 
 use crate::pty::backend::PTY_INPUT_MAX_BYTES;
 use crate::pty::manager::{PtyInputPermit, PtyManager, PtyRouteWriteGuard};
-use crate::session::manager::SessionManager;
+use crate::session::manager::{CarrierSnapshot, SessionManager};
 use crate::session::session::{Session, SessionStatus};
 
 // Internal mailbox suspension, consumed only after the writer/lifecycle guards
@@ -753,7 +754,7 @@ async fn check_injection_hold<R: tauri::Runtime>(
     Ok(())
 }
 
-async fn inject_text_into_session_impl<R, F>(
+async fn inject_text_into_session_impl<R: tauri::Runtime, F>(
     app: &tauri::AppHandle<R>,
     session_id: Uuid,
     text: &str,
@@ -763,11 +764,7 @@ async fn inject_text_into_session_impl<R, F>(
     pre_write_check: F,
 ) -> Result<(), String>
 where
-    R: tauri::Runtime,
-    F: FnOnce(
-        Option<&Session>,
-        Option<&crate::session::manager::CarrierSnapshot>,
-    ) -> Result<(), String>,
+    F: FnOnce(Option<&Session>, Option<&CarrierSnapshot>) -> Result<(), String>,
 {
     // Resolve one public snapshot without retaining a manager guard across an await.
     let manager = {
@@ -789,32 +786,16 @@ where
 
     check_injection_hold(app, session_id, &hold_policy).await?;
 
-    // Deliberately synchronous and immediately adjacent to the serialized write
-    // boundary. Callers of the supported variant perform their final
-    // filesystem/config guard here.
-    // Peer callbacks use the fresh interior snapshot below, after all waits.
-    let legacy_check = if matches!(hold_policy, HoldPolicy::PeerWake(_)) {
-        Some(pre_write_check)
-    } else {
-        // Internal notices must not admit a stale row after waiting for the writer.
-        // Refresh without retaining a shared state guard during caller I/O.
-        let current = if matches!(hold_policy, HoldPolicy::InternalNotice) {
-            manager.get_session(session_id).await
-        } else {
-            session
-        };
-        pre_write_check(current.as_ref(), None)?;
-        None
-    };
-
-    // #2586 D1 - on a `send_enter` shell the two later lone `\r` are the submit;
-    // the wake render's trailing `\n\r` rides inside the pasted burst and can
-    // only add a blank line. Strip exactly that two-byte suffix and nothing
-    // else, never down to empty. Plain shells keep every byte.
-    let text = match text.strip_suffix("\n\r") {
-        Some(stripped) if send_enter && !stripped.is_empty() => stripped,
-        _ => text,
-    };
+    let (legacy_check, text) = preflight::prepare_text(
+        &manager,
+        session_id,
+        session,
+        &hold_policy,
+        pre_write_check,
+        text,
+        send_enter,
+    )
+    .await?;
 
     let mut watch = if on_observation.is_some() {
         Some(clear_watch::for_injection(&permit, &pty_manager)?)
