@@ -372,8 +372,11 @@ function workflowContract(workflow, warm) {
   assert.ok(workflow.includes('group: pr-regression-gates-${{ github.ref }}${{'));
   assert.ok(workflow.includes(`cancel-in-progress: \${{ !${adoption} }}`));
 }
-const workflow = fs.readFileSync('.github/workflows/pr-regression-gates.yml', 'utf8');
-const warm = fs.readFileSync('.github/workflows/cache-warm.yml', 'utf8');
+function workflowText(file) {
+  return fs.readFileSync(file, 'utf8').replaceAll('\r\n', '\n');
+}
+const workflow = workflowText('.github/workflows/pr-regression-gates.yml');
+const warm = workflowText('.github/workflows/cache-warm.yml');
 test('committed workflow contract', () => workflowContract(workflow, warm));
 const mutants = [
   ['adoption enables lifecycle', s => s.replace(
@@ -404,8 +407,11 @@ for (const [name, mutate] of mutants) test(`workflow mutant: ${name}`, () => {
   const changed = mutate(workflow); assert.notEqual(changed, workflow);
   assert.throws(() => workflowContract(changed, warm));
 });
-test('cache warm mutant drops length flag', () => assert.throws(() =>
-  workflowContract(workflow, warm.replace('--force-warn clippy::too_many_lines', ''))));
+test('cache warm mutant drops length flag', () => {
+  const changed = warm.replace('--force-warn clippy::too_many_lines', '');
+  assert.notEqual(changed, warm);
+  assert.throws(() => workflowContract(workflow, changed));
+});
 for (const job of ['rust-regression-windows', 'clippy-linux', 'rust-regression-macos']) {
   for (const flag of ['cognitive_complexity', 'too_many_lines'])
     test(`workflow mutant: ${job} drops ${flag}`, () => {
