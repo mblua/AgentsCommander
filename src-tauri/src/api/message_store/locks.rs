@@ -205,6 +205,11 @@ impl PtyInputTargetGate {
         self.exact_locks.acquire(target_key).await
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "API del gate de ownership: preservar la llamada sobre el gate y las \
+            vidas/guards existentes; no convertir a API estática en este cambio."
+    )]
     pub(crate) fn target_ownership<'a>(
         &self,
         target: &'a str,

@@ -46,7 +46,7 @@ fn fixture() -> Fixture {
         .unwrap()
     {
         AgentFileReadReply::List(list) => list,
-        _ => panic!("list"),
+        AgentFileReadReply::Read(_) => panic!("list"),
     };
     let source = list
         .sources
@@ -61,7 +61,7 @@ fn fixture() -> Fixture {
         .unwrap()
     {
         AgentFileReadReply::Read(snapshot) => snapshot,
-        _ => panic!("snapshot"),
+        AgentFileReadReply::List(_) => panic!("snapshot"),
     };
     Fixture {
         _temp: temp,
@@ -298,7 +298,7 @@ fn e2432_p02_closed_catalog_isolates_registered_failure_and_preserves_owner() {
             .unwrap()
         {
             AgentFileReadReply::List(listed) => listed,
-            _ => panic!("list"),
+            AgentFileReadReply::Read(_) => panic!("list"),
         };
         let registered_source = listed
             .sources
@@ -312,7 +312,7 @@ fn e2432_p02_closed_catalog_isolates_registered_failure_and_preserves_owner() {
             .unwrap()
         {
             AgentFileReadReply::Read(snapshot) => snapshot,
-            _ => panic!("snapshot"),
+            AgentFileReadReply::List(_) => panic!("snapshot"),
         };
         assert!(actual.rows.is_empty() && actual.tickets.is_empty());
         let committed = save(&f);
@@ -441,7 +441,7 @@ fn e2432_p02_captured_validation_has_no_participant_reread() {
     AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = None);
     let snapshot = match reply.unwrap() {
         AgentFileReadReply::Read(snapshot) => snapshot,
-        _ => panic!("snapshot"),
+        AgentFileReadReply::List(_) => panic!("snapshot"),
     };
     assert!(captured.get());
     assert_eq!(snapshot.availability, SourceAvailability::Available);
@@ -570,7 +570,7 @@ fn e2432_p02_preferences_invalid_catalog_fresh_other_menu_and_missing_ref() {
         .unwrap()
     {
         AgentFileReadReply::List(list) => list,
-        _ => panic!("list"),
+        AgentFileReadReply::Read(_) => panic!("list"),
     };
     assert_eq!(list.active_source_by_menu.settings, Some(f.source.clone()));
     assert!(list.menu_diagnostics.contains_key("settings"));
@@ -580,7 +580,7 @@ fn e2432_p02_preferences_invalid_catalog_fresh_other_menu_and_missing_ref() {
         .unwrap()
     {
         AgentFileReadReply::Read(s) => s,
-        _ => panic!("read"),
+        AgentFileReadReply::List(_) => panic!("read"),
     };
     assert_eq!(invalid.availability, SourceAvailability::Invalid);
     assert!(invalid.rows.is_empty() && invalid.tickets.is_empty());
@@ -592,7 +592,7 @@ fn e2432_p02_preferences_invalid_catalog_fresh_other_menu_and_missing_ref() {
         .unwrap()
     {
         AgentFileReadReply::List(list) => list,
-        _ => panic!("list"),
+        AgentFileReadReply::Read(_) => panic!("list"),
     };
     assert_eq!(missing.last_selected.settings, Some(f.source));
     assert!(missing.active_source_by_menu.settings.is_none());

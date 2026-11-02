@@ -439,6 +439,10 @@ impl LocalProcessBackend {
         })
     }
 
+    #[cfg_attr(
+        not(windows),
+        expect(clippy::unused_self, reason = "self holds the Windows git guard.")
+    )]
     fn prepare_spawn_command(
         &self,
         launch: &launch::PreparedLaunch,

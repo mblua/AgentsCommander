@@ -16,20 +16,20 @@ jobs:
       run:
         shell: bash
     env:
-      S: 4481370e87f47b986503dfc1f359b970d0ec2ca6
-      SOURCE_TREE: d641b90715ad34853bf884e47a12429f99ce1558
-      W: ${{ github.event.pull_request.head.sha }}
+      Q: d2b1089a636e5bce9bbc8e036f595e05f9f4077c
+      REFERENCE_TREE: 4f385ba16a8b9e4f965c84d51231e87d21edb73a
+      R: ${{ github.event.pull_request.head.sha }}
+      PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
       EVENT_SHA: ${{ github.sha }}
       PR_BASE: ${{ github.event.pull_request.base.sha }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       E_SUBDIR: i3528-${{ github.run_id }}-${{ github.run_attempt }}
-      SOURCE_SUBDIR: i3528-source-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Initialize evidence
         run: |
           set -euo pipefail
           export E="$RUNNER_TEMP/$E_SUBDIR"
-          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
+          export SOURCE_ROOT="$GITHUB_WORKSPACE"
           mkdir "$E"
           date -u +%FT%TZ > "$E/started"
           uname -a > "$E/host.txt"
@@ -40,20 +40,21 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Isolate measured source S
+      - name: Verify primary R and fixed Q input equivalence
         run: |
           set -euo pipefail
           export E="$RUNNER_TEMP/$E_SUBDIR"
-          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
-          test "$(git rev-parse HEAD)" = "$W"
-          git clone --no-hardlinks --no-checkout "$GITHUB_WORKSPACE" "$SOURCE_ROOT" \
-            > "$E/clone.stdout" 2> "$E/clone.stderr"
-          git -C "$SOURCE_ROOT" checkout --detach "$S" \
-            > "$E/checkout.stdout" 2> "$E/checkout.stderr"
+          export SOURCE_ROOT="$GITHUB_WORKSPACE"
+          test "$PR_HEAD_REF" = refactor/3528-clippy-no-regression
           git -C "$SOURCE_ROOT" rev-parse HEAD 'HEAD^{tree}' > "$E/source-before.txt"
           git -C "$SOURCE_ROOT" status --porcelain --untracked-files=no > "$E/status-before.txt"
-          test "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" = "$S"
-          test "$(git -C "$SOURCE_ROOT" rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          git -C "$SOURCE_ROOT" rev-parse "$Q^{tree}" > "$E/reference-tree.txt"
+          git -C "$SOURCE_ROOT" diff --name-status "$Q" "$R" > "$E/reference-diff-before.txt"
+          test "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" = "$R"
+          test "$(cat "$E/reference-tree.txt")" = "$REFERENCE_TREE"
+          git -C "$SOURCE_ROOT" merge-base --is-ancestor "$Q" "$R"
+          git -C "$SOURCE_ROOT" diff --exit-code "$Q" "$R" -- . \
+            ':(exclude).github/workflows/clippy-seven-measurement.yml'
           test ! -s "$E/status-before.txt"
 
       - uses: actions/setup-node@v5
@@ -64,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           export E="$RUNNER_TEMP/$E_SUBDIR"
-          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
+          export SOURCE_ROOT="$GITHUB_WORKSPACE"
           cd "$SOURCE_ROOT"
           capture() {
             local name=$1
@@ -97,7 +98,7 @@ jobs:
         run: |
           set -euo pipefail
           export E="$RUNNER_TEMP/$E_SUBDIR"
-          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
+          export SOURCE_ROOT="$GITHUB_WORKSPACE"
           cd "$SOURCE_ROOT/src-tauri"
           pwd > "$E/cwd.txt"
           rustc +1.98.1 -vV > "$E/rustc.txt"
@@ -117,10 +118,12 @@ jobs:
           const {E, SOURCE_ROOT: root} = process.env;
           const save = (name, value) => fs.writeFileSync(path.join(E, name),
             JSON.stringify(value, null, 2) + '\n');
-          const keys = ['RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'CARGO_BUILD_RUSTFLAGS',
+          const keys = ['CLIPPY_ARGS', 'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS',
+            'CARGO_BUILD_RUSTFLAGS',
             'CLIPPY_CONF_DIR', 'CARGO_MANIFEST_DIR', 'RUSTC', 'RUSTC_WRAPPER',
             'RUSTC_WORKSPACE_WRAPPER', 'RUSTUP_TOOLCHAIN', 'CARGO_HOME', 'CARGO_TARGET_DIR',
-            'CARGO_BUILD_BUILD_DIR'];
+            'CARGO_BUILD_BUILD_DIR', 'CARGO_BUILD_RUSTC', 'CARGO_BUILD_RUSTC_WRAPPER',
+            'CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER'];
           keys.push(...Object.keys(process.env).filter(k => /^CARGO_TARGET_.*RUSTFLAGS$/.test(k)));
           const environment = Object.fromEntries(keys.map(k => [k, process.env[k] ?? null]));
           save('environment.json', environment);
@@ -148,7 +151,7 @@ jobs:
             const bytes = fs.readFileSync(filename);
             const text = bytes.toString('utf8');
             const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
-            // S has only build.jobs=4. Any additional config needs explanation before capture.
+            // Q has only build.jobs=4. Any additional config needs explanation before capture.
             const approved = filename === path.join(root, '.cargo', 'config.toml') &&
               text.replace(/\r/g, '').trim() === '[build]\njobs = 4';
             if (!approved) errors.push(`Unexplained Cargo configuration ${filename}`);
@@ -166,178 +169,77 @@ jobs:
               sha256: crypto.createHash('sha256').update(bytes).digest('hex')};
           }));
           save('effective-controls.json', {cwd: process.cwd(), errors,
-            clippySelection: 'S root clippy.toml; no CLIPPY_CONF_DIR or external selector',
+            clippySelection: 'Q root clippy.toml; no CLIPPY_CONF_DIR or external selector',
             cargoChildEnvironment: 'No accepted Cargo config has [env] redirection',
-            build: 'S .cargo/config.toml build.jobs=4; default target/build-dir retained',
-            limitations: ['Direct driver bypasses wrappers; cache correctness remains unproven',
-              'Force-warn and positive controls do not prove universal coverage',
+            build: 'Q .cargo/config.toml build.jobs=4; default target/build-dir retained',
+            limitations: ['Wrapper/cache correctness remains unproven',
+              'Old activation/shapes reused; no new control/production run or universal proof',
               'macOS unmeasured']});
           if (errors.length) throw new Error(errors.join('\n'));
           JS
 
-      - name: Capture Cargo and corrected direct-driver control
+      - name: Capture one ALL-target Cargo stream
         run: |
           set -euo pipefail
           export E="$RUNNER_TEMP/$E_SUBDIR"
-          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
-          cd "$SOURCE_ROOT/src-tauri"
+          cd "$GITHUB_WORKSPACE/src-tauri"
           flags=( -D warnings
             --force-warn clippy::cognitive_complexity --force-warn clippy::too_many_lines
             --force-warn clippy::doc_markdown --force-warn clippy::implicit_clone
             --force-warn clippy::map_unwrap_or --force-warn clippy::match_same_arms
             --force-warn clippy::semicolon_if_nothing_returned
             --force-warn clippy::unnested_or_patterns --force-warn clippy::map_err_ignore )
-          for mode in all production; do
-            selector=( --all-targets )
-            if [ "$mode" = production ]; then selector=( --lib --bins ); fi
-            printf '%q ' cargo +1.98.1 clippy --locked --workspace "${selector[@]}" \
-              --message-format=json -- "${flags[@]}" > "$E/$mode.command"
-            date -u +%FT%TZ > "$E/$mode.started"
-            set +e
-            cargo +1.98.1 clippy --locked --workspace "${selector[@]}" \
-              --message-format=json -- "${flags[@]}" \
-              > "$E/$mode.jsonl" 2> "$E/$mode.stderr"
-            rc=$?
-            set -e
-            printf '%s\n' "$rc" > "$E/$mode.exit"
-            date -u +%FT%TZ > "$E/$mode.finished"
-          done
-          cat > "$E/control.rs" <<'RS'
-          /// Uses SomeType in prose.
-          pub fn docs() {}
-          pub fn clone_site(v: Vec<u8>) -> Vec<u8> { v.to_vec() }
-          pub fn option_site(v: Option<u8>) -> u8 { v.map(|x| x + 1).unwrap_or(0) }
-          pub fn arms(v: u8) -> u8 {
-              match v { 1 => 7, 2 => 7, _ => 9 }
-          }
-          pub fn unit_site(v: &mut Vec<u8>) {
-              v.push(1)
-          }
-          pub fn patterns(v: Option<u8>) -> bool {
-              matches!(v, Some(1) | Some(2))
-          }
-          pub enum Failure { Invalid }
-          pub fn error_site(v: Result<u8, u8>) -> Result<u8, Failure> {
-              v.map_err(|_| Failure::Invalid)
-          }
-          pub fn two_sites(a: Vec<u8>, b: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
-              (a.to_vec(), b.to_vec())
-          }
-          macro_rules! clone_expression { ($v:expr) => { $v.to_vec() }; }
-          pub fn macro_site(v: Vec<u8>) -> Vec<u8> { clone_expression!(v) }
-          RS
-          driver=$(rustup which --toolchain 1.98.1 clippy-driver)
-          printf '%q ' "$driver" --crate-name i3528_control --crate-type lib --edition=2021 \
-            --emit=metadata --error-format=json "$E/control.rs" \
-            -o "$E/control.rmeta" "${flags[@]}" > "$E/control.command"
-          date -u +%FT%TZ > "$E/control.started"
+          printf '%q ' cargo +1.98.1 clippy --locked --workspace --all-targets \
+            --message-format=json -- "${flags[@]}" > "$E/all.command"
+          date -u +%FT%TZ > "$E/all.started"
           set +e
-          "$driver" --crate-name i3528_control --crate-type lib --edition=2021 \
-            --emit=metadata --error-format=json "$E/control.rs" \
-            -o "$E/control.rmeta" "${flags[@]}" \
-            > "$E/control.stdout" 2> "$E/control.jsonl"
+          cargo +1.98.1 clippy --locked --workspace --all-targets --message-format=json \
+            -- "${flags[@]}" > "$E/all.jsonl" 2> "$E/all.stderr"
           rc=$?
           set -e
-          printf '%s\n' "$rc" > "$E/control.exit"
-          date -u +%FT%TZ > "$E/control.finished"
+          printf '%s\n' "$rc" > "$E/all.exit"
+          date -u +%FT%TZ > "$E/all.finished"
 
-      - name: Validate captures and describe observations
+      - name: Validate complete ALL capture and report raw totals
         run: |
           set -euo pipefail
           export E="$RUNNER_TEMP/$E_SUBDIR"
-          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
           node --input-type=module <<'JS'
           import fs from 'node:fs';
           import path from 'node:path';
-          const {E, SOURCE_ROOT: root} = process.env;
+          const {E} = process.env;
+          const read = name => fs.readFileSync(path.join(E, name), 'utf8');
+          const errors = [];
+          for (const suffix of ['command', 'started', 'finished', 'exit']) {
+            if (!read('all.' + suffix).trim()) errors.push('Missing receipt ' + suffix);
+          }
+          if (read('all.exit').trim() !== '0') errors.push('Original Cargo exit nonzero');
+          const text = read('all.jsonl');
+          if (!text.trim()) throw new Error('Empty capture');
+          const lines = text.endsWith('\n') ? text.slice(0, -1).split('\n') : text.split('\n');
+          const records = lines.map((line, i) => {
+            try { return JSON.parse(line); }
+            catch { throw new Error('Malformed JSON at line ' + (i + 1)); }
+          });
+          if (records.some(r => !r || typeof r.reason !== 'string')) {
+            errors.push('Invalid Cargo record');
+          }
+          const terminals = records.filter(r => r.reason === 'build-finished');
+          if (terminals.length !== 1 || terminals[0].success !== true ||
+              records.at(-1) !== terminals[0]) errors.push('Incomplete successful terminal');
+          const diagnostics = records.filter(r => r.reason === 'compiler-message');
+          if (diagnostics.some(r => !r.message || r.message.level === 'error' ||
+              r.message.level === 'failure-note')) errors.push('Error diagnostics');
           const codes = ['doc_markdown', 'implicit_clone', 'map_unwrap_or', 'match_same_arms',
             'semicolon_if_nothing_returned', 'unnested_or_patterns', 'map_err_ignore']
-            .map(c => `clippy::${c}`);
-          const errors = [];
-          const read = name => fs.readFileSync(path.join(E, name), 'utf8');
-          const save = (name, value) => fs.writeFileSync(path.join(E, name),
-            JSON.stringify(value, null, 2) + '\n');
-          function stream(name) {
-            const text = read(name);
-            if (!text.trim()) throw new Error(`${name}: empty capture`);
-            const lines = text.endsWith('\n') ? text.slice(0, -1).split('\n') : text.split('\n');
-            return lines.map((line, i) => {
-              try { return JSON.parse(line); }
-              catch { throw new Error(`${name}:${i + 1}: malformed JSON`); }
-            });
-          }
-          function receipt(name) {
-            for (const suffix of ['command', 'started', 'finished', 'exit']) {
-              if (!read(`${name}.${suffix}`).trim()) errors.push(`${name}: missing ${suffix}`);
-            }
-            if (read(`${name}.exit`).trim() !== '0') errors.push(`${name}: original exit nonzero`);
-          }
-          const observations = {};
-          for (const mode of ['all', 'production']) {
-            receipt(mode);
-            const records = stream(`${mode}.jsonl`);
-            const terminals = records.filter(r => r.reason === 'build-finished');
-            if (terminals.length !== 1 || terminals[0].success !== true ||
-                records.at(-1) !== terminals[0]) errors.push(`${mode}: incomplete terminal`);
-            const diagnostics = records.filter(r => r.reason === 'compiler-message');
-            if (diagnostics.some(r => r.message.level === 'error' ||
-                r.message.level === 'failure-note')) errors.push(`${mode}: error diagnostics`);
-            const selected = diagnostics.filter(r => codes.includes(r.message.code?.code));
-            const counts = Object.fromEntries(codes.map(c => [c,
-              selected.filter(r => r.message.code.code === c).length]));
-            // Keep target/profile identities and full spans, children, fixes and expansion chains.
-            observations[mode] = {platform: 'linux', records: records.length, counts,
-              targets: [...new Set(selected.map(r => JSON.stringify({package_id: r.package_id,
-                target: r.target, profile: r.profile})))].map(t => JSON.parse(t)),
-              selected, otherDiagnostics: diagnostics.filter(r =>
-                !codes.includes(r.message.code?.code))};
-          }
-          receipt('control');
-          const control = stream('control.jsonl');
-          if (control.some(r => r.level === 'error' || r.level === 'failure-note')) {
-            errors.push('control: error diagnostics');
-          }
-          const activated = new Set(control.map(r => r.code?.code).filter(Boolean));
-          for (const code of codes) {
-            if (!activated.has(code)) errors.push(`control: missing ${code}`);
-          }
-          const normalize = filename => filename.startsWith(root + '/')
-            ? filename.slice(root.length + 1) : filename;
-          function candidate(record) {
-            return JSON.stringify({code: record.message.code?.code,
-              spans: record.message.spans.map(s => ({file: normalize(s.file_name),
-                byte_start: s.byte_start, byte_end: s.byte_end, is_primary: s.is_primary}))});
-          }
-          const groups = new Map();
-          for (const mode of ['all', 'production']) {
-            observations[mode].selected.forEach((record, index) => {
-              const key = candidate(record);
-              if (!groups.has(key)) groups.set(key, {candidate: JSON.parse(key), all: [],
-                production: []});
-              groups.get(key)[mode].push({index, package_id: record.package_id,
-                target: record.target, profile: record.profile});
-            });
-          }
-          const membership = [...groups.values()].map(g => ({...g,
-            status: g.all.length === 1 && g.production.length === 1 ? 'one-to-one candidate' :
-              g.all.length && g.production.length ? 'ambiguous/repeated targets' : 'unmatched'}));
-          const diagnosticShapes = control.filter(r => codes.includes(r.code?.code)).map(r => ({
-            code: r.code.code, spans: r.spans, children: r.children}));
-          const macroLine = read('control.rs').split('\n')
-            .findIndex(line => line.startsWith('pub fn macro_site')) + 1;
-          const macroDiagnostics = control.filter(r => r.spans?.some(s =>
-            s.line_start === macroLine || s.expansion));
-          save('observations.json', {observations, membership, diagnosticShapes,
-            macro: {present: macroDiagnostics.length > 0, diagnostics: macroDiagnostics,
-              limit: 'Absence supplies no macro expansion shape; no emission assumed'},
-            repeatedTargets: membership.filter(g => g.all.length > 1 || g.production.length > 1),
-            distinctSameFunctionSpans: diagnosticShapes.filter(r =>
-              r.spans.some(s => s.line_start === 19)),
-            limitations: ['Exact spans are candidate groups, not final identity or deduplication',
-              'Unmatched/ambiguous production membership blocks final design, not hidden here',
-              'Raw originals retain doc/expression spans, children, suggestions and expansions',
-              'macOS unmeasured; cache replay and controls cannot prove universal coverage'],
-            errors});
+            .map(c => 'clippy::' + c);
+          const counts = Object.fromEntries(codes.map(c => [c,
+            diagnostics.filter(r => r.message?.code?.code === c).length]));
+          fs.writeFileSync(path.join(E, 'observations.json'), JSON.stringify({platform: 'linux',
+            records: records.length, counts, errors,
+            limits: ['Raw counts only; repeated targets retained, no chosen debt capacities',
+              'Accepted old activation/shapes reused; production/control not rerun',
+              'Macro coverage unproved; macOS unmeasured; compiled cfg/targets only']}, null, 2));
           if (errors.length) throw new Error(errors.join('\n'));
           JS
 
@@ -346,11 +248,14 @@ jobs:
         run: |
           set -euo pipefail
           export E="$RUNNER_TEMP/$E_SUBDIR"
-          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
+          export SOURCE_ROOT="$GITHUB_WORKSPACE"
           git -C "$SOURCE_ROOT" rev-parse HEAD 'HEAD^{tree}' > "$E/source-after.txt"
           git -C "$SOURCE_ROOT" status --porcelain --untracked-files=no > "$E/status-after.txt"
-          test "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" = "$S"
-          test "$(git -C "$SOURCE_ROOT" rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          git -C "$SOURCE_ROOT" diff --name-status "$Q" "$R" > "$E/reference-diff-after.txt"
+          test "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" = "$R"
+          cmp "$E/source-before.txt" "$E/source-after.txt"
+          git -C "$SOURCE_ROOT" diff --exit-code "$Q" "$R" -- . \
+            ':(exclude).github/workflows/clippy-seven-measurement.yml'
           test ! -s "$E/status-after.txt"
 
       - name: Hash every evidence file and record provenance
@@ -360,7 +265,7 @@ jobs:
         run: |
           set -euo pipefail
           export E="$RUNNER_TEMP/$E_SUBDIR"
-          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
+          export SOURCE_ROOT="$GITHUB_WORKSPACE"
           mkdir -p "$E"
           node --input-type=module <<'JS'
           import fs from 'node:fs';
@@ -381,8 +286,11 @@ jobs:
               return [name, {argv: read(f.name), exit: read(`${name}.exit`),
                 started: read(`${name}.started`), finished: read(`${name}.finished`)}];
             }));
-          const manifest = {S: env.S, sourceTree: env.SOURCE_TREE, W: env.W,
-            eventSha: env.EVENT_SHA, pr: {number: env.PR_NUMBER, base: env.PR_BASE, head: env.W},
+          const manifest = {sourceReference: env.Q, referenceTree: env.REFERENCE_TREE,
+            sourceCommit: env.R, sourceTree: read('source-before.txt')?.trim().split('\n')[1],
+            workflowCommit: env.R, primaryBranch: env.PR_HEAD_REF,
+            equivalenceException: '.github/workflows/clippy-seven-measurement.yml',
+            eventSha: env.EVENT_SHA, pr: {number: env.PR_NUMBER, base: env.PR_BASE, head: env.R},
             run: {id: env.GITHUB_RUN_ID, attempt: env.GITHUB_RUN_ATTEMPT,
               url: `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/` +
                 env.GITHUB_RUN_ID}, platform: 'linux', host: read('host.txt'),

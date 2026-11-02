@@ -215,6 +215,11 @@ impl SelectionCoordinator {
     }
 
     /// Prepare all owned data and the independent result cell before U.
+    #[expect(
+        clippy::unused_self,
+        reason = "API de coordinator existente: conservar método y callers de preparación \
+            antes de U; sin alterar operación/nonces."
+    )]
     pub(crate) fn prepare_owned_replacement(
         &self,
         descriptor: ResolvedReplacement,

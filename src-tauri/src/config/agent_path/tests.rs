@@ -158,6 +158,10 @@ async fn agent_path_2589_login_shell_probe_skips_a_missing_shell() {
 
 const T3_INJECTED: &str = "/ac-2683-t3";
 
+#[expect(
+    clippy::option_option,
+    reason = "get_envs distinguishes unspecified PATH, explicit removal, and a present value"
+)]
 fn path_override(command: &std::process::Command) -> Option<Option<OsString>> {
     command
         .get_envs()

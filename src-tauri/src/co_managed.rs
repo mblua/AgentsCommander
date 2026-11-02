@@ -232,6 +232,14 @@ impl CoManagedSupervisorHandle {
         self.lock_state().contended.remove(id);
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "self selecciona hooks sólo en compilación de pruebas; preservar el mismo \
+                método en producción y tests."
+        )
+    )]
     fn record_step(&self, step: &'static str) {
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {
@@ -240,6 +248,14 @@ impl CoManagedSupervisorHandle {
         let _ = step;
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "self selecciona hooks sólo en compilación de pruebas; preservar el mismo \
+                método en producción y tests."
+        )
+    )]
     fn record_commit_call(&self) {
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {
@@ -250,6 +266,14 @@ impl CoManagedSupervisorHandle {
     }
 
     /// Test-only seam: see `CoManagedTestHooks::after_commit`.
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "self selecciona hooks sólo en compilación de pruebas; preservar el mismo \
+                método en producción y tests."
+        )
+    )]
     fn run_after_commit_hook(&self) {
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {

@@ -438,6 +438,11 @@ pub(crate) struct SourceInventoryCapture {
 }
 
 impl SourceInventoryCapture {
+    #[expect(
+        clippy::match_wildcard_for_single_variants,
+        reason = "E2992 postponed: conservar validación/ownership Settings \
+            sin rediseño; este match acepta Bytes y rechaza el otro estado"
+    )]
     pub(crate) fn capture(
         discovery: SourceDiscoveryWitness,
         mut discovered: Vec<SourceDiscoveredTargetEvidence>,

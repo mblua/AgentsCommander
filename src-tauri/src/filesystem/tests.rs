@@ -634,6 +634,11 @@ impl Issue3278SyncGuard {
         Self
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "Método del guard de observación de pruebas: preservar su vida mientras se \
+            consulta el probe global."
+    )]
     fn assert_observed(&self) {
         ISSUE_3278_SYNC_PROBE.with_borrow(|slot| {
             assert!(slot.as_ref().unwrap().observed.is_some());

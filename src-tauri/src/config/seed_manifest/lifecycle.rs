@@ -78,6 +78,11 @@ impl ManifestActivationToken {
         Self { _private: () }
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "Presencia del token/capability autoriza la operación aunque no lea campos; \
+            no hacerlo estático."
+    )]
     pub(crate) fn authorize(&self) {}
 }
 

@@ -56,7 +56,7 @@ fn normal_sibling_repo_resolves_to_repos_container_path() {
             assert_eq!(name, "repo-AgentsCommander");
             assert_eq!(container_path, "/repos/repo-AgentsCommander");
         }
-        other => panic!("expected Mounted, got {:?}", other),
+        other @ RepoOutcome::NotFound => panic!("expected Mounted, got {:?}", other),
     }
     let mounts: Vec<_> = resolution.mounts().collect();
     assert_eq!(mounts.len(), 1);
