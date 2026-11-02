@@ -22,6 +22,7 @@ pub(crate) mod coding_agent_profiles;
 pub(crate) mod coding_agent_requests;
 pub(crate) mod config_locations;
 pub(crate) mod config_seed;
+pub(crate) mod config_write_probe;
 pub(crate) mod context_skills;
 pub(crate) mod context_templates;
 pub(crate) mod coordinator_clocks;
