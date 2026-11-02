@@ -412,8 +412,8 @@ impl ProjectSeedManifestGuard {
         not(test),
         expect(
             clippy::unused_self,
-            reason = "self ofrece hook Windows cfg(test); preservar misma llamada nativa en \
-                producción."
+            reason = "self ofrece hook Windows compilación de pruebas; preservar misma llamada \
+                nativa en producción."
         )
     )]
     pub(crate) fn call_windows_namespace(

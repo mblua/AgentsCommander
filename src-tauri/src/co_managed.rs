@@ -236,8 +236,8 @@ impl CoManagedSupervisorHandle {
         not(test),
         expect(
             clippy::unused_self,
-            reason = "self selecciona hooks sólo en cfg(test); preservar el mismo método en \
-                producción y tests."
+            reason = "self selecciona hooks sólo en compilación de pruebas; preservar el mismo \
+                método en producción y tests."
         )
     )]
     fn record_step(&self, step: &'static str) {
@@ -252,8 +252,8 @@ impl CoManagedSupervisorHandle {
         not(test),
         expect(
             clippy::unused_self,
-            reason = "self selecciona hooks sólo en cfg(test); preservar el mismo método en \
-                producción y tests."
+            reason = "self selecciona hooks sólo en compilación de pruebas; preservar el mismo \
+                método en producción y tests."
         )
     )]
     fn record_commit_call(&self) {
@@ -270,8 +270,8 @@ impl CoManagedSupervisorHandle {
         not(test),
         expect(
             clippy::unused_self,
-            reason = "self selecciona hooks sólo en cfg(test); preservar el mismo método en \
-                producción y tests."
+            reason = "self selecciona hooks sólo en compilación de pruebas; preservar el mismo \
+                método en producción y tests."
         )
     )]
     fn run_after_commit_hook(&self) {

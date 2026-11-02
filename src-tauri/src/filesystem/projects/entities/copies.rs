@@ -71,8 +71,8 @@ impl MatrixCopyHooks<'_> {
         not(test),
         expect(
             clippy::unused_self,
-            reason = "self selecciona callback cfg(test); conservar el préstamo mutable y \
-                orden del seam."
+            reason = "self selecciona callback compilación de pruebas; conservar el préstamo \
+                mutable y orden del seam."
         )
     )]
     pub(crate) fn run(&mut self, stage: MatrixCopyStage, path: &Path) -> Result<(), String> {

@@ -248,8 +248,8 @@ impl NewProjectTransactionHooks {
         not(test),
         expect(
             clippy::unused_self,
-            reason = "self contiene inyección de fallo en cfg(test); preservar hook y contrato \
-                de transacción."
+            reason = "self contiene inyección de fallo en compilación de pruebas; preservar hook y \
+                contrato de transacción."
         )
     )]
     pub(crate) fn save_settings(
@@ -268,7 +268,8 @@ impl NewProjectTransactionHooks {
         not(test),
         expect(
             clippy::unused_self,
-            reason = "self contiene hook en cfg(test); conservar orden y revalidación final."
+            reason = "self contiene hook en compilación de pruebas; conservar orden y revalidación \
+                final."
         )
     )]
     pub(crate) fn before_final_revalidation(&self, ac_root: &Path) {

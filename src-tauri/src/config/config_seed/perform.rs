@@ -104,8 +104,8 @@ impl ConfigSeedTestHooks {
         not(test),
         expect(
             clippy::unused_self,
-            reason = "self controla fallo inyectado cfg(test); preservar hook y orden de \
-                publicación."
+            reason = "self controla fallo inyectado compilación de pruebas; preservar hook y orden \
+                de publicación."
         )
     )]
     fn install(&self, staging: &Path, dest: &Path) -> std::io::Result<()> {
@@ -122,7 +122,8 @@ impl ConfigSeedTestHooks {
         not(test),
         expect(
             clippy::unused_self,
-            reason = "self controla creación ajena inyectada cfg(test); conservar seam."
+            reason = "self controla creación ajena inyectada compilación de pruebas; conservar \
+                seam."
         )
     )]
     fn before_restore(&self, dest: &Path) {
@@ -140,7 +141,8 @@ impl ConfigSeedTestHooks {
         not(test),
         expect(
             clippy::unused_self,
-            reason = "self controla fallo inyectado cfg(test); preservar recuperación."
+            reason = "self controla fallo inyectado compilación de pruebas; preservar \
+                recuperación."
         )
     )]
     fn restore(&self, trash: &Path, dest: &Path) -> std::io::Result<()> {
@@ -157,8 +159,8 @@ impl ConfigSeedTestHooks {
         not(test),
         expect(
             clippy::unused_self,
-            reason = "self controla metadata fallida en cfg(test); conservar diagnóstico \
-                normal y seam."
+            reason = "self controla metadata fallida en compilación de pruebas; conservar \
+                diagnóstico normal y seam."
         )
     )]
     fn staged_diagnostic(&self, staged: &PinnedDirectory, trash: &Path) -> String {
