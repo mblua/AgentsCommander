@@ -20,12 +20,18 @@ use crate::session::profile::CodingAgentKind;
 
 mod instructions;
 mod matching;
+mod preflight;
 mod profile_hash;
 mod seed_candidates;
 mod seed_warning;
 mod spawn_stamp;
 
 pub use seed_warning::compute_config_dir_warning;
+
+pub use preflight::{
+    configured_preflight, preflight_identity_frame, resolve_preflight_stages, PreflightStage,
+    PreflightStageSource, DEFAULT_PREFLIGHT_TIMEOUT_SECONDS,
+};
 
 pub use instructions::{
     default_instructions_filename_for_command, is_safe_instructions_filename,
@@ -109,6 +115,9 @@ pub struct AgentSpawnCommand {
     /// session chokepoint, never here). `None` when the agent has no active seed
     /// or the launch root is not an AC replica/root-agent.
     pub seed: Option<crate::config::config_seed::ResolvedConfigSeed>,
+    /// #3516 - ordered preflight stages (0-2). `Err` carries an invalid saved
+    /// preflight; spawn resolution itself never fails because of it.
+    pub preflight_stages: Result<Vec<PreflightStage>, String>,
     /// #2434 - the #2451 `matchTier` carrier value (`MatchTier::as_wire_str`).
     /// `None` unless a restart resolved a reference through the matcher.
     pub match_tier: Option<String>,
@@ -804,6 +813,13 @@ pub(crate) fn resolve_agent_spawn_command(
         launch_path,
         seed_choice.is_some(),
     )?;
+    // #3516 - no `?`: read-only callers share this builder (P01 contract).
+    let preflight_stages = resolve_preflight_stages(
+        agent,
+        &profile_resolution,
+        launch_path,
+        placeholder_context.as_ref(),
+    );
 
     let agent_env = collect_agent_env(agent, placeholder_context.as_ref())?;
     let profile_env = collect_profile_env(
@@ -854,6 +870,7 @@ pub(crate) fn resolve_agent_spawn_command(
         backend: agent.backend.clone(),
         isolated_codex_home_to_prepare: computed_codex_home.isolated_home_to_prepare,
         seed,
+        preflight_stages,
         match_tier: None,
         original_profile_letter: None,
     })
