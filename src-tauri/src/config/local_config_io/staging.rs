@@ -132,7 +132,7 @@ pub(super) fn acquire_fresh_config_stage_with_sequence(
         guard.check()?;
         match create_local_config_stage(&candidate) {
             Ok(file) => return Ok((candidate, file)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => {
                 return Err(PreparedPairError::Io(format!(
                     "Failed to acquire fresh temp config {}: {}",

@@ -68,7 +68,7 @@ impl JobObject {
             if SetInformationJobObject(
                 handle,
                 JobObjectExtendedLimitInformation,
-                &info as *const _ as *const core::ffi::c_void,
+                (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast::<core::ffi::c_void>(),
                 std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             ) == 0
             {
@@ -154,7 +154,8 @@ impl JobObject {
             QueryInformationJobObject(
                 self.handle,
                 JobObjectBasicAccountingInformation,
-                &mut accounting as *mut _ as *mut core::ffi::c_void,
+                (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION)
+                    .cast::<core::ffi::c_void>(),
                 std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
                 std::ptr::null_mut(),
             )

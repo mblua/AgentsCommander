@@ -164,7 +164,7 @@ pub(super) fn write_git_guard_file_atomic(
         let temp = parent.join(format!(".{name}.{}.{counter}.tmp", std::process::id()));
         match documents::create_git_guard_stage(&temp) {
             Ok(file) => break (temp, file),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(format!("create temp {}: {}", temp.display(), e)),
         }
     };

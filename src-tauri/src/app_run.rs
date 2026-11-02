@@ -373,7 +373,11 @@ pub(crate) fn run(
         // entered" signal is produced. The `[ipc-blackbox] coverage:` line repeats
         // this in every record block.
         .invoke_handler(crate::invoke_handler(ipc_observer_for_handler))
-        .build(tauri::generate_context!())
+        .build({
+            #[expect(clippy::exit, reason = "Tauri generated thread failure exits")]
+            let context = tauri::generate_context!();
+            context
+        })
         .expect("error while building application")
         .run({
             let detached_set = detached_sessions.clone();

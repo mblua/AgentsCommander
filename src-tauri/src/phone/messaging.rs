@@ -381,7 +381,7 @@ fn archive_message_snapshot_with(
                     owned = Some((temp, file));
                     break;
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(e.to_string()),
             }
         }
@@ -445,7 +445,7 @@ pub fn create_message_file(
         let path = messaging_dir.join(&filename);
         match phone_messaging::create_message_stage(&path) {
             Ok(file) => return Ok((path, file)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(MessagingError::Io(e)),
         }
     }

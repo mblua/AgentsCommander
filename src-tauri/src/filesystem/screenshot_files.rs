@@ -50,7 +50,7 @@ pub(crate) fn create_png_file(
             .open(&path)
         {
             Ok(file) => return Ok((path, file)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(format!("failed to create {}: {e}", path.display())),
         }
     }

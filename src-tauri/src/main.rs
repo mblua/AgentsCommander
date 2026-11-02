@@ -143,6 +143,7 @@ fn run_cli(cmd: Commands, owners: &agentscommander_lib::AppOwners) -> ! {
             agentscommander_lib::preflight_config_startup(owners.startup_summary.as_ref())
         {
             agentscommander_lib::cli::present_fatal_startup_message(&error.to_string());
+            #[expect(clippy::exit, reason = "Fatal CLI startup exits with status 1")]
             std::process::exit(1);
         }
         // Install the same logger backend the GUI uses so
@@ -180,6 +181,10 @@ fn run_cli(cmd: Commands, owners: &agentscommander_lib::AppOwners) -> ! {
         owners.messages.as_ref(),
         owners.snapshot_stage.as_ref(),
     );
+    #[expect(
+        clippy::exit,
+        reason = "CLI dispatch preserves its process exit status"
+    )]
     std::process::exit(code);
 }
 

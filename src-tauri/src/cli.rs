@@ -58,6 +58,7 @@ macro_rules! cli_println {
         let mut h = stdout.lock();
         if let Err(e) = writeln!(h) {
             if e.kind() == std::io::ErrorKind::BrokenPipe {
+                #[expect(clippy::exit, reason = "BrokenPipe exits successfully")]
                 std::process::exit(0);
             } else {
                 panic!("failed printing to stdout: {}", e);
@@ -70,6 +71,7 @@ macro_rules! cli_println {
         let mut h = stdout.lock();
         if let Err(e) = writeln!(h, $($arg)*) {
             if e.kind() == std::io::ErrorKind::BrokenPipe {
+                #[expect(clippy::exit, reason = "BrokenPipe exits successfully")]
                 std::process::exit(0);
             } else {
                 panic!("failed printing to stdout: {}", e);

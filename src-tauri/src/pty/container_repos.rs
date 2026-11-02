@@ -217,8 +217,9 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
         let mut seen = std::collections::HashSet::new();
         for entry in &entries {
             if let RepoOutcome::Mounted { container_path, .. } = &entry.outcome {
+                let inserted = seen.insert(container_path.clone());
                 debug_assert!(
-                    seen.insert(container_path.clone()),
+                    inserted,
                     "duplicate container mount target {}",
                     container_path
                 );

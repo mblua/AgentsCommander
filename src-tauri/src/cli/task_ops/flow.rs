@@ -209,7 +209,7 @@ where
                     chosen = Some(candidate);
                     break;
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(TaskOpError::BackupFailed(candidate, e)),
             }
         }

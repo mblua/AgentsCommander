@@ -304,7 +304,7 @@ fn query_process_basic_info(
         NtQueryInformationProcess(
             handle,
             ProcessBasicInformation,
-            pbi.as_mut_ptr() as *mut core::ffi::c_void,
+            pbi.as_mut_ptr().cast::<core::ffi::c_void>(),
             std::mem::size_of::<ProcessBasicInformationRaw>() as u32,
             &mut return_len,
         )
@@ -325,7 +325,7 @@ fn query_wow64_peb_address(handle: windows_sys::Win32::Foundation::HANDLE) -> Op
         NtQueryInformationProcess(
             handle,
             ProcessWow64Information,
-            &mut peb_address as *mut usize as *mut core::ffi::c_void,
+            (&mut peb_address as *mut usize).cast::<core::ffi::c_void>(),
             std::mem::size_of::<usize>() as u32,
             &mut return_len,
         )
@@ -354,7 +354,7 @@ fn read_remote_struct<T: Copy>(
         ReadProcessMemory(
             handle,
             address as *const core::ffi::c_void,
-            out.as_mut_ptr() as *mut core::ffi::c_void,
+            out.as_mut_ptr().cast::<core::ffi::c_void>(),
             requested,
             &mut bytes_read,
         )
@@ -382,7 +382,7 @@ fn read_remote_bytes(
         ReadProcessMemory(
             handle,
             address as *const core::ffi::c_void,
-            buf.as_mut_ptr() as *mut core::ffi::c_void,
+            buf.as_mut_ptr().cast::<core::ffi::c_void>(),
             len,
             &mut bytes_read,
         )

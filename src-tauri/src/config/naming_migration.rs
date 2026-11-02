@@ -671,7 +671,7 @@ fn set_aside(
                 };
             }
             // Someone else's file took the ordinal: take the next one.
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
             Err(e) => {
                 let note = leftover_note(from, &candidate_path);
                 let refusal = Refusal::Io(format!(
