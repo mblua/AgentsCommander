@@ -182,159 +182,124 @@ fn instance_gitignore_names_nothing_that_reaches_the_knot() {
     );
 }
 
-/// #1273 Section 4.3: the knot cannot absorb `config::instance_gitignore`
-/// because, after the cut, everything it depends on is `crate::config`, and
-/// `crate::config` has **zero outgoing arcs** over the record in
-/// `src-tauri/module-arcs.txt`.
-///
-/// **That is a claim about outgoing arcs from `src/config.rs`, and this test
-/// is the only thing that holds it.** The arc
-/// `config::instance_gitignore -> config` is not removed by #1273 and is not
-/// removable: `ensure_instance_gitignore` calls `super::config_dir()` and
-/// `super::agent_local_dir_name()`. So one `use crate::<knot member>::...;` in
-/// `src/config.rs` puts `config` into the knot and this module back in with
-/// it, 49 other modules follow, and every assertion in the test above stays green
-/// because the guarded module's own file did not change.
-///
-/// It reads `src/config.rs` and nothing below it. Every child of `config` is
-/// a separate module in the graph with its own arcs, and 21 of them are knot
-/// members; descending would assert that the whole `config` subtree names
-/// nothing, which is neither true nor #1273's business.
+/// #3534 permits one std-only probe leaf instead of a host with zero outgoing arcs.
+/// Exact host spelling and a leaf with no app references prevent an app return path.
+/// Only the host file is observed; config children are separate graph modules.
 #[test]
 fn the_constant_home_names_nothing_at_all() {
     let seen = observe(&HOST_MODULE, Reach::OwnFilesOnly);
 
     assert!(
         seen.aliases.is_empty(),
-        "the constant's home must not rename the crate root or a module group; \
-         see the same assertion for config::instance_gitignore.\n\
-         \n\
-         OFFENDING FILES: {}",
+        "the host must not rename crate/module groups: {}",
         seen.aliases.join(", ")
     );
-
     assert!(
         seen.forbidden.is_empty(),
-        "the constant's home must not name config::root_agent.\n\
-         \n\
-         WHY: this file is where #1273 put `ROOT_AGENT_DIR_NAME`, precisely so \
-         that nothing below the knot has to reach into it. A path from here into \
-         `config::root_agent` puts `config` in the knot and drags \
-         `config::instance_gitignore` back in with it through arc 547, which \
-         #1273 never removed and cannot remove.\n\
-         \n\
-         WHY IT IS ASSERTED HERE NOW: this observation was computed and thrown \
-         away until the #1273 review. The anchorless check therefore never ran \
-         against this file at all, and `use self::root_agent::...;` here was \
-         measured green while taking the knot 87 to 91. Entry 17.\n\
-         \n\
-         THIS CHECK IS DELIBERATELY ANCHORLESS, for the same reason it is in the \
-         guarded module's test: the arc record cannot see a path that begins with \
-         neither `crate::` nor `super::`. Comments and literal bodies are removed \
-         first.\n\
-         \n\
-         `mod root_agent;` IS EXEMPT AND ONLY THAT. This file is \
-         `config::root_agent`'s parent and must declare it, so without the \
-         exemption this assertion would be red on a correct tree. A `mod` \
-         declaration creates no arc (plan Section 2.7). Any USE of the name is a \
-         separate occurrence and still fails here.\n\
-         \n\
-         OFFENDING FILES: {}",
+        "the host must not use root_agent; only its mod declaration is exempt: {}",
         seen.forbidden.join(", ")
     );
-
     assert_eq!(
         seen.globs, 0,
-        "{CONSTANT_HOME} must contain no glob import.\n\
-         \n\
-         WHY: the test module's `use super::*;` now lives in `src/config/tests.rs`, \
-         a separate module this observation does not read. \
-         Written at the TOP LEVEL of this file the same three words mean \
-         `use crate::*;`, which puts every child of the crate root in scope and \
-         gives `config` an outgoing arc to `agentscommander_lib`. That ends the \
-         zero-outgoing-arc premise the whole of #1273 Section 4.3 rests on.\n\
-         \n\
-         THIS IS THE MOST DAMAGING SPELLING THE REVIEW FOUND. Measured: one line \
-         added to this file took the knot 87 to 91 and \
-         `sccSize(config::instance_gitignore)` 1 to 91, with `cargo fmt --check` \
-         at exit 0 and this guard at 3 passed, because the allowed table below \
-         contains the row for the test module's glob and a text scan cannot tell \
-         the two positions apart. Entry 16. The guarded module's test has \
-         asserted this count since day one; this test did not, and that \
-         asymmetry was the hole.\n\
-         \n\
-         INSTEAD: import what you need by name, and keep the test module's glob \
-         in `src/config/tests.rs`.\n\
-         \n\
-         OBSERVED: {} `super::`-anchored glob imports",
+        "{CONSTANT_HOME} must not glob-import crate children; observed {}",
         seen.globs
     );
-
     assert_eq!(
         seen.anchored,
         expected(&ALLOWED_HOST_CRATE_REFERENCES),
-        "the set of crate modules named from {CONSTANT_HOME} moved.\n\
-         \n\
-         WHY THIS MATTERS MORE THAN IT LOOKS: #1273 is only correct while this \
-         module cannot reach the cyclic SCC. Measured over the arcs of \
-         `src-tauri/module-arcs.txt`, `agentscommander_lib::config` appears on \
-         the left of the separator zero times and on the right many times: it is \
-         a pure sink, and that is the entire non-absorption argument. A module \
-         with no way out cannot reach a knot member, so it cannot share an SCC with \
-         one, so `config::instance_gitignore`, which depends on it, cannot \
-         either.\n\
-         \n\
-         One `use crate::<any knot member>::...;` in this file ends that. `config` \
-         joins the knot, `config::instance_gitignore` follows it back in through \
-         an arc #1273 never removed and cannot remove, and the 49 other modules \
-         that depend on `config` follow too. No other test in this repository \
-         would go red.\n\
-         \n\
-         INSTEAD: if this module needs something, that something belongs below \
-         it. Adding the first row to ALLOWED_HOST_CRATE_REFERENCES is a decision \
-         about the crate's shape and has to be argued in the commit, and Section \
-         4.3 of `.ac/plans/1273-extract-instance-gitignore-from-scc.md` has to be \
-         rewritten before the dependency is added."
+        "the host may name only filesystem::config_write_probe, a leaf with no app return path"
     );
-
     assert_eq!(
         seen.relative_up,
         expected(&ALLOWED_HOST_SUPER_REFERENCES),
-        "the set of names reached by `super::` from {CONSTANT_HOME} moved.\n\
-         \n\
-         The table is empty: the test module's `use super::*;` moved to \
-         `src/config/tests.rs`. At \
-         the top level of this file `super::` means the CRATE ROOT, so any \
-         row here is `config` reaching up into `crate`'s children, which is the \
-         inversion this guard refuses. It would not even show up under the \
-         `crate::` anchor above.\n\
-         \n\
-         See that assertion for why an outgoing arc from this file is the one \
-         thing that undoes #1273."
+        "the host must not reach crate children through super::"
     );
-
     assert_eq!(
         seen.own_module,
         expected(&ALLOWED_HOST_SELF_REFERENCES),
-        "the set of names reached by `self::` from {CONSTANT_HOME} moved.\n\
-         \n\
-         THIS IS THE ANCHOR THAT WAS NOT BEING READ. From this file `self::` \
-         means `crate::config`, so `use self::root_agent::...;` reaches a member \
-         of the knot from the one module whose zero-outgoing-arc property the \
-         whole of #1273 Section 4.3 rests on. Measured during the review: that \
-         one line took the knot 87 to 91 and \
-         `sccSize(config::instance_gitignore)` 1 to 91, with this guard at 3 \
-         passed and `cargo fmt --check` at exit 0, because `children_under` was \
-         only ever called with `crate::` and `super::`. Entry 17.\n\
-         \n\
-         UNLIKE ENTRY 13, THE DETECTOR IS NOT BLIND TO THIS. `self::` resolves \
-         and the arc is recorded, so this spelling is a real regression and not \
-         merely a guard-blind one.\n\
-         \n\
-         THE TABLE IS EMPTY ON PURPOSE. `self::x` and `x` name the same item, so \
-         every row here is a second spelling of a path that should be argued \
-         under its own anchor. The class this closes is every knot member, not \
-         `root_agent` alone, which is why widening the anchorless check would not \
-         have been enough."
+        "the host must not reach config children through self::"
     );
+}
+
+fn host_has_only_probe_import(body: &str) -> bool {
+    let canonical = "use crate::filesystem::config_write_probe;";
+    let mut matches = body.match_indices(canonical);
+    let Some((start, _)) = matches.next() else {
+        return false;
+    };
+    if matches.next().is_some() {
+        return false;
+    }
+    let rest = format!("{} {}", &body[..start], &body[start + canonical.len()..]);
+    !rest
+        .split(|character: char| !character.is_alphanumeric() && character != '_')
+        .any(|token| token == "filesystem")
+}
+
+#[test]
+fn the_constant_home_imports_only_the_probe_leaf() {
+    let files = files_of(&HOST_MODULE, Reach::OwnFilesOnly).expect("resolve host module");
+    assert!(
+        !files.is_empty(),
+        "host module must resolve to source files"
+    );
+    for path in files {
+        let body = scrubbed(&path, Literals::Drop).expect("scrub host source");
+        assert!(
+            host_has_only_probe_import(&normalized(&body)),
+            "host must have only the canonical probe import and no other filesystem token: {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn the_host_probe_import_guard_rejects_other_filesystem_spellings() {
+    let canonical = "use crate::filesystem::config_write_probe;";
+    let accepts = |body: &str| {
+        host_has_only_probe_import(&normalized(
+            &scrub(body, Literals::Drop).expect("scrub host fixture"),
+        ))
+    };
+    assert!(accepts(canonical));
+    assert!(!accepts(""));
+    for extra in [
+        canonical,
+        "use crate::filesystem; filesystem::agent_files::f();",
+        "use crate::{filesystem::agent_files};",
+        "use crate::filesystem as f; f::agent_files::f();",
+        "filesystem::agent_files::f();",
+        "use crate::r#filesystem::agent_files;",
+    ] {
+        assert!(!accepts(&format!("{canonical} {extra}")), "{extra}");
+    }
+    assert!(accepts(&format!(
+        "{canonical} /* filesystem */ let label = \"filesystem\"; // filesystem"
+    )));
+}
+
+#[test]
+fn the_configuration_probe_leaf_names_no_app_modules() {
+    let seen = observe(&["filesystem", "config_write_probe"], Reach::WithSubmodules);
+    assert!(
+        seen.anchored.is_empty(),
+        "probe leaf must not name crate modules"
+    );
+    assert!(
+        seen.relative_up.is_empty(),
+        "probe leaf must not name super modules"
+    );
+    assert!(
+        seen.own_module.is_empty(),
+        "probe leaf must not name self modules"
+    );
+    assert!(
+        seen.aliases.is_empty(),
+        "probe leaf must not alias app modules"
+    );
+    assert!(
+        seen.forbidden.is_empty(),
+        "probe leaf must not name root_agent"
+    );
+    assert_eq!(seen.globs, 0, "probe leaf must not glob-import app modules");
 }
