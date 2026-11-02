@@ -418,7 +418,7 @@ impl MailboxPoller {
             state = next; // adopt the advanced state (the Clear->Handoff reset is already applied)
 
             match action {
-                SelfClearGateAction::Wait => continue,
+                SelfClearGateAction::Wait => {}
                 SelfClearGateAction::InjectClear => {
                     if let Err(e) =
                         inject_self_clear_phase(session_id, clear_text, settle, &mut inject).await
@@ -429,7 +429,7 @@ impl MailboxPoller {
                     // can possibly drop (stamp-then-drop ordering).
                     note_boundary(session_id, SelfClearBoundary::Cleared).await;
                     continuation = true;
-                    continue; // state is already Phase 2 with reset clocks
+                    // state is already Phase 2 with reset clocks
                 }
                 SelfClearGateAction::InjectHandoff => {
                     let injected = inject_self_clear_handoff(

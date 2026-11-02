@@ -652,8 +652,7 @@ fn ui_terminal_timeout_is_bounded_and_cleans_the_request() {
     assert!(
         std::fs::read_dir(requests_dir)
             .unwrap()
-            .filter_map(Result::ok)
-            .next()
+            .find_map(Result::ok)
             .is_none(),
         "terminal timeout should remove its request file"
     );

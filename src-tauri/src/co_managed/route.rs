@@ -302,7 +302,7 @@ pub(crate) async fn commit_co_managed_with_retries<R: tauri::Runtime>(
                 return CoManagedCommit::Committed(committed);
             }
             Err(capture::state::AbstainReason::PreconditionsStale)
-            | Err(capture::state::AbstainReason::LockBusy) => continue,
+            | Err(capture::state::AbstainReason::LockBusy) => {}
             Err(error) => return CoManagedCommit::Rejected(error),
         }
     }
