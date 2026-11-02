@@ -139,15 +139,36 @@ async fn env_is_exactly_the_given_env() {
         text(&result.stdout)
     );
 
+    // Leg 2 drops a key the test process really has: only `env_clear`
+    // keeps the inherited value away from the child.
+    let inherited = std::env::vars()
+        .find(|(k, _)| k == "CARGO_PKG_NAME")
+        .map(|(_, v)| v)
+        .expect("cargo test sets CARGO_PKG_NAME (positive control)");
+    let script = if cfg!(windows) {
+        "echo [%CARGO_PKG_NAME%]"
+    } else {
+        "echo [$CARGO_PKG_NAME]"
+    };
     let mut spec = spec_for(script, Duration::from_secs(30));
     spec.env
-        .retain(|(k, _)| !k.eq_ignore_ascii_case("AC_PF_PROBE"));
+        .retain(|(k, _)| !k.eq_ignore_ascii_case("CARGO_PKG_NAME"));
     let result = run(spec).await;
-    assert!(
-        !text(&result.stdout).contains("v1"),
-        "{}",
-        text(&result.stdout)
-    );
+    let out = text(&result.stdout);
+    assert!(out.contains('['), "child ran: {out}");
+    assert!(!out.contains(&format!("[{inherited}]")), "{out}");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_raw_args_replace_args() {
+    let mut spec = spec_for("echo from-args", Duration::from_secs(30));
+    spec.windows_raw_args = Some("/D /C echo \"x y\" raw-line".into());
+    let result = run(spec).await;
+    let out = text(&result.stdout);
+    assert_eq!(result.end, ContainedRunEnd::Exited(0), "{out}");
+    assert!(out.contains("\"x y\" raw-line"), "{out}");
+    assert!(!out.contains("from-args"), "{out}");
 }
 
 #[tokio::test]
