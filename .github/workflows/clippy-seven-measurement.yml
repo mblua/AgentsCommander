@@ -22,12 +22,14 @@ jobs:
       EVENT_SHA: ${{ github.sha }}
       PR_BASE: ${{ github.event.pull_request.base.sha }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      E: ${{ runner.temp }}/i3528-${{ github.run_id }}-${{ github.run_attempt }}
-      SOURCE_ROOT: ${{ runner.temp }}/i3528-source-${{ github.run_id }}-${{ github.run_attempt }}
+      E_SUBDIR: i3528-${{ github.run_id }}-${{ github.run_attempt }}
+      SOURCE_SUBDIR: i3528-source-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Initialize evidence
         run: |
           set -euo pipefail
+          export E="$RUNNER_TEMP/$E_SUBDIR"
+          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
           mkdir "$E"
           date -u +%FT%TZ > "$E/started"
           uname -a > "$E/host.txt"
@@ -41,6 +43,8 @@ jobs:
       - name: Isolate measured source S
         run: |
           set -euo pipefail
+          export E="$RUNNER_TEMP/$E_SUBDIR"
+          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
           test "$(git rev-parse HEAD)" = "$W"
           git clone --no-hardlinks --no-checkout "$GITHUB_WORKSPACE" "$SOURCE_ROOT" \
             > "$E/clone.stdout" 2> "$E/clone.stderr"
@@ -59,6 +63,8 @@ jobs:
       - name: Capture pinned prerequisites
         run: |
           set -euo pipefail
+          export E="$RUNNER_TEMP/$E_SUBDIR"
+          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
           cd "$SOURCE_ROOT"
           capture() {
             local name=$1
@@ -90,6 +96,8 @@ jobs:
       - name: Record tools and effective controls
         run: |
           set -euo pipefail
+          export E="$RUNNER_TEMP/$E_SUBDIR"
+          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
           cd "$SOURCE_ROOT/src-tauri"
           pwd > "$E/cwd.txt"
           rustc +1.98.1 -vV > "$E/rustc.txt"
@@ -170,6 +178,8 @@ jobs:
       - name: Capture Cargo and corrected direct-driver control
         run: |
           set -euo pipefail
+          export E="$RUNNER_TEMP/$E_SUBDIR"
+          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
           cd "$SOURCE_ROOT/src-tauri"
           flags=( -D warnings
             --force-warn clippy::cognitive_complexity --force-warn clippy::too_many_lines
@@ -234,6 +244,8 @@ jobs:
       - name: Validate captures and describe observations
         run: |
           set -euo pipefail
+          export E="$RUNNER_TEMP/$E_SUBDIR"
+          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
           node --input-type=module <<'JS'
           import fs from 'node:fs';
           import path from 'node:path';
@@ -333,6 +345,8 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
+          export E="$RUNNER_TEMP/$E_SUBDIR"
+          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
           git -C "$SOURCE_ROOT" rev-parse HEAD 'HEAD^{tree}' > "$E/source-after.txt"
           git -C "$SOURCE_ROOT" status --porcelain --untracked-files=no > "$E/status-after.txt"
           test "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" = "$S"
@@ -345,6 +359,8 @@ jobs:
           JOB_STATUS: ${{ job.status }}
         run: |
           set -euo pipefail
+          export E="$RUNNER_TEMP/$E_SUBDIR"
+          export SOURCE_ROOT="$RUNNER_TEMP/$SOURCE_SUBDIR"
           mkdir -p "$E"
           node --input-type=module <<'JS'
           import fs from 'node:fs';
@@ -382,6 +398,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: i3528-linux-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.E }}
+          path: ${{ runner.temp }}/${{ env.E_SUBDIR }}
           if-no-files-found: error
           retention-days: 14
