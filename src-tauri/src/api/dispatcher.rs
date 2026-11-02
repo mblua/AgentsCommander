@@ -263,21 +263,23 @@ pub(crate) async fn run_dispatcher<H: DispatcherDelivery>(
                         }
                     }
                 }
-                let cutoff = chrono::Utc::now() - config.retention;
-                if let Err(e) = store.reap_terminal_before_offloaded(cutoff).await {
-                    log::warn!("[api-dispatcher] reaper failed: {}", e);
-                }
-                if store
-                    .compact_pty_terminal_maintenance_offloaded(chrono::Utc::now(), 64)
-                    .await
-                    .is_err()
-                {
-                    log::warn!(
-                        "[api-dispatcher] PTY compaction failed code=store_transient"
-                    );
-                }
+                maintain_terminal_messages(&store, config.retention).await;
             }
         }
+    }
+}
+
+async fn maintain_terminal_messages(store: &MessageStore, retention: chrono::Duration) {
+    let cutoff = chrono::Utc::now() - retention;
+    if let Err(e) = store.reap_terminal_before_offloaded(cutoff).await {
+        log::warn!("[api-dispatcher] reaper failed: {}", e);
+    }
+    if store
+        .compact_pty_terminal_maintenance_offloaded(chrono::Utc::now(), 64)
+        .await
+        .is_err()
+    {
+        log::warn!("[api-dispatcher] PTY compaction failed code=store_transient");
     }
 }
 
