@@ -322,7 +322,7 @@ pub(crate) fn reopen_windows_zero_access(writer: &ManifestFile) -> io::Result<Ma
     if handle == INVALID_HANDLE_VALUE {
         return Err(io::Error::last_os_error());
     }
-    let file = unsafe { File::from_raw_handle(handle as _) };
+    let file = unsafe { File::from_raw_handle(handle.cast()) };
     Ok(ManifestFile(file))
 }
 

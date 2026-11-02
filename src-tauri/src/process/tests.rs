@@ -108,7 +108,8 @@ fn prevent_child_creation() -> std::os::windows::io::OwnedHandle {
             SetInformationJobObject(
                 handle,
                 JobObjectExtendedLimitInformation,
-                &info as *const _ as *const core::ffi::c_void,
+                (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION)
+                    .cast::<core::ffi::c_void>(),
                 std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             ),
             0,

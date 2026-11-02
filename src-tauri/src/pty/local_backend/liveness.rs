@@ -109,11 +109,11 @@ pub(super) fn probe_child_liveness(
         return ChildLiveness::Unqueryable("child exposes no process handle".to_string());
     };
 
-    match unsafe { WaitForSingleObject(handle as _, 0) } {
+    match unsafe { WaitForSingleObject(handle.cast(), 0) } {
         WAIT_TIMEOUT => ChildLiveness::Alive,
         WAIT_OBJECT_0 => {
             let mut code: u32 = 0;
-            if unsafe { GetExitCodeProcess(handle as _, &mut code) } == 0 {
+            if unsafe { GetExitCodeProcess(handle.cast(), &mut code) } == 0 {
                 let os_error = unsafe { GetLastError() };
                 return ChildLiveness::Unqueryable(format!(
                     "GetExitCodeProcess failed (os error {os_error})"
