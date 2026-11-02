@@ -3,7 +3,7 @@
   "issue": 3507,
   "threshold": 100,
   "toolchain": "1.98.1",
-  "sourceCommit": "66322d0d31f68f076066163bae534f379de5b95b",
+  "sourceCommit": "af830ff15ccd2990e468e683b14f2a471b655380",
   "entries": [
     {
       "id": "rust:crates/session-bridge/src/bin/agentscommander-api-helper/pty_result.rs::parse_result",
@@ -549,25 +549,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/app_run/exit.rs::on_run_event",
-      "name": "on_run_event",
-      "anchor": "0f75d88416b4",
-      "sites": {
-        "linux": {
-          "lines": 105,
-          "production": true
-        },
-        "macos": {
-          "lines": 105,
-          "production": true
-        },
-        "windows": {
-          "lines": 105,
-          "production": true
-        }
-      }
-    },
-    {
       "id": "rust:src-tauri/src/app_run/setup.rs::apply_test_window_placement",
       "name": "apply_test_window_placement",
       "anchor": "fc16562bfe89",
@@ -734,25 +715,6 @@
         },
         "windows": {
           "lines": 103,
-          "production": true
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/cli/terminal_snapshot.rs::execute_inner",
-      "name": "execute_inner",
-      "anchor": "1328a253eef8",
-      "sites": {
-        "linux": {
-          "lines": 112,
-          "production": true
-        },
-        "macos": {
-          "lines": 112,
-          "production": true
-        },
-        "windows": {
-          "lines": 112,
           "production": true
         }
       }
@@ -1164,25 +1126,6 @@
         "windows": {
           "lines": 125,
           "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/commands/session/create/core.rs::create_pending",
-      "name": "create_pending",
-      "anchor": "44b9a184e88c",
-      "sites": {
-        "linux": {
-          "lines": 114,
-          "production": true
-        },
-        "macos": {
-          "lines": 114,
-          "production": true
-        },
-        "windows": {
-          "lines": 114,
-          "production": true
         }
       }
     },
@@ -1783,25 +1726,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/commands/window.rs::execute_detach_transaction",
-      "name": "execute_detach_transaction",
-      "anchor": "fa880bdf858c",
-      "sites": {
-        "linux": {
-          "lines": 128,
-          "production": true
-        },
-        "macos": {
-          "lines": 128,
-          "production": true
-        },
-        "windows": {
-          "lines": 128,
-          "production": true
-        }
-      }
-    },
-    {
       "id": "rust:src-tauri/src/commands/window/tests.rs::attach_post_destroy_pty_loss_clears_intent_preserves_geometry_and_publishes_exit",
       "name": "attach_post_destroy_pty_loss_clears_intent_preserves_geometry_and_publishes_exit",
       "anchor": "2a24ac8426dd",
@@ -2215,25 +2139,6 @@
         },
         "windows": {
           "lines": 110,
-          "production": true
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/config/coding_agents_catalog/snapshot.rs::resolve_catalog_snapshot",
-      "name": "resolve_catalog_snapshot",
-      "anchor": "90f7b4032d0c",
-      "sites": {
-        "linux": {
-          "lines": 105,
-          "production": true
-        },
-        "macos": {
-          "lines": 105,
-          "production": true
-        },
-        "windows": {
-          "lines": 105,
           "production": true
         }
       }
@@ -3617,44 +3522,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/internal_delivery.rs::impl:MailboxPoller::deliver_internal_system_wake",
-      "name": "deliver_internal_system_wake",
-      "anchor": "bb794053ede9",
-      "sites": {
-        "linux": {
-          "lines": 106,
-          "production": true
-        },
-        "macos": {
-          "lines": 106,
-          "production": true
-        },
-        "windows": {
-          "lines": 106,
-          "production": true
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/internal_delivery.rs::impl:MailboxPoller::inject_internal_system_notice",
-      "name": "inject_internal_system_notice",
-      "anchor": "262e86dc3c36",
-      "sites": {
-        "linux": {
-          "lines": 109,
-          "production": true
-        },
-        "macos": {
-          "lines": 109,
-          "production": true
-        },
-        "windows": {
-          "lines": 109,
-          "production": true
-        }
-      }
-    },
-    {
       "id": "rust:src-tauri/src/phone/mailbox/peer_fallback.rs::impl:MailboxPoller::execute_owned_peer_replacement",
       "name": "execute_owned_peer_replacement",
       "anchor": "c58f024c4249",
@@ -3788,44 +3655,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/pty_dispatch.rs::impl:<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>>::dispatch_locked_operation",
-      "name": "dispatch_locked_operation",
-      "anchor": "349384b1e65e",
-      "sites": {
-        "linux": {
-          "lines": 107,
-          "production": true
-        },
-        "macos": {
-          "lines": 107,
-          "production": true
-        },
-        "windows": {
-          "lines": 107,
-          "production": true
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/pty_dispatch.rs::impl:MailboxPoller::dispatch_pty_input_operation_core",
-      "name": "dispatch_pty_input_operation_core",
-      "anchor": "59c76465c1dd",
-      "sites": {
-        "linux": {
-          "lines": 109,
-          "production": true
-        },
-        "macos": {
-          "lines": 109,
-          "production": true
-        },
-        "windows": {
-          "lines": 109,
-          "production": true
-        }
-      }
-    },
-    {
       "id": "rust:src-tauri/src/phone/mailbox/pty_dispatch/context.rs::dispatch_selection_candidates",
       "name": "dispatch_selection_candidates",
       "anchor": "2e9d2724c550",
@@ -3840,101 +3669,6 @@
         },
         "windows": {
           "lines": 102,
-          "production": true
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/pty_dispatch/select.rs::impl:<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>>::dispatch_boundary_authority",
-      "name": "dispatch_boundary_authority",
-      "anchor": "06846d6d1f2d",
-      "sites": {
-        "linux": {
-          "lines": 132,
-          "production": true
-        },
-        "macos": {
-          "lines": 132,
-          "production": true
-        },
-        "windows": {
-          "lines": 132,
-          "production": true
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/pty_dispatch/select.rs::impl:<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>>::dispatch_boundary_write",
-      "name": "dispatch_boundary_write",
-      "anchor": "1929f7efd134",
-      "sites": {
-        "linux": {
-          "lines": 112,
-          "production": true
-        },
-        "macos": {
-          "lines": 112,
-          "production": true
-        },
-        "windows": {
-          "lines": 112,
-          "production": true
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/pty_dispatch/select.rs::impl:<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>>::dispatch_selection_spawn",
-      "name": "dispatch_selection_spawn",
-      "anchor": "67e8bc5d2f3b",
-      "sites": {
-        "linux": {
-          "lines": 104,
-          "production": true
-        },
-        "macos": {
-          "lines": 104,
-          "production": true
-        },
-        "windows": {
-          "lines": 104,
-          "production": true
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/pty_dispatch/select.rs::impl:<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>>::dispatch_selection_spawn_result",
-      "name": "dispatch_selection_spawn_result",
-      "anchor": "de1c8df182d2",
-      "sites": {
-        "linux": {
-          "lines": 138,
-          "production": true
-        },
-        "macos": {
-          "lines": 138,
-          "production": true
-        },
-        "windows": {
-          "lines": 138,
-          "production": true
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/pty_dispatch/select.rs::impl:<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>>::select_pty_dispatch_session",
-      "name": "select_pty_dispatch_session",
-      "anchor": "4d29dd25dea6",
-      "sites": {
-        "linux": {
-          "lines": 137,
-          "production": true
-        },
-        "macos": {
-          "lines": 137,
-          "production": true
-        },
-        "windows": {
-          "lines": 137,
           "production": true
         }
       }
