@@ -543,8 +543,8 @@ impl SourceInventoryCapture {
                 };
                 #[expect(
                     clippy::match_wildcard_for_single_variants,
-                    reason = "E2992 postponed: conservar validación/ownership Settings sin rediseño; \
-                        este match acepta Bytes y rechaza el otro estado"
+                    reason = "E2992 postponed: conservar validación/ownership Settings \
+                        sin rediseño; este match acepta Bytes y rechaza el otro estado"
                 )]
                 let bytes = match &physical[side] {
                     IdentityReferencePhysicalState::Bytes { bytes, .. } => bytes,
