@@ -530,7 +530,10 @@ impl SettingsOwner {
             .try_read_owned()
             .map_err(|_| SettingsOwnerError::Busy)?;
         // The permit now owns the admission and releases it on drop.
-        #[expect(clippy::mem_forget, reason = "SettingsReadPermit takes over admission release")]
+        #[expect(
+            clippy::mem_forget,
+            reason = "SettingsReadPermit takes over admission release"
+        )]
         std::mem::forget(admission);
         let permit = SettingsReadPermit {
             guard: Some(guard),

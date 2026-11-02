@@ -181,7 +181,10 @@ fn run_cli(cmd: Commands, owners: &agentscommander_lib::AppOwners) -> ! {
         owners.messages.as_ref(),
         owners.snapshot_stage.as_ref(),
     );
-    #[expect(clippy::exit, reason = "CLI dispatch preserves its process exit status")]
+    #[expect(
+        clippy::exit,
+        reason = "CLI dispatch preserves its process exit status"
+    )]
     std::process::exit(code);
 }
 
