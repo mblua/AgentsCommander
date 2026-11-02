@@ -68,8 +68,7 @@ impl JobObject {
             if SetInformationJobObject(
                 handle,
                 JobObjectExtendedLimitInformation,
-                (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION)
-                    .cast::<core::ffi::c_void>(),
+                (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast::<core::ffi::c_void>(),
                 std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             ) == 0
             {
