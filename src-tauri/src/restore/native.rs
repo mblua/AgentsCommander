@@ -742,10 +742,7 @@ pub(crate) fn start_native_restore_startup(
                 app.app_handle().clone(),
                 shutdown.clone(),
             );
-            crate::session::auto_close::AutoClose::start(
-                app.app_handle().clone(),
-                shutdown.clone(),
-            );
+            crate::session::auto_close::AutoClose::start(app.clone(), shutdown.clone());
             crate::loops::non_stop_watchdog::start(
                 app.app_handle().clone(),
                 non_stop_state.clone(),

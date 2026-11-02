@@ -473,6 +473,30 @@ struct AutoCloseFixture {
     services: RecordingServices,
 }
 
+async fn auto_close_session(
+    manager: &tokio::sync::RwLock<SessionManager>,
+    cwd: &std::path::Path,
+    coding_agent: Option<String>,
+    is_coordinator: bool,
+) -> Uuid {
+    manager
+        .read()
+        .await
+        .create_session(
+            "shell".to_string(),
+            Vec::new(),
+            cwd.to_string_lossy().into_owned(),
+            coding_agent,
+            None,
+            Vec::new(),
+            is_coordinator,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+        )
+        .await
+        .unwrap()
+        .id
+}
+
 async fn auto_close_fixture() -> AutoCloseFixture {
     use crate::config::coordinator_clocks::CoordinatorClocks;
     use crate::config::settings::{AppSettings, SettingsState};
@@ -495,47 +519,20 @@ async fn auto_close_fixture() -> AutoCloseFixture {
     }
 
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let coordinator_session = manager
-        .read()
-        .await
-        .create_session(
-            "shell".to_string(),
-            Vec::new(),
-            coordinator_cwd.to_string_lossy().into_owned(),
-            None,
-            None,
-            Vec::new(),
-            true,
-            SessionBackendKind::LocalProcess,
-        )
-        .await
-        .unwrap();
-    let member_session = manager
-        .read()
-        .await
-        .create_session(
-            "shell".to_string(),
-            Vec::new(),
-            member_cwd.to_string_lossy().into_owned(),
-            Some("codex".to_string()),
-            None,
-            Vec::new(),
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await
-        .unwrap();
+    let coordinator_id = auto_close_session(&manager, &coordinator_cwd, None, true).await;
+    let member_id =
+        auto_close_session(&manager, &member_cwd, Some("codex".to_string()), false).await;
 
     let backend = Arc::new(AutoCloseBackend::default());
     let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
-    for id in [coordinator_session.id, member_session.id] {
+    for id in [coordinator_id, member_id] {
         backend.set_live(id);
         pty.lock()
             .unwrap()
             .record_route(id, SessionBackendKind::LocalProcess);
     }
     let idle = IdleDetector::new(|_| {}, |_| {});
-    for id in [coordinator_session.id, member_session.id] {
+    for id in [coordinator_id, member_id] {
         idle.set_auto_close_ages_for_test(id, Duration::from_secs(120), Duration::from_secs(120));
     }
 
@@ -592,8 +589,8 @@ async fn auto_close_fixture() -> AutoCloseFixture {
         _temp: temp,
         app,
         backend,
-        coordinator_id: coordinator_session.id,
-        member_id: member_session.id,
+        coordinator_id,
+        member_id,
         cwd: coordinator_cwd.to_string_lossy().into_owned(),
         anchor,
         services,
