@@ -13,10 +13,7 @@ pub(crate) fn create_probe_file(path: &Path) -> io::Result<File> {
 }
 
 pub(crate) fn write_probe_file(file: &mut File) -> io::Result<()> {
-    file.write_all(
-        b"AgentsCommander write probe
-",
-    )
+    file.write_all(b"AgentsCommander write probe\n")
 }
 
 pub(crate) fn remove_probe_file(path: &Path) -> io::Result<()> {
