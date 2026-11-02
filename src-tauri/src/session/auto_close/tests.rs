@@ -462,15 +462,24 @@ fn mark_gate_true_only_when_destroyed_is_the_coordinator() {
     );
 }
 
-#[tokio::test]
-async fn selected_idle_team_closes_as_one_batch_and_clears_selection_once() {
+struct AutoCloseFixture {
+    _temp: tempfile::TempDir,
+    app: tauri::App<tauri::test::MockRuntime>,
+    backend: Arc<AutoCloseBackend>,
+    coordinator_id: Uuid,
+    member_id: Uuid,
+    cwd: String,
+    anchor: DateTime<Utc>,
+    services: RecordingServices,
+}
+
+async fn auto_close_fixture() -> AutoCloseFixture {
     use crate::config::coordinator_clocks::CoordinatorClocks;
     use crate::config::settings::{AppSettings, SettingsState};
-    use crate::pty::backend::{PtyBackend, SessionBackendKind};
+    use crate::pty::backend::SessionBackendKind;
     use crate::resource_monitor::ResourceMonitorState;
-    use crate::session::selection::{SelectionCoordinator, SelectionMode, SelectionSource};
+    use crate::session::selection::SelectionCoordinator;
     use crate::telegram::manager::{TelegramBridgeManager, TelegramBridgeState};
-    use tauri::Listener;
 
     let root = crate::config::root_agent::root_agent_dir().expect("resolve root agent dir");
     let root = std::path::PathBuf::from(root);
@@ -538,16 +547,26 @@ async fn selected_idle_team_closes_as_one_batch_and_clears_selection_once() {
     };
     let settings: SettingsState = crate::config::settings::new_settings_state(settings);
     let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
-    clocks.lock().unwrap().note_user_message(
-        "myproj:wg-1-team/lead",
-        Utc::now() - chrono::Duration::seconds(120),
-    );
+    let anchor = Utc::now() - chrono::Duration::seconds(120);
+    clocks
+        .lock()
+        .unwrap()
+        .note_user_message("myproj:wg-1-team/lead", anchor);
     let shutdown = crate::shutdown::ShutdownSignal::new();
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), shutdown.token().clone());
     let output_senders = Arc::new(Mutex::new(HashMap::new()));
     let telegram: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
         TelegramBridgeManager::new(output_senders),
     ));
+    let services = RecordingServices {
+        settings: settings.clone(),
+        manager: manager.clone(),
+        pty: pty.clone(),
+        idle: idle.clone(),
+        coordinator: coordinator.clone(),
+        clocks: clocks.clone(),
+        notices: Mutex::new(Vec::new()),
+    };
     let app = tauri::test::mock_builder()
         .manage(crate::commands::session::selection_executor::state::<
             tauri::test::MockRuntime,
@@ -569,6 +588,42 @@ async fn selected_idle_team_closes_as_one_batch_and_clears_selection_once() {
         .expect("start selection coordinator");
     coordinator.submit_restore_first().await.unwrap().finish();
 
+    AutoCloseFixture {
+        _temp: temp,
+        app,
+        backend,
+        coordinator_id: coordinator_session.id,
+        member_id: member_session.id,
+        cwd: coordinator_cwd.to_string_lossy().into_owned(),
+        anchor,
+        services,
+    }
+}
+
+#[tokio::test]
+async fn selected_idle_team_closes_as_one_batch_and_clears_selection_once() {
+    use crate::pty::backend::PtyBackend;
+    use crate::session::selection::{SelectionMode, SelectionSource};
+    use tauri::Listener;
+    let fixture = auto_close_fixture().await;
+    let app = &fixture.app;
+    let manager = &fixture.services.manager;
+    let backend = &fixture.backend;
+    let coordinator = &fixture.services.coordinator;
+    let (badges_tx, badges_rx) = std::sync::mpsc::channel();
+    for name in [
+        "coordinator_clock_updated",
+        "coordinator_auto_close_changed",
+    ] {
+        let tx = badges_tx.clone();
+        app.listen_any(name, move |event| {
+            tx.send((
+                name,
+                serde_json::from_str::<serde_json::Value>(event.payload()).unwrap(),
+            ))
+            .unwrap();
+        });
+    }
     let (events_tx, events_rx) = std::sync::mpsc::channel();
     for event_name in ["session_destroyed", "session_switched"] {
         let events_tx = events_tx.clone();
@@ -580,8 +635,8 @@ async fn selected_idle_team_closes_as_one_batch_and_clears_selection_once() {
     tick(app.handle(), &mut HashMap::new()).await;
 
     assert!(manager.read().await.list_sessions().await.is_empty());
-    assert!(!backend.has_session(coordinator_session.id));
-    assert!(!backend.has_session(member_session.id));
+    assert!(!backend.has_session(fixture.coordinator_id));
+    assert!(!backend.has_session(fixture.member_id));
     let selection = manager.read().await.selection_payload().await;
     assert_eq!(selection.mode(), SelectionMode::None);
     assert_eq!(selection.source(), SelectionSource::AutoClose);
@@ -596,5 +651,316 @@ async fn selected_idle_team_closes_as_one_batch_and_clears_selection_once() {
     assert!(selection_payload["id"].is_null());
     assert_eq!(selection_payload["source"], "autoClose");
     assert!(events_rx.try_recv().is_err());
+    let idle = badges_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(
+        idle,
+        (
+            "coordinator_clock_updated",
+            serde_json::json!({
+                "replicaPath": fixture.cwd,
+                "lastUserMessageAt": DateTime::<Utc>::from_timestamp(fixture.anchor.timestamp(), 0)
+                    .unwrap().to_rfc3339(),
+            })
+        )
+    );
+    let marker = fixture.services.clocks.lock().unwrap().snapshot()["myproj:wg-1-team/lead"]
+        .auto_closed_at
+        .unwrap();
+    let closed = badges_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(
+        closed,
+        (
+            "coordinator_auto_close_changed",
+            serde_json::json!({
+                "replicaPath": fixture.cwd, "autoClosedAt": marker.to_rfc3339(),
+            })
+        )
+    );
+    assert!(badges_rx.try_recv().is_err());
     coordinator.close_and_join().await;
+}
+
+#[derive(Debug, PartialEq)]
+enum Badge {
+    Idle(String, DateTime<Utc>),
+    Closed(String, DateTime<Utc>),
+}
+
+struct RecordingServices {
+    settings: SettingsState,
+    manager: Arc<tokio::sync::RwLock<SessionManager>>,
+    pty: Arc<Mutex<PtyManager>>,
+    idle: Arc<IdleDetector>,
+    coordinator: SelectionCoordinator,
+    clocks: CoordinatorClocksState,
+    notices: Mutex<Vec<Badge>>,
+}
+
+impl AutoCloseServices for RecordingServices {
+    fn settings(&self) -> SettingsState {
+        self.settings.clone()
+    }
+    fn session_manager(&self) -> Arc<tokio::sync::RwLock<SessionManager>> {
+        self.manager.clone()
+    }
+    fn pty_manager(&self) -> Arc<Mutex<PtyManager>> {
+        self.pty.clone()
+    }
+    fn idle_detector(&self) -> Arc<IdleDetector> {
+        self.idle.clone()
+    }
+    fn selection_coordinator(&self) -> SelectionCoordinator {
+        self.coordinator.clone()
+    }
+    fn coordinator_clocks(&self) -> Option<CoordinatorClocksState> {
+        Some(self.clocks.clone())
+    }
+    fn idle_badge(&self, cwd: &str, at: DateTime<Utc>) {
+        self.notices
+            .lock()
+            .unwrap()
+            .push(Badge::Idle(cwd.into(), at));
+    }
+    fn auto_closed_badge(&self, cwd: &str, at: DateTime<Utc>) {
+        self.notices
+            .lock()
+            .unwrap()
+            .push(Badge::Closed(cwd.into(), at));
+    }
+}
+
+#[tokio::test]
+async fn recording_tick_deduplicates_and_advances_idle_badges() {
+    let fixture = auto_close_fixture().await;
+    let services = &fixture.services;
+    services
+        .settings
+        .write()
+        .await
+        .coordinator_auto_close_enabled = false;
+    let mut emitted = HashMap::new();
+    tick(services, &mut emitted).await;
+    tick(services, &mut emitted).await;
+    let first = DateTime::from_timestamp(fixture.anchor.timestamp(), 0).unwrap();
+    assert_eq!(
+        *services.notices.lock().unwrap(),
+        vec![Badge::Idle(fixture.cwd.clone(), first)]
+    );
+    let next = first + chrono::Duration::seconds(11);
+    services
+        .clocks
+        .lock()
+        .unwrap()
+        .note_user_message("myproj:wg-1-team/lead", next);
+    tick(services, &mut emitted).await;
+    assert_eq!(
+        *services.notices.lock().unwrap(),
+        vec![
+            Badge::Idle(fixture.cwd.clone(), first),
+            Badge::Idle(fixture.cwd.clone(), next),
+        ]
+    );
+    services.coordinator.close_and_join().await;
+}
+
+#[tokio::test]
+async fn recording_tick_purges_removed_teams_and_reemits_same_anchor() {
+    let mut fixture = auto_close_fixture().await;
+    let services = &mut fixture.services;
+    services
+        .settings
+        .write()
+        .await
+        .coordinator_auto_close_enabled = false;
+    let mut emitted = HashMap::new();
+    tick(services, &mut emitted).await;
+    let removed = std::mem::replace(
+        &mut services.manager,
+        Arc::new(tokio::sync::RwLock::new(SessionManager::new())),
+    );
+    tick(services, &mut emitted).await;
+    assert!(emitted.is_empty());
+    services.manager = removed;
+    tick(services, &mut emitted).await;
+    let anchor = DateTime::from_timestamp(fixture.anchor.timestamp(), 0).unwrap();
+    assert_eq!(
+        *services.notices.lock().unwrap(),
+        vec![
+            Badge::Idle(fixture.cwd.clone(), anchor),
+            Badge::Idle(fixture.cwd.clone(), anchor),
+        ]
+    );
+    services.coordinator.close_and_join().await;
+}
+
+#[tokio::test]
+async fn recording_tick_closes_only_coordinator_badges_once() {
+    use crate::pty::backend::PtyBackend;
+    use crate::session::selection::{SelectionMode, SelectionSource};
+    let fixture = auto_close_fixture().await;
+    let services = &fixture.services;
+    let mut emitted = HashMap::new();
+    tick(services, &mut emitted).await;
+    tick(services, &mut emitted).await;
+    assert!(services
+        .manager
+        .read()
+        .await
+        .list_sessions()
+        .await
+        .is_empty());
+    assert!(!fixture.backend.has_session(fixture.coordinator_id));
+    assert!(!fixture.backend.has_session(fixture.member_id));
+    let selection = services.manager.read().await.selection_payload().await;
+    assert_eq!(selection.mode(), SelectionMode::None);
+    assert_eq!(selection.source(), SelectionSource::AutoClose);
+    let marker = services.clocks.lock().unwrap().snapshot()["myproj:wg-1-team/lead"]
+        .auto_closed_at
+        .unwrap();
+    assert_eq!(
+        *services.notices.lock().unwrap(),
+        vec![
+            Badge::Idle(
+                fixture.cwd.clone(),
+                DateTime::from_timestamp(fixture.anchor.timestamp(), 0).unwrap()
+            ),
+            Badge::Closed(fixture.cwd.clone(), marker),
+        ]
+    );
+    services.coordinator.close_and_join().await;
+}
+
+#[tokio::test]
+async fn closed_badges_ignore_existing_marker_sibling_and_missing_reference() {
+    let fixture = auto_close_fixture().await;
+    let services = &fixture.services;
+    let team = "myproj:wg-1-team".to_string();
+    let refs = HashMap::from([(
+        team.clone(),
+        ("myproj:wg-1-team/lead".into(), fixture.cwd.clone()),
+    )]);
+    let closed = HashSet::from([team.clone()]);
+    mark_closed_badges(&services.clocks, &closed, &refs, |cwd, at| {
+        services.auto_closed_badge(cwd, at)
+    });
+    let marker = services.clocks.lock().unwrap().snapshot()["myproj:wg-1-team/lead"]
+        .auto_closed_at
+        .unwrap();
+    mark_closed_badges(&services.clocks, &closed, &refs, |cwd, at| {
+        services.auto_closed_badge(cwd, at)
+    });
+    mark_closed_badges(&services.clocks, &closed, &HashMap::new(), |cwd, at| {
+        services.auto_closed_badge(cwd, at)
+    });
+    let sibling_closed =
+        destroyed_is_team_coordinator(fixture.member_id, Some(fixture.coordinator_id));
+    assert!(!sibling_closed);
+    let sibling_teams = if sibling_closed {
+        closed
+    } else {
+        HashSet::new()
+    };
+    mark_closed_badges(&services.clocks, &sibling_teams, &refs, |cwd, at| {
+        services.auto_closed_badge(cwd, at)
+    });
+    assert_eq!(
+        *services.notices.lock().unwrap(),
+        vec![Badge::Closed(fixture.cwd, marker)]
+    );
+    services.coordinator.close_and_join().await;
+}
+
+#[test]
+fn tauri_badge_adapter_preserves_event_names_and_complete_payloads() {
+    use tauri::Listener;
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    for name in [
+        "coordinator_clock_updated",
+        "coordinator_auto_close_changed",
+    ] {
+        let tx = tx.clone();
+        app.listen_any(name, move |event| {
+            tx.send((
+                name,
+                serde_json::from_str::<serde_json::Value>(event.payload()).unwrap(),
+            ))
+            .unwrap();
+        });
+    }
+    app.handle().idle_badge("C:/team/lead", ts(123));
+    app.handle().auto_closed_badge("C:/team/lead", ts(456));
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        (
+            "coordinator_clock_updated",
+            serde_json::json!({
+                "replicaPath": "C:/team/lead", "lastUserMessageAt": ts(123).to_rfc3339(),
+            })
+        )
+    );
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        (
+            "coordinator_auto_close_changed",
+            serde_json::json!({
+                "replicaPath": "C:/team/lead", "autoClosedAt": ts(456).to_rfc3339(),
+            })
+        )
+    );
+    assert!(rx.try_recv().is_err());
+}
+
+fn assert_state_panic<T: Send + Sync + 'static>(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    getter: impl FnOnce(),
+) {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use tauri::Manager;
+    let expected = format!(
+        "state() called before manage() for {}",
+        std::any::type_name::<T>()
+    );
+    let real = catch_unwind(AssertUnwindSafe(|| {
+        app.state::<T>();
+    }));
+    let adapted = catch_unwind(AssertUnwindSafe(getter));
+    for result in [real, adapted] {
+        let payload = result.expect_err("missing required state must panic");
+        assert_eq!(
+            *payload.downcast::<String>().expect("String panic payload"),
+            expected
+        );
+    }
+}
+
+#[test]
+fn tauri_state_adapter_preserves_required_panics_and_optional_clock_identity() {
+    use crate::config::coordinator_clocks::CoordinatorClocks;
+    use tauri::Manager;
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let handle = app.handle();
+    assert_state_panic::<SettingsState>(handle, || {
+        handle.settings();
+    });
+    assert_state_panic::<Arc<tokio::sync::RwLock<SessionManager>>>(handle, || {
+        handle.session_manager();
+    });
+    assert_state_panic::<Arc<Mutex<PtyManager>>>(handle, || {
+        handle.pty_manager();
+    });
+    assert_state_panic::<Arc<IdleDetector>>(handle, || {
+        handle.idle_detector();
+    });
+    assert_state_panic::<SelectionCoordinator>(handle, || {
+        handle.selection_coordinator();
+    });
+    assert!(handle.coordinator_clocks().is_none());
+    let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
+    app.manage(clocks.clone());
+    assert!(Arc::ptr_eq(&clocks, &handle.coordinator_clocks().unwrap()));
 }
