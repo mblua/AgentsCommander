@@ -627,7 +627,8 @@ fn workgroup_git_scope_frozen_half_is_byte_exact() {
 ///
 /// The ONE difference this criterion tolerates is D8b's identifier switch at
 /// the git-scope read, which changes an identifier and not a byte of prose.
-/// #3545 re-pins the source length and digest after formatting string literals;
+/// #3545 re-pins the source after wrapping literals and moving the format literal
+/// to a module macro;
 /// all rendered-output lengths and digests stay unchanged. The source remains
 /// frozen byte for byte at this formatted version.
 #[test]
@@ -669,13 +670,13 @@ fn legacy_rendered_default_context_for_generation_source_is_frozen() {
 
     assert_eq!(
         normalized.len(),
-        16655,
+        9802,
         "the frozen legacy reconstruction changed size; it reconstructs a user's pre-#1369 \
          context file for byte comparison and must not move"
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(normalized.as_bytes())),
-        "682651c47342015b5b5872676326152d444ec4a1e774be4252268c2b829809f8",
+        "f66acb89ca35e9f4a081efaed148e2e8c33bc759d16070b83849e3479d193ba3",
         "a byte of legacy_rendered_default_context_for_generation moved; every pre-#1369 \
          Context.AgentsCommander.md falls from StaleGenerated to NotLegacy, never self-heals \
          again, and keeps the pre-#1369 write restrictions permanently"
