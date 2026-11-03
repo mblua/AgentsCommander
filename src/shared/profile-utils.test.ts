@@ -156,7 +156,7 @@ describe("profile utils", () => {
     const docComment = source.slice(start, end);
     expect(docComment).not.toContain("primigenio");
     expect(docComment).not.toContain("agents[0]");
-    expect(docComment).toContain("legacy profile_slots[letter].label");
+    expect(docComment).toContain("legacy `profile_slots[letter].label`");
     expect(docComment).toContain("bare letter");
   });
 
