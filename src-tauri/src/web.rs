@@ -58,7 +58,7 @@ fn acquire_websocket_upgrade_guard(
 }
 
 /// Start the embedded HTTP/WebSocket server.
-/// Called from Tauri's setup(), runs on the same tokio runtime.
+/// Called from Tauri's `setup()`, runs on the same tokio runtime.
 // Wired by a single setup() call with all shared state already in scope; an
 // args struct would just rename the same fields.
 #[allow(clippy::too_many_arguments)]
@@ -94,7 +94,7 @@ where
     // El turbofish es OBLIGATORIO: map_err se interpone entre parse() y el `?`,
     // asi que anotar el `let` no alcanza para inferir el target del parse y
     // rustc emite E0282 (plan 5.2.2 afirmaba lo contrario).
-    let addr = format!("{}:{}", bind, port)
+    let addr = format!("{bind}:{port}")
         .parse::<SocketAddr>()
         .map_err(|e| StartServerError::InvalidAddr {
             bind: bind.clone(),
@@ -111,8 +111,8 @@ where
                 detail: e.to_string(),
             })?;
 
-    log::info!("[web-server] Listening on http://{}", addr);
-    println!("[web-server] Listening on http://{}", addr);
+    log::info!("[web-server] Listening on http://{addr}");
+    println!("[web-server] Listening on http://{addr}");
 
     Ok(spawn_server_on_listener(
         listener,
@@ -162,7 +162,7 @@ pub(super) fn build_router(
     #[cfg(not(has_embedded_dist))]
     {
         if let Some(path) = dist_path {
-            log::info!("[web-server] Serving static files from {:?}", path);
+            log::info!("[web-server] Serving static files from {path:?}");
             app = app.fallback_service(ServeDir::new(path).append_index_html_on_directories(true));
         } else {
             log::warn!("[web-server] No dist/ directory found; static file serving disabled");
@@ -199,7 +199,7 @@ where
             })
             .await
         {
-            log::error!("[web-server] server error: {}", e);
+            log::error!("[web-server] server error: {e}");
         }
     }))
 }
@@ -431,7 +431,10 @@ async fn handle_text_message(state: &WebSocketConnectionContext, text: &str) {
         Err(_) => return,
     };
 
-    let id = parsed.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+    let id = parsed
+        .get("id")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
     let cmd = match parsed.get("cmd").and_then(|v| v.as_str()) {
         Some(c) => c,
         None => return,
@@ -469,7 +472,7 @@ fn resolve_dist_path(resource_dir: Option<std::path::PathBuf>) -> Option<std::pa
     if let Some(resource_dir) = resource_dir {
         let dist = resource_dir.join("dist");
         if dist.exists() && dist.is_dir() {
-            log::info!("[web-server] Found dist via resource_dir: {:?}", dist);
+            log::info!("[web-server] Found dist via resource_dir: {dist:?}");
             return Some(dist);
         }
     }
@@ -479,7 +482,7 @@ fn resolve_dist_path(resource_dir: Option<std::path::PathBuf>) -> Option<std::pa
         if let Some(parent) = exe.parent() {
             let dist = parent.join("dist");
             if dist.exists() && dist.is_dir() {
-                log::info!("[web-server] Found dist next to exe: {:?}", dist);
+                log::info!("[web-server] Found dist next to exe: {dist:?}");
                 return Some(dist);
             }
             // Dev mode: target/debug/exe to project root/dist.
