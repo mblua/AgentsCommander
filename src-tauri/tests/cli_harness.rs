@@ -74,7 +74,7 @@ fn copy_binary_into(tmp: &Path) -> PathBuf {
 
 fn config_dir_for(bin: &Path) -> PathBuf {
     let stem = bin.file_stem().unwrap().to_string_lossy().to_string();
-    bin.parent().unwrap().join(format!(".{stem}"))
+    bin.parent().unwrap().join(format!(".{}", stem))
 }
 
 fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {

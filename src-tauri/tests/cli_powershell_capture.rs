@@ -5,7 +5,7 @@
 //!
 //! IMPORTANT: marked #[ignore] because the bug only reproduces in release mode
 //! (`windows_subsystem = "windows"` is gated on `not(debug_assertions)`). To run:
-//!     cargo test --release --test `cli_powershell_capture` -- --ignored
+//!     `cargo test --release --test cli_powershell_capture -- --ignored`
 //!
 //! CI coverage for shipped/testable release executable names lives in:
 //!     npm run build:prod
