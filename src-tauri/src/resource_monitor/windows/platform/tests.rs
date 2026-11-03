@@ -680,7 +680,9 @@ fn issue_3530_windows_diagnostic_row_failure_after_n() {
         .unwrap_err()
     {
         DiagnosticTerminationError::Evidence(error) => assert!(error.effects_started),
-        other => panic!("expected evidence failure: {other:?}"),
+        other @ DiagnosticTerminationError::Ordinary(_) => {
+            panic!("expected evidence failure: {other:?}")
+        }
     }
     assert_eq!(
         calls
@@ -722,7 +724,9 @@ fn issue_3530_windows_api_return_preserves_bool_error() {
             assert_eq!(raw.returned, Some(false));
             assert_eq!(raw.os_error, Some(5));
         }
-        other => panic!("expected evidence failure: {other:?}"),
+        other @ DiagnosticTerminationError::Ordinary(_) => {
+            panic!("expected evidence failure: {other:?}")
+        }
     }
     assert!(!calls.calls.borrow().contains(&"wait"));
 }

@@ -441,7 +441,7 @@ fn assert_veto(error: CleanupFailure, effects: bool) {
             assert!(result.message.contains("evidence_gap"));
             assert_ne!(accounting_state, "unknown");
         }
-        other => panic!("expected veto, got {other:?}"),
+        other @ CleanupFailure::Ordinary(_) => panic!("expected veto, got {other:?}"),
     }
 }
 
@@ -481,7 +481,7 @@ fn issue_3530_diagnostic_row_failure_after_n() {
             assert!(effects_started);
             assert_eq!(result.killed_processes, [process(20, 1).identity]);
         }
-        other => panic!("expected veto, got {other:?}"),
+        other @ CleanupFailure::Ordinary(_) => panic!("expected veto, got {other:?}"),
     }
     assert_eq!(f.backend.calls.lock().unwrap().len(), 1);
     assert_eq!(f.state(), ResourceGroupState::Quarantined);
@@ -637,7 +637,7 @@ fn issue_3530_veto_accounting_failure_stays_typed() {
                 assert!(accounting_error.is_some());
                 assert!(!effects_started);
             }
-            other => panic!("veto was degraded: {other:?}"),
+            other @ CleanupFailure::Ordinary(_) => panic!("veto was degraded: {other:?}"),
         }
         assert!(f.backend.calls.lock().unwrap().is_empty());
         if !poison {
@@ -677,7 +677,7 @@ fn issue_3530_open_failure_restores_state() {
             assert_eq!(stage, "open");
             assert!(!effects_started);
         }
-        other => panic!("expected open veto: {other:?}"),
+        other @ CleanupFailure::Ordinary(_) => panic!("expected open veto: {other:?}"),
     }
     assert_eq!(f.state(), ResourceGroupState::Running);
     assert!(!f.monitor.quarantine_retry_due(f.id));
