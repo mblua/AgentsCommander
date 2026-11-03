@@ -541,6 +541,29 @@ struct RuntimeState {
     pty_target_gate_state: crate::api::message_store::PtyInputTargetGateState,
 }
 
+fn prepare_resource_monitor_state(
+    owners: &crate::AppOwners,
+) -> Arc<resource_monitor::ResourceMonitorState> {
+    use crate::cleanup_diagnostics::store::Diagnostics;
+
+    let diagnostics = Arc::new(match config::config_dir() {
+        None => Diagnostics::disabled(),
+        Some(config_dir) => match Diagnostics::new(&config_dir) {
+            Ok(diagnostics) => diagnostics,
+            Err(_) => {
+                log::warn!("cleanup_diagnostics init unavailable");
+                Diagnostics::disabled()
+            }
+        },
+    });
+    Arc::new(
+        resource_monitor::ResourceMonitorState::with_spawn_registry_and_diagnostics(
+            owners.spawn.clone(),
+            diagnostics,
+        ),
+    )
+}
+
 fn prepare_runtime_state(
     owners: &crate::AppOwners,
     response_close: &crate::pty::manager::ResponseCloseState,
@@ -570,9 +593,7 @@ fn prepare_runtime_state(
         &startup_project_paths,
     );
     let coordinator_clocks_for_exit = Arc::clone(&coordinator_clocks);
-    let resource_monitor_state = Arc::new(
-        resource_monitor::ResourceMonitorState::with_spawn_registry(owners.spawn.clone()),
-    );
+    let resource_monitor_state = prepare_resource_monitor_state(owners);
     // #714 screenshot capture lifecycle + global-hotkey registration state.
     let screenshot_capture_state: screenshot::ScreenshotCaptureState = Arc::new(
         tokio::sync::Mutex::new(screenshot::ScreenshotCaptureLifecycle::Idle),
