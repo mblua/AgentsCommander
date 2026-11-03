@@ -65,30 +65,8 @@ pub(super) async fn drain_after_shutdown<R: Runtime>(
                 drop(response);
             }
             CoordinatorJob::FinalizeCreate { request, response } => {
-                if let Some(owned) = request.owned_replacement {
-                    // Shutdown is not stopped-executor cleanup authority. The
-                    // accepted caller observes Retained when this channel ends;
-                    // its original pending/finalized binding remains accounted.
-                    hold.release();
-                    drop(hold._create_ticket.take());
-                    if let Ok(mut state) = owned.owner.state.lock() {
-                        state.envelope_released = true;
-                        state.retained_reason =
-                            Some("owned finalizer drained during shutdown".into());
-                    }
-                    #[cfg(test)]
-                    if let Some(control) = owned.fixture.as_ref() {
-                        control.record(&owned, ReplacementFixtureCut::TicketDrained);
-                    }
-                    drop(response);
+                if drain_finalizer(transaction, &mut hold, request, response).await {
                     continue;
-                }
-                execute_rollback_create(transaction, request.binding).await;
-                if respond_unavailable(&mut hold, response) {
-                    log::debug!(
-                        "[selection] shutdown finalizer caller dropped session={}",
-                        request.binding.session_id()
-                    );
                 }
             }
             CoordinatorJob::RollbackCreate { binding } => {
@@ -649,4 +627,37 @@ async fn execute_restore_barrier<R: Runtime>(
     }
     transaction.release_restore(nonce);
     hold.release();
+}
+
+async fn drain_finalizer<R: Runtime>(
+    transaction: &SelectionTransaction<R>,
+    hold: &mut super::envelope::EnvelopeHold,
+    request: super::FinalizeCreateRequest,
+    response: tokio::sync::oneshot::Sender<Result<crate::session::session::SessionInfo, String>>,
+) -> bool {
+    if let Some(owned) = request.owned_replacement {
+        // Shutdown is not stopped-executor cleanup authority. The
+        // accepted caller observes Retained when this channel ends;
+        // its original pending/finalized binding remains accounted.
+        hold.release();
+        drop(hold._create_ticket.take());
+        if let Ok(mut state) = owned.owner.state.lock() {
+            state.envelope_released = true;
+            state.retained_reason = Some("owned finalizer drained during shutdown".into());
+        }
+        #[cfg(test)]
+        if let Some(control) = owned.fixture.as_ref() {
+            control.record(&owned, ReplacementFixtureCut::TicketDrained);
+        }
+        drop(response);
+        return true;
+    }
+    execute_rollback_create(transaction, request.binding).await;
+    if respond_unavailable(hold, response) {
+        log::debug!(
+            "[selection] shutdown finalizer caller dropped session={}",
+            request.binding.session_id()
+        );
+    }
+    false
 }
