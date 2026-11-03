@@ -12,7 +12,7 @@ use super::pty_claim::{ResponseWakeWork, WakeDelivery};
 use super::settle::err_is_pty_session_missing;
 use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
-use crate::session::manager::SessionManager;
+use crate::session::manager::{PendingCreateBinding, SessionManager};
 use crate::session::session::SessionCommunicationKind;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -263,9 +263,7 @@ impl MailboxPoller {
         let Some(info) = continuation.refresh_completion_info(&manager, &pty).await else {
             return Ok(OwnedPeerWakeStep::Retained);
         };
-        let id = continuation
-            .binding()
-            .map(crate::session::manager::PendingCreateBinding::session_id);
+        let id = continuation.binding().map(PendingCreateBinding::session_id);
         let Some(id) = id else {
             return Ok(OwnedPeerWakeStep::Retained);
         };
