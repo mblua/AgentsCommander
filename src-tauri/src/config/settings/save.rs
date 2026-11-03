@@ -64,7 +64,7 @@ pub(crate) use value::{
 /// Combined with the PID it makes `settings.json.<pid>.<op_id>.tmp` distinct from
 /// any concurrent cross-process save (GUI startup, CLI verbs, closing flush) and
 /// from any leftover temp written by a prior crashed run. Mirrors
-/// `sessions_persistence::SAVE_OP_ID` (sessions_persistence.rs:47); a separate
+/// `sessions_persistence::SAVE_OP_ID` (`sessions_persistence.rs:47`); a separate
 /// counter so the two can be reasoned about independently in diagnostics.
 static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -339,7 +339,7 @@ pub(crate) fn write_value_atomic_labeled(
     }
     result?;
 
-    log::debug!("Saved settings to {:?}", label);
+    log::debug!("Saved settings to {label:?}");
     Ok(json)
 }
 
@@ -450,7 +450,7 @@ pub(crate) fn save_settings_to_path(
     path: &Path,
 ) -> Result<(), SettingsSaveError> {
     let value = serde_json::to_value(settings).map_err(|source| {
-        let outward = format!("Failed to serialize settings: {}", source);
+        let outward = format!("Failed to serialize settings: {source}");
         SettingsSaveError::json(
             SettingsSaveStage::Serialize,
             path,
