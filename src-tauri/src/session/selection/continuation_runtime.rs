@@ -280,13 +280,21 @@ impl OwnedReplacementContinuation {
             })
             .await;
         drop(permit);
-        self.complete_retirement_cleanup(
-            transaction,
-            &activity_owner,
-            descriptor.previous.id,
-            reusable.as_ref(),
-        )
-        .await?;
+        let activity = self.retirement_activity()?;
+        crate::config::activity_log::append_batch(&activity, &activity_owner);
+        transaction
+            .lifecycle_executor()
+            .expect("selection start contract violated: lifecycle executor binding missing")
+            .complete_retirement(transaction, descriptor.previous.id)
+            .await;
+        {
+            let mut state = self.owner.state.lock().ok()?;
+            let progress = state.replacement.as_mut()?;
+            progress.retirement_cleanup_completed = true;
+            if let Some(current) = reusable.as_ref() {
+                progress.current_checkpoint = Some(current.clone());
+            }
+        }
         effect.complete(Ok(Some(descriptor.previous.id.to_string())));
         Some(reusable.is_some())
     }
@@ -410,39 +418,19 @@ impl OwnedReplacementContinuation {
         })
     }
 
-    async fn complete_retirement_cleanup<R: Runtime>(
-        &self,
-        transaction: &SelectionTransaction<R>,
-        activity_owner: &crate::config::activity_log::ActivityCoalescer,
-        previous: uuid::Uuid,
-        reusable: Option<&crate::config::sessions_persistence::PublishedCarrier>,
-    ) -> Option<()> {
-        let activity = self
-            .owner
-            .state
-            .lock()
-            .ok()?
-            .replacement
-            .as_ref()?
-            .retirement_result
-            .as_ref()?
-            .activity
-            .clone();
-        crate::config::activity_log::append_batch(&activity, activity_owner);
-        transaction
-            .lifecycle_executor()
-            .expect("selection start contract violated: lifecycle executor binding missing")
-            .complete_retirement(transaction, previous)
-            .await;
-        {
-            let mut state = self.owner.state.lock().ok()?;
-            let progress = state.replacement.as_mut()?;
-            progress.retirement_cleanup_completed = true;
-            if let Some(current) = reusable {
-                progress.current_checkpoint = Some(current.clone());
-            }
-        }
-        Some(())
+    fn retirement_activity(&self) -> Option<Vec<crate::config::activity_log::ActivityRecord>> {
+        Some(
+            self.owner
+                .state
+                .lock()
+                .ok()?
+                .replacement
+                .as_ref()?
+                .retirement_result
+                .as_ref()?
+                .activity
+                .clone(),
+        )
     }
 
     fn finish_current_replacement(
